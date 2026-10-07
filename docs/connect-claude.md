@@ -493,9 +493,12 @@ exact `cotal actor grant` command that widens it. An operator launch, whose chai
 admin-scoped or roster row, is unaffected. Passing `events: false` is the explicit opt-out.
 
 Arming the event plane through a typed spawn request (`manager.spawn` with `events`, including
-the CLI's `cotal spawn --detach --events`) additionally requires the caller's admin tier on a
-user mesh. A non-admin caller that asks for the plane is refused before anything is provisioned,
-and one that stays silent gets a spawn without it, with the reply saying so.
+the CLI's `cotal spawn --detach --events`) is allowed on a user mesh when the child runs under
+the caller's owner. This also satisfies a registration policy that requires the plane. A spawn
+under another owner still needs the caller's admin tier. Without it, an explicit request or a
+required plane is refused before provisioning. A silent non-owner caller in a space without that
+policy has the plane disarmed with a notice in a successful reply. Later provisioning can still
+refuse the spawn. The child's own-channel rule and the ledger's delegation envelope still apply.
 
 ## Resume a session
 

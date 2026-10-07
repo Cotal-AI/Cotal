@@ -778,7 +778,7 @@ export interface StartAgentOpts {
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
    *  on when the connector declares one; `false` (`--no-events`) is the explicit opt-out. */
   events?: boolean;
-  /** #373: set by `opStart` when a non-admin caller omitted `events` and the plane was served
+  /** #373: set by `opStart` when a non-owner, non-admin caller omitted `events` and the plane was served
    *  disarmed. Carried into the reply data so the caller sees the downgrade — never silent. */
   eventsNotice?: string;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
@@ -3684,10 +3684,9 @@ export class Manager {
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
       // #373: arming the event plane (events: true, or the omission that arms it by default)
-      // is operator reach on a user mesh — the spawn handler resolves the caller's admin tier
-      // ONCE here (opLaunch takes the same signal as a parameter) and opStart's admission gate
-      // decides on it BEFORE connector resolution or any grant mutation. Static meshes resolve
-      // true and nothing changes.
+      // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
+      // the residual cross-owner case; opStart decides before connector resolution or grant
+      // mutation. Static meshes resolve true and nothing changes.
       spawn: (ctx) => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
@@ -5193,7 +5192,14 @@ export class Manager {
     const requestedEvents = typeof args.events === "boolean" ? args.events : undefined;
     let eventsNotice: string | undefined;
     let events: boolean | undefined = requestedEvents;
-    if (!admin) {
+    // Imperative spawns have no payload-selected owner. Local provisioning derives it from
+    // the authenticated u_-owner caller; hosted enrollment fixes it to the manager's owner.
+    // Match the same owner-domain boundary as authorizeNamed, without treating the spawn's
+    // spawner relation as authority over a different owner's session.
+    const callerOwner = parsePrincipalKey(caller)?.owner;
+    const childOwner = this.remoteAuthority?.owner ?? (callerOwner?.startsWith("u_") ? callerOwner : undefined);
+    const ownsChild = this.userMode && callerOwner !== undefined && callerOwner === childOwner;
+    if (!admin && !ownsChild) {
       if (requestedEvents === true)
         return Promise.resolve({
           ok: false,

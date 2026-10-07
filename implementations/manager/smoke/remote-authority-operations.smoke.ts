@@ -131,6 +131,7 @@ assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, evict
 
 let remoteChecks = 0;
 let adminDecision: boolean | Error = true;
+let adminCaller = caller;
 const remoteOnly = new Manager({
   space: "demo", runtime: "pty",
   remoteAuthority: {
@@ -141,7 +142,7 @@ const remoteOnly = new Manager({
     validateRetainedAgent: async () => { throw new Error("not used"); }, scanGoalIndex: async () => [],
     authorizeAdmin: async (seen) => {
       remoteChecks++;
-      assert.deepEqual(seen, caller);
+      assert.deepEqual(seen, adminCaller);
       if (adminDecision instanceof Error) throw adminDecision;
       return adminDecision;
     },
@@ -198,7 +199,7 @@ for (const command of ["despawn", "attach", "input", "turn"]) {
 assert.deepEqual(effects, []);
 assert.equal(remoteChecks, 10);
 
-// #373: the typed `spawn` handler gates the event plane on the caller's admin tier BEFORE
+// #373: cross-owner arming still needs admin BEFORE
 // startAgent (which mints credentials — "no credential minted" is asserted as "startAgent was
 // never called"). serveSpawnGoal is stubbed the way findManagedByTarget is above (the goal-writer
 // machinery is not under test here); startAgent is stubbed to record its opts. adminDecision at
@@ -208,11 +209,14 @@ remoteOnly.serveSpawnGoal = (_ctx, run) => run({} as never);
 const startOpts: unknown[] = [];
 const startAgentReply = { ok: true as const, data: { eventsNotice: "event plane not armed: arming it on spawn needs the admin tier; the spawn was served with events: false" } };
 remoteOnly.startAgent = async (opts) => { startOpts.push(opts); return startAgentReply; };
+let spawnCaller = epCaller;
 const spawnCtx = (events?: boolean) => ({
-  subject: { caller: epCaller, command: "spawn", route: "inst", target: { mode: "owner" as const } },
+  subject: { caller: spawnCaller, command: "spawn", route: "inst", target: { mode: "owner" as const } },
   request: { args: { name: "probe", ...(events !== undefined ? { events } : {}) }, target: { owner: foreignTarget.userOwner, actor: "worker", lifecycleUid: mintLifecycleUid() } },
 });
 const spawn = (events?: boolean) => Promise.resolve(handlers.get("spawn")!(spawnCtx(events) as never));
+spawnCaller = { ...epCaller, owner: `u_${"b".repeat(26)}` };
+adminCaller = { ...caller, owner: spawnCaller.owner };
 // (a) non-admin, events: true — refused in the adminGated voice, nothing provisioned.
 adminDecision = false;
 let reply = await spawn(true) as { ok: boolean; error?: string };
@@ -238,6 +242,16 @@ assert.equal(reply.ok, true);
 assert.deepEqual((startOpts[2] as { events?: boolean }).events, false);
 assert.equal((startOpts[2] as { eventsNotice?: string }).eventsNotice, undefined);
 assert.equal(remoteChecks, 14);
+spawnCaller = epCaller;
+adminCaller = caller;
+reply = await spawn(true) as { ok: boolean };
+assert.equal(reply.ok, true, "an owner arms its own child's event plane without admin");
+assert.equal((startOpts[3] as { events?: boolean }).events, true);
+reply = await spawn() as { ok: boolean };
+assert.equal(reply.ok, true, "an owner's omitted event flag stays armed by default");
+assert.equal((startOpts[4] as { events?: boolean }).events, undefined);
+assert.equal((startOpts[4] as { eventsNotice?: string }).eventsNotice, undefined);
+assert.equal(remoteChecks, 16);
 
-console.log("remote authority operations: 38 passed, 0 failed");
+console.log(`remote authority operations: ${cells()} passed, 0 failed`);
 emitSentinel({ passed: cells(), failed: 0 });

@@ -55,6 +55,15 @@ credentials or evicts connections. Zero rows prove absence only with a complete 
 single-server proof. An embedded endpoint's trusted composition can retain transport custody
 through `EndpointOptions.onConnection`.
 
+## Unreleased
+
+On a per-user-auth mesh, a spawn-scoped caller can arm the event plane of a child under its own
+owner without `admin`. This fixes owned spawns in spaces whose registration policy requires the
+plane. Upgrade the manager to pick up the admission change. No credential or state migration is
+needed. Cross-owner arming still requires `admin`, and the child's own-channel rule and ledger
+envelope are unchanged. A silent non-owner caller in a space without the policy still has the
+plane disarmed, with a notice if provisioning succeeds.
+
 ## Hermes model from the environment in 0.68.0
 
 A connector now launches on the model and variant its launcher resolved (the `--model` or

@@ -35,9 +35,9 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "G5 the #373 events admission gate is dropped from opStart: a non-admin typed spawn carrying events:true reaches startAgent again and the child is provisioned with the event-plane grant, the silent-success failure mode the issue reports",
+      "name": "G5 the #373 events admission gate is dropped from opStart: a non-admin, non-owner typed spawn carrying events:true reaches startAgent again and the child is provisioned with the event-plane grant, the silent-success failure mode the issue reports",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (!admin) {\n      if (requestedEvents === true)",
+      "find": "    if (!admin && !ownsChild) {\n      if (requestedEvents === true)",
       "replace": "    if (false) {\n      if (requestedEvents === true)",
       "command": "pnpm smoke:remote-authority-operations",
       "expectRed": "the non-admin events:true spawn is refused before startAgent",
