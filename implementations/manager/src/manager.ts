@@ -1052,6 +1052,19 @@ function foreignEventChannels(channels: readonly string[], owner: string, actor:
   });
 }
 
+/** One connector's declared harness binaries resolved on PATH now. The refusal sentence is built only
+ *  here, so the boot row and the check for a connector registered after boot can never word it apart. */
+function resolveHarness(name: string, requires: readonly string[]): { binaries: Record<string, string>; reason?: string } {
+  const binaries: Record<string, string> = {};
+  const missing: string[] = [];
+  for (const bin of requires) {
+    const path = resolveOnPath(bin);
+    if (path) binaries[bin] = path;
+    else missing.push(bin);
+  }
+  return missing.length ? { binaries, reason: `${name} harness needs ${missing.join(", ")} on PATH - not found` } : { binaries };
+}
+
 type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
 
 function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
@@ -5251,17 +5264,9 @@ export class Manager {
     } else {
       declared = registry.all<Connector>("connector").map((connector) => ({ name: connector.name, requires: connector.requires ?? [] }));
     }
-    for (const connector of declared) {
-      const name = connector.name;
-      const binaries: Record<string, string> = {};
-      const missing: string[] = [];
-      for (const bin of connector.requires) {
-        const path = resolveOnPath(bin);
-        if (path) binaries[bin] = path;
-        else missing.push(bin);
-      }
-      if (missing.length) {
-        const reason = `${name} harness needs ${missing.join(", ")} on PATH - not found`;
+    for (const { name, requires } of declared) {
+      const { binaries, reason } = resolveHarness(name, requires);
+      if (reason) {
         rows.push({ agent: name, state: "unavailable", binaries, reason });
         console.error(`! manager boot: connector ${name} unavailable - ${reason}`);
       } else {
@@ -5295,15 +5300,15 @@ export class Manager {
   }
 
   /** The harness binaries a managed launch runs, as boot resolved them, or the refusal naming what is
-   *  missing. Spawn and resume both take it, so a seat launches from the same files whichever path
-   *  starts it. A connector registered after boot has no inventory row and is checked on PATH now. */
+   *  missing. Spawn, resume and the model catalog all take it, so a seat launches from the same files
+   *  whichever path starts it and the catalog never disagrees with a launch about whether the harness
+   *  is there. A connector registered after boot has no inventory row and is checked on PATH now. */
   private launchHarness(connector: Connector): { binaries?: Readonly<Record<string, string>> } | { refusal: string } {
     const row = this.connectorStatuses.find((status) => status.agent === connector.name);
     if (row?.state === "unavailable") return { refusal: row.reason ?? `${connector.name} harness is unavailable` };
     if (row) return { binaries: row.binaries };
-    const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-    if (missing.length) return { refusal: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
-    return {};
+    const { reason } = resolveHarness(connector.name, connector.requires ?? []);
+    return reason ? { refusal: reason } : {};
   }
 
   /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
@@ -5326,14 +5331,8 @@ export class Manager {
     const refresh = args.refresh === true;
     const one = async (connector: Connector): Promise<ConnectorModelCatalog> => {
       if (!connector.listModels) return { agent: connector.name, supported: false, models: [] };
-      const missing = (connector.requires ?? []).filter((bin) => !resolveOnPath(bin));
-      if (missing.length)
-        return {
-          agent: connector.name,
-          supported: true,
-          models: [],
-          error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found`,
-        };
+      const harness = this.launchHarness(connector);
+      if ("refusal" in harness) return { agent: connector.name, supported: true, models: [], error: harness.refusal };
       try {
         const catalog = await connector.listModels({ refresh });
         return { agent: connector.name, supported: true, ...catalog };
