@@ -87,8 +87,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   };
 
+  let confirmMatcher: StartupConfirmMatcher | undefined;
   let proc: pty.IPty;
   try {
+    // Built before the child exists, so a prompt that cannot match starts nothing.
+    confirmMatcher = launch.confirm === undefined ? undefined : new StartupConfirmMatcher(launch.confirm);
     proc = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
@@ -140,7 +143,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const clients = new Set<Socket>();
   let nextSub = 1;
   let early = "";
-  const confirmMatcher = launch.confirm ? new StartupConfirmMatcher(launch.confirm) : undefined;
   let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let handoffTimer: ReturnType<typeof setTimeout> | undefined;

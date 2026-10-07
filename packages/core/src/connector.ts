@@ -149,7 +149,8 @@ export interface LaunchSpec {
   /** Auto-clear a one-time spawn prompt: when this text appears in the agent's
    *  early output, the runtime presses Enter once so a supervised launch stays
    *  non-interactive. Matched after stripping ANSI + whitespace (TUIs position
-   *  text with cursor moves, not spaces). */
+   *  text with cursor moves, not spaces); a text with nothing left after stripping, `""` included,
+   *  is refused before the seat starts. */
   confirm?: string;
   /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`

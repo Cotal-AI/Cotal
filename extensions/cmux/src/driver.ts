@@ -17,7 +17,9 @@ function cmuxBin(): string {
  * anywhere else.
  */
 function cmux(args: string[], opts: { timeoutMs?: number } = {}): string {
-  return execFileSync(cmuxBin(), args, { encoding: "utf8", timeout: opts.timeoutMs }).trim();
+  // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM would
+  // outlast the timeout.
+  return execFileSync(cmuxBin(), args, { encoding: "utf8", timeout: opts.timeoutMs, killSignal: "SIGKILL" }).trim();
 }
 
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
@@ -77,9 +79,9 @@ function isWorkspaceNotFound(err: unknown): boolean {
 /** Close a workspace (tab) by id/ref. Idempotent: closing an already-gone tab is a no-op, not an
  *  error — both runtime teardown and stale-ref cleanup mean "ensure it's closed". Only cmux's
  *  workspace-not-found is swallowed; other CLI/socket failures still throw. */
-export function closeWorkspace(workspace: string): void {
+export function closeWorkspace(workspace: string, opts: { timeoutMs?: number } = {}): void {
   try {
-    cmux(["close-workspace", "--workspace", workspace]);
+    cmux(["close-workspace", "--workspace", workspace], opts);
   } catch (err) {
     if (isWorkspaceNotFound(err)) return;
     throw err;
@@ -162,7 +164,13 @@ export function send(text: string, target?: Target): void {
   cmux(["send", ...targetArgs(target), "--", text]);
 }
 
+/** The text a terminal surface shows now. Bounded like the exit probe, because the startup-confirm
+ *  watch polls it on the manager's event loop. */
+export function readScreen(target: Target): string {
+  return cmux(["read-screen", ...targetArgs(target)], { timeoutMs: EXIT_PROBE_MS });
+}
+
 /** Send a key press (e.g. "enter") to a terminal surface. */
-export function sendKey(key: string, target?: Target): void {
-  cmux(["send-key", ...targetArgs(target), "--", key]);
+export function sendKey(key: string, target?: Target, opts: { timeoutMs?: number } = {}): void {
+  cmux(["send-key", ...targetArgs(target), "--", key], opts);
 }

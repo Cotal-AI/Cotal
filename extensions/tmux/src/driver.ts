@@ -73,9 +73,16 @@ function noServer(err: unknown): boolean {
 }
 
 /** The running tmux server's pid, or undefined when no server is running. */
-export function serverPid(): string | undefined {
+export function serverPid(opts: { timeoutMs?: number } = {}): string | undefined {
   try {
-    return execFileSync("tmux", ["display-message", "-p", "#{pid}"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    return execFileSync("tmux", ["display-message", "-p", "#{pid}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: opts.timeoutMs,
+      // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM would
+      // outlast the timeout.
+      killSignal: "SIGKILL",
+    }).trim();
   } catch (err) {
     if (noServer(err)) return undefined;
     throw err;
@@ -142,6 +149,7 @@ export function paneState(paneId: string): PaneState {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
+      killSignal: "SIGKILL",
     });
     for (const line of panes.split("\n")) {
       const [id, dead] = line.trim().split(/\s+/);
@@ -156,6 +164,26 @@ export function paneState(paneId: string): PaneState {
     if (noServer(err)) return "exited";
     throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${message.trim()}`, { cause: err });
   }
+}
+
+/** The text pane `paneId` (`%N`) of the server whose pid is `server` shows now, or undefined once it
+ *  has exited or that server is gone. */
+export function capturePane(paneId: string, server: string): string | undefined {
+  let screen: string;
+  try {
+    screen = execFileSync("tmux", ["capture-pane", "-p", "-t", paneId], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: EXIT_PROBE_MS,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    if (paneState(paneId) === "exited") return undefined;
+    throw err;
+  }
+  // capture-pane also reads a pane kept after its process exited (`remain-on-exit`); a pane still
+  // running on `server` after the capture was running during it. A later server reuses pane ids.
+  return paneState(paneId) === "exited" || serverPid({ timeoutMs: EXIT_PROBE_MS }) !== server ? undefined : screen;
 }
 
 /** Bounded polling over tmux's authoritative pane inventory. */
@@ -246,12 +274,34 @@ export function selectWindow(target: string): void {
   execFileSync("tmux", ["select-window", "-t", target], { stdio: "ignore" });
 }
 
+/** tmux arguments that run command `args` only on the server whose pid is `server`, when one is given.
+ *  A later server reuses window and pane ids, so an id kept from an earlier server can name another
+ *  window; tmux checks its pid in the same command. */
+function onServer(server: string | undefined, args: string[]): string[] {
+  return server === undefined ? args : ["if-shell", "-F", `#{==:#{pid},${server}}`, args.map(shellQuote).join(" ")];
+}
+
 /** Kill a tmux window by target (window ID `@N`, or `session:name`). Idempotent: already-gone is a no-op. */
 export function closeWindow(target: string): void {
   try {
     execFileSync("tmux", ["kill-window", "-t", target], { stdio: "pipe" });
   } catch (err) {
     if (isWindowGone(err)) return;
+    throw err;
+  }
+}
+
+/** Kill pane `paneId` (`%N`) wherever it is now, on server `opts.server` only when given. Idempotent:
+ *  already-gone is a no-op. */
+export function closePane(paneId: string, opts: { timeoutMs?: number; server?: string } = {}): void {
+  try {
+    execFileSync("tmux", onServer(opts.server, ["kill-pane", "-t", paneId]), {
+      stdio: "pipe",
+      timeout: opts.timeoutMs,
+      killSignal: "SIGKILL",
+    });
+  } catch (err) {
+    if (/can't find pane/.test(String((err as { stderr?: unknown }).stderr ?? ""))) return;
     throw err;
   }
 }
@@ -344,8 +394,12 @@ export function send(text: string, target: string): void {
   execFileSync("tmux", ["send-keys", "-l", "-t", target, "--", text], { stdio: "ignore" });
 }
 
-/** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target.
- *  `--` guards against key names starting with `-`. */
-export function sendKey(key: string, target: string): void {
-  execFileSync("tmux", ["send-keys", "-t", target, "--", key], { stdio: "ignore" });
+/** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target, on server `opts.server` only
+ *  when given. `--` guards against key names starting with `-`. */
+export function sendKey(key: string, target: string, opts: { timeoutMs?: number; server?: string } = {}): void {
+  execFileSync("tmux", onServer(opts.server, ["send-keys", "-t", target, "--", key]), {
+    stdio: "ignore",
+    timeout: opts.timeoutMs,
+    killSignal: "SIGKILL",
+  });
 }

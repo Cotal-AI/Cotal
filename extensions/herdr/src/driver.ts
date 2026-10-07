@@ -100,13 +100,20 @@ function parseAgent(record: Record<string, unknown>): HerdrAgent {
  *  Herdr session. A JSON `{error}` becomes a {@link HerdrCliError}; missing/non-JSON output
  *  throws — except for `void: true` commands (send-keys, report-metadata), which herdr
  *  acknowledges with a bare exit 0 and no output. */
-export function run(session: string, args: string[], opts: { void?: boolean } = {}): Record<string, unknown> {
+export function run(
+  session: string,
+  args: string[],
+  opts: { void?: boolean; timeoutMs?: number } = {},
+): Record<string, unknown> {
   let out: string;
   try {
     out = execFileSync("herdr", ["--session", session, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: RUN_TIMEOUT_MS,
+      timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
+      // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM would
+      // outlast the timeout.
+      killSignal: "SIGKILL",
     });
   } catch (err) {
     // A JSON error rides stderr (sometimes stdout) with a nonzero exit; surface its code.
@@ -419,8 +426,12 @@ export function agentStart(
  *
  *  A failed inventory THROWS rather than reporting undefined — uncertainty must never read as gone,
  *  or a live agent gets torn down as a corpse. */
-export function agentInfo(session: string, terminalId: string): HerdrAgent | undefined {
-  const result = run(session, ["pane", "list"]);
+export function agentInfo(
+  session: string,
+  terminalId: string,
+  opts: { timeoutMs?: number } = {},
+): HerdrAgent | undefined {
+  const result = run(session, ["pane", "list"], opts);
   const panes = result.panes;
   if (!Array.isArray(panes)) throw new Error(`herdr: malformed pane list (${JSON.stringify(result)})`);
   for (const pane of panes) {
@@ -479,14 +490,26 @@ export function sendText(session: string, paneId: string, text: string): void {
 
 /** Send a named key (e.g. `enter`, `ctrl+c`) to a pane. Pane-scoped: the caller must pass a
  *  freshly re-resolved pane id ({@link agentInfo}), never a cached one. */
-export function sendKeys(session: string, paneId: string, key: string): void {
-  run(session, ["pane", "send-keys", paneId, key], { void: true });
+export function sendKeys(session: string, paneId: string, key: string, opts: { timeoutMs?: number } = {}): void {
+  run(session, ["pane", "send-keys", paneId, key], { void: true, ...opts });
+}
+
+/** The text a pane shows now. Pane-scoped: the caller must pass a freshly re-resolved pane id
+ *  ({@link agentInfo}), never a cached one. `pane read` prints raw terminal text, not the JSON
+ *  envelope {@link run} parses. */
+export function readPane(session: string, paneId: string, opts: { timeoutMs?: number } = {}): string {
+  return execFileSync("herdr", ["--session", session, "pane", "read", paneId], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
+    killSignal: "SIGKILL",
+  });
 }
 
 /** Close a pane. Idempotent for an already-gone pane only; every other error propagates. */
-export function closePane(session: string, paneId: string): void {
+export function closePane(session: string, paneId: string, opts: { timeoutMs?: number } = {}): void {
   try {
-    run(session, ["pane", "close", paneId]);
+    run(session, ["pane", "close", paneId], opts);
   } catch (err) {
     if (err instanceof HerdrCliError && err.code === "pane_not_found") return;
     throw err;

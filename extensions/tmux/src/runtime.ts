@@ -1,7 +1,9 @@
 import {
   registry,
   SpawnRefused,
+  confirmWatch,
   type AgentHandle,
+  type ConfirmPane,
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
@@ -13,6 +15,9 @@ import * as tmux from "./driver.js";
 
 /** Grace window for a clean exit before a graceful stop force-closes the window. */
 const GRACE_MS = 1_500;
+/** Bounds the startup-confirm watch's Enter and close, because the watch runs on the manager's event
+ *  loop; the driver bounds its reads. */
+const CONFIRM_CALL = { timeoutMs: 1_000 };
 
 /** Schedule Enter keypresses to `target` every second for 5 seconds — auto-clears a
  *  one-time confirmation prompt (e.g. Claude's dev-channels prompt) without blocking. */
@@ -48,10 +53,13 @@ export class TmuxRuntime implements Runtime {
     if (!tmux.available())
       throw new SpawnRefused("tmux runtime: tmux is not available — is tmux installed and on PATH?");
 
-    // Nothing has the spec's command until openWindow, so a failure before it (a session that will
-    // not start, a launcher script that cannot be written) is a refusal.
+    // Nothing has the spec's command until openWindow, so a failure before it (a confirm prompt that
+    // cannot match, a session that will not start, a launcher script that cannot be written) is a
+    // refusal.
     let command: string;
+    let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
       tmux.ensureSession(this.session, cwd);
       // P3: env -i strips the tmux server's inherited environment; only the connector-declared
       // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
@@ -64,7 +72,21 @@ export class TmuxRuntime implements Runtime {
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
     const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
-    if (spec.confirm) scheduleConfirm(windowId);
+    // A restarted tmux server reuses window and pane ids, so the watch acts only on the one that opened
+    // this window. It ends the seat's pane, wherever it is now: the window may hold another pane by then.
+    const call = { ...CONFIRM_CALL, server: serverPid };
+    watch?.({
+      read: () => tmux.capturePane(paneId, serverPid),
+      enter: () => tmux.sendKey("Enter", paneId, call),
+      fail: (message) => {
+        console.error(`tmux runtime: "${name}": ${message}`);
+        try {
+          tmux.closePane(paneId, call);
+        } catch (err) {
+          console.error(`tmux runtime: failed to close pane for "${name}":`, err);
+        }
+      },
+    });
 
     return {
       name,

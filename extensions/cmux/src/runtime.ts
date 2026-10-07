@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import {
   registry,
   SpawnRefused,
+  confirmWatch,
   type AgentHandle,
+  type ConfirmPane,
   type LaunchSpec,
   type Pane,
   type Runtime,
@@ -16,6 +18,9 @@ import * as cmux from "./driver.js";
 
 /** Grace window for a clean exit before a graceful stop force-closes the tab. */
 const GRACE_MS = 1_500;
+/** Bounds the startup-confirm watch's Enter and close, because the watch runs on the manager's event
+ *  loop; the driver bounds its reads. */
+const CONFIRM_CALL = { timeoutMs: 1_000 };
 
 /** Background snippet that auto-accepts a one-time confirm prompt by pressing Enter on the
  *  pane's own cmux surface a few times. Gated on the cmux env vars so it's a no-op off cmux. */
@@ -87,14 +92,14 @@ export class CmuxRuntime implements Runtime {
         `the cmux CLI (${process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux"}) couldn't reach the app — ` +
           "is cmux running, and is this process inside a cmux surface (CMUX_SOCKET_PATH set)?",
       );
-    // `confirm` auto-clears a one-time prompt (Claude's dev-channels) by sending Enter to this
-    // tab's own surface — so a spawned teammate joins the mesh without anyone switching to its tab.
-    // Nothing has the spec's command until openWorkspace, so a launch script that cannot be written
-    // is a refusal.
+    // Nothing has the spec's command until openWorkspace, so a confirm prompt that cannot match or a
+    // launch script that cannot be written is a refusal.
     let command: string;
+    let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
       command = paneCommand(
-        { command: spec.command, args: spec.args, env: spec.env, cwd, confirm: Boolean(spec.confirm) },
+        { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,
         true, // isolate: spawned agent gets ONLY the connector-declared env (P3)
       );
@@ -104,6 +109,19 @@ export class CmuxRuntime implements Runtime {
     // Keep the new tab's workspace ref so we can drive (send keys to its terminal)
     // and close it later. cmux targets the tab's single terminal surface by workspace.
     const workspace = cmux.openWorkspace(`cotal-${name}`, JSON.stringify(surface(command)), { focus: false });
+
+    watch?.({
+      read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
+      enter: () => cmux.sendKey("enter", { workspace }, CONFIRM_CALL),
+      fail: (message) => {
+        console.error(`cmux runtime: "${name}": ${message}`);
+        try {
+          cmux.closeWorkspace(workspace, CONFIRM_CALL);
+        } catch (err) {
+          console.error(`cmux runtime: failed to close tab for "${name}":`, err);
+        }
+      },
+    });
 
     return {
       name,
