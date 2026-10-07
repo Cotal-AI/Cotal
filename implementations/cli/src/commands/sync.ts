@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
+import { isLoopbackLiteral, mkSecretDir, registry, resolveAuthProvider, writeSecretFileAtomic, type AuthProvider, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult, type FlagSpec, type FlagValues, type ParsedArgs, type SpaceCatalogConsumer } from "@cotal-ai/core";
 import {
   clearCurrent,
   getCurrent,
@@ -50,8 +50,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Canonicalize an IdP identity for account binding with the same URL shape the stock provider
- * accepts: HTTPS, or loopback HTTP; no credentials, query, fragment, or trailing slash. This is not
- * a bundle validator. It compares already-validated registration trust to the proved account. */
+ * accepts: HTTPS, or HTTP on a loopback IP literal; no credentials, query, fragment, or trailing
+ * slash. This is not a bundle validator. It compares already-validated registration trust to the
+ * proved account. */
 function canonicalIdpUrl(raw: string, what: string): string {
   let url: URL;
   try {
@@ -59,9 +60,8 @@ function canonicalIdpUrl(raw: string, what: string): string {
   } catch {
     throw new Error(`${what} is not a valid URL`);
   }
-  const loopback = url.hostname === "127.0.0.1" || url.hostname === "[::1]" || url.hostname === "localhost";
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback))
-    throw new Error(`${what} must be https (or loopback http for local development)`);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
+    throw new Error(`${what} must be https (or http on a loopback IP literal for local development)`);
   if (url.username || url.password || url.search || url.hash)
     throw new Error(`${what} must not contain credentials, a query, or a fragment`);
   return `${url.origin}${url.pathname.replace(/\/$/, "")}`;

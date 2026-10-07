@@ -2056,7 +2056,10 @@ cotal logout --idp <auth base URL>
 ```
 
 Signs you in to a per-user-auth mesh's IdP (device code flow) and caches the session; run it
-once per machine. It prints your IdP subject, the id the operator grants against. When the trusted
+once per machine. The IdP URL must use `https://`. Plain `http://` is accepted only on a loopback IP
+literal such as `127.0.0.1` or `::1`, for an IdP on this machine. `localhost` is refused because it
+is a name: a hosts entry would choose the IdP. It prints your IdP subject, the id the operator
+grants against. When the trusted
 `/token` response advertises a same-origin space catalog, login validates and records that account's
 spaces immediately. After a
 login, every command on that mesh works under your identity: each connect takes a fresh IdP
