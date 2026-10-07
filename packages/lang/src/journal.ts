@@ -425,6 +425,16 @@ export class Journal {
       // so a run can complete with an unreadable value sitting in a settled entry. Measured, and
       // through the worker that run dies on a structured-clone error naming a host algorithm.
       // `error.thrown` is the third, the program's own value, which a resume hands to its `catch`.
+      // Its WRAPPER answers first: a replay reads `thrown.value`, so any shape but `{ value }`, or
+      // `{}` for `throw undefined`, would replay as `throw undefined` or as a host error the program
+      // catches, neither of which the run threw.
+      const thrown: unknown = e.error?.thrown;
+      if (thrown !== undefined && (thrown === null || Object.getPrototypeOf(thrown) !== Object.prototype || Object.keys(thrown).some((k) => k !== "value")))
+        throw bindingWithoutCanonicalForm(
+          e,
+          "error.thrown",
+          new NotCrossable("opaque", "`error.thrown` is not `{ value }`, or `{}` for `throw undefined`, so the value the program threw cannot be read from it"),
+        );
       for (const [field, value] of [["external", e.external], ["error.detail", e.error?.detail], ["error.thrown", e.error?.thrown?.value]] as const) {
         if (value === undefined) continue;
         try {

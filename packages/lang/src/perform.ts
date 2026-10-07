@@ -1292,8 +1292,11 @@ function thrownError(value: unknown): EntryError {
     return { ...fault, message: cause.message };
   }
   // A COPY: freezing the value itself would freeze a record the branch threw from outside it for
-  // the rest of the live run, where a resume, which never runs the branch, leaves it writable.
-  return { ...fault, thrown: { value: deepFreeze(structuredClone(value)) } };
+  // the rest of the live run, where a resume, which never runs the branch, leaves it writable. And a
+  // copy in the journal's own encoding, JSON: one record held at two places in the value comes back
+  // from a durable store as two records, so a copy that kept them one would hand the live `catch` a
+  // fact its resume cannot.
+  return { ...fault, thrown: { value: deepFreeze(JSON.parse(JSON.stringify(value))) } };
 }
 
 /**
