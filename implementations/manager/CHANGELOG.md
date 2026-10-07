@@ -1,5 +1,28 @@
 # @cotal-ai/manager
 
+## 0.70.1
+
+### Patch Changes
+
+- b4b352f: The docs index no longer repeats a design page's release status in its row, so each status lives only at the top of its design page. The resume transfer design page now says the carry for `cotal spawn --resume <id> --detach --on <instance>` shipped in 0.67.0, and that streaming over the same path is not built. No behavior changes.
+- 30a99ad: `cotal models` now decides whether a connector's harness is present with the same rule spawn and resume use. It used to look the harness binaries up on PATH again on every request, while a launch decides from the manager's boot inventory, so a harness installed after boot was listed by `models` and refused by spawn, and a harness removed after boot was refused by `models` while spawn still launched from the boot path. The catalog now reports the reason boot recorded when a connector's row is unavailable, and the `<name> harness needs <bin> on PATH - not found` sentence is built in one place.
+- 66a0f19: `@cotal-ai/core` now exports `runAgentBearer`, the one runner for an auth provider's agent bearer argv: it owns the 30-second default bound, the 64 KiB output limit and the failure sentence, and returns the printed line. The CLI's foreground preflight, the manager's local and remote enrollment preflights and the connector's bearer refresh and manager calls all run through it instead of carrying their own copy. The CLI still scrubs the enrollment variables from the child environment it passes, and the connector still refuses an empty line.
+- 25237f0: A workflow run that cancels a branch now withdraws what that branch relayed to a seat. The manager serves the reserved `cancel` (SPEC 13.6 item 4) for a turn it relays: the caller's own goal moves to `cancelling`, leaves `turn-pending` and ends `cancelled`, and a later yield of it is answered with that terminal. A goal that already ended is refused with its cached outcome, and one the manager does not relay is refused unchanged. The run sends it as a cancelled `turn`, `ask` attempt or escalated `checkpoint` unwinds, before the branch's scope settles, and its cancellation sweep sends it again for a process that died first. In a space with more than one manager, a cancel refused by a manager other than the one that accepted the relay is sent again until the accepting manager answers. A cancel the accepting manager refuses is sent again until it lands or the relay's deadline passes, and a failed read of that deadline is retried as well (a goal record that is not JSON fails the step at once), so a transient failure no longer lets the branch's scope settle with the relay still on the seat. Before this, a race loser's turn stayed on the seat: the seat could still pull and answer it, and because a seat is shown one turn at a time, the run's next turn to that seat waited behind it until its deadline. The hosted run's credential carries the new `cancel` row, and the manager's cluster document moves to revision 23.
+- 3c1e15d: A static lifecycle's retirement now deletes its broker durables and read-ACL row even when its credential file cannot be removed. The cleanup used to stop at the first failed removal, so a creds path the manager could not delete (a directory in its place, a read-only parent, or a secret store whose delete rejects) left the lifecycle's `dm_` and `dlv_` durables and ACL row on the broker, and every retry stopped at the same step. Each step now runs and the failures are reported together, so the name stays held until the file is removed.
+- Updated dependencies [9c99ee5]
+- Updated dependencies [da6dba0]
+- Updated dependencies [032522a]
+- Updated dependencies [5c6c92d]
+- Updated dependencies [6d81d61]
+- Updated dependencies [66a0f19]
+- Updated dependencies [2be1384]
+- Updated dependencies [25237f0]
+- Updated dependencies [6bd6099]
+- Updated dependencies [ed1e171]
+  - @cotal-ai/core@0.70.1
+  - @cotal-ai/workspace@0.70.1
+  - @cotal-ai/seat@0.70.1
+
 ## 0.70.0
 
 ### Minor Changes

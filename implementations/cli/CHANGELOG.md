@@ -1,5 +1,29 @@
 # @cotal-ai/cli
 
+## 0.70.1
+
+### Patch Changes
+
+- 9c99ee5: The `clearChannel` doc comment now tells callers to pass a `channel-purger` cred. It named a `manager` cred, a profile that `mintCreds` no longer accepts. The comments on `seedChannelRegistry`, the `purger` profile and `cotal channels` now name the creds those paths use. No behavior changes.
+- aca82ef: A broker URL refused for embedded credentials no longer prints the URL's user part. In the NATS token form `nats://<token>@host:4222` that part is the token, so `cotal meshes add`, enrollment-bundle registration in `cotal spawn` and a manifest's `broker.servers` printed the secret they were refusing. A `broker.servers` entry that does not parse as a URL is no longer quoted either. The manifest refusals now name the entry by its position in the list.
+- 2cec5c6: `cotal down delivery`, and a bare `cotal down`, now remove the delivery daemon's per-space credential at `.cotal/space.<key>/delivery.creds` once the daemon is confirmed stopped. `down` used to remove only the flat pre-segmentation `.cotal/delivery.creds`, which a current `cotal up` never writes, so the standing credential of a stopped daemon stayed on disk. `down` now stops the daemon through the same stop as the foreground `up` teardown, which drops both spellings through the secret store.
+- 66a0f19: `@cotal-ai/core` now exports `runAgentBearer`, the one runner for an auth provider's agent bearer argv: it owns the 30-second default bound, the 64 KiB output limit and the failure sentence, and returns the printed line. The CLI's foreground preflight, the manager's local and remote enrollment preflights and the connector's bearer refresh and manager calls all run through it instead of carrying their own copy. The CLI still scrubs the enrollment variables from the child environment it passes, and the connector still refuses an empty line.
+- 923937f: The source-checkout refusal of the operator-global seed store now names `COTAL_SKIP_CONNECTOR_SEED=1` as the way to run other commands without seeding, and says that isolating `XDG_CONFIG_HOME` alone does not lift it. It used to name only `XDG_CONFIG_HOME`, and a sandboxed `XDG_CONFIG_HOME` is still refused, so the remedy on the line could not be followed. The refusal still does not advertise `COTAL_ALLOW_CHECKOUT_SEED`. The CLI reference, configuration and setup internals pages say the same, and the CLI reference notes that a skipped seed leaves a fresh config with no built-in connectors.
+- ed1e171: Every `.cotal/setup.log` entry is one timestamped line. A control character or Unicode line separator in a logged path or error message is written as a `\uXXXX` escape, so a newline in a project path can no longer split one entry into a second line that reads as an entry setup never wrote. The escaping rule is now one exported helper, `oneLine`, shared with the provenance lines. `openSetupLog` no longer takes a working directory it never read; the log always lives in the resolved project `.cotal/`.
+- 8ffb5f5: The up-resume-render-lock live smoke no longer defines `tryLock()`, a lock-acquiring helper that nothing called. The comment on its read-only control now names the risk of an independent acquire directly instead of pointing at that helper. Shipped behaviour is unchanged.
+- Updated dependencies [9c99ee5]
+- Updated dependencies [da6dba0]
+- Updated dependencies [032522a]
+- Updated dependencies [5c6c92d]
+- Updated dependencies [6d81d61]
+- Updated dependencies [66a0f19]
+- Updated dependencies [2be1384]
+- Updated dependencies [25237f0]
+- Updated dependencies [6bd6099]
+- Updated dependencies [ed1e171]
+  - @cotal-ai/core@0.70.1
+  - @cotal-ai/workspace@0.70.1
+
 ## 0.70.0
 
 ### Patch Changes

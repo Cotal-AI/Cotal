@@ -1,5 +1,14 @@
 # @cotal-ai/connector-core
 
+## 0.70.1
+
+### Patch Changes
+
+- 5c6c92d: The Claude Code lifecycle hook no longer loads the NATS client, zod or yaml on every event. It imports `runHookRelay` from the new `@cotal-ai/connector-core/relay` subpath, whose environment readers (`hasIdentity`, `controlFromEnv`) now live in their own module and read the launch material through the new `@cotal-ai/core/launch-material` subpath, so neither package's barrel is in the hook's graph. `dist/hook.cjs` drops from about 1.5 MB and 305 modules to about 10 kB and six, and a hook event with no mesh identity now costs what a bare `node` does. Both readers are still exported from the package root.
+- 66a0f19: `@cotal-ai/core` now exports `runAgentBearer`, the one runner for an auth provider's agent bearer argv: it owns the 30-second default bound, the 64 KiB output limit and the failure sentence, and returns the printed line. The CLI's foreground preflight, the manager's local and remote enrollment preflights and the connector's bearer refresh and manager calls all run through it instead of carrying their own copy. The CLI still scrubs the enrollment variables from the child environment it passes, and the connector still refuses an empty line.
+- 923937f: The source-checkout refusal of the operator-global seed store now names `COTAL_SKIP_CONNECTOR_SEED=1` as the way to run other commands without seeding, and says that isolating `XDG_CONFIG_HOME` alone does not lift it. It used to name only `XDG_CONFIG_HOME`, and a sandboxed `XDG_CONFIG_HOME` is still refused, so the remedy on the line could not be followed. The refusal still does not advertise `COTAL_ALLOW_CHECKOUT_SEED`. The CLI reference, configuration and setup internals pages say the same, and the CLI reference notes that a skipped seed leaves a fresh config with no built-in connectors.
+- 6bd6099: An anycast a seat sends to a role it holds itself is no longer lost. The endpoint used to ack any message from itself as an echo on its DM inbox and role queue consumers, and on the role's work queue that ack deleted the only copy, so neither the sender nor any other holder, present or later, ever received the request. Those consumers now deliver the sender's own anycast, and its own DM, like any other addressed message. `cotal_anycast` counts the sender among the holders online at send when it holds the role, since its own task consumer can now take the request.
+
 ## 0.70.0
 
 ### Minor Changes

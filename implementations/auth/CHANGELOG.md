@@ -1,5 +1,27 @@
 # @cotal-ai/auth
 
+## 0.70.1
+
+### Patch Changes
+
+- cd3c155: The doc comment on `reconstructRemoteManagerServeGrant`, which ships in `dist/manager-contract.d.ts`, now says what the function does: it is the activation entry and derives the serve grant from the submitted `ai.cotal.manager` document through `remoteManagerServeGrantFromCluster`. It described a canonical manager surface mirrored from the manager package that activation was checked against, and the module holds no such value. No runtime change.
+- 0a21b56: The `renew` arm of the manager-service authority now checks the manager gate's owner against the same actor set it mints the supervisor and executor credentials from. It recomputed its own copy before, which only matched because both copies were derived from the same instance id. No behavior changes.
+- Updated dependencies [9c99ee5]
+- Updated dependencies [da6dba0]
+- Updated dependencies [032522a]
+- Updated dependencies [5c6c92d]
+- Updated dependencies [6d81d61]
+- Updated dependencies [fe54eb0]
+- Updated dependencies [1ef1396]
+- Updated dependencies [66a0f19]
+- Updated dependencies [2be1384]
+- Updated dependencies [25237f0]
+- Updated dependencies [6bd6099]
+- Updated dependencies [ed1e171]
+  - @cotal-ai/core@0.70.1
+  - @cotal-ai/lang@0.70.1
+  - @cotal-ai/workspace@0.70.1
+
 ## 0.70.0
 
 ### Minor Changes
