@@ -5519,9 +5519,11 @@ export class Manager {
   }
 
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
-    // Before the first await, so the grant, the launch and the retained form all read the lists as admitted.
+    // Before the first await, so the grant, the launch, the retained form and the restart slot all read
+    // the lists and the restart policy as admitted.
     opts = ownLists(opts);
     if (opts.resolved) opts.resolved = ownLists(opts.resolved);
+    if (opts.supervise) opts.supervise = { restarts: opts.supervise.restarts, windowMs: opts.supervise.windowMs };
     if (opts.delegatedIntent) {
       if (!this.remoteAuthority?.executeDelegatedUserIntent)
         return { ok: false, error: `"${opts.name}" names a delegated user intent, and this manager has no host execution for one` };
