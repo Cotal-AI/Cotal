@@ -6,6 +6,7 @@ import { isAbsolute, join, dirname, resolve } from "node:path";
 import Headless from "@xterm/headless";
 import {
   CotalEndpoint,
+  canonicalJson,
   MANAGED_HANDOFF_KIND,
   accountFromCreds,
   credsClaims,
@@ -332,14 +333,17 @@ function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
   }
 }
 
-/** A caught envelope's optional details. A Proxy can pass the envelope test and still throw from its
- *  `details` getter, and the failed terminal built from them must commit either way. */
-function caughtDetails(e: unknown): EpEnvelopeError["details"] {
+/** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
+ *  `commitGoalResult` refuses a payload that is not interchangeable JSON, and this terminal must commit
+ *  whatever failed, so a lone surrogate in the text becomes U+FFFD and details it cannot read or carry
+ *  (a Proxy's throwing getter, an accessor, a cycle) are dropped. */
+function failedTerminal(error: string, source: { details?: unknown } | undefined): { error: string; details?: EpEnvelopeError["details"] } {
+  const text = error.replace(/\p{Cs}/gu, "\uFFFD");
   try {
-    return caughtEnvelope(e)?.details;
-  } catch {
-    return undefined;
-  }
+    const details = source?.details;
+    if (details) return { error: text, details: JSON.parse(canonicalJson(details)) };
+  } catch { /* unreadable or not interchangeable */ }
+  return { error: text };
 }
 
 /** Run one cleanup step, recording its failure in `failed` as `<what>: <reason>`. A step that threw
@@ -8577,14 +8581,12 @@ export class Manager {
       // the caller follows epe to a terminal that never comes, and the reconcile index that would
       // settle it is only swept at BOOT, so a manager that stays up never converges it.
       if (reply.ok === false && !terminalEntered)
-        return onOutcome({ kind: "failed", data: { error: reply.error ?? "spawn failed after accept", ...(reply.details ? { details: reply.details } : {}) } });
+        return onOutcome({ kind: "failed", data: failedTerminal(reply.error ?? "spawn failed after accept", reply) });
     }).catch((e) => {
       if (acceptance === undefined) { rejectAccept(e); return; }
       // Same obligation for a genuine rejection (one that escaped `run`'s own catch).
-      if (!terminalEntered) {
-        const details = caughtDetails(e);
-        return onOutcome({ kind: "failed", data: { error: rejectionText(e), ...(details ? { details } : {}) } });
-      }
+      if (!terminalEntered)
+        return onOutcome({ kind: "failed", data: failedTerminal(rejectionText(e), caughtEnvelope(e)) });
       console.error(`! spawn-as-action async body for ${goalId}: ${rejectionText(e)}`);
     }).catch((e) => console.error(`! goal terminal fallback for ${goalId}: ${rejectionText(e)}`));
     return acceptP;
