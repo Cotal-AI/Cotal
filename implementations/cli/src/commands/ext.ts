@@ -41,10 +41,12 @@ export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAb
 
 export async function ext(args: ParsedArgs): Promise<void> {
   const [sub, ...rest] = args.positionals;
+  const json = args.values.json === true;
+  if (json && sub !== undefined && sub !== "list") throw new Error(`ext ${sub}: --json is taken by the list only`);
   // Bare `cotal ext` lists the inventory: it is the most natural probe for "what's installed / where",
   // and these extensions never appear in `npm list -g` (they live in a cotal-owned prefix, not npm's
   // global tree), so erroring here left the honest answer undiscoverable.
-  if (!sub) return list();
+  if (!sub) return list(json);
   if (sub === "add" && rest[0]) return addExtension(rest[0]);
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
@@ -54,7 +56,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     return addExtension(rest[1], rest[0], true);
   }
   if (sub === "remove" && rest[0]) return remove(rest[0]);
-  if (sub === "list" && !rest.length) return list();
+  if (sub === "list" && !rest.length) return list(json);
   // `cotal ext root` prints just the prefix path — a one-line scripting primitive (cf. `npm root -g`,
   // `brew --prefix`) so tooling can locate the store without parsing the human inventory.
   if (sub === "root" && !rest.length) {
@@ -65,7 +67,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
     const { repair, reset, force } = args.values as { repair?: boolean; reset?: boolean; force?: boolean };
     return runSeed({ repair, reset, force });
   }
-  throw new Error("usage: cotal ext <add <npm-package> | remove <name> | list | root | seed [--repair|--reset|--force]>");
+  throw new Error("usage: cotal ext <add <npm-package> | remove <name> | list [--json] | root | seed [--repair|--reset|--force]>");
 }
 
 async function npm(args: string[], cwd: string): Promise<{ status: number | null; output: string }> {
@@ -447,21 +449,37 @@ function describeProcess({ provider, context, pidPath }: ExtensionProcess): stri
   return `${provider.name} (${state}) in ${context.root} - run there: cotal down ${provider.name}`;
 }
 
-function list(): void {
-  const { extensions } = loadExtensionsManifest();
+/** The installed extensions. `--json` prints one {@link extensionRow} per line and nothing else, so a
+ *  line reader never meets the header or footer, and an empty prefix prints nothing. */
+function list(json: boolean): void {
+  const rows = loadExtensionsManifest().extensions.map(extensionRow);
+  if (json) {
+    for (const row of rows) console.log(JSON.stringify(row));
+    return;
+  }
   // Lead with the store's real location and its ownership, so the inventory is self-explaining: these
   // packages are cotal-managed and kept out of npm's global prefix by design, which is exactly why
   // `npm list -g` never shows them. Resolve the path dynamically — never hard-code it.
   console.log(c.dim(`Extension root: ${extensionsDir()}`));
   console.log(c.dim("Managed by `cotal ext`; kept separate from npm's global prefix, so `npm list -g` does not include these."));
   console.log("");
-  if (!extensions.length) {
+  if (!rows.length) {
     console.log(c.dim("(no extensions installed - add one with `cotal ext add <npm-package>`)"));
     return;
   }
-  for (const e of extensions) {
-    console.log(`${c.bold(e.pkg)}@${e.version}  ${c.dim(extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`).join(", "))}`);
-  }
+  for (const row of rows) console.log(`${c.bold(row.pkg)}@${row.version}  ${c.dim(row.provides.join(", "))}`);
   console.log("");
   console.log(c.dim("Manage with `cotal ext add`/`cotal ext remove`; `cotal ext --help` for all commands."));
+}
+
+/** One `cotal ext list --json` row: what the table shows, plus the spec `ext add` recorded and whether
+ *  the built-in seed installed the entry, which the table leaves out. */
+function extensionRow(e: InstalledExtension) {
+  return {
+    pkg: e.pkg,
+    version: e.version,
+    spec: e.spec,
+    seeded: e.source === "seeded",
+    provides: extensionProvides(e).map((ref) => `${ref.kind}:${ref.name}`),
+  };
 }

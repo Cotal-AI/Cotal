@@ -2166,7 +2166,7 @@ renders its channel / role / ACL graph. See [Define a team](define-a-team.md) an
 cotal ext                 # same as `list`
 cotal ext add <npm-package>
 cotal ext remove <name>
-cotal ext list
+cotal ext list [--json]
 cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
@@ -2183,6 +2183,12 @@ Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix 
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,
 `cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
 prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
+
+`ext list --json` (or bare `ext --json`) prints one JSON object per installed extension per line:
+`pkg`, `version`, `spec` (what `ext add` was given), `seeded` (`true` for an entry the built-in seed
+installed) and `provides` (the `kind:name` refs the table shows). No header or footer reaches stdout,
+and an empty prefix prints nothing and exits 0. The table is presentation and is not a stable parsing
+target. The other `ext` subcommands refuse `--json`.
 
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process

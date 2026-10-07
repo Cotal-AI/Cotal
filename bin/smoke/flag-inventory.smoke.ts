@@ -128,7 +128,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: [], positionals: true },
-  ext: { flags: ["force:boolean", "repair:boolean", "reset:boolean"], positionals: true },
+  // `--json` (2026-10, #3238): bare `ext` / `ext list` print one JSON object per extension; the other subcommands refuse it.
+  ext: { flags: ["force:boolean", "json:boolean", "repair:boolean", "reset:boolean"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
     // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
