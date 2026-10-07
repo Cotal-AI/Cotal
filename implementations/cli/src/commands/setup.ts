@@ -26,7 +26,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, webUp, WEB_URL } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, type MeshStatus } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -440,9 +440,9 @@ export async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
   const connectorRows = await cardConnectorRows();
-  const web = await webUp();
   const mgr = managerUp();
   const cmd = displayCmd();
+  const web = cardWebRow(mesh, cmd);
   // Read the demo marker out of the catalog the card's own `spawn` hints will resolve — the same
   // seed destination, not a second cwd-derived guess. Hinting `cotal spawn me` off a `david.md` in
   // a directory spawn never opens is the identical defect, one line further down the output.
@@ -462,7 +462,7 @@ export async function readyCard(cwd: string): Promise<void> {
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       ...connectorRows.map((r) => line(r.state === "ok", `${r.label.padEnd(8)} ${dim(r.text)}`)),
       line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
-      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
+      line(web.up, `web      ${dim(web.text)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       ...(remote ? [] : [`start the mesh:  ${dim(`${cmd} up --detach`)}`]),
@@ -475,6 +475,18 @@ export async function readyCard(cwd: string): Promise<void> {
     ].join("\n"),
     brandBold("cotal · status"),
   );
+}
+
+/** The card's web row from the mesh's dashboard records. An unreadable `web.pid` is named on the row,
+ *  like the status Machine section, so the rest of the card still prints. */
+function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
+  try {
+    const url = recordedWebUrl({ root: mesh.root, space: mesh.space });
+    if (url) return { up: true, text: url };
+  } catch (e) {
+    return { up: false, text: `pidfile unreadable · ${(e as Error).message}` };
+  }
+  return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
 }
 
 /** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming

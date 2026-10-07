@@ -26,7 +26,7 @@ import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, resolveRuntimeSpace, webUp, WEB_URL, type HarnessStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, type HarnessStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -78,9 +78,9 @@ export async function status(args: ParsedArgs): Promise<void> {
   const cmd = displayCmd();
 
   console.log(c.bold("cotal status"));
-  await printMachine();
-  printExtensions();
   const selected = resolveSelected(cwd, values);
+  await printMachine(selected);
+  printExtensions();
   // THE RESPONDER AXIS (#1576), read ONCE and threaded into the rows that would otherwise claim
   // health they never checked. It is read before the folder section because that section renders
   // the delivery process row, and a live pid means nothing without it.
@@ -131,9 +131,8 @@ function cliProvenanceLabel(): string {
   return `(${kind}: ${provenance.root})`;
 }
 
-async function printMachine(): Promise<void> {
+async function printMachine(selected: Selected): Promise<void> {
   const m = await machineStatus();
-  const web = await webUp();
   const webExt = webInstalled();
   section("Machine");
   row("cotal-ai", `${c.green(`v${cliVersion()}`)} ${c.dim(cliProvenanceLabel())}`);
@@ -141,7 +140,19 @@ async function printMachine(): Promise<void> {
   await printHarnesses();
   row("Skills (.agents)", skillsSkewRow());
   row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
-  row("Web process", web ? c.green(WEB_URL) : c.dim(webExt ? "down" : "not installed"));
+  row("Web process", webProcessRow(selected, webExt));
+}
+
+/** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` is named on
+ *  the row, like the folder's process rows, so the rest of status still prints. */
+function webProcessRow(selected: Selected, installed: boolean): string {
+  let url: string | undefined;
+  try {
+    url = selected.ok ? recordedWebUrl({ root: selected.target.root, space: selected.target.space }) : undefined;
+  } catch (e) {
+    return c.red(`pidfile unreadable · ${(e as Error).message}`);
+  }
+  return url ? c.green(url) : c.dim(installed ? "down" : "not installed");
 }
 
 /** The rows each connector's setup provider reports, then one row per installed connector, named by
@@ -1110,18 +1121,6 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
   }
 }
 
-/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with any readiness
- * nonce recorded beside it, or `undefined` while no whole record is readable. The dashboard truncates
- * the file before it writes the record, so a read can find it empty while the dashboard starts. A
- * record without a nonce still names the address, so it is probed and its answer graded. */
-function webBoundAddress(path: string): { host: string; port: number; readiness?: string } | undefined {
-  try {
-    const { host, port, readiness } = JSON.parse(readFileSync(path, "utf8")) as { host?: unknown; port?: unknown; readiness?: unknown };
-    if (typeof host !== "string" || typeof port !== "number") return undefined;
-    return typeof readiness === "string" ? { host, port, readiness } : { host, port };
-  } catch { return undefined; }
-}
-
 /** The web dashboard owns the HTTP listener and identifies itself through `/api/meta`, including
  * the serving PID.  A raw TCP success is insufficient: another program could own its port. */
 async function webHealth(context: LocalProcessContext): Promise<ComponentHealth> {
@@ -1142,10 +1141,9 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   const bound = webBoundAddress(localProcessPath("web.session", context));
   if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {
-    const host = bound.host.includes(":") ? `[${bound.host}]` : bound.host;
     // The dashboard refuses an anonymous `/api/meta`; the readiness nonce is the one credential its
     // gate accepts there, so without it a live dashboard could only ever read as a mismatch.
-    const response = await fetch(`http://${host}:${bound.port}/api/meta`, {
+    const response = await fetch(`${bound.url}api/meta`, {
       signal: AbortSignal.timeout(500),
       headers: bound.readiness === undefined ? {} : { "x-cotal-readiness": bound.readiness },
     });
