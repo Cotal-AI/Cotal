@@ -2261,8 +2261,8 @@ export class MeshHandler {
    *  only its own seats, so the class rail is asked again, as a spawn's discharge asks it. An allocator
    *  that does not answer leaves presence as the only witness, which is the case presence is the
    *  authority for: the manager died with the seat. The asking can outlast the caller's own
-   *  cancellation, deadline or terminal, so nothing stands once `decided` holds: that authority decides
-   *  at the caller's next check. */
+   *  cancellation, deadline or terminal, so once `decided` holds nothing stands and no refusal is
+   *  raised: that authority decides at the caller's next check. */
   private async lapseStands(name: string, uid: string, decided: () => Promise<boolean>): Promise<boolean> {
     const entry = this.roster.get(name);
     const spawned = entry?.uid === uid && entry.goalId !== undefined
@@ -2276,6 +2276,7 @@ export class MeshHandler {
         answer = await this.invokeManager(await this.manager(), "inspect", { name }, {});
       } catch (e) {
         if (unansweredRequest(e)) break;
+        if (await decided()) return false;
         throw e;
       }
       const { reply, responder } = answer;
@@ -2283,6 +2284,7 @@ export class MeshHandler {
       if (row?.lifecycleUid === uid && row.status === "running") return false;
       if (responder.instanceId === allocator && !replyRefusedBeforeEffect(reply.error)) {
         if (reply.ok || reply.error?.code === "not-found") break;
+        if (await decided()) return false;
         throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${reply.error?.message ?? "refused with no message"}`);
       }
       this.managerService = undefined;
