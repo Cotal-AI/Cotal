@@ -172,13 +172,16 @@ const graphemes = new Intl.Segmenter();
 // first top-level paragraph after them that has text; an image alone has none. It is rendered and
 // read back as text, so a link keeps its label and loses its target. A long one is cut where the
 // character that crosses the limit begins, so the cut never splits an emoji or an accented letter.
+// When the first character crosses it alone, the cut would keep nothing.
 function firstParagraph(md, rel) {
   for (const token of marked.lexer(md)) {
     if (token.type !== 'paragraph') continue;
     const text = textOf(parseFragment(marked.parser([token]))).replace(/\s+/g, ' ').trim();
     if (!text) continue;
     if (text.length <= 160) return text;
-    return `${text.slice(0, graphemes.segment(text).containing(159).index).replace(/\s+\S*$/, '')}…`;
+    const cut = graphemes.segment(text).containing(159).index;
+    if (cut === 0) throw new Error(`first character of the description is too long to cut to 160 units: ${rel}`);
+    return `${text.slice(0, cut).replace(/\s+\S*$/, '')}…`;
   }
   throw new Error(`no paragraph with text to describe the page: ${rel}`);
 }
