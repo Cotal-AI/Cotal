@@ -19,6 +19,16 @@ export const MODE_STAGE = { w: STAGE.w, h: 780 } as const;
 export const NATS_STAGE = { w: STAGE.w, h: 700 } as const;
 const INSET = 16;
 
+// The cast of the three mode cards: the same points and presence in each, so only
+// the message flow differs and the three read as one space. Alice and the peers
+// sit equidistant from the card middle, where each card routes its message.
+export const MODE_ALICE = { name: "alice", at: { x: 100, y: 410 }, status: "working" } as const;
+export const MODE_PEERS = [
+  { name: "bob", at: { x: 700, y: 240 }, status: "working" },
+  { name: "carol", at: { x: 700, y: 410 }, status: "idle" },
+  { name: "dave", at: { x: 700, y: 580 }, status: "working" },
+] as const;
+
 // --- palette (cool cream + gold + ink) -----------------------------------------
 
 export const GOLD = "#c79a4a";

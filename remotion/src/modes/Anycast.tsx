@@ -16,29 +16,20 @@ import {
   INK,
   Labels,
   lerp,
+  MODE_ALICE,
+  MODE_PEERS,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "./scene";
 
-// Shared stage: alice left, the reviewer pool clustered right, junction center.
-const ALICE: Pt = { x: 100, y: 410 };
 const JUNCTION: Pt = { x: 400, y: 410 };
-const GROUP: Pt[] = [
-  { x: 700, y: 240 }, // bob, busy
-  { x: 700, y: 410 }, // carol, free -> claims
-  { x: 700, y: 580 }, // dave, busy
-];
-const MEMBERS = [
-  { name: "bob", busy: true },
-  { name: "carol", busy: false },
-  { name: "dave", busy: true },
-] as const;
+// the peers are the reviewer pool; carol, the free one, claims
 const CLAIMER = 1;
 
 const SEG1: [Pt, Pt] = [
-  { x: ALICE.x + 52, y: ALICE.y },
+  { x: MODE_ALICE.at.x + 52, y: MODE_ALICE.at.y },
   { x: JUNCTION.x - 10, y: JUNCTION.y },
 ];
 // same fan geometry as multicast, so the two cards glance alike
@@ -49,7 +40,7 @@ const outCtrl = (r: Pt): [Pt, Pt] => [
 const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
 
 const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
-const OUT_PATHS = GROUP.map((r) => wirePath(JUNCTION, ...outCtrl(r), OUT_END(r)));
+const OUT_PATHS = MODE_PEERS.map((p) => wirePath(JUNCTION, ...outCtrl(p.at), OUT_END(p.at)));
 
 const T = {
   sendStart: 14,
@@ -111,13 +102,12 @@ export const ModeAnycast: React.FC = () => {
         <span style={{ background: INK.card, padding: "0 12px" }}>@reviewer</span>
       </div>
 
-      <AgentNode at={ALICE} name="alice" status="working" flash={emit} type={CARD_TYPE} />
-      {MEMBERS.map((m, i) => (
+      <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
+      {MODE_PEERS.map((p, i) => (
         <AgentNode
-          key={m.name}
-          at={GROUP[i]!}
-          name={m.name}
-          status={i === CLAIMER ? carolStatus : m.busy ? "working" : "idle"}
+          key={p.name}
+          {...p}
+          status={i === CLAIMER ? carolStatus : p.status}
           flash={i === CLAIMER ? flash : 0}
           dimmed={i !== CLAIMER ? dimOthers : 0}
           type={CARD_TYPE}
@@ -128,7 +118,7 @@ export const ModeAnycast: React.FC = () => {
       {probing && <Dot at={JUNCTION} breath={breath} />}
       <Beam
         d={OUT_PATHS[CLAIMER]!}
-        pos={(t) => bez(JUNCTION, ...outCtrl(GROUP[CLAIMER]!), OUT_END(GROUP[CLAIMER]!), t)}
+        pos={(t) => bez(JUNCTION, ...outCtrl(MODE_PEERS[CLAIMER].at), OUT_END(MODE_PEERS[CLAIMER].at), t)}
         t={t2}
         visible={t2 > 0 && t2 < 1}
       />
