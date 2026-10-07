@@ -93,7 +93,7 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
-import { credsClaims, type Identity } from "./identity.js";
+import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
   restoreProfilePermissions,
@@ -1026,7 +1026,7 @@ export async function mintPublicUserJwt(
   profile: Profile,
   opts: MintOpts,
 ): Promise<{ jwt: string; exp: number }> {
-  if (!/^U[A-Z2-7]{55}$/.test(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
+  if (!isUserNkey(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
   if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
     throw new Error(`mintPublicUserJwt: profile "${profile}" is not part of the closed remote manager protocol`);
   const pr: MintPrincipal = {
