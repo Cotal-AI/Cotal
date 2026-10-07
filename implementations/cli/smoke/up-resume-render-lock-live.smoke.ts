@@ -120,17 +120,6 @@ function run(args: string[]): ChildProcess {
   return cp;
 }
 
-/** One independent attempt at the root lock, from a LIVE owner (this probe process). */
-function tryLock(): { held: true; reason: string } | { held: false; reason: string } {
-  try {
-    const lock = acquireMaintenanceLock(root);
-    releaseMaintenanceLock(lock);
-    return { held: false, reason: "acquired" };
-  } catch (error) {
-    return { held: true, reason: (error as Error).message };
-  }
-}
-
 const confPath = () => join(authDir(root), "server.conf");
 const confStamp = () => (existsSync(confPath()) ? `${statSync(confPath()).mtimeMs}:${readFileSync(confPath(), "utf8").length}` : "absent");
 const journalState = (): string => {
@@ -171,7 +160,7 @@ try {
   const space = "alpha";
   const first = run(["up", "--detach", "--space", space, "--server", server]);
   const firstExit = once(first, "exit");
-  // READ-ONLY control - never acquire while the up is running. `tryLock()` ACQUIRES, so a probe
+  // READ-ONLY control - never acquire while the up is running. A probe that acquires
   // is itself a live independent owner: the up's single non-retrying acquire landing inside a
   // probe-held window dies with "held by a live owner" (measured on CI - the up's log tail carried
   // exactly that refusal while the loop reported no lock seen), and gating the probe on the lock
