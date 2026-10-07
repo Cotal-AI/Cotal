@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { parse } from "yaml";
 import type { StartAgentOpts } from "./manager.js";
 
+const ENTRY_KEYS = new Set(["name", "agent", "role", "config", "cwd", "share-tools"]);
+
 /**
  * A roster file: a supervisor's declarative boot list.
  *
@@ -17,17 +19,23 @@ import type { StartAgentOpts } from "./manager.js";
  * optional; persona/model come from the same file, and `cwd` roots the agent at a folder of its
  * own (default: the manager's workspace root). `share-tools` is an optional list narrowing the
  * operator's declared MCP servers for this agent, like `--share-tools` (absent: all; `[]`: none).
+ * Any other key, in an entry or beside `agents:`, is refused, because a misspelling such as
+ * `share_tools` would otherwise boot the agent with the default the operator meant to override.
  */
 export function loadRoster(path: string): StartAgentOpts[] {
   const doc: unknown = parse(readFileSync(path, "utf8"));
   if (!doc || typeof doc !== "object" || !Array.isArray((doc as { agents?: unknown }).agents))
     throw new Error(`roster ${path}: expected a top-level "agents:" list`);
+  const topKey = Object.keys(doc).find((k) => k !== "agents");
+  if (topKey !== undefined) throw new Error(`roster ${path}: ${topKey} is not a roster key`);
   const agents = (doc as { agents: unknown[] }).agents;
   return agents.map((entry, i) => {
     const at = `roster ${path}: agents[${i}]`;
     if (!entry || typeof entry !== "object" || Array.isArray(entry))
       throw new Error(`${at} is not a map`);
     const e = entry as Record<string, unknown>;
+    const key = Object.keys(e).find((k) => !ENTRY_KEYS.has(k));
+    if (key !== undefined) throw new Error(`${at}.${key} is not a roster key`);
     const str = (k: string): string | undefined => {
       const v = e[k];
       if (v === undefined) return undefined;
