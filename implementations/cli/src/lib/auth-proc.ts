@@ -12,18 +12,18 @@ import { closeSync, linkSync, openSync, readdirSync, readFileSync, rmSync, write
 import { basename, dirname } from "node:path";
 import { type AuthPrepared } from "@cotal-ai/core";
 import { spaceKey } from "@cotal-ai/workspace";
-import { parsePid, probeLiveness, readPidfile, type LivenessProbe, identityLegacyWarning, identityRefusal, identityUncertaintyRefusal, removePidPair, verifyIdentityPin, writePidPair } from "@cotal-ai/workspace";
-import type { SignalFn } from "./manager-proc.js";
+import { parsePid, probeLiveness, readPidfile, writePidPair, type LocalProcess } from "@cotal-ai/workspace";
+import { stopLocalProcess } from "./local-process-stop.js";
 
 import { selfArgv } from "./self-exec.js";
-import { cotalPath } from "./paths.js";
+import { cotalPath, cotalRoot } from "./paths.js";
 
 const PID_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.pid`);
 const LOG_PATH = (space: string) => cotalPath(`auth-service.${spaceKey(space)}.log`);
 
 /** The pidfile to READ for a space's auth service: the canonical hex name, or the pre-hex
- *  `auth-service.<encoded>.pid` a build before the re-key wrote. `up`'s restart and its stop read
- *  this so an upgrade never orphans the live callout SIGNER of a pre-upgrade auth-service. Byte-
+ *  `auth-service.<encoded>.pid` a build before the re-key wrote. `up`'s restart reads this so an
+ *  upgrade never orphans the live callout SIGNER of a pre-upgrade auth-service. Byte-
  *  exact (a bare `existsSync` case-folds a sibling space's file on macOS/Windows); both present is
  *  ambiguous and fails loud. Starts always WRITE the canonical PID_PATH. */
 function readPidPath(space: string): string {
@@ -227,55 +227,20 @@ export async function ensureAuthService(opts: {
   }
 }
 
-/** Stop THIS space's auth service if we started one. Scoped by the space-carrying pid file — never
- *  a root-global kill. Honors the same attribution contract as {@link claimAuthPidSlot}: it only
- *  removes a record it can ACT on. An empty slot is a husk (nothing to signal, safe to clear); a
- *  positive PID is signalled then removed; unattributable content (garbled, or a non-positive value
- *  that would make `process.kill` signal a whole process GROUP) is NEVER removed and fails loud -
- *  silently dropping it would orphan a live signer behind a torn/tampered pidfile while reporting a
- *  clean stop. */
-export async function stopAuthService(space: string, probe: LivenessProbe = probeLiveness, signal?: SignalFn): Promise<void> {
-  const send: SignalFn = signal ?? ((pid, sig) => process.kill(pid, sig));
-  const p = readPidPath(space); // find a pre-hex pidfile too, or an upgrade leaks the signer
-  const trimmed = readPidfile(p);
-  if (trimmed === undefined) return;
-  if (trimmed === "") {
-    rmSync(p, { force: true }); // empty husk: no process to signal
-    return;
-  }
-  const pid = parsePid(trimmed);
-  if (pid === undefined)
-    throw new Error(
-      `auth-service pidfile ${p} holds unattributable content ${JSON.stringify(trimmed)} - refusing to remove a record for a process it cannot identify or signal; inspect or remove it manually`,
-    );
-  // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule as the manager and delivery
-  // helpers. A reused pid fronts an unrelated process; torn or unreadable identity evidence refuses.
-  // A legacy record warns and proceeds so the first teardown after an upgrade remains possible.
-  const identity = verifyIdentityPin(p);
-  if (identity.kind === "mismatch") throw identityRefusal("the user-auth service", p, identity.record, identity.liveToken);
-  if (identity.kind === "legacy") console.error(identityLegacyWarning("the user-auth service", p));
-  else if (identity.kind !== "match" && identity.kind !== "gone") throw identityUncertaintyRefusal("the user-auth service", p, identity);
-  try {
-    send(pid, "SIGTERM");
-  } catch (e) {
-    // ESRCH = already gone, so removing its record is safe. EPERM (exists, another user's) or any
-    // other errno means we could NOT stop it - removing the record would orphan a live signer while
-    // reporting a clean stop, so preserve it and fail loud.
-    if ((e as NodeJS.ErrnoException).code !== "ESRCH")
-      throw new Error(
-        `could not stop auth-service (pid ${pid}) at ${p} (${(e as NodeJS.ErrnoException).code ?? "unknown error"}) - refusing to remove a record for a process it could not signal; stop it manually`,
-      );
-  }
-  // A signal ACCEPTED is not a death. This deleted the record immediately after SIGTERM, so a
-  // service that ignores or is slow to handle it was reported stopped while still running, with its
-  // pidfile gone. Same shape as the manager and delivery helpers; proven with a child that installs
-  // a no-op SIGTERM handler. Preserve the record unless death is confirmed.
-  const deadline = Date.now() + 15_000;
-  // AWAIT: same reaping hazard as stopManager. A blocked event loop never reaps the child.
-  while (probe(pid) !== "dead" && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-  if (probe(pid) !== "dead")
-    throw new Error(
-      `auth-service (pid ${pid}) accepted SIGTERM but its death could not be confirmed; its pidfile at ${p} was preserved rather than recording a stop that did not happen - check \`ps -p ${pid}\``,
-    );
-  removePidPair(p, trimmed); // proven death: the pin goes with the pidfile (#969), unless a successor was published (#1238)
+/** The user-auth service as a local process: `cotal down` and `up`'s teardown stop it through this one
+ *  descriptor, so both take the same reservation, identity check and SIGKILL escalation. */
+export const AUTH_PROCESS: LocalProcess = {
+  kind: "local-process",
+  name: "auth",
+  label: "user-auth service",
+  order: 30,
+  pidFile: "auth-service.{space}.pid",
+  visibleWhen: "user-auth",
+};
+
+/** Stop THIS space's auth service with the stop `cotal down auth` runs. Scoped by the space-carrying
+ *  pidfile, never a root-global kill. Throws, with the record kept, when the stop is refused or the
+ *  death is not confirmed. */
+export async function stopAuthService(space: string): Promise<void> {
+  await stopLocalProcess(AUTH_PROCESS, { root: cotalRoot(), space });
 }

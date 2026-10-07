@@ -131,11 +131,10 @@ try {
     const pidPath = join(root, ".cotal", "auth-service.6d61696e.pid"); // spaceKey("main")
     writeFileSync(pidPath, String(foreign.pid));
     writeFileSync(identityPinPath(pidPath), `${foreign.pid} 1`);
-    let sent = 0;
     let refused: string | undefined;
-    try { await stopAuthService("main", () => "alive", (pid) => { sent++; process.kill(pid, "SIGTERM"); }); }
+    try { await stopAuthService("main"); }
     catch (e) { refused = (e as Error).message; }
-    check("B3 a reused pid is REFUSED by stopAuthService too", sent === 0 && refused !== undefined, { sent });
+    check("B3 a reused pid is REFUSED by stopAuthService too", refused !== undefined && foreign.child.exitCode === null && alive(foreign.pid), refused?.split("\n")[0]);
     check("B4 the auth record and pin are preserved", existsSync(pidPath) && existsSync(identityPinPath(pidPath)));
     reap(foreign.child);
   }

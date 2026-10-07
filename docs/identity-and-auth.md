@@ -341,6 +341,11 @@ on a standalone broker (a clustered one refuses the reclaim, since a partitioned
 could still hold them). If the claim's connections die mid-run, the service downs itself
 loudly instead of serving from a half-dead plane.
 
+Ctrl-C on a foreground `up`, and a broker that exits under it, stop the service with the same stop
+`cotal down auth` uses. It holds the reservation `down` takes, so a concurrent `cotal down auth` is
+refused while it runs, and it sends SIGKILL to a service that has not exited 15 seconds after
+SIGTERM.
+
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
 creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or

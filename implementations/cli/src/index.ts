@@ -35,6 +35,7 @@ import { update, updateFlags } from "./commands/update.js";
 import { service, serviceComplete } from "./commands/service.js";
 import { sync, syncFlags } from "./commands/sync.js";
 import { DELIVERY_PROCESS } from "./lib/delivery-proc.js";
+import { AUTH_PROCESS } from "./lib/auth-proc.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -480,14 +481,7 @@ const baseCommands: Command[] = [
 const baseProcesses: LocalProcess[] = [
   MANAGER_PROCESS,
   DELIVERY_PROCESS,
-  {
-    kind: "local-process",
-    name: "auth",
-    label: "user-auth service",
-    order: 30,
-    pidFile: "auth-service.{space}.pid",
-    visibleWhen: "user-auth",
-  },
+  AUTH_PROCESS,
   {
     kind: "local-process",
     name: "nats",
