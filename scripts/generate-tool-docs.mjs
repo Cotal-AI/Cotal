@@ -141,7 +141,8 @@ const ANNOTATIONS = {
   cotal_invoke: {
     effect: "whatever the named command does",
     availability: "only the commands your own credential has caller grants for; the broker refuses the rest",
-    notes: "`not-executed` means the command did not run; `unknown` means it may have.",
+    notes:
+      "`not-executed` means the command did not run; `unknown` means it may have. A reply over 200,000 characters of JSON is refused, not cut; ask for a smaller page. An error's message and details are held to the same limit, whether the endpoint answered with the error or the call was refused before it was sent: a message or details over it are withheld with their size, and the code and outcome still come through. Arguments refused by the input schema report outcome `not-executed`.",
   },
   cotal_reconnect: {
     effect: "tears down and rebuilds your own mesh connection",
