@@ -16,7 +16,7 @@
  *  - the invoke pins those digests, so the responder's digest-bound serve boundary honors exactly
  *    the schema the caller validated against.
  */
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -451,6 +451,20 @@ export async function invokeCommand(
     // the handle is the stale side); a caller-supplied hook is a registry read by epCall's contract.
     currencyReference: opts.currentEpoch ? "registry" : "bind",
   });
+}
+
+/** The refusal a goal-following call meets on a handle whose endpoint serves no `goal-result`: an
+ *  accepted goal could never be read back to its terminal (SPEC 13.6), so nothing is submitted.
+ *  `undefined` when the handle can follow. */
+export function goalFollowRefusal(service: ResolvedService): EpAttributedReply | undefined {
+  if (service.commands.has("goal-result")) return undefined;
+  return {
+    reply: { v: 1, id: randomUUID(), ok: false, error: {
+      code: "failed-precondition", outcome: "not-executed",
+      message: `endpoint "${service.endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
+    } },
+    responder: { endpoint: service.endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
+  };
 }
 
 /**

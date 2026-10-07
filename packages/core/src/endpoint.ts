@@ -36,7 +36,7 @@ import {
   parseSecretStoreIdentity,
   type SecretStoreIdentity,
 } from "./secret-store.js";
-import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
+import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, goalFollowRefusal, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
@@ -2516,15 +2516,8 @@ export class CotalEndpoint extends EventEmitter {
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
     const invokeResolved = (service: ResolvedService, signal?: AbortSignal): Promise<EpAttributedReply> => {
       signal?.throwIfAborted();
-      if (opts.follow && !service.commands.has("goal-result")) {
-        return Promise.resolve({
-          reply: { v: 1, id: randomUUID(), ok: false, error: {
-            code: "failed-precondition", outcome: "not-executed",
-            message: `endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
-          } },
-          responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
-        });
-      }
+      const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
+      if (unfollowable) return Promise.resolve(unfollowable);
       return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, signal });
     };
     // A `failed-precondition` from the resolve is its own refusal, raised before any command was
@@ -2599,9 +2592,8 @@ export class CotalEndpoint extends EventEmitter {
           let reissueTarget;
           try {
             reissueTarget = await resolve(signal);
-            if (opts.follow && !reissueTarget.commands.has("goal-result")) {
-              throw new Error(`endpoint "${endpoint}" does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`);
-            }
+            const unfollowable = opts.follow ? goalFollowRefusal(reissueTarget) : undefined;
+            if (unfollowable) throw new Error(unfollowable.reply.error!.message);
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,

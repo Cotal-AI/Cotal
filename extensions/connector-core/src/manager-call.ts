@@ -1,8 +1,8 @@
-import { randomUUID } from "node:crypto";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   assertLifecycleToken,
   dialerFor,
+  goalFollowRefusal,
   invokeCommand,
   isPermissionDenied,
   issuedUserCaller,
@@ -81,30 +81,15 @@ export async function invokeUserManager(
     const endpoint = BASELINE_LIFECYCLE_ENDPOINT;
     const resolve = () => resolveService(nc, config.space, endpoint, caller, { instanceId, deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal });
     let service = await resolve();
-    if (opts.follow && !service.commands.has("goal-result")) {
-      return {
-        reply: {
-          v: 1,
-          id: randomUUID(),
-          ok: false,
-          data: undefined,
-          error: {
-            code: "failed-precondition",
-            message: `manager instance ${service.responder.instanceId} does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`,
-            outcome: "not-executed",
-          },
-        },
-        responder: { endpoint, instanceId: service.responder.instanceId, epoch: service.responder.epoch },
-      };
-    }
+    const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
+    if (unfollowable) return unfollowable;
     const invoke = async () => {
       const result = await invokeCommand(nc, config.space, service, command, args, opts);
       if (result.reply.ok === false && replyRefusedBeforeEffect(result.reply.error)) {
         try {
           service = await resolve();
-          if (opts.follow && !service.commands.has("goal-result")) {
-            throw new Error(`manager instance ${service.responder.instanceId} does not support "goal-result"; upgrade manager to enable durable goal following (SPEC 13.6)`);
-          }
+          const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
+          if (unfollowable) throw new Error(unfollowable.reply.error!.message);
         } catch (error) {
           return { ...result, reply: { ...result.reply, error: {
             ...result.reply.error!,
