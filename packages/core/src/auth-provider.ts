@@ -1,4 +1,4 @@
-import type { ExecFileException } from "node:child_process";
+import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
 import type {
@@ -333,6 +333,24 @@ export function bearerCommandFailure(err: ExecFileException, stderr: string, tim
   if (typeof err.code === "number") return new Error(`the bearer command exited with code ${err.code} and printed nothing`);
   // A spawn, abort or output-limit error has no exit, and Node's sentence for it repeats no arguments.
   return new Error(err.message);
+}
+
+/** Run an {@link AuthProvider.agentBearerCommand} argv once and return the line it printed, trimmed
+ *  and possibly empty. A caller that needs a bearer refuses an empty line itself; a preflight that
+ *  only proves the command succeeds ignores it. */
+export function runAgentBearer(
+  argv: string[],
+  opts: { env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  return new Promise((resolve, reject) => {
+    execFile(
+      argv[0],
+      argv.slice(1),
+      { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal },
+      (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs)) : resolve(stdout.trim()),
+    );
+  });
 }
 
 /** Non-secret proved account identity returned beside a catalog snapshot. */
