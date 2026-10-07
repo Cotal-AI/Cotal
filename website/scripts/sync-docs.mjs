@@ -12,6 +12,8 @@ import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
+import { parse, postprocess, preprocess } from 'micromark';
+import { gfm } from 'micromark-extension-gfm';
 import { parse as parseHtml, parseFragment } from 'parse5';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -22,6 +24,7 @@ const pubDir = join(here, '..', 'public');
 
 // Where repo-relative (non-docs) links point on the web.
 const GITHUB_BLOB = 'https://github.com/Cotal-AI/Cotal/blob/main';
+const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 
 // The Quickstart's paste-into-your-agent fence renders as the interactive
 // AgentPrompt card on the site (the page is emitted as MDX; the .md twin
@@ -112,49 +115,54 @@ const knownSlugs = new Map(
   sources.map((rel) => [basename(rel).replace(/\.md$/, ''), slugFor(basename(rel).replace(/\.md$/, ''))]),
 );
 
-// Rewrite repo-relative links to site routes. Every link is first resolved
-// against its source file's directory to a repo-root-relative path (sources live
-// at different depths: docs/*.md vs the root SPEC.md), then mapped:
+// Rewrite repo-relative links to site routes. Every link is first resolved as a URL
+// against its source file's GitHub address (sources live at different depths:
+// docs/*.md vs the root SPEC.md), then its path, percent-decoded, is mapped:
 //   docs/<page>.md, SPEC.md   → the published Starlight slug (docs/README.md → /)
 //   spec/cotal.schema.json    → the published /cotal.schema.json
 //   assets/*                  → /assets/* (copied into public/ below)
 //   anything else in the repo → GitHub
-// Absolute URLs and same-page #anchors pass through. A doc link that resolves to
-// an unpublished page throws — no silent drift.
+// A query or fragment is kept. Absolute URLs and same-page #anchors pass through. A doc
+// link that resolves to an unpublished page throws — no silent drift.
 // Seeded with images used by the hand-authored landing page (index.mdx), which
 // doesn't pass through this rewriter.
 const assetRefs = new Set(['assets/cotal-demo.webp']);
 
-function resolveRepoPath(srcDir, target) {
-  const out = srcDir ? srcDir.split('/') : [];
-  for (const part of target.split('/')) {
-    if (part === '' || part === '.') continue;
-    if (part === '..') {
-      if (out.length === 0) throw new Error(`link escapes the repo: ${target}`);
-      out.pop();
-    } else out.push(part);
+function rewriteTarget(target, rel) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/') || target.startsWith('#')) return target;
+  const url = new URL(target, `${GITHUB_BLOB}/${rel}`);
+  const path = decodeURIComponent(url.pathname);
+  if (!path.startsWith(blobPath)) throw new Error(`link escapes the repo: ${target}`);
+  const repoPath = path.slice(blobPath.length);
+  const suffix = url.search + url.hash;
+  if (repoPath === 'spec/cotal.schema.json') return `/cotal.schema.json${suffix}`;
+  if (repoPath.startsWith('assets/')) {
+    assetRefs.add(repoPath);
+    return url.href.slice(GITHUB_BLOB.length);
   }
-  return out.join('/');
+  if (repoPath === 'SPEC.md' || (repoPath.startsWith('docs/') && repoPath.endsWith('.md'))) {
+    const name = basename(repoPath).replace(/\.md$/, '');
+    if (name === 'README') return `/${suffix}`;
+    if (!knownSlugs.has(name)) throw new Error(`link to unpublished doc: ${target}`);
+    return `/${knownSlugs.get(name)}/${suffix}`;
+  }
+  // Anything else in the repo (sources, examples, extension READMEs) → GitHub.
+  return url.href;
 }
 
-function rewriteLinks(md, srcDir) {
-  return md.replace(/\]\(([^)#]+?)(#[^)]*)?\)/g, (whole, target, anchor = '') => {
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/')) return whole;
-    const repoPath = resolveRepoPath(srcDir, target);
-    if (repoPath === 'spec/cotal.schema.json') return `](/cotal.schema.json${anchor})`;
-    if (repoPath.startsWith('assets/')) {
-      assetRefs.add(repoPath);
-      return `](/${repoPath}${anchor})`;
-    }
-    if (repoPath === 'SPEC.md' || (repoPath.startsWith('docs/') && repoPath.endsWith('.md'))) {
-      const name = basename(repoPath).replace(/\.md$/, '');
-      if (name === 'README') return `](/${anchor})`;
-      if (!knownSlugs.has(name)) throw new Error(`link to unpublished doc: ${target}`);
-      return `](/${knownSlugs.get(name)}/${anchor})`;
-    }
-    // Anything else in the repo (sources, examples, extension READMEs) → GitHub.
-    return `](${GITHUB_BLOB}/${repoPath}${anchor})`;
-  });
+// The page is parsed as the site renders it (micromark with GFM), so only real link and
+// definition destinations are rewritten: code and HTML keep their text, and titled,
+// angle-bracket and reference-style links are all seen.
+function rewriteLinks(md, rel) {
+  const events = postprocess(parse({ extensions: [gfm()] }).document().write(preprocess()(md, undefined, true)));
+  let out = '';
+  let at = 0;
+  for (const [kind, { type, start, end }] of events) {
+    if (kind !== 'enter' || (type !== 'resourceDestinationString' && type !== 'definitionDestinationString')) continue;
+    out += md.slice(at, start.offset) + rewriteTarget(md.slice(start.offset, end.offset), rel);
+    at = end.offset;
+  }
+  return out + md.slice(at);
 }
 
 // The title comes from the lexed first block, so a `#` comment in a code fence is never read as the
@@ -203,7 +211,6 @@ function yamlEscape(s) {
 // a percent-encoded path as the same file, so paths are compared decoded. A link back to the
 // index itself, such as one to a heading, names no page.
 const indexUrl = new URL(`${GITHUB_BLOB}/docs/README.md`);
-const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 const indexed = new Set();
 const visit = (node) => {
   node.childNodes?.forEach(visit);
@@ -246,8 +253,7 @@ for (const group of groups) {
     const slug = slugFor(name);
     const { title, body } = splitH1(readFileSync(src, 'utf8'), rel);
     const description = firstParagraph(body, rel);
-    const srcDir = dirname(rel);
-    let md = rewriteLinks(body, srcDir === '.' ? '' : srcDir);
+    let md = rewriteLinks(body, rel);
     const fm = ['---', `title: ${yamlEscape(title)}`, `description: ${yamlEscape(description)}`, '---', ''].join('\n');
     let ext = 'md';
     let imports = '';
