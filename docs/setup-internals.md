@@ -241,7 +241,8 @@ after that stamp commits. An older CLI includes those fields in its refusal when
 generation-only stamps stay valid and retain the shorter refusal. A CLI whose package root is the
 repo `bin/` (a source checkout, including a suite child of `bin/cotal.ts`) refuses that write, stamp,
 and generation GC rather than migrating the operator-global store. The refusal names
-`$XDG_CONFIG_HOME` as the isolation remedy; `COTAL_HOME` does not relocate this store. Isolated
+`COTAL_SKIP_CONNECTOR_SEED=1` as the way to run other commands from a checkout, since an isolated
+`$XDG_CONFIG_HOME` alone does not lift it; `COTAL_HOME` does not relocate this store. Isolated
 in-tree seed smokes set `COTAL_ALLOW_CHECKOUT_SEED=1` after pointing `$XDG_CONFIG_HOME` at a scratch
 dir. An unproven entry is refused the same way: a missing identity answer is not treated as a
 released install.

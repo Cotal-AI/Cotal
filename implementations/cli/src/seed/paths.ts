@@ -147,7 +147,7 @@ export function assertReleasedSeedWriter(generation: string, action: string): vo
   }
   const origin = kind === "checkout" ? "a source checkout" : "an unproven CLI entry";
   throw new Error(
-    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Isolate with XDG_CONFIG_HOME. COTAL_HOME does not relocate this store.`,
+    `refusing to ${action} the operator-global seed store at ${seedStoreDir()} for generation ${generation} from ${origin} (${entry}) - this would migrate the machine-wide store and can take an installed cotal down. Set COTAL_SKIP_CONNECTOR_SEED=1 to run other commands without seeding; isolating XDG_CONFIG_HOME alone does not lift this refusal. COTAL_HOME does not relocate this store.`,
   );
 }
 
