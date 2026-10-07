@@ -85,8 +85,9 @@ export function resolvePeer(
   if (matches.length === 0) {
     // Rosters print a peer as `name/role`, so that label is what gets copied into a target. It is
     // refused rather than resolved: `/` is reserved for `owner/name` handles, and reading it as a
-    // role here would give the same string two meanings once handles land.
-    const labelled = peers.find((p) => p.card.role && peerLabel(p.card).toLowerCase() === want);
+    // role here would give the same string two meanings once handles land. The label is trimmed
+    // like the target, or one whose sanitized edge became a space (a role ending in `]`) never matches.
+    const labelled = peers.find((p) => p.card.role && peerLabel(p.card).trim().toLowerCase() === want);
     if (labelled)
       throw new Error(
         `"${target}" is the roster label of ${labelled.card.name} (role ${labelled.card.role}), not an ` +
