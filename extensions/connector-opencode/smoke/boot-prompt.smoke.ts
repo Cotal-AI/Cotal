@@ -470,7 +470,7 @@ try {
   await once(oc2, "listening");
   const ocPort2 = (oc2.address() as { port: number }).port;
 
-  // Cell 2's persona: `loadAgentFile`'s minimal accepted shape (packages/core/src/agent-file.ts:123-150) —
+  // Cell 2's persona: `loadAgentFile`'s minimal accepted shape (packages/core/src/agent-file.ts) —
   // frontmatter `name`, `role`, `agent`, a one-line body.
   const PERSONA_TEXT = "You are Booty2, the boot-prompt probe.";
   const agentFile = join(dir2, "booty2.md");
@@ -485,7 +485,8 @@ try {
     OPENCODE_SERVER_USERNAME: "opencode",
     OPENCODE_SERVER_PASSWORD: "test-secret-3",
   });
-  // No COTAL_MODEL set for the 2.x arms — the `GET /api/model` check is skipped (plugin2.ts:110-113).
+  // No COTAL_MODEL set for the 2.x arms — the `GET /api/model` check is skipped (`modelReady` in
+  // plugin2.ts).
 
   const clearSetupGuard = () => delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
   const waitForPrompts2 = async (n: number, ms = 8000): Promise<void> => {
