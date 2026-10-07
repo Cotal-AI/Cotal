@@ -12,7 +12,7 @@
 // Env (set by mesh-face.sh): COTAL_OPENCODE_HOME (data root, required), COTAL_NAME, COTAL_AGENT_FILE,
 // FACE_PERSONA (face-term persona key), FACE_BIN (path to face-term.mjs), OPENCODE_CONFIG_CONTENT
 // (the inline opencode config with the Cotal plugin). COTAL_OPENCODE_BIN overrides the opencode bin.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { launch } from "../../extensions/connector-opencode/dist/launch.js";
 
@@ -40,15 +40,14 @@ async function main() {
   // Compose persona + face-steering into a launch-local agent file beside the agent's DB (the
   // connector no longer injects any face prompt); the plugin inside the server reads it through
   // COTAL_AGENT_FILE. Same frontmatter ⇒ identity/ACLs are unchanged.
-  const dataRoot = process.env.COTAL_OPENCODE_HOME?.trim();
-  if (!dataRoot) throw new Error("COTAL_OPENCODE_HOME is not set — the launcher must pin the agent's data root");
-  const agentHome = join(dataRoot, ".cotal", "opencode", name);
-  mkdirSync(agentHome, { recursive: true });
-  const composedFile = join(agentHome, basename(agentFile));
-  writeFileSync(composedFile, `${readFileSync(agentFile, "utf8").trimEnd()}\n\n${FACE_STEER}\n`);
-  process.env.COTAL_AGENT_FILE = composedFile;
-
-  await launch(({ url, session }) => [process.execPath, faceBin, "--persona", persona, "--server", url, "--session", session]);
+  await launch(
+    ({ url, session }) => [process.execPath, faceBin, "--persona", persona, "--server", url, "--session", session],
+    (agentHome) => {
+      const composedFile = join(agentHome, basename(agentFile));
+      writeFileSync(composedFile, `${readFileSync(agentFile, "utf8").trimEnd()}\n\n${FACE_STEER}\n`);
+      return { COTAL_AGENT_FILE: composedFile };
+    },
+  );
 }
 
 void main();

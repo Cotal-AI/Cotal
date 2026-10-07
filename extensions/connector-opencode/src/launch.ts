@@ -119,7 +119,12 @@ function isLiveOpencodeServe(pid: number): boolean {
  *  basic-auth credentials, so the argv never needs the secret. */
 export type TuiArgv = (server: { url: string; session: string; line: 1 | 2 }) => [command: string, ...args: string[]];
 
-export async function launch(tuiArgv: TuiArgv): Promise<void> {
+/** Extra env for the server, built from inputs the caller writes into the agent's home. It runs only
+ *  once no seat of this name is running, so a refused launch never rewrites files a running seat's
+ *  server still reads. */
+export type ServeEnv = (agentHome: string) => NodeJS.ProcessEnv;
+
+export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<void> {
   const port = process.env.COTAL_OPENCODE_PORT?.trim() || String(await freePort());
   const url = `http://127.0.0.1:${port}`;
   // Own SQLite DB per agent: opencode auth/config stay on the operator's normal HOME/XDG roots,
@@ -159,6 +164,7 @@ export async function launch(tuiArgv: TuiArgv): Promise<void> {
   const serve = spawn(BIN, ["serve", "--hostname", "127.0.0.1", "--port", port], {
     env: {
       ...process.env,
+      ...serveEnv?.(agentHome),
       COTAL_OPENCODE_SERVER_URL: url,
       COTAL_OPENCODE_LINE: String(line),
       OPENCODE_SERVER_USERNAME: USERNAME,
