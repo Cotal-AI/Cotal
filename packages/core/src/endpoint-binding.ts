@@ -1006,6 +1006,11 @@ export function runJournalConsumerConfig(
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
     deliver_policy: DeliverPolicy.All,
     max_ack_pending: opts.maxAckPending ?? 1000,
+    // In MEMORY, because its state is worthless once the replay that made it is done, and a
+    // file-backed one gives the broker a directory to lose. Every replay on a takeover reuses this
+    // name, so a create can share `obs/<durable>` with the removal of an earlier consumer of the name
+    // and fail with the broker's ENOENT from its store, which the replay raises as the step's failure.
+    mem_storage: true,
     // A REAPER, because nothing else is one. This consumer is created, read and deleted inside a
     // single replay, so it should never outlive one — but a delete can fail, and the stream cannot
     // clean up after it: WFJ sets neither `max_consumers` nor `consumer_limits`, which normalize to
