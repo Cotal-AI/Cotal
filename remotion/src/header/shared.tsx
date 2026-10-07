@@ -142,7 +142,7 @@ export const BeamLine: React.FC<{
   );
 };
 
-// A tapered pulse of light sliding down a wire. Mirrors scene.tsx Pulse.
+// A tapered pulse of light sliding down a wire.
 export const PulseLine: React.FC<{
   d: string;
   pos: (t: number) => Pt;
