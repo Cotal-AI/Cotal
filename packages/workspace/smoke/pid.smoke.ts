@@ -244,7 +244,6 @@ try {
   // The manager's signal path (an EPERM refusal, a process that outlives SIGTERM) is the shared
   // `stopLocalProcess` now; these cells pin how the manager stop treats its own record.
   const { stopManager } = await import("../../../implementations/cli/src/lib/manager-proc.js");
-  const alive = () => "alive" as const;
   writeFileSync(mgrPid, `${deadPid}\n`);
   check("a proven-dead manager IS cleared (the refusal is not blanket)", (await stopManager()) && !existsSync(mgrPid), deadPid);
 
@@ -293,11 +292,7 @@ try {
   check("ensureManager REFUSES corrupt content instead of launching over it", ensureRefused !== undefined);
   check("and does NOT overwrite the record it could not read", readFileSync(mgrPid, "utf8") === corruptBefore);
 
-  // ── the THIRD stop sibling: a signal accepted is not a death ────────────────────────────────
-  // stopAuthService handled EPERM correctly and then deleted the record immediately after a
-  // SUCCESSFUL SIGTERM, so a service that ignores it was reported stopped while still running. The
-  // reviewer's mutation check survived 226 checks with the deletion removed: nothing asserted the
-  // post-signal outcome anywhere.
+  // ── the auth stop: its signal path is the shared `stopLocalProcess` too ────────────────────
   const { stopAuthService } = await import("../../../implementations/cli/src/lib/auth-proc.js");
   // The path is hex-encoded per space (readPidPath), so derive it rather than guessing: my first
   // version invented `auth-service.pid`, the helper found nothing, and the cell failed for the wrong
@@ -317,18 +312,6 @@ try {
   }
   check("stopAuthService REFUSES a malformed pidfile", authMalformed !== undefined);
   check("and that record SURVIVES", existsSync(authPid));
-
-  // The gap the reviewer's mutation exposed: 226 checks survived with the final deletion removed,
-  // so NOTHING asserted the post-signal outcome. A signal accepted is not a death.
-  writeFileSync(authPid, `${process.pid}\n`);
-  let authOutlived: string | undefined;
-  try {
-    await stopAuthService("main", alive, () => {}); // accepted, but never dies
-  } catch (e) {
-    authOutlived = (e as Error).message;
-  }
-  check("stopAuthService REFUSES when the service outlives SIGTERM", authOutlived !== undefined);
-  check("and preserves its pidfile rather than recording a stop that did not happen", existsSync(authPid));
 
   // ── pid 0 and negatives must never reach kill ────────────────────────────────────────────────
   // `kill(0, sig)` is POSIX for "signal my own process group", so a pidfile of `0` reaching the raw

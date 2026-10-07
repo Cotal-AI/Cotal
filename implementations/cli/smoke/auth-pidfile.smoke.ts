@@ -104,15 +104,14 @@ try {
   const retry = await start();
   check("a retry is refused the same way, not satisfied by a record that names this process", REFUSAL.test(retry), retry);
   check("the provider is never asked to report ready for a service nobody started", readyCalls === 0, readyCalls);
-  const signalled: number[] = [];
   const quiet = console.error;
   console.error = () => {}; // the pre-hex record carries no identity pin, which teardown warns about
   try {
-    await stopAuthService(SPACE, () => "dead", (pid) => { signalled.push(pid); });
+    await stopAuthService(SPACE); // a SIGTERM to this launcher's own pid would end the suite here
   } finally {
     console.error = quiet;
   }
-  check("teardown never signals this launcher's own pid", !signalled.includes(process.pid), signalled);
+  check("teardown stops the dead pre-hex record, never a record naming this launcher", !existsSync(LEGACY_FILE) && !existsSync(PID_FILE));
   // CONTROL: the reads above do see a slot this process holds, so their "nothing here" is observed.
   const held = claimAuthPidSlot(SPACE);
   check("CONTROL: a slot this process does claim reads as a running auth service",

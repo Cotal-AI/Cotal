@@ -1229,10 +1229,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // the refusal is printed with the reap route and the latch is released, so the stack keeps running
   // in the foreground; the operator ends it with `cotal down --with-agents` from another terminal,
   // and the broker-exit handler below already ends `up` when the broker goes.
-  // stopDelivery is the stop `cotal down delivery` performs (reservation, SIGKILL escalation); the
-  // rest of the teardown must run even if it fails — the failure is logged, never swallowed
-  // silently. Teardown is AWAITED before the broker is signalled, so it never races a broker that is
-  // already going away.
+  // stopDelivery and stopAuthService are the stops `cotal down delivery` and `cotal down auth`
+  // perform (reservation, SIGKILL escalation); the rest of the teardown must run even if one fails —
+  // the failure is logged, never swallowed silently. Teardown is AWAITED before the broker is
+  // signalled, so it never races a broker that is already going away.
   let stopping = false;
   let teardown: Promise<void> | undefined;
   const stop = () => {

@@ -1,5 +1,6 @@
 /** Stopping one recorded local process: the stop `cotal down` runs for every component, and the
- *  one every manager and delivery teardown shares through `stopManager` and `stopDelivery`. */
+ *  one every manager, delivery and user-auth teardown shares through `stopManager`, `stopDelivery`
+ *  and `stopAuthService`. */
 import { closeSync, existsSync, linkSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import {
@@ -129,9 +130,9 @@ export async function stopLocalProcess(
         return true;
       }
     }
-    // #969 OPEN-VERIFY-TERMINATE: identity before signal, the same rule the auth helper applies. This
-    // is the path every manager and delivery stop takes, and the one `cotal down` uses for the BROKER,
-    // the web dashboard and every extension component, so all of them share one identity rule.
+    // #969 OPEN-VERIFY-TERMINATE: identity before signal. This is the path every manager, delivery
+    // and user-auth stop takes, and the one `cotal down` uses for the BROKER, the web dashboard and
+    // every extension component, so all of them share one identity rule.
     const identity = verifyIdentityPin(pidPath);
     if (identity.kind === "mismatch") throw identityRefusal(component.label, pidPath, identity.record, identity.liveToken);
     if (identity.kind === "legacy" && options.owns) {
