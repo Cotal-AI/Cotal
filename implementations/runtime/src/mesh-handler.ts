@@ -1995,18 +1995,23 @@ export class MeshHandler {
    * An `ask` attempt or an escalation sends its relay a duration the manager counts from its own
    * acceptance, so the relay outlives the pause by the submit's trip (#3044), and retries that
    * stopped at the pause's deadline would let the scope settle while the seat can still pull it.
+   * No deadline is known until that goal is read, and the relay may be served until then, so a
+   * failed read is tried again as well. A goal record that can never yield a deadline is thrown.
    */
   private async withdrawCancelledRelay(goalId: string): Promise<void> {
-    const spec = (await readGoalSpec(await this.actionCtx(), { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId }))?.value;
-    if (spec === undefined) return;
-    if (spec.readinessDeadlineMs === undefined)
-      throw new Error(`the relay "${goalId}" was accepted with no deadline on its goal; a garbled acceptance never authorizes (SPEC 13.6)`);
-    const deadlineAt = spec.acceptedAt + spec.readinessDeadlineMs;
+    let deadlineAt: number | undefined;
     for (;;) {
       try {
+        if (deadlineAt === undefined) {
+          const spec = (await readGoalSpec(await this.actionCtx(), { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId }))?.value;
+          if (spec === undefined) return;
+          if (spec.readinessDeadlineMs === undefined)
+            throw new EpEnvelopeError("internal", `the relay "${goalId}" was accepted with no deadline on its goal; a garbled acceptance never authorizes (SPEC 13.6)`);
+          deadlineAt = spec.acceptedAt + spec.readinessDeadlineMs;
+        }
         return await this.withdrawRelay(goalId);
       } catch (e) {
-        if (this.now() >= deadlineAt) throw e;
+        if (deadlineAt === undefined ? e instanceof EpEnvelopeError : this.now() >= deadlineAt) throw e;
       }
       await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
     }
