@@ -316,7 +316,7 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `delivery.<key>.pid` · `delivery.<key>.log` · `delivery.creds` | Delivery daemon pid and log for one space, and its scoped cred (auth mode). Per-space and compatible with a pre-segmentation `delivery.pid` on the same terms as the manager row |
 | `web.pid` · `web.log` | Web dashboard pid + log |
 | `membership.json` · `membership-*.creds` | Membership feed state + its scoped creds |
-| `setup.log` | Last `cotal setup` run |
+| `setup.log` | `cotal setup` log, one section appended per run. Each entry is one timestamped line: a control character or Unicode line separator in a path or error message is written as a `\uXXXX` escape |
 
 A command that acts on the whole folder without being told a space reads one off these runtime
 records: `<key>` decodes back to the space name, and a space whose record is running wins over

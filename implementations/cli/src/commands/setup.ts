@@ -87,7 +87,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     "Give your agents a place to work together",
   );
 
-  const log = openSetupLog(process.cwd());
+  const log = openSetupLog();
 
   // Prerequisites — CHECKS only, no side effects, no prompts.
   const core: Step[] = [
