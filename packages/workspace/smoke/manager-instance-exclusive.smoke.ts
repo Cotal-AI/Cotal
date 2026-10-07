@@ -4,7 +4,7 @@
  * The first concurrent start on a fresh root used to observe no identity file, mint in memory,
  * and persist with a plain write. Two processes kept different in-memory ids, took different
  * leases, and both served. Atomic rename would still leave the loser serving under the id it
- * minted. Exclusive create (`link` / `O_EXCL`) is the primitive: exactly one creator wins, and
+ * minted. Exclusive create by hard link is the primitive: exactly one creator wins, and
  * every other process adopts the winner or refuses with `identity-record-create-lost`.
  *
  * PRE-FIX CONTROL (same worker shape, load-absent-then-write): 2/40 rounds minted two in-memory
