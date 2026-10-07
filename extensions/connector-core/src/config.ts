@@ -321,7 +321,8 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     creds: boundedCreds ? async () => readFileSync(credsPath!, "utf8") : initialCreds,
     userAuth,
     name,
-    role: env.COTAL_ROLE?.trim() || def?.role || undefined,
+    // Untrimmed: a role is an address, so the endpoint refuses a padded one rather than routing it.
+    role: env.COTAL_ROLE || def?.role || undefined,
     description: def?.description,
     tags: def?.tags,
     meta: def?.meta,

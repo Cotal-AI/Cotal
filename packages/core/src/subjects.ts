@@ -79,7 +79,8 @@ function channelPath(channel: string): string {
  *  distinct spellings to one queue while the envelope kept the spelling the sender typed. Returns the
  *  role unchanged when valid so callers can use it inline. */
 export function assertValidRole(role: string): string {
-  if (!/^[A-Za-z0-9_-]+$/.test(role))
+  // typeof guard as in assertValidOwnerToken: RegExp.test() coerces, so 123 or ["probe"] would pass.
+  if (typeof role !== "string" || !/^[A-Za-z0-9_-]+$/.test(role))
     throw new Error(
       `invalid role "${role}": must be a single NATS-safe token ([A-Za-z0-9_-]) - a role is an ` +
         `address, so it is rejected rather than silently rewritten`,
