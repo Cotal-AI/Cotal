@@ -109,7 +109,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     delete process.env.COTAL_OPENCODE_BIN;
   }
 
-  // The line is `serve.ts`'s own fact (detected from the running binary's `--version`), not the
+  // The line is `launch.ts`'s own fact (detected from the running binary's `--version`), not the
   // connector's launch spec — the spec stays binary-free.
   const plain = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-line", events: false });
   check(

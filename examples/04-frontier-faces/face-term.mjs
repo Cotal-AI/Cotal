@@ -34,7 +34,9 @@ const DEMO = has('demo');
 const PERSONA = flag('persona', 'ray');
 const SERVER = flag('server', 'http://127.0.0.1:4096').replace(/\/$/, '');
 const SESSION = flag('session', ''); // attach to an existing session instead of creating one
-const PASSWORD = flag('password', ''); // HTTP basic auth (opencode serve with OPENCODE_SERVER_PASSWORD)
+// HTTP basic auth for an opencode serve with OPENCODE_SERVER_PASSWORD. The env form is the one a
+// launcher uses, since argv is readable by every local user; `opencode attach` reads it the same way.
+const PASSWORD = flag('password', process.env.OPENCODE_SERVER_PASSWORD ?? '');
 const MODEL_STR = flag('model', 'opencode-go/glm-5.1');
 const [provModel0, ...rest] = MODEL_STR.split('/');
 const MODEL = { providerID: provModel0, modelID: rest.join('/') };
