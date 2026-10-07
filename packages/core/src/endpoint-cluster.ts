@@ -53,6 +53,12 @@ function invalid(what: string): never {
   throw new ContractInvalidError(`cluster document does not validate: ${what}`);
 }
 
+/** A manifest fault names the manifest at its closure digest: the manifest and the root document
+ *  are two artifacts at two digests (SPEC 13.7). */
+function invalidManifest(closureDigest: string, what: string): never {
+  throw new ContractInvalidError(`cluster manifest ${closureDigest} does not validate: ${what}`);
+}
+
 /** The declared admission ceiling for a journal-class command's submissions: what the canonicalizer
  *  refuses BEFORE deciding. It lives in the digest-verified registered surface rather than in a
  *  constant so that two conforming implementations cannot decide the same bytes differently and
@@ -227,10 +233,10 @@ export function verifyClusterManifest(closureDigest: string, manifest: unknown):
   const actual = contractDigest(manifest);
   if (actual !== closureDigest)
     throw new ContractInvalidError(`cluster manifest does not hash to its registered closure digest ${closureDigest} (content is ${actual}); a reader MUST verify fetched bytes and fail loud (SPEC 13.7)`);
-  const o = isRec(manifest) ? manifest : invalid("manifest is not an object");
-  if (o.v !== 1) invalid(`manifest v ${JSON.stringify(o.v)} is not 1`);
-  if (!isDigest(o.root)) invalid("manifest root is not a sha256 artifact digest");
-  if (!Array.isArray(o.members)) invalid("manifest members is not an array");
+  const o = isRec(manifest) ? manifest : invalidManifest(closureDigest, "not an object");
+  if (o.v !== 1) invalidManifest(closureDigest, `v ${JSON.stringify(o.v)} is not 1`);
+  if (!isDigest(o.root)) invalidManifest(closureDigest, "root is not a sha256 artifact digest");
+  if (!Array.isArray(o.members)) invalidManifest(closureDigest, "members is not an array");
   if (o.members.length !== 0)
     throw new ContractInvalidError(`cluster closure ${closureDigest} has ${o.members.length} member(s); multi-artifact closures need the D8 loader and are refused until then (SPEC 13.7), never partially verified`);
   return { root: o.root, members: [] };
