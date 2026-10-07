@@ -5,6 +5,7 @@ import {
   hardenPrivate,
   registry,
   SpawnRefused,
+  watchConfirm,
   writeSecretFile,
   type AgentHandle,
   type LaunchSpec,
@@ -14,8 +15,6 @@ import {
 import * as herdr from "./driver.js";
 
 const GRACE_MS = 2_000;
-const CONFIRM_INTERVAL_MS = 1_000;
-const MAX_CONFIRMS = 5;
 
 interface LauncherPayload {
   cwd: string;
@@ -167,17 +166,25 @@ export class HerdrRuntime implements Runtime {
       return info.paneId;
     };
 
-    if (spec.confirm) {
-      for (let i = 1; i <= MAX_CONFIRMS; i++) {
-        setTimeout(() => {
+    if (spec.confirm)
+      watchConfirm(spec.confirm, {
+        read: () => {
+          const info = herdr.agentInfo(session, terminalId);
+          return info && herdr.readPane(session, info.paneId);
+        },
+        enter: () => herdr.sendKeys(session, currentPane(), "enter"),
+        fail: (message) => {
+          console.error(`herdr runtime: "${name}": ${message}`);
           try {
-            herdr.sendKeys(session, currentPane(), "enter");
-          } catch {
-            /* pane may already be gone */
+            herdr.closePane(session, currentPane());
+          } catch (err) {
+            if (!(err instanceof herdr.HerdrCliError && err.code === "pane_not_found"))
+              console.error(`herdr runtime: failed to close pane for "${name}":`, err);
+          } finally {
+            cleanupLauncher(launcher);
           }
-        }, i * CONFIRM_INTERVAL_MS);
-      }
-    }
+        },
+      });
 
     return {
       name,

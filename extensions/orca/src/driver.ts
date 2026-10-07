@@ -399,6 +399,13 @@ export async function waitManagedTerminalExit(
   }
 }
 
+/** The text terminal `handle` renders now. `--screen` reads the rendered frame, so a prompt a TUI
+ *  draws with cursor moves reads whole instead of as stacked repaint fragments. */
+export function readScreen(handle: string): string {
+  return requireOk<{ terminal: { tail: string[] } }>(["terminal", "read", "--terminal", handle, "--screen", "--json"])
+    .terminal.tail.join("\n");
+}
+
 export function sendTerminal(handle: string, opts: { text?: string; enter?: boolean; interrupt?: boolean } = {}): void {
   const args = ["terminal", "send", "--terminal", handle];
   if (opts.text !== undefined) args.push("--text", opts.text);

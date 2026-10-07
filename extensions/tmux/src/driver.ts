@@ -158,6 +158,20 @@ export function paneState(paneId: string): PaneState {
   }
 }
 
+/** The text pane `paneId` (`%N`) shows now, or undefined once it has exited. */
+export function capturePane(paneId: string): string | undefined {
+  try {
+    return execFileSync("tmux", ["capture-pane", "-p", "-t", paneId], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: EXIT_PROBE_MS,
+    });
+  } catch (err) {
+    if (paneState(paneId) === "exited") return undefined;
+    throw err;
+  }
+}
+
 /** Bounded polling over tmux's authoritative pane inventory. */
 export async function waitForPaneExit(
   paneId: string,

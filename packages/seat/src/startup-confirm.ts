@@ -2,7 +2,9 @@ const CSI = /\x1b\[[0-?]*[ -/]*[@-~]/g;
 const OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const ESC = /\x1b(?:.|$)/g;
 
-/** Normalize terminal text according to LaunchSpec.confirm: ignore ANSI control sequences and whitespace. */
+/** Normalize terminal text according to LaunchSpec.confirm: ignore ANSI control sequences and whitespace.
+ *  Repeated in core's startup-confirm, which the runtimes that read their panes use, because this
+ *  package depends on nothing else in the repo; the two must normalize alike. */
 export function normalizeConfirmText(value: string): string {
   return value.replace(OSC, "").replace(CSI, "").replace(ESC, "").replace(/\s+/g, "");
 }

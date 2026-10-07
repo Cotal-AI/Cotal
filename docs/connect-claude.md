@@ -129,10 +129,13 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   as stray peers. Its MCP server still answers `initialize` and lists one static tool,
   `cotal_how_to_join`, which explains how to launch a session on a mesh. It builds no mesh
   agent, opens no broker connection and binds no control socket.
-- **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The PTY runtime waits for
-  the dialog title in normalized terminal output and presses Enter once when it appears, so startup
-  speed does not affect a supervised launch. If the declared prompt never appears, the seat exits
-  with a bounded error naming the unmatched prompt instead of hanging silently.
+- **Hands-free.** The dev-channels flag prints a one-time confirm prompt. The runtime waits for the
+  dialog title in normalized terminal text and presses Enter once when it appears, so startup speed
+  does not affect a supervised launch. The PTY runtime reads the child's output, and the tmux, cmux,
+  Orca and Herdr runtimes read the pane's screen. If the declared prompt never appears within 15
+  seconds, the seat ends with a bounded error naming the unmatched prompt instead of hanging
+  silently or answering another dialog. The PTY runtime writes that error to the seat's output, and
+  the other runtimes write it to the manager's log.
 - **Trusted directory.** Claude opens a directory it has not trusted on its workspace-trust dialog,
   and the dialog's default answer exits. No one is at a supervised seat to answer it, so a launch
   whose directory the manager host's own Claude does not trust is refused before it starts, naming

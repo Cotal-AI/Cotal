@@ -5,6 +5,7 @@ import {
   hardenPrivate,
   registry,
   SpawnRefused,
+  watchConfirm,
   writeSecretFile,
   type AgentHandle,
   type LaunchSpec,
@@ -14,8 +15,6 @@ import {
 import * as orca from "./driver.js";
 
 const GRACE_MS = 2_000;
-const CONFIRM_INTERVAL_MS = 1_000;
-const MAX_CONFIRMS = 5;
 const MAX_WORKTREE_CACHE = 32;
 
 interface LauncherPayload {
@@ -65,18 +64,6 @@ function cleanupLauncher(launcher: PrivateLauncher): void {
     rmSync(launcher.dir, { recursive: true, force: true });
   } catch {
     /* the launcher also removes itself after loading */
-  }
-}
-
-function scheduleConfirm(handle: () => string): void {
-  for (let i = 1; i <= MAX_CONFIRMS; i++) {
-    setTimeout(() => {
-      try {
-        orca.sendTerminal(handle(), { enter: true });
-      } catch {
-        /* terminal may already be gone */
-      }
-    }, i * CONFIRM_INTERVAL_MS);
   }
 }
 
@@ -136,7 +123,21 @@ export class OrcaRuntime implements Runtime {
       terminal = orca.currentTerminal(terminal) ?? terminal;
       return terminal;
     };
-    if (spec.confirm) scheduleConfirm(() => current().handle);
+    if (spec.confirm)
+      watchConfirm(spec.confirm, {
+        read: () => (orca.terminalAlive(terminal) ? orca.readScreen(current().handle) : undefined),
+        enter: () => orca.sendTerminal(current().handle, { enter: true }),
+        fail: (message) => {
+          console.error(`orca runtime: "${name}": ${message}`);
+          try {
+            orca.closeManagedTerminal(terminal);
+          } catch (err) {
+            console.error(`orca runtime: failed to close terminal for "${name}":`, err);
+          } finally {
+            cleanupLauncher(launcher);
+          }
+        },
+      });
 
     return {
       name,

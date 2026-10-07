@@ -162,6 +162,11 @@ export function send(text: string, target?: Target): void {
   cmux(["send", ...targetArgs(target), "--", text]);
 }
 
+/** The text a terminal surface shows now. */
+export function readScreen(target: Target): string {
+  return cmux(["read-screen", ...targetArgs(target)]);
+}
+
 /** Send a key press (e.g. "enter") to a terminal surface. */
 export function sendKey(key: string, target?: Target): void {
   cmux(["send-key", ...targetArgs(target), "--", key]);

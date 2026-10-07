@@ -1,6 +1,7 @@
 import {
   registry,
   SpawnRefused,
+  watchConfirm,
   type AgentHandle,
   type LaunchSpec,
   type Runtime,
@@ -64,7 +65,19 @@ export class TmuxRuntime implements Runtime {
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
     const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
-    if (spec.confirm) scheduleConfirm(windowId);
+    if (spec.confirm)
+      watchConfirm(spec.confirm, {
+        read: () => tmux.capturePane(paneId),
+        enter: () => tmux.sendKey("Enter", paneId),
+        fail: (message) => {
+          console.error(`tmux runtime: "${name}": ${message}`);
+          try {
+            tmux.closeWindow(windowId);
+          } catch (err) {
+            console.error(`tmux runtime: failed to close window for "${name}":`, err);
+          }
+        },
+      });
 
     return {
       name,

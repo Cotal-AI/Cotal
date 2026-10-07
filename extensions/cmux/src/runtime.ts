@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import {
   registry,
   SpawnRefused,
+  watchConfirm,
   type AgentHandle,
   type LaunchSpec,
   type Pane,
@@ -87,14 +88,12 @@ export class CmuxRuntime implements Runtime {
         `the cmux CLI (${process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux"}) couldn't reach the app — ` +
           "is cmux running, and is this process inside a cmux surface (CMUX_SOCKET_PATH set)?",
       );
-    // `confirm` auto-clears a one-time prompt (Claude's dev-channels) by sending Enter to this
-    // tab's own surface — so a spawned teammate joins the mesh without anyone switching to its tab.
     // Nothing has the spec's command until openWorkspace, so a launch script that cannot be written
     // is a refusal.
     let command: string;
     try {
       command = paneCommand(
-        { command: spec.command, args: spec.args, env: spec.env, cwd, confirm: Boolean(spec.confirm) },
+        { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,
         true, // isolate: spawned agent gets ONLY the connector-declared env (P3)
       );
@@ -104,6 +103,20 @@ export class CmuxRuntime implements Runtime {
     // Keep the new tab's workspace ref so we can drive (send keys to its terminal)
     // and close it later. cmux targets the tab's single terminal surface by workspace.
     const workspace = cmux.openWorkspace(`cotal-${name}`, JSON.stringify(surface(command)), { focus: false });
+
+    if (spec.confirm)
+      watchConfirm(spec.confirm, {
+        read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
+        enter: () => cmux.sendKey("enter", { workspace }),
+        fail: (message) => {
+          console.error(`cmux runtime: "${name}": ${message}`);
+          try {
+            cmux.closeWorkspace(workspace);
+          } catch (err) {
+            console.error(`cmux runtime: failed to close tab for "${name}":`, err);
+          }
+        },
+      });
 
     return {
       name,

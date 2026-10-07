@@ -483,6 +483,17 @@ export function sendKeys(session: string, paneId: string, key: string): void {
   run(session, ["pane", "send-keys", paneId, key], { void: true });
 }
 
+/** The text a pane shows now. Pane-scoped: the caller must pass a freshly re-resolved pane id
+ *  ({@link agentInfo}), never a cached one. `pane read` prints raw terminal text, not the JSON
+ *  envelope {@link run} parses. */
+export function readPane(session: string, paneId: string): string {
+  return execFileSync("herdr", ["--session", session, "pane", "read", paneId], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: RUN_TIMEOUT_MS,
+  });
+}
+
 /** Close a pane. Idempotent for an already-gone pane only; every other error propagates. */
 export function closePane(session: string, paneId: string): void {
   try {
