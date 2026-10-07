@@ -5,7 +5,7 @@
  * and persist with a plain write. Two processes kept different in-memory ids, took different
  * leases, and both served. Atomic rename would still leave the loser serving under the id it
  * minted. Exclusive create (`link` / `O_EXCL`) is the primitive: exactly one creator wins, and
- * every other process adopts the winner or refuses with `manager-instance-identity-create-lost`.
+ * every other process adopts the winner or refuses with `identity-record-create-lost`.
  *
  * PRE-FIX CONTROL (same worker shape, load-absent-then-write): 2/40 rounds minted two in-memory
  * identities at origin/main. This suite must stay red under that write.
@@ -20,7 +20,6 @@ import { fileURLToPath } from "node:url";
 import {
   createManagerInstanceIdentity,
   loadManagerInstanceIdentity,
-  saveManagerInstanceIdentity,
   spaceSegment,
 } from "../src/auth-paths.js";
 
@@ -56,7 +55,7 @@ if (process.env.COTAL_I1263_EXCL_WORKER === "1") {
     mkdirSync(join(root, ".cotal"), { recursive: true });
 
     const planted = candidate("planted");
-    saveManagerInstanceIdentity(root, SPACE, planted);
+    createManagerInstanceIdentity(root, SPACE, planted);
     const adopted = createManagerInstanceIdentity(root, SPACE, candidate("loser"));
     check("ACCEPT: an existing identity is adopted, the candidate is discarded",
       adopted.instanceId === planted.instanceId && adopted.serveIdentity.id === planted.serveIdentity.id);

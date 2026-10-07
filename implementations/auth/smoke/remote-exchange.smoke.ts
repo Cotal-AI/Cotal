@@ -116,7 +116,7 @@ const { createSpaceAuth, epAuthBucket, isReachable, managedRetirementOpId, mintC
   await import("@cotal-ai/core");
 const { Kvm } = await import("@nats-io/kv");
 const { connect } = await import("@nats-io/transport-node");
-const { authDir, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, createManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
@@ -316,7 +316,7 @@ try {
   const beforeLocalFile = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("without a persisted local manager identity and no remote gate, manager-caller refuses none",
     beforeLocalFile.status === 401 && String(beforeLocalFile.body.error).includes("no manager candidate"), beforeLocalFile);
-  saveManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  createManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
   const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("manager-caller re-reads a newly created local identity file and selects its live manager",
     localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);

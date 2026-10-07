@@ -36,7 +36,7 @@ const { CotalEndpoint: CotalEndpointCtor, chatSubject, createSpaceAuth, isReacha
   recordSpecKey, recordStatusKey, RECORD_KINDS } = await import("@cotal-ai/core");
 const { Kvm } = await import("@nats-io/kv");
 const { connect, credsAuthenticator } = await import("@nats-io/transport-node");
-const { authDir, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, createManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, grantActor, grantManagedActor, loadAuthServiceInfo, loadCalloutAuth, newActorToken } = await import("@cotal-ai/auth");
 const { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify } = await import("jose");
 const { pickFreePort } = await import("./_free-port.js");
@@ -181,7 +181,7 @@ try {
   await setupSpaceStreams({ servers: SERVER, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   const managerInstanceId = mintLifecycleUid();
   const managerServe = newIdentity();
-  saveManagerInstanceIdentity(serverRoot, SPACE, { instanceId: managerInstanceId, serveIdentity: managerServe });
+  createManagerInstanceIdentity(serverRoot, SPACE, { instanceId: managerInstanceId, serveIdentity: managerServe });
   {
     const execId = newIdentity();
     const execNc = await connect({ servers: SERVER, ...standaloneConnectOpts({ creds: await mintCreds(auth, execId, "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "manager", instanceId: managerInstanceId } }), tls: false }) });

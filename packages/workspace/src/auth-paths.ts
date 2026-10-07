@@ -11,6 +11,7 @@ import {
   writeSecretFileAtomic,
   writeSecretFileCreateOnly,
   type BrokerAuth,
+  type Identity,
   type SecretStore,
   type SpaceAccountAuth,
   type SpaceAuth,
@@ -376,6 +377,21 @@ export interface ManagerInstanceIdentity {
   instanceId: string;
   serveIdentity: { id: string; seed: string };
 }
+const MANAGER_INSTANCE = "the manager instance identity";
+/** The nkey identity a persisted record holds at `v`, or undefined when `v` is not one: the check
+ *  every identity record's `parse` applies to each nkey it holds. */
+export function identityOf(v: unknown): Identity | undefined {
+  const k = v as { id?: unknown; seed?: unknown } | null | undefined;
+  if (typeof k?.id !== "string" || k.id.length === 0 || typeof k.seed !== "string" || k.seed.length === 0) return undefined;
+  return { id: k.id, seed: k.seed };
+}
+/** The shape both the manager and the auth plane persist as their instance identity. */
+function instanceIdentityOf(raw: unknown): ManagerInstanceIdentity | undefined {
+  const r = raw as { instanceId?: unknown; serveIdentity?: unknown } | null;
+  const serveIdentity = identityOf(r?.serveIdentity);
+  if (typeof r?.instanceId !== "string" || r.instanceId.length === 0 || serveIdentity === undefined) return undefined;
+  return { instanceId: r.instanceId, serveIdentity };
+}
 /** A manager identity record of this root, `<root>/.cotal/space.<hex>/<name>`. It is state of this
  *  root, so it stays out of `.cotal/auth`: that folder is what an operator copies to give another
  *  root a mesh's trust, and an identity copied with it made the other root's manager this root's
@@ -408,48 +424,13 @@ function managerInstanceFile(root: string, space: string): string {
  *  over it would orphan the prior registration and break the restart-fence guarantee, so a restart
  *  never silently becomes a fresh instance (no-fallbacks). */
 export function loadManagerInstanceIdentity(root: string, space: string): ManagerInstanceIdentity | undefined {
-  const f = managerInstanceFile(root, space);
-  if (!existsSync(f)) return undefined;
-  let parsed: ManagerInstanceIdentity;
-  try { parsed = JSON.parse(readFileSync(f, "utf8")) as ManagerInstanceIdentity; }
-  catch (e) { throw new Error(`the persisted manager instance identity at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`); }
-  if (parsed === null || typeof parsed !== "object"
-    || typeof parsed.instanceId !== "string" || parsed.instanceId.length === 0
-    || parsed.serveIdentity === null || typeof parsed.serveIdentity !== "object"
-    || typeof parsed.serveIdentity.id !== "string" || parsed.serveIdentity.id.length === 0
-    || typeof parsed.serveIdentity.seed !== "string" || parsed.serveIdentity.seed.length === 0)
-    throw new Error(`the persisted manager instance identity at ${f} is malformed; refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`);
-  return { instanceId: parsed.instanceId, serveIdentity: { id: parsed.serveIdentity.id, seed: parsed.serveIdentity.seed } };
-}
-/** Persist this workspace root's manager instance identity for `space` (hardened secret file). */
-export function saveManagerInstanceIdentity(root: string, space: string, identity: ManagerInstanceIdentity): void {
-  const path = managerInstanceFile(root, space);
-  mkSecretDir(dirname(path)); // harden the dir BEFORE the secret (with its seed) lands
-  writeSecretFile(path, JSON.stringify(identity, null, 2));
+  return readManagerInstanceRecord(managerInstanceFile(root, space));
 }
 
-/**
- * First-start identity mint: of N concurrent creators on a fresh root, exactly one creates the
- * file and the others adopt the winner. The publication primitive is exclusive create
- * (`writeSecretFileCreateOnly` / `link` or `O_EXCL`), not a read-then-write and not an atomic
- * rename. A loser never keeps the identity it minted in memory: it re-reads the winner or
- * refuses with a named error (`manager-instance-identity-create-lost`).
- */
+/** First-start identity mint through {@link claimIdentityRecord}: of N concurrent creators on a
+ *  fresh root, exactly one creates the file and the others adopt the winner. */
 export function createManagerInstanceIdentity(root: string, space: string, candidate: ManagerInstanceIdentity): ManagerInstanceIdentity {
-  const path = managerInstanceFile(root, space);
-  mkSecretDir(dirname(path));
-  try {
-    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
-    return candidate;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    const winner = loadManagerInstanceIdentity(root, space);
-    if (winner === undefined)
-      throw new Error(
-        `manager-instance-identity-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`,
-      );
-    return winner;
-  }
+  return claimIdentityRecord(managerInstanceFile(root, space), MANAGER_INSTANCE, instanceIdentityOf, () => candidate);
 }
 
 /** The manager's goal-writer and session-ledger nkeys for `space`. Both are siblings of the serve
@@ -463,38 +444,21 @@ export interface ManagerSiblingIdentities {
 function managerSiblingFile(root: string, space: string): string {
   return managerIdentityFile(root, space, "manager-siblings.json", `manager-siblings.${spaceKey(space)}.json`);
 }
-function readManagerSiblingRecord(f: string, space: string): ManagerSiblingIdentities | undefined {
-  type Nkey = { id?: unknown; seed?: unknown } | null | undefined;
-  const raw = readAuthRecord<{ goalWriter?: Nkey; sessionLedger?: Nkey } | null>(f, `the manager sibling identities for space "${space}"`);
-  if (raw === undefined) return undefined;
-  const nkey = (k: Nkey): k is { id: string; seed: string } =>
-    typeof k?.id === "string" && k.id.length > 0 && typeof k.seed === "string" && k.seed.length > 0;
-  if (!nkey(raw?.goalWriter) || !nkey(raw?.sessionLedger))
-    throw new Error(`${f} is malformed; refusing to mint fresh sibling identities over it`);
-  return {
-    goalWriter: { id: raw.goalWriter.id, seed: raw.goalWriter.seed },
-    sessionLedger: { id: raw.sessionLedger.id, seed: raw.sessionLedger.seed },
-  };
+function siblingIdentitiesOf(raw: unknown): ManagerSiblingIdentities | undefined {
+  const r = raw as { goalWriter?: unknown; sessionLedger?: unknown } | null;
+  const goalWriter = identityOf(r?.goalWriter);
+  const sessionLedger = identityOf(r?.sessionLedger);
+  return goalWriter && sessionLedger ? { goalWriter, sessionLedger } : undefined;
 }
 /** This root's manager sibling identities for `space`, minted on the first start and read back on
- *  every later one. The mint publishes by exclusive create, as {@link createManagerInstanceIdentity}
- *  does, so concurrent first starts adopt one pair. */
+ *  every later one through {@link claimIdentityRecord}, so concurrent first starts adopt one pair. */
 export function claimManagerSiblingIdentities(root: string, space: string): ManagerSiblingIdentities {
-  const path = managerSiblingFile(root, space);
-  const stored = readManagerSiblingRecord(path, space);
-  if (stored !== undefined) return stored;
-  mkSecretDir(dirname(path));
-  const candidate: ManagerSiblingIdentities = { goalWriter: newIdentity(), sessionLedger: newIdentity() };
-  try {
-    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
-    return candidate;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    const winner = readManagerSiblingRecord(path, space);
-    if (winner === undefined)
-      throw new Error(`manager-sibling-identities-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`);
-    return winner;
-  }
+  return claimIdentityRecord(
+    managerSiblingFile(root, space),
+    "the manager sibling identities",
+    siblingIdentitiesOf,
+    () => ({ goalWriter: newIdentity(), sessionLedger: newIdentity() }),
+  );
 }
 
 /** The AUTH PLANE's persisted instance identity (#399 M2): a stable `instanceId` + serve nkey so
@@ -506,6 +470,7 @@ export interface AuthInstanceIdentity {
   instanceId: string;
   serveIdentity: { id: string; seed: string };
 }
+const AUTH_INSTANCE = "the auth instance identity";
 function authInstanceFile(root: string, space: string): string {
   return join(authDir(root), `auth-instance.${spaceKey(space)}.json`);
 }
@@ -513,46 +478,12 @@ function authInstanceFile(root: string, space: string): string {
  *  the auth plane has never registered here. A present-but-MALFORMED file fails LOUD: minting a
  *  fresh id over it would orphan the prior registration and break the restart-fence guarantee. */
 export function loadAuthInstanceIdentity(root: string, space: string): AuthInstanceIdentity | undefined {
-  const f = authInstanceFile(root, space);
-  if (!existsSync(f)) return undefined;
-  let parsed: AuthInstanceIdentity;
-  try { parsed = JSON.parse(readFileSync(f, "utf8")) as AuthInstanceIdentity; }
-  catch (e) { throw new Error(`the persisted auth instance identity at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`); }
-  if (parsed === null || typeof parsed !== "object"
-    || typeof parsed.instanceId !== "string" || parsed.instanceId.length === 0
-    || parsed.serveIdentity === null || typeof parsed.serveIdentity !== "object"
-    || typeof parsed.serveIdentity.id !== "string" || parsed.serveIdentity.id.length === 0
-    || typeof parsed.serveIdentity.seed !== "string" || parsed.serveIdentity.seed.length === 0)
-    throw new Error(`the persisted auth instance identity at ${f} is malformed; refusing to mint a fresh id over it - a restart must preserve the logical instanceId (SPEC 13.6)`);
-  return { instanceId: parsed.instanceId, serveIdentity: { id: parsed.serveIdentity.id, seed: parsed.serveIdentity.seed } };
-}
-/** Persist this workspace root's auth-plane instance identity for `space` (hardened secret file). */
-export function saveAuthInstanceIdentity(root: string, space: string, identity: AuthInstanceIdentity): void {
-  const dir = authDir(root);
-  mkSecretDir(dir); // harden the auth dir BEFORE the secret (with its seed) lands
-  writeSecretFile(authInstanceFile(root, space), JSON.stringify(identity, null, 2));
+  return readIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf);
 }
 
-/**
- * First-start identity mint for the auth plane: of N concurrent creators on a fresh root, exactly
- * one creates the file and the others adopt the winner (mirrors {@link createManagerInstanceIdentity}).
- */
+/** First-start identity mint for the auth plane, as {@link createManagerInstanceIdentity}. */
 export function createAuthInstanceIdentity(root: string, space: string, candidate: AuthInstanceIdentity): AuthInstanceIdentity {
-  const dir = authDir(root);
-  mkSecretDir(dir);
-  const path = authInstanceFile(root, space);
-  try {
-    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
-    return candidate;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    const winner = loadAuthInstanceIdentity(root, space);
-    if (winner === undefined)
-      throw new Error(
-        `auth-instance-identity-create-lost: exclusive create for space "${space}" at ${path} lost and the existing file could not be adopted`,
-      );
-    return winner;
-  }
+  return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, () => candidate);
 }
 
 /** The outcome of {@link retireManagerInstanceIdentity}. `removed` means this call deleted the
@@ -565,17 +496,8 @@ function sameManagerInstanceIdentity(a: ManagerInstanceIdentity, b: ManagerInsta
   return a.instanceId === b.instanceId && a.serveIdentity.id === b.serveIdentity.id && a.serveIdentity.seed === b.serveIdentity.seed;
 }
 
-function readManagerInstanceRecord(f: string, space: string): ManagerInstanceIdentity | undefined {
-  const what = `the manager instance identity for space "${space}"`;
-  const raw = readAuthRecord<ManagerInstanceIdentity>(f, what);
-  if (raw === undefined) return undefined;
-  if (raw === null || typeof raw !== "object"
-    || typeof raw.instanceId !== "string" || raw.instanceId.length === 0
-    || raw.serveIdentity === null || typeof raw.serveIdentity !== "object"
-    || typeof raw.serveIdentity.id !== "string" || raw.serveIdentity.id.length === 0
-    || typeof raw.serveIdentity.seed !== "string" || raw.serveIdentity.seed.length === 0)
-    throw new Error(`${f} is malformed`);
-  return { instanceId: raw.instanceId, serveIdentity: { id: raw.serveIdentity.id, seed: raw.serveIdentity.seed } };
+function readManagerInstanceRecord(f: string): ManagerInstanceIdentity | undefined {
+  return readIdentityRecord(f, MANAGER_INSTANCE, instanceIdentityOf);
 }
 
 /** Deterministic instrumentation hooks for testing concurrent retirement races. Hooks do not
@@ -612,7 +534,7 @@ export function retireManagerInstanceIdentity(
     throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: ${why}`);
   };
   let current: ManagerInstanceIdentity | undefined;
-  try { current = readManagerInstanceRecord(path, space); } catch (e) { return refuse((e as Error).message); }
+  try { current = readManagerInstanceRecord(path); } catch (e) { return refuse((e as Error).message); }
   if (current === undefined) return { outcome: "absent" };
   if (!sameManagerInstanceIdentity(current, expected)) return refuse("the stored identity is not the expected generation");
 
@@ -623,7 +545,7 @@ export function retireManagerInstanceIdentity(
     throw new Error(`manager-instance-identity-retire-refused: space "${space}" at ${path}: capture failed`, { cause: e });
   }
   let held: ManagerInstanceIdentity | undefined;
-  try { held = readManagerInstanceRecord(captured, space); } catch { held = undefined; }
+  try { held = readManagerInstanceRecord(captured); } catch { held = undefined; }
   if (held === undefined || !sameManagerInstanceIdentity(held, expected)) {
     opts?.onBeforeLinkBack?.();
     try { linkSync(captured, path); unlinkSync(captured); } catch {
@@ -797,6 +719,41 @@ function readAuthRecord<T>(f: string, what: string): T | undefined {
     return JSON.parse(readFileSync(f, "utf8")) as T;
   } catch (e) {
     throw new Error(`${f} does not parse as ${what} (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it deliberately`);
+  }
+}
+
+/** A persisted identity record, or undefined when absent. Every identity reads through
+ *  {@link readAuthRecord}, so they refuse the same entries, and a record `parse` rejects fails LOUD:
+ *  minting over it would orphan the identity it held. */
+function readIdentityRecord<T>(f: string, what: string, parse: (raw: unknown) => T | undefined): T | undefined {
+  const raw = readAuthRecord<unknown>(f, what);
+  if (raw === undefined) return undefined;
+  const record = parse(raw);
+  if (record === undefined)
+    throw new Error(`${f} is not a well-formed record of ${what} - restore it from backup or remove it deliberately`);
+  return record;
+}
+
+/**
+ * A persisted identity record of this root: the stored one, or on a fresh root `mint()`'s,
+ * published by exclusive create. Of N concurrent first mints exactly one creates the file and the
+ * others adopt it, so a loser never keeps the identity it minted in memory; an atomic rename would
+ * let it. A loser that cannot read the winner refuses with `identity-record-create-lost`.
+ */
+export function claimIdentityRecord<T>(path: string, what: string, parse: (raw: unknown) => T | undefined, mint: () => T): T {
+  const stored = readIdentityRecord(path, what, parse);
+  if (stored !== undefined) return stored;
+  mkSecretDir(dirname(path));
+  const candidate = mint();
+  try {
+    writeSecretFileCreateOnly(path, JSON.stringify(candidate, null, 2));
+    return candidate;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    const winner = readIdentityRecord(path, what, parse);
+    if (winner === undefined)
+      throw new Error(`identity-record-create-lost: exclusive create of ${what} at ${path} lost and the existing record could not be adopted`);
+    return winner;
   }
 }
 

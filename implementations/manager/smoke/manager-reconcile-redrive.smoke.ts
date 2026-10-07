@@ -41,7 +41,7 @@ import {
   type LaunchSpec,
   type StaticManagedSlotRow,
 } from "@cotal-ai/core";
-import { authDir, saveManagerInstanceIdentity, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
+import { authDir, createManagerInstanceIdentity, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_CONTRACTS, MANAGER_ENDPOINT, type ManagerStatus } from "../src/manager-service-contract.js";
 import {
@@ -87,7 +87,7 @@ const conf = join(root, "server.conf");
 const managerInstanceId = mintLifecycleUid();
 mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(root), auth);
-saveManagerInstanceIdentity(root, space, { instanceId: managerInstanceId, serveIdentity: newIdentity() });
+createManagerInstanceIdentity(root, space, { instanceId: managerInstanceId, serveIdentity: newIdentity() });
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: brokerStore, host: "127.0.0.1" }));
 const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
 teardownOnSignal(broker, conf);
@@ -325,7 +325,7 @@ try {
   const shutdownInstanceId = mintLifecycleUid();
   mkdirSync(join(shutdownRoot, ".cotal", "agents"), { recursive: true });
   saveSpaceAuth(authDir(shutdownRoot), auth);
-  saveManagerInstanceIdentity(shutdownRoot, space, { instanceId: shutdownInstanceId, serveIdentity: newIdentity() });
+  createManagerInstanceIdentity(shutdownRoot, space, { instanceId: shutdownInstanceId, serveIdentity: newIdentity() });
   await writeOrphan("shutdown-first", false, shutdownInstanceId, shutdownRoot);
   await writeOrphan("shutdown-last", false, shutdownInstanceId, shutdownRoot);
   let shutdownFirstEntered = false;
