@@ -1,5 +1,40 @@
 # @cotal-ai/cli
 
+## 0.70.0
+
+### Patch Changes
+
+- f4d4b8a: The manager and delivery start refusals now quote the record their verdict was made on instead of reading the pidfile a second time. A manager or daemon removes its record when it exits, so a record that disappeared between the two reads turned the refusal and its `NEXT:` step into a bare `ENOENT`, and a record replaced in between was quoted although the verdict had read different content. This covers the delivery cutover preflight, the delivery daemon's own refusal in `cotal up`, and the manager start refusal in `cotal spawn -f`. A record that is not a pid is now reported as such, quoted on one line, in the cutover preflight and the delivery daemon refusal, which used to say the kernel had answered for a pid it was never asked about.
+- 7254e32: `cotal service status` and `cotal service install` now judge the manager record through the same reader as `cotal up`, called with the root the unit records, instead of a private copy of it. `service status` therefore reports the command line of a live recorded pid: `--json` gives the manager's `command` next to its `state` and `pid`, and the human row names the pid and, for a pid that another program has reused, what that program runs.
+- 8249f3f: `cotal service install` builds the manager's environment from one list that both platforms render. On macOS it no longer writes a `cotal-manager@<key>.env` file nobody reads; the plist's `EnvironmentVariables` carry the same variables as before. On Linux the unit is unchanged, and every value in its `EnvironmentFile` is now double-quoted the way `PATH` already was, so each one reaches the manager verbatim.
+- 5a2a370: `cotal status` no longer exits 1 when the manager's delivery-aware marker cannot be read. The marker is read only for a live manager, and a failed read is named on the manager row as `delivery-aware marker unreadable` with the error, so the recorded meshes, the selected mesh and the `--components` pass still print. `cotal up` and the delivery preflight still refuse a marker they cannot read.
+- c8d6114: The `cotal status` `Web process` row and the `cotal setup` status card now read the selected mesh's dashboard from its own records: the address it recorded in `web.session` once it was listening, while the PID in its `web.pid` is alive. They used to report the dashboard up whenever anything accepted a connection on port 7799 and printed `http://cotal.localhost:7799/` regardless, so a dashboard started with `--port` read as down and an unrelated program on 7799 read as the dashboard. A `web.pid` that cannot be read is named on the row, and the rest of the output still prints.
+- 60328b2: Source comments that sent readers to docs pages retired in the docs restructure now name the current pages. The `MeshView` header points at `docs/mesh-view.md`, and the console space picker and the web dashboard's Agent Detail frame point at `docs/watch-a-mesh.md`. These comments ship in the built packages, and `docs/protocol-view.md` and `docs/web.md` no longer exist.
+- 0ec35c2: A manager's endpoint reply now becomes a `ControlReply` through one core function, `controlReplyFrom`, which `cotal spawn -f`, the CLI's other manager calls (`cotal spawn --detach`, `stop`, `attach` and the rest) and `cotal_spawn` all use. Before, each caller copied the conversion and kept different fields. `cotal spawn -f` dropped the error code, the lifecycle-blocked details and their rendered `[lifecycle …]` facts, and the acceptance an uncertain launch keeps, so it could tell an `uncertain` launch from a `failed` one only by its text. `cotal spawn --detach` dropped that acceptance too, and a `stop` or `attach` whose name lookup was refused dropped the rendered facts. A refusal now carries the same code, details, facts and data whichever caller it reaches.
+- 723eb53: `cotal ext add` refuses a package whose `package.json` declares no `version`, or an empty one, and rolls the add back. It used to record such a package as `0.0.0` (or with an empty version), and every later load then reported it as in the manifest but not installed, which a re-add repeated.
+- 7986785: The connector and the CLI now print every peer with one label, from the new `peerLabel` in `@cotal-ai/core`: `name/role`, or the bare name for a peer with no role, with any line break or bracket shown as a space. Before, `cotal console` dropped a role equal to the name and its roster pane showed the name alone, the console's managed-agent row and the spawn line printed `name (role)`, and only message attribution sanitized the role, so `cotal_roster`, the orientation card, the ambiguous-DM candidate list, `cotal endpoints`, `cotal status` and `cotal ps` printed a role holding `]` or a newline verbatim. The DM target check that refuses a pasted label compares against the same label.
+- 668f6b0: The web dashboard's `web.session` record and its `x-cotal-readiness` header now have one definition, in `@cotal-ai/workspace`: the file name, the record's fields, the one reader, and the header name. The dashboard writes and reads the record through it and `cotal status` reads it there. Renaming the file, a field or the header on the dashboard side used to typecheck cleanly while `cotal status --components` read the live dashboard as `refused` and the `Web process` row read `down`; now it is a compile error on both sides.
+- Updated dependencies [392bfeb]
+- Updated dependencies [66df6c0]
+- Updated dependencies [0ec35c2]
+- Updated dependencies [015f805]
+- Updated dependencies [2cbfe9c]
+- Updated dependencies [1b11c4e]
+- Updated dependencies [c088c5c]
+- Updated dependencies [b413e2a]
+- Updated dependencies [7986785]
+- Updated dependencies [12bfc34]
+- Updated dependencies [4dcfa0b]
+- Updated dependencies [fd07b1e]
+- Updated dependencies [8dc360c]
+- Updated dependencies [cce8dad]
+- Updated dependencies [c7e0c0a]
+- Updated dependencies [2639a13]
+- Updated dependencies [668f6b0]
+- Updated dependencies [15b7920]
+  - @cotal-ai/workspace@0.70.0
+  - @cotal-ai/core@0.70.0
+
 ## 0.69.0
 
 ### Minor Changes
