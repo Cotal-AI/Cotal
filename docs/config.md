@@ -197,7 +197,7 @@ many layers up someone once ran `cotal up` inside an agent. Connection material 
 environment at all (see [identity & auth](identity-and-auth.md)).
 
 Enrollment inputs are launcher-only secrets. `spawn` removes both enrollment variable names from the
-connector's child environment even when `spawn.env` explicitly lists them.
+connector's child environment, and `spawn.env` cannot list them.
 
 PATH is forwarded whole, including entries such as `~/.local/bin` where connector binaries live, so
 a seat can still launch after the strip. There is no inherit mode and no opt-in-to-containment flag:
@@ -210,9 +210,11 @@ To deliberately add an environment name for a spawned agent, declare `spawn.env`
 ```
 
 The listed names are added to the fixed boundary. That is also the opt-in for a host-session marker
-a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). An empty array adds
-nothing. A space-local `spawn` block replaces the operator-level one outright rather than merging,
-so a local list stays local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
+a persona has chosen to receive (`CLAUDE_CODE_CHILD_SESSION` and friends). A `COTAL_` name other
+than the machine-wide knobs above is refused and the seat is not launched: the launcher sets those
+names for each seat, so a value from the spawning process would become the seat's role, model or
+read set. An empty array adds nothing. A space-local `spawn` block replaces the operator-level one
+outright rather than merging, so a local list stays local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
 all add no names.
 
 Be honest with yourself about what this buys: `HOME` is forwarded, so an agent with a shell reads
