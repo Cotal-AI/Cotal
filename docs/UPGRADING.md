@@ -326,11 +326,16 @@ two files.
 
 ### Before the upgrade
 
-Pass `identityRoot` to `openAuthAuthorityPlane`. Passing the directory you pass as `dir` keeps the
-identity that plane already has: it moves from `<dir>/.cotal/auth/` to `<dir>/.cotal/space.<hex>/` on
-the first start. A copy of `.cotal/auth` taken from a root last run by an older Cotal carries that
-root's record. Delete `space.<hex>/.cotal/auth/auth-instance.<hex>.json` from the copy before the
-first `cotal up --user-auth` there.
+Pass `identityRoot` to `openAuthAuthorityPlane`. When `dir` is a workspace root's user-auth state
+dir, `<root>/.cotal/auth/space.<hex>`, pass that root. A plane with no workspace root, as
+`startAuthService` runs, passes `dir` itself. Either keeps the identity the plane already has: on the
+first start it moves from `<dir>/.cotal/auth/` to `<identityRoot>/.cotal/space.<hex>/`. Never pass a
+directory inside `.cotal/auth`: the record would land in the folder an operator copies and travel
+with it again.
+
+A copy of `.cotal/auth` taken from a root last run by an older Cotal carries that root's record.
+Delete `.cotal/auth/space.<hex>/.cotal/auth/auth-instance.<hex>.json` from the root you copied it to
+before the first `cotal up --user-auth` there.
 
 ## Carrying a resumed Claude session to another host in 0.67.0
 
