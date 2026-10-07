@@ -1736,6 +1736,19 @@ no connection and therefore no subscription, so a real corpse is still removed.
 | `registration-in-flight` | The instance holds the endpoint governance slot at the live issuance-gate generation, so a registration is still completing | Nothing was removed. Wait for that registration to finish, then re-run |
 | `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
 
+**A held slot with an unreadable issuance gate is not one of those refusals.** When the instance
+still holds the endpoint governance slot, the command reads its issuance-gate generation to tell a
+completing registration from a leftover. If that gate is absent or carries a delete marker, the
+read fails and the command refuses the delete rather than guess. The caller receives an
+`unavailable` error, not a named refusal: the message begins `could not observe the issuance-gate
+generation for "<endpoint>/<instance>" while its governance slot is held` and ends with the reader's
+own explanation, either `no endpoint gate at <key>` or `the endpoint gate <key> carries a DEL
+(or PURGE) marker`. The two cases are told apart by that text alone; the error class and the exit
+are the same.
+Nothing was removed. A gate is never deleted in normal operation, so treat either text as a damaged
+issuance gate for that instance and repair it before re-running. A manager's own clean stop hits the
+same read; it logs the failure and finishes stopping, and its registration stays in place.
+
 There is no `--force` and no sweep: silence is not death, and a rule that removed rows on silence
 would eventually remove a live instance that was merely slow. An operator names one instance, the
 broker's verdict on its rail is what authorizes the removal, and the guard's job is to show them

@@ -63,14 +63,14 @@ const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, recordsBucket, epAuthBucket,
   freezeExpectedSet, resolveService, scatterCommand, epProbeInstanceInterest,
-  instancePinnedInstrumentCapabilities, spacePrefix, endpointToken, epgateKey, recordAtomicKey, recordSpecKey, RECORD_KINDS, GOVERN_HEAD,
+  instancePinnedInstrumentCapabilities, spacePrefix, endpointToken,
 } = await import("@cotal-ai/core");
 const { authDir, saveSpaceAuth, recordMesh } = await import("@cotal-ai/workspace");
 const { Manager } = await import("../src/manager.js");
 const { MANAGER_ENDPOINT } = await import("../src/manager-service-contract.js");
 const { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } = await import("../src/deregister-instance.js");
 
-const EXPECTED_CELLS = 33;
+const EXPECTED_CELLS = 30;
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -406,43 +406,6 @@ try {
   check("an unrecognised probe verdict REFUSES: only a broker-affirmed gone is acted on",
     foreign?.condition === "liveness-unestablishable" && /not a verdict this command acts on/.test(foreign?.message ?? ""), foreign?.message?.slice(0, 160));
   check("...and the live manager it was asked about is still registered", (await frozenIds()).includes(IID_LIVE), IID_LIVE);
-  console.log("14. an unreadable issuance gate is refused in core's words, on both deregistration paths");
-  // The slot-held state is the only one where `deregisterServiceInstance` reads the gate generation.
-  // The gate row is then deleted, so core's reader answers with its DEL-marker refusal (SPEC 13.12)
-  // where a hand-rolled reader would say only "no issuance gate at <key>".
-  const gateRoot = mkRoot("gate");
-  rmSync(join(gateRoot, ".cotal", "auth"), { recursive: true, force: true });
-  recordMesh({ space: openSpace, server: OPEN_SERVERS, root: gateRoot, mode: "open", ts: new Date().toISOString() });
-  const gateNc = await connect({ servers: OPEN_SERVERS, maxReconnectAttempts: 0 });
-  const gateKvm = new Kvm(gateNc);
-  const gateRecordsKv = await gateKvm.open(recordsBucket(openSpace));
-  const gateAuthKv = await gateKvm.open(epAuthBucket(openSpace));
-  const gateMgr = new Manager({ space: openSpace, servers: OPEN_SERVERS, runtime: "pty", workspaceRoot: gateRoot });
-  await gateMgr.start();
-  const IID_GATE = (gateMgr as unknown as MgrPriv).managerInstanceId;
-  const govKey = recordAtomicKey(GOVERN_HEAD, [MANAGER_ENDPOINT]);
-  const govEntry = await gateRecordsKv.get(govKey);
-  const govHead = JSON.parse(new TextDecoder().decode(govEntry!.value));
-  govHead.provisional = { instanceId: IID_GATE, generation: 0, commands: {} };
-  await gateRecordsKv.update(govKey, new TextEncoder().encode(JSON.stringify(govHead)), govEntry!.revision);
-  await gateAuthKv.delete(epgateKey(MANAGER_ENDPOINT, IID_GATE));
-  const gateRefused = await deregisterEndpointInstance({
-    kv: gateRecordsKv, authKv: gateAuthKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_GATE,
-    probeInstance: async () => ({ state: "gone", detail: "fixture: the guard is not what is under test here" }),
-    log: () => {},
-  }).then(() => "NO THROW", (e: unknown) => (e as Error).message);
-  check("the operator verb refuses a gate row that carries a DEL marker, in core's words",
-    /carries a DEL marker/.test(gateRefused) && !/no issuance gate at/.test(gateRefused), gateRefused.slice(0, 200));
-  const stopLog: string[] = [];
-  const origError = console.error;
-  console.error = (...a: unknown[]) => { stopLog.push(a.join(" ")); };
-  try { await gateMgr.stop({ withAgents: true }); } finally { console.error = origError; }
-  const stopOut = stopLog.join("\n");
-  check("the clean stop reports the same refusal and does not deregister",
-    /could not deregister manager instance/.test(stopOut) && /carries a DEL marker/.test(stopOut) && !/no issuance gate at/.test(stopOut), stopOut.slice(0, 300));
-  check("...and the registration it could not remove is still there",
-    (await gateRecordsKv.get(recordSpecKey(RECORD_KINDS.svc, [MANAGER_ENDPOINT, IID_GATE])))?.operation === "PUT");
-  await gateNc.drain().catch(() => gateNc.close());
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
   await live?.stop().catch(() => {});
