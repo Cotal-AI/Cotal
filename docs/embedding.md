@@ -499,12 +499,13 @@ manifest `{ v: 1, root, members }` at `clusterDigest`, then the cluster document
 `root`, and verifies each against its digest. `artifacts` therefore carries both, and `clusterDigest`
 is the digest of the manifest. `members` stays empty: SPEC §13.7 lists every reachable artifact
 there, but this implementation registers single-document clusters only and refuses a manifest that
-lists members. The instance id is a lifecycle token, `[a-z0-9]{26,32}`. The minimal construction
-below has one command over the void schema. A host copies it, replaces `document` with its real
-cluster, and passes `host` as `platformControl: { observeAssignment, host }`.
+lists members. `singleDocumentClosure(document)` returns that manifest and its closure digest. The
+instance id is a lifecycle token, `[a-z0-9]{26,32}`. The minimal construction below has one command
+over the void schema. A host copies it, replaces `document` with its real cluster, and passes `host`
+as `platformControl: { observeAssignment, host }`.
 
 ```ts
-import { contractDigest, mintLifecycleUid, VOID_SCHEMA_DIGEST } from "@cotal-ai/core";
+import { mintLifecycleUid, singleDocumentClosure, VOID_SCHEMA_DIGEST } from "@cotal-ai/core";
 
 const document = {
   urn: "com.example.host",
@@ -516,8 +517,8 @@ const document = {
     inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST,
   }],
 };
-const manifest = { v: 1, root: contractDigest(document), members: [] };
-const host = { endpoint: "com.example.host", clusterDigest: contractDigest(manifest), artifacts: [document, manifest] };
+const { manifest, closureDigest } = singleDocumentClosure(document);
+const host = { endpoint: "com.example.host", clusterDigest: closureDigest, artifacts: [document, manifest] };
 const instanceId = mintLifecycleUid(); // first start only; later starts reuse the persisted id
 ```
 

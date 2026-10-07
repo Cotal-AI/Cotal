@@ -221,7 +221,7 @@ try {
   // ---- 5. WHAT DEADLINE ACTUALLY BOUNDS THE RESOLVE? -------------------------------------------
   // The brief (and #385) say resolveService "can overrun its OWN 10s deadline". Reading the code,
   // `deadlineMs` is forwarded ONLY to describeEndpoint; the store reads run under
-  // fetchContractClosure's separate walkBudgetMs (default 30_000, endpoint-contract-store.ts:339),
+  // fetchContractClosure's separate walkBudgetMs (default 30_000, endpoint-contract-store.ts:307),
   // one budget PER closure walk. If that reading is right, a resolve whose reads take far longer
   // than 10s still SUCCEEDS — no deadline fires — and the caller's 10s is not a bound on the call.
   // Predicted named cell: resolves OK, elapsed > 10s, no throw.
