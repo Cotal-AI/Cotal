@@ -273,6 +273,5 @@ try {
     const pid = Number.parseInt(readFileSync(join(root, ".cotal", name), "utf8").trim(), 10);
     if (Number.isInteger(pid) && pid > 0) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
   }
-  try { rmSync(maintenancePaths(root).lock, { force: true }); } catch { /* nothing held */ }
   rmSync(scratch, { recursive: true, force: true });
 }
