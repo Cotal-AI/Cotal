@@ -140,7 +140,10 @@ reaches. Persona redefinition separates content from policy; the write path take
 and every connect is authorized live against the operator's **actor ledger**. No creds
 files to hand out, and revoking a grant actually bites.
 
-**The flow.** Each person runs `cotal login --idp <url>` once per machine. After that,
+**The flow.** Each person runs `cotal login --idp <url>` once per machine. The IdP URL, the JWKS
+URL pinned from it and the catalog link below must use HTTPS. Plain HTTP is accepted only on a
+loopback IP literal such as `127.0.0.1`, never on `localhost`, whose resolution would choose the
+keys the mesh trusts. After that,
 any command works: cached IdP session → fresh IdP proof per connect (so IdP-side
 revocation bites here too) → the configured exchange turns it into a short-lived Cotal bearer →
 the broker's **auth callout** checks the bearer and the ledger at connect time and mints

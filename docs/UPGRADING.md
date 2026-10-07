@@ -416,6 +416,35 @@ Rename each role outside the token set to the token it already routed to: remove
 spaces and replace every other character outside the set with `_`. Rename it where the holder is
 launched and in every script or prompt that sends to it.
 
+## IdP URLs on `localhost` in 0.73.0
+
+The IdP URL that `cotal login --idp` and `cotal up --user-auth --idp` take, the JWKS URL the auth
+service pins from it, the space-catalog link and `cotal sync` now share one rule: `https://`, or
+`http://` on a loopback IP literal. `localhost` is a name, so it no longer counts: a hosts entry
+would choose the IdP, and with it the keys the callout trusts. Every loopback literal now passes, so
+`http://127.0.0.2/api/auth` and `http://[::ffff:127.0.0.1]/api/auth` are accepted where they were
+refused before. A JWKS URL with any scheme other than `https:` or `http:` is refused. A mesh whose
+IdP uses HTTPS is unaffected.
+
+### What stops working
+
+On a mesh whose IdP is pinned at `http://localhost:<port>/...`, the auth service builds its key
+resolver from the pinned JWKS URL at start, and that resolver now refuses it with
+`JWKS origin must be https (or http on a loopback IP literal for dev)`.
+
+`cotal login` and `cotal logout` with `--idp http://localhost:<port>/...` are refused with
+`idp url must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev)`, and so is
+every command that reads a session cached under that URL.
+
+### Before the upgrade
+
+Use `127.0.0.1` (or `::1`) in place of `localhost`. In the space's `idp.json` under the mesh's
+`.cotal/auth`, change `url` and `jwksUri` to the literal spelling and leave `issuer` and `audience`
+as they are. Owners derive from the issuer, so existing grants keep matching. Change a manifest's
+`broker.idp` the same way, because `cotal up` refuses an `--idp` that differs from the pin. Then
+have each person run `cotal login --idp http://127.0.0.1:<port>/api/auth` again, because sessions
+are cached under the URL.
+
 ## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

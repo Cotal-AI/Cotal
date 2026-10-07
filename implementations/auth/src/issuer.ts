@@ -24,7 +24,7 @@
  */
 import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "@cotal-ai/core";
+import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral } from "@cotal-ai/core";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
@@ -222,11 +222,11 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
 /** Build the callout's pinned key resolver: a `createRemoteJWKSet` locked to ONE origin. The token
  *  never influences where the key comes from — jose fetches only this URL and ignores any embedded
  *  `jku`/`jwk` (and {@link validateUserToken} rejects those headers outright). HTTPS is required
- *  except for loopback (dev). */
+ *  except plain http on a loopback IP literal (dev). A name such as `localhost` gets no exception,
+ *  because resolution would then choose the trust anchor. */
 export function pinnedJwksResolver(jwksUri: string): JWTVerifyGetKey {
   const url = new URL(jwksUri);
-  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "[::1]";
-  if (url.protocol !== "https:" && !loopback)
-    throw new Error(`JWKS origin must be https (or loopback for dev), got ${url.protocol}//${url.hostname}`);
+  if (url.protocol !== "https:" && !(url.protocol === "http:" && isLoopbackLiteral(url.hostname)))
+    throw new Error(`JWKS origin must be https (or http on a loopback IP literal for dev), got ${url.protocol}//${url.hostname}`);
   return createRemoteJWKSet(url);
 }
