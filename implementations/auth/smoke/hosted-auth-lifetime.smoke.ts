@@ -92,8 +92,10 @@ try {
     ok(parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "held", "hosted failed close leaves the row held");
     // The independent verifier can connect before the existing barrier has reconnected.
     await new Promise((r) => setTimeout(r, 1000));
-    await retry.close();
-    ok(parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "released", "hosted close retries the release after the broker returns");
+    let retryFailure: unknown;
+    try { await retry.close(); } catch (e) { retryFailure = e; }
+    ok(retryFailure === undefined && parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "released",
+      "hosted close retries the release after the broker returns");
   } finally { await verifier.close(); }
   console.log(`hosted auth lifetime: ${count} two-account assertions passed`);
   emitSentinel({ passed: count, failed: 0 });
