@@ -374,12 +374,12 @@ is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
 `down` runs counts as having no record, so the stop goes on. Any other failed read is an error.
 
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
-so a recorded pid alone is not a durable target identity. `up` records each stack process's
-creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the process start
-reported by the OS. Every stop path, including `down` for the broker, web and extension components,
-and the manager, delivery and auth-service stops, applies the same rule. A pin that names a different
-start means the pid was reused, so teardown refuses and preserves it. A torn or unreadable pin also
-refuses.
+so a recorded pid alone is not a durable target identity. `up` and `cotal web` record each
+process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
+process start reported by the OS. Every stop path, including `down` for the broker, web and
+extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
+that names a different start means the pid was reused, so teardown refuses and preserves it. A torn
+or unreadable pin also refuses.
 
 The pidfile and its pin are published by renames, and the pidfile rename is the commit point. Just
 before it, the pin holds two lines: the old process's and the new one's. A launcher that dies
@@ -395,6 +395,10 @@ lock left by a crashed one. When no start token can be read for the new process,
 a pidfile with no pin. Teardown, and a daemon removing its own record on exit, take the same lock and
 remove the record only while the pidfile still names the pid they stopped, so a stop that races a
 publish leaves the new record whole.
+
+The web dashboard claims `web.pid` with an exclusive create, so a second dashboard for the same mesh
+is refused, and writes its pin right after the claim. A stop that runs between the two reads a
+legacy record.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
