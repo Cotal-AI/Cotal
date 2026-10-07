@@ -6,9 +6,8 @@ import {
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
 
-/** Canonical manager surface mirrored from @cotal-ai/manager's contract source. The activation
- * protocol verifies the submitted cluster document matches this exact security-relevant shape;
- * schemas remain content-addressed artifacts and their digests ride each command. */
+/** The activation entry: derives the serve grant from the `ai.cotal.manager` document among the
+ * request's submitted contract artifacts, through remoteManagerServeGrantFromCluster. */
 export function reconstructRemoteManagerServeGrant(
   request: RemoteManagerAuthorityRequest,
   owner: string,
