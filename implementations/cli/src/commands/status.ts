@@ -16,6 +16,7 @@ import {
   DEV_OWNER,
   unansweredRequest,
   resolveAuthProvider,
+  peerLabel,
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
@@ -573,7 +574,7 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
         : c.dim("skipped in open mode (read-only)"),
     );
     for (const p of roster.slice(0, 8)) {
-      const label = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
+      const label = peerLabel(p.card);
       const condition = presenceDetail(p);
       console.log(`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}${activityAge(p)}`) : ""}`);
     }

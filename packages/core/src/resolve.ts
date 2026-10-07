@@ -12,8 +12,8 @@
  */
 import type { Presence, PresenceStatus } from "./types.js";
 
-/** A peer that matched an ambiguous name — structural, so each surface renders it itself
- *  (core never formats UI strings). The full `id` is the authoritative, routable address. */
+/** A peer that matched an ambiguous name — structural, so each surface renders it itself.
+ *  The full `id` is the authoritative, routable address. */
 export interface PeerCandidate {
   id: string;
   name: string;
@@ -37,6 +37,19 @@ export class AmbiguousPeerError extends Error {
     );
     this.name = "AmbiguousPeerError";
   }
+}
+
+/**
+ * The label every surface prints for a peer: `name/role`, or the bare name when it has no role.
+ * A role equal to the name is still printed, because a bare name is how a peer with no role reads
+ * and the role is what an anycast addresses.
+ *
+ * Line breaks and brackets become a space. A role is checked only as a string, and every surface
+ * prints the label on one line beside bracketed fields of its own (message attribution sits inside
+ * brackets), so a role holding `]` or a newline would end that syntax early and forge what follows.
+ */
+export function peerLabel(card: { name: string; role?: string }): string {
+  return (card.role ? `${card.name}/${card.role}` : card.name).replace(/[\r\n\v\f\u0085\u2028\u2029[\]]+/g, " ");
 }
 
 function candidate(p: Presence): PeerCandidate {
@@ -73,7 +86,7 @@ export function resolvePeer(
     // Rosters print a peer as `name/role`, so that label is what gets copied into a target. It is
     // refused rather than resolved: `/` is reserved for `owner/name` handles, and reading it as a
     // role here would give the same string two meanings once handles land.
-    const labelled = peers.find((p) => p.card.role && `${p.card.name}/${p.card.role}`.toLowerCase() === want);
+    const labelled = peers.find((p) => p.card.role && peerLabel(p.card).toLowerCase() === want);
     if (labelled)
       throw new Error(
         `"${target}" is the roster label of ${labelled.card.name} (role ${labelled.card.role}), not an ` +

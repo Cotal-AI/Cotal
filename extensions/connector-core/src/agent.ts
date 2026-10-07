@@ -10,6 +10,7 @@ import {
   assertValidChannel,
   channelInAllow,
   resolvePeer as resolvePeerInRoster,
+  peerLabel,
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
   BIND_SPLIT_REISSUES,
@@ -829,7 +830,7 @@ export class MeshAgent extends EventEmitter {
         await this.ep.start();
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
         this.log(
-          `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
+          `connected to ${this.config.servers} as ${peerLabel(this.config)} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
         );
         // The one user-visible surface of the boot backfill (M2, issue #545): the count is exact
         // right here, before anything else can drain the pull-only lane the backfill filled.
@@ -2753,10 +2754,6 @@ export class MeshAgent extends EventEmitter {
   }
 
   // ---- internals -----------------------------------------------------------
-
-  private who(): string {
-    return this.config.role ? `${this.config.name}/${this.config.role}` : this.config.name;
-  }
 
   /** The connectedness gate every mesh op goes through. Waits out the initial connect window
    *  rather than failing into it (see CONNECT_GRACE_MS), so the common startup race resolves as

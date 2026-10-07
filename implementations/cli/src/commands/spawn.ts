@@ -33,6 +33,7 @@ import {
   CotalEndpoint,
   transferBucket,
   writeTransfer,
+  peerLabel,
   type AgentDef,
   type CompletionResult,
   type Connector,
@@ -1213,7 +1214,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // What happens next belongs to the CONNECTOR: naming one harness's first-run gate for all of
     // them sends the operator looking for a prompt that never appears, and reads as a hang.
     console.error(
-      `spawning ${name}${role ? ` (${role})` : ""} on the mesh${connector.launchHint ? ` - ${connector.launchHint}` : ""}`,
+      `spawning ${peerLabel({ name, role })} on the mesh${connector.launchHint ? ` - ${connector.launchHint}` : ""}`,
     );
     if (userAuth) {
       // The sentence names its own arm's departure (#1837). The LOCAL arm's cleanup revokes the

@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
@@ -401,7 +401,7 @@ async function main(): Promise<void> {
     ...(fork ? { COTAL_HERMES_FORK_SESSION: fork.fork } : {}),
   };
 
-  log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
+  log(`launching hermes gateway as ${peerLabel(config)} (HERMES_HOME=${home})`);
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 
