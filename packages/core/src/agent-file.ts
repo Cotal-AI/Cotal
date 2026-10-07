@@ -119,6 +119,16 @@ const AGENT_FILE_FENCE = /^---\n([\s\S]*?)\n---\n?([\s\S]*)$/;
 /** Named error prefix when a persona prompt starts with `---` but is not a closed, valid agent file. */
 export const PROMPT_FRONTMATTER = "prompt-frontmatter";
 
+/** Refuse a whitespace-only `model` or `variant`. Launchers and connectors read these as set or
+ *  absent, and a blank value is neither, so letting one through leaves each of them to drop, render
+ *  or refuse it on its own. */
+function assertLaunchSelectors(def: Pick<AgentDef, "model" | "variant">, where: string): void {
+  for (const k of ["model", "variant"] as const) {
+    const v = def[k];
+    if (v !== undefined && !v.trim()) throw new Error(`${where}: "${k}" must not be empty`);
+  }
+}
+
 /** Load and parse an agent definition file (Markdown + `---` frontmatter). */
 export function loadAgentFile(path: string): AgentDef {
   return parseAgentFileSource(readFileSync(path, "utf8"), path);
@@ -149,6 +159,9 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   const name = str("name");
   if (!name) throw new Error(`agent file ${path}: "name" is required`);
   assertValidName(name);
+  const model = str("model");
+  const variant = str("variant");
+  assertLaunchSelectors({ model, variant }, `agent file ${path}`);
   const kind = str("kind");
   if (kind && kind !== "agent" && kind !== "endpoint")
     throw new Error(`agent file ${path}: "kind" must be "agent" or "endpoint"`);
@@ -235,8 +248,8 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
     allowPublish,
     quiet,
     muted,
-    model: str("model"),
-    variant: str("variant"),
+    model,
+    variant,
     launchOptions,
     capabilities: list("capabilities"),
     owner: str("owner"),
@@ -252,6 +265,7 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
 export function saveAgentFile(path: string, def: AgentDef): void {
   if (!def.name) throw new Error('saveAgentFile: "name" is required');
   assertValidName(def.name);
+  assertLaunchSelectors(def, "saveAgentFile");
   // The read set must be SAID, not inferred. A persona saved without one used to inherit a channel
   // nobody chose, and the file gave a later reader no way to tell a deliberate silence from a
   // forgotten field. Refusing here rather than filling in an empty list keeps that distinction:

@@ -595,13 +595,12 @@ try {
     const psP = await A.call("ps");
     const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
     check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
-    // #651 fix: an empty/whitespace persona model is not a pin - it coerces to undefined and
-    // serializes ABSENT, never present-but-empty (which a key-presence consumer misreads as a pin).
+    // A whitespace-only persona model is refused at load: dropping it here while a foreground launch
+    // rendered it into the harness command made one persona launch two ways (#2862).
     writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
-    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
-    const psE = await A.call("ps");
-    const erow = ((psE.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === we.name);
-    check("an empty/whitespace persona model serializes ABSENT, not present-empty", erow !== undefined && !("model" in erow), erow);
+    const rE = await A.call("spawn", { name: "emodel", agent: "e2e-stub", cwd: repoRoot, events: false });
+    check("a whitespace-only persona model is refused at load, not launched without a pin",
+      rE.reply.ok === false && String(rE.reply.error?.message ?? "").includes('"model" must not be empty'), rE.reply);
   }
   {
     const rB = await B.call("despawn", { graceful: true }, { actor: w1.id, lifecycleUid: w1.lifecycleUid });

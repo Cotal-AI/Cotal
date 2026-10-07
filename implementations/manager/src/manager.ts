@@ -5100,6 +5100,8 @@ export class Manager {
     // but a raw control message could otherwise slip an empty value through and silently start fresh.
     if (args.resume !== undefined && !String(args.resume).trim())
       return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
+    if (args.model !== undefined && !String(args.model).trim())
+      return Promise.resolve({ ok: false, error: "model: must not be empty" });
     if (args.variant !== undefined && !String(args.variant).trim())
       return Promise.resolve({ ok: false, error: "variant: must not be empty" });
     if (args.defaultAgent !== undefined && !String(args.defaultAgent).trim())
@@ -5688,11 +5690,6 @@ export class Manager {
     } catch (e) {
       return { ok: false, error: opts.resolved ? `launch agent: ${(e as Error).message}` : `persona ${configPath}: ${(e as Error).message}` };
     }
-    // #651: an empty or whitespace-only model string is not a pin. Coerce it to undefined here, at
-    // the single point every path (persona, manifest, imperative) has resolved `model`, so it
-    // serializes ABSENT rather than present-but-empty (`"model": ""`), which a key-presence consumer
-    // would misread as "a pin was recorded".
-    if (model !== undefined && model.trim() === "") model = undefined;
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
     // #966: a seat labelled `manager` that cannot spawn is a worker wearing a label, and the label
