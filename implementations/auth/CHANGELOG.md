@@ -1,5 +1,19 @@
 # @cotal-ai/auth
 
+## 0.71.0
+
+### Patch Changes
+
+- 976fe67: A failed auth plane open now closes every connection it opened and releases its plane claim, wherever the open fails. A JetStream timeout or error on the remote manager issuer's first request, after the auth admin listener came up, used to leave the authority connections, both scanners and the listener open with the claim still held, so a hosted retry on the same space was refused by the leaked claim. The open now records each resource's close as soon as it opens and unwinds them in reverse from one place.
+- Updated dependencies [b9daf53]
+- Updated dependencies [3518435]
+- Updated dependencies [726a750]
+- Updated dependencies [3400d53]
+- Updated dependencies [518351a]
+  - @cotal-ai/core@0.71.0
+  - @cotal-ai/lang@0.71.0
+  - @cotal-ai/workspace@0.71.0
+
 ## 0.70.2
 
 ### Patch Changes

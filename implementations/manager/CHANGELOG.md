@@ -1,5 +1,27 @@
 # @cotal-ai/manager
 
+## 0.71.0
+
+### Patch Changes
+
+- b9daf53: A whitespace-only `model` or `variant` is now refused everywhere a launch selector enters: a persona file's `model:`/`variant:` when it loads or is saved, `cotal spawn --model`, a manifest agent's `model`/`variant`, and every launch the manager admits, including a direct `Manager.startAgent` call. Before, the same blank value was dropped by the manager, rendered into the harness command and environment by the `claude`, `codex` and `opencode` connectors, and refused only by `jcode`, so one persona launched differently depending on who started it. The manager no longer coerces a blank model to absent, and the `jcode` connector no longer carries its own blank-variant check.
+- 3e8b00e: `startAgent` now copies the access lists it is given before its first await: `subscribe`, `allowSubscribe` and `allowPublish`, and on a manifest launch the `resolved` lists and `capabilities`. It used to keep the caller's arrays in the launch it retains, so a caller that wrote to them after the start changed what preservation recorded and what a resume relaunched the seat with.
+- 03af9ed: The manager's three resume control parsers, `parseResumeControlArgs`, `parseResumeCommitArgs` and `parseResumeFinalizeArgs`, now run one bounded parse with their own op name, byte cap and schema, and their argument schemas share one `attemptId` grammar. Before, each parser carried its own copy of the serializable and JSON-object refusals, the byte cap check and the issue formatting, and each schema spelled out the attempt-id rule, so a change made at one copy let `commitResume` refuse an attempt id that `resumePreserved` and `finalizeResume` still accepted. Shipped behaviour and error messages are unchanged.
+- 272e72f: `Manager.resumePreserved` now copies the inventory it is handed before it starts. It copied only the share-tools selection and kept the caller's `subscribe`, `allowSubscribe`, `allowPublish` and `capabilities` arrays, so a caller that wrote to its inventory after the resume changed the resumed agent's retained launch, what the next preservation recorded and what a following resume launched with. The control op was not exposed, because it resumes a freshly parsed inventory.
+- 726a750: The tmux, cmux, Orca and Herdr runtimes now honour `LaunchSpec.confirm` as the PTY runtime does. Each reads its pane, presses Enter once when the declared prompt is on screen, and ends the seat with `Cotal startup confirmation failed: prompt "<prompt>" did not appear within 15000ms.` in the manager's log when it never appears. They used to press Enter five times on a one-second timer whatever the screen showed, so a dialog shown before the declared prompt was answered with its default. Core exports the shared `confirmWatch` they use.
+
+  Each backend call the watch makes times out after one second: the screen read, the terminal lookup, the Enter, and the close that ends a failed seat. A call that times out is killed with SIGKILL, because Node waits for a timed-out child to exit and a CLI that handles SIGTERM would keep the manager blocked past the timeout. The status probes and other CLI calls that share those helpers are killed the same way when they time out. No read starts once the 15 seconds are up, so a backend CLI that hangs fails the seat instead of stalling the manager. The tmux watch ends a failed seat by closing the seat's pane in whichever window holds it now, so a pane swapped into the seat's first window survives. It reads, presses Enter and closes only on the tmux server that opened the seat's window, so after a tmux restart it never types into or closes a new pane that reuses the seat's pane id.
+
+  A `confirm` prompt that is empty once ANSI codes and whitespace are removed, `""` included, is now refused before anything starts, and its launch files are removed. The PTY runtime used to start the child first and then throw, which left the child running with no handle to stop it and its launch files on disk, and every runtime treated `""` as no prompt.
+
+- Updated dependencies [b9daf53]
+- Updated dependencies [3518435]
+- Updated dependencies [726a750]
+- Updated dependencies [518351a]
+  - @cotal-ai/core@0.71.0
+  - @cotal-ai/seat@0.71.0
+  - @cotal-ai/workspace@0.71.0
+
 ## 0.70.2
 
 ### Patch Changes

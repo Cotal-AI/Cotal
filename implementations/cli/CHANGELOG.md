@@ -1,5 +1,18 @@
 # @cotal-ai/cli
 
+## 0.71.0
+
+### Patch Changes
+
+- ac59932: Ctrl-C on a foreground `cotal up --user-auth`, and a broker that exits under it, now stop the user-auth service with the same stop `cotal down auth` uses. Before, that teardown took no stop reservation and never escalated past SIGTERM: a concurrent `cotal down auth` signalled the same process without seeing the stop in progress, and a service that did not exit on SIGTERM survived the teardown with its record kept. The teardown now holds the reservation and sends SIGKILL after the 15-second grace.
+- b9daf53: A whitespace-only `model` or `variant` is now refused everywhere a launch selector enters: a persona file's `model:`/`variant:` when it loads or is saved, `cotal spawn --model`, a manifest agent's `model`/`variant`, and every launch the manager admits, including a direct `Manager.startAgent` call. Before, the same blank value was dropped by the manager, rendered into the harness command and environment by the `claude`, `codex` and `opencode` connectors, and refused only by `jcode`, so one persona launched differently depending on who started it. The manager no longer coerces a blank model to absent, and the `jcode` connector no longer carries its own blank-variant check.
+- Updated dependencies [b9daf53]
+- Updated dependencies [3518435]
+- Updated dependencies [726a750]
+- Updated dependencies [518351a]
+  - @cotal-ai/core@0.71.0
+  - @cotal-ai/workspace@0.71.0
+
 ## 0.70.2
 
 ### Patch Changes
