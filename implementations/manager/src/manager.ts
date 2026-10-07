@@ -9225,11 +9225,16 @@ export class Manager {
       if (retired > 0) console.error(`static retirement ${a.name}: retired ${retired} issuance(s) bound to uid ${a.lifecycleUid}`);
       const secrets = this.secrets;
       const files = a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid);
+      // The broker teardown mints its own credential, so a creds file that cannot be removed must not
+      // skip it. The failures are thrown together, so the terminal still stops at an incomplete cleanup.
+      const failed: string[] = [];
       if (files.creds) {
-        await secrets.delete(agentSecretKeyForFile(files.creds, this.space));
-        rmSync(files.creds, { force: true });
+        const creds = files.creds;
+        await attemptCleanup(failed, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
+        await attemptCleanup(failed, `file ${creds}`, () => rmSync(creds, { force: true }));
       }
-      await this.deprovisionBroker(a);
+      await attemptCleanup(failed, "broker teardown", () => this.deprovisionBroker(a));
+      if (failed.length) throw new Error(`cleanup failed: ${failed.join("; ")}`);
     };
     // The process goes before its footprint: reap the orphan seat by reference, then tear down.
     const reapThenCleanup = async (): Promise<void> => {
