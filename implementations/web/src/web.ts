@@ -1321,6 +1321,29 @@ export function detachedArgs(raw: readonly string[], space: string, server: stri
   return [...kept, "--space", space, "--server", server, "--no-open"];
 }
 
+const PROBE_TEXT_MAX_BYTES = 300;
+
+// Whatever answers the bound port controls these fields, so a mismatched /api/meta body is summarized,
+// never echoed whole: a string is cut to `max` characters, a number or boolean is shown only when short,
+// and anything else (object, array, null, undefined) is named by its type.
+function summarizeProbeField(value: unknown, max: number): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value.length > max ? `${value.slice(0, max)}...` : value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    return text.length <= max ? text : `<${typeof value}>`;
+  }
+  return value === undefined ? "<missing>" : value === null ? "null" : `<${Array.isArray(value) ? "array" : typeof value}>`;
+}
+
+// Bounds the whole last-probe text, whatever its parts, to a few hundred bytes of UTF-8.
+function capProbeText(text: string): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= PROBE_TEXT_MAX_BYTES) return text;
+  return `${buf.subarray(0, PROBE_TEXT_MAX_BYTES).toString("utf8").replace(/\uFFFD+$/, "")}...`;
+}
+
 export async function waitForDetachedWeb(
   child: ChildProcess,
   opts: { pidPath: string; sessionPath: string; url: string; space: string; timeoutMs: number },
@@ -1356,7 +1379,7 @@ export async function waitForDetachedWeb(
         });
         if (res.ok) {
           meta = await res.json() as { space?: unknown; pid?: unknown };
-          lastProbe = `${probeUrl}: answered space ${JSON.stringify(meta?.space)}, pid ${JSON.stringify(meta?.pid)}`;
+          lastProbe = `${probeUrl}: answered space ${summarizeProbeField(meta?.space, 40)}, pid ${summarizeProbeField(meta?.pid, 20)}`;
         } else {
           lastProbe = `${probeUrl}: HTTP ${res.status}`;
         }
@@ -1372,7 +1395,7 @@ export async function waitForDetachedWeb(
     }
     await sleep(100);
   }
-  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${lastProbe}` : ""}`);
+  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : ""}`);
 }
 
 export async function terminateDetachedWeb(child: ChildProcess, pidPath: string): Promise<void> {

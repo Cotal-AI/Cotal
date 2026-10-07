@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -87,6 +88,27 @@ try {
     }),
     /did not become HTTP-ready within 100ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:1\/api\/meta: .+/,
   );
+  // A different process on the bound port answers 200 with a huge space and pid: the error stays bounded.
+  const squatter = createServer((_req, res) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ space: "s".repeat(200_000), pid: "p".repeat(200_000) }));
+  });
+  await new Promise<void>((resolve) => squatter.listen(0, "127.0.0.1", resolve));
+  try {
+    const port = (squatter.address() as { port: number }).port;
+    let message = "";
+    await waitForDetachedWeb(child, {
+      pidPath,
+      url: `http://127.0.0.1:${port}/`,
+      space: "fixture",
+      timeoutMs: 600,
+    }).catch((e: unknown) => { message = e instanceof Error ? e.message : String(e); });
+    assert.match(message, /did not become HTTP-ready within 600ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:\d+\/api\/meta: answered space "s+\.\.\."/);
+    assert.ok(Buffer.byteLength(message) < 500, `mismatched-body error is bounded (got ${Buffer.byteLength(message)} bytes)`);
+  } finally {
+    await new Promise<void>((resolve) => squatter.close(() => resolve()));
+  }
+
   await terminateDetachedWeb(child, pidPath);
   assert.equal(alive(child.pid!), false, "timeout cleanup escalates and confirms child death");
   assert.equal(existsSync(pidPath), false, "timeout cleanup removes the exact child-owned pidfile");
