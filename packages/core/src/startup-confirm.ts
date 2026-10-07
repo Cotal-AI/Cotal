@@ -37,16 +37,19 @@ export function confirmWatch(prompt: string): (pane: ConfirmPane) => void {
   return (pane) => {
     const deadline = Date.now() + CONFIRM_TIMEOUT_MS;
     const poll = (): void => {
-      let failure: string;
+      let failure = `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${CONFIRM_TIMEOUT_MS}ms.`;
       try {
-        const screen = pane.read();
-        if (screen === undefined) return;
+        // A read blocks the event loop, so none starts past the deadline, and none that returns past
+        // it is acted on.
         if (Date.now() < deadline) {
-          if (normalizeConfirmText(screen).includes(needle)) return pane.enter();
-          setTimeout(poll, POLL_MS);
-          return;
+          const screen = pane.read();
+          if (screen === undefined) return;
+          if (Date.now() < deadline) {
+            if (normalizeConfirmText(screen).includes(needle)) return pane.enter();
+            setTimeout(poll, POLL_MS);
+            return;
+          }
         }
-        failure = `Cotal startup confirmation failed: prompt ${JSON.stringify(prompt)} did not appear within ${CONFIRM_TIMEOUT_MS}ms.`;
       } catch (err) {
         failure = `Cotal startup confirmation failed: ${(err as Error).message}`;
       }

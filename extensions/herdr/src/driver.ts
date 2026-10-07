@@ -100,13 +100,17 @@ function parseAgent(record: Record<string, unknown>): HerdrAgent {
  *  Herdr session. A JSON `{error}` becomes a {@link HerdrCliError}; missing/non-JSON output
  *  throws — except for `void: true` commands (send-keys, report-metadata), which herdr
  *  acknowledges with a bare exit 0 and no output. */
-export function run(session: string, args: string[], opts: { void?: boolean } = {}): Record<string, unknown> {
+export function run(
+  session: string,
+  args: string[],
+  opts: { void?: boolean; timeoutMs?: number } = {},
+): Record<string, unknown> {
   let out: string;
   try {
     out = execFileSync("herdr", ["--session", session, ...args], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      timeout: RUN_TIMEOUT_MS,
+      timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
     });
   } catch (err) {
     // A JSON error rides stderr (sometimes stdout) with a nonzero exit; surface its code.
@@ -419,8 +423,12 @@ export function agentStart(
  *
  *  A failed inventory THROWS rather than reporting undefined — uncertainty must never read as gone,
  *  or a live agent gets torn down as a corpse. */
-export function agentInfo(session: string, terminalId: string): HerdrAgent | undefined {
-  const result = run(session, ["pane", "list"]);
+export function agentInfo(
+  session: string,
+  terminalId: string,
+  opts: { timeoutMs?: number } = {},
+): HerdrAgent | undefined {
+  const result = run(session, ["pane", "list"], opts);
   const panes = result.panes;
   if (!Array.isArray(panes)) throw new Error(`herdr: malformed pane list (${JSON.stringify(result)})`);
   for (const pane of panes) {
@@ -486,11 +494,11 @@ export function sendKeys(session: string, paneId: string, key: string): void {
 /** The text a pane shows now. Pane-scoped: the caller must pass a freshly re-resolved pane id
  *  ({@link agentInfo}), never a cached one. `pane read` prints raw terminal text, not the JSON
  *  envelope {@link run} parses. */
-export function readPane(session: string, paneId: string): string {
+export function readPane(session: string, paneId: string, opts: { timeoutMs?: number } = {}): string {
   return execFileSync("herdr", ["--session", session, "pane", "read", paneId], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: RUN_TIMEOUT_MS,
+    timeout: opts.timeoutMs ?? RUN_TIMEOUT_MS,
   });
 }
 

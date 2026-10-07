@@ -1,7 +1,7 @@
 import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
-import type { AgentHandle, AttachSession, LaunchSpec, Runtime, RuntimeReference } from "@cotal-ai/core";
+import { SpawnRefused, type AgentHandle, type AttachSession, type LaunchSpec, type Runtime, type RuntimeReference } from "@cotal-ai/core";
 import { ConnectorDiagnosticReader, StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 
@@ -32,8 +32,13 @@ export class LegacyPtyRuntime implements Runtime {
     const { command, args } = preparePtyLaunch(spec.command, spec.args, spec.env ?? {});
     // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
     // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
-    // Built before the child exists, so a prompt that cannot match starts nothing.
-    const confirmMatcher = spec.confirm ? new StartupConfirmMatcher(spec.confirm) : undefined;
+    // Built before the child exists, so a prompt that cannot match is a refusal.
+    let confirmMatcher: StartupConfirmMatcher | undefined;
+    try {
+      confirmMatcher = spec.confirm === undefined ? undefined : new StartupConfirmMatcher(spec.confirm);
+    } catch (err) {
+      throw new SpawnRefused((err as Error).message);
+    }
     const proc = pty.spawn(command, args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,

@@ -17,6 +17,9 @@ import * as orca from "./driver.js";
 
 const GRACE_MS = 2_000;
 const MAX_WORKTREE_CACHE = 32;
+/** Bounds every Orca call the startup-confirm watch makes, because it polls on the manager's event
+ *  loop. */
+const CONFIRM_CALL = { timeoutMs: 1_000 };
 
 interface LauncherPayload {
   cwd: string;
@@ -92,7 +95,7 @@ export class OrcaRuntime implements Runtime {
     let cachedWorktree: boolean;
     let launcher: PrivateLauncher;
     try {
-      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
       cwdKey = realpathSync(cwd);
       const cached = this.#worktrees.get(cwdKey);
       cachedWorktree = !!cached;
@@ -127,12 +130,18 @@ export class OrcaRuntime implements Runtime {
       return terminal;
     };
     watch?.({
-      read: () => (orca.terminalAlive(terminal) ? orca.readScreen(current().handle) : undefined),
-      enter: () => orca.sendTerminal(current().handle, { enter: true }),
+      read: () => {
+        const resolved = orca.currentTerminal(terminal, CONFIRM_CALL);
+        if (!resolved || resolved.connected === false) return undefined;
+        terminal = resolved;
+        return orca.readScreen(terminal.handle, CONFIRM_CALL);
+      },
+      // Enter follows the read at once, so it uses the handle the read resolved.
+      enter: () => orca.sendTerminal(terminal.handle, { enter: true, ...CONFIRM_CALL }),
       fail: (message) => {
         console.error(`orca runtime: "${name}": ${message}`);
         try {
-          orca.closeManagedTerminal(terminal);
+          orca.closeManagedTerminal(terminal, CONFIRM_CALL);
         } catch (err) {
           console.error(`orca runtime: failed to close terminal for "${name}":`, err);
         } finally {

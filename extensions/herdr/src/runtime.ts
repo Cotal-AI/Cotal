@@ -16,6 +16,8 @@ import {
 import * as herdr from "./driver.js";
 
 const GRACE_MS = 2_000;
+/** Bounds each read the startup-confirm watch makes, because it polls on the manager's event loop. */
+const CONFIRM_READ = { timeoutMs: 1_000 };
 
 interface LauncherPayload {
   cwd: string;
@@ -123,7 +125,7 @@ export class HerdrRuntime implements Runtime {
     let tabsBefore: string[];
     let launcher: PrivateLauncher;
     try {
-      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
       herdr.ensureServer(this.session);
       // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
       tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
@@ -172,8 +174,8 @@ export class HerdrRuntime implements Runtime {
 
     watch?.({
       read: () => {
-        const info = herdr.agentInfo(session, terminalId);
-        return info && herdr.readPane(session, info.paneId);
+        const info = herdr.agentInfo(session, terminalId, CONFIRM_READ);
+        return info && herdr.readPane(session, info.paneId, CONFIRM_READ);
       },
       enter: () => herdr.sendKeys(session, currentPane(), "enter"),
       fail: (message) => {

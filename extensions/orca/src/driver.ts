@@ -6,7 +6,6 @@ const MAX_BUFFER = 16 * 1024 * 1024;
 const PROBE_CACHE_MS = 250;
 const MAX_WORKTREE_PARENT_PROBES = 12;
 const EXIT_WAIT_MS = 8_000;
-const SCREEN_READ_MS = 1_000;
 
 export interface OrcaWorktree {
   id: string;
@@ -283,15 +282,18 @@ export function createTerminal(opts: { worktreeId: string; title: string; comman
   return terminal;
 }
 
-export function showTerminal(handle: string): OrcaEnvelope<TerminalResult> {
-  return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"]);
+export function showTerminal(handle: string, opts: { timeoutMs?: number } = {}): OrcaEnvelope<TerminalResult> {
+  return request<TerminalResult>(["terminal", "show", "--terminal", handle, "--json"], opts);
 }
 
 /** Resolve the current handle for a terminal. Orca handles are runtime-scoped, while ptyId stays
  * stable across handle rotation. */
-export function currentTerminal(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): OrcaTerminal | undefined {
+export function currentTerminal(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  opts: { timeoutMs?: number } = {},
+): OrcaTerminal | undefined {
   if (!terminalCache || Date.now() - terminalCache.at >= PROBE_CACHE_MS) {
-    const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"]).terminals ?? [];
+    const listed = requireOk<TerminalListResult>(["terminal", "list", "--json"], opts).terminals ?? [];
     terminalCache = { at: Date.now(), terminals: listed };
   }
   const listed = terminal.ptyId
@@ -299,7 +301,7 @@ export function currentTerminal(terminal: Pick<OrcaTerminal, "handle" | "ptyId">
     : terminalCache.terminals.find((candidate) => candidate.handle === terminal.handle);
   if (listed) return { ...terminal, ...listed };
 
-  const shown = showTerminal(terminal.handle);
+  const shown = showTerminal(terminal.handle, opts);
   if (shown.ok === false) {
     const code = shown.error?.code ?? "";
     if (/not_found|stale|closed/i.test(code)) return undefined;
@@ -402,26 +404,29 @@ export async function waitManagedTerminalExit(
 }
 
 /** The text terminal `handle` renders now. `--screen` reads the rendered frame, so a prompt a TUI
- *  draws with cursor moves reads whole instead of as stacked repaint fragments. Bounded, because the
- *  startup-confirm watch polls it on the manager's event loop. */
-export function readScreen(handle: string): string {
-  return requireOk<{ terminal: { tail: string[] } }>(["terminal", "read", "--terminal", handle, "--screen", "--json"], {
-    timeoutMs: SCREEN_READ_MS,
-  }).terminal.tail.join("\n");
+ *  draws with cursor moves reads whole instead of as stacked repaint fragments. */
+export function readScreen(handle: string, opts: { timeoutMs?: number } = {}): string {
+  return requireOk<{ terminal: { tail: string[] } }>(
+    ["terminal", "read", "--terminal", handle, "--screen", "--json"],
+    opts,
+  ).terminal.tail.join("\n");
 }
 
-export function sendTerminal(handle: string, opts: { text?: string; enter?: boolean; interrupt?: boolean } = {}): void {
+export function sendTerminal(
+  handle: string,
+  opts: { text?: string; enter?: boolean; interrupt?: boolean; timeoutMs?: number } = {},
+): void {
   const args = ["terminal", "send", "--terminal", handle];
   if (opts.text !== undefined) args.push("--text", opts.text);
   if (opts.enter) args.push("--enter");
   if (opts.interrupt) args.push("--interrupt");
   args.push("--json");
-  requireOk<Record<string, unknown>>(args);
+  requireOk<Record<string, unknown>>(args, { timeoutMs: opts.timeoutMs });
 }
 
-export function closeTerminal(handle: string): boolean {
+export function closeTerminal(handle: string, opts: { timeoutMs?: number } = {}): boolean {
   try {
-    const r = request<Record<string, unknown>>(["terminal", "close", "--terminal", handle, "--json"]);
+    const r = request<Record<string, unknown>>(["terminal", "close", "--terminal", handle, "--json"], opts);
     if (r.ok === false) {
       const code = r.error?.code ?? "";
       if (/not_found|stale|closed/i.test(code)) return false;
@@ -435,12 +440,15 @@ export function closeTerminal(handle: string): boolean {
 
 /** Close by stable identity. If the handle rotates between resolution and close, refresh by ptyId
  * and retry once instead of treating a stale handle as a successful stop. */
-export function closeManagedTerminal(terminal: Pick<OrcaTerminal, "handle" | "ptyId">): void {
-  const current = currentTerminal(terminal);
+export function closeManagedTerminal(
+  terminal: Pick<OrcaTerminal, "handle" | "ptyId">,
+  opts: { timeoutMs?: number } = {},
+): void {
+  const current = currentTerminal(terminal, opts);
   if (!current) return;
-  if (closeTerminal(current.handle) || !current.ptyId) return;
-  const rotated = currentTerminal(current);
-  if (rotated && rotated.handle !== current.handle) closeTerminal(rotated.handle);
+  if (closeTerminal(current.handle, opts) || !current.ptyId) return;
+  const rotated = currentTerminal(current, opts);
+  if (rotated && rotated.handle !== current.handle) closeTerminal(rotated.handle, opts);
 }
 
 export function terminals(): OrcaTerminal[] {

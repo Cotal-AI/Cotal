@@ -94,7 +94,7 @@ export class CmuxRuntime implements Runtime {
     let command: string;
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
-      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
       command = paneCommand(
         { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,

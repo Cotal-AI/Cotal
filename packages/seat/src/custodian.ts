@@ -88,7 +88,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   };
 
   // Built before the child exists, so a prompt that cannot match starts nothing.
-  const confirmMatcher = launch.confirm ? new StartupConfirmMatcher(launch.confirm) : undefined;
+  const confirmMatcher = launch.confirm === undefined ? undefined : new StartupConfirmMatcher(launch.confirm);
   let proc: pty.IPty;
   try {
     proc = pty.spawn(launch.command, launch.args, {
