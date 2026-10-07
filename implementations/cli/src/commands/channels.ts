@@ -13,7 +13,7 @@ import { c } from "../ui.js";
 /**
  * `cotal channels` — inspect and mutate the per-space channel registry (replay policy,
  * description, instructions) while the mesh is up. Writes are privileged: on an auth mesh the
- * command mints ephemeral manager creds from the resolved mesh's `.cotal/auth`; on an open mesh it
+ * command mints an ephemeral `channel-writer` cred from the resolved mesh's `.cotal/auth`; on an open mesh it
  * connects plainly. Works from any directory (resolves the running mesh); `--creds` is a raw
  * off-registry connection.
  *

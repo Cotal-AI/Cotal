@@ -718,8 +718,8 @@ export async function clearSpaceHistory(opts: {
 
 /** Delete one channel and its content: purge every retained message on the channel (across
  *  all senders, via the `*` sender slot) from the chat stream, then drop the channel's
- *  registry config so it stops surfacing as an empty channel. Needs PURGE rights — pass
- *  privileged creds (e.g. `manager`); a bare connection (open mode) has them by default.
+ *  registry config so it stops surfacing as an empty channel. Needs PURGE rights and the
+ *  registry key delete: pass a `channel-purger` cred; a bare connection (open mode) has them by default.
  *  Throws on a wildcard channel (a subtree is not a deletable channel). A missing channel
  *  registry bucket/key is a no-op — the purge alone already emptied the channel. */
 export async function clearChannel(opts: {
