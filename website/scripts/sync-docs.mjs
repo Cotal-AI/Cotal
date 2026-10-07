@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
 import { parse, postprocess, preprocess } from 'micromark';
 import { gfm } from 'micromark-extension-gfm';
+import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
@@ -153,17 +154,17 @@ function rewriteTarget(target, rel) {
   return url.href;
 }
 
-// The page is parsed as the site renders it (micromark with GFM), so only real link and
-// definition destinations are rewritten: code and HTML keep their text, and titled,
-// angle-bracket and reference-style links are all seen. A destination is read as the site
-// reads it, from the parser's text, where a NUL is already U+FFFD: its backslash escapes and
-// character references are decoded and the result is percent-encoded as the renderer encodes
-// it, so URL parsing neither strips whitespace nor reads a backslash as a path separator. The
-// rewritten one is escaped so it parses back to the same address.
-function rewriteLinks(md, rel) {
+// The page is parsed as the site renders it (micromark with the page's syntax extensions), so
+// only real link and definition destinations are rewritten: code, HTML and MDX JavaScript keep
+// their text, and titled, angle-bracket and reference-style links are all seen. A destination
+// is read as the site reads it, from the parser's text, where a NUL is already U+FFFD: its
+// backslash escapes and character references are decoded and the result is percent-encoded as
+// the renderer encodes it, so URL parsing neither strips whitespace nor reads a backslash as a
+// path separator. The rewritten one is escaped so it parses back to the same address.
+function rewriteLinks(md, rel, extensions) {
   // micromark skips one leading BOM and counts offsets from after it, so none may remain.
   md = md.replace(/^\uFEFF+/, '');
-  const events = postprocess(parse({ extensions: [gfm()] }).document().write(preprocess()(md, undefined, true)));
+  const events = postprocess(parse({ extensions }).document().write(preprocess()(md, undefined, true)));
   let out = '';
   let at = 0;
   for (const [kind, token, context] of events) {
@@ -265,7 +266,8 @@ for (const group of groups) {
     const slug = slugFor(name);
     const { title, body } = splitH1(readFileSync(src, 'utf8'), rel);
     const description = firstParagraph(body, rel);
-    let md = rewriteLinks(body, rel);
+    // The Quickstart is emitted as MDX, which has no indented code and reads braces and tags as JavaScript.
+    let md = rewriteLinks(body, rel, rel === QUICKSTART_SRC ? [mdxjs(), gfm()] : [gfm()]);
     const fm = ['---', `title: ${yamlEscape(title)}`, `description: ${yamlEscape(description)}`, '---', ''].join('\n');
     let ext = 'md';
     let imports = '';
