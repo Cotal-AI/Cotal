@@ -391,10 +391,11 @@ export class MeshHandler {
   private readonly conclaves = new Map<string, ConclavePlan>();
 
   /** The run's roster: every agent this run spawned, by name — the handle a handoff resolves to,
-   *  and the owner/actor address a `turn` targets (absent when the spawn's acceptance floor was
-   *  never served; a `turn` on such an agent refuses loudly rather than guessing an address).
+   *  the owner/actor address a `turn` targets (absent when the spawn's acceptance floor was
+   *  never served; a `turn` on such an agent refuses loudly rather than guessing an address), and
+   *  the spawn goal whose terminal names the manager that allocated it.
    *  Seeded live by `spawn`, rebuilt at adoption from the journal's settled spawn entries. */
-  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string; permits?: AgentPermits; spawnedAt?: number }>();
+  private readonly roster = new Map<string, { handle: AgentHandleValue; owner?: string; actor?: string; uid: string; goalId?: string; permits?: AgentPermits; spawnedAt?: number }>();
   /** Turns this run has dispatched per handle composite, live and seeded — what a `turns` permit is spent against. */
   private readonly turnsTaken = new Map<string, number>();
   /** Handle composites a `monitor` registered, live and seeded — what makes `down(agent)` observable. */
@@ -488,10 +489,11 @@ export class MeshHandler {
         const handle = e.result as AgentHandleValue;
         if (typeof handle.agent !== "string") continue; // a garbled result seeds nothing; the turn that needs it refuses loudly
         const { name, uid } = parseAgentHandle(handle.agent);
-        const ext = e.external as { owner?: unknown; actor?: unknown; permits?: unknown; spawnedAt?: unknown } | undefined;
+        const ext = e.external as { goalId?: unknown; owner?: unknown; actor?: unknown; permits?: unknown; spawnedAt?: unknown } | undefined;
         this.roster.set(name, {
           handle,
           uid,
+          ...(typeof ext?.goalId === "string" ? { goalId: ext.goalId } : {}),
           ...(typeof ext?.owner === "string" ? { owner: ext.owner } : {}),
           ...(typeof ext?.actor === "string" ? { actor: ext.actor } : {}),
           ...(ext?.permits !== undefined ? { permits: readPermits(ext.permits, handle.persona) } : {}),
@@ -1086,7 +1088,7 @@ export class MeshHandler {
    * the name AND this incarnation is the death, with the reason split by what the name shows now:
    * `"lapsed"` when nothing live holds the name any more, `"superseded"` when a live row holds it
    * under a DIFFERENT incarnation — this incarnation dead with a successor already up. A lapse is
-   * read as the death only once the row has stayed absent for {@link LAPSE_CONFIRM_MS} and the manager
+   * read as the death only once the row has stayed absent for {@link LAPSE_CONFIRM_MS} and its manager
    * no longer runs the seat: a seat whose connector stalled past the row's TTL renews it under the same
    * uid, and that seat is not down.
    *
@@ -1443,6 +1445,7 @@ export class MeshHandler {
       this.roster.set(parseAgentHandle(handle.agent).name, {
         handle,
         uid: parseAgentHandle(handle.agent).uid,
+        goalId: ref.goalId,
         ...(address !== undefined ? { owner: address.owner, actor: address.actor } : {}),
         ...(permits !== undefined ? { permits } : {}),
         ...(typeof ext.spawnedAt === "number" ? { spawnedAt: ext.spawnedAt } : {}),
@@ -1499,7 +1502,7 @@ export class MeshHandler {
    * DEATH likewise: the manager's reap hook fails pending turns `agent-down`, and this client
    * watches presence itself (the L4002 authority when the manager died with the seat). The watch
    * reads death the way `wait(down)` does: a superseded incarnation at once, a lapsed row only
-   * once it has stayed absent for {@link LAPSE_CONFIRM_MS} and the manager no longer runs the seat.
+   * once it has stayed absent for {@link LAPSE_CONFIRM_MS} and its manager no longer runs the seat.
    *
    * Handoff honoring (lang §5.3) happens HERE: the scope's pending memo is spent at every turn's
    * begin, and when this turn targets its `to`, the link rides the submission (`handoffFrom`, the
@@ -2249,18 +2252,36 @@ export class MeshHandler {
   /** Whether the manager still runs `name#uid`, asked before a confirmed lapse is read as the death.
    *  A lapse is only the seat's heartbeats going quiet: on a loaded host a live seat's presence writer
    *  stalls past {@link LAPSE_CONFIRM_MS} while its process goes on working (#2807), and the manager
-   *  owns that process. A manager that does not answer leaves presence as the only witness, which is
-   *  the case presence is the authority for: the manager died with the seat. */
+   *  owns that process. Only the manager holding the seat has a running row under its incarnation, so
+   *  that row keeps it alive whoever reports it. A miss decides only from the manager that allocated
+   *  it, the committer of its spawn terminal: another member of the class rail knows only its own
+   *  seats, so the class rail is asked again, as a spawn's discharge asks it. An allocator that does
+   *  not answer leaves presence as the only witness, which is the case presence is the authority for:
+   *  the manager died with the seat. */
   private async seatHeld(name: string, uid: string): Promise<boolean> {
-    let reply: EpAttributedReply;
-    try {
-      reply = await this.invokeManager(await this.manager(), "inspect", { name }, {});
-    } catch (e) {
-      if (unansweredRequest(e)) return false;
-      throw e;
+    const entry = this.roster.get(name);
+    const spawned = entry?.uid === uid && entry.goalId !== undefined
+      ? await readGoalResult(await this.actionCtx(), { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId: entry.goalId })
+      : undefined;
+    const allocator = spawned?.committer?.instanceId;
+    for (let attempt = 0; attempt <= MANAGER_ROUTE_ATTEMPTS; attempt += 1) {
+      let answer: EpAttributedReply;
+      try {
+        answer = await this.invokeManager(await this.manager(), "inspect", { name }, {});
+      } catch (e) {
+        if (unansweredRequest(e)) return false;
+        throw e;
+      }
+      const { reply, responder } = answer;
+      const row = reply.ok ? reply.data as { lifecycleUid?: unknown; status?: unknown } : undefined;
+      if (row?.lifecycleUid === uid && row.status === "running") return true;
+      if (responder.instanceId === allocator && !replyRefusedBeforeEffect(reply.error)) {
+        if (reply.ok || reply.error?.code === "not-found") return false;
+        throw new Error(`inspect(${name}) was refused by manager instance ${allocator}, which allocated ${name}#${uid}: ${reply.error?.message ?? "refused with no message"}`);
+      }
+      this.managerService = undefined;
     }
-    const row = reply.reply.ok ? reply.reply.data as { lifecycleUid?: unknown; status?: unknown } : undefined;
-    return row?.lifecycleUid === uid && row.status === "running";
+    return false;
   }
 
   /**
@@ -2691,10 +2712,10 @@ const GOAL_POLL_MS = 2_000;
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
-/** How many class-rail calls a despawn or a relay withdrawal sends before it stops waiting for the
- *  one manager that holds its goal (the spawn's allocator, the relay's accepter) to answer. Each is
- *  one {@link MeshHandler.invokeManager} call, whose describe and invoke both land on that manager
- *  with probability 1/m^2 per trip in a space of m managers, so one call reaches it with
+/** How many class-rail calls a despawn, a relay withdrawal or a lapse's inspect sends before it stops
+ *  waiting for the one manager that holds its goal (the spawn's allocator, the relay's accepter) to
+ *  answer. Each is one {@link MeshHandler.invokeManager} call, whose describe and invoke both land on
+ *  that manager with probability 1/m^2 per trip in a space of m managers, so one call reaches it with
  *  probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All 65 then miss
  *  with probability about 2^-65 and 9e-9. */
 const MANAGER_ROUTE_ATTEMPTS = 64;
