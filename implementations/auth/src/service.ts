@@ -367,6 +367,10 @@ export async function openAuthAuthorityPlane(opts: {
   space: string;
   /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
   dir: string;
+  /** The root whose space segment keeps the plane's restart identity: a CLI composition's workspace
+   *  root, a hosted context's state dir. Never derived from `dir`, which for the CLI sits inside the
+   *  `.cotal/auth` an operator copies to another root. */
+  identityRoot: string;
   dataAccount: { pub: string; signingSeed: string };
   log: (line: string) => void;
   /** SMOKE-ONLY eviction override for the barrier executor's boot resume. Production
@@ -404,15 +408,15 @@ export async function openAuthAuthorityPlane(opts: {
   }
   // #399 M2: register the auth plane itself as an ordinary `auth` service endpoint — the SAME
   // §13.7 registration ceremony the manager runs (`manager.ts:6562-6690`), before the listener
-  // below serves a single request. The persisted instance id + serve nkey (under the plane's
-  // `dir`, hardened the way the manager's own instance identity is) so a restart re-registers the
+  // below serves a single request. The persisted instance id + serve nkey (in `identityRoot`,
+  // hardened the way the manager's own instance identity is) so a restart re-registers the
   // SAME instance: `registerServiceInstance` advances the process epoch on a re-registration and
   // fences the predecessor; a first registration stays at epoch 0.
   let authServeInstanceId: string;
   let authServeGrant: EpServeGrant;
   try {
-    const persisted = loadAuthInstanceIdentity(opts.dir, space);
-    const authIdentity = persisted ?? createAuthInstanceIdentity(opts.dir, space, {
+    const persisted = loadAuthInstanceIdentity(opts.identityRoot, space);
+    const authIdentity = persisted ?? createAuthInstanceIdentity(opts.identityRoot, space, {
       instanceId: mintLifecycleUid(),
       serveIdentity: newIdentity(),
     });
@@ -1674,6 +1678,7 @@ export async function runAuthService(args: ParsedArgs, store?: SecretStore): Pro
     server,
     port,
     dir,
+    identityRoot: root,
     secrets,
     hostedStore: store !== undefined,
     ...(publicFace !== undefined ? { publicFace } : {}),
@@ -1841,6 +1846,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     server: inputs.servers,
     port,
     dir: resolve(inputs.stateDir),
+    identityRoot: resolve(inputs.stateDir),
     secrets: inputs.store,
     hostedStore: true,
     localManager: () => undefined,
@@ -1863,6 +1869,7 @@ interface AuthContextOptions {
   server: string;
   port: number;
   dir: string;
+  identityRoot: string;
   secrets: SecretStore;
   hostedStore: boolean;
   publicFace?: PublicFaceInput;
@@ -1907,6 +1914,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     server,
     space,
     dir,
+    identityRoot: o.identityRoot,
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log: (l) => console.error(l),
     localManager: o.localManager,

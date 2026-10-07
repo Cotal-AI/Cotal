@@ -53,7 +53,7 @@ let plane: Awaited<ReturnType<typeof openAuthAuthorityPlane>> | undefined;
 try {
   await awaitBrokerReady(() => isReachable(SERVERS), { servers: SERVERS, attempts: 50, delayMs: 100 });
   await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: () => {} });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: () => {} });
   const prepareCreds = await mintCreds(auth, held.executor, "remote-manager", {
     principal: { owner, actor: actors.executor }, remoteManager: { instanceId, owner, actor: actors.executor },
   });

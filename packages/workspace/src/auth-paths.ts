@@ -372,7 +372,7 @@ export function brokerAuthPath(dir: string): string {
  *  (i) fence bites) + the serve nkey identity (so re-registration reuses the SAME gate principal —
  *  provisionEndpointGateOpen stays idempotent, no core barrier change, and eviction targets a
  *  stable principal). Holds a private seed, so it lands in a HARDENED secret file in the space's
- *  segment of this root (see {@link managerIdentityFile}). */
+ *  segment of this root (see {@link rootIdentityFile}). */
 export interface ManagerInstanceIdentity {
   instanceId: string;
   serveIdentity: { id: string; seed: string };
@@ -392,32 +392,33 @@ function instanceIdentityOf(raw: unknown): ManagerInstanceIdentity | undefined {
   if (typeof r?.instanceId !== "string" || r.instanceId.length === 0 || serveIdentity === undefined) return undefined;
   return { instanceId: r.instanceId, serveIdentity };
 }
-/** A manager identity record of this root, `<root>/.cotal/space.<hex>/<name>`. It is state of this
- *  root, so it stays out of `.cotal/auth`: that folder is what an operator copies to give another
- *  root a mesh's trust, and an identity copied with it made the other root's manager this root's
- *  logical instance. An older build kept the record in `.cotal/auth` as `legacyName`; the first
- *  touch moves it here, so an upgraded root restarts as the same instance (SPEC 13.6). */
-function managerIdentityFile(root: string, space: string, name: string, legacyName: string): string {
+/** An identity record of this root, `<root>/.cotal/space.<hex>/<name>`. It is state of this root,
+ *  so it stays out of `.cotal/auth`: that folder is what an operator copies to give another root a
+ *  mesh's trust, and an identity copied with it made the other root's manager this root's logical
+ *  instance. An older build kept the record at a `legacy` path; the first touch moves it here, so an
+ *  upgraded root restarts as the same instance (SPEC 13.6). */
+function rootIdentityFile(root: string, space: string, name: string, ...legacy: string[]): string {
   const path = join(root, ".cotal", spaceSegment(space), name);
-  const legacy = join(authDir(root), legacyName);
-  if (!existsSync(legacy)) return path;
-  mkSecretDir(dirname(path));
-  // A link, not a rename: it never replaces a record already at `path`, and a concurrent first
-  // touch that linked first is the same inode, which tells it apart from a second record.
-  try { linkSync(legacy, path); } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") return path;
-    if (code !== "EEXIST") throw e;
-    const old = statSync(legacy, { throwIfNoEntry: false });
-    const current = statSync(path);
-    if (old && (old.ino !== current.ino || old.dev !== current.dev))
-      throw new Error(`both ${path} and the older ${legacy} hold a manager identity for space "${space}" - refusing to guess which belongs to this root. Remove the one that did not come from this root, then retry.`);
+  for (const from of legacy) {
+    if (!existsSync(from)) continue;
+    mkSecretDir(dirname(path));
+    // A link, not a rename: it never replaces a record already at `path`, and a concurrent first
+    // touch that linked first is the same inode, which tells it apart from a second record.
+    try { linkSync(from, path); } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") continue;
+      if (code !== "EEXIST") throw e;
+      const old = statSync(from, { throwIfNoEntry: false });
+      const current = statSync(path);
+      if (old && (old.ino !== current.ino || old.dev !== current.dev))
+        throw new Error(`both ${path} and the older ${from} hold an identity record for space "${space}" - refusing to guess which belongs to this root. Remove the one that did not come from this root, then retry.`);
+    }
+    rmSync(from, { force: true });
   }
-  rmSync(legacy, { force: true });
   return path;
 }
 function managerInstanceFile(root: string, space: string): string {
-  return managerIdentityFile(root, space, "manager-instance.json", `manager-instance.${spaceKey(space)}.json`);
+  return rootIdentityFile(root, space, "manager-instance.json", join(authDir(root), `manager-instance.${spaceKey(space)}.json`));
 }
 /** Load this workspace root's persisted manager instance identity for `space`, or undefined if a
  *  manager has never registered here. A present-but-MALFORMED file fails LOUD: minting a fresh id
@@ -442,7 +443,7 @@ export interface ManagerSiblingIdentities {
   sessionLedger: { id: string; seed: string };
 }
 function managerSiblingFile(root: string, space: string): string {
-  return managerIdentityFile(root, space, "manager-siblings.json", `manager-siblings.${spaceKey(space)}.json`);
+  return rootIdentityFile(root, space, "manager-siblings.json", join(authDir(root), `manager-siblings.${spaceKey(space)}.json`));
 }
 function siblingIdentitiesOf(raw: unknown): ManagerSiblingIdentities | undefined {
   const r = raw as { goalWriter?: unknown; sessionLedger?: unknown } | null;
@@ -471,8 +472,13 @@ export interface AuthInstanceIdentity {
   serveIdentity: { id: string; seed: string };
 }
 const AUTH_INSTANCE = "the auth instance identity";
+/** The auth plane's record sits beside the manager's. An older build kept it in `.cotal/auth` under
+ *  the plane's state dir. For a CLI root that dir is the root's user-auth state dir, inside the folder
+ *  an operator copies; a hosted context passes its state dir as the root, so its record sat in the
+ *  root's own `.cotal/auth`. */
 function authInstanceFile(root: string, space: string): string {
-  return join(authDir(root), `auth-instance.${spaceKey(space)}.json`);
+  const legacyName = `auth-instance.${spaceKey(space)}.json`;
+  return rootIdentityFile(root, space, "auth-instance.json", join(authDir(userAuthStateDir(root, space)), legacyName), join(authDir(root), legacyName));
 }
 /** Load this workspace root's persisted auth-plane instance identity for `space`, or undefined if
  *  the auth plane has never registered here. A present-but-MALFORMED file fails LOUD: minting a

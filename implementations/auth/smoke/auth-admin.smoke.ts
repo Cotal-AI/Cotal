@@ -170,7 +170,7 @@ try {
   await putGate(MGR_INST, SERVE_EPOCH);
 
   // The REAL plane serves the rail.
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: gatedEvictor });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, probeEvictor: gatedEvictor });
   const wreg = await openLifecycleRegistry(wide.nc, space);
 
   console.log("A. requester-credential confinement (broker ACLs)");

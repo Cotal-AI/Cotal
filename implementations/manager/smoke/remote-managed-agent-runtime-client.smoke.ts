@@ -99,7 +99,7 @@ try {
       })));
     } finally { await wide.close(); }
   }
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: () => {} });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: () => {} });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "supervise"], allowSubscribe: [">"], allowPublish: [">"] });
 
   http = createServer(async (req, res) => {

@@ -1,0 +1,6 @@
+---
+"@cotal-ai/workspace": patch
+"@cotal-ai/auth": minor
+---
+
+The user-auth service's instance identity no longer travels with a mesh's trust folder. It now lives in the root's own space segment, `.cotal/space.<space-hex>/auth-instance.json`, beside the manager's identity. It used to land in `.cotal/auth/space.<space-hex>/.cotal/auth/auth-instance.<space-hex>.json`, because the auth plane passed its user-auth state dir where the identity helpers expected a workspace root, so copying `.cotal/auth` to another root, as the docs describe for a mesh you did not start, copied it too and an auth service started there came up as the original instance. A record at the older place is moved on the first start and the instance is kept; both places holding a record is refused. A hosted context started through `startAuthService` keeps its identity in its own `stateDir`, moved the same way from `<stateDir>/.cotal/auth/` to `<stateDir>/.cotal/space.<space-hex>/`. `openAuthAuthorityPlane` now takes a required `identityRoot`, the root whose space segment keeps that identity, and no longer derives it from `dir`.

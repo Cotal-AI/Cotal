@@ -310,6 +310,28 @@ and plain JavaScript reads `undefined` there.
 
 Read the instance from the bearer's `act.managerInstanceId` claim.
 
+## Auth plane identity location in 0.70.0
+
+The user-auth service keeps its instance identity in the root's `.cotal/space.<hex>/auth-instance.json`,
+beside the manager's. It used to sit inside `.cotal/auth`, at
+`space.<hex>/.cotal/auth/auth-instance.<hex>.json`, so a copy of that folder carried it. The first
+start of an upgraded root moves the record and keeps the instance. A hosted context started through
+`startAuthService` has its record moved the same way inside its `stateDir`.
+
+### What stops working
+
+Code that calls `openAuthAuthorityPlane` without the new `identityRoot` option no longer compiles. A
+start that finds a record both in `.cotal/space.<hex>/` and at its older place refuses and names the
+two files.
+
+### Before the upgrade
+
+Pass `identityRoot` to `openAuthAuthorityPlane`. Passing the directory you pass as `dir` keeps the
+identity that plane already has: it moves from `<dir>/.cotal/auth/` to `<dir>/.cotal/space.<hex>/` on
+the first start. A copy of `.cotal/auth` taken from a root last run by an older Cotal carries that
+root's record. Delete `space.<hex>/.cotal/auth/auth-instance.<hex>.json` from the copy before the
+first `cotal up --user-auth` there.
+
 ## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
