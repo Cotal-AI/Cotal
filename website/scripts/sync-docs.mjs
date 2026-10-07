@@ -1,7 +1,8 @@
 // Sync the repo's canonical Markdown (/docs/*.md + /SPEC.md) into Starlight's
 // content collection. The repo files stay the single source of truth; this only
-// derives a frontmatter title from the first H1 and rewrites cross-links to
-// Starlight routes. Generated files are git-ignored (see .gitignore).
+// derives a frontmatter title from the first H1 and a description from the first
+// paragraph, and rewrites cross-links to Starlight routes. Generated files are
+// git-ignored (see .gitignore).
 //
 // The group map below IS the site's information architecture. It publishes the same
 // pages docs/README.md (the docs index) links, and the sync refuses when the two
@@ -11,7 +12,7 @@ import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
-import { parse as parseHtml } from 'parse5';
+import { parse as parseHtml, parseFragment } from 'parse5';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -161,11 +162,16 @@ function firstH1(md) {
   return m ? m[1].trim() : null;
 }
 
-function firstParagraph(md) {
-  const body = md.replace(/^\s*#\s+.+\n+/, '');
-  const m = body.match(/^(?!\s*[#>\-*`|!])\s*(\S.+?)(?:\n\s*\n|$)/s);
-  if (!m) return null;
-  return m[1].replace(/\s+/g, ' ').replace(/[*_`[\]]/g, '').slice(0, 160).trim();
+const textOf = (node) => (node.nodeName === '#text' ? node.value : (node.childNodes ?? []).map(textOf).join(''));
+
+// Every page opens with a banner blockquote and some with headings, so the description is the
+// first top-level paragraph after them. It is rendered and read back as text, so a link keeps its
+// label and loses its target.
+function firstParagraph(md, rel) {
+  const paragraph = marked.lexer(md).find((token) => token.type === 'paragraph');
+  if (!paragraph) throw new Error(`no paragraph to describe the page: ${rel}`);
+  const text = textOf(parseFragment(marked.parser([paragraph]))).replace(/\s+/g, ' ').trim();
+  return text.length <= 160 ? text : `${text.slice(0, 159).replace(/\s+\S*$/, '')}…`;
 }
 
 function yamlEscape(s) {
@@ -223,19 +229,11 @@ for (const group of groups) {
     const slug = slugFor(name);
     let md = readFileSync(src, 'utf8');
     const title = firstH1(md) ?? name;
-    const description = firstParagraph(md);
+    const description = firstParagraph(md, rel);
     md = md.replace(/^\s*#\s+.+\n+/, ''); // drop the H1 (Starlight renders title)
     const srcDir = dirname(rel);
     md = rewriteLinks(md, srcDir === '.' ? '' : srcDir);
-    const fm = [
-      '---',
-      `title: ${yamlEscape(title)}`,
-      description ? `description: ${yamlEscape(description)}` : null,
-      '---',
-      '',
-    ]
-      .filter((l) => l !== null)
-      .join('\n');
+    const fm = ['---', `title: ${yamlEscape(title)}`, `description: ${yamlEscape(description)}`, '---', ''].join('\n');
     let ext = 'md';
     let imports = '';
     if (rel === QUICKSTART_SRC) {

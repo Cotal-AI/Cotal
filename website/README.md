@@ -6,9 +6,10 @@ readable by agents.
 
 The canonical Markdown stays in [`/docs`](../docs) and [`/SPEC.md`](../SPEC.md);
 this site renders it. `scripts/sync-docs.mjs` derives a frontmatter title from each
-file's first H1 and rewrites `*.md` cross-links to site routes, then writes the
-result into `src/content/docs/` (git-ignored). Edit the source files, not the
-generated copies.
+file's first H1 and a description from its first paragraph after the banner and any
+headings, and rewrites `*.md` cross-links to site routes, then writes the result into
+`src/content/docs/` (git-ignored). A page with no such paragraph fails the sync. Edit
+the source files, not the generated copies.
 
 ## Develop
 
