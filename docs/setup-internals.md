@@ -80,7 +80,9 @@ reads each hint off the connector's own declarations: `requires` names the execu
 still needs on PATH, `setup` says whether it owns setup actions at all, and `pluginRoot` says
 whether those actions install plugin assets. A selected candidate runs its connector-owned
 `connector` action as a narrated step built by `actionStep`, which takes the action with the input its
-type declares, so the compiler checks each pairing; a candidate
+type declares, so the compiler checks each pairing. The provider side is checked too. Each action's
+`run`, `assist.run` and `status` are function-typed properties, which TypeScript checks strictly, so a
+provider whose callback narrows the input the CLI hands it does not compile. A candidate
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
 plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
 the same way: the Claude provider reads the user-scope servers from Claude Code's config and
