@@ -1,3 +1,5 @@
+import { oneLine } from "./one-line.js";
+
 /**
  * One consistent voice for CLI provenance, on stderr: which on-disk source a command RESOLVED
  * its configuration from, and what it WROTE where. Commands must never silently pick up state
@@ -49,18 +51,12 @@ const waiting = new Set<{ stream: NodeJS.WriteStream }>();
 const absorbed = new Set<NodeJS.WriteStream>();
 
 /** Write one provenance line under the failure policy above: on stderr, else on stdout with the
- *  stderr error named, else counted as unsaid. */
+ *  stderr error named, else counted as unsaid. The failure name is escaped with the rest, since a
+ *  thrown value's message can carry a newline too. */
 function say(line: string): void {
-  send(process.stderr, oneLine(line), (failure) => {
-    send(process.stdout, oneLine(`${line} (stderr failed: ${nameOf(failure)})`), lost);
+  send(process.stderr, `${oneLine(line)}\n`, (failure) => {
+    send(process.stdout, `${oneLine(`${line} (stderr failed: ${nameOf(failure)})`)}\n`, lost);
   });
-}
-
-/** `text` under the one-line rule above, newline-terminated. The failure name is escaped with the
- *  rest, since a thrown value's message can carry a newline too. */
-function oneLine(text: string): string {
-  const escaped = text.replace(/[\p{Cc}\p{Zl}\p{Zp}]/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
-  return `${escaped}\n`;
 }
 
 /** A thrown value need not be an Error (`throw null`), and naming one must not throw, since that
