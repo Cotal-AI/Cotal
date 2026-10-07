@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import {
   registry,
   SpawnRefused,
-  watchConfirm,
+  confirmWatch,
   type AgentHandle,
+  type ConfirmPane,
   type LaunchSpec,
   type Pane,
   type Runtime,
@@ -88,10 +89,12 @@ export class CmuxRuntime implements Runtime {
         `the cmux CLI (${process.env.CMUX_BUNDLED_CLI_PATH ?? "cmux"}) couldn't reach the app — ` +
           "is cmux running, and is this process inside a cmux surface (CMUX_SOCKET_PATH set)?",
       );
-    // Nothing has the spec's command until openWorkspace, so a launch script that cannot be written
-    // is a refusal.
+    // Nothing has the spec's command until openWorkspace, so a confirm prompt that cannot match or a
+    // launch script that cannot be written is a refusal.
     let command: string;
+    let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
+      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
       command = paneCommand(
         { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,
@@ -104,19 +107,18 @@ export class CmuxRuntime implements Runtime {
     // and close it later. cmux targets the tab's single terminal surface by workspace.
     const workspace = cmux.openWorkspace(`cotal-${name}`, JSON.stringify(surface(command)), { focus: false });
 
-    if (spec.confirm)
-      watchConfirm(spec.confirm, {
-        read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
-        enter: () => cmux.sendKey("enter", { workspace }),
-        fail: (message) => {
-          console.error(`cmux runtime: "${name}": ${message}`);
-          try {
-            cmux.closeWorkspace(workspace);
-          } catch (err) {
-            console.error(`cmux runtime: failed to close tab for "${name}":`, err);
-          }
-        },
-      });
+    watch?.({
+      read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
+      enter: () => cmux.sendKey("enter", { workspace }),
+      fail: (message) => {
+        console.error(`cmux runtime: "${name}": ${message}`);
+        try {
+          cmux.closeWorkspace(workspace);
+        } catch (err) {
+          console.error(`cmux runtime: failed to close tab for "${name}":`, err);
+        }
+      },
+    });
 
     return {
       name,

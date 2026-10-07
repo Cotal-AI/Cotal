@@ -162,9 +162,10 @@ export function send(text: string, target?: Target): void {
   cmux(["send", ...targetArgs(target), "--", text]);
 }
 
-/** The text a terminal surface shows now. */
+/** The text a terminal surface shows now. Bounded like the exit probe, because the startup-confirm
+ *  watch polls it on the manager's event loop. */
 export function readScreen(target: Target): string {
-  return cmux(["read-screen", ...targetArgs(target)]);
+  return cmux(["read-screen", ...targetArgs(target)], { timeoutMs: EXIT_PROBE_MS });
 }
 
 /** Send a key press (e.g. "enter") to a terminal surface. */

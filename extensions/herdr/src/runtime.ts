@@ -5,9 +5,10 @@ import {
   hardenPrivate,
   registry,
   SpawnRefused,
-  watchConfirm,
+  confirmWatch,
   writeSecretFile,
   type AgentHandle,
+  type ConfirmPane,
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
@@ -115,11 +116,14 @@ export class HerdrRuntime implements Runtime {
     // would otherwise die later, invisibly, at the launcher's chdir).
     if (!isDirectory(cwd)) throw new SpawnRefused(`herdr runtime: cwd ${JSON.stringify(cwd)} is not a directory`);
     const layout = layoutFromEnv(); // before any side effects, so a bad value spawns nothing
-    // Nothing has the spec's command until agentStart, so a failure before it (a server that will
-    // not start, a launcher script that cannot be written) is a refusal.
+    // Nothing has the spec's command until agentStart, so a failure before it (a confirm prompt that
+    // cannot match, a server that will not start, a launcher script that cannot be written) is a
+    // refusal.
+    let watch: ((pane: ConfirmPane) => void) | undefined;
     let tabsBefore: string[];
     let launcher: PrivateLauncher;
     try {
+      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
       herdr.ensureServer(this.session);
       // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
       tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
@@ -166,25 +170,24 @@ export class HerdrRuntime implements Runtime {
       return info.paneId;
     };
 
-    if (spec.confirm)
-      watchConfirm(spec.confirm, {
-        read: () => {
-          const info = herdr.agentInfo(session, terminalId);
-          return info && herdr.readPane(session, info.paneId);
-        },
-        enter: () => herdr.sendKeys(session, currentPane(), "enter"),
-        fail: (message) => {
-          console.error(`herdr runtime: "${name}": ${message}`);
-          try {
-            herdr.closePane(session, currentPane());
-          } catch (err) {
-            if (!(err instanceof herdr.HerdrCliError && err.code === "pane_not_found"))
-              console.error(`herdr runtime: failed to close pane for "${name}":`, err);
-          } finally {
-            cleanupLauncher(launcher);
-          }
-        },
-      });
+    watch?.({
+      read: () => {
+        const info = herdr.agentInfo(session, terminalId);
+        return info && herdr.readPane(session, info.paneId);
+      },
+      enter: () => herdr.sendKeys(session, currentPane(), "enter"),
+      fail: (message) => {
+        console.error(`herdr runtime: "${name}": ${message}`);
+        try {
+          herdr.closePane(session, currentPane());
+        } catch (err) {
+          if (!(err instanceof herdr.HerdrCliError && err.code === "pane_not_found"))
+            console.error(`herdr runtime: failed to close pane for "${name}":`, err);
+        } finally {
+          cleanupLauncher(launcher);
+        }
+      },
+    });
 
     return {
       name,

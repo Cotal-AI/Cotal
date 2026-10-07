@@ -5,9 +5,10 @@ import {
   hardenPrivate,
   registry,
   SpawnRefused,
-  watchConfirm,
+  confirmWatch,
   writeSecretFile,
   type AgentHandle,
+  type ConfirmPane,
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
@@ -83,13 +84,15 @@ export class OrcaRuntime implements Runtime {
       throw new SpawnRefused(`orca runtime: unsafe agent name ${JSON.stringify(name)} (allowed: letters, digits, _ . -)`);
     if (!orca.available()) throw new SpawnRefused("orca runtime: Orca CLI/runtime is not reachable (run `orca status --json`)");
 
-    // No terminal exists yet, so a failure here (a lookup, a launcher script that cannot be written)
-    // is a refusal.
+    // No terminal exists yet, so a failure here (a confirm prompt that cannot match, a lookup, a
+    // launcher script that cannot be written) is a refusal.
+    let watch: ((pane: ConfirmPane) => void) | undefined;
     let cwdKey: string;
     let worktree: orca.OrcaWorktree;
     let cachedWorktree: boolean;
     let launcher: PrivateLauncher;
     try {
+      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
       cwdKey = realpathSync(cwd);
       const cached = this.#worktrees.get(cwdKey);
       cachedWorktree = !!cached;
@@ -123,21 +126,20 @@ export class OrcaRuntime implements Runtime {
       terminal = orca.currentTerminal(terminal) ?? terminal;
       return terminal;
     };
-    if (spec.confirm)
-      watchConfirm(spec.confirm, {
-        read: () => (orca.terminalAlive(terminal) ? orca.readScreen(current().handle) : undefined),
-        enter: () => orca.sendTerminal(current().handle, { enter: true }),
-        fail: (message) => {
-          console.error(`orca runtime: "${name}": ${message}`);
-          try {
-            orca.closeManagedTerminal(terminal);
-          } catch (err) {
-            console.error(`orca runtime: failed to close terminal for "${name}":`, err);
-          } finally {
-            cleanupLauncher(launcher);
-          }
-        },
-      });
+    watch?.({
+      read: () => (orca.terminalAlive(terminal) ? orca.readScreen(current().handle) : undefined),
+      enter: () => orca.sendTerminal(current().handle, { enter: true }),
+      fail: (message) => {
+        console.error(`orca runtime: "${name}": ${message}`);
+        try {
+          orca.closeManagedTerminal(terminal);
+        } catch (err) {
+          console.error(`orca runtime: failed to close terminal for "${name}":`, err);
+        } finally {
+          cleanupLauncher(launcher);
+        }
+      },
+    });
 
     return {
       name,

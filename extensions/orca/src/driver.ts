@@ -6,6 +6,7 @@ const MAX_BUFFER = 16 * 1024 * 1024;
 const PROBE_CACHE_MS = 250;
 const MAX_WORKTREE_PARENT_PROBES = 12;
 const EXIT_WAIT_MS = 8_000;
+const SCREEN_READ_MS = 1_000;
 
 export interface OrcaWorktree {
   id: string;
@@ -90,7 +91,7 @@ function errorText(err: unknown): string {
   return (stderr?.trim() || stdout?.trim() || e.message || String(err)).replace(/\s+/g, " ");
 }
 
-function execOrca(args: string[], opts: { cwd?: string } = {}): string {
+function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): string {
   const tried: string[] = [];
   const explicit = !!process.env.COTAL_ORCA_BIN?.trim();
   const bins = !explicit && selectedBin ? [selectedBin] : candidates();
@@ -103,6 +104,7 @@ function execOrca(args: string[], opts: { cwd?: string } = {}): string {
         encoding: "utf8",
         stdio: ["ignore", "pipe", "pipe"],
         maxBuffer: MAX_BUFFER,
+        timeout: opts.timeoutMs,
       });
       if (!explicit) selectedBin = bin;
       return out;
@@ -186,7 +188,7 @@ function parseEnvelope<T>(stdout: string, args: string[]): OrcaEnvelope<T> {
   }
 }
 
-function request<T>(args: string[], opts: { cwd?: string } = {}): OrcaEnvelope<T> {
+function request<T>(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): OrcaEnvelope<T> {
   return parseEnvelope<T>(execOrca(args, opts), args);
 }
 
@@ -197,7 +199,7 @@ async function requestAsync<T>(
   return parseEnvelope<T>(await execOrcaAsync(args, opts), args);
 }
 
-function requireOk<T>(args: string[], opts: { cwd?: string } = {}): T {
+function requireOk<T>(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): T {
   const r = request<T>(args, opts);
   if (r.ok === false) {
     const code = r.error?.code ?? "unknown_error";
@@ -400,10 +402,12 @@ export async function waitManagedTerminalExit(
 }
 
 /** The text terminal `handle` renders now. `--screen` reads the rendered frame, so a prompt a TUI
- *  draws with cursor moves reads whole instead of as stacked repaint fragments. */
+ *  draws with cursor moves reads whole instead of as stacked repaint fragments. Bounded, because the
+ *  startup-confirm watch polls it on the manager's event loop. */
 export function readScreen(handle: string): string {
-  return requireOk<{ terminal: { tail: string[] } }>(["terminal", "read", "--terminal", handle, "--screen", "--json"])
-    .terminal.tail.join("\n");
+  return requireOk<{ terminal: { tail: string[] } }>(["terminal", "read", "--terminal", handle, "--screen", "--json"], {
+    timeoutMs: SCREEN_READ_MS,
+  }).terminal.tail.join("\n");
 }
 
 export function sendTerminal(handle: string, opts: { text?: string; enter?: boolean; interrupt?: boolean } = {}): void {

@@ -30,6 +30,10 @@ export class LegacyPtyRuntime implements Runtime {
     // against `spec.env` (the env we actually launch with), not the manager's, so executable
     // selection stays inside P3 isolation.
     const { command, args } = preparePtyLaunch(spec.command, spec.args, spec.env ?? {});
+    // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
+    // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
+    // Built before the child exists, so a prompt that cannot match starts nothing.
+    const confirmMatcher = spec.confirm ? new StartupConfirmMatcher(spec.confirm) : undefined;
     const proc = pty.spawn(command, args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
@@ -71,9 +75,6 @@ export class LegacyPtyRuntime implements Runtime {
     // The child's last connector diagnostic, carried on `exit` so the reap line can name it.
     const diagnostic = new ConnectorDiagnosticReader();
 
-    // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
-    // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
-    const confirmMatcher = spec.confirm ? new StartupConfirmMatcher(spec.confirm) : undefined;
     let confirmTimer: ReturnType<typeof setTimeout> | undefined;
     if (confirmMatcher) {
       confirmTimer = setTimeout(() => {

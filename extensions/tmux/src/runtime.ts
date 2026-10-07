@@ -1,8 +1,9 @@
 import {
   registry,
   SpawnRefused,
-  watchConfirm,
+  confirmWatch,
   type AgentHandle,
+  type ConfirmPane,
   type LaunchSpec,
   type Runtime,
   type RuntimeProvider,
@@ -49,10 +50,13 @@ export class TmuxRuntime implements Runtime {
     if (!tmux.available())
       throw new SpawnRefused("tmux runtime: tmux is not available — is tmux installed and on PATH?");
 
-    // Nothing has the spec's command until openWindow, so a failure before it (a session that will
-    // not start, a launcher script that cannot be written) is a refusal.
+    // Nothing has the spec's command until openWindow, so a failure before it (a confirm prompt that
+    // cannot match, a session that will not start, a launcher script that cannot be written) is a
+    // refusal.
     let command: string;
+    let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
+      watch = spec.confirm ? confirmWatch(spec.confirm) : undefined;
       tmux.ensureSession(this.session, cwd);
       // P3: env -i strips the tmux server's inherited environment; only the connector-declared
       // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
@@ -65,19 +69,18 @@ export class TmuxRuntime implements Runtime {
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
     const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
-    if (spec.confirm)
-      watchConfirm(spec.confirm, {
-        read: () => tmux.capturePane(paneId),
-        enter: () => tmux.sendKey("Enter", paneId),
-        fail: (message) => {
-          console.error(`tmux runtime: "${name}": ${message}`);
-          try {
-            tmux.closeWindow(windowId);
-          } catch (err) {
-            console.error(`tmux runtime: failed to close window for "${name}":`, err);
-          }
-        },
-      });
+    watch?.({
+      read: () => tmux.capturePane(paneId),
+      enter: () => tmux.sendKey("Enter", paneId),
+      fail: (message) => {
+        console.error(`tmux runtime: "${name}": ${message}`);
+        try {
+          tmux.closeWindow(windowId);
+        } catch (err) {
+          console.error(`tmux runtime: failed to close window for "${name}":`, err);
+        }
+      },
+    });
 
     return {
       name,

@@ -160,8 +160,9 @@ export function paneState(paneId: string): PaneState {
 
 /** The text pane `paneId` (`%N`) shows now, or undefined once it has exited. */
 export function capturePane(paneId: string): string | undefined {
+  let screen: string;
   try {
-    return execFileSync("tmux", ["capture-pane", "-p", "-t", paneId], {
+    screen = execFileSync("tmux", ["capture-pane", "-p", "-t", paneId], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
@@ -170,6 +171,9 @@ export function capturePane(paneId: string): string | undefined {
     if (paneState(paneId) === "exited") return undefined;
     throw err;
   }
+  // capture-pane also reads a pane kept after its process exited (`remain-on-exit`); a pane still
+  // running after the capture was running during it.
+  return paneState(paneId) === "exited" ? undefined : screen;
 }
 
 /** Bounded polling over tmux's authoritative pane inventory. */
