@@ -948,7 +948,6 @@ export async function openAuthAuthorityPlane(opts: {
             const observed = await gate.observe();
             if (!observed || observed.state !== "open")
               throw new EpEnvelopeError("failed-precondition", "manager-service renewal found no current open manager gate");
-            const actors = remoteManagerActors(r.instanceId);
             if (observed.principal !== `${owner}.${actors.serve}`)
               throw new EpEnvelopeError("permission-denied", "manager-service renewal gate does not belong to this authenticated owner and instance");
             const expectedProof = remoteManagerCurrentRegistrationProof(dataAccount.signingSeed, owner, r, observed);
