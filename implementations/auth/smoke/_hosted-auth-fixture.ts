@@ -34,6 +34,8 @@ export interface HostedAuthFixture {
   /** Provision one more injected store for an EXISTING space slug under a freshly created account
    *  (same-slug recreation). The account is not preloaded on the broker. */
   recreateSlug(space: string, coordinate: string): Promise<{ store: MemoryStore; accountPublicKey: string }>;
+  stopBroker(): Promise<void>;
+  restartBroker(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -63,13 +65,24 @@ export async function startHostedAuthFixture(label: string, count = 2): Promise<
     accounts.push({ space, accountPublicKey: auth.account.pub, store, stateDir, sentinelCreds: callout.sentinelCreds, auth });
   }
   writeFileSync(join(dir, "server.conf"), serverConfig(broker, spaceAccounts, { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js"), extraAccounts: calloutAccounts }));
-  const nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-  const release = teardownOnSignal(nats, dir);
+  let nats: ChildProcess = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  let release = teardownOnSignal(nats, dir);
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(servers); if (!up) await wait(200); }
   if (!up) { await killAndAwaitExit(nats, "SIGKILL"); release(); throw new Error(`nats-server did not come up on ${port}`); }
   return {
     servers, dir, accounts,
+    async stopBroker() {
+      await killAndAwaitExit(nats, "SIGTERM");
+      nats.unref();
+      release();
+    },
+    async restartBroker() {
+      nats = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+      release = teardownOnSignal(nats, dir);
+      for (let i = 0; i < 50; i++) { if (await isReachable(servers)) return; await wait(200); }
+      throw new Error("hosted-auth broker did not restart");
+    },
     async recreateSlug(space, coordinate) {
       const auth = composeSpaceAuth(broker, await createSpaceAccountAuth(broker, space));
       const store = new MemoryStore({ kind: "injected", coordinate });

@@ -35,12 +35,15 @@
  *  - CLEAN CLOSE: scan-capable clients close FIRST, then the row CASes `held → released` (a crash
  *    leaves `held`, which the next open reclaims via the oracle), then the barrier closes.
  *
- * OPERATOR FACES (ux co-requirement — THREE distinct states, never collapsed):
+ * OPERATOR FACES (ux co-requirement — distinct states, never collapsed):
  *  1. live peer      → a real double-launch: stop the other auth process.
  *  2. UNKNOWN        → fail-safe refusal on an inconclusive observation: wait/retry, check the
  *                      delivery daemon and the broker link. NEVER "stop the other process".
  *  3. mid-life death → this plane fenced itself deliberately; restart it (the successor may
  *                      briefly land on state 2).
+ *  4. release unreachable → clean close refuses with `release-unreachable` (retryable); the
+ *                          caller can retry close after the broker link returns. A `lost`
+ *                          refusal is not retryable: a successor may own the row.
  */
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
@@ -108,7 +111,8 @@ export interface PlaneClaimHold {
   fence(reason: string): void;
   /** Clean close: CAS `held → released` (call ONLY after the scanner clients are closed). Rejects
    *  when the row was not released: a row no longer held by this open is left alone (a successor
-   *  may own it), and a failed write leaves it held for the next open to reclaim like a crash. */
+   *  may own it), and an unreachable write refuses retryably so close can be called again.
+   *  An already-released row with this claim's identity and scanner tuples succeeds. */
   release(): Promise<void>;
 }
 
@@ -117,9 +121,10 @@ export interface PlaneClaimHold {
  *  corruption keys on `reason`. */
 export const PLANE_CLAIM_REFUSED = "ai.cotal.auth.plane-claim-refused";
 
-/** `unknown` is the inconclusive-liveness refusal, coded `unavailable`; every other reason is
- *  `failed-precondition`. `lost` is a row no longer held by this open. */
-export type PlaneClaimRefusal = "corrupt" | "live-peer" | "unknown" | "concurrent" | "fenced" | "released" | "lost";
+/** `unknown` and `release-unreachable` are coded `unavailable`; other reasons are
+ *  `failed-precondition`. Only `release-unreachable` means retrying close may release this hold;
+ *  `lost` means the row is no longer held by this open. */
+export type PlaneClaimRefusal = "corrupt" | "live-peer" | "unknown" | "concurrent" | "fenced" | "released" | "lost" | "release-unreachable";
 
 interface PlaneClaimRefusedDetail extends EpErrorDetail {
   kind: typeof PLANE_CLAIM_REFUSED;
@@ -269,9 +274,10 @@ export async function acquirePlaneClaim(opts: {
 
   let fencedReason: string | undefined;
   let releasing: Promise<void> | undefined;
+  let releaseStarted = false;
   const assertHeld = async (when: "before" | "after"): Promise<void> => {
     if (fencedReason !== undefined) throw refused("failed-precondition", "fenced", fencedReason);
-    if (releasing !== undefined) throw refused("failed-precondition", "released", `the plane claim for space "${space}" was released by this process; a sealed scan can no longer run under it`);
+    if (releaseStarted) throw refused("failed-precondition", "released", `the plane claim for space "${space}" was released by this process; a sealed scan can no longer run under it`);
     const entry = await kv.get(PLANE_CLAIM_KEY);
     const row = entry === null ? undefined : parsePlaneClaimRow(entry.value);
     // Held by THIS open = state + claimId + generation + BOTH pinned scanner tuples (a row rewrite
@@ -290,24 +296,36 @@ export async function acquirePlaneClaim(opts: {
     fence: (reason: string) => {
       if (fencedReason === undefined) fencedReason = reason;
     },
-    release: () => (releasing ??= (async () => {
-      let row: PlaneClaimRow | undefined;
-      try {
-        const entry = await kv.get(PLANE_CLAIM_KEY);
-        row = entry === null ? undefined : parsePlaneClaimRow(entry.value);
-        // Release ownership = the FULL held invariant (state + claimId + generation + both tuples),
-        // exactly what assertHeld checks.
-        if (entry !== null && row !== undefined && row.state === "held" && row.claimId === claimId && row.generation === gen &&
-            sameTuple(row.ledger, opts.ledger) && sameTuple(row.records, opts.records)) {
-          await kv.update(PLANE_CLAIM_KEY, enc.encode(JSON.stringify({ ...row, state: "released" } satisfies PlaneClaimRow)), entry.revision);
-          log(`plane-claim: released space "${space}" (generation ${row.generation})`);
-          return;
+    release: () => {
+      if (releasing !== undefined) return releasing;
+      releaseStarted = true;
+      const flight = (async () => {
+        let row: PlaneClaimRow | undefined;
+        try {
+          const entry = await kv.get(PLANE_CLAIM_KEY);
+          row = entry === null ? undefined : parsePlaneClaimRow(entry.value);
+          // Release ownership = the FULL held invariant (state + claimId + generation + both tuples),
+          // exactly what assertHeld checks.
+          if (entry !== null && row !== undefined && row.state === "released" && row.claimId === claimId && row.generation === gen &&
+              sameTuple(row.ledger, opts.ledger) && sameTuple(row.records, opts.records)) return;
+          if (entry !== null && row !== undefined && row.state === "held" && row.claimId === claimId && row.generation === gen &&
+              sameTuple(row.ledger, opts.ledger) && sameTuple(row.records, opts.records)) {
+            await kv.update(PLANE_CLAIM_KEY, enc.encode(JSON.stringify({ ...row, state: "released" } satisfies PlaneClaimRow)), entry.revision);
+            log(`plane-claim: released space "${space}" (generation ${row.generation})`);
+            return;
+          }
+        } catch (e) {
+          const error = refused("unavailable", "release-unreachable", `plane-claim: release for space "${space}" failed (${e instanceof Error ? e.message : String(e)}) - the row may stay held; retry close after the broker link returns (fail-safe)`);
+          error.cause = e;
+          throw error;
         }
-      } catch (e) {
-        throw new Error(`plane-claim: release for space "${space}" failed (${e instanceof Error ? e.message : String(e)}) - the row stays held; the next open reclaims it once these connections drop (fail-safe)`, { cause: e });
-      }
-      throw refused("failed-precondition", "lost", `plane-claim: NOT releasing space "${space}" - the row is ${row === undefined ? "missing/unparseable" : row.state !== "held" || row.claimId !== claimId || row.generation !== gen ? `${row.state} under claim ${row.claimId} generation ${row.generation}` : "held under this claimId but with FOREIGN scanner tuples"}, not held by this process (a successor may own it)`);
-    })()),
+        throw refused("failed-precondition", "lost", `plane-claim: NOT releasing space "${space}" - the row is ${row === undefined ? "missing/unparseable" : row.state !== "held" || row.claimId !== claimId || row.generation !== gen ? `${row.state} under claim ${row.claimId} generation ${row.generation}` : "held under this claimId but with FOREIGN scanner tuples"}, not held by this process (a successor may own it)`);
+      })();
+      releasing = flight;
+      // Keep a successful flight memoized, but never cache a rejected release.
+      void flight.catch(() => { if (releasing === flight) releasing = undefined; });
+      return flight;
+    },
   };
 }
 
