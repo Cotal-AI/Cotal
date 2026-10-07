@@ -572,30 +572,38 @@ class Scope {
   }
 }
 
-/** Collect the identifiers a binding pattern introduces. */
-function patternNames(node: AnyNode, out: string[]): void {
+/**
+ * Collect the targets a pattern writes: identifiers, and in an assignment pattern also member
+ * expressions (`[o.a] = …`). A non-pattern node is its own single target.
+ */
+function patternTargets(node: AnyNode, out: AnyNode[]): void {
   switch (node.type) {
-    case "Identifier":
-      out.push(node.name as string);
-      break;
     case "ObjectPattern":
       for (const p of node.properties as AnyNode[]) {
-        if (p.type === "RestElement") patternNames(p.argument as AnyNode, out);
-        else patternNames(p.value as AnyNode, out);
+        if (p.type === "RestElement") patternTargets(p.argument as AnyNode, out);
+        else patternTargets(p.value as AnyNode, out);
       }
       break;
     case "ArrayPattern":
-      for (const el of node.elements as (AnyNode | null)[]) if (el !== null) patternNames(el, out);
+      for (const el of node.elements as (AnyNode | null)[]) if (el !== null) patternTargets(el, out);
       break;
     case "AssignmentPattern":
-      patternNames(node.left as AnyNode, out);
+      patternTargets(node.left as AnyNode, out);
       break;
     case "RestElement":
-      patternNames(node.argument as AnyNode, out);
+      patternTargets(node.argument as AnyNode, out);
       break;
     default:
+      out.push(node);
       break;
   }
+}
+
+/** Collect the identifiers a binding pattern introduces. */
+function patternNames(node: AnyNode, out: string[]): void {
+  const targets: AnyNode[] = [];
+  patternTargets(node, targets);
+  for (const t of targets) if (t.type === "Identifier") out.push(t.name as string);
 }
 
 /**
@@ -1283,6 +1291,18 @@ function capturedWrite(at: AnyNode, name: string, combinator: string, v: Validat
   );
 }
 
+/** Report each binding declared outside the branch that any target of a write lands on. */
+function checkWriteTarget(target: AnyNode, scope: Scope, combinator: string, v: Validator): void {
+  const targets: AnyNode[] = [];
+  patternTargets(target, targets);
+  for (const t of targets) {
+    const root = rootIdentifier(t);
+    if (root !== undefined && scope.lookup(root.name as string) === undefined) {
+      capturedWrite(root, root.name as string, combinator, v);
+    }
+  }
+}
+
 /** Walk one branch thunk with its OWN scope chain: anything it did not declare, it captured. */
 function checkCapturedWrites(fn: AnyNode, combinator: string, v: Validator, seen: Set<AnyNode>): void {
   if (seen.has(fn)) return;
@@ -1317,10 +1337,7 @@ function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Valida
       // itself; the runtime half (values carry the depth they were born at) covers what a value
       // reached through an alias hides from this walk.
       const target = (node.type === "AssignmentExpression" ? node.left : node.argument) as AnyNode;
-      const root = rootIdentifier(target);
-      if (root !== undefined && scope.lookup(root.name as string) === undefined) {
-        capturedWrite(root, root.name as string, combinator, v);
-      }
+      checkWriteTarget(target, scope, combinator, v);
       for (const c of children(node)) walkCaptured(c, scope, combinator, v, seen);
       return;
     }
@@ -1394,6 +1411,10 @@ function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Valida
 
     case "ForStatement":
     case "ForOfStatement": {
+      // `for (x of xs)` with no declaration assigns `x` on every iteration.
+      if (node.type === "ForOfStatement" && (node.left as AnyNode).type !== "VariableDeclaration") {
+        checkWriteTarget(node.left as AnyNode, scope, combinator, v);
+      }
       const inner = new Scope(scope);
       for (const c of children(node)) walkCaptured(c, inner, combinator, v, seen);
       return;
