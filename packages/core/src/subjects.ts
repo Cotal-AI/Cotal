@@ -79,7 +79,7 @@ function channelPath(channel: string): string {
  *  on every concrete value — it only additionally lets `*` through, e.g. for `svc.*.…` allow rules.
  *  Used for the *service/role* slots (`svc.<role>`, `ctl.<tier>`); the owner/actor identity slots go
  *  through {@link ownerToken} (fail-loud, never rewritten). */
-function routeToken(s: string): string {
+export function routeToken(s: string): string {
   return s === "*" ? "*" : token(s);
 }
 
@@ -498,6 +498,18 @@ export function isPrincipalOwnerToken(owner: string, opts: { allowLocal?: boolea
  *  manager's mediated-join validation (`channel ∈ allowSubscribe`) so they can't drift. */
 export function channelInAllow(allow: string[], channel: string): boolean {
   return allow.some((a) => subjectMatches(a, channel));
+}
+
+/** The read ACL an agent's lists resolve to: an omitted or empty `allowSubscribe` reads exactly
+ *  `subscribe`. Throws when a subscription lies outside it. Every site that resolves an agent's
+ *  read list calls this, so a launcher, the session it starts and the provisioner cannot disagree
+ *  on the default. */
+export function resolveReadAcl(subscribe: string[], allowSubscribe: string[] | undefined): string[] {
+  const allow = allowSubscribe?.length ? allowSubscribe : subscribe;
+  for (const ch of subscribe)
+    if (!channelInAllow(allow, ch))
+      throw new Error(`subscribe "${ch}" is not within allowSubscribe [${allow.join(", ")}]`);
+  return allow;
 }
 
 /** Does policy pattern `cap` COVER policy pattern `pattern` — i.e. is every channel matched by
@@ -1063,6 +1075,22 @@ export function managerBucket(space: string): string {
  *  space's resources are listed, never swept by prefix. {@link objectStoreStream} is that name. */
 export function artifactBucket(space: string): string {
   return `cotal_artifacts_${token(space)}`;
+}
+
+/** Name of one manager instance's **transfer bucket**: the Object Store a carried resume transcript
+ *  travels through to that instance (docs/design/resume-transfer.md). One bucket per receiving
+ *  instance, because a grant matches whole subject tokens and nothing inside one bucket carries the
+ *  target in a whole token: the stream name is the only place the read partition can live. Like
+ *  {@link artifactBucket} it sits outside `cotal.<space>.>`, so it is enumerated by name. */
+export function transferBucket(space: string, instanceId: string): string {
+  return `cotal_xfer_${token(space)}_${token(instanceId)}`;
+}
+
+/** Whether `stream` backs one of `space`'s transfer buckets. Instance ids are `[a-z0-9]` lifecycle
+ *  tokens, so another space whose token extends this one with `_` never matches. */
+export function isTransferStream(space: string, stream: string): boolean {
+  const prefix = objectStoreStream(`cotal_xfer_${token(space)}_`);
+  return stream.startsWith(prefix) && /^[a-z0-9]+$/.test(stream.slice(prefix.length));
 }
 
 /** The JetStream stream backing an Object Store bucket. The `OBJ_` prefix is the Object Store's own

@@ -18,9 +18,9 @@
     },
     {
       "name": "the birth-depth check is dropped, so an aliased outer value is writable inside a branch",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "    if (birthDepth(target) < frame.depth) {",
-      "replace": "    if (false) {",
+      "file": "packages/lang/src/values.ts",
+      "find": "  if (birthDepth(target) < frame.depth) throw crossedWrite(frame, binding);",
+      "replace": "  if (false) throw crossedWrite(frame, binding);",
       "expectRed": "a value born outside a concurrent branch and written inside it, through an alias, is L2032",
       "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
       "cell": "a value born outside a concurrent branch and written inside it, through an alias, is L2032",

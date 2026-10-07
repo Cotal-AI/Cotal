@@ -50,16 +50,18 @@ export interface LaunchOpts {
   capabilities?: string[];
   /** Path to an agent definition file (`.cotal/agents/<name>.md`). The connector
    *  passes it through (`COTAL_AGENT_FILE`) so the joined session reads its own
-   *  card from it, and applies the file's persona/model at launch. */
+   *  card from it, and applies the file's persona at launch. */
   configPath?: string;
-  /** Explicit model override — the `cotal start --model <m>` flag. Takes precedence over the
-   *  agent file's `model:` and is applied even when no agent file is present. Each connector
-   *  renders it in its host form (Claude `--model`, OpenCode `config.model`, Hermes `HERMES_MODEL`). */
+  /** The model the launcher resolved: the `--model` flag, else the agent file's `model:`. The
+   *  launcher checks and records this value, so a connector renders it as given in its host form
+   *  (Claude `--model`, OpenCode `config.model`, Hermes `HERMES_MODEL`) and never re-reads it from
+   *  {@link configPath}, which may have changed since. Absent means the harness default. */
   model?: string;
-  /** Optional model variant selector — a connector-defined variant of the selected/default model
-   *  (for example provider-specific reasoning effort). Takes precedence over the agent file's
-   *  `variant:`. A connector that supports variants renders it in its host form; unsupported
-   *  connectors fail loud rather than silently ignoring it. */
+  /** The model variant the launcher resolved: the `--variant` flag, else the agent file's
+   *  `variant:`. A connector-defined variant of the selected/default model (for example
+   *  provider-specific reasoning effort), rendered as given like {@link model}. A connector that
+   *  supports variants renders it in its host form; unsupported connectors fail loud rather than
+   *  silently ignoring it. */
   variant?: string;
   /** Opaque, connector-specific launch options — an arbitrary key→value map core forwards VERBATIM
    *  and never inspects. Connectors forward well-shaped keys raw into their own host form (CLI flags,
@@ -80,6 +82,12 @@ export interface LaunchOpts {
    *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
    *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
   resume?: string;
+  /** A carried {@link resume} (docs/design/resume-transfer.md section 7): the transcript was carried
+   *  from another host and staged by the manager. `home` is the seat-private config home the manager
+   *  created for this seat, `transcript` the staged copy the connector places into it, and `cwd` the
+   *  seat's working directory, which the home must trust. Only a connector that declares
+   *  {@link Connector.resumeTranscript} receives it. */
+  carried?: { home: string; transcript: string; cwd: string };
   /** Exact session of THIS connector process to continue after a supervised process restart.
    *  Distinct from {@link resume}: `resume` forks FROM an existing transcript into a new session;
    *  `continueSession` reopens the already-meshed session itself. Manager-internal only, never a
@@ -123,10 +131,14 @@ export interface LaunchOpts {
    * again later. Absent for standalone/foreground launches that have no manager boot inventory. */
   resolvedBinaries?: Readonly<Record<string, string>>;
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
-   *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can
-   *  point at any repo — doesn't scatter that state into the target tree. The per-agent working
-   *  directory itself is the manager's concern and is passed to the runtime, not here. */
+   *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory ({@link cwd})
+   *  — which can point at any repo — doesn't scatter that state into the target tree. */
   workspaceRoot?: string;
+  /** The directory a supervised seat runs in, set by the manager beside the runtime spawn. A
+   *  connector whose harness stops an untrusted directory at a startup question refuses it here,
+   *  since no one is at a supervised seat to answer. A foreground launch runs in the operator's
+   *  terminal and omits it. */
+  cwd?: string;
 }
 
 /** A recipe for starting an agent as a mesh node — command, args, and extra env. */
@@ -246,6 +258,10 @@ export interface Connector extends Extension {
    *  stays as the backstop. Only a connector that forks-from a prior session (never hijacks it) sets
    *  this `true`. */
   readonly supportsResume?: boolean;
+  /** Where this connector's host keeps resumable transcripts, so the CLI can carry one to a manager
+   *  on another host (docs/design/resume-transfer.md section 10). A connector without it never receives
+   *  a carried transcript: its resume id resolves on the manager's host. */
+  readonly resumeTranscript?: ResumeTranscriptLocator;
   /** Whether this connector can reopen the exact host session named by
    *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
   readonly supportsSessionContinuation?: boolean;
@@ -292,6 +308,14 @@ export interface Connector extends Extension {
    *  one is worse than none: someone waits for a prompt that will never appear and reads the
    *  startup as hung. Omit when there is nothing specific to say. */
   readonly launchHint?: string;
+}
+
+/** Finds the transcript of a resumable session on this host. */
+export interface ResumeTranscriptLocator {
+  /** The transcript file of session `id` under the host configuration `env` names, with the session's
+   *  title when it has one, or `undefined` when this host holds no session `id`. Throws when the id is
+   *  ambiguous or names a session by title rather than by id. */
+  find(id: string, env: NodeJS.ProcessEnv): { path: string; title?: string } | undefined;
 }
 
 /** The only continuity classes a maintenance report may promise for a connector. */

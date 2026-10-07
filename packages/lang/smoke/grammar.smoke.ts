@@ -384,11 +384,11 @@ accepts(
   "and returning the value instead of assigning it is the repair the error asks for",
   'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);',
 );
-// `conclave` is one body with nothing to race, so a write from inside it is as ordered as a write
-// anywhere else in the program. Sweeping it in with the concurrent combinators would ban correct
-// code, which is the failure mode a static rule cannot afford.
-accepts(
-  "a conclave body may write an outer binding, because nothing runs beside it",
+// `conclave` is one body with nothing to race, but a settled conclave is replayed without entering
+// its body, so a write from inside it happens on the live run only.
+rejects(
+  "a conclave body may not write an outer binding, because its replay never runs the write",
+  "L2032",
   'let notes = "";\nconst a = await spawn("x");\nawait conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t" });\nlog(notes);',
 );
 

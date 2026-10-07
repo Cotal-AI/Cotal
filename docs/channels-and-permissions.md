@@ -14,7 +14,7 @@ wildcard subtrees), declared in agent-file frontmatter and/or per-channel in a m
 | Verb | What it grants | Default | Declared in |
 |---|---|---|---|
 | `subscribe` | The **active read set**: channels the agent auto-listens to at boot. Must be within `allowSubscribe`. | none (list a channel to get it) | agent frontmatter, manifest channel list |
-| `allowSubscribe` | The **read ACL**: channels the agent *may* read (live and history). | falls back to `subscribe` | agent frontmatter, manifest channel list |
+| `allowSubscribe` | The **read ACL**: channels the agent *may* read (live and history). | falls back to `subscribe` when omitted or empty | agent frontmatter, manifest channel list |
 | `allowPublish` | The **post ACL**: channels the agent may post to. **Default-deny.** | deny (nobody posts unless listed) | agent frontmatter, manifest channel list |
 
 `subscribe` only sets what an agent tunes into; it never widens read. Read is `allowSubscribe`;

@@ -25,15 +25,17 @@
  *
  * The driver's outcome contract is the walker's, so a failure that crosses the thread boundary is
  * rehydrated into the class `drive()` grades: L5010 back into `JournalAppendRejected` (from the
- * store failure this process itself just witnessed — the thread only reflected it), L5012 back
- * into `RunReleased`, and everything else into an error carrying the same name, code and message
- * it failed with inside the thread.
+ * store failure this process itself just witnessed — the thread only reflected it), L5006 back into
+ * `EffectResultTooLarge` (from the step, size and bound the thread reports, since that refusal
+ * happens in the thread ahead of any append), L5012 back into `RunReleased`, and everything else
+ * into an error carrying the same name, code and message it failed with inside the thread.
  */
 
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
   EffectError,
+  EffectResultTooLarge,
   Journal,
   JournalAppendRejected,
   RunReleased,
@@ -76,6 +78,8 @@ export interface EngineHostRequest {
   readonly store: JournalStore;
   /** The activated prefix: recorded entries for a resume, empty for a fresh run. */
   readonly entries: readonly JournalEntry[];
+  /** The journal's result bound (L5006). The journal it bounds is built in the thread, so it crosses as data. */
+  readonly resultBytes?: number;
   readonly shouldStop: () => string | undefined;
   readonly file?: string;
   readonly seed?: string;
@@ -128,32 +132,34 @@ class WitnessedStore implements JournalStore {
 }
 
 function rehydrate(failed: WorkerRunFailed, store: WitnessedStore): Error {
-  if (failed.code === "L5010") {
-    // The append that failed happened in this process; the thread's L5010 is its reflection. A
-    // reflection with no witnessed failure behind it means the two sides disagree about what
-    // happened, and that is said rather than papered over with a parsed message.
-    if (store.failure === undefined) {
-      return new Error(
-        `the engine thread reported L5010 (journal append rejected) but this host's store recorded no failed append; the run cannot be graded: ${failed.message}`,
-      );
+  switch (failed.class) {
+    case "rejected":
+      // The append that failed happened in this process; the thread's L5010 is its reflection. A
+      // reflection with no witnessed failure behind it means the two sides disagree about what
+      // happened, and that is said rather than papered over with a parsed message.
+      if (store.failure === undefined) {
+        return new Error(
+          `the engine thread reported L5010 (journal append rejected) but this host's store recorded no failed append; the run cannot be graded: ${failed.message}`,
+        );
+      }
+      return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);
+    case "too-large":
+      return new EffectResultTooLarge(failed.stepKey, failed.bytes, failed.bound);
+    case "released":
+      return new RunReleased(failed.reason);
+    case "held":
+      return new RunHeld(failed.step, failed.reason, failed.pending);
+    // An effect failure carries its domain across whole, because callers branch on `kind` exactly as
+    // they do when the walker raises the same class in-process.
+    case "effect":
+      return new EffectError(failed.code, failed.kind, failed.message, failed.detail);
+    case "error": {
+      const e = new Error(failed.message);
+      e.name = failed.name;
+      if (failed.code !== undefined) (e as Error & { code?: string }).code = failed.code;
+      return e;
     }
-    return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);
   }
-  if (failed.code === "L5012") {
-    return new RunReleased(failed.reason ?? failed.message);
-  }
-  if (failed.code === "L5025") {
-    return new RunHeld(failed.step ?? "(step not carried)", failed.reason ?? failed.message, failed.pending === true);
-  }
-  // An effect failure carries its domain across whole, because callers branch on `kind` exactly as
-  // they do when the walker raises the same class in-process.
-  if (failed.code !== undefined && failed.kind !== undefined) {
-    return new EffectError(failed.code, failed.kind, failed.message, failed.detail);
-  }
-  const e = new Error(failed.message);
-  e.name = failed.name;
-  if (failed.code !== undefined) (e as Error & { code?: string }).code = failed.code;
-  return e;
 }
 
 /** Run or resume a program on the compiled engine, with the walker's `RunResult`. */
@@ -180,6 +186,7 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
       handler: "bridged",
       pins: req.pins,
       entries: req.entries,
+      ...(req.resultBytes !== undefined ? { resultBytes: req.resultBytes } : {}),
       ...(req.file !== undefined ? { file: req.file } : {}),
       ...(req.seed !== undefined ? { seed: req.seed } : {}),
       ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),

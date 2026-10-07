@@ -27,9 +27,10 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import type { ActionContext, CotalEndpoint as CotalEndpointType, EpCaller, ParsedEpRequest, ControlReply, ControlRequest } from "@cotal-ai/core";
+import { workspaceSecretStore } from "@cotal-ai/workspace";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 process.env.COTAL_HOME = join(dir, "home");
@@ -105,7 +106,7 @@ try {
         const own = await daemon!.readDeliveryLeaseEntry(0);
         holds = own !== undefined && daemon!.ownsDeliveryLease(own.info);
       } catch { holds = false; }
-      return { ok: true, data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: daemon!.card.id, holdsDeliveryLease: holds } };
+      return { ok: true, data: { identity: workspaceSecretStore(workspaceRoot).identity, responder: daemon!.card.id, holdsDeliveryLease: holds } };
     }
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     evictCalls++;

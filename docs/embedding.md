@@ -45,7 +45,7 @@ are marked; import them with `import type`.
 |---|---|---|
 | `runAuthService(args, store?)` | `@cotal-ai/auth` | boot the auth-service daemon; `store` injects the secret material. |
 | `runDelivery(args, store?)` | `@cotal-ai/delivery` | boot the delivery daemon; `store` injects the scoped `delivery` cred. |
-| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
+| `startAuthService(inputs)` | `@cotal-ai/auth` | start one account-scoped auth-service context and return an `AuthServiceHandle` with the loopback `url`, the per-start `cap`, `readiness`, `drain`, and idempotent `close`. `close` rejects when the context did not release its plane claim: the claim row was no longer its own, or the release write failed. The row then stays held, and the next start reclaims it through the liveness oracle. With the optional `publicFace` input it also serves the public exchange face and carries `publicUrl`. With the optional `platformControl` input the handle also has `platformControlAuthority`, the in-process platform control door, `platformControlReadiness`, its read-only readiness read, `observeManagerGate`, the manager gate read a host composing the delegated user intent decisions passes them, and `activateManagedLifecycle`, the activation that host runs at a delegated launch's pinned lifecycle UID. With `platformControl.host` it also has `registerHostIncarnation`, which registers the host process's own endpoint instance and returns the incarnation a delegated execution pins, `observeHostGate`, the read of that endpoint's issuance gate, and `awaitHostFence`, which resolves once a later registration or barrier fences an incarnation. `runAuthService` remains the CLI entry. |
 | `PlatformControlAuthorityRequest`, `PlatformControlInnerRequest`, `PlatformControlAuthorityResult`, `PlatformControlAssignment` *(types)* | `@cotal-ai/core` | the closed envelope, its inner request union, its result and the backend's assignment row for `platformControlAuthority`. `platformControlOwner` in `@cotal-ai/auth` derives the `p_` owner the door issues under. |
 | `startDeliveryService(inputs)` | `@cotal-ai/delivery` | start one account-scoped delivery instance and return a `HostedServiceHandle` with `readiness`, `drain`, and idempotent `close`. The process runner remains the CLI entry. |
 | `deliveryCredsKey(space, composition)`, `membershipRwCredsKey(space, composition)` | `@cotal-ai/workspace` | build the secret-store keys the delivery cred and the membership feed's rw cred are read/re-signed under. Keys are **per-space**: `space.<hex>/<kind>`. A hosted composition passes `{ injected: true }`. |
@@ -54,7 +54,7 @@ are marked; import them with `import type`.
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
 | `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/platform-pooled-control-authority.md) design describes. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
-| `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumer; broker inactivity expiry remains the crash or deletion-failure backstop. |
+| `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
 The remote manager authority parser accepts `renewStandingBundle` and `renewRunDriver` only with
 an assigned account nkey, the current manager process epoch, and a host-authenticated registration
@@ -97,6 +97,7 @@ through the existing scoped host operation so deregistration can finish without 
 | `deriveOwnerToken`, `validateUserToken` | owner derivation; strict bearer validation. |
 | `cotalAuthProvider` | the self-registering `auth-provider` extension. |
 | `ensureCalloutAuth`/`loadCalloutAuth`, `ensureIssuer`/`loadIssuer`, `ensureOwnerSecret`/`loadOwnerSecret` | read/write the auth secret kinds through a `SecretStore`. |
+| `PLANE_CLAIM_REFUSED`, `planeClaimRefusal`, `PlaneClaimRefusal` *(type)* | every plane-claim refusal carries a `PLANE_CLAIM_REFUSED` detail, and `planeClaimRefusal(err)` reads its `reason`: `corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released` or `lost`. Only `unknown`, an inconclusive liveness observation, is coded `unavailable`. A host can retry contention and stop on a corrupt row without matching message text. |
 
 **Seams and the wire** (all `@cotal-ai/core` unless noted)
 
@@ -135,8 +136,9 @@ and closes any resources created by that late completion.
 
 `startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
-under the explicit `stateDir`. The context never resolves a workspace root from the working
-directory and has no local manager, so only remote manager gates can be selected. It returns after
+under the explicit `stateDir`, and the auth plane's instance identity in its `.cotal/space.<hex>/`.
+The context never resolves a workspace root from the working directory and has no local manager, so
+only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A fenced plane or
 a lost broker connection makes that context `unavailable` and closes it without exiting the process.
 The host writes no discovery file for it. The handle carries what `auth-service.json` holds for a
@@ -183,12 +185,17 @@ authorizes its serve grant, this start is refused with `expired`.
 manager identities stored under an explicit account-local root. Use these public exports when
 composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
 `managerClusterArtifacts()` returns the canonical document, manifest and their digests used by
-registration. Supply its `[document, manifest]` pair when constructing the activation request
-with `remoteManagerClient.remoteManagerAuthorityRequest` and the stock registration proof.
+registration. Pass its `[document, manifest]` pair as `contractArtifacts` to both
+`remoteManagerRegistrationProof(owner, state, contractArtifacts)` from `@cotal-ai/core` and
+`remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
+The request builder takes each operation's coordinates as named fields of its last argument.
 The host still validates the artifact closure and current registration before activation.
 The namespace includes closed standing/run renewal, admission, maintenance, enrollment and
-retirement helpers. It provides no signer or new grant. The host still owns authenticated issuance,
-current registration and activated-run observations, and any guarded foreign-holder repair.
+retirement helpers. `remoteRunHosting` builds the four `runHosting` callbacks from the registration
+and the transport you supply for the host's run admission, run attempt and authority requests, so
+your manager sends the run requests the stock manager sends. The namespace provides no signer or
+new grant. The host still owns authenticated issuance, current registration and activated-run
+observations, and any guarded foreign-holder repair.
 An embedding must preserve those checks and supply a supported runtime; the client exports alone
 do not provide a pooled runtime, an authority service or a complete hosted context.
 
@@ -213,6 +220,12 @@ endpoint is surviving, including failed credential renewal, reconnect retries, a
 it keeps retrying after the broker refuses a durable channel's live subscription. A host may choose
 to ignore warnings for a one-shot endpoint whose awaited operation owns the verdict, but that choice
 should be explicit. An unhandled warning is nonfatal and silent.
+
+The `error` event carries a fault the endpoint cannot return from a call, such as a refused
+subscription or a refused publish that no request was waiting on. Attach a listener before `start()`,
+since Node throws on an unhandled `error`. A denial the broker returns to a request, such as an
+observer's read of the DM stream, reaches only that call, which decides what it means, and is not
+emitted again as an `error`.
 
 ## Booting the daemons
 
@@ -286,7 +299,10 @@ cross-host composition cannot satisfy that by writing one filesystem and fingerp
 divergent pair is refused naming both stores. The identity is the store the daemon actually
 reloads: an injected coordinate, the workstation root only when `--creds` is
 `<root>/.cotal/<spaceSegment(space)>/delivery.creds` (matching the canonical arm), the
-file's own directory for any other `--creds` path, or the workstation root. Uninjected
+file's own directory for any other `--creds` path, or the workstation root. A filesystem
+store is also named by a random id it records in `store.id` inside its own directory, so two
+hosts that use the same root path are two stores. No key and no `--creds` file may be that
+file under any name, and a `store.id` that is a symbolic link or holds anything but a lowercase UUID is refused. Uninjected
 `--creds` that names one real workstation while process cwd resolves another is refused
 at start, naming both, because membership-rw still uses `findCotalRoot`. A `--creds`
 path that is not under any `.cotal` tree is not that case and is not refused here. It never
@@ -415,9 +431,17 @@ nothing about.
 
 Both managed-agent operations ride the one verified `POST /manager-service-authority` transport as
 `kind: "manager-managed-agent-enrollment"` and `kind: "manager-managed-agent-prepare-retirement"`.
-Stock `dispatchManagerAuthorityRequest` refuses both with `unimplemented`: they mutate host storage,
-and stock holds none of that composition. A host terminates its own public route, authenticates the
-human there, and asks the auth service for the decision at
+Stock `cotal auth-service` answers both itself, because it owns the actor ledger and the space's
+provisioning authority. An enrollment writes the managed grant at a fresh UID with the supervising
+actor as its parent, provisions that UID's durables, and returns the daemon's public exchange URL as
+`agentBearerExchangeUrl`; a daemon started without `--exchange-public-port` refuses enrollment. A
+retry with the same token digest answers the same UID while the supervising actor's current grant
+covers it, and a fresh enrollment's refusal otherwise. While the agent's grant stands, an enrollment
+with another digest is refused with `conflict` until that lifecycle's retirement is prepared. A
+prepare-retirement releases the target UID's broker footprint and then revokes its grant, so the
+manager's terminal rail finds the grant gone. A platform that keeps these writers in its own storage
+intercepts both kinds instead. It terminates its own public route, authenticates the human there,
+and asks the auth service for the decision at
 `POST /manager-service-authority/verify-enrollment` (exported as `VERIFY_ENROLLMENT_PATH` from
 `@cotal-ai/auth`) with the `Bearer <cap>` from `auth-service.json` and only `{ owner, request }`. That
 door has the managed retirement door's guards, derives the caller's scope from the local ledger rather
@@ -470,8 +494,35 @@ over the context's own connection, so the host opens no second data-account conn
 observation for the decision: the consuming CAS and the writers still apply their own checks. The
 consuming CAS pins the incarnation of the host process that runs the flight as the executor, never
 the auth plane's, because the two can restart independently. `platformControl.host` names that
-process's reverse-DNS endpoint, the closure digest of its §13.7 cluster and every contract artifact
-the closure needs, and the auth plane self-authorizes that one name.
+process's reverse-DNS endpoint, the closure digest of its §13.7 cluster and the contract artifacts
+registration reads, and the auth plane self-authorizes that one name. Registration reads the closure
+manifest `{ v: 1, root, members }` at `clusterDigest`, then the cluster document at the manifest's
+`root`, and verifies each against its digest. `artifacts` therefore carries both, and `clusterDigest`
+is the digest of the manifest. `members` stays empty: SPEC §13.7 lists every reachable artifact
+there, but this implementation registers single-document clusters only and refuses a manifest that
+lists members. `singleDocumentClosure(document)` returns that manifest and its closure digest. The
+instance id is a lifecycle token, `[a-z0-9]{26,32}`. The minimal construction below has one command
+over the void schema. A host copies it, replaces `document` with its real cluster, and passes `host`
+as `platformControl: { observeAssignment, host }`.
+
+```ts
+import { mintLifecycleUid, singleDocumentClosure, VOID_SCHEMA_DIGEST } from "@cotal-ai/core";
+
+const document = {
+  urn: "com.example.host",
+  revision: 1,
+  attributes: [],
+  events: [],
+  commands: [{
+    name: "ping", class: "ephemeral", targeted: false, capability: "host.ping",
+    inputDigest: VOID_SCHEMA_DIGEST, outputDigest: VOID_SCHEMA_DIGEST,
+  }],
+};
+const { manifest, closureDigest } = singleDocumentClosure(document);
+const host = { endpoint: "com.example.host", clusterDigest: closureDigest, artifacts: [document, manifest] };
+const instanceId = mintLifecycleUid(); // first start only; later starts reuse the persisted id
+```
+
 `registerHostIncarnation(instanceId)` publishes the artifacts, registers that instance through the
 ceremony the plane runs for itself, and returns `{ instanceId, processEpoch }` with the epoch that
 registration committed. The host calls it at every start with its persisted instance id, before it

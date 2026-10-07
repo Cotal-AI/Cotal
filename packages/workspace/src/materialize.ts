@@ -36,22 +36,21 @@ function declaredPeerRange(pkg: string, peer: string): string | undefined {
 
 /**
  * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
- * behind. `bindExtensionPeers` linked this host's peer into the extension a few lines above the
+ * behind. Every caller links this host's peer into the extension (`bindExtensionPeers`) before the
  * import, so the copy that failed is nameable — path and version — and rankable against the extension.
  * Prescribing `cotal ext add` without ranking them tells the operator to reinstall whichever side is
  * CURRENT, and no reinstall of an extension can add an export to an older core.
  */
-function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
+function importFailure(pkg: string, version: string, e: unknown, remedy: string): Error {
   const message = e instanceof Error ? e.message : String(e);
-  const reinstall = `reinstall it: \`cotal ext add ${ext.spec}\``;
   const missing = /The requested module '([^']+)' does not provide an export named '([^']+)'/.exec(message);
   // Any other import failure (a syntax error, an unresolvable specifier) is the extension's own file
-  // being wrong, not a skew: reinstalling it is the remedy, and no side claim is warranted.
-  if (!missing) return new Error(`extension ${pkg}@${ext.version} failed to import: ${message} - ${reinstall}`);
+  // being wrong, not a skew: the caller's remedy for that build applies, and no side claim is warranted.
+  if (!missing) return new Error(`extension ${pkg}@${version} failed to import: ${message} - ${remedy}`);
 
   const [, peer, symbol] = missing;
-  const head = `extension ${pkg}@${ext.version} failed to import: it needs \`${symbol}\` from ${peer}`;
-  const skew = diagnosePeerSkew(pkg, ext.version, peer, declaredPeerRange(pkg, peer));
+  const head = `extension ${pkg}@${version} failed to import: it needs \`${symbol}\` from ${peer}`;
+  const skew = diagnosePeerSkew(pkg, version, peer, declaredPeerRange(pkg, peer));
   if (!skew) {
     return new Error(
       `${head}, which the linked ${peer} does not export. This cotal cannot locate its own ${peer} to compare against, ` +
@@ -72,12 +71,35 @@ function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error 
           `extension's source - rebuild or reinstall the cotal that owns ${skew.peerPath}.`,
       );
     case "extension-behind":
-      return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${reinstall}`);
+      return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${remedy}`);
     case "unrankable":
       return new Error(
         `${head}, and ${at}. Neither side can be named as behind: ${skew.because} - compare the two installs before ` +
           `reinstalling either.`,
       );
+  }
+}
+
+/**
+ * Import an installed package's declared entry so it self-registers. `cotal ext add` and every later
+ * load import through here, so a missing peer export is reported as a ranked skew on both paths.
+ * `remedy` closes a failure the extension's own build must fix: an installed extension is reinstalled,
+ * while an add has already rolled its candidate back.
+ */
+export async function importExtensionEntry(pkg: string, version: string, remedy: string): Promise<void> {
+  const dir = extensionPackageDir(pkg);
+  const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string; exports?: unknown };
+  let entry = meta.main ?? "index.js";
+  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
+  if (typeof dot === "string") entry = dot;
+  else if (dot && typeof dot === "object") {
+    const d = dot as Record<string, string>;
+    entry = d.import ?? d.default ?? entry;
+  } else if (typeof meta.exports === "string") entry = meta.exports;
+  try {
+    await import(pathToFileURL(join(dir, entry)).href);
+  } catch (e) {
+    throw importFailure(pkg, version, e, remedy);
   }
 }
 
@@ -143,23 +165,11 @@ async function loadOne(ext: InstalledExtension, advertised: ExtensionRef): Promi
   // The prefix is machine-global, but global installs, npx, and source worktrees are distinct hosts.
   // Rebind before the first import in this process so registration lands in this host's core registry.
   bindExtensionPeers([pkg], pkg);
-  const dir = extensionPackageDir(pkg);
-  const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")) as { main?: string; exports?: unknown };
-  let entry = meta.main ?? "index.js";
-  const dot = (meta.exports as Record<string, unknown> | undefined)?.["."];
-  if (typeof dot === "string") entry = dot;
-  else if (dot && typeof dot === "object") {
-    const d = dot as Record<string, string>;
-    entry = d.import ?? d.default ?? entry;
-  } else if (typeof meta.exports === "string") entry = meta.exports;
-  let staged: Extension[];
-  try {
-    // The import self-registers into OUR registry (core is linked); runStaged keeps those
-    // registrations invisible until we've validated them, so a throw discards the stage untouched.
-    ({ staged } = await registry.runStaged(() => import(pathToFileURL(join(dir, entry)).href)));
-  } catch (e) {
-    throw importFailure(pkg, ext, e); // stage discarded; nothing reached the live registry
-  }
+  // The import self-registers into OUR registry (core is linked); runStaged keeps those
+  // registrations invisible until we've validated them, so a throw discards the stage untouched.
+  const { staged } = await registry.runStaged(() =>
+    importExtensionEntry(pkg, ext.version, `reinstall it: \`cotal ext add ${ext.spec}\``),
+  );
   // Publish ONLY if the package advertised the requested provider. Otherwise commit NONE of its
   // registrations (never leave a package's other keys live when its advertised one is absent).
   if (!staged.some((r) => r.kind === advertised.kind && r.name === advertised.name)) {

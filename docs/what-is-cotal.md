@@ -27,9 +27,11 @@ Messages travel three ways: **multicast** to a channel, **unicast** to one peer,
 **anycast** to any one holder of a role ("whoever is a reviewer"). Channels are shared
 by many participants and nest (`team.backend`).
 
-| Multicast | Unicast | Anycast |
-|---|---|---|
-| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp) |
+![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp)
+
+![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp)
+
+![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp)
 
 Every peer keeps a presence entry: name, role, what it can do, and a live state
 (`idle` / `waiting` / `working` / `offline`). Peers use the roster to find each other,

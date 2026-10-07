@@ -26,7 +26,7 @@ import {
   EpEnvelopeError,
   LANG_PROBLEM_DETAIL_KIND,
   dialerFor,
-  invokeCommand,
+  invokeRepairingSplit,
   newTakeoverId,
   newIdentity,
   mintCreds,
@@ -594,8 +594,9 @@ export function unansweredManagerRefusal(e: EpEnvelopeError): string {
 }
 
 /** One command to the mesh's manager over the endpoint rails: a fresh resolve (describe, store
- *  fetch, digest-verified recompile), then the invoke. The reply's data on success; on a refusal
- *  the manager's own sentence, printed, and a non-zero exit. */
+ *  fetch, digest-verified recompile), then the invoke, re-issued after a bind split
+ *  ({@link invokeRepairingSplit}). The reply's data on success; on a refusal the manager's own
+ *  sentence, printed, and a non-zero exit. */
 async function askHost(values: RunValues, command: string, args: Record<string, unknown> | undefined): Promise<unknown> {
   const t = await resolveRunControlTarget(values);
   const who = controlCaller(t.auth);
@@ -619,7 +620,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
     // launching" refusal is what a slow activation reads as, never a manager that did not answer.
-    const r = await invokeCommand(nc, t.space, service, command, args, {
+    const r = await invokeRepairingSplit(nc, t.space, service, command, args, {
       deadlineMs: RUN_LAUNCH_DEADLINE_MS,
       ...(command === "run-answer" ? { target: { mode: "self" as const } } : {}),
     });

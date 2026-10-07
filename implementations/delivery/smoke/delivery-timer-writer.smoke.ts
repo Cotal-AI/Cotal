@@ -94,12 +94,13 @@ function memKv(): KV {
 /** A faithful in-memory §13.1 gate: revision-pinned CAS for the mint's commit and the barrier's
  *  freeze/reopen, create-only ledger stage. Same model as the core serve-auth suite, trimmed. */
 function makeGate(init: { generation: number; processEpoch: number; registrationRevision: number }) {
-  const gate = {
+  let gate: EpGateState = {
     space, endpoint: EP, lifecycleUid: IID, principal: "u_op.mgr",
-    state: "open" as "open" | "frozen" | "retired",
+    state: "open",
     generation: init.generation, processEpoch: init.processEpoch,
     registrationRevision: init.registrationRevision, nameAuthorityRevision: 0, revision: 1,
   };
+  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
   const rows = new Map<string, EpServeLedgerRow>();
   const observe = (): EpGateState | null => ({ ...gate });
   const revoke = (row: EpServeLedgerRow) => { const e = rows.get(row.credentialId); if (e) e.state = "revoked"; };
@@ -124,7 +125,7 @@ function makeGate(init: { generation: number; processEpoch: number; registration
     observe,
     freeze: (expectedRevision) => {
       if (gate.state !== "open" || gate.revision !== expectedRevision) return null;
-      gate.state = "frozen"; gate.revision++;
+      gate = { ...gate, state: "frozen", op, revision: gate.revision + 1 };
       return gate.revision;
     },
     enumerate: () => [...rows.values()],
@@ -132,12 +133,13 @@ function makeGate(init: { generation: number; processEpoch: number; registration
     evict: (holderPrincipals) => holderPrincipals.map(() => true),
     reopen: (token, succ) => {
       if (gate.state !== "frozen" || gate.revision !== token) return false;
-      gate.state = "open";
-      gate.generation = succ.generation;
-      gate.processEpoch = succ.processEpoch;
-      gate.registrationRevision = succ.registrationRevision;
-      gate.nameAuthorityRevision = succ.nameAuthorityRevision;
-      gate.revision++;
+      const { op: _op, ...frozen } = gate;
+      gate = {
+        ...frozen, state: "open",
+        generation: succ.generation, processEpoch: succ.processEpoch,
+        registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision,
+        revision: token + 1,
+      };
       return true;
     },
   };

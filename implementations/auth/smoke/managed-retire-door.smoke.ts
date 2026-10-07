@@ -133,7 +133,7 @@ try {
   await epKv.put(epgateKey("manager", MGR_INST), new TextEncoder().encode(JSON.stringify(
     { state: "open", generation: 1, processEpoch: SERVE_EPOCH, registrationRevision: 1, nameAuthorityRevision: 1, principal: principalKey(DEV_OWNER, MGR_SERVE.id).key })));
 
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet, probeEvictor: countingEvictor });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet, probeEvictor: countingEvictor });
   const wreg = await openLifecycleRegistry(wide.nc, space);
   const door = (actor: string, lifecycleUid: string) => outcome(() => plane!.retireManagedLifecycle({ owner: OWNER, actor, lifecycleUid }));
   const grant = (actor: string, lifecycleUid: string) => grantManagedActor(dir, {

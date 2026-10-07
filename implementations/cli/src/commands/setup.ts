@@ -13,6 +13,7 @@ import {
   personaDir,
   provenance,
   resolveMeshTarget,
+  resolveOnPath,
   seedConnectorServers,
   type MeshTarget,
 } from "@cotal-ai/workspace";
@@ -25,7 +26,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, onPath, webUp, WEB_URL } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, type MeshStatus } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -86,7 +87,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
     "Give your agents a place to work together",
   );
 
-  const log = openSetupLog(process.cwd());
+  const log = openSetupLog();
 
   // Prerequisites — CHECKS only, no side effects, no prompts.
   const core: Step[] = [
@@ -127,23 +128,25 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
       p.log.warn(`${candidate.value} needs ${candidate.missing.join(", ")} on PATH. Install it, then re-run ${displayCmd()} setup.`);
       continue;
     }
-    const step = await connectorSetupStep(candidate.connector, "connector");
-    if (step) {
-      if (!(await runSteps([step], log, { yes, assists: connectorAssists }))) return abort();
+    const provider = await availableSetupProvider(candidate.connector);
+    if (provider?.connector) {
+      if (!(await runSteps([actionStep(provider.connector, undefined)], log, { yes, assists: connectorAssists }))) return abort();
     } else {
       p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
       log.line(`connector ${candidate.value}: ready (no install)`);
     }
-    const share = await connectorSetupStep(candidate.connector, "mcpServers");
-    if (share && !(await runSteps([share], log, { yes, assists: connectorAssists }))) return abort();
+    // Resolved again because the connector action can change what is on PATH, and a provider whose
+    // executables are gone must not write.
+    const share = (await availableSetupProvider(candidate.connector))?.mcpServers;
+    if (share && !(await runSteps([actionStep(share, connectorShareInput(candidate.connector))], log, { yes, assists: connectorAssists }))) return abort();
   }
   // A connector's skills action is independent of the mesh connector selection: it runs for every
   // connector whose harness is present, so someone using that harness gets Cotal's authored skills
   // even without joining the mesh through it (Claude Code, for one, does not read `.agents/skills`).
   for (const candidate of candidates) {
     if (candidate.missing.length) continue;
-    const step = await connectorSetupStep(candidate.connector, "skills");
-    if (step && !(await runSteps([step], log, { yes, assists: connectorAssists }))) return abort();
+    const provider = await availableSetupProvider(candidate.connector);
+    if (provider?.skills && !(await runSteps([actionStep(provider.skills, connectorSkillsInput())], log, { yes, assists: connectorAssists }))) return abort();
   }
 
   // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
@@ -272,7 +275,7 @@ export interface SetupConnectorCandidate {
  *  for how that reads — and connector names never gate membership. Exported for the genericity smoke. */
 export function setupConnectorCandidates(
   connectors: readonly Connector[],
-  pathProbe: (bin: string) => boolean = onPath,
+  pathProbe: (bin: string) => boolean = (bin) => !!resolveOnPath(bin),
 ): SetupConnectorCandidate[] {
   return [...connectors]
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -359,21 +362,25 @@ export async function connectorSetupProvider(connector: Connector): Promise<Conn
   return materializeExtension<ConnectorSetupProvider>(connector.setup);
 }
 
-/** One connector-owned setup action as a narrated step, or null when this connector declares no
- * provider, no such action, or its provider's executables are absent — none of which is a failure
- * of guided setup (the cross-vendor skills drop still reconciles). Exported for the fail-loud
- * smoke, which drives this exact seam. */
-export async function connectorSetupStep(connector: Connector, action: "connector" | "skills" | "mcpServers"): Promise<Step | null> {
+/** A connector's setup provider when its executables are on PATH, or null when the connector
+ * declares none or they are absent. Neither is a failure of guided setup: the cross-vendor skills
+ * drop still reconciles. */
+async function availableSetupProvider(connector: Connector): Promise<ConnectorSetupProvider | null> {
   const provider = await connectorSetupProvider(connector);
-  const setup = provider?.[action] as ConnectorSetupAction | undefined;
-  if (!provider || !setup || !setupProviderAvailable(provider)) return null;
-  const input = action === "skills" ? connectorSkillsInput() : action === "mcpServers" ? connectorShareInput(connector) : undefined;
+  return provider && setupProviderAvailable(provider) ? provider : null;
+}
+
+/** One connector-owned setup action as a narrated step. Generic over the action's input so the
+ * compiler checks each call site's pairing of an action with the input it hands it. `NoInfer` infers
+ * `I` from the action alone: inferring it from the input too widens it to accept a dropped
+ * (`undefined`) input. */
+function actionStep<I>(setup: ConnectorSetupAction<I>, input: NoInfer<I>): Step {
   return {
     name: setup.name,
     title: setup.title,
     explain: setup.explain,
     context: [...(setup.context ?? [])],
-    async run() { return setup.run(input as never); },
+    async run() { return setup.run(input); },
   };
 }
 
@@ -390,9 +397,8 @@ function connectorShareInput(connector: Connector): ConnectorShareSetupInput {
 
 async function reconcileConnectorSkills(): Promise<void> {
   for (const connector of await setupConnectorSurface()) {
-    const provider = await connectorSetupProvider(connector);
-    if (!provider?.skills || !setupProviderAvailable(provider)) continue;
-    await provider.skills.run(connectorSkillsInput());
+    const provider = await availableSetupProvider(connector);
+    if (provider?.skills) await provider.skills.run(connectorSkillsInput());
   }
 }
 
@@ -401,8 +407,8 @@ async function reconcileConnectorSkills(): Promise<void> {
 async function connectorAssists(): Promise<ConnectorAssist[]> {
   const assists: ConnectorAssist[] = [];
   for (const connector of await setupConnectorSurface()) {
-    const provider = await connectorSetupProvider(connector);
-    if (provider?.assist && setupProviderAvailable(provider)) assists.push(provider.assist);
+    const provider = await availableSetupProvider(connector);
+    if (provider?.assist) assists.push(provider.assist);
   }
   return assists;
 }
@@ -410,7 +416,7 @@ async function connectorAssists(): Promise<ConnectorAssist[]> {
 /** Pure availability rule for connector-owned setup actions. No executable means no harness write;
  * the caller still continues to the cross-vendor Agent Skills reconcile. */
 export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires">): boolean {
-  return !(provider.requires?.some((command) => !onPath(command)) ?? false);
+  return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
 }
 
 /** True when an installed extension contributes the `web` command (the dashboard moved out to
@@ -434,9 +440,9 @@ export async function readyCard(cwd: string): Promise<void> {
   const mesh = await meshStatus(cwd);
   const m = await machineStatus();
   const connectorRows = await cardConnectorRows();
-  const web = await webUp();
   const mgr = managerUp();
   const cmd = displayCmd();
+  const web = cardWebRow(mesh, cmd);
   // Read the demo marker out of the catalog the card's own `spawn` hints will resolve — the same
   // seed destination, not a second cwd-derived guess. Hinting `cotal spawn me` off a `david.md` in
   // a directory spawn never opens is the identical defect, one line further down the output.
@@ -456,7 +462,7 @@ export async function readyCard(cwd: string): Promise<void> {
       line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
       ...connectorRows.map((r) => line(r.state === "ok", `${r.label.padEnd(8)} ${dim(r.text)}`)),
       line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
-      line(web, `web      ${dim(web ? WEB_URL : webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup`)}`),
+      line(web.up, `web      ${dim(web.text)}`),
       line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
       "",
       ...(remote ? [] : [`start the mesh:  ${dim(`${cmd} up --detach`)}`]),
@@ -469,6 +475,18 @@ export async function readyCard(cwd: string): Promise<void> {
     ].join("\n"),
     brandBold("cotal · status"),
   );
+}
+
+/** The card's web row from the mesh's dashboard records. An unreadable `web.pid` is named on the row,
+ *  like the status Machine section, so the rest of the card still prints. */
+function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
+  try {
+    const url = recordedWebUrl({ root: mesh.root, space: mesh.space });
+    if (url) return { up: true, text: url };
+  } catch (e) {
+    return { up: false, text: `pidfile unreadable · ${(e as Error).message}` };
+  }
+  return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
 }
 
 /** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming

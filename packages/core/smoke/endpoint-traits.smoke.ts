@@ -40,7 +40,7 @@ import {
   type SignerAnchor, type AnchorResolver, type TraitDefinition,
   type GuardCallSeam, type EpTraitEnforcement, type EpGovernedSurface,
   type ServiceSpec, type ServiceNameAuthority, type EpCaller, type EndpointReply,
-  type EpCommandDef, type EpServeGrant, type EpIssuanceBarrier, type EpServeContext,
+  type EpCommandDef, type EpServeGrant, mintLifecycleUid, type EpIssuanceBarrier, type EpGateState, type EpServeContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -295,18 +295,18 @@ try {
   const kv = await openRecordsBucket(nc, SPACE, { create: true });
 
   const authority: ServiceNameAuthority = { authorize: (_n, owner) => ({ authorized: owner === "u_op", revision: 0 }) };
-  const gateStates = new Map<string, { space: string; endpoint: string; lifecycleUid: string; principal: string; state: "open" | "frozen" | "retired"; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number; revision: number }>();
+  const gateStates = new Map<string, EpGateState>();
   const barrierFor = (endpoint: string, instanceId: string): EpIssuanceBarrier => {
     const key = `${endpoint}/${instanceId}`;
     if (!gateStates.has(key)) gateStates.set(key, { space: SPACE, endpoint, lifecycleUid: instanceId, principal: "u_op.mgr", state: "open", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, revision: 1 });
-    const g = gateStates.get(key)!;
+    const op = { opId: mintLifecycleUid(), kind: "registration" as const };
     return {
-      observe: () => ({ ...g }),
-      freeze: (rev) => { if (g.state !== "open" || g.revision !== rev) return null; g.state = "frozen"; g.revision++; return g.revision; },
+      observe: () => ({ ...gateStates.get(key)! }),
+      freeze: (rev) => { const g = gateStates.get(key)!; if (g.state !== "open" || g.revision !== rev) return null; gateStates.set(key, { ...g, state: "frozen", op, revision: rev + 1 }); return rev + 1; },
       enumerate: () => [],
       revoke: () => {},
       evict: (holderPrincipals) => holderPrincipals.map(() => true),
-      reopen: (token, succ) => { if (g.state !== "frozen" || g.revision !== token) return false; g.state = "open"; g.generation = succ.generation; g.processEpoch = succ.processEpoch; g.registrationRevision = succ.registrationRevision; g.nameAuthorityRevision = succ.nameAuthorityRevision; g.revision++; return true; },
+      reopen: (token, succ) => { const { op: _op, ...g } = gateStates.get(key)!; if (g.state !== "frozen" || g.revision !== token) return false; gateStates.set(key, { ...g, state: "open", generation: succ.generation, processEpoch: succ.processEpoch, registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision, revision: token + 1 }); return true; },
     };
   };
   // The trusted registrar wires the content-store reader; the governed set is pinned internally

@@ -2,22 +2,23 @@
   "suite": [
     "implementations/auth/smoke/managed-agent-enrollment.smoke.ts"
   ],
-  "guard": "Host-owned managed-agent enrollment and terminal-release preparation are authorized only for a caller holding supervise at its own instance's current open manager gate, with the host-issued registration proof, the host-selected lifecycle UID, and the one derived terminal operation id; stock refuses both kinds rather than answering them",
+  "guard": "Host-owned managed-agent enrollment and terminal-release preparation are authorized only for a caller holding supervise at its own instance's current open manager gate, with the host-issued registration proof, the host-selected lifecycle UID, and the one derived terminal operation id; stock dispatch sends each kind to its own host arm rather than to a manager-lifecycle phase",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/managed-agent-enrollment.smoke.ts",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/managed-agent-enrollment.json",
   "completionMarker": "MANAGED-AGENT-ENROLLMENT SMOKE",
   "why": [
     "The two space mutations accept a request that names another host space. A participant registered on one mesh could then have an agent enrolled, or released, in a mesh it never joined; the suite names the cell that refuses a foreign space for each operation.",
     "The two supervise mutations accept spawn or admin in place of supervise. Those are ordinary agent capabilities that a great many rows carry, so this is the single widest escalation available here, and the suite proves each operation refuses a fully spawn/admin-scoped row.",
-    "The two gate-state mutations accept any gate the KV happens to hold, including a frozen one. A frozen gate is a takeover in flight, so an enrollment admitted there would author a grant against a registration that is being replaced; the suite runs a real frozen gate row and an absent one.",
-    "The two gate-principal mutations accept a gate whose serving principal belongs to a different owner's serve actor. That is the cross-tenant hole: one owner's manager would drive another owner's registration. The suite writes exactly that row on the real broker.",
-    "The two epoch mutations accept a stale serveEpoch. A superseded manager process could then keep enrolling and releasing after its successor took the gate; the suite names the conflict cell for each operation.",
-    "The two proof mutations drop the constant-time proof comparison. The registration proof is the only host-issued fact in the request, so without it every other coordinate is participant-supplied; the suite presents a forged proof, a proof for a superseded registration revision, and a proof derived under another owner.",
+    "The gate-state mutation accepts any gate the KV happens to hold, including a frozen one. A frozen gate is a takeover in flight, so an enrollment admitted there would author a grant against a registration that is being replaced; the suite runs a real frozen gate row and an absent one.",
+    "The gate-principal mutation accepts a gate whose serving principal belongs to a different owner's serve actor. That is the cross-tenant hole: one owner's manager would drive another owner's registration. The suite writes exactly that row on the real broker.",
+    "The epoch mutation accepts a stale serveEpoch. A superseded manager process could then keep enrolling and releasing after its successor took the gate; the suite names the conflict cell for each operation.",
+    "The proof mutation drops the constant-time proof comparison. The registration proof is the only host-issued fact in the request, so without it every other coordinate is participant-supplied; the suite presents a forged proof, a proof for a superseded registration revision, and a proof derived under another owner.",
+    "Those four mutations edit the one current-registration check every door in the module runs, and each is named against an enrollment cell. The prepare-retirement mutation skips that check at the release door alone, so the suite proves the release door reaches it rather than relying on the enrollment cells.",
     "The target-owner mutation lets a prepare-retirement name another owner's target. It would let one participant start the terminal release of a foreign agent; the suite names that cell.",
     "The opId mutation trusts the caller's opId instead of recomputing managedRetirementOpId(target.lifecycleUid). Two opIds for one lifecycle means two barriers over one head, which is the hazard the derivation exists to remove.",
     "The tokenHash mutation lets the closed parser accept any string where the sha256 digest belongs, so a plaintext standing actor token would pass as a digest and land on the host and in its logs. The suite feeds it a real actorToken and names the refusal.",
     "The lifecycle-uid mutation lets the enrollment parser retain a caller-supplied lifecycleUid. Only the host can see the retirement tombstones that make a UID permanently unusable, so a participant-named UID could aim a fresh grant at a dead incarnation.",
-    "The dispatch mutation removes the unimplemented refusal, so a managed-agent request falls through to the manager-lifecycle issuer. The suite names both refusal cells, and its negative control proves an ordinary manager-authority request still reaches its own arm."
+    "The dispatch mutation drops the enrollment branch, so a managed-agent request falls through to the manager-lifecycle issuer. The suite names the routing cell, and its negative control proves an ordinary manager-authority request still reaches its own arm."
   ],
   "mutations": [
     {
@@ -37,33 +38,33 @@
       "cell": "a row without \"supervise\" is refused even holding spawn and admin"
     },
     {
-      "name": "enrollment accepts any manager gate state, including frozen",
+      "name": "the current-registration check accepts any manager gate state, including frozen",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `managed agent enrollment found no current open manager gate for instance ${r.instanceId}`);\n",
-      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `managed agent enrollment found no current open manager gate for instance ${r.instanceId}`);\n",
+      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
+      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
       "expectRed": "FAIL: enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)",
       "cell": "enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)"
     },
     {
-      "name": "enrollment accepts a gate held by another owner's serve principal",
+      "name": "the current-registration check accepts a gate held by another owner's serve principal",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);\n  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager enrollment proof does not match current host registration\");\n",
-      "replace": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager enrollment proof does not match current host registration\");\n",
+      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);\n",
+      "replace": "",
       "expectRed": "FAIL: enrollment: a gate held by another owner's serve principal is refused",
       "cell": "enrollment: a gate held by another owner's serve principal is refused"
     },
     {
-      "name": "enrollment accepts a stale serve epoch",
+      "name": "the current-registration check accepts a stale serve epoch",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager enrollment proof does not match current host registration\");\n",
-      "replace": "  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager enrollment proof does not match current host registration\");\n",
+      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n",
+      "replace": "",
       "expectRed": "FAIL: enrollment: a stale serve epoch is refused as a conflict",
       "cell": "enrollment: a stale serve epoch is refused as a conflict"
     },
     {
-      "name": "enrollment stops checking the host-issued registration proof",
+      "name": "the current-registration check stops checking the host-issued registration proof",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager enrollment proof does not match current host registration\");\n",
+      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
       "replace": "",
       "expectRed": "FAIL: enrollment: a forged registration proof is refused",
       "cell": "enrollment: a forged registration proof is refused"
@@ -103,33 +104,9 @@
       "cell": "prepare-retirement refuses a second valid opId for one lifecycle"
     },
     {
-      "name": "prepare-retirement accepts any manager gate state, including frozen",
+      "name": "prepare-retirement skips the current-registration check",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `prepare-retirement found no current open manager gate for instance ${r.instanceId}`);\n",
-      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `prepare-retirement found no current open manager gate for instance ${r.instanceId}`);\n",
-      "expectRed": "FAIL: release: a FROZEN gate is refused",
-      "cell": "release: a FROZEN gate is refused"
-    },
-    {
-      "name": "prepare-retirement accepts a gate held by another owner's serve principal",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);\n  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager prepare-retirement proof does not match current host registration\");\n",
-      "replace": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager prepare-retirement proof does not match current host registration\");\n",
-      "expectRed": "FAIL: release: a foreign gate principal is refused",
-      "cell": "release: a foreign gate principal is refused"
-    },
-    {
-      "name": "prepare-retirement accepts a stale serve epoch",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager prepare-retirement proof does not match current host registration\");\n",
-      "replace": "  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager prepare-retirement proof does not match current host registration\");\n",
-      "expectRed": "FAIL: release: a stale serve epoch is refused as a conflict",
-      "cell": "release: a stale serve epoch is refused as a conflict"
-    },
-    {
-      "name": "prepare-retirement stops checking the host-issued registration proof",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", \"manager prepare-retirement proof does not match current host registration\");\n",
+      "find": "  await assertCurrentManagerRegistration(r, args, \"prepare-retirement\");\n",
       "replace": "",
       "expectRed": "FAIL: release: a forged registration proof is refused",
       "cell": "release: a forged registration proof is refused"
@@ -155,12 +132,12 @@
       "cell": "enrollment refuses an unknown top-level field"
     },
     {
-      "name": "stock dispatch answers a managed-agent request instead of refusing it",
+      "name": "stock dispatch sends an enrollment request to the manager-lifecycle issuer",
       "file": "implementations/auth/src/service.ts",
-      "find": "  if (request.kind === \"manager-managed-agent-enrollment\" || request.kind === \"manager-managed-agent-prepare-retirement\")\n    throw new EpEnvelopeError(\"unimplemented\", \"managed agent enrollment and retirement preparation must be handled by host platform interception\");\n",
+      "find": "  if (request.kind === \"manager-managed-agent-enrollment\")\n    return ctx.enrollManagedAgent({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentEnrollmentRequest });\n",
       "replace": "",
-      "expectRed": "FAIL: dispatch refuses an enrollment request with unimplemented",
-      "cell": "dispatch refuses an enrollment request with unimplemented"
+      "expectRed": "FAIL: dispatch sends an enrollment request to the host enrollment arm with the caller's ledger scope",
+      "cell": "dispatch sends an enrollment request to the host enrollment arm with the caller's ledger scope"
     }
   ]
 }

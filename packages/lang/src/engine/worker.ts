@@ -15,9 +15,7 @@
  * `now()` is async, and the journal's durable half (`JournalStore.append`) is a Promise the
  * journal awaits before any effect fires, so both survive a port hop with the awaits lining up
  * exactly as they line up over a PubAck. What is genuinely synchronous is `now()` and the stop
- * flag, and both go over shared memory. An earlier form of this header ruled the bridge out by
- * claiming "every journal.* call in the effect path" is synchronous; the durable append never was,
- * and the in-memory reads that are never leave the thread.
+ * flag, and both go over shared memory.
  *
  * CANCELLATION IS THE ONE EXCEPTION, and it is why there is a SharedArrayBuffer here. `shouldStop`
  * is read synchronously, between effects, so it cannot be a message either. The host writes a reason
@@ -72,6 +70,12 @@ export interface WorkerRunRequest {
   readonly pins?: RunPins;
   /** A resume: the recorded entries, rebuilt into the run's journal inside the thread. */
   readonly entries?: readonly JournalEntry[];
+  /**
+   * The journal's result bound (`JournalInit.resultBytes`, L5006), given to the journal the thread
+   * builds. Only valid on the bridged route: it is the durable store's limit, and only that route
+   * has a store.
+   */
+  readonly resultBytes?: number;
   readonly file?: string;
   /**
    * The caller's loose limits and seed, forwarded so the thread's `bindPins` performs the same
@@ -93,30 +97,30 @@ export interface WorkerRunOk {
   readonly steps: number;
 }
 
-export interface WorkerRunFailed {
+export type WorkerRunFailed = {
   readonly inspection?: InspectionSnapshot;
   readonly ok: false;
-  /** The language code where there is one (`L4013`, `L5011`), so a caller can branch as it always has. */
-  readonly code?: string;
   readonly name: string;
   readonly message: string;
-  /**
-   * `RunReleased.reason` (L5012) and `RunHeld.reason` (L5025), carried as the field it is so a
-   * host rebuilding either class does not have to parse its own sentence back out of the message.
-   */
-  readonly reason?: string;
-  /** `RunHeld.step` (L5025): the step whose refusal held the run, carried like `reason`. */
-  readonly step?: string;
-  /** `RunHeld.pending` (L5025): the refusal was an at-most-once step's hold, carried like `step`. */
-  readonly pending?: boolean;
-  /**
-   * An `EffectError`'s domain fields, carried so a host can rebuild the class whole: `kind` is what
-   * failure handling branches on and `detail` is a recorded value, already fenced at its throw
-   * site. Present together with `code` exactly when the run failed as an effect failure.
-   */
-  readonly kind?: string;
-  readonly detail?: Readonly<Record<string, unknown>>;
-}
+} & WorkerFailure;
+
+/**
+ * The class a run failed as, with the fields a host rebuilds that class from.
+ *
+ * The thread picks the variant by `instanceof`, so a value a program threw crosses as `error`
+ * whatever fields it happens to carry: a program cannot raise a host class by its shape. Each
+ * variant requires its class's fields, so the host rebuilds it with nothing to default.
+ */
+export type WorkerFailure =
+  | { readonly class: "released"; readonly reason: string }
+  | { readonly class: "held"; readonly step: string; readonly reason: string; readonly pending: boolean }
+  // `kind` is what failure handling branches on; `detail` is a recorded value, fenced at its throw site.
+  | { readonly class: "effect"; readonly code: string; readonly kind: string; readonly detail?: Readonly<Record<string, unknown>> }
+  | { readonly class: "too-large"; readonly stepKey: string; readonly bytes: number; readonly bound: number }
+  // L5010: the host rebuilds it from the append it witnessed, so nothing else crosses.
+  | { readonly class: "rejected" }
+  // The language code where there is one (`L4013`, `L5011`), so a caller can branch as it always has.
+  | { readonly class: "error"; readonly code?: string };
 
 export type WorkerRunResult = WorkerRunOk | WorkerRunFailed;
 
@@ -201,6 +205,8 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
     throw new Error("cutAt is only supported by the inspection route");
   if (request.handler === "inspection" && request.pins === undefined)
     throw new Error("inspection requires the recorded run pins");
+  if (request.resultBytes !== undefined && request.handler !== "bridged")
+    throw new Error("resultBytes is only supported by the bridged route");
   // ONE ROUTE, DECIDED, before a thread exists to be wrong in. A bridged request with no seam has
   // nowhere to run its effects; a module-named handler beside a live seam is two answers to where
   // the effects live, and picking one silently would be this module deciding the caller's

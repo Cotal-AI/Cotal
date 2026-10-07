@@ -1,9 +1,16 @@
+import { oneLine } from "./one-line.js";
+
 /**
  * One consistent voice for CLI provenance, on stderr: which on-disk source a command RESOLVED
  * its configuration from, and what it WROTE where. Commands must never silently pick up state
  * from a directory or silently drop files — every read of config (persona file, mesh entry,
  * config.json layer) and every write (creds, seeded files) gets one dim arrow line. stderr so
  * it never pollutes machine-readable stdout; plain text so this layer needs no color dep.
+ *
+ * One call is one line whatever its arguments hold. A path can carry a newline, and written raw it
+ * would let one call announce a second act the command never made, or a carriage return overwrite
+ * the act it did make. So every control character and Unicode line separator in the line is shown
+ * as a `\uXXXX` escape instead.
  *
  * Failure policy: a line reports an act that already happened, so a fault on stderr must neither
  * fail that act nor drop the line unsaid. When the stderr write throws or fails (EPIPE, ENOSPC,
@@ -44,10 +51,11 @@ const waiting = new Set<{ stream: NodeJS.WriteStream }>();
 const absorbed = new Set<NodeJS.WriteStream>();
 
 /** Write one provenance line under the failure policy above: on stderr, else on stdout with the
- *  stderr error named, else counted as unsaid. */
+ *  stderr error named, else counted as unsaid. The failure name is escaped with the rest, since a
+ *  thrown value's message can carry a newline too. */
 function say(line: string): void {
-  send(process.stderr, `${line}\n`, (failure) => {
-    send(process.stdout, `${line} (stderr failed: ${nameOf(failure)})\n`, lost);
+  send(process.stderr, `${oneLine(line)}\n`, (failure) => {
+    send(process.stdout, `${oneLine(`${line} (stderr failed: ${nameOf(failure)})`)}\n`, lost);
   });
 }
 

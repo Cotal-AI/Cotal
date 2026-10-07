@@ -32,7 +32,7 @@
     {
       "name": "R5 the epoch fence in startPresenceWatch is dropped, so a bind that completes after stop() installs a watch on the stopped endpoint (reviewer BLOCK on c67c0bb9)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (epoch !== this.presenceEpoch) {\n      try { iter.stop(); } catch { /* its connection may already be gone */ }\n      hydrated();\n      return false;\n    }\n",
+      "find": "    if (epoch !== this.presenceEpoch) {\n      try { iter.stop(); } catch { /* its connection may already be gone */ }\n      hydrated();\n      return undefined;\n    }\n",
       "replace": "",
       "expectRed": "6.3 the late bind installs NOTHING on the stopped endpoint (no resurrected watch)"
     },
@@ -53,7 +53,7 @@
     {
       "name": "R8 the bind-time pending peek is dropped, so a rebind onto an EMPTY bucket (no entry ever delivered) leaves the view stale for good (second-reviewer BLOCK on c67c0bb9)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (pending === 0) await this.onPresenceBucketEmpty();\n",
+      "find": "        if (info.num_pending === 0) await this.onPresenceBucketEmpty();\n",
       "replace": "",
       "expectRed": "8.3 the rebind onto an EMPTY bucket turns the view current (nobody present is current knowledge)"
     },

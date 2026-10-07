@@ -135,7 +135,7 @@ writeFileSync(join(runDir, "r1.json"), JSON.stringify({
 }));
 const digest = (path: string): string => createHash("sha256").update(readFileSync(path)).digest("hex");
 const inventoryOf = (...agents: ManagerResumeAgent[]): ManagerResumeInventory => ({
-  version: "cotal-manager-resume/v1",
+  version: "cotal-manager-resume/v2",
   space: "preserve-smoke",
   createdAt: new Date().toISOString(),
   agents,
@@ -344,7 +344,7 @@ registry.register(preserveAuth as unknown as AuthProvider);
   check("preservation hard-stops the child", handle.stops === 1, handle.stops);
   check("preservation and its exit watcher never deprovision", deprovisions === 0, deprovisions);
   const json = JSON.stringify(result.inventory);
-  check("inventory is JSON-persistable", JSON.parse(json).version === "cotal-manager-resume/v1");
+  check("inventory is JSON-persistable", JSON.parse(json).version === "cotal-manager-resume/v2");
   check("inventory records the exact same principal", result.inventory.agents[0]?.identity.mode === "open" && result.inventory.agents[0].identity.id === "open_principal_1", result.inventory.agents[0]);
   check("inventory records effective connector/runtime/cwd references", result.inventory.agents[0]?.launch.connector === "preserve-connector" && result.inventory.agents[0]?.launch.runtime === "fake" && result.inventory.agents[0]?.launch.cwd === root, result.inventory.agents[0]?.launch);
   check("inventory preserves .cotal/run dependencies", result.inventory.agents[0]?.dependencies.includes(join(runDir, "r1.json")) === true && result.inventory.agents[0]?.dependencies.includes(runPersonaPath) === true, result.inventory.agents[0]?.dependencies);

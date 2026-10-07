@@ -48,43 +48,35 @@
  * the predicate does select, on a session that contains the thing it selects. The three captures
  * here simply contain none. **Both numbers belong together; either alone misleads.**
  *
- * **THIS WAS A COVERAGE GAP, IT WAS RULED, AND THE RULING IS IMPLEMENTED BELOW.** It read: on
- * agent-driven sessions no run is ever opened and the connector emits nothing, because the mapping table
- * sent every non-`human` origin to *nothing*. The session it was derived from had a human typing 44 times alongside
- * its 3068 mesh messages; a spawned lane seat has **0 and 67**, so the open question was **what
- * opens a run when nobody types**.
+ * **WHAT OPENS A RUN WHEN NOBODY TYPES.** A mapping that sends every non-`human` origin to
+ * *nothing* opens no run on an agent-driven session, and the connector emits nothing there. The
+ * session the mapping was derived from had a human typing 44 times alongside its 3068 mesh
+ * messages; a spawned lane seat has **0 and 67**.
  *
- * **THE RULING: run-opening and attribution are two predicates, and that row was one predicate
- * doing both jobs.** A run opens on
- * `origin.kind ∈ { human, channel }`, ENUMERATED and never inferred; `task-notification` is named as
- * known-and-not-a-turn; absent `origin` gets its own enumeration over `promptSource`. Attribution
- * rides as `cotal.turnSource` — **a field on the run, never a gate on it**. The privacy argument is
- * untouched: a `RUN_STARTED` attributed to a peer republishes no message body, so a peer-initiated
- * turn can be a turn without re-emitting the peer's content. See {@link ORIGIN_RULE} and
- * {@link ABSENT_ORIGIN_RULE}, which are where this now lives.
+ * **THE RULE: run-opening and attribution are two predicates, not one doing both jobs.** A run
+ * opens on `origin.kind ∈ { human, channel }`, ENUMERATED and never inferred; `task-notification`
+ * is named as known-and-not-a-turn; absent `origin` gets its own enumeration over `promptSource`.
+ * Attribution rides as `cotal.turnSource` — **a field on the run, never a gate on it**. The privacy
+ * argument holds: a `RUN_STARTED` attributed to a peer republishes no message body, so a
+ * peer-initiated turn can be a turn without re-emitting the peer's content. See
+ * {@link ORIGIN_RULE} and {@link ABSENT_ORIGIN_RULE}, which are where this lives.
  *
- * **KEEP THIS PARAGRAPH HONEST.** Its earlier form said "no run is ever opened and the connector
- * emits nothing" and "escalated as a plan defect rather than decided here" — describing the state
- * before the ruling, directly above code that had already implemented it. A successor read it,
- * believed it over the code, and escalated a closed question as a live blocker; the measurement that
- * corrected it took one run of the real mapper (**67 runs / 5217 events** on the 5938-record
- * session, `diagnose()` → `null`). **A stale header is not a documentation defect, it is a false
- * claim about the function beneath it.** If the rule changes again, this paragraph changes with it.
+ * On the 5938-record session the real mapper opens **67 runs** and emits **5217 events**, and
+ * `diagnose()` returns `null`.
  *
  * **DO NOT "FIX" THIS BY TREATING ABSENT `origin` AS HUMAN.** In a Claude session `user` is also the
  * role of a TOOL RESULT: that predicate selects **825** of the interactive session's 892 user
  * entries, and the single non-tool-result among them is a **context-compaction summary**
  * (`isCompactSummary`), so the true human count is 0 and the predicate over-matches by 825. It would
  * not emit nothing — it would emit a flood, each entry opening a run, which looks like the connector
- * working. An earlier revision of this comment recorded (B) as HEADLESS-ONLY and asserted a human
- * turn is "a `user` entry with no `origin`"; both halves were wrong.
+ * working.
  *
- * **The rule is implemented exactly as RULED, and still not guessed at.** `promptSource` was
- * proposed as the selector and REJECTED: it is bounded by the partition it was inferred from, and
- * "sdk" also covers programmatic injection. It survives only inside {@link ABSENT_ORIGIN_RULE},
- * where there is no `origin.kind` to enumerate — a second table rather than a synthetic member,
- * because an enumeration over `origin.kind` cannot classify a record that has none. Every value
- * outside either table **fails loud** rather than being silently treated as not-a-turn.
+ * **The rule is not guessed at.** `promptSource` is not the selector: it is bounded by the
+ * partition it was inferred from, and "sdk" also covers programmatic injection. It is read only
+ * inside {@link ABSENT_ORIGIN_RULE}, where there is no `origin.kind` to enumerate — a second table
+ * rather than a synthetic member, because an enumeration over `origin.kind` cannot classify a
+ * record that has none. Every value outside either table **fails loud** rather than being silently
+ * treated as not-a-turn.
  *
  * **(C) `TOOL_CALL_RESULT.messageId` is unstated in §3.1's table** (the row names only
  * `toolCallId`) while the real schema REQUIRES it. It is keyed the same way every other message
@@ -168,7 +160,7 @@ export interface ClaudeEntry {
  */
 const ORIGIN_RULE: Record<string, "human" | "channel" | "auto-continuation" | null> = {
   human: "human",
-  channel: "channel", // a peer/mesh delivery IS a turn, the one change from the original table
+  channel: "channel", // a peer/mesh delivery IS a turn
   "task-notification": null, // known, and deliberately not a turn
   // MEASURED ON THIS MACHINE'S CORPUS, 237 session files and 531,882 records: 4 occurrences, every
   // one a standing goal the harness re-injects to continue work, all carrying
@@ -196,12 +188,11 @@ const ORIGIN_RULE: Record<string, "human" | "channel" | "auto-continuation" | nu
  * caveat>`, `/compact` command records, `<local-command-stdout>`, the caveat/heartbeat class §3.1
  * counts at 81.
  *
- * **THIS IS NOT `promptSource`-PRESENCE READMITTED, and the difference is the whole reason the first
- * attempt was wrong.** That predicate asked "is the field there?", and the field is there on
- * task-notifications and caveats as `"system"` — so it opened runs on harness plumbing. This asks
- * "is the value exactly `sdk`?", in a branch that only runs when `origin` is absent, against a
- * two-value measured population. Different predicate, different position, measured rather than
- * inferred from a partition of three captures.
+ * **THIS IS NOT `promptSource`-PRESENCE.** That predicate asks "is the field there?", and the field
+ * is there on task-notifications and caveats as `"system"`, so it would open runs on harness
+ * plumbing. This asks "is the value exactly `sdk`?", in a branch that only runs when `origin` is
+ * absent, against a two-value measured population. Different predicate, different position,
+ * measured rather than inferred from a partition of three captures.
  */
 const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
   sdk: "sdk",
@@ -210,22 +201,23 @@ const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
   // `origin` because the harness does not stamp one on this shape, not because nobody authored
   // them.
   //
-  // This is the case the previous table would have THROWN on, which is why it had to be read and
-  // not assumed. A throw here is a session that stops mapping mid-stream; attributing these to
-  // anything other than the person who typed them would be the confident wrong attribution the
-  // enumeration exists to prevent. Both failures were available, so the record was opened.
+  // Without this key the mapper THROWS on these records, which is why they were read and not
+  // assumed. A throw here is a session that stops mapping mid-stream; attributing these to anything
+  // other than the person who typed them would be the confident wrong attribution the enumeration
+  // exists to prevent.
   typed: "human",
-  // **NOT FROM MY CORPUS — FROM §3.1's, WHICH I CANNOT RE-READ.** My 88-session sweep finds this
-  // value on an absent-origin `user` record ZERO times in 129,910 records. §3.1's table records it
-  // 81 times, as "local-command caveats, heartbeats, resumed-session summaries", on a capture with
-  // 4728 `user` entries and 3068 `channel` deliveries — and **no session on this machine matches
-  // that shape**; the closest has 18 human and 0 channel. So the two measurements are over different
-  // corpora and one of them is gone.
+  // **FROM §3.1's CORPUS, NOT THE 88-SESSION SWEEP ABOVE**, which finds this value on an
+  // absent-origin `user` record ZERO times in 129,910 records. §3.1's table records it 81 times, as
+  // "local-command caveats, heartbeats, resumed-session summaries", on a capture with 4728 `user`
+  // entries and 3068 `channel` deliveries — and **no session in the sweep matches that shape**; the
+  // closest has 18 human and 0 channel. So the two measurements are over different corpora, and
+  // §3.1's capture is not available to re-read.
   //
   // It is entered as `null` — known, and NOT a turn — because §3.1 already classified it and a
-  // measurement I cannot repeat is still a measurement. Leaving it out would make the throw below
-  // fire in production on a class the plan documents, which is the one thing a fail-loud branch must
-  // not do: **a fail-loud branch is only safe if you know what is on the other side of it.**
+  // measurement that cannot be repeated is still a measurement. Leaving it out would make the throw
+  // below fire in production on a class the plan documents, which is the one thing a fail-loud
+  // branch must not do: **a fail-loud branch is only safe if you know what is on the other side of
+  // it.**
   system: null,
 };
 
@@ -244,8 +236,8 @@ const ABSENT_ORIGIN_RULE: Record<string, "sdk" | "human" | null> = {
 const runOpeningAttribution = (entry: ClaudeEntry): "human" | "channel" | "sdk" | "auto-continuation" | null => {
   const kind = entry.origin?.kind;
   if (kind === undefined) {
-    // ABSENT origin. Not an error — absence is a known shape — but no longer a blanket refusal
-    // either, because a headless prompt has no `origin` and IS a turn.
+    // ABSENT origin. Not an error — absence is a known shape — and not a blanket refusal either,
+    // because a headless prompt has no `origin` and IS a turn.
     const ps = entry.promptSource;
     if (ps === undefined) return null;
     if (!(ps in ABSENT_ORIGIN_RULE))
@@ -404,8 +396,8 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // DROPS REAL HUMAN TURNS. A `user` entry carries an array both when the harness reports tool
       // results and when a person attaches something to a prompt, and the second case is not rare:
       // 8 of them sit in this machine's corpus, every one a person sending an attachment with a
-      // question about it. The previous shape returned early on any array, so each of those turns
-      // produced NOTHING, which an observer reads as an agent that did work nobody asked for.
+      // question about it. Returning early on any array would make each of those turns produce
+      // NOTHING, which an observer reads as an agent that did work nobody asked for.
       //
       // The discriminator is the presence of a `tool_result` block, not the array-ness.
       const toolResults = Array.isArray(content) ? content.filter((b) => b.type === "tool_result" && b.tool_use_id) : [];
@@ -453,14 +445,14 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // §3.1, whose table sent every non-human origin to nothing and therefore emitted NOTHING on an
       // agent-driven session.
       //
-      // **KEYED ON `origin.kind`, NOT ON `promptSource`, and the difference is a category error I
-      // made first.** `promptSource` is present on every submitted prompt in the captures available,
+      // **KEYED ON `origin.kind`, NOT ON `promptSource`, and keying on `promptSource` is a category
+      // error.** `promptSource` is present on every submitted prompt in the captures available,
       // so a partition of those captures suggests it as the discriminator — but the captures contain
       // no `task-notification` and no local-command caveats, and §3.1's own measurement does:
       // `task-notification` × 5 and 81 absent-origin entries (caveats, heartbeats, resumed-session
       // summaries), all of which carry `promptSource: "system"` too. **A predicate inferred from a
-      // partition is bounded by that partition's categories**, and this one would have opened runs
-      // on harness plumbing. `promptSource` is corroboration; it is not the gate.
+      // partition is bounded by that partition's categories**, and this one would open runs on
+      // harness plumbing. `promptSource` is corroboration; it is not the gate.
       //
       // Anything not enumerated FAILS LOUD — including a value a future harness adds.
       promptShaped += 1;
@@ -484,12 +476,12 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
        * the observer is entitled to the peer's words.
        *
        * §3.1's privacy argument is stated as already true — *"a `RUN_STARTED` attributed to a peer
-       * republishes no message body"* — and it was NOT: this branch emitted
-       * `TEXT_MESSAGE_CONTENT` with the peer's `content` verbatim, measured at 240 bytes in and 240
-       * bytes out on a real session. `events.<owner>.<actor>` carries a DIFFERENT read ACL from the
-       * channel the message arrived on, so that is a republication across an ACL boundary — the
-       * exact failure §3.1's non-human exclusion existed to prevent, which the ruling correctly
-       * moved off run-opening and which then had nothing enforcing it.
+       * republishes no message body"* — and this branch is what makes it true. Emitting
+       * `TEXT_MESSAGE_CONTENT` here would carry the peer's `content` verbatim, and
+       * `events.<owner>.<actor>` carries a DIFFERENT read ACL from the channel the message arrived
+       * on, so that is a republication across an ACL boundary — the exact failure §3.1's non-human
+       * exclusion exists to prevent, and which nothing else enforces once a peer delivery opens a
+       * run.
        *
        * So the run opens and the BODY IS WITHHELD. `cotal.turnSource` already tells a consumer a
        * peer began this turn, which is the fact an observer needs; the text is not.

@@ -45,6 +45,7 @@
  * rule, verbatim. And ordinary private ranges are refused in BOTH modes — no public CA issues for
  * them, so required TLS cannot make them verifiable, and a cafe LAN is private too.
  */
+import { isLoopbackLiteral } from "@cotal-ai/core";
 
 /** The address class a permitted target belongs to. This is a REACHABILITY allowlist: it says the
  *  address is one we are willing to consider, never that the connection is protected. What
@@ -185,25 +186,13 @@ const DEFAULT_PORT = 4222;
  * — and misses real loopback spellings such as `0177.0.0.1` or `[::ffff:127.0.0.1]`. It is wrong
  * in both directions, which is what a string standing in for an address decision usually is.
  *
- * Exported so every caller that needs "is this loopback" shares ONE authority, canonicalization
- * included, rather than growing a second opinion. Brackets are tolerated so a caller may pass a
- * URL hostname straight in.
+ * The verdict is core's `isLoopbackLiteral`. This adds only the legacy IPv4 canonicalization a
+ * `nats://` host needs, because no URL parser normalizes a non-special scheme's host. Brackets are
+ * tolerated so a caller may pass a URL hostname straight in.
  */
 export function isLoopbackHost(host: string): boolean {
   const bare = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
-  return isLoopbackLiteral(normalizeLegacyV4(normalizeMappedV4(bare)));
-}
-
-/** Loopback: `127.0.0.0/8` and `::1`. LITERALS ONLY, never `localhost`, because the whole point is
- *  a verdict that does not depend on a resolver an attacker could influence (a hosts-file entry or
- *  a poisoned lookup would otherwise turn "loopback" into any address at all). */
-function isLoopbackLiteral(host: string): boolean {
-  if (host === "::1" || host === "0:0:0:0:0:0:0:1") return true;
-  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!v4) return false;
-  const parts = v4.slice(1).map(Number);
-  if (parts.some((n) => n > 255)) return false;
-  return parts[0] === 127;
+  return isLoopbackLiteral(normalizeLegacyV4(bare));
 }
 
 /** The private overlay's address space: `100.64.0.0/10` (the CGNAT range Tailscale assigns) and

@@ -250,8 +250,9 @@ When the seat's mesh connection drops and the endpoint is rebuilding it, event p
 until the connection is live again and then publishes the queued records in order. The seat stays up
 through the outage. If the seat is stopped before the connection returns, the wait ends and the
 connector log records `AG-UI emitter stopped`. The unpublished records stay in the journal
-behind the stored cursor, and the next start publishes them. Any other emitter failure still stops
-the seat with exit code 1.
+behind the stored cursor, and the next start publishes them. Any other emitter failure stops the
+seat with exit code 1 on a space that requires events. On any other space the seat keeps running
+without events.
 
 The journal records settled message blocks rather than live deltas. Text and reasoning therefore
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
@@ -279,6 +280,10 @@ turn. A turn that stopped advancing therefore shows the age of its last event, `
 beside a heartbeat that is still fresh. `cotal_inbox` pulls only buffered quiet
 ambient from that host-owned queue; its shared optional `peek` argument is supported, so `peek: true`
 shows those messages without clearing them.
+
+A run turn rides the message that starts a Cotal-owned turn. It counts as shown once the Harness
+accepts that message, so the seat can `cotal_yield` it during the turn that carries it. A send the
+Harness never accepts leaves it unshown, and the next turn carries it again.
 
 ## Model limits
 

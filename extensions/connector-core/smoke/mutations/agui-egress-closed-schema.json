@@ -32,7 +32,7 @@
     },
     {
       "name": "T-ATTEMPT-EXTRA the extra-property verdict is silently swallowed in attempt() so AguiEmitter.start republishes a frozen body with extra properties",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "      throw this.halt(\n        \"egress-extra-property\",",
       "replace": "      void this.halt(\n        \"egress-extra-property\",",
       "expectRed": "recover:AguiEmitter.start halts with egress-extra-property for frozen sibling-property body",

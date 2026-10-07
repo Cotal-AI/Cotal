@@ -2,6 +2,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
+import { refuseUntrustedCwd } from "./trust.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -158,6 +160,7 @@ export const claudeConnector: Connector = {
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
+  resumeTranscript: claudeResumeTranscript,
   supportsToolListAnnounce: true, // MCP McpServer.registerTool; SDK fires tools/list_changed
   supportsPrompt: true, // a leading positional is auto-submitted as the first turn — see buildLaunch
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
@@ -217,6 +220,14 @@ export const claudeConnector: Connector = {
         );
       env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     }
+    // A carried resume (#1499) runs in the seat-private home the manager made for it, and every
+    // supervised seat needs a directory Claude already trusts. These refusals run here, before any
+    // private file is written and before the manager spends the claim.
+    const binary = opts.resolvedBinaries?.claude ?? "claude";
+    if (opts.carried) refuseCarriedLaunch(binary, env);
+    if (opts.cwd) refuseUntrustedCwd(opts.cwd);
+    // placeCarried trusts the carried directory in the seat's home, whatever cwd came beside it.
+    if (opts.carried && opts.carried.cwd !== opts.cwd) refuseUntrustedCwd(opts.carried.cwd);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
@@ -261,13 +272,11 @@ export const claudeConnector: Connector = {
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
     const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
     // Every refusal below runs before the first private file is written, so a refused launch leaves
-    // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus
-    // persona + model, which can only be applied to a `claude` session at launch. The `--model` flag
-    // wins over the agent file, and applies even with no agent file.
+    // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus a
+    // persona, which can only be applied to a `claude` session at launch.
     const agentFile = opts.configPath ? resolve(opts.configPath) : undefined;
     const def = agentFile ? loadAgentFile(agentFile) : undefined;
-    const model = opts.model ?? def?.model;
-    if (model) assertServableModel(model);
+    if (opts.model) assertServableModel(opts.model);
     // Rendered to strings here, so a value that cannot become a flag argument refuses before any file
     // exists. After the first write, only writeLaunchArtifact can throw, and it removes every file
     // this launch wrote before it does.
@@ -304,9 +313,9 @@ export const claudeConnector: Connector = {
       // The file must outlive buildLaunch for startup and resume, so it is a launch artifact too.
       args.push("--append-system-prompt-file", writeLaunchArtifact(artifacts, "cotal-claude-persona-", "persona.md", def.persona));
     }
-    if (model) {
-      args.push("--model", model);
-      env.COTAL_MODEL = model;
+    if (opts.model) {
+      args.push("--model", opts.model);
+      env.COTAL_MODEL = opts.model;
     }
 
     // Fork an existing session INTO the mesh (opts.resume, an opaque host-local id). `--fork-session`
@@ -315,6 +324,7 @@ export const claudeConnector: Connector = {
     // token (no shell), so a hostile-looking id can't inject. The persona prompt-file flag
     // above still applies, so the forked context runs under the current mesh persona.
     if (opts.resume) args.push("--resume", opts.resume, "--fork-session");
+    if (opts.carried) Object.assign(env, placeCarried(opts.carried.home, opts.carried.transcript, opts.resume, opts.carried.cwd));
 
     // Opaque connector options → native `claude` flags, RAW passthrough: `key=value` renders
     // `--key value`, and an empty value (`--opt foo=`) renders a bare boolean `--foo`. No allow-list,
@@ -327,7 +337,7 @@ export const claudeConnector: Connector = {
     }
 
     return {
-      command: opts.resolvedBinaries?.claude ?? "claude",
+      command: binary,
       args,
       env,
       // The dev-channels flag shows this one-time gate. Use its unique title rather than the generic
@@ -335,6 +345,7 @@ export const claudeConnector: Connector = {
       // default action. The runtime presses Enter once when this connector-owned text appears.
       confirm: "WARNING: Loading development channels",
       control,
+      ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),
       ...(artifacts.length > 0 ? { artifacts } : {}),
     };
   },

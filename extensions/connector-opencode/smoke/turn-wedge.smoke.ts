@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable, unicastSubject, parsePrincipalKey } from "@cotal-ai/core";
 import { configFromEnv, cotalToolSpecs } from "@cotal-ai/connector-core";
 import { connect as rawConnect } from "@nats-io/transport-node";
-import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
+import { bootPlugin, bootPlugin2, fakeOpenCode2Context, disposeInProcess } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await freePort();
@@ -470,16 +470,17 @@ try {
 
   // Stop: a retry is now pending (delay back at 2s after this failure). A cooperative stop landing
   // while it is pending must cancel the timer and submit nothing — two guards hold this: the timer
-  // clear in dispose's teardown (line 624) and the `stopping` refusal in `drive` (line 900), so no
-  // single-site mutant reds this cell; it is asserted here rather than proved by mutation.
+  // clear in dispose's teardown (`clearErrorRetry` in `quiesce`) and the `stopping` refusal in
+  // `drive`, so no single-site mutant reds this cell; it is asserted here rather than proved by
+  // mutation.
   await errorOnce();
   const beforeStop = prompts.length;
-  await hooks.dispose!();
+  await disposeInProcess(hooks);
   hooks = undefined;
   await sleep(4_000);
   check("retry:a stop submits nothing — a pending retry does not submit after dispose()", prompts.length === beforeStop, prompts);
 } finally {
-  await hooks?.dispose?.();
+  await disposeInProcess(hooks);
   await pub.stop();
   srv.kill("SIGKILL");
   oc.close();

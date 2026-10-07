@@ -13,6 +13,7 @@ import {
   newIdentity,
   provisionAgent,
   partsToText,
+  peerLabel,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -257,8 +258,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     }
   };
 
-  const who = (card: { name: string; role?: string }) =>
-    `${c.bold(card.name)}${card.role ? c.dim("/" + card.role) : ""}`;
+  const who = (card: { name: string; role?: string }) => c.bold(peerLabel(card));
 
   ep.on("message", (m: CotalMessage, d: Delivery) => {
     const text = partsToText(m.parts);
@@ -305,7 +305,7 @@ export async function join(args: ParsedArgs): Promise<void> {
 
   if (!interactive || !rl) {
     console.log(
-      c.dim(`${name} (${values.role ?? "no role"}) holding presence in ${space} - headless`),
+      c.dim(`${peerLabel({ name, role: values.role })} holding presence in ${space} - headless`),
     );
     await new Promise<void>(() => {}); // park; event handlers do the work
     return;

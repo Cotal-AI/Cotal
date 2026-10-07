@@ -70,18 +70,15 @@ for (const model of ["xai/grok-4.6", "openai/gpt-5.6-sol-fast", "google/gemini-2
   check(`the ${model} refusal points at the connector that can serve it`, !!msg && /opencode/.test(msg), msg);
 }
 
-// ---- REFUSED THROUGH THE AGENT FILE, which is the route that actually bit -----------------------
-// The seats in the incident carried `model:` in frontmatter, not on the spawn call. A guard that
-// only covered the explicit option would have passed this suite and missed the entire defect.
+// ---- THE AGENT FILE, which is the route that actually bit ----------------------------------------
+// The seats in the incident carried `model:` in frontmatter, not on the spawn call. The launcher
+// resolves that `model:` into the explicit option refused above; the connector never reads it from
+// the file, so a file model reaches neither the guard nor argv by any other route.
 const dir = mkdtempSync(join(tmpdir(), "cotal-launch-model-"));
 const agentFile = join(dir, "seat.md");
-writeFileSync(agentFile, `---\nname: seat\nmodel: xai/grok-4.6\n---\n\nA review seat.\n`);
-const viaFile = refusalFor({ configPath: agentFile });
-check(
-  "a model reaching the connector from an AGENT FILE is refused too, not only an explicit option",
-  viaFile !== null && /cannot serve model/.test(viaFile),
-  viaFile,
-);
+writeFileSync(agentFile, `---\nname: seat\nmodel: xai/grok-4.6\n---\n`);
+const viaFile = launch({ configPath: agentFile }) as { args: string[] };
+check("an AGENT FILE model is not rendered by the connector", !viaFile.args.includes("--model"), viaFile.args);
 
 // ---- ACCEPTED: the controls. Without these, a guard that refuses everything grades green. -------
 for (const model of ["opus", "sonnet", "claude-opus-5"]) {

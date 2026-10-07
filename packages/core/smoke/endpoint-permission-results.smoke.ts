@@ -146,8 +146,8 @@ try {
     denial,
   );
   check(
-    "the real broker denial also reaches the endpoint status surface",
-    statusErrors.some((message) => /STREAM\.INFO\.CHAT_permissionresults/.test(message)),
+    "the call that received the denial owns it: the endpoint does not re-emit it as an error",
+    !statusErrors.some((message) => /STREAM\.INFO\.CHAT_permissionresults/.test(message)),
     statusErrors,
   );
 

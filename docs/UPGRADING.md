@@ -34,6 +34,388 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Hermes model from the environment in 0.68.0
+
+A connector now launches on the model and variant its launcher resolved (the `--model` or
+`--variant` flag, else the agent file's `model:` or `variant:`) and no longer reads them again from
+the agent file. The Hermes connector also no longer takes a model from `HERMES_MODEL` in the
+environment of the process that spawns the seat, including when `spawn.env` lists it.
+
+### What stops working
+
+A Hermes spawn whose only model was `HERMES_MODEL` in the spawning environment is refused at launch,
+and the refusal names both ways to set a model. Spawns that set `--model` or `model:` are unchanged,
+on every connector.
+
+Code that calls a connector's `buildLaunch` directly with only `configPath` now gets no model or
+variant from that file. Pass them as `model` and `variant`.
+
+### Before the upgrade
+
+Move each Hermes seat's model from `HERMES_MODEL` onto its spawn with `--model`, or into its
+persona's `model:`.
+
+## Run answers on a participant manager in 0.68.0
+
+A participant manager now asks its issuing host for an answering credential by naming the run and
+step it answers. The host reads the pause's token off that run's journal and no longer accepts a
+token from the manager. Runs on a mesh with no participant manager are unaffected.
+
+### What stops working
+
+While a participant manager and its issuing host run different sides of this release, the host
+refuses every `cotal run answer` and every amendment that manager serves, because each side refuses
+the other's request shape. Starting, resuming and reading runs is unchanged. A pause stays waiting
+through the window, or follows its timeout if it has one.
+
+### Before the upgrade
+
+Upgrade the auth service and every participant manager registered with it in the same window, then
+answer the pauses that waited.
+
+## Headless OpenCode handshake in 0.69.0
+
+With `COTAL_SERVE_HEADLESS=1`, the OpenCode launcher's `[cotal-serve]` line on stdout now carries
+only `port` and `session`. The server password no longer appears in it, and the 1.x TUI no longer
+receives the password on its command line.
+
+### What stops working
+
+A headless host that read `password` from that line has no password, and the server refuses its
+requests. Seats with a TUI, and headless seats that no host drives, are unaffected.
+
+### Before the upgrade
+
+Have each headless host mint a password and pass it to the launcher as `OPENCODE_SERVER_PASSWORD`,
+then use it for basic auth as before. Without that variable the launcher mints its own.
+
+## Filesystem store identity in 0.69.0
+
+The delivery daemon's answer to the manager's store check now names a filesystem store by its root
+and by a random `id` that the store records once in `store.id` inside its own directory:
+`.cotal/store.id` for a workspace root, or the directory of the file for `cotal deliver --creds
+<file>`. A manager no longer counts the daemon's store as its own because the two roots have the
+same path. On a split whose broker host and manager host use one root path, the manager host now
+stays off the daemon-credential renewal lease, so `cotal doctor auth --fix` on the broker host can
+renew the daemon credentials.
+
+### What stops working
+
+A manager and a delivery daemon on different sides of this release refuse each other's answer to
+the store check. The manager then remints no daemon credential, and a manager that is booting does
+not start. This is read from the code and was not measured across two releases. A
+`cotal deliver --creds <file>` whose directory is a read-only mount and holds no `store.id` stops at
+start. So does a `--creds` file that is its directory's `store.id` under any name, and a `store.id`
+that is a symbolic link or holds anything but a lowercase UUID.
+
+### Before the upgrade
+
+Upgrade the broker host and every manager host of a space in the same window. For a `--creds` file
+on a read-only mount, add a regular `store.id` file beside it that holds a new lowercase UUID and no newline,
+as `node -e 'process.stdout.write(crypto.randomUUID())' > store.id` writes. Move a `--creds` file
+named or linked as `store.id` to a file of its own.
+
+## Detached spawns with `--share-tools` in 0.69.0
+
+The manager's `spawn` operation now takes `shareTools` as a list of MCP server names. The CLI parses
+`--share-tools` into that list before it sends the request, and the manager cluster document moves
+to revision 22. A cut taken with `cotal down --preserve-state` before the upgrade still resumes: the
+manager reads its `cotal-manager-resume/v1` inventory and writes new cuts as
+`cotal-manager-resume/v2`.
+
+### What stops working
+
+A CLI and a manager on different sides of this release refuse a detached spawn that passes
+`--share-tools`, because the CLI checks each request against the contract the manager serves. This
+is read from the code and was not measured across two releases. A detached spawn without the flag,
+a foreground spawn and a roster entry are unaffected. A manager older than this release cannot
+resume a cut that this release took.
+
+### Before the upgrade
+
+Upgrade the CLI on every host that runs `cotal spawn --detach` in the same window as the managers
+it reaches.
+
+## Shared MCP server checks in 0.69.0
+
+The cotal config reader now checks each server under `connectors.<name>.mcpServers` when it reads
+the file, and refuses one that cannot launch as written, naming the file and the field. The rules
+are in [the config file](config.md#the-config-file).
+
+### What stops working
+
+A config file that holds such a server refuses every Claude spawn that reads it, including one with
+`--share-tools none`. Before, a field of the wrong type failed each Claude spawn that shared the
+server with a `TypeError` that named neither the file nor the server, a spawn that did not share it
+launched, and a server with no `command` or `url` was passed to `claude`, which never started it.
+Read from the code and not measured: spawns on other connectors, a manager resume and the step of
+`cotal setup` that records the shared list read the same files, so each stops at the same refusal.
+
+### Before the upgrade
+
+Check `connectors.<name>.mcpServers` in the operator-level config file and in each space's
+`.cotal/config.json`. Give each server a string `command`, or a `type` of `http`, `sse` or `ws` with
+a string `url`. Write `args` as a list of strings and `env` and `headers` as objects of strings, or
+remove the server.
+
+## Remote manager family eviction in 0.69.0
+
+A remote manager registered through its host now asks the host to evict up to 256 holders of its
+credential family in one maintenance request, and the host reads the family once for the whole set.
+Before, a restart sent one request per holder and the host read the whole family for each one.
+Meshes with no remote manager are unaffected.
+
+### What stops working
+
+While a remote manager and its issuing host run different sides of this release, each side refuses
+the other's eviction request shape. A restart whose credential family already has holders then fails
+at its eviction step and leaves the manager's registration gate frozen. A first start, a clean stop
+and the host's reconciliation of a foreign slot holder are unchanged.
+
+### Before the upgrade
+
+Upgrade the auth service and every remote manager registered with it in the same window. A manager
+that restarted inside the window resumes its frozen registration on its next start once both sides
+run this release.
+
+## AG-UI emitter holder hooks in 0.69.0
+
+`AguiEmitterHolder` from `@cotal-ai/connector-core` now takes its hooks as one named object after
+the emitter factory: `new AguiEmitterHolder(startEmitter, { onError, onRunClosed, waitLive, runMeta })`.
+Only `onError` is required. Nothing about a running mesh changes, and every shipped connector passes
+its hooks by name. Only a connector of your own that builds a holder is affected.
+
+### What stops working
+
+A holder built with positional hooks, such as `new AguiEmitterHolder(start, onError, onRunClosed)`,
+no longer compiles, because the constructor takes two arguments. Plain JavaScript that keeps the
+positional form still runs, but the holder calls none of its hooks, so a failure never reaches
+`onError`.
+
+### Before the upgrade
+
+Pass each hook by name, for example `new AguiEmitterHolder(start, { onError, onRunClosed })`, and
+drop any `undefined` that filled an earlier slot to reach a later hook.
+
+## Worker run failure type in 0.70.0
+
+`WorkerRunFailed`, the failed result of `runInWorker` in `@cotal-ai/lang`, is now a union on
+`class`: `released`, `held`, `effect`, `too-large`, `rejected` or `error`. A running mesh needs
+nothing, because the runtime host and the engine thread ship in the same install. A run on the
+compiled engine whose program throws an object with `code: "L5012"` or `code: "L5025"` used to end
+released and now ends failed, as it does on the walker.
+
+### What stops working
+
+TypeScript code that reads `code`, `reason`, `step`, `pending`, `kind`, `detail` or `tooLarge` on a
+`WorkerRunFailed` it has not narrowed fails with TS2339. A released, held, too-large or rejected
+result no longer carries `code`, so JavaScript that branched on `L5012`, `L5025`, `L5006` or
+`L5010` stops matching with no error. `tooLarge` is gone.
+
+### Before the upgrade
+
+Branch on `class` where such code read `code`: `released` for L5012, `held` for L5025, `too-large`
+for L5006 and `rejected` for L5010. An `effect` or `error` result keeps its `code`. Once narrowed to
+`too-large`, a result carries the `stepKey`, `bytes` and `bound` that `tooLarge` held.
+
+## Remote manager request builder in 0.70.0
+
+`remoteManagerClient.remoteManagerAuthorityRequest` from `@cotal-ai/manager` now takes an
+operation's coordinates as one object, and `remoteManagerRegistrationProof` from `@cotal-ai/core`
+computes the proof from the manager's identity state instead of a request. Nothing about a running
+mesh changes: the proof digest and the request on the wire are the same, so a manager and a host on
+different sides of this release still accept each other. Only code that builds remote manager
+requests itself is affected, in TypeScript and in plain JavaScript.
+
+### What stops working
+
+A call that passes the registration proof, contract artifacts, session, retirement or transfer
+reader as positional arguments after the operation no longer compiles. A call that passes a request
+to `remoteManagerRegistrationProof` no longer compiles either, because the second argument now names
+the lifecycle `lifecycleUid`, as the identity state does.
+
+Plain JavaScript runs both old calls without an error. The builder drops the positional coordinates,
+so the host refuses the request with `requires a sha256 registrationProof`. A proof computed from a
+request leaves out the lifecycle, so the host refuses a request that carries it as a proof mismatch.
+
+### Before the upgrade
+
+Name the coordinates, for example
+`remoteManagerAuthorityRequest(state, "cli", "retire", { registrationProof, retirement })`.
+Compute the proof as `remoteManagerRegistrationProof(owner, state)`, adding the contract artifacts
+as a third argument for activation only. A host that recomputes the proof from a received request
+passes `{ space, instanceId, lifecycleUid: managerLifecycleUid, identities }` from that request.
+
+## Bearer validator lifetime cap in 0.70.0
+
+`validateUserToken` from `@cotal-ai/auth` no longer takes `maxTtlSec`. It caps a bearer's lifetime
+at the cap of the bearer's view, the same cap the issuer applies when it mints: 900 seconds, or 300
+for a `transfer-writer` bearer. The auth callout never passed the option, so a running mesh behaves
+as before. Only code of your own that calls the validator with `maxTtlSec` is affected.
+
+### What stops working
+
+A call that passes `maxTtlSec` in an object literal no longer compiles. Plain JavaScript that keeps
+it still runs, and the value is ignored. A `NaN` value, such as `Number()` of an unset environment
+variable, used to turn the lifetime check off and accept a bearer of any lifetime. That bearer is
+now refused at its view's cap.
+
+### Before the upgrade
+
+Remove `maxTtlSec` from each call. A test that needs a bearer to expire sooner mints one with a
+shorter lifetime.
+
+## Persisted identity records in 0.70.0
+
+The manager instance identity, the manager sibling identities, the auth plane instance identity and
+a participant manager's remote authority state now share one reader and one first mint in
+`@cotal-ai/workspace`, exported as `claimIdentityRecord` with the nkey check `identityOf`. Each
+record is read as a regular file, must hold non-empty nkeys and is created exclusively, so
+concurrent first starts of a participant manager on one root now settle on one identity where each
+used to keep its own. `saveManagerInstanceIdentity` and `saveAuthInstanceIdentity` are gone. A
+running mesh whose records are plain files needs nothing.
+
+### What stops working
+
+A manager instance, auth instance or remote authority record that is a symlink, a directory or any
+other non-regular entry is refused where it used to be followed. The manager, the auth plane and a
+participant manager fail to start on it, and `cotal reconcile-gate` and `cotal deregister-instance`
+refuse it. Retirement already refused it. A remote authority record with an empty nkey id or seed
+is refused too. A first mint that loses its race and cannot read the winner now refuses with
+`identity-record-create-lost` in place of `manager-instance-identity-create-lost` or
+`auth-instance-identity-create-lost`. Code that imports either `save` function no longer compiles.
+
+### Before the upgrade
+
+Replace a symlinked identity record with a copy of the file it points to. Code that wrote a record
+with a `save` function plants it with `createManagerInstanceIdentity` or
+`createAuthInstanceIdentity`, which create the record when it is absent and otherwise return the
+stored one unchanged. Nothing replaces an overwrite of a stored identity.
+
+## Manager instance in user credentials in 0.70.0
+
+`AuthProvider.userCredentials` from `@cotal-ai/core` no longer returns `managerInstanceId`. A
+`manager-caller` credential's manager instance is the signed `act.managerInstanceId` claim in its
+bearer, which the broker verifies and the CLI already used. The reference provider in
+`@cotal-ai/auth` stops copying the exchange response's field into its result, where nothing
+compared it with the bearer. The exchange still answers with the field, so a running mesh behaves as
+before.
+
+### What stops working
+
+Code of your own that reads `managerInstanceId` from a `userCredentials` result no longer compiles,
+and plain JavaScript reads `undefined` there.
+
+### Before the upgrade
+
+Read the instance from the bearer's `act.managerInstanceId` claim.
+
+## Auth plane identity location in 0.70.0
+
+The user-auth service keeps its instance identity in the root's `.cotal/space.<hex>/auth-instance.json`,
+beside the manager's. It used to sit inside `.cotal/auth`, at
+`space.<hex>/.cotal/auth/auth-instance.<hex>.json`, so a copy of that folder carried it. The first
+start of an upgraded root moves the record and keeps the instance. A hosted context started through
+`startAuthService` has its record moved the same way inside its `stateDir`.
+
+### What stops working
+
+Code that calls `openAuthAuthorityPlane` without the new `identityRoot` option no longer compiles. A
+start that finds a record both in `.cotal/space.<hex>/` and at its older place refuses and names the
+two files. A start also refuses when the older place of the auth or manager identity holds a symlink,
+a directory or anything else that is not a regular file. The manager used to skip a dangling symlink
+there and mint a new identity.
+
+### Before the upgrade
+
+Pass `identityRoot` to `openAuthAuthorityPlane`. When `dir` is a workspace root's user-auth state
+dir, `<root>/.cotal/auth/space.<hex>`, pass that root. A plane with no workspace root, as
+`startAuthService` runs, passes `dir` itself. Either keeps the identity the plane already has: on the
+first start it moves from `<dir>/.cotal/auth/` to `<identityRoot>/.cotal/space.<hex>/`. Never pass a
+directory inside `.cotal/auth`: the record would land in the folder an operator copies and travel
+with it again.
+
+A copy of `.cotal/auth` taken from a root last run by an older Cotal carries that root's record.
+Delete `.cotal/auth/space.<hex>/.cotal/auth/auth-instance.<hex>.json` from the root you copied it to
+before the first `cotal up --user-auth` there.
+
+## Carrying a resumed Claude session to another host in 0.67.0
+
+`cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the
+operator's host to the target manager instance. Both sides need this release: an older manager does
+not serve `transcript-receive`, and the CLI then stops with that manager's refusal instead of
+launching. The manager cluster document moves to revision 21, and the `ps` row's `resume` object
+gains `host` and `transferredAt`.
+
+A manager host that runs carried seats needs `CLAUDE_CODE_OAUTH_TOKEN`, `ANTHROPIC_AUTH_TOKEN` or a
+cloud provider selection in its environment, because each carried seat runs in its own Claude home
+with no stored login. On an authenticated mesh the CLI mints the transfer writer from the space's
+signing seed, so the carrying host needs that seed, as for any other operator command. On a user-auth
+mesh it exchanges the operator's login for a `transfer-writer` view instead, so the operator's grant
+needs scope `admin`, and the auth service must run this release. A remote manager receives a carry once
+its host serves the manager-service `transferReader` operation. A seat launched without carrying,
+including any `--resume` whose id this host does not hold, is unchanged.
+
+## Lifecycle head type in 0.67.0
+
+`LifecycleMapping`, the type `parseLifecycleHead` returns, is now a union on `state`. Nothing about
+a running mesh changes: heads that parsed before parse the same way, and the refusals are
+unchanged. Only TypeScript code that compiles against `@cotal-ai/core` is affected.
+
+### What stops working
+
+An `interface` that extends `LifecycleMapping` fails with TS2312, because an interface cannot extend
+a union. Code that builds a head in memory no longer compiles when the head is `retiring` without
+its `op`, or `active` or `retired` with one. The parser already refused those heads.
+
+### Before the upgrade
+
+Declare such an interface as an intersection instead, for example
+`type ActiveMapping = LifecycleMapping & { state: "active" }`. A reader that has checked
+`state === "retiring"` reads `op` without a guard.
+
+## Issuance gate types in 0.67.0
+
+`EpGateRow` and `EndpointGateRow`, which `parseIssuanceGate` and `parseEndpointGate` return, and
+`EpGateState`, which an `EpIssuanceGate` or `EpIssuanceBarrier` returns from `observe`, are now
+unions on `state`. Nothing about a running mesh changes: gates that parsed before parse the same
+way, and the refusals are unchanged. Only TypeScript code that compiles against `@cotal-ai/core`
+is affected.
+
+### What stops working
+
+An `interface` that extends one of these types fails with TS2312, because an interface cannot
+extend a union. Code that builds a gate in memory, such as a custom barrier's `observe`, no longer
+compiles when the gate is `frozen` or `retired` without its `op`, or `open` with one. The gate
+parsers already refused those rows.
+
+### Before the upgrade
+
+Declare such an interface as an intersection instead, for example
+`type CustomGateRow = EpGateRow & { custom: string }`.
+
+## Lifecycle-blocked refusals in 0.66.0
+
+A refusal that carries `ai.cotal.ep.lifecycle-blocked` now reports only the lifecycle state it
+read. Nothing about a running mesh changes. A client that branches on the detail must read the new
+field.
+
+### What stops working
+
+A refusal raised at the issuance gate used to carry `headState` without reading the head:
+`retiring` for a frozen gate and `retired` for a retired one. It now carries `gateState`
+(`frozen` or `retired`) and no `headState`. A client that treats `headState: "retired"` as a
+burned uid, or `headState: "retiring"` as a retirement in flight, no longer matches those
+refusals, and the `[lifecycle ...]` suffix on the error string changes the same way. A custom
+issuance barrier whose `observe` returns a frozen gate without a valid `op` (a string `opId` and
+one of the four op kinds) is now refused as `internal` by `registerServiceInstance`.
+
+### Before the upgrade
+
+Update such a client to read `gateState` for a gate refusal and `blockedOp` for the operation that
+holds the gate. `headState` is present only when the refusal read the head, for example an
+activation refused because the head is still retiring.
+
 ## Workflow programs that bind `once` in 0.65.0
 
 `once` is now a scope of the workflow language, so it is a reserved name. A program that declares
@@ -660,6 +1042,13 @@ no release claims every release and distinguishes none: `## Notes` with a senten
 otherwise satisfy the rule. Naming the release also makes the section the one an operator upgrading
 that release will search for. Use `###` freely for detail inside a section. Subsections belong to
 their release rather than counting as separate coverage.
+
+Name the release that first carries the change: the next version Changesets publishes, which
+`pnpm changeset status --verbose` lists. `bin/package.json` on `main` still reads the release already
+published. If a release is cut while the change is open, the change ships in the release after it,
+so move the heading before merging. The gate accepts any version in a heading, so before merging a
+release pull request, check every heading added since the previous tag against the version it
+publishes.
 
 A section is written for the operator, not for the reviewer. It answers, in this order:
 

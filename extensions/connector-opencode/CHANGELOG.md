@@ -1,5 +1,49 @@
 # @cotal-ai/connector-opencode
 
+## 0.70.0
+
+### Minor Changes
+
+- 76113ce: `AguiEmitterHolder` now takes its hooks as one named object after the emitter factory, `new AguiEmitterHolder(startEmitter, { onError, onRunClosed, waitLive, runMeta })`, typed by the exported `AguiEmitterHolderHooks`, where only `onError` is required. Before, the four hooks were positional, and a `runMeta` provider passed third was accepted as `onRunClosed`: it typechecked, ran after the run had already closed, and its metadata was dropped with no error. A caller no longer fills earlier slots with `undefined` to reach a later hook. The Claude Code, Codex, jcode, OpenCode and pi connectors pass their hooks by name, with no change in behavior.
+
+### Patch Changes
+
+- 95788eb: A seat whose AG-UI event plane stops for good now follows the space's policy on every connector. On a space that requires events the seat stops, where Pi, Claude Code and OpenCode used to keep it running without events. On any other space the seat keeps running and its log records `AG-UI emitter stopped`, where Jcode used to stop the seat and refuse further turns. Codex no longer rebuilds a stopped plane at its next turn boundary on any space, and it now waits for the mesh before starting its emitter, as the other connectors do. The rule is `eventPlaneStopped` in connector-core, which each connector passes its log sink and its stop hook.
+- 3fbdbef: Comments in the OpenCode connector name the code they point at by symbol instead of by line number. Three of those line numbers had drifted onto unrelated code, so the 2.x session handshake comment and the turn-wedge stop cell's rationale sent a reader to the wrong place. They now cite `sessionReady` in plugin.ts, `clearErrorRetry` in `quiesce`, the `stopping` refusal in `drive`, `buildLaunch` in extension.ts and `modelReady` in plugin2.ts. No behavior changes.
+- 5a17a92: The OpenCode launcher's lifecycle now lives in `launch`, bundled as `dist/launch.js`, which takes the argv of the TUI to attach and, optionally, extra env for the server, built only once no seat of that name is running. `dist/serve.js` runs it with the `opencode` TUI, as before. The frontier-faces example ran a hand-kept copy of this lifecycle with its face viewer, and the copy had drifted: a face seat kept running after its server exited, refused to start over a `serve.pid` whose pid an unrelated process had reused, and passed the server password on the viewer's argv. It now calls `launch` with the face viewer, which reads the password from `OPENCODE_SERVER_PASSWORD`, and composes its persona file in that env step, so a refused second launch leaves the running seat's persona untouched.
+- edfb4cd: An OpenCode agent launch no longer fails with `ENOENT` when the previous launch of the same agent removes its `serve.pid` record while the new launch is checking it. The launcher now reads the record once, treats a record that is gone as no record, and removes a dead one without failing if it has already been removed.
+- b3f3ac8: Restate the comment above the OpenCode plugin's `shutdown` as the rule it carries: the exit waits for the shared teardown to settle and runs whether that teardown resolves or rejects. It no longer compares the exit with an earlier version, a comparison that suggested a teardown that throws keeps the process running. No behavior changes.
+
+## 0.69.0
+
+### Minor Changes
+
+- 5dfd357: The OpenCode launcher keeps the server password off command lines and stdout. The 1.x TUI reads it from its environment instead of `attach --password`, and the headless `[cotal-serve]` line now carries only `port` and `session`. A headless host that drives the server passes its own `OPENCODE_SERVER_PASSWORD` to the launcher; without one, the launcher mints a password per launch as before.
+
+### Patch Changes
+
+- 5838b9d: The OpenCode event mapper now exposes only what the plugin calls: `map` and `forgetOpenRun`. It dropped `closeOpenRun`, `openRun` and `diagnose`, which nothing shipped called. The run closes the record stream cannot see, at `session.idle` and `session.error`, go through the event holder and never went through the mapper, and `diagnose` could only ever report that no assistant record had arrived. No behavior changes.
+
+## 0.68.0
+
+### Minor Changes
+
+- 585fdb2: Connectors launch on the model and variant their launcher resolved. `LaunchOpts.model` and `LaunchOpts.variant` are now the launcher's resolved values (the flag, else the agent file's `model:` / `variant:`), and every connector renders them as given instead of reading the agent file again in `buildLaunch`. Before, a model the launcher did not resolve was taken from a later read of a file that could have changed since, so the seat could run a model the launcher never checked or recorded, and a supervised restart re-read it each time. The in-session config takes the model and variant from `COTAL_MODEL` / `COTAL_VARIANT` only, so the card and the orientation pin no longer report a model the seat was not launched on. The Hermes connector no longer falls back to `HERMES_MODEL` from the spawning process, including one `spawn.env` forwards; set the model with `--model` or the persona's `model:`. Code that calls `buildLaunch` directly must pass `model` and `variant` itself.
+
+### Patch Changes
+
+- ad30240: An OpenCode 1.x seat whose instance the host disposes now ends instead of staying up off the mesh. OpenCode disposes an instance while its server keeps running, for example after a global config change or on `POST /instance/dispose`, and the next request loaded the plugin again from its process-wide cache. That handed back the stopped seat: the server kept running with the agent off the mesh, every `cotal_*` tool and native prompt was refused, and the manager still listed the seat as running. `dispose` now runs the same teardown as a stop and then exits the server, and the launcher closes the attached TUI when its server exits, killing a stopped or unresponsive one after 3 seconds, so the manager sees the seat end.
+
+## 0.67.0
+
+### Patch Changes
+
+- 7f909a1: Remove sentences from the AG-UI holder and the Claude Code and OpenCode AG-UI mapper comments that described what earlier revisions of those comments got wrong. The comments now state only the current contract: the `boundPath` gate keeps start-once, the chain serializes hook events, the refusals live in `subject-frontier.ts` and `event-wal.ts`, the bracket interleave is open, OpenCode publishes `RUN_ERROR` through `AguiEmitterHolder.closeRun`, and the Claude Code mapper keeps its measured predicate counts. No behavior changes.
+
+## 0.66.1
+
+## 0.66.0
+
 ## 0.65.0
 
 ## 0.64.0

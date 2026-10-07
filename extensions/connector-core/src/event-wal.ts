@@ -9,7 +9,7 @@
  * THE ORDERING RULE THE WHOLE DESIGN RESTS ON. Transition 1 records `sent_unacked` and only THEN
  * publishes; transition 2 records `acked` on a NON-duplicate ack, durably, BEFORE the frontier
  * moves; transition 3 folds the frontier and clears pending. The `acked` state looks redundant
- * until you remove it: an earlier draft committed the cursor and then unlinked pending, on the
+ * until you remove it: committing the cursor and then unlinking pending looks safe on the
  * reasoning that a crash between them would "re-publish, and CAS or in-window dedupe absorbs it".
  * That is false under these same rules. Pending still holds the PRE-STORE `E`, the tip has moved to
  * `E+1`, so recovery takes a CAS loss — which is fail-loud — and the emitter wedges FOREVER on a
@@ -70,10 +70,10 @@ export interface WalPending {
   /**
    * The frame's parts, FROZEN at transition 1 beside the id and `E` that identify them.
    *
-   * Without this the WAL froze what NAMES a frame and not the frame: a restart holding
-   * `sent_unacked` recovered the id and the expectation and had nothing to re-publish, so
+   * Without this the WAL would freeze what NAMES a frame and not the frame: a restart holding
+   * `sent_unacked` would recover the id and the expectation and have nothing to re-publish, so
    * "retry the same frame after a crash" — the one thing this file exists to make possible —
-   * could not be performed from the document. The write-ahead rule requires it and it was absent.
+   * could not be performed from the document. The write-ahead rule requires it.
    *
    * It is the parts and not a rendered message because `multicastExpecting` builds the envelope
    * (`ts`, `from`, `space`) at publish time; storing that too would freeze a second copy of fields
@@ -105,10 +105,9 @@ export interface WalDoc {
   gen: number;
   /**
    * The space this WAL belongs to — stored because it is a PATH COMPONENT and a path component is
-   * not a trusted input. `principal` and `threadId` were verified on
-   * load and `space` was not, so a WAL copied or mis-resolved between two space directories under
-   * the same principal and thread LOADED, and one space's frontier was adopted as another's. Two
-   * thirds of a three-part guard is not the guard.
+   * not a trusted input. Verifying only `principal` and `threadId` on load would let a WAL copied
+   * or mis-resolved between two space directories under the same principal and thread LOAD, and
+   * adopt one space's frontier as another's. Two thirds of a three-part guard is not the guard.
    */
   space: string;
   epoch: string;
@@ -178,9 +177,8 @@ function docGeneration(path: string, doc: { v?: unknown; gen?: unknown }): numbe
  *
  * **Exported so a test can drive the shipped flags rather than recompose them.** A cell that builds
  * `O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW` itself is testing a COPY of this rule: it stays green
- * while the production open drifts or loses a flag. That is not hypothetical here — the first
- * version of those cells did exactly that, and a mutation reverting the real open to `"w"` left the
- * suite fully green. Driving this function is what makes the mutation land.
+ * while the production open drifts or loses a flag, so a mutation reverting the real open to `"w"`
+ * leaves it green. Driving this function is what makes the mutation land.
  *
  * `O_EXCL` refuses a pre-existing file rather than adopting it — which matters because `"w"` does
  * NOT re-chmod an existing inode, so an adopted 0644 temp would carry its mode onto the renamed WAL
@@ -204,23 +202,23 @@ export async function openExclusiveNoFollow(path: string): Promise<FileHandle> {
  * Named relations rather than one compound boolean: an operator who cannot see WHICH relation broke
  * cannot act on it, and a single fused check gives a mutation only one cell to kill.
  *
- * **THERE IS DELIBERATELY NO `sourceCursor` RELATION HERE, AND THAT IS A CORRECTION.**
- * An earlier version asserted `pending.sourceCursor >= frontier.sourceCursor` using string `<`.
+ * **THERE IS DELIBERATELY NO `sourceCursor` RELATION HERE.**
  * A cursor is **OPAQUE** — `DurableSource` defines it per source and states that a caller "never
  * parses it". `JsonlFileSource` happens to emit `dev:ino:offset:seal`, and lexicographic order is
- * NOT offset order once the digit width changes, so that check was wrong in BOTH directions:
+ * NOT offset order once the digit width changes, so `pending.sourceCursor >= frontier.sourceCursor`
+ * by string `<` is wrong in BOTH directions:
  *
- *   frontier offset 8,   acked pending offset 45  → REFUSED a healthy WAL ("45" < "8")
- *   frontier offset 170, acked pending offset 98  → ACCEPTED a mixed-vintage one ("98" > "170")
+ *   frontier offset 8,   acked pending offset 45  → REFUSES a healthy WAL ("45" < "8")
+ *   frontier offset 170, acked pending offset 98  → ACCEPTS a mixed-vintage one ("98" > "170")
  *
  * The first wedges recovery on ordinary source growth across any digit boundary — on the exact
  * crash window the `acked` state exists to survive. The second silently admits the mixed vintage
- * the relation was written to refuse. Found independently by two reviewers, then reproduced here.
+ * it is meant to refuse.
  *
- * The root cause is not the operator; it is that **ordering an opaque value requires parsing it**,
- * and parsing it would bind this WAL to one source's format — breaking the abstraction the moment
- * a store-backed source uses something else (OpenCode's `part.id`, a rollout path, an API token).
- * So the relation is not fixed, it is REMOVED: it cannot be stated correctly at this layer.
+ * Changing the operator does not help: **ordering an opaque value requires parsing it**, and
+ * parsing it would bind this WAL to one source's format — breaking the abstraction the moment a
+ * store-backed source uses something else (OpenCode's `part.id`, a rollout path, an API token).
+ * The relation cannot be stated correctly at this layer, so it is not stated at all.
  *
  * What remains is sufficient and well-defined, because it uses the WAL's OWN monotonic counters
  * rather than a foreign key: an acked frame must be exactly the frontier's successor, and its
@@ -230,15 +228,11 @@ export async function openExclusiveNoFollow(path: string): Promise<FileHandle> {
 function assertPendingVintage(path: string, p: WalPending, f: WalFrontier): void {
   // ── RELATIONS THAT HOLD FOR *EITHER* TAG ──
   //
-  // These were previously checked ONLY for `acked`, which left `sent_unacked` — the crash window
-  // transition 1 exists to survive — almost unguarded. Documents with `E` disagreeing with the
-  // frontier's tip, or a `seq` that is not the frontier's successor, LOADED and would then retry a
-  // frozen expectation that cannot be the honest successor of this frontier: a permanent CAS halt,
-  // or a publish at the wrong stream position, with no loud corrupt at open.
-  //
-  // The asymmetry was mine: I wrote three named relations for the path that has already succeeded
-  // and almost none for the path that is still in flight. Found by fmae-rev-sec, reproduced by
-  // fmae-rev-eng and fmae-rev-wal, then here.
+  // `sent_unacked` is the crash window transition 1 exists to survive, so it is held to these as
+  // strictly as `acked`. A document with `E` disagreeing with the frontier's tip, or a `seq` that is
+  // not the frontier's successor, would otherwise LOAD and then retry a frozen expectation that
+  // cannot be the honest successor of this frontier: a permanent CAS halt, or a publish at the
+  // wrong stream position, with no loud corrupt at open.
   if (p.E !== f.lastSubjectSeq)
     throw new WalCorruptError(
       path,
@@ -276,7 +270,7 @@ function assertPendingVintage(path: string, p: WalPending, f: WalFrontier): void
         `never published; resuming would drop them with no gap for a consumer to see`,
     );
   // NO sourceCursor comparison — see the note above. The cursor is opaque; ordering it here is not
-  // a thing this layer can do correctly, and doing it with string `<` was wrong in both directions.
+  // a thing this layer can do correctly.
 }
 
 /**
@@ -366,10 +360,10 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
 
   // A NONZERO FRONTIER MUST CARRY THE POSITION IT WAS DERIVED FROM.
   //
-  // This guard was omitted on the reasoning that no shipped transition can produce a nonzero
-  // frontier without a cursor — which is exactly backwards. A recovery component must refuse the
-  // states its own writer CANNOT produce, because those are precisely the states corruption
-  // produces. The happy path is not the input domain.
+  // No shipped transition produces a nonzero frontier without a cursor, and that is the reason to
+  // check for one rather than a reason to skip it. A recovery component must refuse the states its
+  // own writer CANNOT produce, because those are precisely the states corruption produces. The
+  // happy path is not the input domain.
   //
   // The cost of accepting it is silent loss, and it is not theoretical: the emitter resumes by
   // reading forward from this cursor, and `read(undefined)` does not resume — it ADOPTS AT THE
@@ -393,12 +387,10 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
   // reclassifies "we may have published and do not know" as "we have nothing in flight", which is
   // the one downgrade a write-ahead log must never make on its own authority.
   //
-  // ONE check, not two. The first version guarded the absent key with `hasOwnProperty` AND the
-  // shape with a `typeof`, and the mutation proof caught the redundancy: deleting the
-  // `hasOwnProperty` half killed nothing, because an absent key is `undefined` and the shape check
-  // already refuses it with the same invariant. Two mechanisms preventing one outcome means a cell
-  // asserting that outcome proves neither of them — so the belt came off and the cells now bite on
-  // the one guard that does the work.
+  // ONE check, not two. An absent key is `undefined`, and the shape check refuses it with the same
+  // invariant, so a separate `hasOwnProperty` guard would be a second mechanism preventing one
+  // outcome, and a cell asserting that outcome would prove neither of them. The cells bite on the
+  // one guard that does the work.
   if (doc.pending !== null && typeof doc.pending !== "object")
     throw new WalCorruptError(path, "pending is present (null or an object)",
       doc.pending === undefined ? "the key is absent, which is not the same as null" : typeof doc.pending);
@@ -411,11 +403,11 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
     if (typeof p.id !== "string" || p.id.length === 0)
       throw new WalCorruptError(path, "pending.id is a non-empty string", String(p.id));
     // ...and it must satisfy the WIRE grammar, not merely be a string. `beginSend` validates with
-    // `assertIdToken` on the way IN; open accepted anything non-empty on the way OUT — so a corrupted
-    // or hand-edited id (`"has.dots"`) was ADOPTED at recovery and then rejected by
-    // `multicastExpecting` on every republish attempt. That turns disk corruption into a permanent
-    // runtime wedge instead of a refusal at open, which inverts this file's posture. Validated with
-    // the SHIPPED grammar rather than a second copy that could drift from it.
+    // `assertIdToken` on the way IN, and open checks the same on the way OUT: a corrupted or
+    // hand-edited id (`"has.dots"`) ADOPTED at recovery would be rejected by `multicastExpecting` on
+    // every republish attempt. That turns disk corruption into a permanent runtime wedge instead of
+    // a refusal at open, which inverts this file's posture. Validated with the SHIPPED grammar
+    // rather than a second copy that could drift from it.
     try {
       assertIdToken(p.id, "event WAL pending.id");
     } catch (e) {
@@ -479,16 +471,14 @@ export class EventWal {
    *
    * Without it, two concurrent `beginSend` calls both read `this.doc.pending === null` before either
    * durable replace finishes — the guard is an in-memory read that is NOT atomic with the write
-   * across its `await` points. Reviewers reproduced the split: one call fulfils, one rejects, and
-   * the process is left holding `pending.id === "A"` in memory while the disk says `"B"`. Recovery
-   * would then resume the frame on disk while the live emitter retries the other, which breaks the
-   * one thing this file exists to guarantee — that `id` and `E` are frozen and agreed.
+   * across its `await` points. The split leaves one call fulfilled, one rejected, and the process
+   * holding `pending.id === "A"` in memory while the disk says `"B"`. Recovery would then resume
+   * the frame on disk while the live emitter retries the other, which breaks the one thing this
+   * file exists to guarantee — that `id` and `E` are frozen and agreed.
    *
-   * A per-instance chain is sufficient and honest about its scope, and the scope is narrower than it
-   * once claimed: it serializes THIS INSTANCE's callers. It does nothing about a SECOND `EventWal`
-   * on the same file, in this process or another — the chain is per object, so two objects are two
-   * chains and both of them "succeed". That gap was described here as "solved upstream by the
-   * principal-level lock" while no lock was ever acquired. Two things close it now, and neither is
+   * The chain serializes THIS INSTANCE's callers and nothing more. It does nothing about a SECOND
+   * `EventWal` on the same file, in this process or another — the chain is per object, so two
+   * objects are two chains and both of them "succeed". Two things close that gap, and neither is
    * this chain: `acquirePrincipalLock` refuses a second emitter for the principal at start, and
    * {@link EventWal.assertNotClobbering} refuses a stale handle's write even when it got past that.
    */
@@ -545,11 +535,11 @@ export class EventWal {
     if (bytes !== undefined) {
       // FATAL UTF-8 — never `readFile(path, "utf8")`. Node's default decoder SUBSTITUTES U+FFFD for
       // invalid bytes, so a corrupted file arrives as a changed-but-parseable document: a single raw
-      // 0xff inside the epoch string loaded cleanly with `epoch` silently rewritten. For a file whose
+      // 0xff inside the epoch string loads cleanly with `epoch` silently rewritten. For a file whose
       // whole posture is that every unreadable state fails loud, "quietly altered and accepted" is
       // the one outcome it must not produce — the identity bytes recovery depends on would be the
-      // decoder's invention. `JsonlFileSource` in this same package already decodes fatally for
-      // exactly this class; this is that rule applied where it was missing, not a new one.
+      // decoder's invention. `JsonlFileSource` in this same package decodes fatally for exactly
+      // this class, and this is the same rule.
       try {
         raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       } catch {
@@ -595,20 +585,17 @@ export class EventWal {
   /**
    * Bind the PRINCIPAL-scoped subject frontier this thread publishes onto.
    *
-   * **THE TIP IS NOT THIS THREAD'S TO REMEMBER, AND THAT IS THE WHOLE CORRECTION.**
+   * **THE TIP IS NOT THIS THREAD'S TO REMEMBER.**
    * `frontier.lastSubjectSeq` records the last sequence THIS thread was assigned, which is a true
-   * fact about this log and was mistaken for the subject's tip. The subject is per principal, so a
-   * second session of the same agent opened virgin, expected an empty subject its own predecessor
-   * had filled, and halted forever. Once bound, the bound record is authoritative for the
+   * fact about this log and not the subject's tip. The subject is per principal, so a second
+   * session of the same agent reading its own virgin log would expect an empty subject its own
+   * predecessor had filled, and halt forever. Once bound, the bound record is authoritative for the
    * expectation and this document's own number is history.
    *
    * Called once, by {@link AguiEmitter.start}, which is the only thing that drives a WAL toward a
    * publish. An UNBOUND log still opens, replays and reports its own frontier, so a caller that
    * only READS one needs no record; but every step toward a publish reads the subject's tip, so
    * `expectedTip`, `beginSend`, `recordAck` and `abandon` all throw until this has been called.
-   * An earlier version of this sentence said an unbound WAL behaved exactly as it did before,
-   * which was true when it was written and stopped being true in the same change that made the
-   * unbound expectation throw.
    */
   async bindSubjectFrontier(frontier: SubjectFrontier): Promise<void> {
     // Binding the SAME record twice is not a change, and refusing it would only push a caller that
@@ -619,24 +606,21 @@ export class EventWal {
     if (this.subject === frontier) return;
     if (this.subject) throw new Error(`event WAL ${this.path}: a DIFFERENT subject frontier is already bound`);
     this.subject = frontier;
-    // NO SEEDING HERE, and the first version of this method did it here and was wrong. The upgrade
-    // case is a NEW thread whose own log is virgin while the sequence sits in a PREVIOUS thread's
-    // log, so seeding from `this` document recovers nothing in exactly the case that matters. That
-    // recovery belongs to whoever can see every thread log of the principal, which is the record's
-    // own `open`.
+    // NO SEEDING HERE. The upgrade case is a NEW thread whose own log is virgin while the sequence
+    // sits in a PREVIOUS thread's log, so seeding from `this` document recovers nothing in exactly
+    // the case that matters. That recovery belongs to whoever can see every thread log of the
+    // principal, which is the record's own `open`.
   }
 
   /**
    * The sequence a publish must expect, which is the SUBJECT's tip and not this thread's.
    *
-   * **UNBOUND IT THROWS, AND AN EARLIER VERSION OF THIS RETURNED THIS DOCUMENT'S OWN LAST ACK.**
-   * That number is the defect's own shape: per session, while the subject is per principal. The
-   * argument for returning it was that no shipped path can reach it, because
-   * {@link AguiEmitter.start} is the only route from a log to a publish and it binds before the
-   * emitter exists. The argument was true, and it is the same argument the released seam shipped
-   * on: two correct components with an assumption standing where a guard belongs, recorded in
-   * prose. So the assumption is a guard now. A caller that drives a log toward a publish without a
-   * frontier fails here rather than republishing an expectation that was never the subject's.
+   * **UNBOUND IT THROWS**, and it never falls back to this document's own last ack: that number is
+   * per session, while the subject is per principal. No shipped path reaches the unbound case,
+   * because {@link AguiEmitter.start} is the only route from a log to a publish and it binds before
+   * the emitter exists, and the throw makes that a guard rather than an assumption recorded in
+   * prose. A caller that drives a log toward a publish without a frontier fails here rather than
+   * republishing an expectation that was never the subject's.
    */
   get expectedTip(): number {
     if (!this.subject)
@@ -660,11 +644,10 @@ export class EventWal {
   }): Promise<void> {
     return this.serialize(async () => {
     if (this.doc.pending) throw new Error(`event WAL ${this.path}: a frame is already pending; one emit unit is one pending frame`);
-    // THE SAME GRAMMAR THE WIRE USES, not a restatement of it. `beginSend` previously accepted ids
-    // (" ", a newline, 65 chars, dots) that `multicastExpecting`'s `assertIdToken` rejects — so T1
-    // could freeze an id on disk that can NEVER publish, wedging the emitter until an abandon. The
-    // id is supposed to be one token on the wire and in the WAL; importing the check is what makes
-    // that true rather than asserted.
+    // THE SAME GRAMMAR THE WIRE USES, not a restatement of it. An id that `multicastExpecting`'s
+    // `assertIdToken` rejects (" ", a newline, 65 chars, dots) would let T1 freeze an id on disk
+    // that can NEVER publish, wedging the emitter until an abandon. The id is one token on the wire
+    // and in the WAL; importing the check is what makes that true rather than asserted.
     assertIdToken(frame.id, "event WAL pending id");
     if (frame.E !== this.expectedTip)
       throw new Error(`event WAL ${this.path}: E=${frame.E} is not the subject's tip ${this.expectedTip}`);
@@ -687,26 +670,24 @@ export class EventWal {
     return this.serialize(async () => {
     const p = this.doc.pending;
     if (!p || p.state !== "sent_unacked") throw new Error(`event WAL ${this.path}: no sent_unacked frame to ack`);
-    // VALIDATE BEFORE THE DURABLE WRITE. `recordAck(-1)` was accepted, `fold()` then persisted
-    // `frontier.lastSubjectSeq = -1`, and the NEXT open refused the file — a single bad ack durably
-    // bricked the WAL while every call reported success. Fail-closed has to happen before the write,
-    // not on the boot after it.
+    // VALIDATE BEFORE THE DURABLE WRITE. An accepted `recordAck(-1)` would let `fold()` persist
+    // `frontier.lastSubjectSeq = -1`, and the NEXT open would refuse the file — a single bad ack
+    // durably bricking the WAL while every call reported success. Fail-closed has to happen before
+    // the write, not on the boot after it.
     if (!isSafeNonNegInt(ackSeq))
       throw new Error(`event WAL ${this.path}: ackSeq must be a safe non-negative integer, got ${String(ackSeq)}`);
     if (ackSeq <= this.expectedTip)
       throw new Error(`event WAL ${this.path}: ackSeq=${ackSeq} is not ahead of the subject's tip ${this.expectedTip}`);
     // TWO RULES ABOUT THE NEXT TWO LINES, AND THEY ARE KEPT TOGETHER SO NO PROSE SITS BETWEEN THEM.
     //
-    // A STALE WRITER MAY NOT TOUCH THE SHARED RECORD AT ALL, and the refusal is here rather than
-    // inside `write` because making the unbound expectation throw surfaced that it could. The
-    // generation guard used to run in `write`, which is AFTER the record moves, so a handle whose
-    // file had been rewritten underneath it advanced the principal's tip and only then learned it
-    // was not allowed to write. The record is shared by every thread of the principal; a refusal
-    // that arrives after the mutation refuses the wrong thing.
+    // A STALE WRITER MAY NOT TOUCH THE SHARED RECORD AT ALL, so the refusal runs here and not only
+    // inside `write`, which is AFTER the record moves: there, a handle whose file had been rewritten
+    // underneath it would advance the principal's tip and only then learn it was not allowed to
+    // write. The record is shared by every thread of the principal; a refusal that arrives after
+    // the mutation refuses the wrong thing.
     //
-    // THEN THE SHARED RECORD ADVANCES FIRST, and the crash window between these two lines was
-    // written backwards here until somebody executed it. What a crash between them actually leaves
-    // is the record AHEAD of this log: the frame landed, the record took the sequence the broker
+    // THEN THE SHARED RECORD ADVANCES FIRST. What a crash between these two lines leaves is the
+    // record AHEAD of this log: the frame landed, the record took the sequence the broker
     // assigned it, and the log still holds that frame as `sent_unacked` with its `E` frozen at the
     // tip BEFORE it. The next start republishes the frozen expectation, the subject has already
     // passed it, and a single-replica stream evaluates the expectation BEFORE the dedup cache, so
@@ -723,14 +704,13 @@ export class EventWal {
     // of this principal reads its expectation from. Both orders fail closed. Only one of them fails
     // closed on a value the whole principal reads.
     //
-    // A LOCAL, NOT `this.subject?.advance(ackSeq)`. The optional call was not a hole: `expectedTip`
-    // above throws when nothing is bound, so an unbound log never reaches this statement, and that
-    // was measured rather than assumed. It is the wrong SHAPE all the same, and this file already
-    // has the counterexample: `abandon`'s optional call shipped on the identical argument until the
-    // argument stopped being true. A comment claiming the line above throws cannot survive that
-    // line being moved or deleted; a local the compiler checks can. The refusal below is therefore
-    // unreachable by construction and NO CELL GRADES IT, which is said here rather than registered
-    // as a mutant that could only ever survive.
+    // A LOCAL, NOT `this.subject?.advance(ackSeq)`. `expectedTip` above throws when nothing is
+    // bound, so an unbound log never reaches this statement, but an optional call would be the
+    // wrong SHAPE all the same: it leans on that line staying above this one, and a comment
+    // claiming the line above throws cannot survive that line being moved or deleted; a local the
+    // compiler checks can. The refusal below is therefore unreachable by construction and NO CELL
+    // GRADES IT, which is said here rather than registered as a mutant that could only ever
+    // survive.
     const subject = this.subject;
     if (!subject) throw new Error(`event WAL ${this.path}: no subject frontier is bound, so this ack has no shared record to advance`);
     await this.assertNotClobbering();
@@ -788,11 +768,10 @@ export class EventWal {
     // goes with it. Leaving it standing would make the next thread expect a tip the subject no
     // longer has, which is this defect's mirror image: the same permanent halt from the other side.
     //
-    // REQUIRED, NEVER `this.subject?.reset()`. That optional call was the last silent degradation
-    // in this file: with no record bound it cleared the log's half and reported a completed
-    // abandonment, leaving the shared half standing. This method's own contract above is that
-    // partial abandonment is not a state, and an optional call is how a partial one gets reported
-    // as whole.
+    // REQUIRED, NEVER `this.subject?.reset()`. With no record bound, an optional call would clear
+    // the log's half and report a completed abandonment, leaving the shared half standing. This
+    // method's own contract above is that partial abandonment is not a state, and an optional call
+    // is how a partial one gets reported as whole.
     await this.assertNotClobbering();
     if (!this.subject)
       throw new Error(
@@ -827,12 +806,12 @@ export class EventWal {
    * (that message has landed); the only window where it is dangerous is exactly the window this
    * file holds it in, between transition 1 and the ack.
    *
-   * So the residual a reviewer raised as "gated on a local disk read rather than mesh access" is
-   * gated on a read OF THIS FILE. A world-readable WAL would convert a property the design credits
-   * to entropy into one credited to filesystem luck. Under our own rules the attack yields a LOUD
-   * halt rather than silent loss — a duplicate ack on a retry fails loud with the frontier and
-   * cursor unmoved — so this is denial of service, not corruption. Closing it by construction is
-   * cheap enough that naming it as an accepted residual would be the worse trade.
+   * So the exposure is gated on a local read OF THIS FILE rather than on mesh access. A
+   * world-readable WAL would convert a property the design credits to entropy into one credited to
+   * filesystem luck. Under our own rules the attack yields a LOUD halt rather than silent loss — a
+   * duplicate ack on a retry fails loud with the frontier and cursor unmoved — so this is denial of
+   * service, not corruption. Closing it by construction is cheap enough that naming it as an
+   * accepted residual would be the worse trade.
    */
   private async write(next: WalDoc): Promise<void> {
     // NOBODY ELSE HAS WRITTEN THIS FILE SINCE THIS HANDLE READ IT. Checked FIRST, because every
@@ -840,32 +819,22 @@ export class EventWal {
     await this.assertNotClobbering();
     const stamped: WalDoc = { ...next, gen: this.doc.gen + 1 };
 
-    // The temp name is RANDOM per write, and the open is EXCLUSIVE and NON-FOLLOWING.
-    //
-    // The previous version derived the name from `path` + `pid` — predictable — and used
-    // `open(tmp, "w", 0o600)`. Both halves were exploitable and both were reproduced:
+    // The temp name is RANDOM per write, and the open is EXCLUSIVE and NON-FOLLOWING, because a
+    // predictable name (`path` + `pid`) opened with `open(tmp, "w", 0o600)` is exploitable twice:
     //   - `open(…, "w")` does not re-chmod an EXISTING inode; the mode argument applies only on
-    //     create. A planted 0644 temp therefore survived as the WAL's mode, and the file holding
-    //     `pending.id` — a pre-publication secret by this class's own argument — ended up
-    //     world-readable while a comment three lines up claimed 0600.
-    //   - `"w"` follows symlinks. A symlink planted at the predicted name made the next transition
-    //     truncate and overwrite an arbitrary file the process could open. One plant, one write.
-    // Found by fmae-rev-sec, reproduced independently by fmae-rev-eng and fmae-rev-wal, then here.
-    //
-    // **The symlink half is the one I have no excuse for: I added `O_NOFOLLOW` to `JsonlFileSource`
-    // in this same session, for this same class, and did not carry it to the file this module
-    // writes.** A fence built on the read path while the write path stayed open.
+    //     create. A planted 0644 temp would survive as the WAL's mode, and the file holding
+    //     `pending.id` — a pre-publication secret by this class's own argument — would end up
+    //     world-readable.
+    //   - `"w"` follows symlinks. A symlink planted at the predicted name would make the next
+    //     transition truncate and overwrite an arbitrary file the process could open. One plant,
+    //     one write.
     //
     // O_EXCL makes a pre-existing temp a hard failure rather than something to adopt; O_NOFOLLOW
-    // refuses a symlink outright; the random suffix removes the predictability that made planting
-    // reliable; and 0600 comes from the CREATE flags, which is the only place it can come from —
+    // refuses a symlink outright; the random suffix removes the predictability that planting
+    // relies on; and 0600 comes from the CREATE flags, which is the only place it can come from —
     // `rename` preserves the inode's mode, so there is no post-rename chmod here and this comment
     // does not claim one. The suite asserts the mode on the surviving file, which is where the
     // guarantee has to hold; the code's part is refusing to adopt an existing inode at all.
-    // (An earlier version of this sentence said the mode was "asserted on the surviving inode" as
-    // though the production path checked it. It does not — the SUITE does. Flagged independently by
-    // two reviewers: a comment describing a check that lives somewhere else is the same overclaim
-    // class this file's own header warns about.)
     const tmp = join(
       dirname(this.path),
       `.${createHash("sha256").update(this.path).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.wal.tmp`,
@@ -890,13 +859,13 @@ export class EventWal {
   /**
    * Refuse to replace a document this handle did not read.
    *
-   * **THE FAILURE THIS EXISTS FOR WAS EXECUTED, NOT IMAGINED.** Two `EventWal` objects were opened
-   * on one file. A ran the full cycle and folded a frontier of `{seq:1, lastSubjectSeq:5}`. B, whose
-   * in-memory document was frozen back at the pending write, then called `recordAck(99)` and
-   * `fold()` — both SUCCEEDED, each replacing the whole file, and the WAL came back up claiming a
-   * durable tip of 99: a subject sequence the broker never assigned. The next publish freezes
-   * `E := 99` against a stream whose real tip is 5, so the emitter either CAS-halts forever or
-   * recovers a frontier that never existed. Nothing about that is loud; it reads as a healthy WAL.
+   * **THE FAILURE THIS EXISTS FOR.** Two `EventWal` objects are open on one file. A runs the full
+   * cycle and folds a frontier of `{seq:1, lastSubjectSeq:5}`. B, whose in-memory document is
+   * frozen back at the pending write, then calls `recordAck(99)` and `fold()` — without this check
+   * both SUCCEED, each replacing the whole file, and the WAL comes back up claiming a durable tip
+   * of 99: a subject sequence the broker never assigned. The next publish freezes `E := 99`
+   * against a stream whose real tip is 5, so the emitter either CAS-halts forever or recovers a
+   * frontier that never existed. Nothing about that is loud; it reads as a healthy WAL.
    *
    * The per-instance `serialize` chain cannot see it (two instances, two chains) and neither can the
    * principal lock (B's handle predates any lock B would take, and a lock is not held against a

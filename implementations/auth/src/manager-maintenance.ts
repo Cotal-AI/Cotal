@@ -1,17 +1,18 @@
 import {
+  EVICT_PRINCIPALS_MAX,
   EpEnvelopeError,
   assertLifecycleToken,
   assertValidOwnerToken,
   epcredFamilyPrefix,
   parseLedgerRow,
   remoteManagerActors,
+  parseRemoteManagerIdentities,
   type RemoteManagerMaintenanceRequest,
   type RemoteManagerMaintenanceResult,
 } from "@cotal-ai/core";
 import type { AuthLedgerScanner } from "./ledger-scanner.js";
+import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
-
-const identityNames = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
 
 function requestError(what: string): never {
   throw new EpEnvelopeError("bad-request", `manager-service maintenance request ${what}`);
@@ -22,7 +23,7 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
   const o = raw as Record<string, unknown>;
   const allowed = new Set([
     "v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid",
-    "requestId", "identities", "targetInstanceId", "principal",
+    "requestId", "identities", "targetInstanceId", "principals",
   ]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (o.v !== 1 || o.kind !== "manager-service-maintenance")
@@ -37,22 +38,12 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
   assertLifecycleToken(o.targetInstanceId as string, "manager maintenance targetInstanceId");
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) requestError("requestId must be a 22-64 character idempotency token");
   if (o.operation === "evict-family-principal") {
-    if (typeof o.principal !== "string" || o.principal.length === 0) requestError("evict-family-principal requires principal");
-  } else if (o.principal !== undefined) requestError("reconcile-registration must not carry principal");
-  const ids = o.identities;
-  if (ids === null || typeof ids !== "object" || Array.isArray(ids)) requestError("requires identities");
-  const idObj = ids as Record<string, unknown>;
-  if (Object.keys(idObj).sort().join(",") !== [...identityNames].sort().join(","))
-    requestError(`identities must contain exactly ${identityNames.join(", ")}`);
-  const identities = {} as RemoteManagerMaintenanceRequest["identities"];
-  for (const name of identityNames) {
-    const item = idObj[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
-      requestError(`identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) requestError(`identities.${name}.id must be a user nkey`);
-    identities[name] = { id };
-  }
+    const p = o.principals;
+    if (!Array.isArray(p) || p.length === 0 || p.length > EVICT_PRINCIPALS_MAX ||
+        p.some((x) => typeof x !== "string" || x.length === 0) || new Set(p).size !== p.length)
+      requestError(`evict-family-principal requires 1 to ${EVICT_PRINCIPALS_MAX} distinct non-empty principals`);
+  } else if (o.principals !== undefined) requestError("reconcile-registration must not carry principals");
+  const identities = parseRemoteManagerIdentities(o.identities, requestError);
   return {
     v: 1,
     kind: "manager-service-maintenance",
@@ -64,19 +55,14 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
     requestId: o.requestId as string,
     identities,
     targetInstanceId: o.targetInstanceId as string,
-    ...(typeof o.principal === "string" ? { principal: o.principal } : {}),
+    ...(Array.isArray(o.principals) ? { principals: [...(o.principals as string[])] } : {}),
   };
 }
 
 export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHolder & {
   request: RemoteManagerMaintenanceRequest;
   space: string;
-  observeManagerGate(instanceId: string): Promise<{
-    state: "open" | "frozen" | "retired";
-    principal: string;
-    processEpoch: number;
-    registrationRevision: number;
-  } | null>;
+  observeManagerGate: ObserveManagerGate;
   scanner: AuthLedgerScanner;
 }): Promise<RemoteManagerMaintenanceRequest> {
   const r = parseRemoteManagerMaintenanceRequest(args.request);
@@ -109,8 +95,9 @@ export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHo
       if (!entry.key.startsWith(prefix))
         throw new EpEnvelopeError("internal", `the sealed manager-family scan returned foreign key ${entry.key}`);
     }
-    if (!holders.has(r.principal!))
-      throw new EpEnvelopeError("permission-denied", `manager maintenance may evict only a holder enumerated in ${epcredFamilyPrefix("manager", r.targetInstanceId)}; ${r.principal} is outside that family`);
+    const outside = r.principals!.filter((p) => !holders.has(p));
+    if (outside.length > 0)
+      throw new EpEnvelopeError("permission-denied", `manager maintenance may evict only holders enumerated in ${epcredFamilyPrefix("manager", r.targetInstanceId)}; outside that family: ${outside.join(", ")}`);
   }
   return r;
 }
@@ -118,7 +105,7 @@ export async function authorizeRemoteManagerMaintenance(args: ManagerAuthorityHo
 export function completeRemoteManagerMaintenance(
   request: RemoteManagerMaintenanceRequest,
   owner: string,
-  result: Pick<RemoteManagerMaintenanceResult, "eviction" | "reconciliation">,
+  result: Pick<RemoteManagerMaintenanceResult, "evictions" | "reconciliation">,
 ): RemoteManagerMaintenanceResult {
   return { ...request, owner, ...result };
 }

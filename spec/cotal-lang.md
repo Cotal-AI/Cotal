@@ -130,14 +130,12 @@ The validator MUST also refuse, before a program runs:
 - **A call that starts an effect and is not awaited (L2013).** A call to an effect primitive, or to
   a user function declared `async` (or bound by `const` to an async function expression), MUST be
   the operand of `await`, the operand of `return`, or the concise body of an arrow function passed
-  as a branch to `parallel`, `race`, `fanOut` or `conclave`. Anything else starts work whose result
+  as a branch to a scope (§7). Anything else starts work whose result
   nothing waits for, and calls outside a combinator run in sequence, so the program would say
   "concurrently" while the runtime did the opposite. The validator enforces this where the call
   site is syntactically visible; an effect reached through a function value it cannot follow (an
   arrow passed to a user function that calls it without awaiting) is not refused, and the program
   is responsible for awaiting it.
-  The concise body of an arrow passed to `once` (§7.8) is admitted the same way, since `once` owns
-  its body as the other scopes own their branches.
 - The effect call-shape rules of §6.2 and §6.3 (L3011 to L3044).
 - **A write from a concurrent branch to a binding declared outside it (L2032, §7.7).**
 
@@ -531,7 +529,7 @@ and `events` on `spawn` are policy over a result and are never hashed.
   ahead of each addressee's next turn; it is never a channel message. The fact is bounded (§6.8).
 - **`monitor`** registers interest in an agent's health, after which `down(agent)` is an event a
   branch can `wait` on.
-- The four scopes are §7. `once` is the fifth (§7.8).
+- The scopes are §7.
 
 ### 6.6 Events
 
@@ -568,12 +566,20 @@ if (r.status === "blocked") {
 ## 7. Concurrency
 
 Concurrency is visible in the source: a program has no `Promise` and no way to start work it does
-not await except through the four **scopes**. Each scope opens a **scope frame** in the step-key
-grammar (§10.2), gives every branch its own key namespace, and writes one journal entry of its own
-whose result records how it settled.
+not await except through the **scopes**, the primitives whose journal kind §6.1 marks as a scope. Each
+scope opens a **scope frame** in the step-key grammar (§10.2), gives every branch its own key
+namespace, and writes one journal entry of its own whose result records how it settled.
 
-`once` (§7.8) is a fifth scope. It opens a scope frame and writes one entry like the other four, and
-runs its one branch with nothing beside it.
+Scopes differ in the three traits below. The rules that depend on a trait read its column here
+instead of naming kinds, so a new scope is a row in §6.1 and a row in this table.
+
+| Scope | Settles (§10.6) | Orphaned on migrate (§11.2) | A fork cut inside it (§11.3) |
+| --- | --- | --- | --- |
+| `parallel` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
+| `race` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | **refused** (L5020): re-entering would decide the winner again |
+| `fanOut` | an assembly of branch outcomes | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
+| `conclave` | its body's own value | ignored if `closed`; else **rejected** (L5014) | **refused** (L5020): re-entering would open the conclave again on a fresh handler |
+| `once` | its body's own value | ignored: a scope outlives nothing of its own | re-entered: it decides nothing of its own |
 
 ### 7.1 Branches and branch keys
 
@@ -638,7 +644,9 @@ Opens a scoped sub-team: the handler creates (or names, with `channel`) a concla
 returns. It is a scope **and** an effect: its one entry (kind `conclave`) hashes the members and
 channel (§6.4) and carries a `closed` fact stating whether the membership was released (§10.6). A
 body that merely fails is closed; a body that was cancelled is not, and its release travels the
-recovery path of every other branch-local resource.
+recovery path of every other branch-local resource. A settled `conclave` is replayed from its entry
+without entering `fn`, so `fn` MUST NOT write to a binding declared outside it or into a record or
+array born outside it (L2032, §7.7), and returns what the program reads instead.
 
 ### 7.6 Cancellation
 
@@ -665,10 +673,10 @@ into a record or array **born** outside it, through any alias (L2032 at run time
 cover this: nothing crosses an effect boundary. And it is silent: live, branches write in completion
 order; on resume the recorded effects return instantly and they write in launch order, so the run
 takes a path it never recorded with no divergence to catch it. Return the value from the branch and
-read it out of the scope's result. `conclave` has one branch and does not raise the depth. `once`
-raises the depth like a branch of `parallel`, though nothing runs beside it, because a settled `once`
-is replayed without entering its body (§7.8), so a write from the body would happen live and never on
-resume.
+read it out of the scope's result. `conclave` and `once` raise the depth like a branch of
+`parallel`, though nothing runs beside their one body, because a settled `conclave` or `once` is
+replayed without entering its body (§7.5, §7.8), so a write from the body would happen live and never
+on resume.
 
 ```js
 // refused: L2032
@@ -767,8 +775,8 @@ revision MAY drop it from the pin set. `stepBudget` bounds a walk and not the ru
 not recorded, and a **step is whatever the running engine counts** (a walker dispatch under
 version 1, a transformed-site hit under version 2), so the same budget does not buy the same
 program two engines, and a recorded `stepBudget` is not comparable across versions; `effectCeiling` bounds the run because the journal records every dispatch, and a
-resume counts the recorded distinct effect keys (excluding `conclave`, which is dispatched from the
-scope walker) toward it.
+resume counts the recorded distinct effect keys toward it, a `conclave`'s included, so re-entering a
+pending or refused step does not count it again.
 
 ### 8.4 Language version
 
@@ -889,8 +897,7 @@ The journal is an append-only log of entries. An entry is JSON:
   seq,                 // append order, for reading only; matching never uses it
   run,                 // the run id
   scope,               // the scope path string (§10.2)
-  kind,                // spawn | turn | ask | checkpoint | sleep | wait | waitUntil | notify
-                       //   | monitor | parallel | race | fanOut | conclave | once
+  kind,                // the primitive's journal kind (§6.1)
   name,                // the step name, "" when unnamed
   occurrence,          // the n-th (kind, name) in this scope, from 0
   inputHash,           // "sha256:<hex>" (§6.4)
@@ -1004,13 +1011,11 @@ result must: a value the record cannot carry is refused AT THE SETTLE, and the s
 a fault under `L4000` with kind `scope-fault` rather than settled `ok`. A failure the program
 itself caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler
 raised keeps its code and kind (§10.1); `L4000` `scope-fault` is for everything else. ABSENCE IS
-EXEMPT, and where it is exempt follows the scope's kind. `parallel`, `fanOut` and `race` settle an
-assembly of branch outcomes, so a BRANCH that produced no value is absence and its slot is not put
-through the rule;
-anything deeper is, including a field the branch's own value carries. A `conclave` settles the
-body's own value and assembles nothing, so only a body that produced NO VALUE AT ALL is absence, and
-every field of a value it did produce answers to the rule. A `once` settles its body's own value the
-same way, so only a body that produced no value at all is absence; it records no `closed`. A resume refuses a loaded record whose
+EXEMPT, and where it is exempt follows what the scope's §7 row says it settles. A scope that settles
+an assembly of branch outcomes exempts a BRANCH that produced no value: its slot is not put through
+the rule; anything deeper is, including a field the branch's own value carries. A scope that settles
+its body's own value assembles nothing, so only a body that produced NO VALUE AT ALL is absence, and
+every field of a value it did produce answers to the rule. A resume refuses a loaded record whose
 `result` fails the rule, naming the entry and the field (L5024). THE RULE FENCES WHAT IS WRITTEN
 AND DOES NOT REPAIR WHAT WAS WRITTEN BEFORE IT: a record produced under an earlier host may carry a
 scope value the store already flattened, and such a record still loads and still replays, because
@@ -1077,13 +1082,12 @@ never looks up are **orphans**, and what happens to each depends on what it did:
 | Orphaned kind | Verdict |
 | --- | --- |
 | `sleep`, `wait`, `monitor`, `ask` | ignored: nothing outlives it |
+| `waitUntil` | ignored, settled or pending: it holds no agent, membership or decision, and its recorded observations stay in the journal |
 | `turn` | kept: the agent already spoke; the record stays and the migration says the source no longer accounts for it |
 | `notify` | ignored if its notice was carried by the addressee's next turn; else **rejected** (L5013) |
-| `conclave` | ignored if `closed`; else **rejected** (L5014) |
 | `spawn` | **rejected** (L5003) unless the agent is adopted or released by an explicit override |
 | `checkpoint` | ignored if never resolved; a resolved one is **rejected** (L5004) unless discarded by an explicit override, recorded with the actor |
-| `parallel`, `race`, `fanOut` | ignored: a scope outlives nothing of its own |
-| `once` | ignored: a scope outlives nothing of its own |
+| a scope (§7) | the **Orphaned on migrate** verdict in its §7 row |
 | any other kind | **rejected** (L5015): a kind with no policy is not waved through |
 
 A divergence inside a reached step is a rejection naming the step (L5001); an edit inside a losing
@@ -1098,8 +1102,10 @@ a named step key (never an ordinal), under the parent's pins **unchanged, seed i
 reseeded prefix would re-decide every pure draw inside history it is supposed to copy, and no entry
 records a draw. The cut is found by a dry walk in migration mode (§11.2), so a cut inside a settled
 scope is found rather than swept past. The cut step MUST exist in the parent's journal (L5017), MUST
-be reached by the parent program's own path (L5018), and MUST NOT lie inside a scope whose outcome
-was already decided (L5020, a race loser's step); a fork that asks to pin a new program hash is
+be reached by the parent program's own path (L5018), and MUST NOT lie inside a scope unless its §7
+row re-enters a fork cut (L5020). A scope that encloses the cut and is re-entered is left out of the
+prefix, so the child enters it again: its other branches replay from the entries the prefix holds,
+and the branch holding the cut runs live from it. A fork that asks to pin a new program hash is
 refused (L5002) until the run record carries one. Agents the prefix spawned are respawned at the
 frontier by default and adopted only where the spawn said `onFork: "adopt"`, and a host that cannot
 honour that refuses (L5019). The child is a new run under a new id whose record names its lineage:
@@ -1274,3 +1280,7 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-02 | A host stack exhaustion is uncatchable (§9.2) and is not L4016 (§5.4): the depth at which a host runs out of stack belongs to the host, so a program that caught it chose its next effect by the machine it ran on, and a journal recorded on one host diverged (L5001) on resume on another. It unwinds past `finally` on both engines, and a scope it fails inside settles nothing, cancels no sibling and closes no conclave. Measured before it: a `parallel` branch that overflowed settled the scope `failed` under `L4000` and cancelled its sibling, and on the compiled engine a `finally { throw ... }` replaced the overflow, which an outer `catch` then caught. A `conclave` body that overflowed still closed the room, and a close that failed replaced the overflow with an error the program caught. A `race` whose arm overflowed left its entry pending but still sent every sibling the race's cancellation after the arms settled, which a live handler saw. A `parallel` or `fanOut` whose other branch failed first settled `failed` under `L4000` over a later sibling's overflow, and the program caught it and performed its next effect. |
 | 2026-10-03 | The record and array arguments of the free builtins are checked like `len`'s (§5.4): `keys`, `values`, `entries`, `has` and `merge` take a record, and `map`, `filter`, `find`, `some`, `every`, `sort`, `slice`, `join`, `reverse`, `unique`, `sum`, `pick` and `concat`'s first argument take an array; every other kind is refused L4016 before the host is reached. Measured before it: `map(5, f)` and `keys(5)` answered `[]`, `every(5, f)` answered true, `has(f, "length")` answered true off the implementation's function wrapper, `keys("ab")` answered index strings, `concat("a", [1])` answered `"a1"` past L4018, and `keys(null)` refused with the host's error text. A version-1 record that relied on the host's answer is the third known case of §8.4's replay posture. |
 | 2026-10-05 | A fifth scope, `once` (§7.8): every step under it is dispatched at most once, and a resume that finds one pending opens a hold under a token derived from its recorded request id instead of dispatching it again. An entry may carry `hold` (§10.1). An expired hold fails the step with the catchable L4027, and an effect `once` does not admit is refused with L4028. `once` is a reserved name. |
+| 2026-10-06 | The migrate orphan table has a `waitUntil` row (§11.2): an orphaned `waitUntil` is ignored whether it settled or is still pending, and its recorded observations stay in the journal. The reference migrate check already admitted it, while the table's "any other kind" row required L5015, so an implementation written from the table refused every migration that orphaned a `waitUntil`. |
+| 2026-10-06 | A `conclave` body may not write outside itself (L2032, §7.5, §7.7): `conclave` raises the depth on both engines and the validator walks its body, as it does for `once`. Measured before it: a body that assigned an outer `let` or wrote a field of a record built outside it completed, the live run read the new value, and the resume, which delivers a settled `conclave` from its entry, read the old one and diverged (L5001) at the next effect that took it as input. |
+| 2026-10-06 | The scopes and the three traits in which they differ are one table (§7): what a scope settles, its verdict when a migration orphans it, and whether a fork re-enters it when the cut lies inside it. §2.3, §6.5, §10.1, §10.6, §11.2 and §11.3 cite that table or §6.1 instead of listing or counting kinds, so a new scope is a row in §6.1 and a row in §7. §11.3 refused a cut inside "a scope whose outcome was already decided" without naming those scopes; it now re-enters `parallel`, `fanOut` and `once` and refuses `race` and `conclave` (L5020), as the reference already did, and refuses a cut inside a scope with no row. No behavior changes. |
+| 2026-10-06 | A `conclave` counts toward `effectCeiling` (§8.3): opening one is a dispatch, so it is counted once before its entry begins, and a resume's tally counts its recorded key. Before this a program whose only effect was `conclave` could open any number of them, live or across a resume, without reaching L4009. A resume that re-enters a pending or refused step no longer counts it a second time: its key is already in the tally, and counting it again faulted the resumed run at a step where a fresh run went on. |

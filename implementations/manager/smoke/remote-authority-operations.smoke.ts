@@ -119,15 +119,15 @@ assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, caller: { ...
 assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, owner: `u_${"b".repeat(26)}` }, adminRequest, owner), /different lifecycle/);
 assert.throws(() => remoteManagerAdminAuthorized({ ...adminResult, authorized: "yes" } as never, adminRequest, owner), /different lifecycle/);
 
-const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", instanceId, `${owner}.manager_goal_${instanceId}`);
+const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", "evict-family-principal", instanceId, [`${owner}.manager_goal_${instanceId}`]);
 const maintenanceResult = {
   ...maintenanceRequest,
   owner,
-  eviction: { principal: maintenanceRequest.principal!, kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true },
+  evictions: [{ principal: maintenanceRequest.principals![0], kicked: 1, remaining: 0, verifiedGone: true, scanComplete: true }],
 };
-assert.deepEqual(remoteManagerMaintenanceResult(maintenanceResult, maintenanceRequest, owner).eviction, maintenanceResult.eviction);
+assert.deepEqual(remoteManagerMaintenanceResult(maintenanceResult, maintenanceRequest, owner).evictions, maintenanceResult.evictions);
 assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, extra: true } as never, maintenanceRequest, owner), /different lifecycle|closed matching/);
-assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, eviction: { ...maintenanceResult.eviction, verifiedGone: true, remaining: 1 } }, maintenanceRequest, owner), /contradictory/);
+assert.throws(() => remoteManagerMaintenanceResult({ ...maintenanceResult, evictions: [{ ...maintenanceResult.evictions[0], verifiedGone: true, remaining: 1 }] }, maintenanceRequest, owner), /contradictory/);
 
 let remoteChecks = 0;
 let adminDecision: boolean | Error = true;

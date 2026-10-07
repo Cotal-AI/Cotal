@@ -4,10 +4,14 @@
 // /spec/cotal-lang.md + /spec/cotal.schema.json, stamped with the release version (bin/package.json). Run:
 // `pnpm gen:docsbundle`.
 //
-// Emits extensions/connector-core/src/docs-bundle.generated.ts by default, as a plain typed
-// constant (a JSON.stringify'd object literal — readable and bundler-proof: tsc copies it into
-// dist and esbuild inlines it into the OpenCode plugin bundle, where loose files would be
-// dropped). FAILS LOUD on an empty or missing source so a release can never ship hollow docs.
+// Emits extensions/connector-core/src/docs-bundle.generated.ts by default, as a typed object
+// literal (a JSON.stringify'd one — readable and bundler-proof: tsc copies it into dist and
+// esbuild inlines it into the OpenCode plugin bundle, where loose files would be dropped).
+// The literal is the body of `loadDocsBundle()` rather than a module constant: every connector
+// process imports this module and most never call `cotal_docs`, and a constant would build the
+// whole docs set in each of them at startup. `DOCS_VERSION` sits outside it so the orientation
+// card can print the version without building the docs. FAILS LOUD on an empty or missing source
+// so a release can never ship hollow docs.
 //
 // THE OUTPUT IS A BUILD ARTIFACT, NOT A TRACKED FILE. `@cotal-ai/connector-core` runs this
 // from its own `build` and `typecheck`, and the path is gitignored. It used to be committed,
@@ -139,9 +143,11 @@ writeFileSync(
   out,
   banner +
     'import type { DocsBundle } from "./docs.js";\n\n' +
-    "export const DOCS_BUNDLE: DocsBundle = " +
+    "/** The installed Cotal version, for stamping the orientation card and other surfaces. */\n" +
+    `export const DOCS_VERSION = ${JSON.stringify(version)};\n\n` +
+    "export function loadDocsBundle(): DocsBundle {\n  return " +
     JSON.stringify(bundle, null, 2) +
-    ";\n",
+    ";\n}\n",
 );
 
 console.log(`gen:docsbundle: wrote ${pages.length} pages + spec + lang + schema for Cotal v${version} → ${out.startsWith(repoRoot + "/") ? out.slice(repoRoot.length + 1) : out}`);

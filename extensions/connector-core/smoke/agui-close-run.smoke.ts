@@ -49,8 +49,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Part } from "@cotal-ai/core";
 import {
-  AguiEmitter,
-  AguiEmitterHalted,
   AguiVocabularyError,
   runStarted,
   textMessageStart,
@@ -60,6 +58,10 @@ import {
   type AguiFrame,
   RUN_ERROR_EGRESS_MESSAGE,
 } from "../src/agui.js";
+import {
+  AguiEmitter,
+  AguiEmitterHalted,
+} from "../src/agui-emitter.js";
 import { AguiEmitterHolder } from "../src/agui-holder.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
@@ -379,8 +381,7 @@ try {
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
       async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
-      (e) => errors.push(e),
-      (runId) => closedRuns.push(runId),
+      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
     );
 
     holder.flush(src); // adopt
@@ -480,8 +481,7 @@ try {
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
       async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
-      (e) => errors.push(e),
-      (runId) => closedRuns.push(runId),
+      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
     );
 
     holder.flush(src); // adopt
@@ -518,8 +518,7 @@ try {
         started += 1;
         return AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
       },
-      () => {},
-      () => {},
+      { onError: () => {}, onRunClosed: () => {} },
     );
     holder.closeRun(99);
     await holder.settled();
@@ -624,8 +623,7 @@ try {
             source,
             map: mapper,
           }),
-        (e) => errors.push(e),
-        (runId) => closedRuns.push(runId),
+        { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
       );
       holder.flush(src);
       await holder.settled();

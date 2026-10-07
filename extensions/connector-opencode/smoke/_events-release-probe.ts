@@ -2,14 +2,11 @@
  * Subprocess probe for the opencode event-release smoke (events-release.smoke.ts). Never run
  * standalone.
  *
- * A SEPARATE PROCESS BECAUSE THE CLAIM IS ABOUT PROCESSES. The principal lock records the pid that
- * holds it, and its refusal is "that pid is still alive". An in-process arm cannot express that at
- * all: `acquirePrincipalLock` hands the SAME lock object back to a second caller inside one process,
- * on purpose, so a same-process replacement would be answered by the cache and would grade nothing.
+ * A SEPARATE PROCESS BECAUSE THE CLAIM IS ABOUT PROCESSES: `dispose` ends the process it runs in,
+ * so only a parent can see that it did and what it left on disk.
  *
  * The probe boots the real plugin against a tiny fake OpenCode HTTP server, drives one event so the
- * emitter binds and takes the lock, and then either disposes and STAYS ALIVE (which is the editor
- * unloading the plugin while its host keeps running) or simply stays alive holding it.
+ * emitter binds and takes the lock, and then disposes.
  */
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -19,8 +16,7 @@ import { bootPlugin } from "./_boot-plugin.js";
 
 const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 const READY = process.env.REL_READY!;
-const DISPOSE = process.env.REL_DISPOSE;
-const DISPOSED = process.env.REL_DISPOSED;
+const DISPOSE = process.env.REL_DISPOSE!;
 const SESSION = process.env.REL_SESSION ?? "ses_rel";
 const WS = process.env.COTAL_WORKSPACE_ROOT!;
 
@@ -72,12 +68,9 @@ await fire({ type: "message.part.updated", properties: { part: { sessionID: SESS
 for (let i = 0; i < 100 && locks(WS).length === 0; i++) await sleep(200);
 writeFileSync(READY, `${process.pid} :: ${JSON.stringify(locks(WS))}\n`);
 
-if (DISPOSE) {
-  while (!existsSync(DISPOSE)) await sleep(50);
-  await (hooks as unknown as { dispose?: () => Promise<void> }).dispose?.();
-  writeFileSync(DISPOSED!, `${process.pid} :: ${JSON.stringify(locks(WS))}\n`);
-}
-// STAYS ALIVE, which is the whole scenario: `dispose` is the editor unloading the plugin, not the
-// host exiting, so the pid the lock recorded is still a live pid when the replacement starts.
+while (!existsSync(DISPOSE)) await sleep(50);
+await (hooks as unknown as { dispose?: () => Promise<void> }).dispose?.();
+// Reached only when `dispose` returned instead of ending the process. Held up, so the exit code the
+// parent grades can only have come from the dispose.
 setInterval(() => undefined, 1_000);
 setTimeout(() => process.exit(4), 120_000);

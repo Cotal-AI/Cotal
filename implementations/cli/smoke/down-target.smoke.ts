@@ -45,14 +45,15 @@ let meshesForRoot!: typeof import("@cotal-ai/workspace").meshesForRoot;
 let recordMesh!: typeof import("@cotal-ai/workspace").recordMesh;
 let setCurrent!: typeof import("@cotal-ai/workspace").setCurrent;
 let down!: typeof import("../src/commands/down.js").down;
-let stopLocalProcess!: typeof import("../src/commands/down.js").stopLocalProcess;
+let stopLocalProcess!: typeof import("../src/lib/local-process-stop.js").stopLocalProcess;
 let webProcess!: typeof import("../../web/src/web.js").webProcess;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
   ({ registry } = await import("@cotal-ai/core"));
   ({ cacheLocalProcess, extensionLocalProcesses, findCotalRoot, meshesForRoot, recordMesh, setCurrent } = await import("@cotal-ai/workspace"));
-  ({ down, stopLocalProcess } = await import("../src/commands/down.js"));
+  ({ down } = await import("../src/commands/down.js"));
+  ({ stopLocalProcess } = await import("../src/lib/local-process-stop.js"));
   ({ webProcess } = await import("../../web/src/web.js"));
 } catch (e) { cleanScratch(e); }
 
@@ -137,6 +138,7 @@ async function stopPlantedManager(
     "  setTimeout(()=>process.exit(0),100);",
     " } catch(error) { writeFileSync(process.env.DECISION_PATH,String(error?.stack??error)); process.exit(2); }",
     "});",
+    "process.stdout.write('ready\\n');",
     "setInterval(()=>{},1000);",
   ].join("");
   const decisionPath = join(root, "manager-decision.json");
@@ -154,10 +156,16 @@ async function stopPlantedManager(
   const child = spawn(
     process.execPath,
     ["--input-type=module", "-e", managerProgram, "supervise"],
-    { cwd: prevCwd, env: managerEnv, stdio: "ignore" },
+    { cwd: prevCwd, env: managerEnv, stdio: ["ignore", "pipe", "ignore"] },
   );
   spawnedChildren.push(child);
   assert.ok(child.pid, "legacy manager fixture must have a manager pid");
+  // A slow start can still hold Node's default SIGTERM action when down signals, so no fixed delay
+  // proves readiness; the manager prints its first line only once its handler is installed.
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("legacy manager fixture never installed its SIGTERM handler")), 20_000);
+    child.stdout!.once("data", () => { clearTimeout(timer); resolve(); });
+  });
   const context = { root, space: "main" };
   const pidPath = canonicalLocalProcessPath(MANAGER_PIDFILE, context);
   writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
@@ -177,7 +185,6 @@ async function stopPlantedManager(
     process.chdir(root);
     console.error = (...args: unknown[]) => { warning += `${args.join(" ")}\n`; };
     console.log = (...args: unknown[]) => { output += `${args.join(" ")}\n`; };
-    await sleep(100); // the child must install its SIGTERM handler before down can signal it
     try { await run(target === "manager" ? ["manager"] : [], withAgents ? { "with-agents": true } : {}); }
     catch (error) { warning += `${(error as Error).message}\n`; }
   } finally {

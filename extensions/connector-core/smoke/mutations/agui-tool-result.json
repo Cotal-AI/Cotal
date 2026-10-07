@@ -17,7 +17,7 @@
     "THE REBUILDS STAY. command builds WHILE the mutant is applied and poisons dist; afterRestore's",
     "rebuild is what cleans it. That is the real reason they are load-bearing. The stated reason that",
     "connector-core exports resolve to dist/ is wrong FOR THIS SUITE: agui-tool-result.smoke.ts imports",
-    "from \"../src/agui.js\", so under tsx a mutation of connector-core/src/agui.ts is read from SRC.",
+    "from \"../src/agui.js\" and \"../src/agui-emitter.js\", so under tsx a mutation of either is read from SRC.",
     "Per-file, not per-package: anything reaching @cotal-ai/core still resolves via the exports map to",
     "dist/, so a packages/core mutation genuinely would be read by nothing unbuilt. A surviving",
     "mutation is not by itself evidence of a stale dist.",
@@ -55,7 +55,7 @@
   "mutations": [
     {
       "name": "T-RETRY recover republishes a frozen TOOL_CALL_RESULT body because attempt() no longer refuses it",
-      "file": "extensions/connector-core/src/agui.ts",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
       "find": "    const egress = frozenBodyEgressVerdict(o.body);\n    if (egress === \"forbidden-kind\") {",
       "replace": "    const egress = frozenBodyEgressVerdict(o.body);\n    if (false && egress === \"forbidden-kind\") {",
       "expectRed": "recover:AguiEmitter.start refuses a frozen TOOL_CALL_RESULT body rather than publishing it",

@@ -428,15 +428,14 @@ function classify(
     // A `waitUntil` that FINISHED outlives nothing: it observed, the predicate held, and the wait
     // is over. One still PENDING is a different fact, and it is not "live work" either: its
     // durability is the entry itself, and the edit removing it is exactly how a program stops
-    // waiting for something it no longer needs. What it leaves behind is an armed cadence pause,
-    // which the run's own discharge sweep releases like any other timer. The OBSERVATIONS are what
-    // deserve saying out loud, because they are history a reader may want and the migration is
-    // where it would silently disappear.
+    // waiting for something it no longer needs. The OBSERVATIONS are what deserve saying out loud,
+    // because they are history a reader may want and the migration is where it would silently
+    // disappear.
     case "waitUntil": {
       const looked = (e.observations ?? []).length;
       return ignore(
         e.state === "pending"
-          ? `the edit stops waiting on this; ${looked} recorded observation${looked === 1 ? "" : "s"} stay in the journal, and its cadence timer is released with the run's other timers`
+          ? `the edit stops waiting on this; ${looked} recorded observation${looked === 1 ? " stays" : "s stay"} in the journal`
           : "the wait finished, so nothing outlives it",
       );
     }
@@ -516,7 +515,7 @@ function classify(
     case "once":
       // A scope is not an effect and outlives nothing by itself; every consequence it had belongs
       // to an entry underneath it, and those get their own rows. `conclave` is the exception and is
-      // above, which is exactly why the orphan table lists it and not these four.
+      // above, as its row in the spec's scope table (§7) says.
       return ignore("a scope outlives nothing of its own; what ran under it has its own rows");
 
     default:

@@ -22,7 +22,8 @@
  *
  * Exit status is not enough. A suite that returns 0 having run zero cells is the same false green
  * as an empty chain; the runner parses a cell-count sentinel from the suite's own output and refuses
- * a missing sentinel or a zero-cell run, naming the suite and the reason.
+ * a missing sentinel or a zero-cell run, naming the suite and the reason. A suite that declares a
+ * platform skip is listed as skipped and adds no cell to the total.
  */
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -132,6 +133,7 @@ function runSuite(bin, args) {
 
 const leaked = [];
 const leakedSeats = [];
+const skipped = [];
 let failure;
 let totalCells = 0;
 
@@ -168,6 +170,7 @@ async function runPoolPhase() {
       if (r.brokers.reaped.length > 0) leaked.push({ cmd: r.cmd, count: r.brokers.reaped.length });
       if (r.seats.reaped.length > 0) leakedSeats.push({ cmd: r.cmd, count: r.seats.reaped.length });
       if (r.status === 0 && !r.stopped) totalCells += r.cells;
+      if (r.skipped !== undefined) skipped.push({ cmd: r.cmd, reason: r.skipped });
     }
     if (result.interrupted) {
       failure = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 }[result.interrupted];
@@ -214,6 +217,10 @@ async function main() {
       failAt(cmd, i, "no sentinel", 1);
       break;
     }
+    if (sentinel.kind === "skipped") {
+      skipped.push({ cmd, reason: sentinel.reason });
+      continue;
+    }
     if (sentinel.cells === 0) {
       failAt(cmd, i, "zero cells", 1);
       break;
@@ -247,14 +254,16 @@ async function main() {
     process.exitCode = 1;
     return;
   }
+  const skips = skipped.length > 0 ? `, ${skipped.length} skipped` : "";
   if (offline) {
     console.log(
-      `\n✓ smoke:ci OFFLINE shard ${shard}/${count} passed (${planned.length} of ${all.length} smokes, ${totalCells} cells; ` +
+      `\n✓ smoke:ci OFFLINE shard ${shard}/${count} passed (${planned.length} of ${all.length} smokes, ${totalCells} cells${skips}; ` +
         `${excluded.length} live-shaped suite(s) excluded)`,
     );
   } else {
-    console.log(`\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells)`);
+    console.log(`\n✓ smoke:ci shard ${shard}/${count} passed (${mine.length} smokes, ${totalCells} cells${skips})`);
   }
+  for (const { cmd, reason } of skipped) console.log(`  skipped ${cmd} (${reason})`);
 }
 
 await main();

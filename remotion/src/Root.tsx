@@ -1,8 +1,11 @@
 import { Composition } from "remotion";
-import { ModeMulticast } from "./modes/Multicast";
-import { ModeUnicast } from "./modes/Unicast";
-import { ModeAnycast } from "./modes/Anycast";
-import { STAGE } from "./modes/scene";
+import { ModeMulticast, MULTICAST_DURATION } from "./modes/Multicast";
+import { ModeUnicast, UNICAST_DURATION } from "./modes/Unicast";
+import { ModeAnycast, ANYCAST_DURATION } from "./modes/Anycast";
+import { NatsIdentity } from "./nats/Identity";
+import { NatsReplay } from "./nats/Replay";
+import { NatsAttention } from "./nats/Attention";
+import { MODE_STAGE, NATS_STAGE } from "./modes/scene";
 import { PeerMesh } from "./variants/PeerMesh";
 import { Observer } from "./variants/Observer";
 import { WireTrace } from "./variants/WireTrace";
@@ -12,7 +15,7 @@ import { MeshFull } from "./variants/MeshFull";
 import { MeshBanner } from "./variants/MeshBanner";
 import { MeshRing } from "./variants/MeshRing";
 import { HeaderMorph } from "./header/HeaderMorph";
-import { HeaderModesReel } from "./header/HeaderModesReel";
+import { HeaderModesReel, REEL_DURATION } from "./header/HeaderModesReel";
 import { HeaderAssemble } from "./header/HeaderAssemble";
 import { HeaderBanner } from "./header/HeaderBanner";
 import { S1Problem } from "./explainer/S1Problem";
@@ -44,14 +47,18 @@ const EXPL = { fps: 30, width: 1920, height: 1080 } as const;
 
 const COMMON = { durationInFrames: 120, fps: 30, width: 1280 } as const;
 
-const MODE = { fps: 30, width: STAGE.w, height: STAGE.h } as const;
+const MODE = { fps: 30, width: MODE_STAGE.w, height: MODE_STAGE.h } as const;
+const NATS = { fps: 30, width: NATS_STAGE.w, height: NATS_STAGE.h } as const;
 
 export const Root: React.FC = () => {
   return (
     <>
-      <Composition id="ModeMulticast" component={ModeMulticast} durationInFrames={150} {...MODE} />
-      <Composition id="ModeUnicast" component={ModeUnicast} durationInFrames={168} {...MODE} />
-      <Composition id="ModeAnycast" component={ModeAnycast} durationInFrames={162} {...MODE} />
+      <Composition id="ModeMulticast" component={ModeMulticast} durationInFrames={MULTICAST_DURATION} {...MODE} />
+      <Composition id="ModeUnicast" component={ModeUnicast} durationInFrames={UNICAST_DURATION} {...MODE} />
+      <Composition id="ModeAnycast" component={ModeAnycast} durationInFrames={ANYCAST_DURATION} {...MODE} />
+      <Composition id="NatsIdentity" component={NatsIdentity} durationInFrames={210} {...NATS} />
+      <Composition id="NatsReplay" component={NatsReplay} durationInFrames={180} {...NATS} />
+      <Composition id="NatsAttention" component={NatsAttention} durationInFrames={180} {...NATS} />
       <Composition id="PeerMesh" component={PeerMesh} height={340} {...COMMON} />
       <Composition id="Observer" component={Observer} height={360} {...COMMON} />
       <Composition id="WireTrace" component={WireTrace} height={320} {...COMMON} />
@@ -63,7 +70,7 @@ export const Root: React.FC = () => {
 
       {/* Header-video candidates (cream/gold), to compare and pick one. */}
       <Composition id="HeaderMorph" component={HeaderMorph} fps={30} width={1280} height={400} durationInFrames={240} />
-      <Composition id="HeaderModesReel" component={HeaderModesReel} fps={30} width={1080} height={1080} durationInFrames={555} />
+      <Composition id="HeaderModesReel" component={HeaderModesReel} fps={30} width={1080} height={1080} durationInFrames={REEL_DURATION} />
       <Composition id="HeaderAssemble" component={HeaderAssemble} fps={30} width={1080} height={1080} durationInFrames={210} />
       <Composition id="HeaderBanner" component={HeaderBanner} fps={30} width={1280} height={340} durationInFrames={180} />
 

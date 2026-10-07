@@ -272,7 +272,7 @@ export async function openAuthAdminListener(opts: {
       if (head.mapping.lifecycleUid !== target.lifecycleUid)
         throw new EpEnvelopeError("expired", `the despawn names a stale incarnation of "${target.owner}/${target.actor}" (current is ${head.mapping.lifecycleUid}); nothing was retired. NEXT: refresh the agent list and retry against the current incarnation.`);
       const gate = await observeGate(opts.reg, target.lifecycleUid);
-      if (gate !== undefined && gate.row.state === "frozen" && gate.row.op !== undefined && gate.row.op.opId !== args.opId)
+      if (gate !== undefined && gate.row.state === "frozen" && gate.row.op.opId !== args.opId)
         throw new EpEnvelopeError("conflict", `another operation (${gate.row.op.kind} ${gate.row.op.opId}) already holds "${target.owner}/${target.actor}"; this despawn did not start a second one. NEXT: wait for that operation to finish (or its resume on the next auth-service boot), then retry.`);
 
       // EXECUTE (create-or-resume: the barrier's own freeze CAS + durable intent make the same

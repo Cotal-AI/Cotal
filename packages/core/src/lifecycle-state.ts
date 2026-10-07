@@ -25,8 +25,15 @@ const uint = (v: unknown): v is number => typeof v === "number" && Number.isSafe
  *  `mappingRevision` is NOT here: it is the head key's STORE revision (§13.1), returned beside
  *  the mapping by the leader read. `currentCredentialId` stays ABSENT until the (3) normative
  *  ledger mints under the reopened gate (an active head naming a released credential before the
- *  ledger exists would be exactly the unledgered mint §13.1 forbids). */
-export interface LifecycleMapping {
+ *  ledger exists would be exactly the unledgered mint §13.1 forbids).
+ *
+ *  `state`: `active` is the ONLY current state. `retiring` = the terminal barrier's op-bound
+ *  containment phase (non-current, NOT replaceable). `retired` = terminal AND asserts the
+ *  completed barrier (only then may activation replace the alias, with a fresh UID). The
+ *  retirement `op` intent is REQUIRED at `retiring` and absent otherwise, as `parseLifecycleHead`
+ *  enforces it; carried in the type so a reader that has checked the state reads the op without
+ *  re-deriving the rule. */
+export type LifecycleMapping = ({ state: "active" | "retired"; op?: never } | { state: "retiring"; op: { opId: string; kind: "retirement" } }) & {
   owner: string;
   actor: string;
   /** The never-reused, space-globally reserved lifecycle UID of THIS incarnation. */
@@ -36,10 +43,6 @@ export interface LifecycleMapping {
   /** The fenced process epoch (§13.1: live authority binds it; advanced only by the takeover
    *  barrier). */
   processEpoch: number;
-  /** `active` is the ONLY current state. `retiring` = the terminal barrier's op-bound
-   *  containment phase (non-current, NOT replaceable). `retired` = terminal AND asserts the
-   *  completed barrier (only then may activation replace the alias, with a fresh UID). */
-  state: "active" | "retiring" | "retired";
   /** The public credential fingerprint + authority epoch — absent until the ledger slice. */
   currentCredentialId?: string;
   /** The opId of the takeover operation that LAST advanced this epoch (SPEC 13.1: the epoch
@@ -48,9 +51,7 @@ export interface LifecycleMapping {
    *  takeover finds a foreign opId and refuses, never claiming the winner's completion. Absent
    *  at initial activation (epoch 1), present from the first takeover. */
   lastTakeoverOpId?: string;
-  /** REQUIRED at `retiring` (the retirement operation's durable intent); absent otherwise. */
-  op?: { opId: string; kind: "retirement" };
-}
+};
 
 export const LIFECYCLE_HEAD_STATES: ReadonlySet<string> = new Set(["active", "retiring", "retired"]);
 
@@ -112,22 +113,29 @@ export function parseLifecycleHead(raw: Uint8Array, key: string, owner: string, 
 
 // ---- the issuance gate (auth store, agent family `gate.<lifecycleUid>`) ---------------------
 
-/** The agent-family issuance gate row (§13.1, amended): `frozen` MUST carry the durable op
- *  intent; the embedded uid MUST agree with the key. (The disjoint ENDPOINT family
- *  `epgate.<endpoint>.<instanceId>` is separate.) */
-export interface EpGateRow {
+/** A gate's durable op intent (§13.1), one shape for both gate families. `successor` is a
+ *  per-kind summary token: only `takeover`/`registration` may carry one (their authoritative
+ *  successor artifacts live under `stage.<opId>.`); `activation`/`retirement` never do. */
+export interface GateOp {
+  opId: string;
+  kind: "activation" | "takeover" | "registration" | "retirement";
+  successor?: string;
+}
+
+/** A gate's state bound to its op intent as both gate parsers enforce it (§13.1): the op is
+ *  REQUIRED at `frozen` (which operation owns this freeze and may advance it) AND at `retired`
+ *  (the terminalizing op, audit + same-op idempotence), and absent at `open`. Carried in the
+ *  type so a reader that has checked the state reads the op without re-deriving the rule. */
+export type GateStateOp = { state: "open"; op?: never } | { state: "frozen" | "retired"; op: GateOp };
+
+/** The agent-family issuance gate row (§13.1, amended): the embedded uid MUST agree with the
+ *  key. (The disjoint ENDPOINT family `epgate.<endpoint>.<instanceId>` is separate.) */
+export type EpGateRow = GateStateOp & {
   lifecycleUid: string;
-  state: "open" | "frozen" | "retired";
   /** Mint generation: born 0 under the activation freeze, first mintable generation is 1 (the
    *  activation's reopen), and every barrier reopen advances it. */
   generation: number;
-  /** REQUIRED at `frozen` (which operation owns this freeze and may advance it) AND at
-   *  `retired` (the terminalizing op, audit + same-op idempotence); absent at `open`.
-   *  `successor` is a per-kind summary token (SPEC 13.1): only `takeover`/`registration`
-   *  may carry one (their authoritative successor artifacts live under `stage.<opId>.`);
-   *  `activation`/`retirement` never do. */
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
-}
+};
 
 export const ISSUANCE_GATE_STATES: ReadonlySet<string> = new Set(["open", "frozen", "retired"]);
 export const ISSUANCE_GATE_OP_KINDS: ReadonlySet<string> = new Set(["activation", "takeover", "registration", "retirement"]);
@@ -135,6 +143,34 @@ export const ISSUANCE_GATE_OP_KINDS: ReadonlySet<string> = new Set(["activation"
 /** The gate key `gate.<lifecycleUid>` (§13.7). */
 export function issuanceGateKey(lifecycleUid: string): string {
   return `gate.${assertLifecycleToken(lifecycleUid)}`;
+}
+
+/** The §13.1 op-intent grammar, one copy for both gate families (`gate.` and `epgate.`) so they
+ *  cannot disagree on it: required at `frozen`/`retired`, absent at `open`, closed, and held to
+ *  the per-kind STATE x KIND and successor invariants. `label` names the gate in every refusal. */
+function assertGateOp(op: unknown, state: string, label: string): void {
+  if (state === "open") {
+    if (op !== undefined) throw new EpEnvelopeError("internal", `${label} is open but carries an op intent (SPEC 13.1: open gates are not op-bound)`);
+    return;
+  }
+  if (!isRec(op))
+    throw new EpEnvelopeError("internal", `${label} is ${state} without its durable op intent (SPEC 13.1: a frozen gate is op-bound, and a retired gate retains its terminalizing op)`);
+  for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `${label} op intent carries the unknown field "${k}" (closed schema)`);
+  if (typeof op.opId !== "string" || typeof op.kind !== "string" || !ISSUANCE_GATE_OP_KINDS.has(op.kind))
+    throw new EpEnvelopeError("internal", `${label} op intent does not validate (SPEC 13.1)`);
+  // STATE x KIND invariant (SPEC 13.1 per-kind transition sets): only an activation orphan or
+  // a retirement produces a `retired` gate, so a persisted `retired` gate carrying a
+  // takeover/registration kind is IMPOSSIBLE state — refuse it at parse, never let the terminal
+  // idempotence path return it as a settled success (fail-closed on corruption, not open).
+  if (state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
+    throw new EpEnvelopeError("internal", `${label} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1); impossible persisted state, refused`);
+  if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
+    throw new EpEnvelopeError("internal", `${label} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
+  try {
+    assertLifecycleToken(op.opId);
+  } catch {
+    throw new EpEnvelopeError("internal", `${label} op intent carries a malformed opId (SPEC 13.1)`);
+  }
 }
 
 /** Validate a gate row at the consuming boundary — CLOSED schema; key/uid agreement; the
@@ -150,29 +186,7 @@ export function parseIssuanceGate(raw: Uint8Array, key: string, lifecycleUid: st
   for (const k of Object.keys(o)) if (k !== "lifecycleUid" && k !== "state" && k !== "generation" && k !== "op") throw new EpEnvelopeError("internal", `the issuance gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (o.lifecycleUid !== lifecycleUid || typeof o.state !== "string" || !ISSUANCE_GATE_STATES.has(o.state) || !uint(o.generation))
     throw new EpEnvelopeError("internal", `the issuance gate ${key} does not validate (uid/state/generation); a garbled or key-mismatched gate never authorizes (SPEC 13.1)`);
-  if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
-    throw new EpEnvelopeError("internal", `the issuance gate ${key} is ${o.state} without its durable op intent (SPEC 13.1: a frozen gate is op-bound, and a retired gate retains its terminalizing op)`);
-  if (o.state === "open" && o.op !== undefined)
-    throw new EpEnvelopeError("internal", `the issuance gate ${key} is open but carries an op intent (SPEC 13.1: open gates are not op-bound)`);
-  if (o.op !== undefined) {
-    const op = o.op as Record<string, unknown>;
-    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
-    if (typeof op.opId !== "string" || typeof op.kind !== "string" || !ISSUANCE_GATE_OP_KINDS.has(op.kind))
-      throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent does not validate (SPEC 13.1)`);
-    // STATE x KIND invariant (SPEC 13.1 per-kind transition sets): only an activation orphan or
-    // a retirement produces a `retired` gate, so a persisted `retired` gate carrying a
-    // takeover/registration kind is IMPOSSIBLE state — refuse it at parse, never let the terminal
-    // idempotence path return it as a settled success (fail-closed on corruption, not open).
-    if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
-      throw new EpEnvelopeError("internal", `the issuance gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1); impossible persisted state, refused`);
-    if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
-      throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
-    try {
-      assertLifecycleToken(op.opId);
-    } catch {
-      throw new EpEnvelopeError("internal", `the issuance gate ${key} op intent carries a malformed opId (SPEC 13.1)`);
-    }
-  }
+  assertGateOp(o.op, o.state, `the issuance gate ${key}`);
   return o as unknown as EpGateRow;
 }
 
@@ -317,8 +331,7 @@ export function parseEndpointRepairCursor(raw: Uint8Array, key: string): Endpoin
  *  exactly like the agent family. Lifted to core (guarded-core: ONE encoder shared by the auth
  *  session ledger and the manager's endpoint-serve wiring; a second dialect is the dual-encoder
  *  drift this module bans). */
-export interface EndpointGateRow {
-  state: "open" | "frozen" | "retired";
+export type EndpointGateRow = GateStateOp & {
   generation: number;
   processEpoch: number;
   registrationRevision: number;
@@ -329,8 +342,7 @@ export interface EndpointGateRow {
    *  rows (`epcred.`) copy it as their `holderPrincipal`, so the endpoint KEY identity
    *  (`endpoint`) and the evictable principal stay disjoint. */
   principal: string;
-  op?: { opId: string; kind: "activation" | "takeover" | "registration" | "retirement"; successor?: string };
-}
+};
 
 /** The endpoint gate key `epgate.<endpoint>.<instanceId>` (an instanceId is unique ONLY within
  *  `(space, endpoint)`, so the key is endpoint-qualified — equal instanceIds under two endpoints
@@ -352,30 +364,12 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
   const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
-  if (!["open", "frozen", "retired"].includes(o.state as string) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
+  if (typeof o.state !== "string" || !ISSUANCE_GATE_STATES.has(o.state) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
   const principal = typeof o.principal === "string" ? parsePrincipalKey(o.principal) : null;
   if (principal === null || !isPrincipalOwnerToken(principal.owner, { allowLocal: true, allowPlatform: true }))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (owner-grammar owner.actor, SPEC 13.1)`);
-  if ((o.state === "frozen" || o.state === "retired") && !isRec(o.op))
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is ${o.state} without its durable op intent (SPEC 13.1)`);
-  if (o.state === "open" && o.op !== undefined)
-    throw new EpEnvelopeError("internal", `the endpoint gate ${key} is open but carries an op intent (SPEC 13.1)`);
-  if (o.op !== undefined) {
-    const op = o.op as Record<string, unknown>;
-    for (const k of Object.keys(op)) if (k !== "opId" && k !== "kind" && k !== "successor") throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries the unknown field "${k}" (closed schema)`);
-    if (typeof op.opId !== "string" || !["activation", "takeover", "registration", "retirement"].includes(op.kind as string))
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent does not validate (SPEC 13.1)`);
-    if (o.state === "retired" && op.kind !== "activation" && op.kind !== "retirement")
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} is retired under a ${op.kind} op; only an activation orphan or a retirement terminalizes (SPEC 13.1); impossible persisted state, refused`);
-    if (op.successor !== undefined && (typeof op.successor !== "string" || op.successor.length === 0 || (op.kind !== "takeover" && op.kind !== "registration")))
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries an invalid successor (SPEC 13.1: only takeover/registration stage successors, and the summary is a non-empty token)`);
-    try {
-      assertLifecycleToken(op.opId);
-    } catch {
-      throw new EpEnvelopeError("internal", `the endpoint gate ${key} op intent carries a malformed opId (SPEC 13.1)`);
-    }
-  }
+  assertGateOp(o.op, o.state, `the endpoint gate ${key}`);
   return o as unknown as EndpointGateRow;
 }
 

@@ -9,13 +9,13 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
 import { attributionSafe, fmtBody, fmtItem, fmtFrom } from "./framing.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, isAuthed, type AgentConfig } from "./config.js";
-import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
+import { buildOrientation, presenceLiveness, renderOrientation, type OrientationTool } from "./orientation.js";
 import { runDocs } from "./docs.js";
 
 /** What a Cotal tool returns: text to show the model, flagged on failure. MCP wraps it in
@@ -152,19 +152,6 @@ export const NO_TOOL_ARGS: CotalToolInput = z.strictObject({});
 export function refuseAnyArgs(name: string, args: unknown): string | undefined {
   const keys = args && typeof args === "object" ? Object.keys(args as Record<string, unknown>) : [];
   return keys.length ? `${name}: unknown argument(s): ${keys.join(", ")} — this tool takes no arguments` : undefined;
-}
-
-/** Compact age of an epoch-ms stamp at `now`: `12s`, `47m`, `3h`, `2d`, or undefined without a stamp.
- *  A presence record is parsed from the bucket unchecked, so anything but a finite number counts as no
- *  stamp: the subtraction would date `null` from the epoch, render a string as `NaNd`, and render an
- *  exponent literal such as `1e400`, which parses to an infinity, as `0s` or `Infinityd`. */
-function ageText(now: number, at: number | undefined): string | undefined {
-  if (typeof at !== "number" || !Number.isFinite(at)) return undefined;
-  const s = Math.max(0, Math.floor((now - at) / 1000));
-  if (s < 60) return `${s}s`;
-  if (s < 3600) return `${Math.floor(s / 60)}m`;
-  if (s < 86_400) return `${Math.floor(s / 3600)}h`;
-  return `${Math.floor(s / 86_400)}d`;
 }
 
 function statusGlyph(s: PresenceStatus): string {
@@ -803,25 +790,12 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         "List the agents currently present in your Cotal space, with their role, status, and current activity.",
       run(agent) {
         if (!agent.connected) return ok(`Not connected to the mesh yet (${config.servers}).`);
-        const writeFailure = agent.transportConnected ? agent.presenceWriteFailure : undefined;
         // #1229: rendering never refuses, but it must not present a partial or last-known roster
-        // as a complete one. `unpopulated` = the watch has not replayed its initial snapshot (a
-        // reconnect refill); `stale` = the bucket has been silent past the liveness window.
-        const view = agent.presenceView();
-        const viewSentence =
-          view.state === "unpopulated"
-            ? `The presence watch has not completed its initial snapshot in "${config.space}", so this list may be partial and a missing name is not an absence verdict.`
-            : view.state === "stale"
-              ? `The presence view in "${config.space}" has been silent since ${new Date(view.staleSince).toISOString()}, so the rows below are last-known.`
-              : "";
+        // as a complete one.
+        const presence = presenceLiveness(agent);
+        const preface = presence.live ? "" : `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: ${presence.detail}.\n\n`;
         const roster = agent.roster();
-        if (!roster.length) {
-          const empty = `No one is present in "${config.space}" yet.`;
-          const preface = writeFailure?.stuck
-            ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. This empty roster is last-known until a write succeeds or the broker store is repaired.`
-            : viewSentence;
-          return ok(preface ? `${preface}\n\n${empty}` : empty);
-        }
+        if (!roster.length) return ok(`${preface}No one is present in "${config.space}" yet.`);
         // Names aren't unique. Where one repeats, append the instance id so a DM can target the
         // exact peer (the id is the only authoritative address); keep unique rows clean.
         const counts = new Map<string, number>();
@@ -830,7 +804,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           counts.set(n, (counts.get(n) ?? 0) + 1);
         }
         const lines = roster.map((p) => {
-          const who = p.card.role ? `${p.card.name}/${p.card.role}` : p.card.name;
+          const who = peerLabel(p.card);
           const isMe = p.card.id === agent.id;
           const me = isMe ? ` (you${agent.attention !== "open" ? `, ${agent.attention}` : ""})` : "";
           const id = (counts.get(p.card.name.toLowerCase()) ?? 0) > 1 ? ` — id: ${p.card.id}` : "";
@@ -849,23 +823,15 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // advancing 40m ago no longer reads like a live one, and neither does a report made 40m ago.
           // The activity also carries its own age (#544): a hook flips the status every turn and leaves
           // the activity alone, so the status age cannot date it.
-          const now = Date.now();
-          const conditionAge = ageText(now, p.condition?.since);
-          const unchangedAge = ageText(now, p.statusSince);
-          const activeAge = ageText(now, p.activeAt);
-          const unchanged = unchangedAge === undefined ? "" : ` · unchanged for ${unchangedAge}`;
-          const active = activeAge === undefined ? "" : ` · active ${activeAge} ago`;
-          const condition = (p.condition ? ` (${p.condition.code}${conditionAge === undefined ? "" : ` for ${conditionAge}`})` : "") + unchanged + active;
+          const age = presenceAges(p, Date.now());
+          const unchanged = age.statusSince === undefined ? "" : ` · unchanged for ${formatAge(age.statusSince)}`;
+          const active = age.activeAt === undefined ? "" : ` · active ${formatAge(age.activeAt)} ago`;
+          const condition = (p.condition ? ` (${p.condition.code}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "") + unchanged + active;
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
-          const activityAge = ageText(now, p.activitySince);
-          const activity = p.activity ? `: ${p.activity}${activityAge === undefined ? "" : ` (set ${activityAge} ago)`}` : "";
+          const activity = p.activity ? `: ${p.activity}${age.activitySince === undefined ? "" : ` (set ${formatAge(age.activitySince)} ago)`}` : "";
           return `${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`;
         });
-        const rendered = `Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`;
-        const preface = writeFailure?.stuck
-          ? `Presence view is NOT LIVE in ${JSON.stringify(config.space)}: bucket ${JSON.stringify(writeFailure.bucket)} has refused ${writeFailure.consecutiveFailures} consecutive writes for ${writeFailure.forMs}ms. The roster below is last-known until a write succeeds or the broker store is repaired.`
-          : viewSentence;
-        return ok(preface ? `${preface}\n\n${rendered}` : rendered);
+        return ok(`${preface}Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);
       },
     },
     {
@@ -1097,7 +1063,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         } catch (e) {
           if (e instanceof AmbiguousPeerError) {
             const who = e.candidates
-              .map((c) => `  • ${c.name}${c.role ? `/${c.role}` : ""} (${c.status}) — id: ${c.id}`)
+              .map((c) => `  • ${peerLabel(c)} (${c.status}) — id: ${c.id}`)
               .join("\n");
             return err(
               `"${e.target}" is ambiguous — ${e.candidates.length} peers share that name. ` +
@@ -1119,8 +1085,13 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       },
       async run(agent, _config, { role, text: msg }: { role: string; text: string }) {
         try {
-          await agent.anycast(role, msg);
-          return ok(`Sent to one @${role}.`);
+          const { ack, queue, holdersAtSend: n } = await agent.anycast(role, msg);
+          const dup = ack.duplicate ? " duplicate publication." : "";
+          const at =
+            n === undefined
+              ? "holders unknown at send: the presence view was not current"
+              : `${n} holder${n === 1 ? "" : "s"} online at send`;
+          return ok(`Request stored as seq ${ack.seq} on the @${queue} queue (${at}; delivery not confirmed).${dup}`);
         } catch (e) {
           return err(`Couldn't send: ${(e as Error).message}`);
         }
@@ -1356,15 +1327,20 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       async run(agent, _config, { name, instance, role, agent: agentType, model, variant, launchOptions, cwd, prompt, events }: { name: string; instance?: string; role?: string; agent?: string; model?: string; variant?: string; launchOptions?: Record<string, unknown>; cwd?: string; prompt?: string; events?: boolean }) {
         try {
           const reply = await agent.spawn(name, role, { agent: agentType, model, variant, launchOptions, cwd, prompt, events, instance });
-          if (!reply.ok) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
-          const d = reply.data as { name?: string; mode?: string; model?: string } | undefined;
+          // An uncertain launch is still managed and may yet join. Reported as an error it reads as a
+          // failed launch, and the caller's retry starts a second agent on the same work.
+          const pending = reply.code === "uncertain";
+          if (!reply.ok && !pending) return err(`Couldn't spawn ${name}: ${renderLifecycleBlocked(reply.error ?? "manager refused", reply)}`);
+          const d = reply.data as { name?: string; mode?: string; model?: string; actor?: string; executor?: { lifecycleUid: string } } | undefined;
           const actual = d?.name ?? name; // the manager auto-numbers on a collision — report what it spawned
           const mode = d?.mode;
-          const who = role ? `${actual}/${role}` : actual;
+          const who = peerLabel({ name: actual, role });
           // Make the rename unmissable: a colliding caller must see it asked for `name` but got
           // `actual`, not silently address the wrong peer later (the tool result is the only channel).
           const lead = actual !== name ? `"${name}" was taken — spawning ${who} instead` : `Spawning ${who}`;
           const pin = d?.model ? ` recorded model ${JSON.stringify(d.model)}` : "";
+          if (pending)
+            return ok(`${lead}${pin} (id ${d?.actor}, manager ${d?.executor?.lifecycleUid}), but it did not join the mesh within its readiness window. It may still be booting, so do not spawn it again: a retry starts a second agent. Watch cotal_roster for ${actual}, and cotal_despawn it if it never joins.`);
           return ok(`${lead}${mode ? ` (${mode})` : ""}${pin} — it will appear in the roster shortly.`);
         } catch (e) {
           return controlFailure(`Couldn't spawn ${name}`, e);

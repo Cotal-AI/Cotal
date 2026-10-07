@@ -30,7 +30,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { EndpointKind } from "./types.js";
 import { assertValidName } from "./resolve.js";
-import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel } from "./subjects.js";
+import { assertValidChannel, assertValidOwnerToken, channelInAllow, isConcreteChannel, resolveReadAcl } from "./subjects.js";
 
 export interface AgentDef {
   name: string;
@@ -181,13 +181,12 @@ export function parseAgentFileSource(src: string, path: string): AgentDef {
   // gets none, and the agent is reachable by DM/presence/anycast only. The old default put every
   // persona that forgot the field onto `general`, including DM-only reviewers and probes, and
   // minted the matching channel read row into its credential — a channel nobody chose.
-  const effSubscribe = subscribe ?? [];
-  const effAllow = allowSubscribe?.length ? allowSubscribe : effSubscribe;
-  for (const ch of effSubscribe)
-    if (!channelInAllow(effAllow, ch))
-      throw new Error(
-        `agent file ${path}: subscribe channel "${ch}" is not within allowSubscribe [${effAllow.join(", ")}]`,
-      );
+  let effAllow: string[];
+  try {
+    effAllow = resolveReadAcl(subscribe ?? [], allowSubscribe);
+  } catch (e) {
+    throw new Error(`agent file ${path}: ${(e as Error).message}`);
+  }
 
   // Per-channel attention defaults (quiet/muted): concrete channels within the read ACL (allowSubscribe)
   // — silencing a channel you can't read, or with a wildcard the ingest match would never hit, is a config error. A

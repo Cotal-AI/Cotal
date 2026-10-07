@@ -30,15 +30,16 @@
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
- *   manager.admin    purge / launch / resume family        (operator instruments only)
+ *   manager.admin    purge / launch / resume family / transcript-receive  (operator instruments only)
  *   manager.run      run-start / run-resume / run-answer   (the `run` capability + privileged instrument)
  *                    run-status / run-ps ride manager.read
  */
 import {
   compileContract,
-  contractDigest,
+  singleDocumentClosure,
   VOID_SCHEMA,
   type CompiledContract,
+  type ContractClosureManifest,
   type EpAuthzMode,
   type EpCommandDef,
   type EpServeContext,
@@ -248,12 +249,15 @@ const AGENT_ROW_SCHEMA = {
     host: { type: "string" },
     // #1500: present only on a `--resume` seat. `source` is the session it forked; `title` and
     // `transcriptSha256` appear once the seat has recorded its fork, and `title` only when the source
-    // has one.
+    // has one. A carried resume (#1499) also names the source `host` and when its bytes were staged.
     resume: {
       type: "object",
       additionalProperties: false,
       required: ["source"],
-      properties: { source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" } },
+      properties: {
+        source: { type: "string" }, title: { type: "string" }, transcriptSha256: { type: "string" },
+        host: { type: "string" }, transferredAt: { type: "string" },
+      },
     },
   },
 } as const;
@@ -313,13 +317,17 @@ const SPAWN_INPUT_SCHEMA = {
     variant: { type: "string" },
     launchOptions: { type: "object" },
     resume: { type: "string" },
+    // #1499: the one-time claim `transcript-receive` issued for carried bytes of `resume`, and the
+    // agent the CLI found them with.
+    resumeClaim: { type: "string" },
+    resumeAgent: { type: "string" },
     events: { type: "boolean" },
     cwd: { type: "string" },
     prompt: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
     allowSubscribe: { type: "array", items: { type: "string" } },
     allowPublish: { type: "array", items: { type: "string" } },
-    shareTools: { type: "string" },
+    shareTools: { type: "array", items: { type: "string" } },
     supervise: {
       type: "object",
       additionalProperties: false,
@@ -391,9 +399,16 @@ const STOP_OUTPUT_SCHEMA = {
 // grant is a signed, presenter-equality-bound offer (sessionId/subjects/serving/exp/sig) — non-bearer
 // (a leak releases nothing) and never logged. The caller redeems it over the mesh (meshSessionTransport)
 // with a per-session rails-only cred it mints itself. The object is signature-validated, not schema-shaped.
+// `resumedFrom` (#1499): present only on a seat that forked a session carried from another host.
 const ATTACH_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["grant"],
-  properties: { grant: { type: "object" } },
+  properties: {
+    grant: { type: "object" },
+    resumedFrom: {
+      type: "object", additionalProperties: false, required: ["host", "source"],
+      properties: { host: { type: "string" }, source: { type: "string" } },
+    },
+  },
 } as const;
 
 /** `input` (C3): type text into a running seat's terminal. The one call an external UI needs to
@@ -506,6 +521,17 @@ const TURN_YIELD_OUTPUT_SCHEMA = {
   properties: {
     goalId: { type: "string" },
     state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] },
+  },
+} as const;
+/** `cancel` (SPEC 13.6 item 4): the reserved goal cancel, served for a turn this manager relays.
+ *  Untargeted, because it names a goal rather than a seat: the goal ref derives from the
+ *  authenticated caller, so a caller withdraws only a relay it submitted. It answers with the
+ *  terminal the goal reached, which is the yield's own output shape. */
+const CANCEL_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: {
+    goalId: { type: "string", minLength: 1 },
+    mode: { enum: ["graceful", "terminate"] },
   },
 } as const;
 
@@ -633,6 +659,26 @@ const RESUME_INPUT_SCHEMA = {
 const FINALIZE_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId", "durableCommitToken"],
   properties: { attemptId: { type: "string", minLength: 1 }, durableCommitToken: { type: "string", minLength: 1 } },
+} as const;
+// `transcript-receive` (#1499, docs/design/resume-transfer.md 5.1): the operator announces carried
+// bytes by digest; the answer is a claim on a staged copy, or a request to upload.
+const TRANSCRIPT_RECEIVE_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["sha256", "size", "source", "sourceHost"],
+  properties: {
+    sha256: { type: "string", pattern: "^[0-9a-f]{64}$" },
+    size: { type: "integer", minimum: 0 },
+    source: { type: "string", minLength: 1 },
+    sourceHost: { type: "string", minLength: 1 },
+    title: { type: "string" },
+  },
+} as const;
+const TRANSCRIPT_RECEIVE_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["state"],
+  properties: {
+    state: { type: "string", enum: ["upload", "staged"] },
+    claim: { type: "string" },
+    fetched: { type: "boolean" },
+  },
 } as const;
 const GOAL_RESULT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["goalId"],
@@ -832,6 +878,7 @@ const ROWS: CommandRow[] = [
   { name: "turn", capability: "manager.lifecycle", input: TURN_INPUT_SCHEMA, output: TURN_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "turn" },
   { name: "turn-pending", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PENDING_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnPending" },
   { name: "turn-yield", capability: "manager.self", input: TURN_YIELD_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnYield" },
+  { name: "cancel", capability: "manager.lifecycle", input: CANCEL_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: false, handler: "cancel" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   // The workflow-run family (SPEC 14.3): untargeted, a run is not an agent. The writes ride the
   // `manager.run` class (minted by the `run` capability and the privileged instrument); the reads
@@ -853,6 +900,7 @@ const ROWS: CommandRow[] = [
   { name: "prepare-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "preparePreservation" },
   { name: "commit-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: OPEN_OBJECT_SCHEMA, targeted: false, handler: "commitPreservation" },
   { name: "abort-preservation", capability: "manager.admin", input: ATTEMPT_INPUT_SCHEMA, output: ATTEMPT_STATE_OUTPUT_SCHEMA, targeted: false, handler: "abortPreservation" },
+  { name: "transcript-receive", capability: "manager.admin", input: TRANSCRIPT_RECEIVE_INPUT_SCHEMA, output: TRANSCRIPT_RECEIVE_OUTPUT_SCHEMA, targeted: false, handler: "transcriptReceive" },
 ];
 
 // WHEN THE COMPILE HAPPENS (#1323): every CLI invocation loads this module before its verb is
@@ -878,15 +926,6 @@ function pairFor(name: string): ContractPair {
   return pair;
 }
 
-/** The §13.7 closure digest of a self-contained schema root, WITHOUT compiling: the manifest
- *  `{ v: 1, root, members: [] }` over the source document's artifact digest — the identical value
- *  `compileContract` returns as `closureDigest` for a member-free closure (schema-profile's
- *  `assertClosureProfile` derives it the same way, from the source, before any Ajv work). The
- *  cluster document pins these, so `describe`-only readers never pay the compile. */
-function closureDigestOfSource(root: unknown): string {
-  return contractDigest({ v: 1, root: contractDigest(root), members: [] });
-}
-
 /** Per-command compiled contract pairs, exported for CALLERS (`epCall` pins the same digests the
  *  cluster document registers; the generic invoke CLI compiles these from the STORE instead).
  *  LAZY: a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
@@ -908,10 +947,10 @@ export function managerContractArtifactValues(): unknown[] {
   const seen = new Set<string>();
   for (const r of ROWS) {
     for (const source of [r.input, r.output]) {
-      const rootDigest = contractDigest(source);
-      if (seen.has(rootDigest)) continue;
-      seen.add(rootDigest);
-      values.push(source, { v: 1, root: rootDigest, members: [] });
+      const { manifest } = singleDocumentClosure(source);
+      if (seen.has(manifest.root)) continue;
+      seen.add(manifest.root);
+      values.push(source, manifest);
     }
   }
   return values;
@@ -990,7 +1029,20 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  20 = the `ps`/`inspect` row adds `resume`: the session a `--resume` seat forked, its title and
  *  its transcript hash. A changed output contract is a changed described surface even though the
- *  command names are unchanged. */
+ *  command names are unchanged.
+ *
+ *  21 = `transcript-receive` stages a resume transcript carried from another host (#1499), `spawn`
+ *  input grows `resumeClaim` and `resumeAgent`, the `ps`/`inspect` row's `resume` adds the source
+ *  `host` and `transferredAt`, and `attach` output adds `resumedFrom`. A new served command cannot
+ *  fold into 20.
+ *
+ *  22 = `spawn` input's `shareTools` is the list of MCP server names rather than the
+ *  `--share-tools` flag string. A changed input contract is a changed described surface even
+ *  though the command name is unchanged.
+ *
+ *  23 = the reserved `cancel` (SPEC 13.6 item 4) is served for a relayed turn, so a run withdraws
+ *  a turn, an ask attempt or an escalation from a branch it cancelled. A new served command cannot
+ *  fold into 22. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1008,7 +1060,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 20,
+    revision: 23,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1017,8 +1069,8 @@ export function managerClusterDocument(): {
       targeted: r.targeted,
       ...(r.modes ? { modes: r.modes } : {}),
       capability: r.capability,
-      inputDigest: closureDigestOfSource(r.input),
-      outputDigest: closureDigestOfSource(r.output),
+      inputDigest: singleDocumentClosure(r.input).closureDigest,
+      outputDigest: singleDocumentClosure(r.output).closureDigest,
     })),
   };
 }
@@ -1048,14 +1100,12 @@ export function managerAuthorityContractSource(): { document: ReturnType<typeof 
 export function managerClusterArtifacts(): {
   document: ReturnType<typeof managerClusterDocument>;
   rootDigest: string;
-  manifest: { v: 1; root: string; members: string[] };
+  manifest: ContractClosureManifest;
   closureDigest: string;
 } {
   const document = managerClusterDocument();
-  const rootDigest = contractDigest(document);
-  const manifest = { v: 1 as const, root: rootDigest, members: [] as string[] };
-  const closureDigest = contractDigest(manifest);
-  return { document, rootDigest, manifest, closureDigest };
+  const { manifest, closureDigest } = singleDocumentClosure(document);
+  return { document, rootDigest: manifest.root, manifest, closureDigest };
 }
 
 /** The handlers the manager supplies to back each served command. Each receives the serve
@@ -1077,6 +1127,7 @@ export interface ManagerServiceHandlers {
   turn(ctx: EpServeContext): unknown | Promise<unknown>;
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;
   turnYield(ctx: EpServeContext): unknown | Promise<unknown>;
+  cancel(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   runStart(ctx: EpServeContext): unknown | Promise<unknown>;
   runResume(ctx: EpServeContext): unknown | Promise<unknown>;
@@ -1095,6 +1146,7 @@ export interface ManagerServiceHandlers {
   preparePreservation(ctx: EpServeContext): unknown | Promise<unknown>;
   commitPreservation(ctx: EpServeContext): unknown | Promise<unknown>;
   abortPreservation(ctx: EpServeContext): unknown | Promise<unknown>;
+  transcriptReceive(ctx: EpServeContext): unknown | Promise<unknown>;
 }
 
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes: each command's provenance-branded compiled

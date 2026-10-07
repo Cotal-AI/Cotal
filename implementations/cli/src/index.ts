@@ -1,9 +1,9 @@
 import { registry, type Command } from "@cotal-ai/core";
 import {
   serverFlag, spaceFlag, targetFlags,
-  DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type LocalProcess,
 } from "@cotal-ai/workspace";
+import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { up, upComplete, upFlags } from "./commands/up.js";
 import { runtimes } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
@@ -34,6 +34,7 @@ import { backup, backupComplete, backupFlags } from "./commands/backup.js";
 import { update, updateFlags } from "./commands/update.js";
 import { service, serviceComplete } from "./commands/service.js";
 import { sync, syncFlags } from "./commands/sync.js";
+import { DELIVERY_PROCESS } from "./lib/delivery-proc.js";
 
 /** The minimal mesh CLI: thin NATS clients (up/join/console), plus `spawn` — an agent launch
  *  (foreground or --detach) that reuses the connector's launch recipe. Self-registers on import;
@@ -477,22 +478,8 @@ const baseCommands: Command[] = [
 // TEMPLATES like `auth-service.{space}.pid` already was. A copied literal here is the defect this
 // closes: the manager and the daemon write one name and status/down looked up another.
 const baseProcesses: LocalProcess[] = [
-  {
-    kind: "local-process",
-    name: "manager",
-    label: "manager",
-    order: 10,
-    pidFile: MANAGER_PIDFILE,
-    artifacts: [MANAGER_DELIVERY_AWARE_MARKER, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY],
-  },
-  {
-    kind: "local-process",
-    name: "delivery",
-    label: "delivery daemon",
-    order: 20,
-    pidFile: DELIVERY_PIDFILE,
-    artifacts: ["delivery.creds"],
-  },
+  MANAGER_PROCESS,
+  DELIVERY_PROCESS,
   {
     kind: "local-process",
     name: "auth",

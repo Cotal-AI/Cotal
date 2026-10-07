@@ -1,4 +1,4 @@
-/** The spare side of a stack teardown, shared by `down` and the foreground `up` Ctrl-C handler.
+/** The spare side of a manager stop, which `stopManager` runs for `down` and every `up` teardown.
  *
  *  One policy, one implementation: a stack stop that is not `--with-agents` snapshots the manager's
  *  seats, verifies the exact manager can release its local custody, and reports the agents left
@@ -59,8 +59,8 @@ export function printSparedAgents(rows: SpareSeatRow[], seats: ManagerSpareSeats
   if (stopped.length) {
     console.log(c.dim(`stopped ${stopped.length} managed agent${stopped.length === 1 ? "" : "s"} that ran inside the manager process:`));
     for (const row of stopped) console.log(line(row, undefined));
-    if (!left.length) return;
   }
+  if (!left.length) return;
   console.log(c.dim(`left ${left.length} managed agent${left.length === 1 ? "" : "s"} running (no longer managed):`));
   for (const row of left) console.log(line(row, row.status));
   console.log(c.dim("to stop managed agents with the stack: cotal down --with-agents"));

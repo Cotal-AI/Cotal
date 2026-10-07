@@ -58,7 +58,10 @@ const { acquireMaintenanceLock, authDir, maintenancePaths, readMaintenanceJourna
 
 const WT = resolvePath(import.meta.dirname, "..", "..", "..");
 const CLI = join(WT, "bin", "cotal.ts");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+// The `.bin/tsx` shim runs the script in a second process and relays only SIGINT and SIGTERM, so a
+// SIGKILL sent to it ends the wrapper and orphans the CLI. Loading tsx into node makes the child the
+// CLI itself.
+const TSX_IMPORT = import.meta.resolve("tsx");
 
 let pass = 0;
 const kids: ChildProcess[] = [];
@@ -108,7 +111,7 @@ function run(args: string[]): ChildProcess {
     stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"],
   };
   assertSmokeSandboxDown(sandbox, args, options);
-  const cp = spawn(TSX, [CLI, ...args], options);
+  const cp = spawn(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], options);
   kids.push(cp);
   let log = "";
   cp.stdout?.on("data", (b: Buffer) => { log += b.toString(); });

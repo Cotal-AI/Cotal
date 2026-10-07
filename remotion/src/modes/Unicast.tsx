@@ -2,7 +2,7 @@
 // dave busy); bob is busy, so the message parks durably in his inbox and
 // delivers the moment he frees up. Unicast is point-to-point, so there is no
 // shared hub at center: the inbox lives on the direct route to bob, its owner.
-// 210 frames @ 30fps = 7s seamless loop.
+// Loops seamlessly at UNICAST_DURATION.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -10,33 +10,33 @@ import {
   AgentNode,
   Beam,
   Card,
+  CARD_TYPE,
   Dot,
   fade,
   GOLD,
   INK,
   Labels,
   lerp,
+  MODE_ALICE,
+  MODE_PEERS,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "./scene";
 
-// Same cluster as the other cards; bob (top) is the addressee, carol/dave below
-// are present but unaddressed. The inbox sits on the alice -> bob route.
-const ALICE: Pt = { x: 118, y: 300 };
-const BOB: Pt = { x: 726, y: 134 };
-const CAROL: Pt = { x: 726, y: 300 };
-const DAVE: Pt = { x: 726, y: 466 };
-const INBOX: Pt = { x: 442, y: 220 };
+// bob (top) is the addressee, carol/dave below are present but unaddressed. The
+// inbox sits on the alice -> bob route.
+const [BOB, CAROL, DAVE] = MODE_PEERS;
+const INBOX: Pt = { x: 400, y: 325 };
 
 const SEG1: [Pt, Pt] = [
-  { x: ALICE.x + 50, y: ALICE.y - 13 },
+  { x: MODE_ALICE.at.x + 50, y: MODE_ALICE.at.y - 13 },
   { x: INBOX.x - 38, y: INBOX.y + 9 },
 ];
 const SEG2: [Pt, Pt] = [
   { x: INBOX.x + 38, y: INBOX.y - 9 },
-  { x: BOB.x - 48, y: BOB.y + 12 },
+  { x: BOB.at.x - 48, y: BOB.at.y + 12 },
 ];
 
 const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
@@ -51,6 +51,8 @@ const T = {
   flashEnd: 140,
   bobBack: 152,
 };
+
+export const UNICAST_DURATION = 168;
 
 export const ModeUnicast: React.FC = () => {
   const frame = useCurrentFrame();
@@ -76,13 +78,13 @@ export const ModeUnicast: React.FC = () => {
   const glow2 = deliverFlash;
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[PATH1, PATH2]} glow={[glow1, glow2]} />
 
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />
-      <AgentNode at={BOB} name="bob" role="builder" status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} />
-      <AgentNode at={CAROL} name="carol" role="reviewer" status="idle" />
-      <AgentNode at={DAVE} name="dave" role="builder" status="working" />
+      <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
+      <AgentNode {...BOB} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
+      <AgentNode {...CAROL} type={CARD_TYPE} />
+      <AgentNode {...DAVE} type={CARD_TYPE} />
 
       {/* durable inbox: a rounded slot matching the node language; gold while it holds */}
       <div
@@ -103,13 +105,13 @@ export const ModeUnicast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: INBOX.x - 70,
+          left: INBOX.x - 70 * CARD_TYPE,
           top: INBOX.y + 48,
-          width: 140,
+          width: 140 * CARD_TYPE,
           textAlign: "center",
-          fontSize: 20,
+          fontSize: 20 * CARD_TYPE,
           color: INK.dim,
-          letterSpacing: 0.3,
+          letterSpacing: 0.3 * CARD_TYPE,
         }}
       >
         inbox
@@ -124,7 +126,7 @@ export const ModeUnicast: React.FC = () => {
         </>
       )}
 
-      <Labels mode="unicast" caption="deliver to one, durably" subject="cotal.demo.inst.bob" />
+      <Labels mode="unicast" caption="deliver to one, durably" subject="cotal.demo.inst.bob" type={CARD_TYPE} />
     </Card>
   );
 };

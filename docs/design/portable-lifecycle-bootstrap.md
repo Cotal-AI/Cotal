@@ -355,7 +355,7 @@ The delegated arm of the spawn path runs when `this.runtime.spawnDelegated` is d
    - `cwd`: the path is on the manager's filesystem. The child runs in the provider resource's own
      working directory and never in the manager's workspace root.
    - shared MCP servers: the set `connectorServers(loadCotalConfig(workspaceRoot), agent,
-     parseShareSelection(shareTools))` must be empty, because each server is a command on the
+     shareTools)` must be empty, because each server is a command on the
      manager's host. A spawn that would share any, from `--share-tools` or from the config default,
      refuses and names them; `--share-tools none` passes.
    - `supervise`: already refused for every user-mode seat (`manager.ts:5196`).

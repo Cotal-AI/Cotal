@@ -38,13 +38,13 @@ import {
   deferralExhausted,
   exhaustedDeferralAction,
   nextFallbackDelay,
-  refusalNeedsBoundary,
   type FallbackState,
 } from "./queue-fallback.js";
 import {
   MeshAgent,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   ORIENTATION_BOOTSTRAP,
@@ -488,55 +488,58 @@ export async function runJcodeHost(): Promise<void> {
             map: mapper.map,
           });
         },
-        (error: Error) => {
-          writeJcodeDiagnostic(`[cotal-jcode] AG-UI emitter stopped: ${error.message}\n`);
-          if (!stopping) void shutdown(1);
-        },
-        (runId: string) => mapper?.forgetOpenRun(runId),
-        // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
-        // that was not there and killed the seat. The holder now rides the window out on this
-        // wait instead. TWO edges are required, and the difference is measured rather than
-        // assumed: `connection` covers the Cotal bind (initial start, manual reconnect, the
-        // endpoint's own background rebuild), while `transport` covers the window INSIDE nats.js's
-        // own reconnect, where `this.nc` still exists but its `info` is already cleared, so
-        // `maxPayload` throws while every Cotal-side flag still says live. Waiting on
-        // `connection` alone resolves immediately in exactly that window (measured: the
-        // reproduced death kept `agent.connected === true`). Both getters are re-checked after
-        // the listeners are attached, so a bind landing between check and listen cannot be missed.
-        // No time bound: the endpoint's re-establish loop owns retry and backoff, and a bound here
-        // would reintroduce the terminal death under a standing outage, just slower. The one
-        // other exit is the seat stopping: `shutdown()` aborts `eventWaitStop`, and the wait
-        // rejects into the holder's terminal path so a stop during an outage is not held open.
-        // The step stays queued meanwhile — no event is dropped, reordered or duplicated, because
-        // the WAL's cursor has not moved and the chain serializes everything behind this await.
-        () =>
-          new Promise<void>((resolve, reject) => {
-            const live = (): boolean => agent.connected && agent.transportConnected;
-            const release = (): void => {
-              agent.off("connection", onConnection);
-              agent.off("transport", onTransport);
-              eventWaitStop.signal.removeEventListener("abort", onStop);
-            };
-            const finish = (): void => {
-              release();
-              resolve();
-            };
-            const onStop = (): void => {
-              release();
-              reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the journal"));
-            };
-            const onConnection = (e: { connected: boolean }): void => {
-              if (e.connected && agent.transportConnected) finish();
-            };
-            const onTransport = (e: { connected: boolean }): void => {
-              if (e.connected && agent.connected) finish();
-            };
-            agent.on("connection", onConnection);
-            agent.on("transport", onTransport);
-            eventWaitStop.signal.addEventListener("abort", onStop);
-            if (live()) finish();
-            else if (eventWaitStop.signal.aborted) onStop();
+        {
+          onError: eventPlaneStopped({
+            required: config.eventsRequired === true,
+            log: (line) => writeJcodeDiagnostic(`[cotal-jcode] ${line}\n`),
+            stopSeat: () => void shutdown(1),
           }),
+          onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+          // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
+          // that was not there and killed the seat. The holder now rides the window out on this
+          // wait instead. TWO edges are required, and the difference is measured rather than
+          // assumed: `connection` covers the Cotal bind (initial start, manual reconnect, the
+          // endpoint's own background rebuild), while `transport` covers the window INSIDE nats.js's
+          // own reconnect, where `this.nc` still exists but its `info` is already cleared, so
+          // `maxPayload` throws while every Cotal-side flag still says live. Waiting on
+          // `connection` alone resolves immediately in exactly that window (measured: the
+          // reproduced death kept `agent.connected === true`). Both getters are re-checked after
+          // the listeners are attached, so a bind landing between check and listen cannot be missed.
+          // No time bound: the endpoint's re-establish loop owns retry and backoff, and a bound here
+          // would reintroduce the terminal death under a standing outage, just slower. The one
+          // other exit is the seat stopping: `shutdown()` aborts `eventWaitStop`, and the wait
+          // rejects into the holder's terminal path so a stop during an outage is not held open.
+          // The step stays queued meanwhile — no event is dropped, reordered or duplicated, because
+          // the WAL's cursor has not moved and the chain serializes everything behind this await.
+          waitLive: () =>
+            new Promise<void>((resolve, reject) => {
+              const live = (): boolean => agent.connected && agent.transportConnected;
+              const release = (): void => {
+                agent.off("connection", onConnection);
+                agent.off("transport", onTransport);
+                eventWaitStop.signal.removeEventListener("abort", onStop);
+              };
+              const finish = (): void => {
+                release();
+                resolve();
+              };
+              const onStop = (): void => {
+                release();
+                reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the journal"));
+              };
+              const onConnection = (e: { connected: boolean }): void => {
+                if (e.connected && agent.transportConnected) finish();
+              };
+              const onTransport = (e: { connected: boolean }): void => {
+                if (e.connected && agent.connected) finish();
+              };
+              agent.on("connection", onConnection);
+              agent.on("transport", onTransport);
+              eventWaitStop.signal.addEventListener("abort", onStop);
+              if (live()) finish();
+              else if (eventWaitStop.signal.aborted) onStop();
+            }),
+        },
       )
     : undefined;
   let eventJournal: string | undefined;
@@ -551,7 +554,6 @@ export async function runJcodeHost(): Promise<void> {
     if (!events || !eventJournal || events.running) return;
     events.adopt(eventJournal);
     await events.settled();
-    if (events.failure) throw events.failure;
   };
 
   const releaseEventLock = async (): Promise<void> => {
@@ -993,10 +995,7 @@ export async function runJcodeHost(): Promise<void> {
     if (events) {
       await ensureEventsBound();
       await events.settled();
-      if (events.failure) {
-        writeJcodeDiagnostic(`[cotal-jcode] refusing a new turn because the AG-UI event plane stopped: ${events.failure.message}\n`);
-        return;
-      }
+      if (stopping) return;
     }
     driving = true;
     if (pendingKickoff !== undefined && steering)
@@ -1018,8 +1017,8 @@ export async function runJcodeHost(): Promise<void> {
     const parts: string[] = [];
     let ids: string[] = [];
     let turnIds: string[] = [];
-    // Run turns ride the same composed injection; their ids commit as surfaced only after the
-    // turn verifiably ran (two-phase — a failed or severed turn re-surfaces them, never a lie).
+    // Run turns ride the same composed injection; their ids commit as surfaced once the Harness
+    // verifiably accepted it (two-phase — an unaccepted send re-surfaces them, never a lie).
     const turnPeek = agent.peekPendingTurns();
     if (pendingKickoff !== undefined) parts.push(pendingKickoff);
     else {
@@ -1084,10 +1083,28 @@ export async function runJcodeHost(): Promise<void> {
       // An object is not a thenable, so it crosses both async boundaries as a value and the turn is
       // awaited below, outside the gate.
       const { dispatched: runTurn } = await withExclusiveDispatch(async () => {
+        // Read before this send exists: while a lapsed send is still open, an acknowledgement may
+        // be that send's, and it cannot prove the Harness took these run turns.
+        const attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
         const dispatched = turnClient!.run(sessionId!, parts.join("\n\n"), { autoApprove: true });
         // Keep a failed dispatch from surfacing as an unhandled rejection while it is only being
         // raced below; the handle returned from this gate is what actually reports it.
         dispatched.catch(() => {});
+        // Surfaced at acceptance, not at turn end: the model's own cotal_yield runs inside this
+        // turn, and yieldTurn refuses a turn that is not surfaced yet. Heard until the turn settles,
+        // not only inside the window below: while this run is open with its acceptance lapsed, the
+        // queue fallback defers and nothing else sends this session a message it could acknowledge,
+        // so a late acceptance is still this send's.
+        if (attributable && turnIds.length) {
+          const surface = (event: ApiEvent): void => {
+            if (!("session_id" in event && event.session_id === sessionId)) return;
+            stopSurfacing();
+            agent.commitSurfacedTurns(turnIds);
+          };
+          const stopSurfacing = (): void => { turnClient!.off("message_accepted", surface); };
+          turnClient!.on("message_accepted", surface);
+          void dispatched.then(stopSurfacing, stopSurfacing);
+        }
         // Hold the gate for ONE acceptance round trip, then hand the turn back to run outside it.
         // Whichever happens first ends the window: the acknowledgement, the turn itself finishing,
         // or the SDK's own 10s acceptance timeout, so the gate cannot be held by a silent Harness.
@@ -1124,9 +1141,6 @@ export async function runJcodeHost(): Promise<void> {
       // only safe outcome. The reconnect path redrives it after it reattaches the owned session.
       if (reconnecting || client !== turnClient)
         throw new Error("Jcode Harness connection closed during the turn; leaving the inbox batch unacknowledged");
-      // The turn ran to completion with the injection in its prompt — the run turns are surfaced.
-      // Committed before the finally's idle write, whose boundary auto-yields them `done`.
-      if (turnIds.length) agent.commitSurfacedTurns(turnIds);
       // A directed DM can be accepted into Jcode's persistent soft-interrupt queue while this run is
       // active. Wait for that request to settle before reading the exact containing-turn ledger.
       await steerSettled;
@@ -1466,6 +1480,10 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await withExclusiveDispatch(async () => {
         attributable = unsettledLapsedDispatches === 0 && !acceptanceSuspectUntilBridgeReplaced;
+        // The deferral above was read before the wait for this gate, and a run can lapse during it.
+        // A frame written now could only be refused while the Harness still runs it, and its
+        // acceptance would surface that run's turns, so nothing is written.
+        if (!attributable) return;
         const onAccepted = (event: ApiEvent): void => {
           if ("session_id" in event && event.session_id === session) acknowledged = true;
         };
@@ -1487,12 +1505,16 @@ export async function runJcodeHost(): Promise<void> {
         release();
         return;
       }
-      if (!acknowledged || !attributable) {
-        // Written but never acknowledged, OR acknowledged while an earlier lapsed send could still
-        // have been the sender. Recording either as accepted is what turned a stall into LOSS, so
-        // both are refused: released, un-acked, still owed, retried by the loop.
+      // Deferred, not refused: nothing was written, and the next tick defers on the run's debt.
+      if (!attributable) {
+        release();
+        return;
+      }
+      if (!acknowledged) {
+        // Written but never acknowledged. Recording it as accepted is what turned a stall into LOSS,
+        // so it is refused: released, un-acked, still owed, retried by the loop.
         //
-        // AND IF IT WAS NEVER ACKNOWLEDGED, THIS SEND IS NOW ITSELF A LAPSED ONE. The SDK resolved
+        // AND THIS SEND IS NOW ITSELF A LAPSED ONE. The SDK resolved
         // our `sendMessage` on its own accept wait, which proves only that we stopped listening: the
         // request is still live at the Harness and may emit its session-only acceptance at any
         // later point, when some other batch is the one waiting. Nothing settles that promise in a
@@ -1515,33 +1537,11 @@ export async function runJcodeHost(): Promise<void> {
         // The request itself is made by the fallback's next tick rather than here, so it happens on
         // the retry path where the batch is still owed and can be redriven, instead of inside a
         // handover that is already unwinding.
-        // BOTH REFUSALS NEED THE BOUNDARY, not just the unacknowledged one. A reviewer measured the
-        // gap: a RUN whose acceptance window lapses owes `unsettledLapsedDispatches` debt that
-        // clears only when that turn ENDS, which on a long turn is unbounded. Every fallback send
-        // meanwhile is genuinely acknowledged, so `!acknowledged` is false and no boundary was ever
-        // requested, while `attributable` stays false because the run debt is outstanding. The
-        // batch is refused, stays owed, and the level-triggered loop re-delivers it into a healthy
-        // Harness that ACCEPTS AND EXECUTES each copy: 4 executions from 4 send frames.
-        //
-        // That is the same unbounded duplicate execution the `!acknowledged` case was given a
-        // boundary to stop, reached through the other debt state, so it takes the same answer. The
-        // discriminator is not which flag failed but whether re-delivery on THIS connection can
-        // ever become attributable again; while a lapsed dispatch is open it cannot, because
-        // nothing distinguishes its late acceptance from the next send's.
-        //
-        // Replacing the bridge ends the ambiguity at the root: the replacement attaches the same
-        // session, drops the old connection's still-open request with it, and the batch is redriven
-        // once where an acknowledgement means something. The one-shot guard governs it, so widening
-        // the trigger cannot turn into a reconnect loop.
-        if (refusalNeedsBoundary(!acknowledged)) acceptanceSuspectUntilBridgeReplaced = true;
+        acceptanceSuspectUntilBridgeReplaced = true;
         release();
         writeJcodeDiagnostic(
-          acknowledged
-            ? `[cotal-jcode] queued turn was acknowledged but an earlier unacknowledged dispatch is ` +
-              `still open, so the acknowledgement is not attributable; replacing the Harness ` +
-              `connection before re-delivering ${items.length} automatic message(s)\n`
-            : `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
-              `automatic message(s) remain queued for redelivery\n`,
+          `[cotal-jcode] queued turn was not acknowledged (no message_accepted); ${items.length} ` +
+            `automatic message(s) remain queued for redelivery\n`,
         );
         return;
       }
@@ -2095,6 +2095,9 @@ export async function runJcodeHost(): Promise<void> {
     // would publish the pre-join orientation tool records and merge the next requested turn into the
     // same AG-UI run. A completed proof can bind now; an open one binds in drive() after turn_done.
     if (!readinessTurnOpen) await ensureEventsBound();
+    // A space that requires events has already stopped a seat whose event plane failed to bind, and
+    // that shutdown owns the exit.
+    if (stopping) return;
     // The readiness proof necessarily precedes mesh join. Tell the session that its bootstrap
     // orientation card was pre-join so it cannot later mistake that truthful old snapshot for its
     // current connection state (#778).

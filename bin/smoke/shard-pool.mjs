@@ -138,7 +138,8 @@ export async function runPool(commands, { jobs, runMarker, indices, onStart }) {
         r.seats = reapRunCustodians(state.COTAL_RUN);
         const sentinel = parseSentinel(out);
         r.cells = sentinel?.cells ?? 0;
-        const reason = r.status !== 0 ? `exit ${r.status}` : !sentinel ? "no sentinel" : sentinel.cells === 0 ? "zero cells" : undefined;
+        r.skipped = sentinel?.kind === "skipped" ? sentinel.reason : undefined;
+        const reason = r.status !== 0 ? `exit ${r.status}` : !sentinel ? "no sentinel" : sentinel.kind !== "skipped" && sentinel.cells === 0 ? "zero cells" : undefined;
         if (!r.stopped && reason) failure ??= { cmd, reason, status: r.status || 1 };
         if (r.stopped) r.status = r.status || 1;
         // Reap and record attributable leaks before sweeping the remaining process group.

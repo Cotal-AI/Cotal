@@ -15,7 +15,7 @@ import {
   mintLifecycleUid, newIdentity, openIssuedStore, readRunAdmission, remoteManagerActors, type IssuedSourceRef,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { deriveOwnerForIdpSubject, grantActor, openAuthAuthorityPlane, handleManagerServiceAuthority } from "../src/index.js";
+import { deriveOwnerForIdpSubject, grantActor, openAuthAuthorityPlane, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx } from "../src/index.js";
 import { admitRemoteRun } from "../src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { pickFreePort } from "./_free-port.js";
@@ -62,11 +62,14 @@ try {
   const subjectFor = (caller: { owner: string; actor: string; uid: string; generation?: string }, over: { space?: string; command?: string; instance?: string } = {}) =>
     epRequestSubject(over.space ?? SPACE, { route: { mode: "inst", instanceId: over.instance ?? instanceId }, endpoint: "manager", command: over.command ?? "run-start", caller: caller as never, nonce: "n".repeat(24) });
   const runId = () => `run-${Buffer.from(mintGeneration().slice(0, 16)).toString("hex").slice(0, 32)}`;
+  // These cells call the host function directly, as if every forwarded subject was published;
+  // the HTTP section below publishes each one the host observes.
+  const takeObserved = async () => ({ operation: { command: "run-start" as const }, envelope: { class: "ephemeral" as const, op: { endpoint: "manager", command: "run-start" } } });
   const admit = (run: { runId: string; subject: string }, over: Record<string, unknown> = {}, gateOver: Partial<typeof gate> | null = {}) => admitRemoteRun({
     request: { ...base, requestId: `req-${run.runId}`, registrationProof: proof, run, ...over },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
     observeManagerGate: async () => gateOver === null ? null : { ...gate, ...gateOver },
-    issued, sourceIsLive: async (s) => liveKeys.has(s.key), admissions,
+    issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
   });
   const absent = async (id: string) => (await admissions.get(`admission.v1.manager.${id}`)) === null;
 
@@ -75,9 +78,9 @@ try {
   const okRun = runId();
   const okSubject = subjectFor(alice);
   const result = await admitRemoteRun({
-    request: { ...base, requestId: "req-ok", registrationProof: proof, run: { runId: okRun, subject: okSubject } },
+    request: { ...base, requestId: `req-${okRun}`, registrationProof: proof, run: { runId: okRun, subject: okSubject } },
     owner: OWNER, space: SPACE, accountPublicKey: ACCOUNT, proofSecret: SECRET, endpoint: "manager",
-    observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), admissions,
+    observeManagerGate: async () => gate, issued, sourceIsLive: async (s) => liveKeys.has(s.key), takeObserved, admissions,
   }).catch((e: Error) => e);
   const view = await readRunAdmission(jsm, SPACE, "manager", okRun).catch((e: Error) => e);
   c("a registered manager's forwarded v1 run-start admits under the caller's real issued generation",
@@ -193,12 +196,13 @@ try {
     server: servers,
     space: SPACE,
     dir: authDir,
+    identityRoot: authDir,
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     log: () => {},
   });
 
   const cap = "operator-cap-secret";
-  const httpCtx = {
+  const httpCtx: ManagerServiceAuthorityCtx = {
     space: SPACE,
     dir: authDir,
     ownerSecret,
@@ -206,22 +210,17 @@ try {
     managerServiceAuthority: plane.issueManagerServiceAuthority,
     maintainRemoteManager: plane.maintainRemoteManager,
     validateRetainedAgent: plane.validateRetainedAgent,
-    verifyManagedAgentEnrollment: plane.verifyManagedAgentEnrollment,
-    verifyManagedAgentPrepareRetirement: plane.verifyManagedAgentPrepareRetirement,
+    // This suite runs no callout, so it has no sentinel credentials to enroll with; it sends run kinds only.
+    enrollManagedAgent: () => { throw new Error("this suite sends no managed-agent enrollment"); },
+    prepareManagedAgentRetirement: plane.prepareManagedAgentRetirement,
     scanManagerGoalIndex: plane.scanManagerGoalIndex,
     authorizeManagerAdmin: plane.authorizeManagerAdmin,
     admitManagerRun: plane.admitManagerRun,
     issueManagerRunAttempt: plane.issueManagerRunAttempt,
     secrets: new Map() as never,
-    retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
-    retireManagedLifecycle: plane.retireManagedLifecycle,
     cap,
-    failures: [],
-    badCaps: [],
-    mintConnectCredential: plane.mintConnectCredential,
-    selectManagerInstance: plane.selectManagerInstance,
   };
-  const httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx as never, {
+  const httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx, {
     requireCapability: true,
     refuseViews: false,
     allowManagerAuthority: true,
@@ -260,10 +259,20 @@ try {
 
   const httpSubjectFor = (caller: { owner: string; actor: string; uid: string; generation?: string }, over: { space?: string; command?: string; instance?: string } = {}) =>
     epRequestSubject(over.space ?? SPACE, { route: { mode: "inst", instanceId: over.instance ?? httpInstanceId }, endpoint: "manager", command: over.command ?? "run-start", caller: caller as never, nonce: "n".repeat(24) });
+  // The caller's own run-start request, which the issuing host observes before the manager forwards it.
+  const publishRunStart = async (caller: { owner: string; actor: string; uid: string; generation?: string }) => {
+    const digest = `sha256:${"0".repeat(64)}`;
+    nc.publish(httpSubjectFor(caller), JSON.stringify({
+      v: 1, id: "n".repeat(24), op: { endpoint: "manager", command: "run-start", inputDigest: digest, outputDigest: digest },
+      class: "ephemeral", replyExpected: true, deadlineMs: 5000, args: {}, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor },
+    }));
+    await nc.flush();
+  };
 
   // Positive HTTP route check
   const httpOkRun = runId();
-  const httpOkRes = await postHttp({ ...httpBaseReq, requestId: "req-http-ok", registrationProof: httpProof, run: { runId: httpOkRun, subject: httpSubjectFor(httpAlice) } });
+  await publishRunStart(httpAlice);
+  const httpOkRes = await postHttp({ ...httpBaseReq, requestId: `req-${httpOkRun}`, registrationProof: httpProof, run: { runId: httpOkRun, subject: httpSubjectFor(httpAlice) } });
   const httpOkView = await readRunAdmission(jsm, SPACE, "manager", httpOkRun).catch((e: Error) => e);
   c("HTTP route: a registered manager's forwarded v1 run-start admits and writes the admission record",
     httpOkRes.status === 200 && (httpOkRes.body as { v?: number }).v === 1 && !(httpOkView instanceof Error) &&
@@ -271,43 +280,47 @@ try {
 
   // Negative HTTP: missing supervise scope
   const nosupProof = remoteManagerCurrentRegistrationProof(auth.account.signingSeed, httpOwner, { ...httpBaseReq, actor: "nosupervise" }, httpGate);
-  const nosupRes = await postHttp({ ...httpBaseReq, actor: "nosupervise", requestId: "req-nosup", registrationProof: nosupProof, run: { runId: runId(), subject: httpSubjectFor(httpAlice) } });
+  const nosupRes = await postHttp({ ...httpBaseReq, actor: "nosupervise", requestId: `req-${mintLifecycleUid()}`, registrationProof: nosupProof, run: { runId: runId(), subject: httpSubjectFor(httpAlice) } });
   c("HTTP route: missing supervise scope refuses (403)",
     nosupRes.status === 403 && String(nosupRes.body.error).includes('manager run admission needs scope "supervise"'), nosupRes);
 
   // Negative HTTP: forged generation
   const forgedHttpRun = runId();
-  const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-forged", registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor({ ...httpAlice, generation: mintGeneration() }) } });
+  const forgedCaller = { ...httpAlice, generation: mintGeneration() };
+  await publishRunStart(forgedCaller);
+  const forgedHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${forgedHttpRun}`, registrationProof: httpProof, run: { runId: forgedHttpRun, subject: httpSubjectFor(forgedCaller) } });
   c("HTTP route: a forged generation refuses (403)",
     forgedHttpRes.status === 403 && String(forgedHttpRes.body.error).includes("no issued evidence") && await absent(forgedHttpRun), forgedHttpRes);
 
   // Negative HTTP: stale source
   const staleHttpRun = runId();
-  const staleHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-stale", registrationProof: httpProof, run: { runId: staleHttpRun, subject: httpSubjectFor(httpDave) } });
+  await publishRunStart(httpDave);
+  const staleHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${staleHttpRun}`, registrationProof: httpProof, run: { runId: staleHttpRun, subject: httpSubjectFor(httpDave) } });
   c("HTTP route: a generation whose source is no longer live refuses (403)",
     staleHttpRes.status === 403 && String(staleHttpRes.body.error).includes("no longer live") && await absent(staleHttpRun), staleHttpRes);
 
   // Negative HTTP: foreign space
   const fsHttpRun = runId();
-  const fsHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-fs", registrationProof: httpProof, run: { runId: fsHttpRun, subject: httpSubjectFor(httpAlice, { space: "other" }) } });
+  const fsHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${fsHttpRun}`, registrationProof: httpProof, run: { runId: fsHttpRun, subject: httpSubjectFor(httpAlice, { space: "other" }) } });
   c("HTTP route: a subject of another space refuses (403)",
     fsHttpRes.status === 403 && String(fsHttpRes.body.error).includes("served v1 run-start subject") && await absent(fsHttpRun), fsHttpRes);
 
   // Negative HTTP: foreign manager instance
   const fiHttpRun = runId();
-  const fiHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-fi", registrationProof: httpProof, run: { runId: fiHttpRun, subject: httpSubjectFor(httpAlice, { instance: mintLifecycleUid() }) } });
+  const fiHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${fiHttpRun}`, registrationProof: httpProof, run: { runId: fiHttpRun, subject: httpSubjectFor(httpAlice, { instance: mintLifecycleUid() }) } });
   c("HTTP route: a subject addressed to another manager instance refuses (403)",
     fiHttpRes.status === 403 && String(fiHttpRes.body.error).includes("instance") && await absent(fiHttpRun), fiHttpRes);
 
   // Negative HTTP: revoked generation
   const rvHttpRun = runId();
-  const rvHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-rv", registrationProof: httpProof, run: { runId: rvHttpRun, subject: httpSubjectFor(httpCarol) } });
+  await publishRunStart(httpCarol);
+  const rvHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${rvHttpRun}`, registrationProof: httpProof, run: { runId: rvHttpRun, subject: httpSubjectFor(httpCarol) } });
   c("HTTP route: a revoked generation refuses (403)",
     rvHttpRes.status === 403 && String(rvHttpRes.body.error).includes("revoked") && await absent(rvHttpRun), rvHttpRes);
 
   // Negative HTTP: caller-supplied ceiling field
   const clHttpRun = runId();
-  const clHttpRes = await postHttp({ ...httpBaseReq, requestId: "req-cl", registrationProof: httpProof, ceiling: { publish: { allow: { mode: "all" }, deny: [] } }, run: { runId: clHttpRun, subject: httpSubjectFor(httpAlice) } });
+  const clHttpRes = await postHttp({ ...httpBaseReq, requestId: `req-${clHttpRun}`, registrationProof: httpProof, ceiling: { publish: { allow: { mode: "all" }, deny: [] } }, run: { runId: clHttpRun, subject: httpSubjectFor(httpAlice) } });
   c("HTTP route: a caller-supplied ceiling field refuses before any write",
     (clHttpRes.status === 400 || clHttpRes.status === 403) && String(clHttpRes.body.error).includes("unknown field ceiling") && await absent(clHttpRun), clHttpRes);
 

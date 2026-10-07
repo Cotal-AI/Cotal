@@ -35,12 +35,12 @@ import {
   type RunStatusView,
   type RunValidation,
 } from "@cotal-ai/core";
-import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, programHashOf, type JournalEntry } from "@cotal-ai/lang";
+import { CATALOG, codeFrame, primitiveDoc, validate, LangErrors, journalEntryKeyString, programHashOf, stepPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, PauseToken, type DriveOutcome } from "./run-driver.js";
 import { createRunEffectHost } from "./run-effect-host.js";
 import { createRunScopeAuthority } from "./run-scope-authority.js";
 import { createRunRecordHost, runRecordView } from "./run-record-host.js";
-import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer, stepPauseToken } from "./resolve-checkpoint.js";
+import { locateOpenCheckpoint, answerOpenCheckpoint, locateAcceptedAnswer, amendAcceptedAnswer } from "./resolve-checkpoint.js";
 import type { KV } from "@nats-io/kv";
 
 function outcomeOf(out: DriveOutcome): RunHostOutcome {

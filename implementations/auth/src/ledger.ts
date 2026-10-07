@@ -429,6 +429,13 @@ export function revokeManagedActor(dir: string, owner: string, actor: string): b
   return revokeIn(dir, "managed-agent", owner, actor);
 }
 
+/** Revoke a managed row only while it still names `lifecycleUid`: a caller releasing one lifecycle
+ *  must never remove the grant a same-name successor holds. */
+export function revokeManagedActorAt(dir: string, owner: string, actor: string, lifecycleUid: string): boolean {
+  if (findIn(dir, "managed-agent", owner, actor)?.lifecycleUid !== lifecycleUid) return false;
+  return revokeIn(dir, "managed-agent", owner, actor);
+}
+
 function revokeIn(dir: string, kind: ActorKind, owner: string, actor: string): boolean {
   const p = rowPath(dir, kind, owner, actor);
   if (!existsSync(p)) return false;

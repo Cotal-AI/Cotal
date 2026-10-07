@@ -1,5 +1,45 @@
 # @cotal-ai/lang
 
+## 0.70.0
+
+### Minor Changes
+
+- 83a6352: A run on the compiled engine no longer reports a value the program threw as a host hold or release. The worker thread used to copy `code`, `reason`, `step` and `kind` off whatever was thrown, and the host rebuilt `RunHeld` or `RunReleased` from the code alone, so `throw { code: "L5025", reason: "..." }` came back as a held run with the placeholder step `(step not carried)`, and `throw { code: "L5012", ... }` as a release. Both now fail as the plain value they are, as they do on the walker. `WorkerRunFailed` is now a union discriminated by `class` (`released`, `held`, `effect`, `too-large`, `rejected` or `error`). The thread picks the variant with `instanceof`, each variant requires its class's fields, and the host rebuilds the class with no defaults. `tooLarge` is replaced by the `too-large` variant's `stepKey`, `bytes` and `bound`. This breaks code that calls `runInWorker` itself: `code` now crosses only on the `effect` and `error` variants, so a caller that branched on `L5012`, `L5025`, `L5006` or `L5010` branches on `class` instead.
+
+## 0.69.0
+
+### Patch Changes
+
+- 1bdc7f2: A `conclave` now counts toward a run's `effectCeiling` (L4009). Opening one is a dispatch against the world, but it was counted neither by the live counter nor by the journal tally a resume seeds that counter from, so a program whose only effect was `conclave` could open any number of them, live or across a resume, without reaching the ceiling. It is counted once, before its entry begins, on both engines. A resume that re-enters a pending or refused step, a `conclave` or an effect, no longer counts it a second time, so a resumed run reaches the ceiling at the same step as a fresh one instead of faulting where the fresh run goes on. `spec/cotal-lang.md` §8.3 no longer excludes it.
+- 94996e5: The scope kinds' traits now come from one record keyed by `ScopeKind`, exported as `scopeTraits`, which returns a frozen row: whether a scope settles an assembly of branch outcomes, and whether a fork whose cut lies inside it re-enters it. The journal seed check, the scope value rule, the static captured-write check (L2032) and `planFork` read it instead of keeping their own kind lists, so a scope kind added to `ScopeKind` does not compile until it is classified. Before, a new kind compiled with a list missed and failed only at run time, for example a settled no-return scope of that kind refused at the journal seed with L5024. Shipped behaviour is unchanged.
+- f409b46: A `waitUntil` whose first observation is not terminal now waits out its cadence on a host that checks journal authority (a manager-hosted run, or `cotal run start --local`) and fails `L4023` at its deadline. Before, its second observation failed `L4000`: the interpreter sent the observation index as the effect's attempt, which the run authority refused, and the authority listed no pause token for a `waitUntil` cadence. Which pause tokens a step owns is now one table that the run authority, the adoption re-arm and a cancelled branch's discharge all read, so a cancelled `waitUntil` on a hosted run also releases its open cadence pause.
+
+## 0.68.0
+
+### Minor Changes
+
+- 6141e7b: The issuing host no longer signs an answering run operator for a checkpoint token a participant manager names. The manager's request now names the run and step it answers (`operator.answers: { runId, stepKey, amend? }`), and the host requires that run admitted on the manager's instance, reads the pause's token off the run's journal under a read it mints for that run, and requires a served answer to name the same run and step as the request it observed. Before, a manager could be issued the answer and settle writes for another instance's waiting pause. The pause lookups `openCheckpointToken`, `settledPauseToken`, `stepPauseToken`, `CheckpointNotOpen` and `CheckpointNotAmendable` move to `@cotal-ai/lang`; `@cotal-ai/runtime` still exports the first four. A participant manager and its issuing host must upgrade together.
+
+### Patch Changes
+
+- b38a683: A `conclave` body may no longer write a binding declared outside it, or a field of a record or array built outside it (L2032), on both engines, as `once` already could not. A settled `conclave` is replayed from its journal entry without entering its body, so the write happened on the live run and never on resume: the resumed run read the old value and diverged at the next effect that took it as input. Return the value from the body and assign the scope's result instead.
+- d5ea4d2: The cotal-lang spec's migrate orphan table has a `waitUntil` row. An orphaned `waitUntil` is ignored whether it settled or is still pending, and its recorded observations stay in the journal. This is what `cotal run migrate` already reported; the table's "any other kind" row required L5015, so an implementation written from the spec refused the same migrations. No behavior changes.
+- 54e0199: The cotal-lang spec lists the scopes and the traits in which they differ in one table (§7): what a scope settles, its verdict when a migration orphans it, and whether a fork re-enters it when the cut lies inside it or refuses the cut (L5020). The journal entry's `kind` field, the absence rule for a scope's settled value, the L2013 admission, the migrate orphan table and the fork cut rule cite that table or the primitive table instead of listing kinds, so a new scope is one row in each. No behavior changes.
+
+## 0.67.0
+
+### Patch Changes
+
+- 48f18d0: Remove sentences from shipped comments in core, lang, the CLI and the manager that described what earlier revisions of those comments claimed. The request-path validation note in `endpoint-envelope.ts` now states as current fact that registration-time profile bounds do not replace request-path enforcement, with the `uniqueItems` measurement under it. The barrier-window note in `endpoint-action.ts`, the lang worker header, the worker result backstop, the `--rotate-sys` broker check and the manager's goal-writer epoch belt keep their contract text and drop the history. No behavior changes.
+
+## 0.66.1
+
+## 0.66.0
+
+### Patch Changes
+
+- a9be586: Apply the driver's result bound on the compiled engine. A hosted run on language version 2 never received the result bound that `cotal run` and the manager derive from the broker's `max_payload`, so an oversized effect result was recorded when it fit the store, or released as the store's own L5010 when it did not. The bound now reaches the journal the worker thread builds, an oversized `ok` result is refused ahead of the settling append (L5006) as it is on version 1, and the host rebuilds that refusal as `EffectResultTooLarge`, so the driver releases the run instead of recording it as failed. `WorkerRunRequest` gains `resultBytes`, refused outside the bridged route, and `WorkerRunFailed` gains `tooLarge`.
+
 ## 0.65.0
 
 ### Minor Changes

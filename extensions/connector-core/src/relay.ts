@@ -8,7 +8,7 @@
  * entry points are one-liners over {@link runHookRelay}.
  */
 import { connect } from "node:net";
-import { controlFromEnv, hasIdentity } from "./config.js";
+import { controlFromEnv, hasIdentity } from "./session-env.js";
 import { HANDOFF_RECEIPT } from "./control.js";
 
 const TIMEOUT_MS = 2000;

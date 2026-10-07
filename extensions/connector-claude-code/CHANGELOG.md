@@ -1,5 +1,53 @@
 # @cotal-ai/connector-claude-code
 
+## 0.70.0
+
+### Minor Changes
+
+- 76113ce: `AguiEmitterHolder` now takes its hooks as one named object after the emitter factory, `new AguiEmitterHolder(startEmitter, { onError, onRunClosed, waitLive, runMeta })`, typed by the exported `AguiEmitterHolderHooks`, where only `onError` is required. Before, the four hooks were positional, and a `runMeta` provider passed third was accepted as `onRunClosed`: it typechecked, ran after the run had already closed, and its metadata was dropped with no error. A caller no longer fills earlier slots with `undefined` to reach a later hook. The Claude Code, Codex, jcode, OpenCode and pi connectors pass their hooks by name, with no change in behavior.
+
+### Patch Changes
+
+- 95788eb: A seat whose AG-UI event plane stops for good now follows the space's policy on every connector. On a space that requires events the seat stops, where Pi, Claude Code and OpenCode used to keep it running without events. On any other space the seat keeps running and its log records `AG-UI emitter stopped`, where Jcode used to stop the seat and refuse further turns. Codex no longer rebuilds a stopped plane at its next turn boundary on any space, and it now waits for the mesh before starting its emitter, as the other connectors do. The rule is `eventPlaneStopped` in connector-core, which each connector passes its log sink and its stop hook.
+- b01ab5d: Restate the remaining comments in the connector-core event WAL and the Claude Code AG-UI mapper as the rule each one carries, in the present tense. They no longer tell the story of an earlier version, speak in the first person, or name the internal reviewers who found a defect, so none of that reaches the published `dist`. Every rule they held is kept: no `sourceCursor` relation because a cursor is opaque, one check for an absent `pending` key, no seeding in `bindSubjectFrontier`, `expectedTip` throwing while unbound, the stale-writer refusal before the shared record moves, and the `O_EXCL | O_NOFOLLOW` random-name temp file. No behavior changes.
+
+## 0.69.0
+
+### Minor Changes
+
+- 2d45766: The cotal config reader now refuses a shared MCP server that cannot launch as written, naming the file and the field (`cotal config <path>: connectors.<name>.mcpServers.<server>.<field> must be ...`). A wrong-typed `command`, `type`, `url`, `args`, `env` or `headers` used to pass the reader and fail every Claude spawn with a bare `TypeError` that named neither, and a server with no transport to start (no `command` for stdio, no `url` for http, sse or ws, or any other `type`) was forwarded to `claude` and silently never loaded. `cotal setup` copies a server from the Claude config by the same check. A config file that holds such a server now refuses every spawn until it is fixed; `docs/UPGRADING.md` lists what to check before upgrading.
+
+## 0.68.0
+
+### Minor Changes
+
+- 585fdb2: Connectors launch on the model and variant their launcher resolved. `LaunchOpts.model` and `LaunchOpts.variant` are now the launcher's resolved values (the flag, else the agent file's `model:` / `variant:`), and every connector renders them as given instead of reading the agent file again in `buildLaunch`. Before, a model the launcher did not resolve was taken from a later read of a file that could have changed since, so the seat could run a model the launcher never checked or recorded, and a supervised restart re-read it each time. The in-session config takes the model and variant from `COTAL_MODEL` / `COTAL_VARIANT` only, so the card and the orientation pin no longer report a model the seat was not launched on. The Hermes connector no longer falls back to `HERMES_MODEL` from the spawning process, including one `spawn.env` forwards; set the model with `--model` or the persona's `model:`. Code that calls `buildLaunch` directly must pass `model` and `variant` itself.
+
+### Patch Changes
+
+- bdb0132: The Claude connector now finds a session's `/rename` title when the transcript row spells its type with a JSON escape, such as `"custom\u002dtitle"`. Before, such a row was skipped: a detached `--resume <name>` naming that title went to the manager host as an id instead of being refused, the carried title was missing, and a later rename written that way lost to an earlier one. Every transcript line is now parsed before its type is read.
+- 33be936: A Claude Code seat no longer re-prints the wake nudge for a DM it already announced each time JetStream redelivers that DM. While one long tool call kept the hook drain from running, an unacked DM was redelivered every 60s and every copy queued another identical "New dm" notice, so a 51-minute call left about 50 of them per message. The connector now nudges once per message until a hook frame carries it, including a message first counted in a batch notice, and a redelivery after a frame whose reply never reached Claude Code still nudges again, even when the original nudge was still queued behind a full stdout. The retry after a rejected nudge follows the same rule: it counts only messages no live nudge announces, and a rejection that a newer nudge already superseded is not retried. `MeshAgent.pendingWake` takes an optional predicate that leaves out items the caller has already woken the session for.
+- 681c5b0: A supervised Claude seat whose directory the manager host's own Claude does not trust is now refused before it launches, with an error that names the directory and Claude's workspace-trust dialog. Claude opens such a directory on that dialog, whose default answer exits, so the seat used to die on launch with only `EntertoconfirmEsctocancel` as its last output. Trust is read as Claude reads it: a parent directory's trust counts up to the root of the directory's own Git repository, and a linked worktree shares its main checkout's trust. The manager passes the seat's directory to the connector as the new `LaunchOpts.cwd`, so a spawn, a supervised restart and a preserved-seat resume are all checked. A foreground `cotal spawn` still shows the dialog in the operator's terminal. A carried resume uses the same check.
+
+## 0.67.0
+
+### Minor Changes
+
+- f389576: `cotal spawn --resume <id> --detach --on <instance>` carries a Claude session held on the operator's host to a manager on another host, as `docs/design/resume-transfer.md` lays out. The CLI finds the transcript with the connector's new `resumeTranscript` locator and writes it into a JetStream Object Store bucket owned by the target instance, in chunks sized to the broker's `max_payload`, as a chain that an interrupted carry continues. The manager's new operator-only `transcript-receive` command stages it, removes the broker object, and issues a one-time `resumeClaim` that `spawn` consumes; a re-run of the same bytes moves none. The seat forks the transcript in a seat-private Claude home that authenticates with an environment credential, and `cotal ps --wide` names the source host, session, digest and carry time. The manager cluster document moves to revision 21. Two one-shot credentials carry it on an authenticated mesh: a `transfer-writer` the CLI mints from the space's signing seed for the one transcript it hashed, or on a user-auth mesh exchanges from the operator's login as the new `transfer-writer` view (scope `admin`), and a `transfer-reader` the target manager mints for its own bucket on each receive or sweep, or that the host issues a remote manager through the new manager-service `transferReader` operation. A carried seat records the digest of the transcript Claude forked, and the manager stops a seat whose record does not match the carried bytes, including one whose launch was uncertain and that joined later. Space deletion lists the transfer buckets and deletes them: `deleteSpace` given the space's trust material mints its own `teardown` naming them, and it now throws naming every stream it could not delete instead of reporting success. The console space picker deletes a space this host registered as a static-auth mesh that way. The `transfer-writer` view, and the broker connection minted from it, lives at most five minutes, the static credential's lifetime.
+
+### Patch Changes
+
+- 7f909a1: Remove sentences from the AG-UI holder and the Claude Code and OpenCode AG-UI mapper comments that described what earlier revisions of those comments got wrong. The comments now state only the current contract: the `boundPath` gate keeps start-once, the chain serializes hook events, the refusals live in `subject-frontier.ts` and `event-wal.ts`, the bracket interleave is open, OpenCode publishes `RUN_ERROR` through `AguiEmitterHolder.closeRun`, and the Claude Code mapper keeps its measured predicate counts. No behavior changes.
+- 8e0c2a3: Remove comment passages from the connector-core event WAL and the Claude Code AG-UI mapper that narrated earlier revisions of those comments, who flagged them, and the session they were written in. The `bindSubjectFrontier` doc ends at its contract, the temp-file write keeps its `O_EXCL`, `O_NOFOLLOW`, random suffix and `0600` rationale, and the mapper header states its measurement directly: 67 runs and 5217 events on the 5938-record session, with `diagnose()` returning `null`. No behavior changes.
+
+## 0.66.1
+
+### Patch Changes
+
+- abddc24: The Claude Code connector now leaves the mesh when its stdin closes. An MCP client closes the server's stdin to end the session, and a killed `claude` closes it without firing `SessionEnd`. The connector used to keep running after either, held open by its mesh connection, so it kept heartbeating presence and every peer's `cotal_roster` showed the dead session as a live peer indefinitely. It now stops on stdin end as it does on SIGTERM, publishing `offline` before it exits.
+
+## 0.66.0
+
 ## 0.65.0
 
 ## 0.64.0

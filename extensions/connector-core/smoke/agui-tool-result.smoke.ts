@@ -39,8 +39,6 @@ import { join } from "node:path";
 import { eventChannel, type Part } from "@cotal-ai/core";
 import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 import {
-  AguiEmitter,
-  AguiEmitterHalted,
   aguiFrame,
   applyAguiEgressPolicy,
   frozenBodyEgressVerdict,
@@ -55,8 +53,12 @@ import {
   toolCallResult,
   toolCallStart,
   type AguiEvent,
-  type RecordMapper,
 } from "../src/agui.js";
+import {
+  AguiEmitter,
+  AguiEmitterHalted,
+  type RecordMapper,
+} from "../src/agui-emitter.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
 import { createClaudeMapper, type ClaudeEntry } from "../../connector-claude-code/src/agui-map.js";

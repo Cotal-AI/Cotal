@@ -33,7 +33,10 @@ cotal console                    # no --space on an open mesh → the admin over
 every space on the server (enumerated from its `CHAT_*` streams and presence buckets) with its
 agents, channels, and message counts. Pick one to drop into its console; `b` returns to the
 overview. `--space X` skips the picker. Under auth a server hosts a single space, so the console
-enters it directly (no overview).
+enters it directly (no overview). `D` deletes the selected space once you type its name. A space this
+host registered as a static-auth mesh on that server is deleted under a teardown minted from its trust
+material, which names the resume transfer buckets the space holds at that moment; any other space is
+deleted under the console's own connection, bare on an open mesh or your `--creds` file.
 
 **Lenses and keys** (TUI). The layout is a roster, a live feed, per-channel tabs, a golden-signal
 tiles strip, and toggleable lenses:
@@ -119,7 +122,7 @@ cotal web --space main --creds ./admin.creds # use a cred you minted yourself
 ```
 
 Flags: `--space` (default `main`), `--server` (the mesh's broker, resolved from the registry),
-`--host` (HTTP bind and browser host, default `127.0.0.1`), `--port` (default `7799`), `--detach`
+`--host` (HTTP bind and browser host, default `127.0.0.1`), `--port` (1 to 65535, default `7799`), `--detach`
 (run in the background), `--no-open` (skip auto-launching the browser), `--creds` (override the
 self-minted cred). Remote exposure requires an explicit concrete `--host`; wildcard addresses
 `0.0.0.0` and `::` are refused because neither is a browser destination. Detached mode waits for
@@ -127,8 +130,9 @@ the real HTTP server at the bound host and port before returning, logs to `<mesh
 `cotal down web` or bare `cotal down`. On the default host it probes `127.0.0.1`, because a system
 resolver such as WSL2's may not answer the branded `cotal.localhost`. It requires a recorded mesh root; after `cotal up` records the
 mesh, it can be launched from any directory. The branded URL `http://cotal.localhost:7799/` resolves
-to loopback with no DNS setup in Chrome, Firefox, and Edge; Safari may not resolve `*.localhost`,
-so use `http://127.0.0.1:7799`. A custom `--port` uses the plain loopback address. An explicit
+to loopback with no DNS setup in Chrome, Firefox, and Edge. Safari and a system resolver such as
+WSL2's may not resolve `*.localhost`, so on this default the launch link is printed again at
+`http://127.0.0.1:7799/` with the same single-use token. A custom `--port` uses the plain loopback address. An explicit
 `--host` is also the advertised address and the only allowed browser Origin for that process.
 
 **The link is single-use, and the surface authenticates the caller.** Starting the dashboard prints a
@@ -166,7 +170,10 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
 - **Monitor**: the all-activity feed (two-line messages with a delivery-mode badge, per-mode
   filter chips, and pause), the roster (status as shape *and* colour, role, a one-line activity,
   and the agent's harness: claude / opencode / hermes), and the golden-signal tiles
-  (working / waiting / idle / offline / oldest-unattended).
+  (working / waiting / idle / offline / oldest-unattended). The roster groups live peers by the
+  machine each one reports as its host, with a count per machine, so placement across machines
+  reads at a glance. A peer that reports no host, such as a manager, is listed last under *host
+  not reported*. Seats do not report which manager runs them, so the roster has no manager grouping.
 - **Channel view**: one channel's message list, members shown in the header.
 - **Direct messages**: a per-peer roll-up (one row per peer, not the n² pair list); expand a peer
   for its conversations. Threads key on authenticated ids, and every shown name, role, and status
@@ -259,7 +266,9 @@ Ordinary bodyless requests keep their connection as usual.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
-raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines
+raw HTML is stripped and only http(s)/mailto links survive. A peer's name, role and activity show
+as plain text, including inside an attribute such as the activity's hover title. Long bodies still
+clamp to a few lines
 with a per-message *show more*; a channel-wide **expand / collapse all** in the header opens or
 closes every message at once.
 

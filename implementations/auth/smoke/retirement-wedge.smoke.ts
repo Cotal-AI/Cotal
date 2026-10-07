@@ -170,7 +170,7 @@ const bootPlane = async (opts: { log?: (l: string) => void; evictor: EvictPrinci
   for (const c of [ledgerCand, recordsCand])
     claimCandidates.set(`${c.tuple.serverId}|${c.tuple.cid}|${c.tuple.userNkey}`, { gone: c.gone });
   const p = await openAuthAuthorityPlane({
-    server: SERVERS, space, dir, dataAccount,
+    server: SERVERS, space, dir, identityRoot: dir, dataAccount,
     log: opts.log ?? quiet, probeEvictor: opts.evictor, probePlaneOracle: planeClaimOracle,
   });
   const close = p.close.bind(p);
@@ -239,7 +239,7 @@ try {
       gate?.row.state === "retired" && gate.row.op?.opId === wedge.op, gate?.row);
     const head = await readLifecycleHeadForOperation(wreg, OWNER, A);
     check("THE CRASH WINDOW: the head is still `retiring` under THIS op (the barrier's own last step never ran)",
-      head?.mapping.state === "retiring" && head.mapping.op?.opId === wedge.op, head?.mapping);
+      head?.mapping.state === "retiring" && head.mapping.op.opId === wedge.op, head?.mapping);
     const intent = await authKv.get(stageIntentKey(wedge.op));
     check("THE CRASH WINDOW: the durable intent survives (only the head terminal drops it)",
       intent !== null && intent.operation === "PUT", intent?.operation);

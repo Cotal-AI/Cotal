@@ -297,7 +297,7 @@ This section adds the time bound and states plainly which half is new.
 ### 2.1 What the code checks today
 
 `Manager.resumePreserved` in `manager.ts` performs, in order: an inventory version check against
-`cotal-manager-resume/v1`; a space match against its own space; a capacity check against `MAX_AGENTS`
+`cotal-manager-resume/v2`; a space match against its own space; a capacity check against `MAX_AGENTS`
 (50, declared in `resume.ts`); a duplicate-name check; a duplicate-principal check; a manager-local
 retirement-hold check against `this.retiring`, which refuses and re-drives that exact teardown; and a
 roster liveness check that refuses with `retained principal is already live and this runtime cannot
@@ -431,10 +431,9 @@ What the manager persists today is not a generation. `ManagerInstanceIdentity` i
 `packages/workspace/src/auth-paths.ts` holds `instanceId` and `serveIdentity` only. Its comment
 states the intent: the logical instanceId is stable across restart so that a restart re-registers the
 same id with an advanced epoch and the fence bites. `loadManagerInstanceIdentity` refuses a
-malformed file loudly rather than minting a fresh id over it, with the message that a restart must
-preserve the logical instanceId, and `createManagerInstanceIdentity` publishes by exclusive create so
-that of N concurrent creators one wins and the losers adopt the winner or refuse with
-`manager-instance-identity-create-lost`.
+malformed file loudly rather than minting a fresh id over it, and `createManagerInstanceIdentity`
+publishes through `claimIdentityRecord` by exclusive create so that of N concurrent creators one
+wins and the losers adopt the winner or refuse with `identity-record-create-lost`.
 
 The epoch itself is not in that file. It is derived at registration:
 `completeFrozenRegistrationFromSpec` in `packages/core/src/endpoint-service.ts` computes

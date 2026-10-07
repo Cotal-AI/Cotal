@@ -67,6 +67,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
+import { serializedFor } from "./serialized.js";
 
 /** The ONE literal consumer name every scan over the auth stream reuses (the grant pins exactly
  *  this token). Scans over it serialize on the MODULE-LEVEL per-space chain below, never a
@@ -76,12 +77,6 @@ const SCANNER_CONSUMER_NAME = "cotal-ledger-scan";
 /** fact-5 ENFORCED (panel HIGH): the serialization critical section for a space's literal consumer
  *  name lives at MODULE level, keyed by space, shared by every instance for that space. */
 const SPACE_SCAN_CHAINS = new Map<string, Promise<unknown>>();
-const serializedForSpace = <T>(space: string, fn: () => Promise<T>): Promise<T> => {
-  const tail = SPACE_SCAN_CHAINS.get(space) ?? Promise.resolve();
-  const run = tail.then(fn, fn);
-  SPACE_SCAN_CHAINS.set(space, run.then(() => undefined, () => undefined));
-  return run;
-};
 /** Bounded inactivity (ns): a leaked orphan (a run that crashed before its unconditional delete)
  *  is broker-collected within this window, and the next run's pre-clean removes it by name. */
 const INACTIVE_THRESHOLD_NS = 30_000_000_000;
@@ -254,7 +249,7 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // Serialize every scan over the shared literal consumer name on the MODULE-LEVEL per-space
   // chain: a second caller (or a sibling instance) waits rather than colliding on
   // pre-clean/create/fetch/delete.
-  const serialized = <T>(fn: () => Promise<T>): Promise<T> => serializedForSpace(space, fn);
+  const serialized = <T>(fn: () => Promise<T>): Promise<T> => serializedFor(SPACE_SCAN_CHAINS, space, fn);
   // The PLANE guard (#29 HIGH 3, SPEC 13.13), inside the serialized critical section: the claim
   // is re-validated BEFORE the scan (refuse to enumerate under a lost claim) and AFTER it (a
   // claim lost DURING the scan discards the result — a successor may already own the literal

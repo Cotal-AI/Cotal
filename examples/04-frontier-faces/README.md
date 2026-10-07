@@ -119,8 +119,9 @@ node tools/serve-wall.mjs      # then open the printed URL
 ```
 
 `face-term.mjs` flags: `--persona <key>` (`--list` prints all), `--server`, `--model
-<provider/id>`, `--session <id>` to attach to an existing session, `--password` for
-`OPENCODE_SERVER_PASSWORD`-protected servers, `--dump` to print the grid as ASCII.
+<provider/id>`, `--session <id>` to attach to an existing session, `--password` (default: the
+`OPENCODE_SERVER_PASSWORD` env) for password-protected servers, `--dump` to print the grid as
+ASCII.
 
 ## What's here
 
@@ -132,11 +133,12 @@ node tools/serve-wall.mjs      # then open the printed URL
   `cotal-opencode.js`) and the transcript from the operator endpoint's feed.
 - **`mesh-wall.sh`**: the tmux one-command launcher; starts the mesh, a tmux grid of mesh faces
   (one `mesh-face.sh` per agent), and the console.
-- **`mesh-face.sh`** + **`mesh-face.mjs`**: one mesh agent. The `.mjs` launcher starts an
-  `opencode serve` with the `@cotal-ai/connector-opencode` plugin + an agent file (so it joins the
-  mesh and creates a session), reads that session's id (the plugin prints `[cotal-session] <id>`),
-  and attaches the face. The OpenCode connector is face-agnostic; this launcher owns the viewer
-  attach, so face rendering never leaks into shared code.
+- **`mesh-face.sh`** + **`mesh-face.mjs`**: one mesh agent. The `.mjs` launcher runs the
+  `@cotal-ai/connector-opencode` launcher's own lifecycle (`launch` from its `dist/launch.js`): an
+  `opencode serve` with the plugin + an agent file (so it joins the mesh and creates a session),
+  then the face attached to that session in place of the `opencode` TUI. The connector only runs
+  the viewer it is given, so face rendering never leaks into shared code and the face seat ends
+  with its server like any other OpenCode seat.
 - **`face-plugin.mjs`**: example-local OpenCode plugin registering the `face_<mood>` expression
   tools. A mesh face calls them to drive its avatar, keeping its `cotal_*` messages clean on the wire.
 - **`face-term.mjs`**: the terminal face (half-block renderer, zero deps). Connects to an OpenCode

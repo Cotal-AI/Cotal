@@ -116,7 +116,7 @@ const { createSpaceAuth, epAuthBucket, isReachable, managedRetirementOpId, mintC
   await import("@cotal-ai/core");
 const { Kvm } = await import("@nats-io/kv");
 const { connect } = await import("@nats-io/transport-node");
-const { authDir, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
+const { authDir, createManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, grantManagedActor, revokeManagedActor,
   loadAuthServiceInfo, loadCalloutAuth, newActorToken,
@@ -316,7 +316,7 @@ try {
   const beforeLocalFile = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("without a persisted local manager identity and no remote gate, manager-caller refuses none",
     beforeLocalFile.status === 401 && String(beforeLocalFile.body.error).includes("no manager candidate"), beforeLocalFile);
-  saveManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  createManagerInstanceIdentity(root, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
   const localManagerCall = await post(`${PUBLIC}/exchange`, { ...agentBody, view: "manager-caller" });
   check("manager-caller re-reads a newly created local identity file and selects its live manager",
     localManagerCall.status === 200 && localManagerCall.body.managerInstanceId === localManagerInstanceId, localManagerCall);
@@ -581,11 +581,11 @@ try {
   } }, capHdr);
   check("enrollment door: the SAME door serves prepare-retirement and reaches its proof check (403)",
     vedPrepare.status === 403 && /does not match current host registration/.test(String(vedPrepare.body.error)), vedPrepare);
-  // The dispatch refusal, on the wire: the same enrollment request through the manager-authority
-  // route is refused as unimplemented rather than answered as a manager-lifecycle phase.
+  // On the wire, the same enrollment request through the manager-authority route reaches the host
+  // enrollment arm's own proof check rather than a manager-lifecycle phase.
   const dispatched = await post(`${LOOPBACK}/manager-service-authority`, { idpToken: idpJwt, request: vedRequest() }, capHdr);
-  check("the typed manager-authority route refuses an enrollment kind (host interception owns it)",
-    dispatched.status === 403 && /must be handled by host platform interception/.test(String(dispatched.body.error)), dispatched);
+  check("the typed manager-authority route sends an enrollment kind to the host enrollment arm (403 on the forged proof)",
+    dispatched.status === 403 && /manager enrollment proof does not match current host registration/.test(String(dispatched.body.error)), dispatched);
   // The hosted runtime kinds share this door. Each must reach the plane's own ledger read, gate, and
   // proof check (the 403 on the forged proof proves it passed the parser and the ledger read), and a
   // provider reference must never reach the plane at all.

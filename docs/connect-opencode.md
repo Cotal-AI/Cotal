@@ -79,11 +79,17 @@ in-process plugin does everything.
   not-yet-built feature (see [Limits](#limits)).
 - **Per-agent database.** The session SQLite DB is moved per agent
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
-  agents don't lock each other or drop files into a target repo.
+  agents don't lock each other or drop files into a target repo. A launch checks the agent's
+  `serve.pid` before it starts a server, and a record that the previous launcher removes during
+  that check counts as no record.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
   from OpenCode's event stream (busy → working, idle → idle, permission asked → waiting).
+- **A password on the server.** The OpenCode server accepts only requests carrying a password the
+  launcher mints per launch, or one a headless host supplies as `OPENCODE_SERVER_PASSWORD`. It
+  reaches the server and the TUI only through their environment, and the headless `[cotal-serve]`
+  line leaves it out.
 - **Observed model.** Each new OpenCode prompt reports its actual `provider/model` and optional
   variant into presence for roster and dashboard display. Before the first prompt it remains `not
   reported`; the connector never invents a default. An explicit `model:` or `variant:` pin wins.
@@ -101,6 +107,11 @@ in-process plugin does everything.
   `the prompt was not run: this seat is shutting down`, as a `session.error` event for an
   asynchronous prompt and only in its server log for a synchronous one, which answers with a generic
   server error. A turn already running when the stop began is not cancelled.
+- **An instance dispose ends the seat on 1.x.** OpenCode can dispose an instance while its server
+  keeps running, for example after a global config change or on `POST /instance/dispose`. The
+  connector then runs the same teardown as a stop and exits the server. Whenever the server exits,
+  the launcher closes its TUI, killing it if it is still up 3 seconds later, so the manager sees the
+  seat end.
 - **`/new` = context reset.** Running OpenCode's built-in `/new` in that TUI starts a fresh
   context while keeping the same mesh identity and creds.
 - **`/reconnect` = in-process recovery.** OpenCode has no host reconnect surface, so the connector

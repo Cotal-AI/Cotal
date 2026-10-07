@@ -166,14 +166,13 @@ mounts, ephemeral fs.
 The number of agents is the number of roster entries; mix connector types freely.
 
 ```yaml
-# roster.yaml - one entry per agent, maps 1:1 to `cotal start`
+# roster.yaml - one entry per agent, each started the way `cotal spawn --detach` does
 agents:
   - { name: planner, agent: claude,   role: planner }
   - { name: builder, agent: opencode, role: builder }
 ```
 
-- `agent`: the connector (`claude` or `opencode`), required, no default.
-- `role`, `config`: optional.
+- [Roster files](../docs/define-a-team.md#roster-files) lists every key an entry takes.
 - **Persona and model** come from `.cotal/agents/<name>.md` (mounted read-only): the Markdown
   body is the system prompt, `model:` the model override, `subscribe:` the active read set,
   `allowSubscribe:` the read ACL, `allowPublish:` the post ACL (default-deny).

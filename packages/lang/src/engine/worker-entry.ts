@@ -25,15 +25,15 @@
 
 import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
-import { Journal, type JournalStore } from "../journal.js";
+import { EffectResultTooLarge, Journal, JournalAppendRejected, type JournalStore } from "../journal.js";
 import { EngineUnavailable } from "../errors.js";
 import { assertCrossable } from "../values.js";
-import { EffectError, type EffectHandler } from "../effects.js";
+import { EffectError, RunHeld, RunReleased, type EffectHandler } from "../effects.js";
 import { bridgedSeam } from "./bridge.js";
 import { runOnEngine } from "./host.js";
 import { InspectionJournal, inspectionExit } from "./inspection.js";
 import type { EngineCtx } from "./ctx.js";
-import type { WorkerRunRequest, WorkerRunResult } from "./worker.js";
+import type { WorkerFailure, WorkerRunRequest, WorkerRunResult } from "./worker.js";
 
 // ONCE PER THREAD, and before the run exists.
 lockdown();
@@ -108,7 +108,12 @@ async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal 
     const seam = bridgedSeam(bridge.port, bridge.clock);
     return {
       handler: seam.handler,
-      journal: new Journal({ run: request.runId, entries: request.entries ?? [], store: seam.store }),
+      journal: new Journal({
+        run: request.runId,
+        entries: request.entries ?? [],
+        store: seam.store,
+        ...(request.resultBytes !== undefined ? { resultBytes: request.resultBytes } : {}),
+      }),
     };
   }
   return {
@@ -159,6 +164,7 @@ async function run(): Promise<WorkerRunResult> {
       ok: false,
       name: error instanceof Error ? error.name : "Error",
       message: error instanceof Error ? error.message : String(error),
+      ...failureOf(error),
       inspection: { orphans: seam.journal!.orphans(), exit },
     };
   }
@@ -183,23 +189,28 @@ async function run(): Promise<WorkerRunResult> {
   };
 }
 
+/** The class a run failed as, by `instanceof`: a value the program threw is never a host class by its shape. */
+function failureOf(e: unknown): WorkerFailure {
+  if (e instanceof RunReleased) return { class: "released", reason: e.reason };
+  if (e instanceof RunHeld) return { class: "held", step: e.step, reason: e.reason, pending: e.pending };
+  if (e instanceof EffectError) return { class: "effect", code: e.code, kind: e.kind, ...(e.detail !== undefined ? { detail: e.detail } : {}) };
+  // Ahead of `JournalAppendRejected`, which it extends.
+  if (e instanceof EffectResultTooLarge) return { class: "too-large", stepKey: e.stepKey, bytes: e.bytes, bound: e.bound };
+  if (e instanceof JournalAppendRejected) return { class: "rejected" };
+  const code = (e as { code?: unknown })?.code;
+  return { class: "error", ...(typeof code === "string" ? { code } : {}) };
+}
+
 /** The answer a thread owes when it cannot give the one it was asked for. */
 const answerWith = (e: unknown): void => {
-  const err = e as { code?: string; name?: string; message?: string; reason?: string; pending?: unknown; kind?: string; detail?: Readonly<Record<string, unknown>> };
+  const err = e as { name?: string; message?: string };
   port.postMessage({
     kind: "result",
     result: {
       ok: false,
-      ...(typeof err?.code === "string" ? { code: err.code } : {}),
       name: typeof err?.name === "string" ? err.name : "Error",
       message: typeof err?.message === "string" ? err.message : String(e),
-      // A release's reason is a field on the class (L5012), and an EffectError's kind and detail
-      // are its domain; each crosses as the field it is. See WorkerRunFailed.
-      ...(typeof err?.reason === "string" ? { reason: err.reason } : {}),
-      ...(typeof (err as { step?: unknown })?.step === "string" ? { step: (err as { step: string }).step } : {}),
-      ...(err?.pending === true ? { pending: true } : {}),
-      ...(typeof err?.kind === "string" ? { kind: err.kind } : {}),
-      ...(err?.detail !== undefined && e instanceof EffectError ? { detail: err.detail } : {}),
+      ...failureOf(e),
     } satisfies WorkerRunResult,
   });
 };
@@ -211,16 +222,11 @@ const answerWith = (e: unknown): void => {
 // answered", which is the wrong cause every time, and MEASURED: a handler binding a function
 // produced exactly that, a DataCloneError naming a host algorithm reported as a silent exit.
 //
-// A BACKSTOP, NOT A DEAD BRANCH, and the difference is worth stating because this comment once
-// claimed the stronger thing. Every value that crosses back is fenced at its own write site:
+// A BACKSTOP, NOT A DEAD BRANCH. Every value that crosses back is fenced at its own write site:
 // `value` by `assertCrossable` above, `external` and a failure's `detail` by the guards in
 // perform.ts, an effect's `result` at its settle, and a SCOPE's settled value at its own settle.
 // `pins`, `programHash` and `steps` are primitives.
 //
-// THAT LIST IS AN ENUMERATION, so it is true of the fields it names and silent about any other. It
-// was WRONG once, and not hypothetically: this comment claimed the route was unreachable while a
-// scope's settled value crossed unfenced, so a legal program whose branch returned a closure
-// completed on the walker and answered a DataCloneError through a thread. The fence for that landed
-// with the cell that measures it. What survives is the honest reading: this line names no known
-// route at this sha, and it is what makes the day a new field is added LOUD instead of silent.
+// THAT LIST IS AN ENUMERATION, so it is true of the fields it names and silent about any other.
+// This line names no known route; it makes the day a new field is added LOUD instead of silent.
 run().then((result) => port.postMessage({ kind: "result", result }), answerWith).catch(answerWith);

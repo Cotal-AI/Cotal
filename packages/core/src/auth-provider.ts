@@ -1,3 +1,4 @@
+import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
 import type {
@@ -75,7 +76,7 @@ export interface AuthProvider extends Extension {
    * deploy connections the operator surfaces (`web`, `console`, `history clear`, `channels`,
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
-  userCredentials(opts: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string; sessionGrant?: unknown }): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }>;
+  userCredentials(opts: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }>;
   /**
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and
@@ -318,6 +319,40 @@ export interface AuthProvider extends Extension {
   readonly agentBearerCommand: string;
 }
 
+/** The error for a failed run of an {@link AuthProvider.agentBearerCommand} argv. The command prints
+ *  an operator sentence on stderr for every failure it handles, and that sentence is the error.
+ *  Empty stderr means the child never reached its handler, and Node's `Command failed` message
+ *  would repeat the whole argv, with its exchange URL, principal and file paths, while hiding
+ *  whether the child timed out, was killed or exited. */
+export function bearerCommandFailure(err: ExecFileException, stderr: string, timeoutMs: number): Error {
+  const said = stderr.trim();
+  if (said) return new Error(said);
+  // execFile marks an exit error `killed` only when its own timeout killed the child.
+  if (err.killed) return new Error(`the bearer command timed out after ${timeoutMs}ms`);
+  if (err.signal) return new Error(`the bearer command was killed by ${err.signal}`);
+  if (typeof err.code === "number") return new Error(`the bearer command exited with code ${err.code} and printed nothing`);
+  // A spawn, abort or output-limit error has no exit, and Node's sentence for it repeats no arguments.
+  return new Error(err.message);
+}
+
+/** Run an {@link AuthProvider.agentBearerCommand} argv once and return the line it printed, trimmed
+ *  and possibly empty. A caller that needs a bearer refuses an empty line itself; a preflight that
+ *  only proves the command succeeds ignores it. */
+export function runAgentBearer(
+  argv: string[],
+  opts: { env?: NodeJS.ProcessEnv; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<string> {
+  const timeoutMs = opts.timeoutMs ?? 30_000;
+  return new Promise((resolve, reject) => {
+    execFile(
+      argv[0],
+      argv.slice(1),
+      { timeout: timeoutMs, maxBuffer: 64 * 1024, env: opts.env, signal: opts.signal },
+      (err, stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeoutMs)) : resolve(stdout.trim()),
+    );
+  });
+}
+
 /** Non-secret proved account identity returned beside a catalog snapshot. */
 export interface AuthSpaceCatalogAccount {
   idpUrl: string;
@@ -386,6 +421,19 @@ export function resolveAuthProvider(): AuthProvider {
   if (providers.length > 1)
     throw new Error(`multiple auth providers registered (${providers.map((p) => p.name).join(", ")}) - cannot choose between them`);
   return providers[0];
+}
+
+/** What {@link AuthProvider.userCredentials} takes: `store` and `dir` locate this machine's state,
+ *  and the other fields are the coordinates of the credential requested. */
+export interface UserCredentialsRequest {
+  store: SecretStore;
+  dir: string;
+  space: string;
+  actor: string;
+  view?: string;
+  managerInstanceId?: string;
+  sessionGrant?: unknown;
+  transferWriter?: { instanceId: string; hex: string };
 }
 
 /** What {@link AuthProvider.userStatus} reports. Fields are absent when locally unknowable —

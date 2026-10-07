@@ -34,12 +34,11 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer, connect as netConnect, type Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
-import { join as joinPath } from "node:path";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { bootPlugin } from "./_boot-plugin.js";
+import { bootPlugin, disposeInProcess } from "./_boot-plugin.js";
 import { SESSION_RETIRED, WAL_KEPT, WAL_REAPED } from "../src/plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -190,7 +189,6 @@ const clearPluginGuard = (): void => void delete (globalThis as { __cotalOpencod
 let hooks: Hooks | undefined;
 let pendingHooks: Hooks | undefined;
 let first: ChildProcess | undefined;
-let replacement: ChildProcess | undefined;
 /** Section 3's OWN broker, killed on purpose partway through. It is a second one rather than the
  *  suite's so that killing it cannot make this section's position in the file load-bearing: a
  *  section added after it would otherwise fail for a reason nothing in its own text explains. */
@@ -234,16 +232,16 @@ try {
   // that adopts it again is the case the log is for. One directory per PROCESS is the stated cost;
   // one per `/new` was the accumulation #599 named.
   const beforeDispose = threadDirs(WS_INPROC).length;
-  await hooks.dispose?.();
+  await disposeInProcess(hooks);
   hooks = undefined;
   check("teardown reaps nothing, so the live session's log survives it",
     threadDirs(WS_INPROC).length === beforeDispose, { beforeDispose, after: threadDirs(WS_INPROC) });
   check("teardown gives the principal's lock back", !lockExists(WS_INPROC), principalDir(WS_INPROC));
 
-  // ── 2. DISPOSE WITH A LIVE HOST, THEN A REPLACEMENT PROCESS ───────────────────────────────────
-  // The scenario the lock's refusal is actually about, and it cannot be expressed in one process:
-  // `acquirePrincipalLock` deliberately hands the same object back to a second caller inside one
-  // process, so a same-process replacement is answered by the cache and grades nothing.
+  // ── 2. DISPOSE GIVES THE LOCK BACK, THEN ENDS ITS HOST ────────────────────────────────────────
+  // A separate process because `dispose` ends the one it runs in: the host loads the plugin again
+  // after a dispose and gets the cached hooks back, so a host left running would serve a stopped
+  // seat (#2634). The lock still has to go back first, or its record outlives the teardown.
   const WS_PROC = join(dir, "ws-proc");
   mkdirSync(WS_PROC, { recursive: true });
   const env = (extra: Record<string, string>): NodeJS.ProcessEnv => ({
@@ -259,10 +257,10 @@ try {
     return false;
   };
 
-  const ready1 = join(dir, "p1-ready"), goDispose = join(dir, "p1-go"), disposed = join(dir, "p1-disposed");
+  const ready1 = join(dir, "p1-ready"), goDispose = join(dir, "p1-go");
   const firstOut: string[] = [];
   first = spawn(process.execPath, ["--import", "tsx", PROBE], {
-    env: env({ REL_READY: ready1, REL_DISPOSE: goDispose, REL_DISPOSED: disposed, REL_SESSION: "ses_p1" }),
+    env: env({ REL_READY: ready1, REL_DISPOSE: goDispose, REL_SESSION: "ses_p1" }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   sink("first", first, firstOut);
@@ -270,35 +268,11 @@ try {
     ready: existsSync(ready1) ? readFileSync(ready1, "utf8").trim() : "(absent)",
   });
 
-  // `dispose` is the editor unloading the plugin. The host process does NOT exit, which is exactly
-  // why the recorded pid stays alive and why the lock has to be given back rather than outlived.
   const { writeFileSync } = await import("node:fs");
   writeFileSync(goDispose, "go\n");
-  const didDispose = await waitFile(disposed, 40_000);
-  check("the plugin disposed while its host process stayed alive", didDispose && first.exitCode === null,
-    { didDispose, exitCode: first.exitCode });
-  check("dispose released the lock even though the host is still running", !lockExists(WS_PROC),
-    existsSync(disposed) ? readFileSync(disposed, "utf8").trim() : "(absent)");
-
-  // The claim the release exists for. A second process, same principal, same workspace, while the
-  // first is still alive: it must serve its own event plane rather than be refused by a record
-  // naming a pid that is running and no longer publishing.
-  const ready2 = join(dir, "p2-ready");
-  const replOut: string[] = [];
-  replacement = spawn(process.execPath, ["--import", "tsx", PROBE], {
-    env: env({ REL_READY: ready2, REL_SESSION: "ses_p2" }),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  sink("replacement", replacement, replOut);
-  const replArmed = await waitFile(ready2, 40_000);
-  check("a replacement process for the same principal arms its own event emitter", replArmed && lockExists(WS_PROC),
-    { replArmed, tail: replOut.join("").slice(-400) });
-  check("and it was not refused by the disposed process's lock",
-    !/AG-UI emitter stopped/.test(replOut.join("")), replOut.join("").slice(-400));
-  // The control for both cells above: the process they had to get past is still there. Without it a
-  // green pair is also what a first process that had already exited would produce.
-  check("the first process was still alive throughout, so the refusal really had a live owner to name",
-    first.exitCode === null, { exitCode: first.exitCode });
+  for (let i = 0; i < 400 && first.exitCode === null && first.signalCode === null; i++) await sleep(100);
+  check("dispose ends its host process", first.exitCode === 0, { exitCode: first.exitCode, signal: first.signalCode });
+  check("and gave the principal's lock back before it went", !lockExists(WS_PROC), principalDir(WS_PROC));
 
   // ── 3. A FRAME THE BROKER NEVER CONFIRMED ─────────────────────────────────────────────────────
   // Condition (b) of the lifetime, and the half section 1 cannot reach. There, a log is kept because
@@ -394,7 +368,7 @@ try {
   const walOf = (name: string): { pending?: unknown } | undefined => {
     const pd = principalDir(WS_PENDING);
     if (!pd) return undefined;
-    const f = joinPath(pd, name, "wal.json");
+    const f = join(pd, name, "wal.json");
     if (!existsSync(f)) return undefined;
     try { return JSON.parse(readFileSync(f, "utf8")) as { pending?: unknown }; } catch { return undefined; }
   };
@@ -426,10 +400,9 @@ try {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack);
 } finally {
-  await hooks?.dispose?.().catch(() => undefined);
-  await pendingHooks?.dispose?.().catch(() => undefined);
+  await disposeInProcess(hooks).catch(() => undefined);
+  await disposeInProcess(pendingHooks).catch(() => undefined);
   first?.kill("SIGKILL");
-  replacement?.kill("SIGKILL");
   relayServer?.close();
   nats2?.kill("SIGKILL");
   nats.kill("SIGKILL");

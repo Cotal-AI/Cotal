@@ -18,12 +18,9 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 
-if (process.platform === "win32") {
-  console.log("✓ repro-1587 smoke skipped on Windows (the Hermes connector is Unix-only)");
-  console.log("defect is present: false");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
 const python = ["python3", "python"].find((bin) => spawnSync(bin, ["-c", ""], { stdio: "ignore" }).status === 0);

@@ -63,6 +63,7 @@ import {
   WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   JsonlFileSource,
@@ -303,31 +304,10 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
  * So the boundary is captured at the bind, before the announcement, and substituted HERE, on the
  * one read that would otherwise ask the file where it currently ends.
  *
- * IT IS DELIBERATELY NOT WRITTEN INTO THE LOG. The log's cursor stays the emitter's own, and on a
- * log with nothing in it a start writes nothing at all: its recovery has no pending frame to fold,
- * so the position is first written by a PUMP, once one has actually read something. A start that
- * throws therefore leaves nothing behind, and so does a start that succeeded and then died before
- * its first read. Both leave the log virgin and the next bind boundaries at the file as it stands
- * then, which is this same window one level up. A start that throws is the ordinary case here and
- * not an edge: an armed seat whose broker is not up yet loses its emitter at launch and rebinds at
- * a later boundary. A boundary seeded before the start would outlive it, the later bind would read
- * a cursor and treat it as a RESUME, and everything the session wrote while the seat was cut off
- * would be republished onto a channel whose readers are not the input channel's.
- *
  * THE LIMIT, stated once and in one place: this positions the first read of a log that has no
  * cursor. A log that already carries one is a resume and passes through untouched, because a
  * cursor written by a live emitter is the honest one. Each bind builds its own source with its own
- * boundary, so a rebind never reuses an older one.
- *
- * Which makes the bind's own announcement precise for a fresh log and IMPRECISE for a resume, and
- * that is worth saying rather than covering. A bind onto a log that already carries a position
- * CONTINUES that log rather than starting here, and what it delivers is everything the thread
- * appended after that position. That includes what the thread wrote long after the previous
- * emitter was already dead, not merely what that emitter had read and had not sent, which is why
- * the docs state the reach of a recovery rather than describing it as a flush. Nothing is sent
- * twice either way. The line is left as it is because things outside this process parse it, and
- * because the case it is imprecise about is reachable only after an emitter really was publishing
- * this thread.
+ * boundary, so a later bind never reuses an older one.
  */
 class BoundStartSource<T> implements DurableSource<T> {
   readonly kind: string;
@@ -420,9 +400,8 @@ export async function runCodexHost(): Promise<void> {
    *  gets a new holder rather than a second adopt (see `bindEvents`). */
   let rollout: string | undefined;
   const newEventHolder = (startCursor: string): AguiEmitterHolder<CodexRecord> => {
-    // The widening belongs to the first bind only. A recovery holder must exercise the ordinary
-    // startup path; repeating the test delay there adds no coverage and turns every recovery proof
-    // into another artificial setup-window proof.
+    // The widening belongs to the first bind only: a restart's holder must exercise the ordinary
+    // startup path, and repeating the test delay there adds no coverage.
     const holderStartDelayMs = startDelayMs;
     startDelayMs = 0;
     const holderPostStartHoldMs = postStartHoldMs;
@@ -432,6 +411,10 @@ export async function runCodexHost(): Promise<void> {
         // The test-only widening of this setup, at the top of it so a fixture's write lands in the
         // real window rather than beside it. Zero unless a test set it, and zero does not await.
         if (holderStartDelayMs > 0) await new Promise<void>((r) => setTimeout(r, holderStartDelayMs));
+        // The launch binds while `agent.start()` is still connecting in the background, and a start
+        // against an unconnected endpoint is terminal for the holder, so it waits for the mesh as
+        // the OpenCode and Claude Code holders do.
+        await agent.whenConnected(MESH_READY_TIMEOUT_MS);
         // Throws rather than defaulting to the working directory: a write-ahead log written
         // somewhere no later start looks is a silent loss.
         const workspaceRoot = resolveEventsStateRoot(process.env);
@@ -467,11 +450,10 @@ export async function runCodexHost(): Promise<void> {
           // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on
           // the outer `startCursor`, because the invariant that matters is "what the emitter will
           // read is what the log now says", and only the source object knows the first half.
-          // Before start would leave a resume behind if start then failed (the fixture at L9 fences
-          // exactly that); after start is safe because `AguiEmitter.start` awaits `recover()`, which
-          // settles any pending frame before returning, so `advanceCursorOnly` never races a pending
-          // write. Without this, a host killed between this line and the emitter's first pump leaves
-          // a virgin log, and the next bind takes its boundary at the file's later end, dropping
+          // After start is safe because `AguiEmitter.start` awaits `recover()`, which settles any
+          // pending frame before returning, so `advanceCursorOnly` never races a pending write.
+          // Without this, a host killed between this line and the emitter's first pump leaves a
+          // virgin log, and the next bind takes its boundary at the file's later end, dropping
           // whatever the thread appended in between.
           if (source instanceof BoundStartSource && wal.frontier.sourceCursor === undefined)
             await wal.advanceCursorOnly(source.start);
@@ -481,12 +463,12 @@ export async function runCodexHost(): Promise<void> {
             await new Promise<void>((r) => setTimeout(r, holderPostStartHoldMs));
           return em;
       },
-      // Required, and not defaulted to a swallow. The holder is terminal on error and does not
-      // retry, so this line is the whole record of why events stopped.
-      (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
-      // A turn terminal closes a run the record stream never described. Without this the mapper
-      // would attribute the next records to a run the published stream has already finished.
-      (runId: string) => mapper?.forgetOpenRun(runId),
+      {
+        onError: eventPlaneStopped({ required: config.eventsRequired === true, log, stopSeat: () => void shutdown(1) }),
+        // A turn terminal closes a run the record stream never described. Without this the mapper
+        // would attribute the next records to a run the published stream has already finished.
+        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+      },
     );
   };
 
@@ -871,24 +853,8 @@ export async function runCodexHost(): Promise<void> {
    *  nothing tells this process a record landed; the driver's own boundaries are the closest
    *  signal there is, and a flush is cheap and idempotent (the cursor decides what is new). */
   const flushEvents = (): void => {
-    // A DEAD HOLDER IS NOT A BINDING. The holder is TERMINAL on error, and one error it can take is
-    // the one that matters most here: `AguiEmitter.start` refuses an endpoint with no connection,
-    // and `agent.start()` connects in the BACKGROUND, so an armed seat whose broker was not up yet
-    // kills its own plane at launch. Nothing after that publishes, the mesh side recovers around it
-    // and looks healthy, and one line in the seat's own log is the whole trace. Flushing a corpse is
-    // silence with a heartbeat, so a death is treated as NO BINDING and the next boundary builds a
-    // new one. WHAT THE FRESH ADOPT THEN PUBLISHES DEPENDS ON WHETHER THE DEAD HOLDER EVER WROTE A
-    // POSITION, and saying only half of that here is what made this comment wrong. A log with no
-    // cursor in it is virgin: the new bind starts at the file's last complete record, so what the
-    // dead holder had not published is not recovered, which is the same stated limit a late bind
-    // carries. A log that carries one is a RESUME and continues it, so everything the thread
-    // appended after that position IS published, including what it appended while this plane was
-    // dead. `BoundStartSource` states that split once and in one place.
-    if (events?.failure !== undefined) {
-      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);
-      events = undefined;
-      rollout = undefined;
-    }
+    // A dead holder stays bound and no boundary rebuilds it: its failure was answered once, by
+    // `eventPlaneStopped` under the space's policy, as on every other connector.
     if (rollout !== undefined) {
       events?.flush(rollout);
       return;

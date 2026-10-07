@@ -195,7 +195,7 @@ console.log("✓ 6 — the built docs module serves every page in docs/ at the s
     // ACCEPT CONTROL FIRST. Without it, a generator broken in some unrelated way would throw for
     // the wrong reason and the refuse legs below would pass while measuring nothing.
     execFileSync("node", [gen, "--out", out], { cwd: repoRoot, stdio: ["ignore", "pipe", "pipe"] });
-    assert.match(readFileSync(out, "utf8"), /export const DOCS_BUNDLE/, "the generator writes a bundle from the real sources");
+    assert.match(readFileSync(out, "utf8"), /export function loadDocsBundle/, "the generator writes a bundle from the real sources");
 
     // The generator resolves its sources relative to its own file, so a copy of the four source
     // locations plus the script reproduces a real run against a damaged tree.

@@ -1,5 +1,6 @@
 import { rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
+import { isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
 
 /**
@@ -13,7 +14,7 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, asse
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver";
+  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver" | "transferReader";
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
@@ -46,6 +47,9 @@ export interface RemoteManagerAuthorityRequest {
     opId: string;
     serveEpoch: number;
   };
+  /** Transfer reader only: one fresh caller-generated nkey for one `transcript-receive` or sweep over
+   * this instance's own transfer bucket (docs/design/resume-transfer.md section 6). */
+  transferReader?: { id: string };
   /** Activate only: the manager's canonical contract artifacts, already content-addressed by the
    * client. The host publishes exactly these after re-hashing and derives the registered surface;
    * arbitrary extra contracts are refused by closed artifact count/digest checks. */
@@ -113,11 +117,12 @@ export interface RemoteManagerAuthorityMaterial {
     runMediator: RemoteManagerCredential;
     sessionServing: RemoteManagerCredential;
     retirementRequester: RemoteManagerCredential;
+    transferReader: RemoteManagerCredential;
   }>;
 }
 
 /** Closed host-owned maintenance request for one remote manager registration. The participant
- * names an operation and, for eviction, one claimed family holder. The host re-binds every
+ * names an operation and, for eviction, the claimed family holders. The host re-binds every
  * coordinate to the authenticated owner and current registration before it acts. */
 export interface RemoteManagerMaintenanceRequest {
   v: 1;
@@ -132,8 +137,10 @@ export interface RemoteManagerMaintenanceRequest {
   /** Instance whose frozen gate or credential family the host operation touches. Eviction requires
    * this to equal `instanceId`; reconciliation may name a foreign slot holder in the same space. */
   targetInstanceId: string;
-  /** Required only for `evict-family-principal`. Membership is host-enumerated, never trusted. */
-  principal?: string;
+  /** Required only for `evict-family-principal`: 1 to `EVICT_PRINCIPALS_MAX` distinct
+   *  holders, so one host request and one family scan cover a restart's sweep. Membership is
+   *  host-enumerated, never trusted. */
+  principals?: string[];
 }
 
 /** Exact maintenance request echo plus the host-owned result. */
@@ -149,8 +156,9 @@ export interface RemoteManagerMaintenanceResult {
   requestId: string;
   identities: RemoteManagerAuthorityRequest["identities"];
   targetInstanceId: string;
-  principal?: string;
-  eviction?: import("./evict.js").EvictionResult;
+  principals?: string[];
+  /** One result per requested principal, in request order. */
+  evictions?: import("./evict.js").EvictionResult[];
   reconciliation?: import("./endpoint-reconcile.js").GateReconcileReport;
 }
 
@@ -420,18 +428,24 @@ export function remoteManagerActors(instanceId: string): RemoteManagerActors {
   };
 }
 
-/** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts. */
-export function remoteManagerRegistrationProof(owner: string, request: RemoteManagerAuthorityRequest): string {
-  const artifactDigests = request.operation === "session" ? [] : (request.contractArtifacts ?? []).map((value) => rawDigest(JSON.stringify(value)));
+/** Deterministic proof binding one remote Manager lifecycle to its owner, identities, and artifacts.
+ * Only activation binds contract artifacts. */
+export function remoteManagerRegistrationProof(
+  owner: string,
+  registration: { space: string; instanceId: string; lifecycleUid: string; identities: RemoteManagerAuthorityRequest["identities"] },
+  contractArtifacts: unknown[] = [],
+): string {
   return rawDigest(JSON.stringify({
     v: 1,
-    space: request.space,
+    space: registration.space,
     owner,
-    instanceId: request.instanceId,
-    lifecycleUid: request.managerLifecycleUid,
-    actors: remoteManagerActors(request.instanceId),
-    identities: request.identities,
-    artifactDigests,
+    instanceId: registration.instanceId,
+    lifecycleUid: registration.lifecycleUid,
+    actors: remoteManagerActors(registration.instanceId),
+    // The manager passes its identity state, which also holds the private seeds; the host has only
+    // the ids its request carries.
+    identities: Object.fromEntries(REMOTE_MANAGER_IDENTITY_NAMES.map((name) => [name, { id: registration.identities[name].id }])),
+    artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
   }));
 }
 
@@ -441,7 +455,28 @@ export function managedRetirementOpId(lifecycleUid: string): string {
   return rawDigest(`retire:${assertLifecycleToken(lifecycleUid)}`).slice("sha256:".length, "sha256:".length + 26);
 }
 
-const IDENTITY_NAMES = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+/** The five standing identities of a remote manager. A parsed `identities` object keeps this key
+ *  order, which the registration proofs digest. */
+export const REMOTE_MANAGER_IDENTITY_NAMES = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+
+/** Closed parser for a request's `identities` field: exactly the five names, each exactly `{ id }`
+ *  with a user nkey. `fail` throws the calling parser's error, so each request keeps its own prefix. */
+export function parseRemoteManagerIdentities(raw: unknown, fail: (detail: string) => never): RemoteManagerAuthorityRequest["identities"] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) fail("requires identities");
+  const ids = raw as Record<string, unknown>;
+  if (Object.keys(ids).sort().join(",") !== [...REMOTE_MANAGER_IDENTITY_NAMES].sort().join(","))
+    fail(`identities must contain exactly ${REMOTE_MANAGER_IDENTITY_NAMES.join(", ")}`);
+  const identities = {} as RemoteManagerAuthorityRequest["identities"];
+  for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {
+    const item = ids[name];
+    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
+      fail(`identities.${name} must be exactly { id }`);
+    const id = (item as { id?: unknown }).id;
+    if (!isUserNkey(id)) fail(`identities.${name}.id must be a user nkey`);
+    identities[name] = { id };
+  }
+  return identities;
+}
 
 /** The bound on one enrollment ACL list. A grant wider than this is a configuration mistake, and a
  *  request carrying thousands of patterns is a body-size attack on the host's derivation. */
@@ -451,21 +486,21 @@ function enrollmentError(what: string, detail: string): never {
   throw new EpEnvelopeError("bad-request", `${what} request ${detail}`);
 }
 
-/** The envelope fields every managed-agent request shares, validated once for both parsers. */
-function parseManagedAgentEnvelope(
-  o: Record<string, unknown>,
-  what: string,
-  kind: string,
-): {
+/** The envelope fields every request from a registered manager carries. */
+export interface RemoteManagerEnvelope {
   space: string;
   actor: string;
   instanceId: string;
   managerLifecycleUid: string;
   requestId: string;
   registrationProof: string;
-  serveEpoch: number;
   identities: RemoteManagerAuthorityRequest["identities"];
-} {
+}
+
+/** Closed parser for the envelope of a request from a registered manager. `what` names the request
+ *  in every refusal, so each request keeps its own prefix. The epoch differs per request
+ *  (`serveEpoch` or `processEpoch`), so each caller checks its own. */
+export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string): RemoteManagerEnvelope {
   if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
   for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof"] as const)
     if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
@@ -475,22 +510,7 @@ function parseManagedAgentEnvelope(
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
     enrollmentError(what, "requestId must be a 22-64 character idempotency token");
   if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) enrollmentError(what, "requires a sha256 registrationProof");
-  if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
-    enrollmentError(what, "serveEpoch must be a non-negative safe integer");
-  const ids = o.identities;
-  if (ids === null || typeof ids !== "object" || Array.isArray(ids)) enrollmentError(what, "requires identities");
-  const idObj = ids as Record<string, unknown>;
-  if (Object.keys(idObj).sort().join(",") !== [...IDENTITY_NAMES].sort().join(","))
-    enrollmentError(what, `identities must contain exactly ${IDENTITY_NAMES.join(", ")}`);
-  const identities = {} as RemoteManagerAuthorityRequest["identities"];
-  for (const name of IDENTITY_NAMES) {
-    const item = idObj[name];
-    if (item === null || typeof item !== "object" || Array.isArray(item) || Object.keys(item as object).join(",") !== "id")
-      enrollmentError(what, `identities.${name} must be exactly { id }`);
-    const id = (item as { id?: unknown }).id;
-    if (typeof id !== "string" || !/^U[A-Z2-7]{55}$/.test(id)) enrollmentError(what, `identities.${name}.id must be a user nkey`);
-    identities[name] = { id };
-  }
+  const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
     space: o.space as string,
     actor: o.actor as string,
@@ -498,9 +518,15 @@ function parseManagedAgentEnvelope(
     managerLifecycleUid: o.managerLifecycleUid as string,
     requestId: o.requestId as string,
     registrationProof: o.registrationProof as string,
-    serveEpoch: o.serveEpoch,
     identities,
   };
+}
+
+function parseManagedAgentEnvelope(o: Record<string, unknown>, what: string, kind: string): RemoteManagerEnvelope & { serveEpoch: number } {
+  const envelope = parseRemoteManagerEnvelope(o, kind, what);
+  if (typeof o.serveEpoch !== "number" || !Number.isSafeInteger(o.serveEpoch) || o.serveEpoch < 0)
+    enrollmentError(what, "serveEpoch must be a non-negative safe integer");
+  return { ...envelope, serveEpoch: o.serveEpoch };
 }
 
 /** One optional channel/pattern list on an enrollment target: bounded, string-only, in-grammar. */
@@ -780,8 +806,8 @@ export interface RemoteRunAdmissionResult {
  * attempt. The manager generates the nkeys and sends public ids only. The host authenticates the
  * registration, then derives every grant coordinate from its own stores: the immutable admission
  * (present, unrevoked, admitted on this instance), the run record's next epoch and fencing token,
- * the holder under the registered supervisor id, and for an answer a checkpoint still waiting (for an
- * amendment, one whose answer was accepted).
+ * the holder under the registered supervisor id, and for an answer the pause the named run's journal
+ * records at the named step, still waiting (for an amendment, one whose answer was accepted).
  * Delegation to the registered trusted host; the host signs only the returned grant arguments.
  */
 export interface RemoteRunAttemptRequest {
@@ -802,9 +828,10 @@ export interface RemoteRunAttemptRequest {
      *  Absent for a boot reconcile, which continues under the original admission. */
     served?: string };
   operator?: { id: string; takeoverId: string; runId?: string;
-    /** The one pause an answering operator writes. `amend` asks for an amendment of the answer
-     *  that pause already accepted, so the host checks a settled pause instead of a waiting one. */
-    answers?: { token: string; amend?: true };
+    /** The one pause an answering operator writes, named by its run and step: the host reads the
+     *  pause's token off that run's journal. `amend` asks for an amendment of the answer that pause
+     *  already accepted, so the host checks a settled pause instead of a waiting one. */
+    answers?: { runId: string; stepKey: string; amend?: true };
     /** The served `run-answer` request subject, verbatim. Required with `answers`. */
     served?: string };
 }

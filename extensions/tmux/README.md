@@ -23,7 +23,8 @@ import.
 
 - **`TerminalLayout` (`tmux`)** — opens/closes tmux windows for host-side orchestration
   (e.g. `cotal setup`). Detects the current session from `$TMUX`; must be called from inside
-  a tmux session. Supports multi-pane tabs via `split-window`.
+  a tmux session. Supports multi-pane tabs via `split-window`. Looking up tabs by label throws
+  when tmux cannot be queried.
 
 ## Usage
 

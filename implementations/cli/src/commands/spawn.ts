@@ -1,6 +1,8 @@
-import { spawn as spawnProcess, execFile } from "node:child_process";
+import { spawn as spawnProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { hostname } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import {
   agentFilePath,
   connectorServers,
@@ -26,7 +28,12 @@ import {
   provisionAgentDurables,
   registry,
   resolveAuthProvider,
+  resolveReadAcl,
+  runAgentBearer,
   CotalEndpoint,
+  transferBucket,
+  writeTransfer,
+  peerLabel,
   type AgentDef,
   type CompletionResult,
   type Connector,
@@ -37,6 +44,7 @@ import {
   type LaunchSpec,
   type ManagedLifecycleHandoff,
   type ParsedArgs,
+  type SecretStore,
   type SpaceAuth,
 } from "@cotal-ai/core";
 import {
@@ -47,7 +55,6 @@ import {
   authDir,
   credsFlag,
   defaultAgentOverride,
-  defaultAgentType,
   defaultPersonaOverride,
   defaultPersonaRef,
   launchFlags,
@@ -59,6 +66,7 @@ import {
   parseLaunchOptions,
   preflightOrThrow,
   provenance,
+  resolveAgentType,
   resolveMeshTarget,
   resolveTargetOrThrow,
   serverFlag,
@@ -69,13 +77,19 @@ import {
   workspaceSecretStore,
   refreshRegistrationPolicy,
   resolveSeatControlTarget,
+  connectUserControlOrExit,
+  userViewAuth,
   type Check,
+  type ConnectFlags,
+  type ControlAuth,
+  type ControlTarget,
   type MeshTarget,
+  type SpaceMaterialComposition,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS, withControlConnection } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames, materializeExtension } from "../ext-loader.js";
@@ -234,7 +248,7 @@ async function registerEnrollmentMesh(stock: UserBundle, root: string, refusals?
     if (!check.ok) throw new Error(refusals?.[phase] ?? check.message.replace(/^✗\s*/, ""));
     return check.value;
   };
-  await step("server", () => checkServer(stock.server));
+  await step("server", () => checkServer(stock.server, "the enrollment bundle's server"));
   const tlsRequired = stock.tlsRequired || tlsIntent(stock.server, false);
   const dial = await step("server", () => checkDialPolicy(stock.server, { tlsRequired, allowUnencryptedOverlay: false }));
   await step("exchange", () => verifyUserExchange(stock.userAuth.endpoints!.url!, userExchangeIssuer(stock.space)));
@@ -315,7 +329,7 @@ export function spawnPersonaRef(configFlag: string | undefined, positionals: rea
 }
 
 /**
- * Auto-number `requested` past any peer already present on the mesh (foo → foo-2 → foo-3) — the same
+ * Auto-number `requested` past any peer already present on the mesh (foo → foo_2 → foo_3) — the same
  * series the manager's spawn funnel uses (firstFreeName). Foreground `cotal spawn` doesn't go through
  * the manager, so it has no name reservation: this is a best-effort, advisory check. It connects a
  * transient presence-watching endpoint, lets the roster settle, and snapshots the live names; two
@@ -461,6 +475,12 @@ async function spawnDetached(
     process.exit(1);
   }
   provenance.read("mesh", `${t.space} (${t.server})`);
+  let resumeAgent: string | undefined;
+  let resumeClaim: string | undefined;
+  if (values.resume !== undefined) {
+    resumeAgent = resolveAgentType({ flag: values.agent });
+    resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
+  }
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
   const reply = await askManager(t.space, t.server, "start", {
     name: ref,
@@ -478,8 +498,9 @@ async function spawnDetached(
     launchOptions,
     cwd: values.cwd,
     resume: values.resume, // host-local session id; the manager preflights connector resume support
+    ...(resumeClaim !== undefined ? { resumeClaim, resumeAgent } : {}),
     prompt: values.prompt,
-    shareTools: values["share-tools"],
+    shareTools: parseShareSelection(values["share-tools"]),
     subscribe: splitFlag(values.subscribe),
     allowSubscribe: splitFlag(values["allow-subscribe"]),
     allowPublish: splitFlag(values["allow-publish"]),
@@ -498,6 +519,73 @@ async function spawnDetached(
     c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
       c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
   );
+}
+
+/**
+ * Carry a session this host holds to the manager instance a detached resume launches on, and return
+ * the claim its `spawn` names (#1499, docs/design/resume-transfer.md section 2). Undefined when this
+ * host holds no session `id`: the id then resolves on the manager's host as it always has. Only the
+ * connector can tell a local session from one that lives on the manager's host, so a connector this
+ * CLI cannot load is refused.
+ */
+async function carryTranscriptOrExit(flags: ConnectFlags, on: string | undefined, id: string, agent: string): Promise<string | undefined> {
+  let found: { path: string; title?: string } | undefined;
+  try {
+    await materializeExtension({ kind: "connector", name: agent });
+    found = registry.resolve<Connector>("connector", agent).resumeTranscript?.find(id, process.env);
+  } catch (e) {
+    console.error(c.red(`✗ resume: ${(e as Error).message}`));
+    process.exit(1);
+  }
+  if (found === undefined) return undefined;
+  if (on === undefined) {
+    console.error(c.red(`✗ resume: session ${id} is held on this host, and carrying it needs one manager instance; pass --on <instance>`));
+    process.exit(1);
+  }
+  const bytes = readFileSync(found.path);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const t = await resolveControlTarget(flags, "control-caller-admin", on);
+  const bucket = transferBucket(t.space, on);
+  const writer = await transferWriterOrExit(flags, t, on, sha256);
+  let sent = 0;
+  let chunks = 0;
+  for (;;) {
+    const reply = await askManager(t.space, t.server, "transcriptReceive", {
+      sha256, size: bytes.length, source: id, sourceHost: hostname(), ...(found.title ? { title: found.title } : {}),
+    }, t.auth, "owner", undefined, { instanceId: on });
+    failIfNotOk(reply);
+    const answer = reply.data as { state: "upload" } | { state: "staged"; claim: string };
+    if (answer.state === "staged") {
+      console.log(c.dim(`carried session ${id} to ${on}: sha256:${sha256}, ${sent} of ${bytes.length} bytes sent in ${chunks} chunks`));
+      return answer.claim;
+    }
+    const pass = await withControlConnection(t.server, writer, (nc) => writeTransfer(nc, bucket, bytes));
+    sent += pass.sent;
+    chunks += pass.chunks;
+  }
+}
+
+/** The transfer writer instrument for one object in one instance's bucket (design section 6), once
+ *  the transcript is hashed: minted from this host's copy of the mesh's signing seed, or on a
+ *  user-auth mesh exchanged from the operator's login as a `transfer-writer` view. An open mesh
+ *  enforces no grants, so a bare connection writes there. */
+async function transferWriterOrExit(flags: ConnectFlags, t: ControlTarget, instanceId: string, hex: string): Promise<ControlAuth> {
+  if (t.mode === "open") return { tls: t.auth.tls };
+  if (t.mode === "user") {
+    const conn = await connectUserControlOrExit(flags);
+    try {
+      const view = await userViewAuth(conn, "transfer-writer", { transferWriter: { instanceId, hex } });
+      return { bearer: view.bearer, sentinelCreds: view.sentinelCreds, tls: conn.tls };
+    } catch (e) {
+      console.error(c.red(`✗ resume: ${(e as Error).message}`));
+      process.exit(1);
+    }
+  }
+  if (t.mode !== "auth" || !t.spaceAuth) {
+    console.error(c.red("✗ resume: carrying a session mints a transfer writer from this mesh's signing seed, and this host holds none for it (an off-registry connection)"));
+    process.exit(1);
+  }
+  return { creds: await mintCreds(t.spaceAuth, newIdentity(), "transfer-writer", { transferWriter: { instanceId, hex } }), tls: t.auth.tls };
 }
 
 /**
@@ -745,9 +833,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     def = loadAgentFile(path);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
+    const fromEnv = !values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : "";
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
+    } else if (code === "ENOENT" && path !== join(target.personaRoot, `${ref}.md`)) {
+      // A path reference opened that one file and never read the catalog, so name the file.
+      console.error(c.red(`✗ no persona "${ref}"${fromEnv} - ${path} not found`));
     } else if (code === "ENOENT") {
       // A refusal that names no root is why this bug cost an hour. The old text asserted an absence
       // ("no default persona yet") and prescribed a remedy (`cotal setup`) without saying WHERE it
@@ -760,7 +852,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
         c.red(
           ref === "default" && !defaultPersona
             ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
-            : `✗ no persona "${ref}"${!values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : ""} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
+            : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
       );
     } else {
@@ -835,7 +927,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
-  const agentType = values.agent ?? def.agent ?? defaultAgentType("claude");
+  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });
   // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice
   // (flag > persona pin > env > default) is only final once the target root has supplied the file.
   // On the published binary nothing static-imports connectors, so this import-from-manifest is what
@@ -889,7 +981,13 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
   // runtime (the connector would otherwise read only the persona file and miss the override).
   let subscribe = splitFlag(values.subscribe) ?? def.subscribe;
-  let allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
+  let allowSubscribe: string[];
+  try {
+    allowSubscribe = resolveReadAcl(subscribe ?? [], splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;
   // The AG-UI event plane, refused HERE for the same reason the manager refuses it before
   // provisioning: a connector that cannot emit must stop the launch while there is still nothing to
@@ -1116,7 +1214,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // What happens next belongs to the CONNECTOR: naming one harness's first-run gate for all of
     // them sends the operator looking for a prompt that never appears, and reads as a hang.
     console.error(
-      `spawning ${name}${role ? ` (${role})` : ""} on the mesh${connector.launchHint ? ` - ${connector.launchHint}` : ""}`,
+      `spawning ${peerLabel({ name, role })} on the mesh${connector.launchHint ? ` - ${connector.launchHint}` : ""}`,
     );
     if (userAuth) {
       // The sentence names its own arm's departure (#1837). The LOCAL arm's cleanup revokes the
@@ -1145,7 +1243,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // Launch construction / spawn threw AFTER provisioning — undo BOTH planes (each a no-op in the
     // other's mode): revoke the user-mode actor grant AND roll back the static-auth creds + footprint,
     // before rethrowing, so no standing grant survives a spawn that never started.
-    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(err as Error).message}`)));
+    if (userCleanup) await userCleanup().catch((err) => console.error(c.red(`✗ cleaning up after ${name}: ${(err as Error).message}`)));
     await retireProvision("launch build failed");
     // The launch's private files (core launch-artifacts) go too: no child will read them.
     discardLaunchArtifacts(artifacts);
@@ -1175,7 +1273,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
   // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
   // on failure, never blocking the exit code already set above.
-  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ revoking ${name}'s actor grant: ${(e as Error).message}`)));
+  if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ cleaning up after ${name}: ${(e as Error).message}`)));
   // The child has exited or never started, so nothing reads the launch's private files any more
   // (core launch-artifacts). A SIGKILLed CLI cannot run this; the child's watcher removes those.
   discardLaunchArtifacts(spec.artifacts);
@@ -1221,6 +1319,52 @@ function checkRemoteAgentMaterial(v: unknown, actor: string): { ok: true; materi
   };
 }
 
+/** A caught value's text for a refusal. A provider or store may reject with any value, including null
+ *  or one whose `message` getter or `toString` throws, and the refusal must still be printed, so the
+ *  coercion to text runs inside the guard. */
+function rejectionText(e: unknown): string {
+  try {
+    return String((e as Error)?.message ?? e);
+  } catch {
+    return "an unreadable rejection";
+  }
+}
+
+/** A cleanup step that threw. `step` names it without quoting the agent's paths or secret keys. */
+type CleanupFailure = { step: string; err: unknown };
+
+/** Run one cleanup step, recording its failure in `failed`. A step that threw would otherwise skip
+ *  every step after it, and a swallowed one would leave nothing to report. */
+async function attemptCleanup(failed: CleanupFailure[], step: string, run: () => unknown): Promise<void> {
+  try {
+    await run();
+  } catch (err) {
+    failed.push({ step, err });
+  }
+}
+
+/** `<step>: <reason>` for each failure. */
+function describeCleanupFailures(failed: CleanupFailure[]): string {
+  return failed.map(({ step, err }) => `${step}: ${rejectionText(err)}`).join("; ");
+}
+
+/** Shred a user-mode agent's local material: both secrets from the store, then their files and the
+ *  health file. Each step is attempted and a failed one is recorded in `failed`. */
+async function shredAgentMaterial(
+  failed: CleanupFailure[],
+  store: SecretStore,
+  space: string,
+  name: string,
+  composition: SpaceMaterialComposition,
+  paths: { actorToken: string; sentinelCreds: string; health: string },
+): Promise<void> {
+  await attemptCleanup(failed, "actor token secret", () => store.delete(agentActorTokenKey(space, name, composition)));
+  await attemptCleanup(failed, "sentinel creds secret", () => store.delete(agentSentinelCredsKey(space, name, composition)));
+  await attemptCleanup(failed, "actor token file", () => rmSync(paths.actorToken, { force: true }));
+  await attemptCleanup(failed, "sentinel creds file", () => rmSync(paths.sentinelCreds, { force: true }));
+  await attemptCleanup(failed, "health file", () => rmSync(paths.health, { force: true }));
+}
+
 /** Foreground REMOTE-USER onboarding — the participant path for a mesh registered with
  *  `meshes add --from` that advertises an agent-provisioning endpoint (U6 §2).
  *
@@ -1264,11 +1408,13 @@ async function provisionRemoteUserForeground(
   } catch (e) {
     return fail((e as Error).message);
   }
+  // Checked before the grant is requested, because `fail` exits without running the shred in the
+  // catch below and would leave the granted material on disk.
+  const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
+  if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
   let body: unknown;
-  let exchangeUrl = target.userAuth?.endpoints?.url;
   if ("body" in source) {
     body = source.body;
-    exchangeUrl = source.exchangeUrl;
   } else {
     const idpUrl = target.userAuth?.idp.url;
     if (!idpUrl) return fail(`mesh "${space}" records no IdP to sign in against - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
@@ -1298,7 +1444,6 @@ async function provisionRemoteUserForeground(
     provenance.wrote(`remote actor material ${material.owner}.${name} (user mode)`, tokenPath);
     // The bearer preflight — the same one-shot proof the local path runs, pointed at the pinned
     // exchange instead of a local service. A dead auth chain stops the spawn here.
-    if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
     const bearerCmd = [
       process.execPath,
       ...process.execArgv,
@@ -1318,27 +1463,20 @@ async function provisionRemoteUserForeground(
       // Local shred only. The remote row and its durables belong to the mesh's lifecycle; this
       // machine has no authority to retire them and must not pretend otherwise.
       cleanup: async () => {
-        await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-        await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-        rmSync(tokenPath, { force: true });
-        rmSync(sentinelPath, { force: true });
-        rmSync(healthPath, { force: true });
+        const failed: CleanupFailure[] = [];
+        await shredAgentMaterial(failed, store, space, name, composition, paths);
+        if (failed.length) throw new Error(describeCleanupFailures(failed));
       },
     };
   } catch (e) {
-    let cause = e as Error;
-    try {
-      await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-      await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-      rmSync(tokenPath, { force: true });
-      rmSync(sentinelPath, { force: true });
-      rmSync(healthPath, { force: true });
-    } catch (shred) {
-      // Material may be left behind, which outranks the failure that started the shred, and an
-      // escaped error would bypass the refusal below.
-      cause = shred as Error;
-    }
-    return fail(refusals?.bearer ?? `agent auth preflight failed for "${name}": ${cause.message}`);
+    // What the shred left behind joins the refusal after its cause. A handoff refusal keeps its
+    // fixed sentence and names only the failed steps, because their errors quote paths named for
+    // the handoff's actor.
+    const failed: CleanupFailure[] = [];
+    await shredAgentMaterial(failed, store, space, name, composition, paths);
+    const steps = refusals ? failed.map((f) => f.step).join("; ") : describeCleanupFailures(failed);
+    const leftover = failed.length ? `; cleanup failed: ${steps}` : "";
+    return fail(`${refusals?.bearer ?? `agent auth preflight failed for "${name}": ${rejectionText(e)}`}${leftover}`);
   }
 }
 
@@ -1352,7 +1490,7 @@ async function provisionUserForeground(
   target: MeshTarget,
   name: string,
   ref: string,
-  opts: { subscribe?: string[]; allowSubscribe?: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
+  opts: { subscribe?: string[]; allowSubscribe: string[]; allowPublish?: string[]; role?: string; capabilities?: string[]; lifecycleUid: string; liveOnly?: boolean; eventChannel?: (p: { owner: string; actor: string }) => string },
 ): Promise<{ userAuth: NonNullable<LaunchOpts["userAuth"]>; cleanup: () => Promise<void>; eventChannel?: string }> {
   const { space, server } = target;
   const dir = userAuthStateDir(target.root, space);
@@ -1379,7 +1517,21 @@ async function provisionUserForeground(
   const publish = eventGrant ? [...(opts.allowPublish ?? []), eventGrant] : (opts.allowPublish ?? []);
   const infra = await getSpaceAuth(store, space); // cross-check the bundle names the space we resolved this root for
   if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
-  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = agentSecretFilePaths(target.root, space, name);
+  const paths = agentSecretFilePaths(target.root, space, name);
+  const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = paths;
+  // Revoke the row, shred the secret material, and retire the broker footprint the durable
+  // provisioning below creates (DM/DLV durables + ACL row). Every step is attempted, so a failed
+  // removal cannot strand the durables on the broker, and the failures go back to the caller.
+  const teardown = async (): Promise<CleanupFailure[]> => {
+    const failed: CleanupFailure[] = [];
+    await attemptCleanup(failed, "revoke agent grant", () => provider.revokeAgent({ dir, owner, actor: name }));
+    await shredAgentMaterial(failed, store, space, name, composition, paths);
+    const targetId = principalKey(owner, name).key;
+    await attemptCleanup(failed, "deprovision", () =>
+      mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
+        .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds })));
+    return failed;
+  };
   try {
     // The GRANT first — it is the envelope-rule enforcement point (a delegation must sit within
     // the spawner's own grant), so a refused delegation exits here with zero broker footprint —
@@ -1391,9 +1543,7 @@ async function provisionUserForeground(
       owner,
       actor: name,
       scope: (opts.capabilities ?? []).filter((s) => s === "spawn" || s === "run" || s === "admin" || /^role:[A-Za-z0-9_-]+$/.test(s)),
-      // Read ACL: the flag, else the boot set, else nothing. A spawn that names no channel grants
-      // no channel (the agent is still DM-reachable) rather than silently granting `general`.
-      allowSubscribe: opts.allowSubscribe?.length ? opts.allowSubscribe : (opts.subscribe ?? []),
+      allowSubscribe: opts.allowSubscribe,
       allowPublish: publish,
       role: opts.role,
       parent: `${owner}.cli`,
@@ -1453,36 +1603,18 @@ async function provisionUserForeground(
       userAuth: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd },
       ...(eventGrant ? { eventChannel: eventGrant } : {}),
       // The foreground departure's half of the runtime-grant invariant: the caller runs this when
-      // the agent process exits — revoke the row, shred the secret material, and retire the broker
-      // footprint the durable provisioning above created (DM/DLV durables + ACL row), the same
-      // teardown the rollback path below runs on a failed preflight.
+      // the agent process exits, the same teardown the rollback below runs on a failed preflight.
       cleanup: async () => {
-        await provider.revokeAgent({ dir, owner, actor: name });
-        await store.delete(agentActorTokenKey(space, name, composition));
-        await store.delete(agentSentinelCredsKey(space, name, composition));
-        rmSync(tokenPath, { force: true });
-        rmSync(sentinelPath, { force: true });
-        rmSync(healthPath, { force: true });
-        const targetId = principalKey(owner, name).key;
-        await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
-          .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds }))
-          .catch((err) => console.error(c.red(`✗ retiring ${name}'s broker footprint: ${(err as Error).message}`)));
+        const failed = await teardown();
+        if (failed.length) throw new Error(describeCleanupFailures(failed));
       },
     };
   } catch (e) {
-    // Roll back EVERYTHING this attempt materialized, including the broker footprint the durable
-    // provisioning above created — a refused spawn leaves no row, no secret, no orphaned durables.
-    await provider.revokeAgent({ dir, owner, actor: name }).catch(() => {});
-    await store.delete(agentActorTokenKey(space, name, composition)).catch(() => {});
-    await store.delete(agentSentinelCredsKey(space, name, composition)).catch(() => {});
-    rmSync(tokenPath, { force: true });
-    rmSync(sentinelPath, { force: true });
-    rmSync(healthPath, { force: true });
-    const targetId = principalKey(owner, name).key;
-    await mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
-      .then((creds) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid: opts.lifecycleUid, creds }))
-      .catch((err) => console.error(c.red(`✗ rollback deprovision ${name}: ${(err as Error).message}`)));
-    return fail(`agent auth preflight failed for "${name}": ${(e as Error).message}`);
+    // Roll back EVERYTHING this attempt materialized: a refused spawn leaves no row, no secret, no
+    // orphaned durables. What the teardown could not remove joins the refusal after its cause.
+    const failed = await teardown();
+    const leftover = failed.length ? `; cleanup failed: ${describeCleanupFailures(failed)}` : "";
+    return fail(`agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`);
   }
 }
 
@@ -1492,12 +1624,5 @@ async function provisionUserForeground(
 export async function runBearerPreflight(bearerCmd: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const childEnv = { ...env };
   scrubEnrollmentEnv(childEnv);
-  await new Promise<void>((resolve, reject) => {
-    execFile(
-      bearerCmd[0],
-      bearerCmd.slice(1),
-      { timeout: 30_000, maxBuffer: 64 * 1024, env: childEnv },
-      (err, _stdout, stderr) => err ? reject(new Error(stderr.trim() || err.message)) : resolve(),
-    );
-  });
+  await runAgentBearer(bearerCmd, { env: childEnv });
 }

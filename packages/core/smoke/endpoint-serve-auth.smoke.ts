@@ -42,7 +42,7 @@ import {
   epRequestSubject, epCallerReplyFilter, epServeFilter, epClassQueueGroup, spacePrefix,
   type EpCaller, type EndpointReply, type EpCommandDef,
   type DescribeAnswer, type ServiceNameAuthority, type EpServeGrant,
-  type EpIssuanceGate, type EpIssuanceBarrier, type EpGateState, type EpServeLedgerRow,
+  mintLifecycleUid, type EpIssuanceGate, type EpIssuanceBarrier, type EpGateState, type EpServeLedgerRow,
 } from "../src/index.js";
 
 let ok = 0, fail = 0;
@@ -111,7 +111,7 @@ function memKv(): KV {
 
 /** A faithful in-memory model of the §13.1 durable issuance gate (`gate.<lifecycleUid>`): ONE key
  *  binding `{lifecycleUid, state, generation, processEpoch, registrationRevision,
- *  nameAuthorityRevision, revision}` with BOTH halves of the seam sharing it. The mint's `commit`
+ *  nameAuthorityRevision, revision, op}` with BOTH halves of the seam sharing it. The mint's `commit`
  *  and every barrier's `freeze` are revision-pinned CAS on the SAME key and each advances
  *  `revision`, so exactly one of a parked mint's commit and a barrier's freeze wins. `freeze`
  *  returns the FROZEN revision as a fencing token; `reopen(token, …)` is a CAS that only the
@@ -120,20 +120,21 @@ function memKv(): KV {
  *  verified cluster-wide eviction (records the principal; a per-gate override forces fail-closed).
  *  The ledger `rows` carry the normative §13.1 fields + `active`/`revoked` state. */
 function makeGate(init: { endpoint: string; lifecycleUid: string; generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision?: number; evictOk?: boolean; space?: string; principal?: string }) {
-  const gate = {
+  let gate: EpGateState = {
     space: init.space ?? space, // this smoke's single space; a per-gate override tests cross-space refusal
     endpoint: init.endpoint,
     lifecycleUid: init.lifecycleUid,
     // The registered serving principal the mint binds to (§13.1): default matches the positive
     // mint's `u_op.mgr`; a per-gate override drives the sibling-actor refusal probe.
     principal: init.principal ?? "u_op.mgr",
-    state: "open" as "open" | "frozen" | "retired",
+    state: "open",
     generation: init.generation,
     processEpoch: init.processEpoch,
     registrationRevision: init.registrationRevision,
     nameAuthorityRevision: init.nameAuthorityRevision ?? 0,
     revision: 1,
   };
+  const op = { opId: mintLifecycleUid(), kind: "registration" as const };
   const rows = new Map<string, EpServeLedgerRow>(); // keyed by credentialId; row.state is active|revoked
   const evicted: string[] = [];
   let evictOk = init.evictOk ?? true;
@@ -160,7 +161,7 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     observe,
     freeze: (expectedRevision) => {
       if (gate.state !== "open" || gate.revision !== expectedRevision) return null; // revision-pinned CAS
-      gate.state = "frozen"; gate.revision++;
+      gate = { ...gate, state: "frozen", op, revision: gate.revision + 1 };
       return gate.revision; // the fencing token = the frozen revision
     },
     enumerate: () => [...rows.values()],
@@ -168,12 +169,13 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     evict: (holderPrincipals) => holderPrincipals.map((p) => { if (!evictOk) return false; evicted.push(p); return true; }),
     reopen: (token, succ) => {
       if (gate.state !== "frozen" || gate.revision !== token) return false; // token-pinned CAS: a stale reopen loses
-      gate.state = "open";
-      gate.generation = succ.generation;
-      gate.processEpoch = succ.processEpoch;
-      gate.registrationRevision = succ.registrationRevision;
-      gate.nameAuthorityRevision = succ.nameAuthorityRevision;
-      gate.revision++;
+      const { op: _op, ...frozen } = gate;
+      gate = {
+        ...frozen, state: "open",
+        generation: succ.generation, processEpoch: succ.processEpoch,
+        registrationRevision: succ.registrationRevision, nameAuthorityRevision: succ.nameAuthorityRevision,
+        revision: token + 1,
+      };
       return true;
     },
   };
@@ -181,7 +183,7 @@ function makeGate(init: { endpoint: string; lifecycleUid: string; generation: nu
     seam, barrier, rows, evicted,
     /** CAS-freeze the gate at its CURRENT revision (a barrier's first step); returns the token or null. */
     freezeNow: () => barrier.freeze(gate.revision),
-    retire: () => { gate.state = "retired"; gate.revision++; },
+    retire: () => { gate = { ...gate, state: "retired", op: { opId: mintLifecycleUid(), kind: "retirement" }, revision: gate.revision + 1 }; },
     setEvictOk: (v: boolean) => { evictOk = v; },
     coord: () => ({ ...gate }),
     active: () => [...rows.values()].filter((r) => r.state === "active").length,

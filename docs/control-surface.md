@@ -83,7 +83,9 @@ class queue can hand `inspect` to an instance that does not host the name. When 
 different instance and is not `retired`, the miss returns `failed-precondition` with the same
 detail plus `ownerInstanceId`, which names the only manager that can act on it. The message names
 both instances, so a caller that reads only the string can tell it from `not-found`. A sibling's
-`retired` row remains `not-found`.
+`retired` row remains `not-found`. A named `cotal_despawn` resolves its target through this read
+and cannot address an instance, so it asks again until the owning instance answers, up to 16
+times.
 
 The slot is read before the head. These records do not form one atomic snapshot, so the detail
 also carries `readOrder: ["slot", "head"]` and `consistency: "ordered-not-atomic"`. A head can
@@ -126,16 +128,20 @@ up, the manager accepts the goal and returns the allocated identity at once:
 
 ```json
 {
-  "name": "reviewer-2",
-  "owner": "u_...", "actor": "reviewer", "uid": "...",
+  "name": "reviewer_2",
+  "owner": "u_...", "actor": "reviewer_2", "uid": "...",
   "goalId": "...", "fingerprint": "...",
   "readinessDeadlineMs": 30000,
   "executor": { "lifecycleUid": "...", "epoch": 3 }
 }
 ```
 
+The `uid` is the lifecycle the agent runs at. On a participant manager whose host enrolls its
+agents, the host picks that uid, so the manager accepts the goal only after the host has answered.
+A host refusal there refuses the spawn, and no goal is bound.
+
 The name is the one actually allocated: a persona-derived collision is auto-numbered
-(`reviewer`, then `reviewer-2`), while a hard-pinned `--name` that collides with a live
+(`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
 agent is refused at accept, before anything is minted. Auto-numbering never hands out a numbered
 name it has already issued in that manager process, even after the agent holding it is gone, so
 a collision takes the next number. Only numbering consults that history: a hard-pinned `--name`,
@@ -149,7 +155,10 @@ a bounded, durable outcome that a later `ps` or status read settles against the 
 `uncertain` is a real terminal outcome, not an absence and not a silent hang. It carries the
 diagnosis of whoever owned the deadline: for a launch that
 names the agent and says to inspect it rather than re-issue, since re-issuing after a launch
-that in fact succeeded mints a duplicate. A committer that supplies no diagnosis falls back to
+that in fact succeeded mints a duplicate. A follower keeps the acceptance as the data of any
+terminal other than `succeeded`, so `cotal_spawn` returns an uncertain launch as a pending result
+instead of an error: it names the allocated agent, its id, and its manager, and tells the calling
+agent to watch the roster. A committer that supplies no diagnosis falls back to
 "the success signal did not arrive within the readiness deadline". The agent's own eventual
 state is then observable on its presence record.
 
@@ -160,11 +169,16 @@ still legitimately waiting for its terminal.
 
 A spawn that is **refused** because a lifecycle barrier already holds the actor (a frozen
 issuance gate, a retiring alias, a retired uid) is not a wait-timeout. The manager already
-knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the head
-state (`active` / `retiring` / `retired`), the `opId` holding it, and the remedy when one
-exists (`retry`, `cotal reconcile-gate`). Those facts ride `error.details[]` as
+knows the blocked op (`registration` / `retirement` / `activation` / `takeover`), the `opId`
+holding it, and the remedy when one exists (`retry`, `cotal reconcile-gate`). The detail
+carries `headState` (`active` / `retiring` / `retired`) only when the refusing site read the
+lifecycle head, and `gateState` (`frozen` / `retired`) only when it read the issuance gate. A
+gate frozen by a takeover or a registration says nothing about the head, so that refusal
+carries `gateState=frozen` and no `headState`. Those facts ride `error.details[]` as
 `kind = ai.cotal.ep.lifecycle-blocked` and are also appended to the error string, so a
-caller that only prints `error.message` still sees them. A connector that collapses the
+caller that only prints `error.message` still sees them. The CLI and the connector tools hand a
+refusal on in one shape, so `cotal spawn -f` keeps the same code, details, rendered facts and
+acceptance data as `cotal spawn --detach` and `cotal_spawn`. A connector that collapses the
 refusal to "startup failed (unknown)" or a SPEC 13.6 wait-timeout is hiding a knowable
 state, not reporting a missing one.
 
@@ -207,12 +221,24 @@ terminal is recorded; it does not prove the goal is running or permit another su
 existing trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler
 confines it to this endpoint and caller triple.
 
+The manager's reserved `cancel` command accepts `{goalId, mode?}` and returns `{goalId, state}`.
+It is served for a turn the manager relays. The goal is the authenticated caller's own, so a caller
+withdraws only a turn it submitted. The turn ends `cancelled`, its seat is not shown it again, and a
+later yield of it is answered with that terminal. A goal that already ended is refused
+`failed-precondition` with its cached outcome attached, and a goal this manager does not relay is
+refused without being changed. So is a second cancel that arrives while a first is still ending the
+turn; a first that fails leaves the turn pending unless something ended it meanwhile. A workflow
+run sends it for the turn, ask attempt or escalation of a branch it cancelled.
+
 A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
 the manager, issuer and client together before using that recovery path. Reloading an issuer alone
 cannot change an already-running participant manager. Recovery re-resolves the accepting instance's
 epoch, preserves the caller lifecycle and validates the result against the accepted goal and any
 acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
 
+A followed call resolves the endpoint within its deadline before the submission starts, so a
+refused or unanswered describe surfaces as its own error. A describe or command publish that the
+broker refuses reports `not-executed`.
 Cancellation before submission reports `not-executed`. Once submission starts, cancellation or a
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received
 refusal remains a refusal even when stop races it. Local failures do not invent responder identities.
@@ -251,9 +277,19 @@ between a split and a duplicated spawn. Against a manager older than this fence 
 still after the fact, and its message says so. The re-issue is automatic only when the refusal
 states `not-executed` in its `outcome` field; a refusal that omits the field, or states
 `unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
-not run. The CLI's manager commands, `cotal invoke` and the manager row of `cotal status` re-describe
-and re-issue an unpinned call after each such refusal, up to 16 times, so a split reaches the
-operator only when every attempt split. A pinned call is never re-issued.
+not run. The CLI's manager commands, `cotal invoke`, the `cotal run` verbs and the manager row of
+`cotal status` re-describe and re-issue an unpinned call after each such refusal, up to 16 times,
+so a split reaches the operator only when every attempt split. A hosted run's own manager calls
+use the same bound. A pinned call is never re-issued. An agent's own manager
+tools, such as `cotal_spawn` and `cotal_despawn`, re-describe and re-issue with the same bound,
+including the goal-result read that follows a spawn to its outcome.
+
+An unpinned targeted call, such as `cotal_despawn` or a hosted run's turn relay, can also reach a
+manager that does not host its target, because each manager resolves targets against the agents
+it runs. That manager refuses with `expired` and `not-executed` and says it holds no mapping for
+the target, and the same re-issue repairs it within the same bound. An agent that no manager hosts
+still ends in that refusal once the re-issues run out. A pinned call gets the refusal of the
+instance it named.
 
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
@@ -306,14 +342,15 @@ A probe makes a dead registration cheap to skip; it does not remove it. Removal 
 registration's own exit, and there are two explicit routes to it
 ([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
 
-A manager that stops cleanly removes its own registration if it still owns the recorded revision,
-so an ordinary shutdown leaves no stale row. It refuses that delete while this instance holds the
-endpoint governance slot at the live issuance-gate generation (a registration still completing
-its reopen). A leftover slot whose generation is behind that live generation is not in-flight and
-does not block the stop. A manager that cannot renew or read its lease keeps serving, stays
-registered, and retries. If another process holds the same instance key, that process has taken
-the instance over, so this one logs the conflict and exits without deregistering, leaving the
-successor's registration alone.
+A manager that stops cleanly removes its own registration, so an ordinary shutdown leaves no stale
+row. The delete is pinned to the registration revision that process wrote. When a successor has
+registered the same instance since then, the stop logs that and leaves the successor's registration
+alone. It refuses that delete while this instance holds the endpoint governance slot at the live
+issuance-gate generation (a registration still completing its reopen). A leftover slot whose
+generation is behind that live generation is not in-flight and does not block the stop. A manager
+that cannot renew or read its lease keeps serving, stays registered, and retries. If another process
+holds the same instance key, that process has taken the instance over, so this one logs the conflict
+and exits without deregistering, leaving the successor's registration alone.
 
 A restart that died *mid-registration* is a different residue: the issuance gate stays frozen under
 that op. The successor completes the dead registration on boot when the freeze-holder is
@@ -419,6 +456,12 @@ broker fences by subject. Authorization is checked at the serving boundary, and 
 it linearises at acceptance: a spawn refused there mints no reservation and leaves no
 process. See [SPEC §13.9](../SPEC.md#139-authority-boundary) and
 [identity & auth](identity-and-auth.md).
+
+A carried resume transcript never rides the rails. The operator-only `transcript-receive` command
+answers whether to upload and hands back a one-time claim for `spawn`, and the bytes travel through
+the target instance's own transfer bucket under two one-shot credentials: a writer the operator
+mints for that one transcript, and a reader the target instance mints for its own bucket, or that
+the host issues a remote manager through its `transferReader` authority operation.
 
 ## See also
 

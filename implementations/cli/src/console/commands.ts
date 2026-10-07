@@ -4,7 +4,7 @@
 // they are gated on `canWrite` (open mode, or a privileged --creds). Control commands go through
 // `ctx.control` (one per-action call on the CLI's control path, console/control.ts), gated on
 // `canControl`; the observer endpoint never carries control.
-import { resolvePeer, AmbiguousPeerError, type CotalEndpoint } from "@cotal-ai/core";
+import { resolvePeer, AmbiguousPeerError, peerLabel, type CotalEndpoint } from "@cotal-ai/core";
 import type { MeshSnapshot } from "../view/mesh-view.js";
 import type { ManagerReply } from "../lib/control.js";
 import type { ControlOp, ManagedRow, PsReply } from "./control.js";
@@ -61,8 +61,7 @@ const why = (r: ManagerReply): string => r.error ?? "failed";
  *  A bare `working` would claim an observation the manager never made. */
 export function formatManagedRow(a: ManagedRow): string {
   const mesh = a.mesh === "working" ? "working · progress unknown" : a.mesh;
-  const role = a.role ? ` (${a.role})` : "";
-  return `${a.name}${role} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${mesh} · up ${Math.round(a.uptimeMs / 60000)}m`;
+  return `${peerLabel(a)} · ${a.agent} · ${a.mode} · ${a.status} · mesh ${mesh} · up ${Math.round(a.uptimeMs / 60000)}m`;
 }
 
 /** Resolve an agent/endpoint name (with or without a leading @) to its instance id. Fail-loud:

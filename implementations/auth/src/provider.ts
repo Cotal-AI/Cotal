@@ -13,10 +13,9 @@
  *  - the service handle: the `auth-service` command name + the readiness contract (poll the
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
-import { registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore } from "@cotal-ai/core";
+import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
-import { isIPv4, isIPv6 } from "node:net";
 import { resolve, sep } from "node:path";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
@@ -181,13 +180,14 @@ export const cotalAuthProvider: AuthProvider = {
   /** Client side: this machine's login session → a fresh IdP JWT → the local auth service's
    *  exchange → the Cotal bearer, plus the space's sentinel creds. NO fallback anywhere; each
    *  failure is one sentence with the exact operator action (U1/U10/U11 acceptance strings). */
-  async userCredentials({ store, dir, space, actor, view, managerInstanceId, sessionGrant }: { store: SecretStore; dir: string; space: string; actor: string; view?: string; managerInstanceId?: string; sessionGrant?: unknown }) {
+  async userCredentials(request: UserCredentialsRequest) {
+    const { store, dir, space, actor, view } = request;
     const idp = loadPinnedIdp(dir);
     const callout = await loadCalloutAuth(store, space);
     // No local material: this machine may still hold a REMOTE registration (\`cotal meshes add
     // --from\`), whose registry entry pinned the IdP + public exchange at registration time. The
     // remote arm consumes exactly what registration pinned - it discovers nothing at connect time.
-    if (!idp || !callout) return remoteUserCredentials(dir, space, actor, view, managerInstanceId, sessionGrant);
+    if (!idp || !callout) return remoteUserCredentials(request);
     // The no-fallback login gate: throws the exact `cotal login --idp …` line when not signed in.
     const session = requireIdpSession(homeCotalDir(), idp.url);
     // Daemon liveness BEFORE the IdP round-trip: a down auth service must surface its exact
@@ -210,7 +210,7 @@ export const cotalAuthProvider: AuthProvider = {
       res = await fetch(`${info.url}/exchange`, {
         method: "POST",
         headers: { "content-type": "application/json", authorization: `Bearer ${info.cap}` },
-        body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}), ...(sessionGrant !== undefined ? { sessionGrant } : {}) }),
+        body: exchangeBody(idpJwt, request),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
@@ -226,10 +226,10 @@ export const cotalAuthProvider: AuthProvider = {
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
+    const out = (await res.json().catch(() => ({}))) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error(`the auth service's exchange returned no token - its build may be stale; restart it with \`cotal up\``);
-    return { bearer: out.token, sentinelCreds: callout.sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
+    return { bearer: out.token, sentinelCreds: callout.sentinelCreds };
   },
 
   async managerServiceAuthority({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteManagerAuthorityRequest }): Promise<RemoteManagerAuthorityMaterial> {
@@ -671,24 +671,6 @@ export const cotalAuthProvider: AuthProvider = {
 
 registry.register(cotalAuthProvider);
 
-/** The loopback-literal exception for the pinned exchange, decided by PARSING the host as an
- *  address - never by how the text begins. A NAME gets no exception however it starts
- *  (`127.evil.com`, `localhost`): names resolve wherever DNS says, and the exchange body carries
- *  the login proof. Mirrors the registration-side pinned-fetch policy in `meshes add --from`,
- *  which verified this same URL under the same rule before recording it. */
-function isLoopbackLiteral(hostname: string): boolean {
-  const h = hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (isIPv4(h)) return h.startsWith("127.");
-  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-  if (mappedHex) return parseInt(mappedHex[1], 16) >> 8 === 127;
-  if (isIPv6(h)) {
-    if (h === "::1") return true;
-    const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return mapped !== null && mapped[1].startsWith("127.");
-  }
-  return false;
-}
-
 /** The pinned exchange base -> the POST target. Same composition as `agent-bearer
  *  --exchange-url` (append `/exchange`, drop search/hash), same transport rule as the
  *  registration probe: HTTPS, with a loopback-LITERAL http exception (nothing leaves the box;
@@ -810,6 +792,13 @@ function remoteUserAuthEntry(
   return bound ? (ua as UserAuthInfo & { remote: true; endpoints: { url: string }; sentinelCredsPath: string }) : undefined;
 }
 
+/** The `/exchange` body both client arms send. It names each coordinate rather than spreading the
+ *  request because the service also reads `owner`, `actorToken` and `ttlSec` from this body, and a
+ *  wider object passed as the request must not reach them. */
+function exchangeBody(idpToken: string, { actor, view, managerInstanceId, sessionGrant, transferWriter }: UserCredentialsRequest): string {
+  return JSON.stringify({ idpToken, actor, view, managerInstanceId, sessionGrant, transferWriter });
+}
+
 /** Client side of a REMOTE user mesh: the registry entry `cotal meshes add --from` recorded is
  *  the whole trust position (IdP pins, public exchange URL, sentinel path) - registration pinned
  *  it, connect consumes it, nothing is discovered here. The flow mirrors the local arm exactly
@@ -817,14 +806,8 @@ function remoteUserAuthEntry(
  *  differences: the POST goes to the PUBLIC exchange face (capless - the idpToken IS the
  *  credential; the 0600 capability file exists only where the daemon runs), and the sentinel
  *  creds come from the 0600 file registration landed rather than the local secret store. */
-async function remoteUserCredentials(
-  dir: string,
-  space: string,
-  actor: string,
-  view?: string,
-  managerInstanceId?: string,
-  sessionGrant?: unknown,
-): Promise<{ bearer: string; sentinelCreds: string; managerInstanceId?: string }> {
+async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }> {
+  const { dir, space, actor, view } = request;
   const remote = remoteUserAuthEntry(dir, space);
   if (!remote)
     throw new Error(
@@ -852,7 +835,7 @@ async function remoteUserCredentials(
       // NO Authorization header: the public face is capless by design - the idpToken in the body
       // is the whole credential, and the loopback capability never leaves the daemon's machine.
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ idpToken: idpJwt, actor, ...(view !== undefined ? { view } : {}), ...(managerInstanceId !== undefined ? { managerInstanceId } : {}), ...(sessionGrant !== undefined ? { sessionGrant } : {}) }),
+      body: exchangeBody(idpJwt, request),
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
@@ -875,8 +858,8 @@ async function remoteUserCredentials(
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,
     );
   }
-  const out = (await res.json().catch(() => ({}))) as { token?: string; managerInstanceId?: string };
+  const out = (await res.json().catch(() => ({}))) as { token?: string };
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
-  return { bearer: out.token, sentinelCreds, ...(out.managerInstanceId ? { managerInstanceId: out.managerInstanceId } : {}) };
+  return { bearer: out.token, sentinelCreds };
 }

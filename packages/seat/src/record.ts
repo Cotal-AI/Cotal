@@ -75,8 +75,9 @@ export function socketPath(root: string, id: string): string {
 
 /** This boot's identity. Read at the moment a record is written and again when it is read back: a
  *  start token is ticks since THIS boot, so two records from different boots share a namespace they
- *  cannot distinguish on their own. Undefined where the kernel does not publish it, which leaves a
- *  record unbound and therefore unsignallable rather than wrongly signallable. */
+ *  cannot distinguish on their own. Undefined where the kernel does not publish it: a record written
+ *  then is unbound, and a record read then cannot be tied to this boot, so both are refused rather
+ *  than wrongly signalled. */
 export function bootToken(): string | undefined {
   try {
     const id = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();

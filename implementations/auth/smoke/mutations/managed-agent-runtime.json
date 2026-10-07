@@ -9,9 +9,7 @@
   "why": [
     "The ledger mutation decides without reading the manager actor's ledger row. A host composing the door would then authorize a manager actor the owner never granted; the suite names the cell for an actor with no row.",
     "The supervise mutation accepts any row. spawn and admin are ordinary agent capabilities, and the suite proves a row holding both is still refused.",
-    "The gate-state mutation accepts a frozen gate. A frozen gate is a takeover in flight, so a create admitted there would launch a runtime for a registration that is being replaced.",
-    "The epoch mutation accepts a stale serveEpoch, so a superseded manager process could keep creating runtimes after its successor took the gate.",
-    "The proof mutation drops the constant-time proof comparison. The proof is the only host-issued fact in the request, so without it every other coordinate is participant-supplied.",
+    "The current-registration mutation skips the gate, principal, epoch, and proof check at the runtime door. managed-agent-enrollment.json grades that shared check one guard at a time; this mutation proves the runtime door reaches it, since without it a create could launch a runtime for a frozen, foreign, or superseded registration on a forged proof.",
     "The target-owner mutation lets a request name another owner's target, which would let one owner's manager drive or read another owner's runtime.",
     "The two closed-schema mutations let a providerRef through at the top level or a handle through in the target. The contract refuses a provider reference rather than ignoring it, so a host can never be handed one as if it were authority.",
     "The dispatch mutation removes the unimplemented refusal, so a runtime request falls through to the manager-lifecycle issuer.",
@@ -35,25 +33,9 @@
       "cell": "runtime-create: a manager row without \"supervise\" is refused even holding spawn and admin"
     },
     {
-      "name": "runtime door accepts a frozen manager gate",
+      "name": "runtime door skips the current-registration check",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
-      "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
-      "expectRed": "FAIL: runtime-create: a FROZEN gate is refused",
-      "cell": "runtime-create: a FROZEN gate is refused"
-    },
-    {
-      "name": "runtime door accepts a stale serve epoch",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
-      "replace": "  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);\n  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
-      "expectRed": "FAIL: runtime-create: a stale serve epoch is refused as a conflict",
-      "cell": "runtime-create: a stale serve epoch is refused as a conflict"
-    },
-    {
-      "name": "runtime door stops checking the host-issued registration proof",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
+      "find": "  await assertCurrentManagerRegistration(r, args, what);\n",
       "replace": "",
       "expectRed": "FAIL: runtime-create: a forged registration proof is refused",
       "cell": "runtime-create: a forged registration proof is refused"

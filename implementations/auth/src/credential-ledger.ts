@@ -637,8 +637,8 @@ export async function runAgentTakeoverBarrier(
     if (gate === undefined)
       throw new EpEnvelopeError("internal", `the issuance gate for ${intent.lifecycleUid} vanished mid-operation; a gate is never deleted (corruption, SPEC 13.12)`);
     if (gate.row.state === "frozen") {
-      if (gate.row.op?.opId !== opId)
-        throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is frozen by operation ${gate.row.op?.opId ?? "<none>"}, not ${opId}; one barrier at a time (SPEC 13.1)`);
+      if (gate.row.op.opId !== opId)
+        throw new EpEnvelopeError("failed-precondition", `the issuance gate for ${intent.lifecycleUid} is frozen by operation ${gate.row.op.opId}, not ${opId}; one barrier at a time (SPEC 13.1)`);
       // Our own freeze (fresh or resumed). Whether we are still the CURRENT operation or a
       // stale loser whose freeze straddled a foreign completion is decided at the epoch CAS
       // (step 5), NOT here: a freeze held over a foreign head may already have PARTIALLY
@@ -702,7 +702,7 @@ export async function runAgentTakeoverBarrier(
   } catch (e) {
     if (e instanceof EpEnvelopeError && e.code === "conflict") {
       const g = await observeGate(reg, intent.lifecycleUid);
-      if (g !== undefined && g.row.state === "frozen" && g.row.op?.opId === opId)
+      if (g !== undefined && g.row.state === "frozen" && g.row.op.opId === opId)
         await reopenGate(reg, { lifecycleUid: intent.lifecycleUid, revision: g.revision, opId }); // abort, no epoch advance
       throw new EpEnvelopeError("conflict", `the takeover ${opId} of ${intent.lifecycleUid} lost: a foreign operation already advanced the epoch (captured ${intent.fromEpoch}). Containment completed (${revokedRows} row(s) revoked and every holder verified-evicted) and the gate was reopened without an epoch advance; nothing is wedged and no revoked credential is left live (SPEC 13.1)`);
     }

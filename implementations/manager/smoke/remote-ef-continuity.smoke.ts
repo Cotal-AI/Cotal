@@ -145,6 +145,7 @@ try {
     server: SERVERS,
     space: SPACE,
     dir: authDir,
+    identityRoot: authDir,
     dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
     log: () => {},
     standingRenewableTtlSeconds: REHEARSAL_STANDING_TTL,
@@ -212,7 +213,7 @@ try {
   };
 
   // LABELLED TRUSTED FIXTURE HOST (not stock, not a production SandboxProvider): intercepts ONLY
-  // managed-agent enrollment on its own path, the host-platform interception stock requires. It
+  // managed-agent enrollment on its own path, as a platform that keeps its own writers does. It
   // authenticates the caller from the IdP token, derives scope from the ledger row (never from the
   // body) and asks the REAL plane's verifyManagedAgentEnrollment, the same decision the stock
   // loopback verify-enrollment door makes. Material issuance is the next step (see gap note).
@@ -244,15 +245,19 @@ try {
       cap: "cap",
       ownerSecret: "dummy-secret-value-32-chars-long!",
       bridgeIdp: { issuer: IDP_ISS, audience: "cotal-services", key: idpPair.publicKey as never },
-      failures: [],
       managerServiceAuthority: wrappedMgrAuthority,
       maintainRemoteManager: plane.maintainRemoteManager,
       validateRetainedAgent: plane.validateRetainedAgent,
+      // This suite runs no callout, so the enrollment answer carries a labelled placeholder where the
+      // stock daemon puts the callout's sentinel credentials; 8a reads only the status.
+      enrollManagedAgent: (args: Parameters<typeof plane.verifyManagedAgentEnrollment>[0]) =>
+        plane.enrollManagedAgent({ ...args, sentinelCreds: "fixture: no callout in this suite", agentBearerExchangeUrl: `http://127.0.0.1:${httpPort}` }),
+      prepareManagedAgentRetirement: plane.prepareManagedAgentRetirement,
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
       issueManagerRunAttempt: wrappedIssueRunAttempt,
-    } as any, {
+    }, {
       requireCapability: false,
       refuseViews: false,
       allowManagerAuthority: true,
@@ -720,19 +725,17 @@ try {
     }, 15_000);
     assert.ok(completed, "workflow did not complete after checkpoint answer");
   });
-  // GAP REPRODUCTION (not a pass for accepted-goal): the stock authority route refuses managed-agent
-  // enrollment and requires host-platform interception; a pooled spawn goal cannot be accepted
-  // through stock callbacks. Recorded, not counted.
+  // The stock authority route enrolls the managed agent itself. 8b keeps the fixture host's
+  // interception path, which a platform that owns its own writers still uses.
   const enrollProbe = (mode: string) => new Promise<any>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error("enroll probe timed out")), 10_000);
     enrollWaiters.push((x) => { clearTimeout(t); resolve(x); });
     managerProc!.stdin!.write(`ENROLL_PROBE ${mode}\n`);
   });
-  await cell("8a. Stock authority route still refuses managed-agent enrollment (403, host interception required)", async () => {
+  await cell("8a. Stock authority route enrolls the manager's managed agent itself (200)", async () => {
     const r = await enrollProbe("stock");
     console.log(`    evidence: stock status=${r.status} error=${r.error}`);
-    assert.equal(r.status, 403);
-    assert.match(r.error, /host platform interception/);
+    assert.equal(r.status, 200, r.error);
   });
   await cell("8b. Fixture host interception: real plane verifies the manager's own enrollment; forged proof and unledgered caller actor are refused", async () => {
     const before = fixtureHostEnrollments.length;

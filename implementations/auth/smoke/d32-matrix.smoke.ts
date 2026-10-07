@@ -317,7 +317,9 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$JS.API.STREAM.MSG.GET.KV_cotal_sessions_d32m",
   ], subscribe: [
     "_INBOX_ibxconn0123456789.>",
-    // Read-only witness of the resume and answer requests a participant manager forwards (SPEC 14.8).
+    // Read-only witness of the run-start, resume and answer requests a participant manager forwards (SPEC 14.8).
+    "cotal.d32m.ep.v1.inst.manager.*.run-start.>",
+    "cotal.d32m.ep.v1.one.manager.run-start.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-resume.>",
     "cotal.d32m.ep.v1.one.manager.run-resume.>",
     "cotal.d32m.ep.v1.inst.manager.*.run-answer.>",
@@ -940,6 +942,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `cotal.${S}.ep.one.*.describe.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.spawn.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.turn.owner.${cO}.${cO}.${cA}.${cU}.*`,
+        `cotal.${S}.ep.one.${EP}.cancel.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.despawn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `$JS.API.DIRECT.GET.EPC_${S}.cotal.${S}.epc.>`,
         // SPEC 14.8: the run's admission and revocation state, leader-served, read before every

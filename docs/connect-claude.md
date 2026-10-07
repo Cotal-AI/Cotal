@@ -9,7 +9,9 @@ mesh.
 
 The shared mesh runtime (agent, `cotal_*` tools, hook relay) lives in
 [`@cotal-ai/connector-core`](../extensions/connector-core); this connector is the thin
-Claude-specific adapter over it. Siblings: [OpenCode](connect-opencode.md) (beta),
+Claude-specific adapter over it. Its lifecycle hook imports the relay from the
+`@cotal-ai/connector-core/relay` subpath, so each hook process loads the relay and its environment
+readers and none of the NATS client, zod or yaml. Siblings: [OpenCode](connect-opencode.md) (beta),
 [Hermes](connect-hermes.md) (alpha), [pi](connect-pi.md) (alpha); the
 [Connectors](connectors.md) matrix compares them feature-by-feature.
 
@@ -133,6 +135,13 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   the dialog title in normalized terminal output and presses Enter once when it appears, so startup
   speed does not affect a supervised launch. If the declared prompt never appears, the seat exits
   with a bounded error naming the unmatched prompt instead of hanging silently.
+- **Trusted directory.** Claude opens a directory it has not trusted on its workspace-trust dialog,
+  and the dialog's default answer exits. No one is at a supervised seat to answer it, so a launch
+  whose directory the manager host's own Claude does not trust is refused before it starts, naming
+  the directory and the dialog. Trust is read as Claude reads it: trust given to a parent directory
+  counts up to the root of the directory's own Git repository, and a linked worktree shares the trust
+  of its repository's main checkout. Open `claude` in that directory on the manager host once and
+  trust it, then spawn again. A foreground `cotal spawn` shows the dialog in your own terminal instead.
 
 Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
@@ -176,7 +185,11 @@ delivers, the other only wakes:
   so dropping it means silence until someone types. When the channel becomes active, the connector
   first re-fires a focus mention remembered during startup, otherwise one buffered wake. A rejected
   push keeps its bounded retry, and JetStream redelivery remains the durable backstop for unacked
-  inbox items. If the channel cannot run at all, delivery still waits for the next hook. Live-only
+  inbox items. Neither a redelivery nor that retry repeats a nudge already pushed for that message,
+  whether the message had its own nudge or was counted in a batch one, so a session held in a long
+  tool call gets one nudge per message. Once a hook frame carries the message, or the push that
+  announced it fails, its next redelivery nudges again, so a reply that never reached Claude Code
+  still recovers. If the channel cannot run at all, delivery still waits for the next hook. Live-only
   traffic has no durable retry.
 
 **Two priority tiers.** A *directed* message (DM, anycast, or a channel message that
@@ -297,6 +310,10 @@ A `SessionStart` during an open turn, including compaction, preserves the curren
 | `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). `StopFailure` also relays Claude Code's native error value as `condition.source` and maps it to the closed condition vocabulary. On the [event plane](#event-plane) it closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
+The connector also leaves gracefully when its stdin closes. An MCP client closes it to end the
+session, and a killed `claude` closes it with no `SessionEnd`, so a dead session drops off the
+roster instead of staying on it as a live peer.
+
 `StopFailure` maps `rate_limit` and `overloaded` directly; auth and credential failures to
 `auth`; account and billing failures to `billing`; `invalid_request` to `request`;
 `model_not_found` to `model`; `server_error` to `server`; `max_output_tokens` to `context`; and
@@ -319,6 +336,12 @@ private launch material, so the connector arms even without `COTAL_EVENTS`; `--n
 A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQUIRED=1`. Its own
 publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
 session with no launch material and no required-policy fallback keeps the generic default behavior.
+
+If the event plane stops for good, the space's policy decides what happens to the seat, on every
+connector. On a space that requires events the seat stops and leaves the mesh. On any other space
+it keeps running without events, and the connector log records `AG-UI emitter stopped` with the
+reason. For Claude Code the connector is the MCP server: it leaves the mesh and exits with code 1,
+and its stderr carries that line.
 
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
@@ -480,11 +503,32 @@ original is untouched.
 
 - `cotal spawn --resume <id>` (foreground) is the primary surface: the transcript is on
   *your* machine, and errors are Claude's own stderr, inline.
-- `--detach --resume <id>` works, with two differences: the id resolves against the
-  **manager host's** `~/.claude` (you practically need `--cwd`), and the manager waits for
-  a real outcome; `✓ started` means the agent *joined the mesh*, `✗ exited on launch`
-  carries Claude's last output, and an uncertain launch (~30 s) is reported without
-  tearing the agent down.
+- `--detach --resume <id> --on <instance>` carries a session held on *your* machine to that
+  manager instance, which may run on another host. The CLI finds the transcript under your
+  Claude config (`~/.claude`, or `$CLAUDE_CONFIG_DIR`), sends it through a JetStream Object
+  Store bucket only that instance reads, under a writer credential pinned to that one transcript,
+  and prints `carried session <id> to <instance>:
+  sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. A re-run of the same bytes
+  sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
+  private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
+  lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
+  records the SHA-256 of the transcript it read from its own project; the manager stops a seat
+  whose record names other bytes than the carried ones, or that records none within the join
+  timeout after it joins, an uncertain launch included, and otherwise shows that record as the
+  seat's provenance. `cotal attach` to such a seat names its source after the seat
+  name, as `(resumed from <host>:<id>)`. A remote manager receives a carry when its host issues it a
+  transfer reader. On a user-auth mesh the CLI exchanges the operator's login for a one-object
+  `transfer-writer` view, which needs scope `admin`.
+- A session name in place of an id is refused, listing each session on this host that carries
+  that name with its id, SHA-256 and modification time. An id this host does not hold resolves
+  against the **manager host's** `~/.claude`, as before.
+- A seat-private home holds no login. The manager host needs `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`), `ANTHROPIC_AUTH_TOKEN`, or a cloud provider selection in its
+  environment; `ANTHROPIC_API_KEY` alone is refused. The launch directory must already be
+  trusted by the manager host's own Claude, and Claude must be 2.1.234 or later.
+- The manager waits for a real outcome: `✓ started` means the agent *joined the mesh*,
+  `✗ exited on launch` carries Claude's last output, and an uncertain launch (~30 s) is
+  reported without tearing the agent down.
 - Resume is an **operator surface only**, deliberately not exposed on MCP `cotal_spawn`
   (a mesh peer naming host-local transcripts would widen `spawn` into transcript
   disclosure). Only the Claude connector supports it today; OpenCode and Hermes fail loud.

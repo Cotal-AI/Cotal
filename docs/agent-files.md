@@ -47,7 +47,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `description` | string | One-line summary → `card.description`. |
 | `tags` | string[] | Capability tags → `card.tags`. |
 | `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. **Omitted ⇒ no channels**: an agent reads what it lists, and one that lists none joins none (still reachable by DM, anycast and presence). List `general` if you want it. |
-| `allowSubscribe` | string[] | The **read ACL**: channels it *may* read. Wildcard subtrees allowed (`team.>`). Omitted ⇒ same as `subscribe`. |
+| `allowSubscribe` | string[] | The **read ACL**: channels it *may* read. Wildcard subtrees allowed (`team.>`). Omitted or empty ⇒ same as `subscribe`. |
 | `allowPublish` | string[] | The **post ACL**: channels it may publish to. **Omitted ⇒ deny**; posting is the dangerous capability, declare it explicitly. |
 | `quiet` | string[] | Per-channel attention *default*: ambient stays buffered and pull-only until `cotal_inbox`; `@mention`s remain automatic. Concrete channels within the read ACL. |
 | `muted` | string[] | Per-channel attention *default*: dropped on receive, `@mentions` included. |

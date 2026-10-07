@@ -43,6 +43,12 @@ boundary. The Pi-local ledger commits those IDs through `MeshAgent.drainInboxIds
 only exact matches even when quiet ambient is physically interleaved or older IDs were overflow-
 evicted. Missing confirmed IDs are marked handled and tombstoned so late copies cannot resurface.
 
+A run turn rides the batch that carries it and counts as shown once the provider takes that batch's
+request: at a successful `after_provider_response`, or, on a transport without that hook, when Pi
+runs a tool from the answer or reaches the clean terminal boundary. The seat can therefore
+`cotal_yield` it during the Pi turn that carries it. A batch the provider never takes leaves the run
+turn unshown, and a later batch carries it again.
+
 Pi emits `agent_end` to extensions without exposing whether it will retry. Error and unknown
 reasons, and zero/missing-output `length`, therefore retain the delivery association in `waiting`
 while the driver itself attempts the continuation: it re-dispatches the retained batch through the
@@ -83,7 +89,9 @@ session JSONL is the durable source; extension hooks only wake the reader after 
 The event plane is enabled by default. `--no-events` opts out only on unrestricted spaces.
 A registration that requires events arms the plane independently of the environment flag, and
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
-workspace root for its write-ahead log.
+workspace root for its write-ahead log. If the event plane stops for good, the seat stops on a
+space that requires events. On any other space it keeps running without events, and Pi's log
+records `AG-UI emitter stopped` with the reason.
 
 Text is published at **completed-message granularity**, not as live token deltas. Pi emits
 live text updates before writing the assistant record, so those deltas cannot be recovered

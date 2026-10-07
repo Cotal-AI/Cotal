@@ -243,6 +243,7 @@ export const MANAGER_ADMIN_COMMANDS = Object.freeze([
   "purge", "launch",
   "resume-preserved", "commit-resume", "finalize-resume",
   "prepare-preservation", "commit-preservation", "abort-preservation",
+  "transcript-receive",
 ] as const);
 
 /** The ACTION commands (§13.6): submitting one accepts a GOAL, so the caller may follow its OWN

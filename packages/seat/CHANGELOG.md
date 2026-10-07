@@ -1,5 +1,25 @@
 # @cotal-ai/seat
 
+## 0.70.0
+
+### Patch Changes
+
+- d949bc8: The seat reaper now refuses a custody record when this host's boot identity cannot be read, instead of comparing start tokens as if the record came from this boot. A start token is unique only within one boot, so with no boot to compare against, `cotal seats` reported a record stamped by another boot as `live-child`, and `cotal seats --drain` or a manager reap could signal an unrelated process that held the recorded pid and start tick. Such a record is now `refused` with "this host publishes no boot identity", nothing is signalled, and the record stays on disk.
+
+## 0.69.0
+
+## 0.68.0
+
+### Patch Changes
+
+- 2638235: A static retirement interrupted after its lifecycle audit was written now completes when a later manager process retries it. The retry compared the stored audit against its own manager process uid and broker eviction counts, so every process after the first, and any retry that found the connections already kicked, failed with `records different evidence` and left the slot `terminalizing`. The comparison now keys on the stable retirement identity: the principal, alias, lifecycle uid, manager instance and retirement op. The pty reaper also treats a custody record from an earlier boot as a seat that is gone. It used to refuse such a record, which held the name after a reboot on every attempt; it now removes the record without signalling anything, since no process outlives a reboot, and `cotal seats` reports it as `childless`.
+
+## 0.67.0
+
+## 0.66.1
+
+## 0.66.0
+
 ## 0.65.0
 
 ## 0.64.0

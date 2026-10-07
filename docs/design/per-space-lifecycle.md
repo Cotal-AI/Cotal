@@ -81,8 +81,10 @@ operator.
 6. Re-render and promote `server.conf` from the inventory minus this space, then reload (§4).
 7. Delete the local material keyed to this space: `account.<key>.json` through a new
    `deleteSpaceAccountAuth` (§7, rejected alternative 7), the `space.<hex>` user-auth state dir,
-   `manager-instance.<hex>.json`, and the space's P7 material — its `$SYS` pair, `membership-rw`,
-   `membership.json` and `delivery.creds` — through `reapSpaceMaterial`, which P7 landed ahead of
+   and the space's P7 material — its `$SYS` pair, `membership-rw`,
+   `membership.json` and `delivery.creds` — plus the manager's `manager-instance.json` and
+   `manager-siblings.json` and the auth service's `auth-instance.json` in the same segment, through
+   `reapSpaceMaterial`, which P7 landed ahead of
    this verb. It sweeps every store-backed kind through the seam and then removes THIS space's
    segment dir, never `.cotal/space.*`: unlike `clean`, this runs on a root the other tenants keep
    using, and it has no raw `.cotal/` sweep behind it to catch a kind the seam loop forgot. The

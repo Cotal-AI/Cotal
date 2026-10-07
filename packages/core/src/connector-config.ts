@@ -109,6 +109,8 @@ export function readCotalConfigFile(path: string): CotalConfig {
     throw new Error(`cotal config ${path}: top level must be a JSON object`);
   const policy = (parsed as { modelPolicy?: unknown }).modelPolicy;
   if (policy !== undefined) checkModelPolicy(path, policy);
+  const connectors = (parsed as { connectors?: unknown }).connectors;
+  if (connectors !== undefined) checkConnectors(path, connectors);
   return parsed as CotalConfig;
 }
 
@@ -130,6 +132,49 @@ function checkModelPolicy(path: string, policy: unknown): void {
         throw bad(`modelPolicy.${role}.${field} must be a non-empty list of ${field === "models" ? "model" : "variant"} ids`);
     }
   }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+/** A shared server that cannot launch as written is refused, never forwarded: past the reader every
+ *  connector takes a spec at the type {@link McpServerSpec} declares, and a server with no transport
+ *  to start would be shared in name only. */
+function checkConnectors(path: string, connectors: unknown): void {
+  const bad = (what: string) => new Error(`cotal config ${path}: ${what}`);
+  if (!isRecord(connectors)) throw bad("connectors must be an object keyed by connector");
+  for (const [name, connector] of Object.entries(connectors)) {
+    if (!isRecord(connector)) throw bad(`connectors.${name} must be an object`);
+    const servers = connector.mcpServers;
+    if (servers === undefined) continue;
+    if (!isRecord(servers)) throw bad(`connectors.${name}.mcpServers must be an object keyed by server name`);
+    for (const [server, spec] of Object.entries(servers)) {
+      const problem = mcpServerProblem(`connectors.${name}.mcpServers.${server}`, spec);
+      if (problem !== undefined) throw bad(problem);
+    }
+  }
+}
+
+const REMOTE_TRANSPORTS = new Set<unknown>(["http", "sse", "ws"]);
+
+/** Why the server spec at `where` cannot launch as written, or undefined when it can. Each field must
+ *  have the type {@link McpServerSpec} gives it, and the spec must name a transport to start: a
+ *  non-empty `command` for stdio, a non-empty `url` for http, sse and ws. */
+export function mcpServerProblem(where: string, spec: unknown): string | undefined {
+  if (!isRecord(spec)) return `${where} must be an object`;
+  for (const field of ["command", "type", "url"] as const)
+    if (spec[field] !== undefined && typeof spec[field] !== "string") return `${where}.${field} must be a string`;
+  if (spec.args !== undefined && !(Array.isArray(spec.args) && spec.args.every((arg) => typeof arg === "string")))
+    return `${where}.args must be a list of strings`;
+  for (const field of ["env", "headers"] as const) {
+    const values = spec[field];
+    if (values !== undefined && !(isRecord(values) && Object.values(values).every((v) => typeof v === "string")))
+      return `${where}.${field} must be an object of string values`;
+  }
+  if (spec.type === undefined || spec.type === "stdio")
+    return spec.command ? undefined : `${where}.command must be a non-empty string when type is stdio or absent`;
+  if (!REMOTE_TRANSPORTS.has(spec.type)) return `${where}.type must be stdio, http, sse or ws`;
+  return spec.url ? undefined : `${where}.url must be a non-empty string when type is ${spec.type}`;
 }
 
 /** Layer `over` onto `base`: per connector, a server in `over` replaces the same-named server in
@@ -173,17 +218,19 @@ export function connectorServers(
 ): Record<string, McpServerSpec> {
   const declared = config.connectors?.[connector]?.mcpServers ?? {};
   if (selection === undefined) return { ...declared };
-  const chosen: Record<string, McpServerSpec> = {};
-  for (const name of selection) {
-    const spec = declared[name];
-    if (!spec)
-      throw new Error(
-        `--share-tools: "${name}" is not a shared server for connector "${connector}" ` +
-          `(declared: ${Object.keys(declared).join(", ") || "none"})`,
-      );
-    chosen[name] = spec;
-  }
-  return chosen;
+  // Only an own key is declared: an inherited `toString` is not a server. `fromEntries` defines each
+  // name as an own key, so a declared `__proto__` is kept rather than becoming the result's prototype.
+  return Object.fromEntries(
+    selection.map((name) => {
+      const spec = Object.hasOwn(declared, name) ? declared[name] : undefined;
+      if (!spec)
+        throw new Error(
+          `--share-tools: "${name}" is not a shared server for connector "${connector}" ` +
+            `(declared: ${Object.keys(declared).join(", ") || "none"})`,
+        );
+      return [name, spec];
+    }),
+  );
 }
 
 /** Parse a `--share-tools` flag value into a selection for {@link connectorServers}: flag absent

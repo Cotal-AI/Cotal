@@ -32,6 +32,18 @@ export function parsePid(raw: string): number | undefined {
   return Number.isInteger(n) && n > 0 && n <= 0x7fffffff ? n : undefined;
 }
 
+/** A pidfile's trimmed content, or undefined when there is no pidfile. Read once, never behind an
+ *  existence check: the owner removes its record on exit, so a file that existed a moment ago can be
+ *  gone at the read. Only ENOENT means absent; any other read error throws. */
+export function readPidfile(path: string): string | undefined {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+}
+
 /** The errno-to-state MAPPING, split out from the syscall so it can be tested exhaustively without
  *  an environment in the loop. The whole contract turns on one rule: only an actual `ESRCH` proves a
  *  process gone. `EPERM` (it exists, it is just another user's, so we cannot signal it) is ALIVE.

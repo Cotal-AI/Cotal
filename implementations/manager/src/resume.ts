@@ -1,3 +1,4 @@
+import { parseShareSelection } from "@cotal-ai/core";
 import { z } from "zod";
 import type { ManagerResumeInventory } from "./manager.js";
 
@@ -83,7 +84,9 @@ const agent = z.strictObject({
     // required field here would refuse every inventory the previous version wrote, so an upgrade
     // that restarts the manager would lose the agents it was supposed to preserve.
     events: z.boolean().default(false),
-    shareTools: z.string().max(4096).optional(),
+    // Start takes any declared server key as written, empty or long, so a bound per name here would
+    // refuse to preserve an agent that launched. The args byte cap bounds the list.
+    shareTools: z.array(z.string()).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     // Optional: a seat that was not resumed, or has not recorded its fork yet, has none, and an
     // inventory written before this field existed must still resume.
@@ -105,12 +108,26 @@ const agent = z.strictObject({
   backfillFloor: z.number().int().nonnegative().optional(),
 });
 
-const inventory = z.strictObject({
-  version: z.literal("cotal-manager-resume/v1"),
-  space: label,
-  createdAt: z.string().min(1).max(64),
-  agents: z.array(agent).max(MAX_AGENTS),
-});
+const inventory = z.discriminatedUnion("version", [
+  z.strictObject({
+    version: z.literal("cotal-manager-resume/v2"),
+    space: label,
+    createdAt: z.string().min(1).max(64),
+    agents: z.array(agent).max(MAX_AGENTS),
+  }),
+  // v1 stored shareTools as the `--share-tools` flag string. A cut taken before the upgrade still
+  // resumes: its selection is parsed here, once, into the list v2 carries.
+  z.strictObject({
+    version: z.literal("cotal-manager-resume/v1"),
+    space: label,
+    createdAt: z.string().min(1).max(64),
+    agents: z.array(agent.extend({ launch: agent.shape.launch.extend({ shareTools: z.string().max(4096).optional() }) })).max(MAX_AGENTS),
+  }).transform(({ agents, ...rest }) => ({
+    ...rest,
+    version: "cotal-manager-resume/v2" as const,
+    agents: agents.map((a) => ({ ...a, launch: { ...a.launch, shareTools: parseShareSelection(a.launch.shareTools) } })),
+  })),
+]);
 
 const argsSchema = z.strictObject({
   attemptId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/, "must be a safe attempt token"),

@@ -30,7 +30,7 @@ import {
 export { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type PathKind, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
-import { NotCrossable, Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
+import { NotCrossable, Prng, assertCrossable, assertWritable, born, crossedWrite, deepFreeze, setOwn, type WritingFrame } from "./values.js";
 import { parseDuration } from "./duration.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
@@ -115,8 +115,9 @@ class Env {
    * branch the validator cannot resolve to a function node — one that arrives through a parameter
    * or a computed record — is not proven, and banning that shape outright would cost more than the
    * hazard. So the depth travels with the binding: a write from inside a concurrent branch to a
-   * binding declared OUTSIDE it is refused where it happens. `conclave` does not raise the depth,
-   * because its single body has nothing to race.
+   * binding declared OUTSIDE it is refused where it happens. `once` and `conclave` raise it too,
+   * though their single body has nothing to race, because a settled one is replayed without
+   * entering its body.
    */
   constructor(
     readonly parent: Env | null,
@@ -172,7 +173,7 @@ class Env {
     return this.find(name) !== undefined;
   }
 
-  set(name: string, value: unknown, atDepth: number): void {
+  set(name: string, value: unknown, frame: WritingFrame): void {
     const owner = this.owner(name);
     if (owner === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
     const b = owner.names.get(name) as Binding;
@@ -183,12 +184,7 @@ class Env {
       );
     }
     if (!b.mutable) throw new RuntimeFault("L2003", `${name} is declared const`);
-    if (owner.depth < atDepth) {
-      throw new RuntimeFault(
-        "L2032",
-        `${name} is declared outside this concurrent branch and written inside it. Live, the branches write in completion order; on resume the recorded effects return instantly and they write in launch order, so ${name} holds a different value and the run takes a path it never recorded, with no divergence raised. Return the value from the branch and read it out of the combinator's result, or use race, which yields its winner.`,
-      );
-    }
+    if (owner.depth < frame.depth) throw crossedWrite(frame, name);
     b.value = value;
   }
 }
@@ -279,9 +275,7 @@ class Frame {
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
-      // `conclave` opens a scope but not a RACE: one body, nothing running beside it, so a write
-      // from inside it is as ordered as a write anywhere else and the depth does not move.
-      kind === "conclave" ? this.depth : this.depth + 1,
+      this.depth + 1,
     );
   }
 }
@@ -442,34 +436,11 @@ class Interpreter {
       startedAt: this.pins.startedAt,
       prng: this.prng,
       ...(this.options.onLog !== undefined ? { onLog: this.options.onLog } : {}),
-      assertWritable: (target, frame) => this.assertWritable(target, frame),
+      assertWritable,
     };
   }
 
   // ---- values: reads and writes ---------------------------------------------------------------
-
-  /**
-   * May this frame write into this container? Two refusals, and they are the whole of the value
-   * half of freeze-on-share (design D4, §3.4 rule 4):
-   *
-   * - a FROZEN value crossed an effect boundary, and what crossed is what was recorded (L2031);
-   * - a value born OUTSIDE this concurrent branch and written inside it is L2032's defect reached
-   *   through a value instead of a binding, and just as silent on resume.
-   */
-  assertWritable(target: object, frame: { readonly depth: number }): void {
-    if (Object.isFrozen(target)) {
-      throw new RuntimeFault(
-        "L2031",
-        "this value crossed an effect boundary and is frozen: what crossed is what the journal recorded, so it cannot change afterwards. Build a new value instead: `{ ...record, field: value }` or `[...list, item]`.",
-      );
-    }
-    if (birthDepth(target) < frame.depth) {
-      throw new RuntimeFault(
-        "L2032",
-        "this value was built outside this concurrent branch and is written inside it. Two branches writing one value is nondeterministic, and it is silent: live they write in completion order, on resume the recorded effects return instantly and they write in launch order, so the value differs and the run takes a path it never recorded. Build the value inside the branch and return it, and read it out of the combinator's result.",
-      );
-    }
-  }
 
   /** The property key a member expression names, as JavaScript would spell it. A computed key is
    *  held to the same no-implicit-conversion law as every other coercion site (L4018): `String(k)`
@@ -551,7 +522,7 @@ class Interpreter {
     if (obj === null || obj === undefined || typeof obj !== "object") {
       throw new RuntimeFault("L4010", `cannot write \`${prop}\` of ${obj === null ? "null" : typeof obj === "undefined" ? "undefined" : `a ${typeof obj}`}`);
     }
-    this.assertWritable(obj, frame);
+    assertWritable(obj, frame);
     if (Array.isArray(obj)) {
       if (prop === "length") {
         // `xs.length = n` truncates, as in JavaScript. A LONGER length is refused: JavaScript would
@@ -752,7 +723,7 @@ class Interpreter {
           refuseNonNumberUpdate(current);
           const old = current as number;
           const next = old + delta;
-          env.set(name, next, frame.depth);
+          env.set(name, next, frame);
           return prefix ? next : old;
         }
         const obj = await this.evaluate(arg.object as AnyNode, env, frame);
@@ -821,7 +792,7 @@ class Interpreter {
 
     const read =
       left.type === "Identifier"
-        ? { get: (): unknown => env.get(left.name as string), set: (v: unknown): void => env.set(left.name as string, v, frame.depth) }
+        ? { get: (): unknown => env.get(left.name as string), set: (v: unknown): void => env.set(left.name as string, v, frame) }
         : await (async () => {
             const obj = await this.evaluate(left.object as AnyNode, env, frame);
             const key = await this.memberKey(left, env, frame);
@@ -898,7 +869,7 @@ class Interpreter {
   ): Promise<void> {
     switch (pattern.type) {
       case "Identifier":
-        if (mode === "assign") env.set(pattern.name as string, value, frame.depth);
+        if (mode === "assign") env.set(pattern.name as string, value, frame);
         else env.declare(pattern.name as string, value, mode === "let");
         return;
       case "MemberExpression": {

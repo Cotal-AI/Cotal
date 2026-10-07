@@ -6,7 +6,7 @@ import {
   epProbeInstanceInterest,
   freezeExpectedSet,
   instancePinnedInstrumentCapabilities,
-  invokeCommand,
+  invokeRepairingSplit,
   issuedUserCaller,
   mintCreds,
   parseEpSubject,
@@ -15,8 +15,7 @@ import {
   unansweredRail,
   registryReadFailed,
   undeclaredArg,
-  renderLifecycleBlocked,
-  replyRefusedBeforeEffect,
+  controlReplyFrom,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -25,13 +24,11 @@ import {
   resolveService,
   standaloneConnectOpts,
   type ControlReply,
-  type EpAttributedReply,
   type EpCaller,
   type EpInstanceLiveness,
   type EpVerbTarget,
   type FlagSpec,
   type Profile,
-  type ResolvedService,
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
@@ -78,53 +75,13 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   preparePreservation: { command: "prepare-preservation" },
   commitPreservation: { command: "commit-preservation" },
   abortPreservation: { command: "abort-preservation" },
+  transcriptReceive: { command: "transcript-receive" },
 };
 
 /** Operator reach for one targeted control call: `owner` rides the caller's own-domain verb rows
  *  (the spawn capability's standing mint), `any` the admin instrument's cross-agent rows (§13.2
  *  any-mode). Replaces the deleted manager ctl tiers as the CLI's mode selector (1d). */
 export type ControlReach = "owner" | "any";
-
-/** How many times {@link invokeRepairingSplit} re-issues one call after a `not-executed` bind
- *  refusal. Every re-issue is a first attempt, so this is a loop guard and not a duplication guard.
- *  Each attempt splits with probability (m-1)/m in a space of m managers, so seventeen attempts
- *  leave a three-manager space about 1 in 1000 where the unrepaired call failed 2 in 3 (#398). An
- *  attempt costs an answered describe and invoke, never an elapsed deadline. */
-const BIND_SPLIT_REISSUES = 16;
-
-/**
- * One invoke on a resolved handle, with a SPEC 13.2 bind refusal repaired rather than surfaced.
- *
- * An unpinned handle binds the instance that answered its describe, and the invoke is a second,
- * independent trip through the same class queue, so in a multi-manager space another member
- * routinely receives it and refuses before dispatching. That refusal states the command did not
- * run, so re-describing and re-issuing is a first attempt and is safe for any command, mutations
- * included. The re-issue repeats until the describe and the invoke agree or the bound runs out, and
- * then the last refusal surfaces unchanged. A pinned handle is never repaired: it names its
- * instance, so a refusal from it is that instance answering about itself.
- */
-export async function invokeRepairingSplit(
-  nc: NatsConnection,
-  space: string,
-  service: ResolvedService,
-  command: string,
-  args: Record<string, unknown> | undefined,
-  opts: Parameters<typeof invokeCommand>[5],
-): Promise<EpAttributedReply> {
-  let handle = service;
-  for (let reissues = 0; ; reissues += 1) {
-    const r = await invokeCommand(nc, space, handle, command, args, opts);
-    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
-    if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return r;
-    try {
-      handle = await resolveService(nc, space, handle.endpoint, handle.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) });
-    } catch {
-      // The repair could not be attempted. The refusal surfaces, because it states that nothing
-      // ran, which a describe timeout raised in its place would lose.
-      return r;
-    }
-  }
-}
 
 /** The ep-rail control call — since 1d {@link askManager}'s ONLY path: one short-lived raw
  *  connection, a fresh `resolveService` (describe → §13.7 store fetch → digest-verified recompile
@@ -173,13 +130,10 @@ async function askManagerEp(
       // that can despawn/attach can also resolve its target (a `ps` SCAN here broker-drops exactly
       // the spawn-scoped user bearers - the 1c.2b read narrowing - and hangs their stop/attach).
       const info = await invokeRepairingSplit(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
-      if (info.reply.ok !== true)
-        return {
-          ok: false,
-          error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}`,
-          ...(info.reply.error?.code ? { code: info.reply.error.code } : {}),
-          ...(info.reply.error?.details ? { details: info.reply.error.details } : {}),
-        };
+      if (info.reply.ok !== true) {
+        const refused = controlReplyFrom(info.reply);
+        return { ...refused, error: `could not resolve "${name}": ${refused.error}` };
+      }
       const row = info.reply.data as { id: string; lifecycleUid: string };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
@@ -212,13 +166,7 @@ async function askManagerEp(
     const r = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command)
       ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit)
       : await submit();
-    if (r.reply.ok !== true)
-      return {
-        ok: false,
-        error: renderLifecycleBlocked(r.reply.error?.message ?? r.reply.error?.code ?? "error", r.reply.error),
-        ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
-        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
-      };
+    if (r.reply.ok !== true) return controlReplyFrom(r.reply);
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
@@ -243,13 +191,8 @@ async function askManagerEp(
  *  the call went UNANSWERED, as core marks it (`EP_UNANSWERED`: no responder, or the reply
  *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
- *  predicate in another file.
- *
- *  `code` is the manager's error CODE, when there was one. A caller that has to DECIDE on a refusal — the
- *  attach loop distinguishing "you may not" from "that seat is gone" from "try again" — was left
- *  matching English, because both renderings below collapse the envelope to
- *  `message ?? code` and the code is the only stable half. */
-export type ManagerReply = ControlReply & { unanswered?: boolean; code?: string };
+ *  predicate in another file. */
+export type ManagerReply = ControlReply & { unanswered?: boolean };
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
  *  (`ps`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator typed, if
@@ -416,7 +359,7 @@ export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { o
  *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
  *  and in nothing else. The selected dialer matters because the raw node transport refuses a
  *  `wss://` mesh behind an HTTPS edge even when the other endpoint rails can reach it. */
-async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
+export async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
   const nc = await dialerFor(server)({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),

@@ -15,7 +15,7 @@
 import { canonicalize } from "json-canonicalize";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { RuntimeFault } from "./errors.js";
-import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
+import { type JournalKind, type StepKey, scopeTraits, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 
 export type EntryState = "pending" | "settled";
@@ -346,9 +346,6 @@ function bindingWithoutCanonicalForm(entry: JournalEntry, field: RecordedField, 
   );
 }
 
-/** The entry kinds whose `result` is an assembly of branches rather than one handler's value. */
-const SCOPE_KINDS: ReadonlySet<string> = new Set(["parallel", "race", "fanOut", "conclave", "once"]);
-
 /** What the crossing rule calls the value it is refusing, so its path reads as the record's own. */
 const LABEL_OF: Record<RecordedField, string> = {
   external: "the recorded binding",
@@ -455,7 +452,7 @@ export class Journal {
       // list of branch NAMES (strings) and needs no exemption.
       if (e.result !== undefined) {
         try {
-          if (SCOPE_KINDS.has(e.kind)) {
+          if (scopeTraits(e.kind) !== undefined) {
             const assembled = e.result as { readonly branches?: unknown; readonly value?: unknown };
             if (assembled.branches !== undefined) assertCrossable(assembled.branches, "the recorded branch list");
             assertScopeValueCrossable(assembled.value, "the recorded result.value", e.kind);
@@ -789,17 +786,13 @@ export class Journal {
    * same key, and the interpreter counts the dispatch once. A pending entry still counts — the
    * effect was performed, which is exactly why it was written before the handler was called.
    *
-   * `conclave` is excluded because the interpreter does not count it either: it dispatches
-   * `openConclave` from the scope walker rather than through `performEffect`, so counting it here
-   * would make a resumed run's tally disagree with a fresh one's. That asymmetry is a real gap in
-   * what the ceiling sees and it is reported separately; this method mirrors the counter rather
-   * than quietly repairing it, because a seed that does not match the thing it seeds is worse than
-   * the gap it would paper over.
+   * A `conclave` counts, because its open is a dispatch and the interpreter counts it as one; the
+   * other scope kinds dispatch nothing of their own, so their entries do not.
    */
   dispatchedEffects(): number {
     let n = 0;
     for (const e of this.byKey.values()) {
-      if (e.kind !== "conclave" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
+      if ((EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
     }
     return n;
   }

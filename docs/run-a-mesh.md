@@ -12,9 +12,9 @@ operator-only maintenance verbs. Every command's full flag set is in the
 `cotal up` brings up the whole local stack and bare `cotal down` stops it. Managed
 agents stay running as unmanaged OS processes; pass `--with-agents` to take them
 with the stack. Seats of the built-in pty runtime run inside the manager process, so
-they stop with the manager either way. Ctrl-C on a foreground `up` follows the same sparing rule
-and prints the same report as bare down; when the manager cannot prove it can spare,
-Ctrl-C refuses the teardown and leaves the stack running, and you end it with
+they stop with the manager either way. Ctrl-C on a foreground `up` stops the manager through the
+same stop as bare down and prints the same report; when that stop is refused, for example because
+the manager cannot prove it can spare, Ctrl-C leaves the stack running, and you end it with
 `cotal down --with-agents`. A current manager records what its stop does with its seats before
 bare down signals it. A pre-pin legacy manager instead receives a reduced-guarantee
 warning and is signalled according to the documented upgrade contract. Its running binary
@@ -128,7 +128,9 @@ lease row, so a live holder on record makes that outcome a refusal rather than a
 daemon. Keep delivery on the broker host under `up`, and share one store
 only when you are composing a hosted pair ([embedding](embedding.md#supervisor-signing-authority)).
 On the `--no-manager` split above, the manager host's manager stays off the daemon-credential
-renewal lease once its store check finds the daemon on another root. `cotal doctor auth --fix` on
+renewal lease once its store check finds the daemon on another store. A filesystem store is named
+by its root and by a random id in `.cotal/store.id`, which the copied `.cotal/auth` does not carry,
+so this holds when both hosts use the same root path. `cotal doctor auth --fix` on
 the broker host then renews the daemon credentials once they pass their renewal point.
 
 ### Split host bind
@@ -183,7 +185,9 @@ server contract is in
 `cotal status` prints the detailed setup, process, registry, and live mesh status. Its Machine
 section names the running CLI's source checkout, installed package root, or npx package root beside
 the version. It has one row per installed connector, which reports whether the executables that
-connector declares in `requires` are on PATH. A connector whose setup provider reports health adds its
+connector declares in `requires` are on PATH. Status, setup and the manager's preflight resolve them
+the same way: an entry written as a path is checked as given, and a directory never counts as the
+executable. A connector whose setup provider reports health adds its
 own rows above those. The Claude Code connector reports its plugin and its skills plugin, and a stale
 skills row names the installed and CLI versions it compared. `cotal
 setup` (after the first run) prints the compact card.
@@ -192,7 +196,12 @@ Before reporting ready, the manager resolves every installed connector's declare
 binaries against its own environment. A missing binary does not stop unrelated manager work: boot
 continues, but prints a named `connector <name> unavailable` line and records that reason in the
 manager's `status` response. Available connector rows record the absolute paths boot resolved.
-Spawn keeps the same pre-mint check as a backstop for connectors registered after boot.
+A spawned seat and a seat resumed after `cotal down --preserve-state` both launch from those paths,
+and both are refused with the recorded reason when their connector's row is unavailable.
+`cotal models` takes the same rule and reports that reason in place of the catalog, so it agrees
+with a launch about a harness installed or removed after boot. The manager looks again only when it
+restarts. A connector registered after boot has no row, so spawn, resume and `cotal models` check
+its binaries on PATH when they run.
 
 On an authenticated manager start, unfinished static lifecycle rows reconcile while the control
 endpoint is already serving. The manager `status` response reports
@@ -315,18 +324,22 @@ provisioner credential, or generic storage authority. Remote registration publis
 status at the registered revision and current process epoch, so manager-caller selection can find it.
 
 Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
-retirement, over the same manager-authority transport. The stock auth service refuses both requests
-as `unimplemented`, because it holds none of the storage they write: a host platform intercepts them
-on its own route and asks the loopback verify-enrollment door for the decision. Successful remote
-detached spawning therefore requires such a host composition; copying host secrets or actor-ledger
-files to a participant is not supported. Foreground spawning and operator-local hosted managers use
-their existing paths.
+retirement, over the same manager-authority transport. The stock auth service answers both when it
+runs with a public exchange face: it grants the agent under the participant's owner at a lifecycle
+UID it picks, bounded by the participant actor's own grant, provisions that UID's durables, and on
+retirement releases them and revokes the grant before the manager's terminal rail. It refuses a
+second enrollment of a name whose grant still stands until that agent's retirement is prepared. A
+host platform that keeps these writers in its own storage intercepts both requests on its own route
+instead. Copying host secrets or actor-ledger files to a participant is not supported. Foreground
+spawning and operator-local hosted managers use their existing paths.
 
 The remote manager that `cotal supervise` starts can host workflow runs through its host: the host
 admits each run and signs only the run's own driver, mediator and operator credentials. A logged-in
 user's `cotal run start` against it is admitted: the auth callout issues the user's manager
-connection, and the host binds each run to the owner who registered the manager. The host's own
-manager refuses user-auth runs by name.
+connection, and the host binds each run to the owner who registered the manager. The run spawns
+agents that user owns, enrolled by the host like any detached spawn, with the reach the user's own
+row grants when the spawn runs. A spawn may be placed on that manager and on no other instance. The
+host's own manager refuses user-auth runs by name.
 [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
 records the path.
 
@@ -451,6 +464,13 @@ without a terminal nothing prompts.
 `--root` is the local folder holding that mesh's `.cotal/auth` and `.cotal/agents` (its personas);
 the mode is inferred from what that folder holds.
 
+The instance identities of the manager and the user-auth service are not part of that folder.
+Each root keeps its own in `.cotal/space.<hex>/`, so `cotal supervise` or `cotal up --user-auth` in
+the root you copied the folder to starts an instance of its own. A root last run by an older Cotal
+still holds them in `.cotal/auth`, as `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`
+and `space.<hex>/.cotal/auth/auth-instance.<hex>.json`. Delete those files from a copy of such a
+folder before the first `cotal supervise` or `cotal up` there.
+
 **Know what you are copying.** For an authenticated mesh that folder carries the space's account
 **signing seed**, which is the authority to mint any identity in the space. A machine holding it
 is a certificate authority for the mesh rather than a client of it: anyone who reads it can
@@ -492,9 +512,10 @@ address spelling changes nothing: `[::ffff:192.168.1.10]`, `3232235786`, `0300.0
 
 A user-auth space's IdP pins are established where the mesh runs and are never guessed. Register
 one from **supplied** trust: `--user-auth-file bundle.json` (exported on the mesh's machine), or
-`--from https://…/.well-known/cotal-mesh`, which asks before it contacts the address at all,
-fetches the discovery document over HTTPS, shows you the pins, and asks again before adopting
-them. Redirects are refused because a 302 can walk a pinned fetch down to
+`--from https://auth.example`, which asks before it contacts the address at all, fetches the
+discovery document at `/.well-known/cotal-mesh` under that address over HTTPS, shows you the pins,
+and asks again before adopting them. A URL that already ends in `/.well-known/cotal-mesh` is
+fetched as given. Redirects are refused because a 302 can walk a pinned fetch down to
 plaintext or onto another host, and the pinned exchange must be an `https://` URL too. The one
 exception is an exchange on **this machine**, where nothing leaves the box: plain `http://` is
 accepted for a loopback *literal* (`127.0.0.1`, `::1`, and any spelling of them), but **not** for
@@ -660,9 +681,9 @@ resort, so do not swap it back into a live mesh casually.
 
 ## When something looks absent
 
-Permission denials are **loud, never silent**: an over-tight ACL rejects the endpoint call and
-also shows up as a logged denial, instead of returning an empty or incomplete result that looks
-successful. Check
+Permission denials are **loud, never silent**: an over-tight ACL rejects the endpoint call it
+refuses instead of returning an empty or incomplete result that looks successful, and a denial no
+call is waiting on, such as a refused subscription, shows up as a logged denial on the endpoint. Check
 `.cotal/manager.<key>.log`, `.cotal/delivery.<key>.log` (one pair per space, keyed as
 [Config](config.md#project-files) describes), and `.cotal/nats.log`; `cotal status` shows
 what is actually running. Those files live under the **project** `.cotal/`, not `~/.cotal`,

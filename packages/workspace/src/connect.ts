@@ -162,7 +162,7 @@ export interface UserViewAuth {
  *  re-grant sentence. Call ONLY with a user-mode connection (`conn.bearer` set) — anything else
  *  is a caller bug. Long-running servers (the web delete handler) call THIS and surface the
  *  thrown sentence; CLI startup paths use {@link userViewAuthOrExit}. */
-export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string } = {}): Promise<UserViewAuth> {
+export async function userViewAuth(conn: Connection, view: string, opts: { managerInstanceId?: string; transferWriter?: { instanceId: string; hex: string } } = {}): Promise<UserViewAuth> {
   if (!conn.bearer || !conn.userAuth || !conn.root)
     throw new Error(`userViewAuth: not a user-mode registry connection (view "${view}")`);
   const ua = conn.userAuth;
@@ -180,27 +180,28 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
     if (view !== "manager-caller") throw new Error("a manager instance selector requires the manager-caller view");
     assertLifecycleToken(opts.managerInstanceId, "managerInstanceId");
   }
+  if ((view === "transfer-writer") !== (opts.transferWriter !== undefined))
+    throw new Error("the transfer-writer view and the one object it uploads come together or not at all");
   const request = { store, dir, space: conn.space, actor: CLI_USER_ACTOR, view, ...opts };
   const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
   const mint = async () => {
     const result = await provider.userCredentials(request);
+    const principal = principalFromBearer(result.bearer);
     if (original) {
-      const { owner, actor, lifecycleUid } = principalFromBearer(result.bearer);
-      const payload = JSON.parse(Buffer.from(result.bearer.split(".")[1]!, "base64url").toString("utf8"));
+      const { owner, actor, lifecycleUid, claims } = principal;
       if (owner !== original.owner || actor !== original.actor || lifecycleUid !== original.lifecycleUid ||
-          payload.act?.owner !== owner || payload.act?.view !== view ||
-          !(payload.aud === conn.space || (Array.isArray(payload.aud) && payload.aud.length === 1 && payload.aud[0] === conn.space)) ||
-          typeof payload.act?.managerInstanceId !== "string")
+          claims.act?.owner !== owner || claims.act?.view !== view ||
+          !(claims.aud === conn.space || (Array.isArray(claims.aud) && claims.aud.length === 1 && claims.aud[0] === conn.space)) ||
+          typeof claims.act?.managerInstanceId !== "string")
         throw new Error("manager control exchange returned different space, principal, lifecycle or view coordinates");
-      const instanceId = assertLifecycleToken(payload.act.managerInstanceId, "managerInstanceId");
+      const instanceId = assertLifecycleToken(claims.act.managerInstanceId, "managerInstanceId");
       if (request.managerInstanceId !== undefined && instanceId !== request.managerInstanceId)
         throw new Error("manager control exchange selected a different manager instance");
       request.managerInstanceId = instanceId;
     }
-    return result;
+    return { ...result, principal };
   };
-  const { bearer, sentinelCreds } = await mint();
-  const { owner, actor, lifecycleUid } = principalFromBearer(bearer);
+  const { bearer, sentinelCreds, principal: { owner, actor, lifecycleUid } } = await mint();
   const managerInstanceId = request.managerInstanceId;
   return { bearer, sentinelCreds, owner, actor, lifecycleUid, ...(managerInstanceId ? { managerInstanceId } : {}), source: () => mint().then((r) => r.bearer) };
 }
@@ -238,24 +239,29 @@ export async function userViewAuthOrExit(conn: Connection, view: string): Promis
   }
 }
 
+/** A minted bearer's payload as the client reads it, before any field is checked. */
+type BearerClaims = {
+  sub?: unknown;
+  aud?: unknown;
+  act?: { owner?: unknown; actor?: unknown; lifecycleUid?: unknown; view?: unknown; managerInstanceId?: unknown };
+};
+
 /** The (owner, actor, lifecycleUid) principal a minted bearer is bound to — read from the JWT
  *  payload WITHOUT verification (client side; the broker verifies). A bearer-source endpoint
  *  requires the principal pinned at construction, and the caller triple (1c.2c: the v0.4 ep-rail
  *  subjects the callout-minted rows pin) needs the ledger lifecycle claim too — the bearer is the
- *  one authoritative place all three live. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
+ *  one authoritative place all three live. It returns the decoded `claims` too, so the
+ *  manager-caller check reads the same decode. */
+function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string; claims: BearerClaims } {
   try {
     const mid = bearer.split(".")[1];
     if (!mid) throw new Error("not a compact JWS");
-    const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as {
-      sub?: string;
-      act?: { actor?: string; lifecycleUid?: string };
-    };
+    const payload = JSON.parse(Buffer.from(mid, "base64url").toString("utf8")) as BearerClaims;
     if (typeof payload.sub !== "string" || !payload.sub || typeof payload.act?.actor !== "string" || !payload.act.actor)
       throw new Error("missing sub/act.actor");
     if (typeof payload.act.lifecycleUid !== "string" || !payload.act.lifecycleUid)
       throw new Error("missing act.lifecycleUid (lifecycle-bound bearers are the v0.4 hard cut)");
-    return { owner: payload.sub, actor: payload.act.actor, lifecycleUid: payload.act.lifecycleUid };
+    return { owner: payload.sub, actor: payload.act.actor, lifecycleUid: payload.act.lifecycleUid, claims: payload };
   } catch (e) {
     throw new Error(`could not read the principal from the minted bearer (${e instanceof Error ? e.message : String(e)}) - the auth service's build may be stale; restart it with \`cotal up\``);
   }

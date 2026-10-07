@@ -70,8 +70,9 @@ let modes = new Set(MODES); // delivery modes currently shown
 let paused = false; // freeze auto-scroll so a value can be read
 let expandAll = false; // channel-wide: expand every clamped message body (else per-message toggle)
 
+// Also used for values inside double-quoted attributes, where an unescaped `"` would end the value.
 const esc = (s) =>
-  String(s).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
+  String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
 const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 // Shared with graph.js via parts.js (loaded before this file). It names a part kind it cannot
 // draw instead of rendering it as the empty string, which read as "nothing arrived".
@@ -208,9 +209,25 @@ function peerRow(p) {
     </div>
   </div>`;
 }
+// Grouped by the machine each peer reports in `card.meta.host`, so placement across a multi-machine
+// mesh reads at a glance. A peer that reports no host (a manager card carries none) groups last
+// instead of being guessed onto a machine. Seats do not name the manager they run under, so there
+// is no manager grouping to draw from this feed.
 function renderRoster(list) {
+  const machines = new Map();
+  for (const p of list) {
+    const host = typeof p.host === "string" ? p.host : "";
+    if (!machines.has(host)) machines.set(host, []);
+    machines.get(host).push(p);
+  }
   $("roster").innerHTML = list.length
-    ? list.map(peerRow).join("")
+    ? [...machines.keys()]
+        .sort((a, b) => !a - !b || a.localeCompare(b))
+        .map((host) => {
+          const peers = machines.get(host);
+          return `<div class="machine"><span class="h">${host ? esc(host) : "host not reported"}</span><span class="c">${peers.length}</span></div>${peers.map(peerRow).join("")}`;
+        })
+        .join("")
     : `<div class="empty">no peers</div>`;
   for (const el of $("roster").querySelectorAll(".peer[data-agent]")) {
     el.onclick = () => selectAgent(el.dataset.agent);
@@ -237,6 +254,7 @@ function rosterRows() {
       status: p.status,
       act: p.activity,
       harness: p.card.meta?.connector,
+      host: p.card.meta?.host,
       attention: p.attention, // open/absent both render as nothing
       tag: p.status === "waiting" ? "needs input" : null,
     }));
@@ -728,7 +746,7 @@ function renderRail() {
     el.onclick = () => selectAgent(el.dataset.agent);
 }
 
-// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/web.md) ──
+// ── Agent Detail drill-down (centre) — per-agent frame, rendered from the peer's card (docs/watch-a-mesh.md) ──
 function selectAgent(id) {
   agentSel = id;
   dmSel = null;
@@ -1218,12 +1236,12 @@ const bd = [
 const lm = [{ ts: "10:15", who: "maya", status: "idle", body: "sent the NATS v3 notes your way" }];
 const DEMO = {
   roster: [
-    { name: "alice", role: "planner", status: "waiting", tag: "needs input", act: "blocked — needs OPENAI_API_KEY", harness: "claude" },
-    { name: "linus", role: "reviewer", status: "working", act: "reviewing PR #42 · auth guards", harness: "opencode" },
-    { name: "bob", role: "builder", status: "working", act: "writing tests · channels.ts", harness: "claude" },
-    { name: "dave", role: "builder", status: "working", act: "refactoring endpoint.ts", harness: "hermes" },
-    { name: "maya", role: "researcher", status: "idle", act: "—", harness: "opencode" },
-    { name: "scout", role: "observer", status: "idle", act: "watching #team.>", harness: "claude" },
+    { name: "alice", role: "planner", status: "waiting", tag: "needs input", act: "blocked — needs OPENAI_API_KEY", harness: "claude", host: "studio" },
+    { name: "linus", role: "reviewer", status: "working", act: "reviewing PR #42 · auth guards", harness: "opencode", host: "build-01" },
+    { name: "bob", role: "builder", status: "working", act: "writing tests · channels.ts", harness: "claude", host: "build-01" },
+    { name: "dave", role: "builder", status: "working", act: "refactoring endpoint.ts", harness: "hermes", host: "build-01" },
+    { name: "maya", role: "researcher", status: "idle", act: "—", harness: "opencode", host: "studio" },
+    { name: "scout", role: "observer", status: "idle", act: "watching #team.>", harness: "claude", host: "studio" },
   ],
   activity: [
     { type: "sys", text: "— scout joined · observer —" },

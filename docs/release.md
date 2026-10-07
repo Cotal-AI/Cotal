@@ -98,9 +98,9 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
      under `claude-plugin/` with the new bundles and stamps both plugin manifests with the new
      version. Claude Code updates an installed plugin only when that version changes, so a release
      is what delivers a new plugin to installs from the repo's marketplace or a pinned commit.
-     The bundles carry the docs, so `scripts/operator-literal-allowlist.json` lists them with the
-     same example counts as `docs/cli.md` and `docs/run-a-mesh.md`. A release that changes those
-     counts updates the bundle entries in the release PR.
+     Only `dist/mcp.cjs` carries the docs, so `scripts/operator-literal-allowlist.json` lists it
+     with the same example counts as `docs/cli.md` and `docs/run-a-mesh.md`. A release that changes
+     those counts updates its entries in the release PR.
      The workflow rewrites the PR body each time it updates the PR, so add its `Approved-at` line
      after the last update, just before you merge.
    - When **that** PR is merged, the same workflow detects the bumped versions, runs `pnpm

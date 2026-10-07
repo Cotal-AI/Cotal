@@ -155,7 +155,7 @@ try {
   await putGate(FROZEN_INSTANCE, { state: "frozen", principal: `${OWNER}.${remoteManagerActors(FROZEN_INSTANCE).serve}`, processEpoch: EPOCH, registrationRevision: REVISION });
   await putGate(FOREIGN_INSTANCE, { state: "open", principal: `${OTHER_OWNER}.${remoteManagerActors(FOREIGN_INSTANCE).serve}`, processEpoch: EPOCH, registrationRevision: REVISION });
 
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet });
   const store = workspaceSecretStore(tmp);
   ensurePinnedIdp(dir, "http://127.0.0.1:49151/api/auth");
   await cotalAuthProvider.prepareServer({
@@ -284,6 +284,8 @@ try {
       managerServiceAuthority: wrongArm as never,
       maintainRemoteManager: wrongArm as never,
       validateRetainedAgent: wrongArm as never,
+      enrollManagedAgent: wrongArm as never,
+      prepareManagedAgentRetirement: wrongArm as never,
       scanManagerGoalIndex: wrongArm as never,
       authorizeManagerAdmin: wrongArm as never,
       admitManagerRun: wrongArm as never,

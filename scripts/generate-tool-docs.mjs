@@ -47,7 +47,7 @@ const ANNOTATIONS = {
     effect: "read-only",
     availability: "always",
     notes:
-      "Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
+      "Serves the version-exact docs bundled with this release (offline). The connector builds the docs and their search index when the tool is first called. `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
   },
   cotal_inbox: {
     effect: "clears only the messages it returns (nothing at all when peek is true)",
@@ -95,7 +95,7 @@ const ANNOTATIONS = {
     availability:
       "capability-gated: injected only for personas declaring `capabilities: [spawn]` (auth mode); open mode is permissive",
     notes:
-      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such; a lifecycle barrier that already holds the actor (frozen issuance gate, retiring alias) names the blocked op, head state, opId, and the remedy when one exists, rather than a wait-timeout.",
+      "Failure modes are distinct: a permission denial names the missing capability; an unreachable manager is reported as such; a lifecycle barrier that already holds the actor (frozen issuance gate, retiring alias) names the blocked op, head state, opId, and the remedy when one exists, rather than a wait-timeout. A launch that has not joined the mesh within its readiness window returns a pending result instead of an error: it names the allocated agent, its id, and its manager, and says to watch the roster, because spawning again starts a second agent.",
   },
   cotal_feedback: {
     effect: "sends data to an external HTTPS intake (network egress)",
@@ -250,6 +250,12 @@ for (const s of specs) {
   if (s.name === "cotal_dm") {
     lines.push(
       "On success the tool answers `DM stored as seq <N> for <name> (recipient was <status> at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. `delivery not confirmed` is the strongest claim the sender can make: the stored sequence proves the broker accepted the message, the status names the recipient's roster state a moment before the publish, and neither is proof the recipient ever read it. When `to` names a peer with no roster row that sent you a DM or anycast, such as a one-shot [`cotal send`](cli.md#send), the DM goes to that sender's id and the status reads `recipient had no roster row at send`. The space's DM history keeps the DM, so an operator's DM view shows it, but it may never reach an inbox. A name that two such senders share is refused with their ids.",
+    );
+    lines.push("");
+  }
+  if (s.name === "cotal_anycast") {
+    lines.push(
+      "On success the tool answers `Request stored as seq <N> on the @<role> queue (<k> holders online at send; delivery not confirmed).`, appending ` duplicate publication.` when the publish was a duplicate. The sequence proves the broker stored the request on the role's work queue, and `<role>` names that queue as the subject spells it, which differs from the role you passed when routing rewrites it into a subject token. The count is the roster's live seats whose role routes to that queue a moment before the publish, you included when you hold that role, since your own task consumer can take the request like any other holder's. While the presence view is not current the count reads `holders unknown at send: the presence view was not current`, because a partial roster cannot show that no holder exists. Neither the sequence nor the count proves a holder took the request.",
     );
     lines.push("");
   }

@@ -41,12 +41,13 @@ connector records it as events arrive and the next heartbeat carries it. `cotal 
 `cotal endpoints` and `cotal_roster` print a condition with its age and the age of `activeAt`, such
 as `waiting (rate_limit for 40m) · active 40m ago`. The optional `statusSince` is the epoch ms when the
 instance entered its current status and activity. A change to either moves it, while a heartbeat or a
-repeated report does not, so an activity that outlived what it described reads as old. `cotal_roster`
-prints its age, such as `idle · unchanged for 40m`. An offline record carries none, because an observer
-that derives `offline` from a stale heartbeat does not know when the peer left. The optional
-`activitySince` is when the current activity was set. A status change does not move it, so an
-activity left behind while hooks flip the status every turn still shows its age, such as
-`(set 9h ago)` after the activity on a `cotal_roster` row. The optional `environment` is an opaque provider reference. Core publishes
+repeated report does not, so an activity that outlived what it described reads as old. `cotal status`,
+`cotal endpoints` and `cotal_roster` print its age, such as `idle · unchanged for 40m`. An offline
+record carries none, because an observer that derives `offline` from a stale heartbeat does not know
+when the peer left. The optional `activitySince` is when the current activity was set. A status
+change does not move it, so an activity left behind while hooks flip the status every turn still
+shows its age after the activity on the same three surfaces, such as `(set 9h ago)`. A stamp that
+is not a finite number shows no age. The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, whose
 `card.name` or `status` is missing or has the wrong type, or whose `ts` is not a finite number, and
 report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
@@ -74,15 +75,16 @@ manager reports a view that is not `current` ([cli.md](cli.md)).
 Presence publishing is also monitored separately from the watch. One refused heartbeat remains a
 recoverable warning. If consecutive writes keep failing for a full presence TTL, the endpoint raises
 `PresenceWriteStuckError` with code `presence-write-stuck` and marks the failure record as stuck.
-`cotal_orientation` and `cotal_roster` then say the view is not live and label roster rows as
+`cotal_orientation` and `cotal_roster` then say the view is not live and call the roster
 last-known until a write succeeds. A successful write resets the consecutive count and clears the
 condition. The condition is local diagnosis, not a new wire field.
 
-The same two tools also render the view's own trust state: under an `unpopulated` view `cotal_roster`
-says the presence watch has not completed its initial snapshot, so the list may be partial and a
-missing name is not an absence verdict, and under a `stale` view it names the silent-since instant
-and labels the rows last-known. A send or DM to a name the observer cannot verify is refused with
-that condition rather than sent, instead of being reported as an unknown peer.
+The same two tools also render the view's own trust state: under an `unpopulated` view they say
+the presence watch has not completed its initial snapshot, so the roster may be partial and a
+missing name is not an absence verdict, and under a `stale` view they name the silent-since instant
+and call the roster last-known. A send or DM to a name the observer cannot verify is refused with
+that condition rather than sent, instead of being reported as an unknown peer. Both tools and both
+refusals print each condition in the same words.
 
 ## Plane liveness
 
@@ -147,9 +149,11 @@ Every delivery message is addressed one of three ways
 | **unicast** | `to` (instance id) | one specific peer's inbox |
 | **anycast** | `toService` (role) | *any one* holder of the role: "whoever is a reviewer" |
 
-| Multicast | Unicast | Anycast |
-|---|---|---|
-| ![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp) | ![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp) | ![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp) |
+![Multicast: alice posts to the #general channel and every subscriber receives it](../assets/multicast.webp)
+
+![Unicast: alice messages bob directly; the message waits in his durable inbox while he is busy](../assets/unicast.webp)
+
+![Anycast: a message addressed to the reviewer role; one free reviewer instance claims it](../assets/anycast.webp)
 
 Channels are dotted and hierarchical (`team.backend`); publishing is always concrete,
 subscriptions may wildcard a subtree (`team.>`). Anycast is queued work: a task with no

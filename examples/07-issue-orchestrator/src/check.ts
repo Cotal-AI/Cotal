@@ -229,7 +229,7 @@ for (const c of cases) {
         onLog: (l) => engineLogs.push([...l.values]),
       },
     ).done;
-    check("the compiled engine completes", engine.ok === true, engine.ok ? undefined : `${engine.code ?? ""} ${engine.message}`);
+    check("the compiled engine completes", engine.ok === true, engine.ok ? undefined : engine);
 
     const records = laneRecords(walkerLogs);
     check("one lane record", records.length === 1, records);

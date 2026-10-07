@@ -346,8 +346,11 @@ loudly instead of serving from a half-dead plane.
 creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
 less) and refreshes ahead of each expiry. Rows are runtime grants: every start rotates
 the secret, every stop or despawn revokes the row, so a non-running agent holds no
-standing authority. Manifest deploys (`up -f`) stamp the logged-in owner into the launch,
-so those agents are yours too.
+standing authority. A spawn whose auth preflight fails is rolled back: the manager, or `cotal spawn`
+itself for a foreground agent, revokes the row, shreds the secret files and deletes the broker
+footprint. Every step runs even when an earlier one fails, and the refusal names each step that
+failed. A foreground agent's exit runs the same teardown. Manifest deploys (`up -f`)
+stamp the logged-in owner into the launch, so those agents are yours too.
 
 **Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
 drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the
@@ -361,8 +364,10 @@ a plain reason and a retry hint rather than quietly handing the alias to a new a
 the old lifecycle's teardown is still running. Only once the broker footprint is gone, the standing
 authority is revoked, and the retirement is confirmed does the name free, and `cotal spawn <same-name>`
 gives you a fresh agent cleanly. This is what makes reusing an agent's name safe: the old lifecycle is
-fully torn down before the new one takes the alias. If the auth service is unreachable or the
-standing-authority revoke fails, the despawn still stops the agent and *holds* the name. **A
+fully torn down before the new one takes the alias. A local file that cannot be removed does not
+stop the rest of the teardown: the broker footprint is still deleted, the failure is reported, and
+the name stays held. If the auth service is unreachable or the standing-authority revoke fails,
+the despawn still stops the agent and *holds* the name. **A
 same-name `cotal spawn` re-drives the whole teardown** and finishes it. Retrying the despawn has no
 effect because the agent is already stopped. The operator copy tells you to recover the stack
 (`cotal supervise`) rather than reusing the name over an unretired predecessor.
@@ -402,8 +407,8 @@ only on a signed-in human exchange. The `manager-caller` view is the one managed
 because it narrows the agent's existing manager command set to one server-selected instance and adds
 no capability. All views are authorized against the fresh ledger row at every connect and expire
 with the bearer, so narrowing or revoking a grant bites within minutes here too. On the public
-exchange face only `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller` are
-served; `admin`, `purger`, `deployer`, and `manager-service` remain loopback-only.
+exchange face only `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
+`transfer-writer` are served; `admin`, `purger`, `deployer`, and `manager-service` remain loopback-only.
 
 The `session-caller` view is how `cotal attach` opens a seat's session on a user-auth mesh. It needs
 no ledger scope, because the session grant is the authority. The exchange takes the grant with the
@@ -412,6 +417,13 @@ is active and unexpired, its signature equals the presented grant's, its holder 
 actor at this lifecycle, its endpoint and serving epoch match, and the serving manager's gate is open
 at that epoch. The callout repeats the same check at connect and mints the session's caller rails
 with the grant's expiry instead of the bearer's.
+
+The `transfer-writer` view is how `cotal spawn --resume <id> --detach --on <instance>` uploads a
+session this host holds on a user-auth mesh. It needs scope `admin`, as the `transcript-receive`
+call it serves does, and names one object: the target instance and the transcript's SHA-256. The
+callout mints writes to that object of that instance's transfer bucket and nothing else. The bearer,
+and with it the broker connection, lives at most five minutes, the lifetime of the static
+`transfer-writer` credential, and never past the login proof it was exchanged for.
 
 ### Remote manager authority
 
@@ -447,8 +459,9 @@ recomputes that id from the broker-pinned target before any durable access. A ca
 substitute another valid operation identity for the same target, and retries plus auth-service
 boot recovery finish the same terminal barrier. It never exposes the barrier executor or a general mint surface.
 
-Registration maintenance stays on the host. Eviction accepts only a principal found by the host's
-sealed scan of the caller instance's `epcred.manager.<instanceId>.*` family. Reconciliation may
+Registration maintenance stays on the host. One eviction request carries up to 256 holders, and the
+host accepts it only when its single sealed scan of the caller instance's
+`epcred.manager.<instanceId>.*` family finds every one of them. Reconciliation may
 target a foreign manager slot holder in the same space, but it runs only after the delivery daemon
 proves the frozen gate's holder gone under a complete sweep. The participant receives neither an
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an

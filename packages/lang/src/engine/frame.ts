@@ -80,9 +80,7 @@ export class EngineFrame {
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
-      // `conclave` opens a scope but not a RACE: one body, nothing running beside it, so a write
-      // from inside it is as ordered as a write anywhere else and the depth does not move.
-      kind === "conclave" ? this.depth : this.depth + 1,
+      this.depth + 1,
     );
   }
 }

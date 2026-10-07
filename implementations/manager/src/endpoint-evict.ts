@@ -80,6 +80,38 @@ export async function untilDeliveryAdminAnswers<T>(
   }
 }
 
+/** Run `work` on a short-lived, non-participating endpoint holding one `profile` credential: the one
+ *  place the evictors and the liveness probe decide how they connect. The lifetime is always 60s,
+ *  which bounds a copied credential to a minute; the profile default is never used because `observer`
+ *  has none. A failed stop never replaces the outcome. */
+export async function withScopedEndpoint<T>(
+  opts: { space: string; servers: string; auth: SpaceAuth },
+  profile: "endpoint-evictor" | "observer",
+  name: string,
+  work: (ep: CotalEndpoint) => Promise<T>,
+): Promise<T> {
+  const id = newIdentity();
+  let ep: CotalEndpoint | undefined;
+  try {
+    ep = new CotalEndpoint({
+      space: opts.space,
+      servers: opts.servers,
+      creds: await mintCreds(opts.auth, id, profile, { expiresInSeconds: 60 }),
+      card: { id: id.id, name, kind: "endpoint" },
+      channels: [],
+      consume: false,
+      watchChannels: false,
+      watchPresence: false,
+      registerPresence: false,
+    });
+    ep.on("error", () => {});
+    await ep.start();
+    return await work(ep);
+  } finally {
+    await ep?.stop().catch(() => {});
+  }
+}
+
 /** Accept one daemon eviction result only when it verifiably describes `principal`. A garbled,
  *  foreign or internally contradictory result throws, so it never authorizes. */
 function checkedEviction(principal: string, data: unknown, log: (line: string) => void): EvictionResult {
@@ -114,32 +146,11 @@ export function makeManagerEndpointEvictionEvidence(opts: {
   unreachableWaitMs?: number;
 }): (holderPrincipal: string) => Promise<EvictionResult> {
   return async (principal: string): Promise<EvictionResult> => {
-    const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
-      const id = newIdentity();
-      let ep: CotalEndpoint | undefined;
-      try {
-        // A per-eviction SCOPED cred for ONE ~15s delivery-admin call (60s TTL bounds a copied cred to
-        // a minute). endpoint-evictor holds EXACTLY its own delivery-admin request+reply rail — no
-        // lease, presence, store, consumer, KV, or executing right.
-        const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
-        ep = new CotalEndpoint({
-          space: opts.space,
-          servers: opts.servers,
-          creds,
-          card: { id: id.id, name: "manager-endpoint-evict", kind: "endpoint" },
-          channels: [],
-          consume: false,
-          watchChannels: false,
-          watchPresence: false,
-          registerPresence: false,
-        });
-        ep.on("error", () => {});
-        await ep.start();
-        return await ep.requestDeliveryAdmin("evictPrincipal", { principal }, requestMs(15_000));
-      } finally {
-        await ep?.stop().catch(() => {});
-      }
-    };
+    // A per-eviction SCOPED cred for ONE ~15s delivery-admin call. endpoint-evictor holds EXACTLY its
+    // own delivery-admin request+reply rail — no lease, presence, store, consumer, KV, or executing right.
+    const ask = (requestMs: (capMs: number) => number): Promise<ControlReply> =>
+      withScopedEndpoint(opts, "endpoint-evictor", "manager-endpoint-evict", (ep) =>
+        ep.requestDeliveryAdmin("evictPrincipal", { principal }, requestMs(15_000)));
     let r: ControlReply;
     try {
       r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
@@ -179,29 +190,9 @@ export function makeManagerEndpointHolderEvictor(opts: Parameters<typeof makeMan
         const chunk = principals.slice(i, i + EVICT_PRINCIPALS_MAX);
         // Each attempt mints its own 60s credential, so waiting out a silent rail never leaves a
         // request riding a credential that expired during the wait.
-        const ask = async (requestMs: (capMs: number) => number): Promise<ControlReply> => {
-          const id = newIdentity();
-          let ep: CotalEndpoint | undefined;
-          try {
-            const creds = await mintCreds(opts.auth, id, "endpoint-evictor", { expiresInSeconds: 60 });
-            ep = new CotalEndpoint({
-              space: opts.space,
-              servers: opts.servers,
-              creds,
-              card: { id: id.id, name: "manager-endpoint-evict", kind: "endpoint" },
-              channels: [],
-              consume: false,
-              watchChannels: false,
-              watchPresence: false,
-              registerPresence: false,
-            });
-            ep.on("error", () => {});
-            await ep.start();
-            return await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, requestMs(15_000));
-          } finally {
-            await ep?.stop().catch(() => {});
-          }
-        };
+        const ask = (requestMs: (capMs: number) => number): Promise<ControlReply> =>
+          withScopedEndpoint(opts, "endpoint-evictor", "manager-endpoint-evict", (ep) =>
+            ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, requestMs(15_000)));
         const r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
           opts.log(`manager-endpoint-evict: the ctl.delivery-admin rail did not answer (${reason}); retrying in ${delayMs / 1000}s`));
         if (!r.ok) {

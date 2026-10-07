@@ -22,6 +22,7 @@ import {
   WORKFLOW_STEER,
   AguiEmitter,
   AguiEmitterHolder,
+  eventPlaneStopped,
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
@@ -41,10 +42,13 @@ import { createBoundClaudeTranscriptSource } from "./agui-source.js";
  *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
 let events: AguiEmitterHolder<ClaudeEntry> | undefined;
 
+/** The `claude/channel` push side — set in main() once the MCP server exists. */
+let wake: WakePolicy | undefined;
+
 /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
- *  Read `events` lazily: main() assigns it after this handler is built. `onReply` is the commit
- *  half — an injected batch is acked only once its reply is confirmed delivered. */
-const claude = createClaudeHandle({ events: () => events });
+ *  Read `events` and `wake` lazily: main() assigns them after this handler is built. `onReply` is
+ *  the commit half — an injected batch is acked only once its reply is confirmed delivered. */
+const claude = createClaudeHandle({ events: () => events, surfaced: (items) => wake?.surfaced(items) });
 
 /** What a plain session's one tool says. Static: an unmanaged process knows nothing about any mesh. */
 const HOW_TO_JOIN =
@@ -158,15 +162,18 @@ async function main(): Promise<void> {
         await agent.whenConnected(20_000);
         return startEmitter();
       },
-      // Required, and not defaulted to a swallow: this runs behind a hook that must not throw, so
-      // a failure reaches a human only if it is written somewhere. The holder is terminal on
-      // error, it does not retry, so this line is the whole record of why events stopped.
-      (e: Error) => process.stderr.write(`[cotal-connector] AG-UI emitter stopped: ${e.message}\n`),
-      // The turn terminal closes a run the record stream never described, so the mapper still
-      // believes that run is open. Without this it would attribute the next records to a run the
-      // published stream has already finished and the emitter would refuse the batch. Keyed on the
-      // id, so a newer run opened in between is left alone.
-      (runId: string) => mapper?.forgetOpenRun(runId),
+      {
+        onError: eventPlaneStopped({
+          required: config.eventsRequired === true,
+          log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`),
+          stopSeat: () => void shutdown(1),
+        }),
+        // The turn terminal closes a run the record stream never described, so the mapper still
+        // believes that run is open. Without this it would attribute the next records to a run the
+        // published stream has already finished and the emitter would refuse the batch. Keyed on
+        // the id, so a newer run opened in between is left alone.
+        onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+      },
     );
   }
 
@@ -186,11 +193,10 @@ async function main(): Promise<void> {
   const controlToken = control.token;
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
   // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
-  // `wake` is likewise assigned later — declared with `let` (not `const` further down) so a shutdown
-  // frame arriving before the MCP server exists reads `undefined` instead of hitting the TDZ.
+  // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
+  // reads `undefined`.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  let wake: WakePolicy | undefined;
-  const shutdown = async () => {
+  const shutdown = async (code = 0) => {
     try {
       controlServer?.close();
     } catch {
@@ -200,7 +206,7 @@ async function main(): Promise<void> {
     try {
       await agent.stop();
     } finally {
-      process.exit(0);
+      process.exit(code);
     }
   };
   controlServer = startControlServer(
@@ -254,22 +260,28 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  // A client ends a stdio session by closing our stdin, and so does a harness that dies. The mesh
+  // connection would keep this process alive past it, heartbeating a presence no session backs,
+  // which every peer's roster reads as a live agent (#544).
+  process.stdin.once("end", () => void shutdown());
+
+  // Is this session consuming us as a channel? Decided once the client finishes the handshake,
+  // after its `initialize` has carried its capabilities: `connect()` resolves as soon as stdio is
+  // attached, before any client message has been read. The handlers registered above no-op until then.
+  server.server.oninitialized = () => {
+    const clientCaps = server.server.getClientCapabilities();
+    const envFlag = process.env.COTAL_CHANNEL;
+    const channelActive = envFlag
+      ? /^(1|true|yes|on)$/i.test(envFlag)
+      : Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
+    wake?.setChannelActive(channelActive);
+    process.stderr.write(
+      `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
+    );
+  };
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-
-  // Is this session consuming us as a channel? Only now (post-handshake) can we read the
-  // client's capabilities, so we flip the flag the nudge path is gated on. The handlers
-  // were registered above and simply no-op'd until this point.
-  const clientCaps = server.server.getClientCapabilities();
-  const envFlag = process.env.COTAL_CHANNEL;
-  const channelActive = envFlag
-    ? /^(1|true|yes|on)$/i.test(envFlag)
-    : Boolean((clientCaps?.experimental as Record<string, unknown> | undefined)?.["claude/channel"]);
-  wake?.setChannelActive(channelActive);
-  process.stderr.write(
-    `[cotal-connector] client capabilities: ${JSON.stringify(clientCaps ?? {})} → channel ${channelActive ? "ACTIVE" : "off"}\n`,
-  );
 
   process.stderr.write(
     `[cotal-connector] MCP ready (stdio) — space="${config.space}" name="${config.name}"${config.role ? ` role="${config.role}"` : ""}\n`,

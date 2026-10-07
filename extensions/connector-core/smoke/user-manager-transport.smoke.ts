@@ -87,7 +87,7 @@ const { Kvm } = await import(pathToFileURL(coreRequire.resolve("@nats-io/kv")).h
 type NatsConnection = import("@nats-io/transport-node").NatsConnection;
 const { connect, AuthorizationError, NoRespondersError, PermissionViolationError } = await import(pathToFileURL(coreRequire.resolve("@nats-io/transport-node")).href);
 const { jetstreamManager } = await import(pathToFileURL(coreRequire.resolve("@nats-io/jetstream")).href);
-const { authDir, recordMesh, assertUserAuthInfo, saveManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import(workspaceIndex);
+const { authDir, recordMesh, assertUserAuthInfo, createManagerInstanceIdentity, saveSpaceAuth, userAuthStateDir, workspaceSecretStore } = await import(workspaceIndex);
 const { cotalAuthProvider, grantActor, grantManagedActor, loadCalloutAuth, newActorToken } = await import(authIndex);
 const { managerAuthorityContractSource, managerClusterArtifacts } = await import(managerContractIndex);
 const { Manager } = await import("@cotal-ai/manager");
@@ -424,7 +424,7 @@ try {
   // 1. Platform-Local Manager identity (registered in KV to test routing between local and remote)
   const localManagerInstanceId = mintLifecycleUid();
   const localServe = newIdentity();
-  saveManagerInstanceIdentity(serverRoot, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
+  createManagerInstanceIdentity(serverRoot, SPACE, { instanceId: localManagerInstanceId, serveIdentity: localServe });
 
   // Publish manager service contract schema to EPC stream using endpoint-serve-executor
   const execCreds = await mintCreds(auth, newIdentity(), "endpoint-serve-executor", {

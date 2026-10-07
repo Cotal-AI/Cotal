@@ -45,7 +45,7 @@ export interface LibraryContext {
   readonly startedAt: number;
   readonly prng: Prng;
   readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
-  /** Refuse a write to `target` from `frame`, or return normally. Owned by the interpreter. */
+  /** Refuse a write to `target` from `frame`, or return normally. Both engines pass `assertWritable` from values.ts. */
   assertWritable(target: object, frame: LibFrame): void;
 }
 

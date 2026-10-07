@@ -15,11 +15,9 @@ import { strict as assert } from "node:assert";
 import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 
-if (process.platform === "win32") {
-  console.log("✓ bundle-import smoke skipped on Windows (the Hermes connector is Unix-only; execFileSync(\"pnpm\") cannot spawn a .cmd)");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only; execFileSync(\"pnpm\") cannot spawn a .cmd");
 
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
 

@@ -268,7 +268,12 @@ Three identity layers, in increasing permanence
 - **`name`** is a cosmetic, reusable human handle. Addressing by name is best-effort
   convenience, with deterministic and fail-loud resolution: a unique live name resolves,
   and a collision among live peers throws with the candidate ids rather than silently
-  picking one. The manager auto-numbers its own spawns (`reviewer` → `reviewer-2`).
+  picking one. The manager auto-numbers its own spawns (`reviewer` → `reviewer_2`).
+  The connector and the CLI print a peer with one label (in the roster, message attribution,
+  `cotal endpoints` and the console): `name/role`, or the bare name when it has no role. A
+  line break or bracket in either part prints as a space. That label is not an address, because `/` is
+  reserved for `owner/name` handles: a target written that way is refused, and the refusal
+  gives the bare name.
 - **`role`** is the addressable service, which makes it the anycast address:
   `svc.reviewer` reaches "whoever is a reviewer", so the label carries routing meaning.
 - **The instance id** is the authoritative address: the presence key, the unicast target,

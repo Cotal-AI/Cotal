@@ -62,7 +62,7 @@
  * fence that fails open when misconfigured is worse than one coordinate less addressable.
  */
 import { randomBytes } from "node:crypto";
-import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type ConsumerInfo, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { wfjStreamName, wfjSubject, runJournalConsumerConfig } from "./endpoint-binding.js";
 import { isCasLoss } from "./endpoint-records.js";
@@ -338,6 +338,12 @@ export function isConsumerNotFound(e: unknown): boolean {
   return Number(err?.code) === 10014 || err?.name === "ConsumerNotFoundError";
 }
 
+/** Measured on nats-server 2.15: a create whose config differs from the durable of that name is a
+ *  `JetStreamApiError` with `code: 10148`, and the client gives it no class of its own. */
+function isConsumerAlreadyExists(e: unknown): boolean {
+  return Number((e as { code?: unknown } | null | undefined)?.code) === 10148;
+}
+
 function isObj(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -461,8 +467,16 @@ export async function replayRunJournal(
   const cfg = runJournalConsumerConfig(space, runId, takeoverId);
   const durable = cfg.durable_name as string;
   return await exclusively(`${stream}/${durable}`, async () => {
-    let created = await jsm.consumers.add(stream, cfg);
-    if (!replayConsumerIsFresh(created)) {
+    let created: ConsumerInfo | undefined;
+    try {
+      created = await jsm.consumers.add(stream, cfg);
+    } catch (e) {
+      // A durable of this name in a config this create cannot update to is refused rather than
+      // returned: one an earlier release left in FILE storage, before the replay asked for memory.
+      // It is the leftover described below, and it is removed and remade the same way.
+      if (!isConsumerAlreadyExists(e)) throw e;
+    }
+    if (created === undefined || !replayConsumerIsFresh(created)) {
       // A durable of this replay's OWN name, holding a tail, that no live replay in this process
       // owns: the deletion below did not run. A replay is interrupted by whatever ends its
       // connection — a drive's standing connection reconnecting under it, a host closing one on a

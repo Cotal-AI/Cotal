@@ -11,10 +11,11 @@
  * and attribution rides inside brackets on that line. Indentation is not decoration here; it is the
  * only thing separating what the connector said from what a peer said it said.
  *
- * This module is the single place that enforces it. It has no imports beyond the item type, so the
- * hook relay can reach it without pulling a tool surface in behind it, and so neither surface can
- * drift into a second convention.
+ * This module is the single place that enforces it. It imports nothing beyond the item type and
+ * core's peer label, so the hook relay can reach it without pulling a tool surface in behind it, and
+ * so neither surface can drift into a second convention.
  */
+import { peerLabel } from "@cotal-ai/core";
 import type { InboxItem } from "./agent.js";
 
 /**
@@ -47,10 +48,9 @@ export function attributionSafe(s: string): string {
   return s.replace(/[\r\n\v\f\u0085\u2028\u2029[\]]+/g, " ");
 }
 
-/** "name/role" (or just "name") for a message's sender. */
+/** A message's sender, by the label every other surface prints for that peer. */
 export function fmtFrom(i: InboxItem): string {
-  const name = attributionSafe(i.fromName);
-  return i.fromRole ? `${name}/${attributionSafe(i.fromRole)}` : name;
+  return peerLabel({ name: i.fromName, role: i.fromRole });
 }
 
 /**

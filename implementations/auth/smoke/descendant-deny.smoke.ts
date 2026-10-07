@@ -95,7 +95,7 @@ try {
   streamsSetup = await openAuthorityClient({ server: SERVERS, space, dataAccount, label: `cotal:smoke-streams:${space}`, grants: (id) => (void id, { publish: [">"], subscribe: [`_INBOX_${id}.>`] }), log: quiet });
   await createEndpointStreams(await jetstreamManager(streamsSetup.nc), new Kvm(streamsSetup.nc), space);
 
-  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, dataAccount, log: quiet });
+  plane = await openAuthAuthorityPlane({ server: SERVERS, space, dir, identityRoot: dir, dataAccount, log: quiet });
   const key = await generateSigningKey();
   const issuer = createUserTokenIssuer({ issuer: ISS, key });
   calloutNc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(enc(callout.calloutCreds)) });

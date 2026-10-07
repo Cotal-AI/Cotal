@@ -17,7 +17,12 @@ export class PiEvents {
   private closing = false;
   private dead = false;
 
-  constructor(private readonly mesh: MeshAgent, private readonly space: string) {}
+  /** @param stopped Told once, with the first failure, that this seat's event plane has stopped. */
+  constructor(
+    private readonly mesh: MeshAgent,
+    private readonly space: string,
+    private readonly stopped: (error: Error) => void,
+  ) {}
 
   async start(sessionId: string, path: string | undefined, freshSession = false): Promise<void> {
     if (this.closing || this.dead) return;
@@ -130,12 +135,12 @@ export class PiEvents {
         source: new PiSessionSource(path),
         map,
       });
-    }, (error) => this.fail(error));
+    }, { onError: (error) => this.fail(error) });
   }
 
   private fail(error: Error): void {
     if (this.dead) return;
     this.dead = true;
-    console.error(`Pi AG-UI emitter stopped: ${error.message}`);
+    this.stopped(error);
   }
 }

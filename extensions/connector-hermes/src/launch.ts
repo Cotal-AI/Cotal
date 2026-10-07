@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
-import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, peerLabel, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, SUN_PATH_MAX_BYTES, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER, WORKFLOW_STEER } from "@cotal-ai/connector-core";
 import { hermesUvCommand, spawnHermesGateway } from "./binary.js";
 import { startSidecar } from "./sidecar.js";
@@ -123,7 +123,7 @@ export function setupProfile(home: string, opts: { model: string | undefined; pe
   if (!opts.model)
     throw new LaunchRefused(
       "a managed Hermes profile does not read ~/.hermes, and no model was resolved for it — " +
-        `set one with --model, the agent file's model:, or HERMES_MODEL, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
+        `set one with --model or the agent file's model:, or run the gateway on your own profile with ${ADOPT_HOME_ENV}=$HOME/.hermes`,
     );
   mkdirSync(home, { recursive: true });
   const pluginDst = join(home, "plugins", "cotal");
@@ -401,7 +401,7 @@ async function main(): Promise<void> {
     ...(fork ? { COTAL_HERMES_FORK_SESSION: fork.fork } : {}),
   };
 
-  log(`launching hermes gateway as ${config.name}${config.role ? `/${config.role}` : ""} (HERMES_HOME=${home})`);
+  log(`launching hermes gateway as ${peerLabel(config)} (HERMES_HOME=${home})`);
   const child = spawnHermesGateway({ pkgDir: PKG_DIR, env: childEnv });
   const gatewayExit = new Promise<void>((done) => child.once("exit", () => done()));
 

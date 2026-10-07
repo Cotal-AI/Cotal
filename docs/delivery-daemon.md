@@ -77,8 +77,14 @@ is still connecting, and nothing is sent after it. A daemon that answers fails t
 it refuses or its reply cannot be read. One that stays silent for the whole wait fails it, and the
 manager log names the rail.
 
+A reply on the `ctl.delivery` or `ctl.delivery-admin` rail that is larger than the broker's
+`max_payload` cannot be published. The daemon answers that request with a refusal giving the reply's
+size in bytes, so the caller fails at once and does not wait out its timeout.
+
 A restart verify-evicts every holder in the manager's credential family, and the family keeps a
-ledger row for every credential an earlier incarnation was issued. The manager sends those holders
+ledger row for every credential an earlier incarnation was issued. The manager keeps its serve,
+goal-writer and session-ledger identities across restarts, so restarts add no holders; each attach
+session adds one serving holder. The manager sends those holders
 as one `evictPrincipals` request per 256, and the daemon answers each request with one shared sweep
 of the broker. The manager records the holders each request verified before it sends the next, so a
 restart cut short by its executor window resumes after the last recorded request. A daemon that does
@@ -101,11 +107,24 @@ refuses a plaintext listener rather than upgrading on the server's unauthenticat
 holds a standing credential and reconnects unattended, so a downgrade here would repeat with nobody
 watching. See [transport.md](transport.md).
 
-The transport-health component can use the resident endpoint's NATS connection events, with no
-additional authenticated dial while it is healthy. It distinguishes broker disconnects from
-authentication-expiry errors and clears the corresponding failure on a proved credential adoption.
-Until this component is wired into the daemon, the current two-second authenticated broker probe
-remains its active broker watch.
+After a reachability check at start-up, the daemon watches the broker only through its resident
+connection's events. It opens no other connection to check the broker. A disconnect starts a clock,
+and a reconnect stops it. When the time since the disconnect, less any time the daemon's own
+event loop was stalled, reaches the window (`COTAL_DELIVERY_BROKER_GONE_MS`, 15 seconds by
+default), the daemon logs
+`✗ delivery: broker connection unavailable (broker unreachable), exiting (coupled to the broker)`
+and exits. Wall time since the disconnect also has a backstop
+(`COTAL_DELIVERY_BROKER_GONE_BACKSTOP_MS`, four times the window by default and never less than it).
+Reaching it logs
+`✗ delivery: broker connection unavailable past backstop (broker unreachable), exiting (coupled to the broker)`
+and exits, however long the daemon was stalled. A broker that stops answering without closing the
+socket counts as disconnected only once the client's pings go unanswered, so the clock starts a few
+seconds after the broker stops.
+
+An authentication-expiry error is not a broker disconnect. The daemon logs
+`! delivery: credential expired, awaiting proved renewal` at once and waits for a renewal it has
+proved against the broker; a reconnect alone does not clear it. If no such renewal arrives by the
+backstop, it logs `✗ delivery: credential expired without renewal` and exits.
 
 The daemon refuses a `reloadCreds` adoption until it has finished starting, which is after its lease
 watch is bound. Its lease turns ready earlier than that, so a renewal owner can ask before start-up
@@ -137,6 +156,13 @@ that exits cleanly or on SIGTERM or SIGINT stays stopped. So does one that `cota
 stops, also when the daemon is too starved to exit on SIGTERM and `down` kills it, when it is a
 replacement that is still starting, and when the stop lands between two restart attempts. Detached
 `up` exits after launching and restarts nothing; a bare `cotal up` relaunches a missing daemon there.
+
+Ctrl-C on a foreground `up`, and a broker that exits under it, stop the daemon with the same stop
+`cotal down delivery` uses. It holds the reservation `down` takes, so a concurrent
+`cotal down delivery` is refused while it runs. It sends SIGKILL to a daemon that has not exited 15
+seconds after SIGTERM, and removes the daemon's credential only once its death is confirmed. A
+record whose pid now belongs to another program is cleared without a signal. If the broker exits
+while that stop is running, `up` waits for the stop to finish before it exits.
 
 The daemon **records itself** in `.cotal/delivery.<key>.pid`, whichever way it was started, and
 removes that record when it exits cleanly. The launcher is not the only route to a running daemon: a

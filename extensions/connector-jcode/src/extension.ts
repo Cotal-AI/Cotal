@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
@@ -184,21 +184,13 @@ export const jcodeConnector: Connector = {
       env.COTAL_JCODE_PROMPT = prompt;
     }
 
-    let model = opts.model;
-    let variant = opts.variant;
-    if (opts.configPath) {
-      const path = resolve(opts.configPath);
-      env.COTAL_AGENT_FILE = path;
-      const def = loadAgentFile(path);
-      model ??= def.model;
-      variant ??= def.variant;
-    }
-    if (model) env.COTAL_MODEL = model;
+    if (opts.configPath) env.COTAL_AGENT_FILE = resolve(opts.configPath);
+    if (opts.model) env.COTAL_MODEL = opts.model;
     // The host applies the requested tier before its first turn. Do not drop a whitespace-only
     // variant: that would make an operator's request look accepted while silently selecting the
     // provider default.
-    if (variant !== undefined) {
-      variant = variant.trim();
+    if (opts.variant !== undefined) {
+      const variant = opts.variant.trim();
       if (!variant)
         throw new Error("jcode connector: a model variant was given but it is empty — there is no reasoning effort to select");
       env.COTAL_VARIANT = variant;

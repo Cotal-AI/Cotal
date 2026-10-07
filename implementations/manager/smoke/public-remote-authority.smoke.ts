@@ -15,7 +15,7 @@ try {
     "loadOrCreateRemoteManagerIdentity", "remoteManagerAuthorityRequest", "materialCredential",
     "currentRegistrationProof", "remoteStandingBundleRenewal", "remoteManagerRenewalCredentials",
     "remoteRunAdmissionRequest", "remoteRunAdmission", "remoteRunAttemptRequest",
-    "remoteRunAttemptCredentials", "remoteRunRenewalCredentials",
+    "remoteRunAttemptCredentials", "remoteRunRenewalCredentials", "remoteRunHosting",
     "remoteManagerAdminAuthorizationRequest", "remoteManagerAdminAuthorized", "remoteManagerGoalIndexEntries",
     "remoteManagerMaintenanceRequest", "remoteManagerMaintenanceResult", "remoteRetainedAgentValidationRequest",
     "retainedAgentAuthority", "expectedRemoteManagerActors", "remoteManagedAgentEnrollmentRequest",

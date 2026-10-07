@@ -1,4 +1,4 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { join, delimiter, resolve, extname } from "node:path";
 
 const isWindows = process.platform === "win32";
@@ -24,7 +24,8 @@ function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
 /**
  * Resolve `bin` to a concrete executable path, or `undefined` if not found. The single shared
  * resolver behind every "is this binary available / what exactly will we launch" decision:
- *   - a connector's `requires` preflight (manager + CLI manifest) — boolean-ised as `!!resolveOnPath(bin)`;
+ *   - a connector's `requires` preflight (manager, CLI manifest, `cotal status`, `cotal setup`) —
+ *     boolean-ised as `!!resolveOnPath(bin)`;
  *   - the PtyRuntime, which launches the EXACT path returned (resolve once; never validate one file
  *     and then launch a different one).
  *
@@ -34,11 +35,11 @@ function envGet(env: NodeJS.ProcessEnv, name: string): string | undefined {
  * child launch a different shim than the preflight saw.
  *
  * POSIX: the name IS the file — a bare name is looked up across PATH, an explicit path checked as
- * given, each via `accessSync(X_OK)`. Windows: there is no execute bit, so `accessSync(X_OK)` is
- * existence-only; a bare name (or a path lacking a known executable extension) is tried against each
- * `PATHEXT` extension IN ORDER — executables before scripts — so a real `claude.exe` beats a
- * `claude.cmd` shim in the same directory; a name that already carries a `PATHEXT` extension is taken
- * as-is.
+ * given, each via `accessSync(X_OK)` on a regular file. Windows: there is no execute bit, so
+ * `accessSync(X_OK)` is existence-only; a bare name (or a path lacking a known executable extension)
+ * is tried against each `PATHEXT` extension IN ORDER — executables before scripts — so a real
+ * `claude.exe` beats a `claude.cmd` shim in the same directory; a name that already carries a
+ * `PATHEXT` extension is taken as-is.
  */
 export function resolveOnPath(bin: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
   // Probe `.COM`/`.EXE` FIRST and ALWAYS — independent of what PATHEXT contains OR its order, because
@@ -74,6 +75,8 @@ export function resolveOnPath(bin: string, env: NodeJS.ProcessEnv = process.env)
     for (const cand of candidates(base)) {
       try {
         accessSync(cand, constants.X_OK);
+        // X_OK also holds for a searchable directory, which exec skips for the next PATH entry.
+        if (!statSync(cand).isFile()) continue;
         // A relative PATH entry is resolved against this process's cwd during lookup. Return that
         // exact ABSOLUTE executable: a managed launch may use a different cwd, where replaying the
         // relative spelling would select another file or fail after boot had declared it available.

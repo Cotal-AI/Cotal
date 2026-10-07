@@ -29,7 +29,7 @@
     {
       "name": "M1 EEXIST still returns the minted candidate (in-memory loser)",
       "file": "packages/workspace/src/auth-paths.ts",
-      "find": "    if ((e as NodeJS.ErrnoException).code !== \"EEXIST\") throw e;\n    const winner = loadManagerInstanceIdentity(root, space);\n    if (winner === undefined)\n      throw new Error(\n        `manager-instance-identity-create-lost: exclusive create for space \"${space}\" at ${path} lost and the existing file could not be adopted`,\n      );\n    return winner;",
+      "find": "    if ((e as NodeJS.ErrnoException).code !== \"EEXIST\") throw e;\n    const winner = readIdentityRecord(path, what, parse);\n    if (winner === undefined)\n      throw new Error(`identity-record-create-lost: exclusive create of ${what} at ${path} lost and the existing record could not be adopted`);\n    return winner;",
       "replace": "    if ((e as NodeJS.ErrnoException).code !== \"EEXIST\") throw e;\n    return candidate;",
       "expectRed": "N=8 concurrent first mints over 20 rounds share exactly one identity",
       "cell": "N=8 concurrent first mints over 20 rounds share exactly one identity",

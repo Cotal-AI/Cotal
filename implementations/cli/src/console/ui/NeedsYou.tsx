@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import type { Presence } from "@cotal-ai/core";
+import { peerLabel, type Presence } from "@cotal-ai/core";
 import { agentColor, STATUS, ago } from "./theme.js";
 import type { FocusId } from "../mesh.js";
 
@@ -64,18 +64,17 @@ export function NeedsYou({
       ) : (
         visible.map((p, i) => {
           const selected = isFocused && start + i === selClamped;
-          const role = p.card.role ? "/" + p.card.role : "";
+          const label = peerLabel(p.card);
           return (
             <Box key={p.card.id} flexDirection="column">
               {selected ? (
                 <Text inverse bold color="cyan" wrap="truncate-end">
-                  {STATUS.waiting.dot + " " + p.card.name + role + "  seen " + ago(p.ts)}
+                  {STATUS.waiting.dot + " " + label + "  seen " + ago(p.ts)}
                 </Text>
               ) : (
                 <Text wrap="truncate-end">
                   <Text color={STATUS.waiting.color}>{STATUS.waiting.dot + " "}</Text>
-                  <Text color={agentColor(p.card.name)}>{p.card.name}</Text>
-                  {role ? <Text dimColor>{role}</Text> : null}
+                  <Text color={agentColor(p.card.name)}>{label}</Text>
                   <Text dimColor>{"  seen " + ago(p.ts)}</Text>
                 </Text>
               )}

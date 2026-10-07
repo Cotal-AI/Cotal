@@ -1,6 +1,6 @@
 // Anycast: alice addresses the role "reviewer". The same cast is present; bob
 // and dave are busy, carol is free, so carol claims the work. Exactly one
-// instance picks it up. 180 frames @ 30fps = 6s seamless loop.
+// instance picks it up. Loops seamlessly at ANYCAST_DURATION.
 
 import React from "react";
 import { useCurrentFrame } from "remotion";
@@ -9,46 +9,38 @@ import {
   Beam,
   bez,
   Card,
+  CARD_TYPE,
   Dot,
   fade,
   GOLD,
   INK,
   Labels,
   lerp,
+  MODE_ALICE,
+  MODE_PEERS,
   prog,
   wirePath,
   Wires,
   type Pt,
 } from "./scene";
 
-// Shared stage: alice left, the reviewer pool clustered right, junction center.
-const ALICE: Pt = { x: 118, y: 300 };
-const JUNCTION: Pt = { x: 425, y: 300 };
-const GROUP: Pt[] = [
-  { x: 726, y: 134 }, // bob, busy
-  { x: 726, y: 300 }, // carol, free -> claims
-  { x: 726, y: 466 }, // dave, busy
-];
-const MEMBERS = [
-  { name: "bob", busy: true },
-  { name: "carol", busy: false },
-  { name: "dave", busy: true },
-] as const;
+const JUNCTION: Pt = { x: 400, y: 410 };
+// the peers are the reviewer pool; carol, the free one, claims
 const CLAIMER = 1;
 
 const SEG1: [Pt, Pt] = [
-  { x: ALICE.x + 52, y: ALICE.y },
+  { x: MODE_ALICE.at.x + 52, y: MODE_ALICE.at.y },
   { x: JUNCTION.x - 10, y: JUNCTION.y },
 ];
 // same fan geometry as multicast, so the two cards glance alike
 const outCtrl = (r: Pt): [Pt, Pt] => [
-  { x: JUNCTION.x + 80, y: JUNCTION.y },
-  { x: r.x - 115, y: r.y },
+  { x: JUNCTION.x + 60, y: JUNCTION.y },
+  { x: r.x - 90, y: r.y },
 ];
 const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
 
 const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
-const OUT_PATHS = GROUP.map((r) => wirePath(JUNCTION, ...outCtrl(r), OUT_END(r)));
+const OUT_PATHS = MODE_PEERS.map((p) => wirePath(JUNCTION, ...outCtrl(p.at), OUT_END(p.at)));
 
 const T = {
   sendStart: 14,
@@ -59,6 +51,8 @@ const T = {
   flashEnd: 116,
   carolBack: 148,
 };
+
+export const ANYCAST_DURATION = 162;
 
 export const ModeAnycast: React.FC = () => {
   const frame = useCurrentFrame();
@@ -80,17 +74,17 @@ export const ModeAnycast: React.FC = () => {
   const claimGlow = flash;
 
   return (
-    <Card frame={frame}>
+    <Card>
       <Wires paths={[PATH1, ...OUT_PATHS]} glow={[inGlow, 0, claimGlow, 0]} />
 
       {/* the role: a quiet bracket around the pool, labelled on its top edge */}
       <div
         style={{
           position: "absolute",
-          left: 632,
-          top: 72,
-          width: 188,
-          height: 492,
+          left: 590,
+          top: 178,
+          width: 220,
+          height: 520,
           borderRadius: 26,
           border: `1px solid ${INK.line}`,
         }}
@@ -98,11 +92,11 @@ export const ModeAnycast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: 632,
-          top: 59,
-          width: 188,
+          left: 590,
+          top: 155,
+          width: 220,
           textAlign: "center",
-          fontSize: 21,
+          fontSize: 18 * CARD_TYPE,
           letterSpacing: 1,
           color: GOLD,
         }}
@@ -110,16 +104,15 @@ export const ModeAnycast: React.FC = () => {
         <span style={{ background: INK.card, padding: "0 12px" }}>@reviewer</span>
       </div>
 
-      <AgentNode at={ALICE} name="alice" role="planner" status="working" flash={emit} />
-      {MEMBERS.map((m, i) => (
+      <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
+      {MODE_PEERS.map((p, i) => (
         <AgentNode
-          key={m.name}
-          at={GROUP[i]!}
-          name={m.name}
-          role="reviewer"
-          status={i === CLAIMER ? carolStatus : m.busy ? "working" : "idle"}
+          key={p.name}
+          {...p}
+          status={i === CLAIMER ? carolStatus : p.status}
           flash={i === CLAIMER ? flash : 0}
           dimmed={i !== CLAIMER ? dimOthers : 0}
+          type={CARD_TYPE}
         />
       ))}
 
@@ -127,12 +120,17 @@ export const ModeAnycast: React.FC = () => {
       {probing && <Dot at={JUNCTION} breath={breath} />}
       <Beam
         d={OUT_PATHS[CLAIMER]!}
-        pos={(t) => bez(JUNCTION, ...outCtrl(GROUP[CLAIMER]!), OUT_END(GROUP[CLAIMER]!), t)}
+        pos={(t) => bez(JUNCTION, ...outCtrl(MODE_PEERS[CLAIMER].at), OUT_END(MODE_PEERS[CLAIMER].at), t)}
         t={t2}
         visible={t2 > 0 && t2 < 1}
       />
 
-      <Labels mode="anycast" caption="any one of a role claims it" subject="cotal.demo.svc.reviewer" />
+      <Labels
+        mode="anycast"
+        caption="any one of a role claims it"
+        subject="cotal.demo.svc.reviewer"
+        type={CARD_TYPE}
+      />
     </Card>
   );
 };

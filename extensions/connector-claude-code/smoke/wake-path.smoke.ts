@@ -115,7 +115,8 @@ const wake = createWakePolicy(
 );
 
 // ---- the hook side: the SHIPPED handler behind the SHIPPED control server ---------------------
-const claude = createClaudeHandle();
+// Wired to the wake policy as `mcp.ts` wires it: a frame that surfaces an item spends its nudge.
+const claude = createClaudeHandle({ surfaced: (items) => wake.surfaced(items) });
 const controlServer = startControlServer(agent, { path: socketPath, token: TOKEN }, claude.handle, {
   onReply: claude.onReply,
 });

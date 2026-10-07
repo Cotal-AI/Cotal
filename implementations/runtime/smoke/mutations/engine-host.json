@@ -10,8 +10,8 @@
     {
       "name": "a lost journal crosses back as a plain error rather than the class the driver grades",
       "file": "implementations/runtime/src/engine-host.ts",
-      "find": "  if (failed.code === \"L5010\") {",
-      "replace": "  if ((false as boolean) && failed.code === \"L5010\") {",
+      "find": "      return new JournalAppendRejected(journalEntryKeyString(store.failure.entry), store.failure.entry.state, store.failure.reason);",
+      "replace": "      return new Error(failed.message);",
       "expectRed": "the superseded driver is RELEASED, not completed and not thrown",
       "cell": "the superseded driver is RELEASED, not completed and not thrown",
       "note": "drive() grades a lost run by instanceof, and instanceof does not survive a thread boundary - the rehydration map is what puts the class back. Mutated, a superseded driver's L5010 arrives as a generic error, drive() rethrows it as a run failure, and a run somebody else now owns is recorded as failed by a process that no longer speaks for it."
@@ -19,8 +19,8 @@
     {
       "name": "a release crosses back as a failure",
       "file": "implementations/runtime/src/engine-host.ts",
-      "find": "  if (failed.code === \"L5012\") {\n    return new RunReleased(failed.reason ?? failed.message);\n  }",
-      "replace": "  if ((false as boolean) && failed.code === \"L5012\") {\n    return new RunReleased(failed.reason ?? failed.message);\n  }",
+      "find": "      return new RunReleased(failed.reason);",
+      "replace": "      return new Error(failed.message);",
       "expectRed": "a driver past its work horizon RELEASES the run rather than failing it",
       "cell": "a driver past its work horizon RELEASES the run rather than failing it",
       "note": "The host stopping is not a fact about the program, and the outcome contract says so as `released`. Mutated, the thread's RunReleased crosses as a plain error, drive() records `failed` onto a run that neither failed nor finished, and the next driver reads a terminal state about work that is still resumable."

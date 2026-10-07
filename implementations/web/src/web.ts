@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -24,12 +25,18 @@ import {
   connectOrExit,
   localProcessPath,
   progressSignal,
+  readWebSession,
+  removePidPair,
   userViewAuth,
   userViewAuthOrExit,
+  WEB_READINESS_HEADER,
+  WEB_SESSION_FILE,
+  writeIdentityPin,
   type ConnectFlags,
   type Connection,
   type LocalProcess,
   type UserViewAuth,
+  type WebSession,
 } from "@cotal-ai/workspace";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -43,10 +50,9 @@ export const WEB_HOST = "127.0.0.1";
 export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
 const WILDCARD_HOSTS = new Set(["0.0.0.0", "::"]);
 const IPV4_MAPPED_WILDCARD = "::ffff:0:0";
-/** The three reasons this surface refuses a request, named as constants because the browser and the
- *  cells must both match the SAME token — a restated literal drifts silently, and a refusal that
- *  cannot be told apart from another refusal is the defect this lane exists to remove. Four
- *  different failures reported as one is the same defect as a failure reported as success. */
+/** The three reasons this surface refuses a request. Each names a different condition so a caller
+ *  learns which one failed, and the refusal body and the smokes share these constants because a
+ *  restated literal drifts silently. */
 export const UNAUTHENTICATED = "unauthenticated";
 export const LAUNCH_TOKEN_ALREADY_USED = "launch-token-already-used";
 export const CROSS_ORIGIN = "cross-origin";
@@ -55,9 +61,6 @@ export const CROSS_ORIGIN = "cross-origin";
  *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
  *  discovered in review. */
 const SESSION_COOKIE = "cotal_web_session";
-/** Lower-case because Node lower-cases incoming header names; matching on a capitalised literal
- *  would never fire and would look like a working check. */
-const READINESS_HEADER = "x-cotal-readiness";
 /** The ONLY path the readiness nonce opens. Shared with the route below so the gate and the route
  *  cannot drift into disagreeing about which path that is. */
 const READINESS_PATH = "/api/meta";
@@ -90,11 +93,6 @@ function requestTargetForLog(req: IncomingMessage, launchToken: string): string 
   safeTarget = `${safeTarget.slice(0, q)}?${safe.toString()}`;
   return safeTarget;
 }
-/** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
- *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's
- *  local process state. */
-const SESSION_FILE = "web.session";
-
 /** Constant-time compare of two secrets that may differ in length. `timingSafeEqual` throws on a
  *  length mismatch, and returning early on that throw would leak the length through timing, so the
  *  length check is folded into the result instead of short-circuiting it. */
@@ -123,10 +121,10 @@ function cookieValue(header: string | undefined, name: string): string | undefin
 
 /** The gate. Every request passes through it before any route runs.
  *
- *  WHY THIS EXISTS AT ALL: the surface binds loopback and authenticated NOBODY. Loopback defends
- *  against other HOSTS; it does not defend against other PROCESSES on this machine, and it does not
- *  defend against a page in the operator's own browser issuing requests to http://127.0.0.1:7799.
- *  Today that reaches the whole mesh read path and a channel-delete POST.
+ *  WHY THIS EXISTS AT ALL: the default loopback bind keeps out other HOSTS, but it does not
+ *  authenticate other PROCESSES on this machine or a page in the operator's own browser issuing
+ *  requests to http://127.0.0.1:7799. So no mesh read and no channel delete runs for a caller this
+ *  gate has not admitted.
  *
  *  ORDER IS DELIBERATE: origin is checked BEFORE the session. A cross-site request arrives without
  *  the cookie anyway (SameSite=Strict), so checking the session first would report every such
@@ -137,9 +135,10 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
   // Single-use, minted per process. 32 bytes: this is the only secret standing between a local
   // process and the mesh view until the cookie exists.
   let launchToken: string | undefined = randomBytes(32).toString("base64url");
-  // A SECOND secret, for one caller: `--detach`'s parent, which must poll `/api/meta` to learn the
-  // child is up and is OURS rather than a squatter on the same port. It is presented as a header and
-  // is NOT exchanged for a session and NOT consumed, because the parent may poll many times.
+  // A SECOND secret, for the callers that must poll `/api/meta` to learn the dashboard is up and is
+  // OURS rather than a squatter on the same port: `--detach`'s parent and `cotal status`. It is
+  // presented as a header and is NOT exchanged for a session and NOT consumed, because they may poll
+  // many times.
   //
   // Two secrets rather than exempting `/api/meta`, and the difference matters: an exempt route is
   // permanently unauthenticated for everyone, and the next person to add a field to it will not know
@@ -174,10 +173,10 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
         if (normalized === undefined || !allowedOrigins.has(normalized)) return { refuse: CROSS_ORIGIN };
       }
 
-      // Scoped to the one path its only caller polls. The nonce is never consumed and lives as long
+      // Scoped to the one path its callers poll. The nonce is never consumed and lives as long
       // as the process, so accepting it on every path would leave `web.session` holding a standing
       // full-surface credential beside a link this command calls single-use.
-      const readiness = req.headers[READINESS_HEADER];
+      const readiness = req.headers[WEB_READINESS_HEADER];
       if (pathOf(req) === READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
         return undefined;
 
@@ -216,7 +215,7 @@ export const webProcess: LocalProcess = {
   // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.
-  artifacts: [SESSION_FILE],
+  artifacts: [WEB_SESSION_FILE],
   // The dashboard starts target-resolved from any directory and claims its pidfile under the
   // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
   rootedAt: "target",
@@ -232,13 +231,16 @@ function pidAlive(pid: number): boolean {
   }
 }
 
-/** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it. */
+/** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it,
+ *  then pin this process's identity beside it. The pin follows the exclusive create because
+ *  `writePidPair` publishes by rename, which would replace a concurrent launch's claim. */
 function claimPid(path: string): void {
   let created = false;
   try {
     const fd = openSync(path, "wx", 0o600);
     created = true;
     try { writeFileSync(fd, String(process.pid)); } finally { closeSync(fd); }
+    writeIdentityPin(path, process.pid);
   } catch (e) {
     if (created) rmSync(path, { force: true });
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
@@ -260,9 +262,9 @@ function claimPid(path: string): void {
 
 function releasePid(path: string): void {
   try {
-    if (readFileSync(path, "utf8").trim() === String(process.pid)) rmSync(path, { force: true });
+    removePidPair(path, String(process.pid));
   } catch {
-    // Already removed by `down` or another cleanup path.
+    // Unreadable or locked: leaving a record this process cannot prove is its own is the safe error.
   }
 }
 
@@ -800,10 +802,10 @@ async function connectWithoutSeed(
  *  to a different host explicitly. */
 export async function web(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
-  // Validate the exposure coordinate before connecting to the broker or claiming local artifacts.
-  // An invalid remote-exposure request must have no dashboard side effects.
+  // Validate the exposure coordinates before connecting to the broker or claiming local artifacts.
+  // An invalid exposure request must have no dashboard side effects.
   const host = normalizeWebHost(values.host);
-  const port = values.port ? Number(values.port) : WEB_PORT;
+  const port = parseWebPort(values.port);
   // Resolve WHICH running mesh + creds (admin god-view: shows DMs + anycast).
   //
   // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
@@ -816,24 +818,17 @@ export async function web(args: ParsedArgs): Promise<void> {
   if (!started) return;
   const { conn, user, pidPath, purgeCreds } = started;
   const { server, space } = conn;
-  const sessionPath = conn.root ? localProcessPath(SESSION_FILE, { root: conn.root, space }) : undefined;
+  const sessionPath = conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
     space,
     servers: server,
-    // THE RESOLVED TRANSPORT, NOT A DEFAULT. `connectOrExit` already decided this from the mesh
-    // record and `Connection.tls` is non-optional, so the answer was in scope and was being dropped
-    // here — the same shape as `--tls-cert` being validated and then discarded at a call boundary,
-    // which is the defect this branch exists to close.
-    //
-    // It matters more here than the omission looks. Against a TLS broker this endpoint CONNECTED
-    // FINE without it, by upgrading the socket once it read `tls_required` — so nothing was visibly
-    // wrong. But that INFO is unauthenticated plaintext: an on-path attacker strips `tls_required`
-    // and a client with no requirement of its own carries on in the clear, with its credentials in
-    // the CONNECT line. The client's own `tls` is the PRIMARY fence, not a second layer, so a
-    // dashboard that omits it is protected by the server's cooperation rather than by its own
-    // demand.
+    // The resolved transport, because the endpoint requires TLS only when told to. Against a TLS
+    // broker it would still connect without this, upgrading once it reads `tls_required`, but that
+    // INFO is unauthenticated plaintext: an on-path attacker strips `tls_required` and a client
+    // with no requirement of its own carries on in the clear, with its credentials in the CONNECT
+    // line. The client's own `tls` is the fence.
     tls: conn.tls,
     ...(user
       ? { bearer: user.source, sentinelCreds: user.sentinelCreds, card: { owner: user.owner, actor: user.actor, name: "web", kind: "endpoint" as const } }
@@ -1098,9 +1093,10 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
     // Delete a channel and its content. The only write path on this otherwise read-only
-    // dashboard, so it's POST-gated and guarded by a confirm in the UI. Uses the manager cred
-    // pre-minted at startup (auth mode) or the connection creds (open / --creds), NOT the account
-    // seed (which we dropped). A wildcard / missing channel is a 400.
+    // dashboard, so it's POST-gated and guarded by a confirm in the UI. Purges with the
+    // channel-purger cred minted at startup (auth mode), the connection creds (open / --creds) or a
+    // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
+    // channel is a 400.
     if (path === "/api/channel/delete" && req.method === "POST") {
       const body = await readBody(req).catch((e: unknown) => {
         // A body this server DECLINED TO READ is not a body with no channel in it. Flattening the
@@ -1224,8 +1220,11 @@ export async function web(args: ParsedArgs): Promise<void> {
   const launchUrl = `${url}?k=${gate.launchToken}`;
   // Written AFTER listen() succeeded, so its existence means the port is ours. A detached parent
   // reads it for the readiness nonce and the link; an operator who lost the printed line reads it
-  // for the link. 0600 — same trust boundary as the rest of `~/.cotal`, no wider.
+  // for the link; `cotal status` reads it for the address to probe and the nonce to present. 0600 —
+  // same trust boundary as the rest of `~/.cotal`, no wider.
   if (sessionPath) {
+    // The socket's address, not the requested one: a hostname `--host` binds the address it resolved to.
+    const bound = httpServer.address() as AddressInfo;
     // `mode:` on writeFileSync applies at CREATION ONLY — a stale `web.session` left behind with a
     // broader mode would keep it and quietly hold the launch URL and readiness nonce world-readable.
     // Open, then fchmod the DESCRIPTOR (not the path, which could be re-pointed between the calls),
@@ -1233,7 +1232,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     const sfd = openSync(sessionPath, "w", 0o600);
     try {
       fchmodSync(sfd, 0o600);
-      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce }));
+      writeFileSync(sfd, JSON.stringify({ launchUrl, readiness: gate.readinessNonce, host: bound.address, port: bound.port } satisfies WebSession));
     } finally { closeSync(sfd); }
     process.once("exit", () => rmSync(sessionPath, { force: true }));
   }
@@ -1243,7 +1242,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // session file and prints the link to the operator's terminal, so repeating the live credential in
   // the log adds secret-at-rest exposure and no recovery value. An attached process still prints it.
   if (!process.env[DETACHED_LOG_ENV]) {
-    console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(Ctrl-C to stop)")}`);
+    printLaunchLink(launchUrl, host, port, "(Ctrl-C to stop)");
     console.log(c.dim("  the link is single-use; it opens one session in one browser"));
   }
   if (!values["no-open"]) openBrowser(launchUrl);
@@ -1296,7 +1295,7 @@ async function launchDetachedWeb(
   child.unref();
 
   const url = webUrl(host, port);
-  const sessionPath = localProcessPath(SESSION_FILE, context);
+  const sessionPath = localProcessPath(WEB_SESSION_FILE, context);
   try {
     await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
@@ -1310,9 +1309,9 @@ async function launchDetachedWeb(
   // The child minted the token, so the parent reads the link rather than reconstructing it. If the
   // file is unreadable the dashboard is still up and the operator is told where the link lives,
   // instead of being handed a URL that will refuse them.
-  const launchUrl = readSessionLaunchUrl(sessionPath);
+  const launchUrl = readWebSession(sessionPath)?.launchUrl;
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
-  if (launchUrl) console.log(`  ${c.cyan(launchUrl)}  ${c.dim("(single-use link)")}`);
+  if (launchUrl) printLaunchLink(launchUrl, host, port, "(single-use link)");
   else console.log(c.dim(`  launch link: see ${sessionPath}`));
   console.log(c.dim(`  log: ${logPath}`));
   console.log(c.dim("  stop: cotal down web"));
@@ -1374,10 +1373,10 @@ export async function waitForDetachedWeb(
       // unreadable file simply means "not up yet" and the loop keeps waiting — exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
-      const readiness = readSessionSecret(opts.sessionPath);
+      const session = opts.sessionPath === undefined ? undefined : readWebSession(opts.sessionPath);
       const meta = await fetch(`${opts.url}api/meta`, {
         signal: AbortSignal.timeout(500),
-        headers: readiness ? { [READINESS_HEADER]: readiness } : {},
+        headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
       })
         .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
         .catch(() => undefined);
@@ -1403,27 +1402,7 @@ export async function terminateDetachedWeb(child: ChildProcess, pidPath: string)
         throw new Error(`failed to terminate detached web dashboard (pid ${pid}); ${pidPath} was preserved`);
     }
   }
-  if (pidFileOwned(pidPath, pid)) rmSync(pidPath, { force: true });
-}
-
-/** The readiness nonce, or `undefined` if the child has not written it yet. Never throws: a missing
- *  file is the ordinary state during startup, not an error. */
-function readSessionSecret(path: string | undefined): string | undefined {
-  if (path === undefined) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { readiness?: unknown };
-    return typeof parsed.readiness === "string" ? parsed.readiness : undefined;
-  } catch { return undefined; }
-}
-
-/** The launch URL the child recorded, for a detached parent to open. Separate from the nonce reader
- *  so a caller asks for exactly the one it needs. */
-function readSessionLaunchUrl(path: string | undefined): string | undefined {
-  if (path === undefined) return undefined;
-  try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as { launchUrl?: unknown };
-    return typeof parsed.launchUrl === "string" ? parsed.launchUrl : undefined;
-  } catch { return undefined; }
+  removePidPair(pidPath, String(pid));
 }
 
 function pidFileOwned(path: string, pid: number): boolean {
@@ -1482,16 +1461,37 @@ export function normalizeWebHost(input: string | undefined): string {
   return host;
 }
 
+/** Validate the one port used for the bind, the advertised link, the Origin allow-list and the
+ *  detached readiness probe. Port 0 is refused because the kernel would bind an ephemeral port that
+ *  none of those, all built from the requested value, would name. */
+function parseWebPort(input: string | undefined): number {
+  if (input === undefined) return WEB_PORT;
+  const port = Number(input);
+  if (!/^[0-9]+$/.test(input) || port < 1 || port > 65535)
+    throw new Error(`invalid --port ${quoteForOperator(input)}; pass a decimal port from 1 to 65535`);
+  return port;
+}
+
 export function webUrl(host: string, port: number): string {
   if (host === WEB_HOST && port === WEB_PORT) return WEB_URL;
   return boundUrl(host, port);
 }
 
-/** The address the server binds, for a probe made by this process rather than a browser:
- *  `cotal.localhost` is a browser convention, and a system resolver such as WSL2's has no answer for it. */
+/** The address the server binds, for a client that does not resolve `cotal.localhost` itself: that
+ *  name is a browser convention, and a system resolver such as WSL2's has no answer for it. */
 function boundUrl(host: string, port: number): string {
   const literal = host.includes(":") ? `[${host}]` : host;
   return `http://${literal}:${port}/`;
+}
+
+/** On the branded default the link is printed a second time at the bound address, so an operator
+ *  whose browser or resolver has no answer for `cotal.localhost` still has a way in. Both carry the
+ *  one token, so opening either spends it. */
+function printLaunchLink(launchUrl: string, host: string, port: number, note: string): void {
+  console.log(`  ${c.cyan(launchUrl)}  ${c.dim(note)}`);
+  const bound = boundUrl(host, port);
+  if (webUrl(host, port) !== bound)
+    console.log(`  ${c.cyan(`${bound}${new URL(launchUrl).search}`)}  ${c.dim("(the same link, where cotal.localhost does not resolve)")}`);
 }
 
 function json(res: ServerResponse, data: unknown, status = 200): void {

@@ -1,5 +1,161 @@
 # @cotal-ai/cli
 
+## 0.70.0
+
+### Patch Changes
+
+- f4d4b8a: The manager and delivery start refusals now quote the record their verdict was made on instead of reading the pidfile a second time. A manager or daemon removes its record when it exits, so a record that disappeared between the two reads turned the refusal and its `NEXT:` step into a bare `ENOENT`, and a record replaced in between was quoted although the verdict had read different content. This covers the delivery cutover preflight, the delivery daemon's own refusal in `cotal up`, and the manager start refusal in `cotal spawn -f`. A record that is not a pid is now reported as such, quoted on one line, in the cutover preflight and the delivery daemon refusal, which used to say the kernel had answered for a pid it was never asked about.
+- 7254e32: `cotal service status` and `cotal service install` now judge the manager record through the same reader as `cotal up`, called with the root the unit records, instead of a private copy of it. `service status` therefore reports the command line of a live recorded pid: `--json` gives the manager's `command` next to its `state` and `pid`, and the human row names the pid and, for a pid that another program has reused, what that program runs.
+- 8249f3f: `cotal service install` builds the manager's environment from one list that both platforms render. On macOS it no longer writes a `cotal-manager@<key>.env` file nobody reads; the plist's `EnvironmentVariables` carry the same variables as before. On Linux the unit is unchanged, and every value in its `EnvironmentFile` is now double-quoted the way `PATH` already was, so each one reaches the manager verbatim.
+- 5a2a370: `cotal status` no longer exits 1 when the manager's delivery-aware marker cannot be read. The marker is read only for a live manager, and a failed read is named on the manager row as `delivery-aware marker unreadable` with the error, so the recorded meshes, the selected mesh and the `--components` pass still print. `cotal up` and the delivery preflight still refuse a marker they cannot read.
+- c8d6114: The `cotal status` `Web process` row and the `cotal setup` status card now read the selected mesh's dashboard from its own records: the address it recorded in `web.session` once it was listening, while the PID in its `web.pid` is alive. They used to report the dashboard up whenever anything accepted a connection on port 7799 and printed `http://cotal.localhost:7799/` regardless, so a dashboard started with `--port` read as down and an unrelated program on 7799 read as the dashboard. A `web.pid` that cannot be read is named on the row, and the rest of the output still prints.
+- 60328b2: Source comments that sent readers to docs pages retired in the docs restructure now name the current pages. The `MeshView` header points at `docs/mesh-view.md`, and the console space picker and the web dashboard's Agent Detail frame point at `docs/watch-a-mesh.md`. These comments ship in the built packages, and `docs/protocol-view.md` and `docs/web.md` no longer exist.
+- 0ec35c2: A manager's endpoint reply now becomes a `ControlReply` through one core function, `controlReplyFrom`, which `cotal spawn -f`, the CLI's other manager calls (`cotal spawn --detach`, `stop`, `attach` and the rest) and `cotal_spawn` all use. Before, each caller copied the conversion and kept different fields. `cotal spawn -f` dropped the error code, the lifecycle-blocked details and their rendered `[lifecycle …]` facts, and the acceptance an uncertain launch keeps, so it could tell an `uncertain` launch from a `failed` one only by its text. `cotal spawn --detach` dropped that acceptance too, and a `stop` or `attach` whose name lookup was refused dropped the rendered facts. A refusal now carries the same code, details, facts and data whichever caller it reaches.
+- 723eb53: `cotal ext add` refuses a package whose `package.json` declares no `version`, or an empty one, and rolls the add back. It used to record such a package as `0.0.0` (or with an empty version), and every later load then reported it as in the manifest but not installed, which a re-add repeated.
+- 7986785: The connector and the CLI now print every peer with one label, from the new `peerLabel` in `@cotal-ai/core`: `name/role`, or the bare name for a peer with no role, with any line break or bracket shown as a space. Before, `cotal console` dropped a role equal to the name and its roster pane showed the name alone, the console's managed-agent row and the spawn line printed `name (role)`, and only message attribution sanitized the role, so `cotal_roster`, the orientation card, the ambiguous-DM candidate list, `cotal endpoints`, `cotal status` and `cotal ps` printed a role holding `]` or a newline verbatim. The DM target check that refuses a pasted label compares against the same label.
+- 668f6b0: The web dashboard's `web.session` record and its `x-cotal-readiness` header now have one definition, in `@cotal-ai/workspace`: the file name, the record's fields, the one reader, and the header name. The dashboard writes and reads the record through it and `cotal status` reads it there. Renaming the file, a field or the header on the dashboard side used to typecheck cleanly while `cotal status --components` read the live dashboard as `refused` and the `Web process` row read `down`; now it is a compile error on both sides.
+- Updated dependencies [392bfeb]
+- Updated dependencies [66df6c0]
+- Updated dependencies [0ec35c2]
+- Updated dependencies [015f805]
+- Updated dependencies [2cbfe9c]
+- Updated dependencies [1b11c4e]
+- Updated dependencies [c088c5c]
+- Updated dependencies [b413e2a]
+- Updated dependencies [7986785]
+- Updated dependencies [12bfc34]
+- Updated dependencies [4dcfa0b]
+- Updated dependencies [fd07b1e]
+- Updated dependencies [8dc360c]
+- Updated dependencies [cce8dad]
+- Updated dependencies [c7e0c0a]
+- Updated dependencies [2639a13]
+- Updated dependencies [668f6b0]
+- Updated dependencies [15b7920]
+  - @cotal-ai/workspace@0.70.0
+  - @cotal-ai/core@0.70.0
+
+## 0.69.0
+
+### Minor Changes
+
+- 8c01391: The manager carries an agent's MCP server selection as a list instead of the `--share-tools` flag string. The CLI parses `--share-tools` once and sends the list, so the `spawn` operation's `shareTools` input is now an array of server names and the manager cluster document moves to revision 22. A `supervise --roster` entry's `share-tools:` list is used as written, so a declared server named `none`, or one whose name contains a comma, now loads and is shared instead of refusing the roster. Preserved-state inventories are written as `cotal-manager-resume/v2`; a v1 inventory from an earlier release still resumes.
+
+### Patch Changes
+
+- f5cb8e1: Applying a space catalog (`cotal sync` and the lazy catalog refresh) now reads the mesh registry a fixed number of times instead of once or twice per catalog row. Each row reads only its own record file just before writing it, so a registration that `cotal meshes add` or `cotal up` records while the catalog applies still wins its collision check, and the records and the removals each share one legacy-file sweep, so the time spent under the catalog lock grows linearly with the registry. The workspace package adds `readMesh`, which reads one space's record file, and `recordMeshes` and `removeMeshes`, the batch forms of `recordMesh` and `removeMesh`.
+- 5aa48ce: Bare `cotal down`, and Ctrl-C on a foreground `cotal up`, no longer print `left 0 managed agents running (no longer managed):` and the `cotal down --with-agents` hint when the manager had no managed agents. The spare report now prints only when the pre-stop inventory names at least one agent.
+- 809a594: The `down-target` smoke now waits for its planted legacy manager to report that its SIGTERM handler is installed before `cotal down` signals it, with a 20 second bound. A fixed 100ms delay stood in for that readiness, so on a loaded host the manager could die to Node's default SIGTERM action before its handler existed, leave its planted agent running, and fail the `--with-agents` and historical-destructive cells without `down` being at fault. Shipped behaviour is unchanged.
+- c4bfba2: A foreground user-mode `cotal spawn` whose auth preflight fails now attempts every rollback step even when one fails, so a failed file removal no longer skips the deprovision of the agent's durables and ACL row. The `agent auth preflight failed` refusal keeps its cause and appends each step that failed, whatever value the step rejected with. The remote arm appends a failed removal instead of replacing the cause, a managed handoff's fixed refusal names the failed steps without their errors, and both arms' exit cleanup runs every step and reports what it left behind.
+- 02c0a2d: `cotal meshes add --mode user --from <https url>` now fetches the `/.well-known/cotal-mesh` discovery document under the address it is given, as its help says. Passing the mesh's address, such as `https://auth.example`, previously fetched that URL as is, so a host serving its site there failed with the file-oriented "user-auth bundle is not JSON" refusal. A URL that already ends in `/.well-known/cotal-mesh` is fetched as given, and the consent prompt now shows the full URL it will fetch instead of only the origin. The derivation is shared with the manual-registration policy refresh through the new `discoveryDocumentUrl` export of `@cotal-ai/workspace`.
+- 3a1716d: Every manager stop the CLI makes now runs the stop `cotal down` runs. Ctrl-C on a foreground `cotal up`, the teardown after its broker exits, the leftover-manager stop before `cotal up -f` and the delivery cutover preflight used a second stop that took no stop reservation, skipped the spare-capability check and gave up after 2s, leaving a wedged manager running with its record kept. They now hold the reservation, so a stop while another `cotal down` is stopping the manager is refused and leaves that stop's `--with-agents` policy in place, verify the spare capability before signalling, and send `SIGKILL` to a manager still running 15s after `SIGTERM`. Ctrl-C stops the manager first and, when that stop fails, signals nothing else and leaves the stack running. A pre-pin manager record whose pid now runs a process that is not a manager is removed without a signal on every path, `cotal down` included. The workspace exports `stopReservationPath`, the one spelling of a pidfile's stop reservation.
+- 06429be: `cotal status` and `cotal endpoints` now date a presence row the way `cotal_roster` does. Both print how long the status has stood, such as `unchanged for 40m`, and the age of the activity, such as `(set 9h ago)`, and neither prints an age for a stamp that is not a finite number: `activeAt: "nope"` printed `active NaNd ago`, a `null` condition start printed an age counted from 1970, and `1e400` printed `active 0s ago`. Core exports `presenceAges`, which decides which facts a row dates, and `formatAge`, the one compact age formatter, so the CLI and the connector no longer keep separate copies.
+- adab793: Resolve an agent's read list through one core function, `resolveReadAcl`, at every site: the persona loader, the session config, the manager launch, foreground `cotal spawn` and its user-mode grant, `cotal mint` and the manifest persona merge. An explicit empty `allowSubscribe` now reads `subscribe` everywhere, as an omitted one does. Before, the session refused a persona the loader had accepted. The manager also granted and recorded an empty read list while the provisioner recorded `subscribe`.
+- e0ad25c: A foreground `cotal spawn` through a remote user-mode mesh's advertised agent-provisioning endpoint, against a record that pins no exchange URL, is now refused before the provisioning request is sent. It used to request the grant, write the agent's actor token and sentinel credential under `.cotal/auth/creds/`, and then exit on the missing exchange URL with both files still on disk. `docs/cli.md` now says when that refusal happens.
+- b584718: `cotal status` and `cotal setup` now decide whether a connector's `requires` executables are present with the same PATH resolver as the manager and manifest preflights. A `requires` entry written as a path is checked as given instead of being joined under every PATH directory, so an absolute path or `./tool` is no longer reported as missing and `bin/tool` under a PATH directory is no longer reported as ready. The shared resolver now skips a directory that matches on PATH, as exec does, so a directory named like a harness no longer counts as that harness or hides the real binary later on PATH.
+- 0c5b205: `cotal run start`, `resume`, `ps`, `journal` and `answer` now re-describe and re-issue an unpinned manager call that a sibling manager refused before running it, up to the same 16 attempts the CLI's manager commands use. Before, one such refusal ended the command, so in a space with two managers about half of these calls failed with a refusal saying the command was not run. A hosted run's own manager calls now use that bound too instead of 8. The repair is one core helper, `invokeRepairingSplit`, which the CLI and the runtime both call.
+- 98d2b41: Resolve a spawn's harness through one shared rule. Foreground `cotal spawn`, the detached `--resume` carry and the manager's `start` now all call `resolveAgentType` in `@cotal-ai/workspace` (`--agent`, then the persona's `agent:` pin, then a detached caller's default, then `COTAL_DEFAULT_AGENT`, then the product default). The foreground path no longer spells the product default as its own literal, so it can no longer pick a different harness than a detached spawn of the same persona. Behavior is unchanged while the product default stays `claude`.
+- 6540a32: The architecture and control-surface pages, which ship in the bundled docs, and several source comments described spawn auto-numbering as `reviewer-2`. They now spell the series with `_` (`reviewer_2`, `reviewer_3`), the separator the manager and `cotal spawn` use. The control-surface spawn accept example shows `reviewer_2` as both the allocated name and the user-mode actor. No behavior changes.
+- 5195d74: A foreground `cotal spawn` whose persona reference is a path that does not exist now names the file it opened. It used to say the persona was missing from the mesh's `.cotal/agents` directory, which a path reference never reads. A bare catalog name is still refused with that directory and the mesh it came from. `docs/cli.md` now says how a path reference resolves.
+- cbbde1d: A first `cotal up` no longer prints `✓ restored in the background: manager (pid N)`. The line came from the control-plane helper that every launch shares, so the detached, foreground and resume launches claimed a restore whenever they started their manager. Only a refresh of a running mesh prints it now, when it starts a manager that was missing.
+- 02a989a: Foreground `cotal up` and `cotal up --detach` now run the steps after their listener is ready through one function: the space setup, the user-auth service, the mesh record, the transport policy and the control plane. When the space setup of a fresh foreground boot failed, for example on a channel seed with an invalid `replayWindow`, `up` exited 1 but left its nats-server running on the port with `.cotal/nats.pid` in place and no mesh record for `cotal down` to find. It now stops the listener and removes the pid file, as `--detach` already did. A foreground TLS boot also writes its broker policy after the mesh is recorded, in the same order as `--detach`.
+- Updated dependencies [f5cb8e1]
+- Updated dependencies [2d45766]
+- Updated dependencies [03a7405]
+- Updated dependencies [a256e2f]
+- Updated dependencies [3f3d04a]
+- Updated dependencies [4500563]
+- Updated dependencies [5eb1e24]
+- Updated dependencies [69232cd]
+- Updated dependencies [02c0a2d]
+- Updated dependencies [93716c3]
+- Updated dependencies [3a1716d]
+- Updated dependencies [9772fd4]
+- Updated dependencies [06429be]
+- Updated dependencies [adab793]
+- Updated dependencies [d29d4d3]
+- Updated dependencies [539266a]
+- Updated dependencies [b584718]
+- Updated dependencies [0c5b205]
+- Updated dependencies [98d2b41]
+  - @cotal-ai/workspace@0.69.0
+  - @cotal-ai/core@0.69.0
+
+## 0.68.0
+
+### Patch Changes
+
+- 218006f: A bearer command that fails without printing a sentence of its own now reports its cause. The agent auth preflight in `cotal spawn` and in the manager, and a running agent's bearer refresh, reported such a failure with Node's `Command failed` line, which repeated the whole bearer argv (exchange URL or state dir, space, owner, actor, token file and health file) and never said whether the child timed out, was killed or exited. The error now says the bearer command timed out after its limit, was killed by a named signal, or exited with a named code and printed nothing. A failure the command explains on stderr is still reported with that sentence. `bearerCommandFailure` in `@cotal-ai/core` builds the error.
+- a31363d: A broker URL refused during registration now names where it came from. `cotal meshes add --user-auth-file` or `--from` reports a bad server in the bundle as the bundle's server, and the enrollment bootstrap (`COTAL_ENROLLMENT_URL` with `cotal spawn --space`) reports it as the enrollment bundle's server. Both used to blame `--server`, a flag neither command was given. A typed `--server` is still reported as `--server`.
+- 2dfb9b9: The `up-multi-space-render`, `up-per-space-membership` and `up-resume-render-lock` live smokes now start `cotal` as `node --import tsx` instead of through the `.bin/tsx` shim. The shim runs the CLI in a second process and relays only SIGINT and SIGTERM, so the suites' SIGKILL escalation ended the wrapper and left the real `cotal up` running as an orphan. The spawned child is now the CLI itself, so the SIGKILL reaches it. Shipped behaviour is unchanged.
+- a5256fd: Ctrl-C on a foreground `cotal up`, and a broker that exits under it, now stop the delivery daemon with the same stop `cotal down delivery` uses. Before, that teardown took no stop reservation and never escalated past SIGTERM: a concurrent `cotal down delivery` could not see the stop in progress, and a daemon that did not exit on SIGTERM survived the teardown while `up` went on to stop the broker. The teardown now holds the reservation, sends SIGKILL after the 15-second grace, and removes the daemon's credential only once its death is confirmed. If the broker exits while the Ctrl-C teardown is running, `up` waits for that teardown to finish before it exits. `cotal down delivery` now clears a record whose pid belongs to another program without signalling it, as the `up` teardown already did. A local process descriptor can carry `isOwnCommand` for that check; an installed extension's descriptor is cached as data and is refused if it declares one.
+- 2014b03: `cotal setup` now builds each connector setup step with the input that action's type declares, so the compiler checks which input reaches the `connector`, `skills` and `mcpServers` actions. The step builder used to pick the input by action name behind two casts, which let a swapped or missing input compile and reach the provider only when someone ran `cotal setup`.
+- 237c813: `cotal_spawn` now returns an uncertain launch as a pending result instead of a tool error. A worker that has not joined the mesh within its readiness window is still managed and may yet join, so the result names the allocated agent, its id and its manager, and says to watch the roster, because spawning again starts a second agent. A launch that exits stays an error. The goal follower keeps the acceptance as the reply data of any terminal other than `succeeded`, and `ControlReply` carries the endpoint error code, so the tool keys on the `uncertain` code rather than on the message. A pinned-model spawn that settles uncertain reports its recorded pin the same way.
+- e6b48bf: `cotal status --components` now presents the dashboard's readiness nonce from `web.session` when it probes `/api/meta`, so a live dashboard at its recorded address grades `web serving`. The probe used to ask anonymously, the dashboard's auth gate refused it with 401, and the row could only read `not-serving · http identity mismatch`.
+- Updated dependencies [6141e7b]
+- Updated dependencies [4120c97]
+- Updated dependencies [218006f]
+- Updated dependencies [681c5b0]
+- Updated dependencies [585fdb2]
+- Updated dependencies [a5256fd]
+- Updated dependencies [0d806ae]
+- Updated dependencies [9b439e8]
+- Updated dependencies [41a7e66]
+- Updated dependencies [f018376]
+- Updated dependencies [6a1789b]
+- Updated dependencies [237c813]
+  - @cotal-ai/core@0.68.0
+  - @cotal-ai/workspace@0.68.0
+
+## 0.67.0
+
+### Minor Changes
+
+- f389576: `cotal spawn --resume <id> --detach --on <instance>` carries a Claude session held on the operator's host to a manager on another host, as `docs/design/resume-transfer.md` lays out. The CLI finds the transcript with the connector's new `resumeTranscript` locator and writes it into a JetStream Object Store bucket owned by the target instance, in chunks sized to the broker's `max_payload`, as a chain that an interrupted carry continues. The manager's new operator-only `transcript-receive` command stages it, removes the broker object, and issues a one-time `resumeClaim` that `spawn` consumes; a re-run of the same bytes moves none. The seat forks the transcript in a seat-private Claude home that authenticates with an environment credential, and `cotal ps --wide` names the source host, session, digest and carry time. The manager cluster document moves to revision 21. Two one-shot credentials carry it on an authenticated mesh: a `transfer-writer` the CLI mints from the space's signing seed for the one transcript it hashed, or on a user-auth mesh exchanges from the operator's login as the new `transfer-writer` view (scope `admin`), and a `transfer-reader` the target manager mints for its own bucket on each receive or sweep, or that the host issues a remote manager through the new manager-service `transferReader` operation. A carried seat records the digest of the transcript Claude forked, and the manager stops a seat whose record does not match the carried bytes, including one whose launch was uncertain and that joined later. Space deletion lists the transfer buckets and deletes them: `deleteSpace` given the space's trust material mints its own `teardown` naming them, and it now throws naming every stream it could not delete instead of reporting success. The console space picker deletes a space this host registered as a static-auth mesh that way. The `transfer-writer` view, and the broker connection minted from it, lives at most five minutes, the static credential's lifetime.
+
+### Patch Changes
+
+- 48f18d0: Remove sentences from shipped comments in core, lang, the CLI and the manager that described what earlier revisions of those comments claimed. The request-path validation note in `endpoint-envelope.ts` now states as current fact that registration-time profile bounds do not replace request-path enforcement, with the `uniqueItems` measurement under it. The barrier-window note in `endpoint-action.ts`, the lang worker header, the worker result backstop, the `--rotate-sys` broker check and the manager's goal-writer epoch belt keep their contract text and drop the history. No behavior changes.
+- e85e1fd: An agent's manager calls now repair a class-queue split as the CLI does. In a space with more than one manager, a call can reach a manager other than the one it resolved against, which refuses it before running it. `CotalEndpoint.invokeService` re-described and re-issued that call only once, and the re-issue splits again at the same rate, so with two managers about a quarter of `cotal_spawn` and `cotal_despawn` calls still failed. A spawn whose seat came up was reported as `Couldn't spawn` when the goal-result read that follows it split, and a named despawn was refused with `WAS NOT RUN`. The endpoint now re-issues up to 16 times, the bound the CLI already uses, which core now exports as `BIND_SPLIT_REISSUES`. A named `cotal_despawn` also asks its `inspect` lookup again when the manager that answered names a sibling instance as the owner, until the owner answers, within the same bound; before, it refused a live seat whenever the lookup reached the other manager.
+- 55061ff: `cotal ext add` now reports an extension that needs an export its linked `@cotal-ai/*` peer does not have the way a later load of it does: it names which install is behind and what to rebuild or upgrade. It used to print only the raw missing-export import error. First-run and upgrade seeding add every built-in connector through this path.
+- Updated dependencies [48f18d0]
+- Updated dependencies [e85e1fd]
+- Updated dependencies [55061ff]
+- Updated dependencies [5b0da88]
+- Updated dependencies [e65ec69]
+- Updated dependencies [79e5268]
+- Updated dependencies [bb0b14e]
+- Updated dependencies [3069425]
+- Updated dependencies [ae5b3cd]
+- Updated dependencies [954a78b]
+- Updated dependencies [f389576]
+- Updated dependencies [562a56b]
+  - @cotal-ai/core@0.67.0
+  - @cotal-ai/workspace@0.67.0
+
+## 0.66.1
+
+### Patch Changes
+
+- 568f718: `cotal down` no longer fails with `ENOENT` when a component removes its own process record while the command runs. The record readers in `down`, the manager, delivery and auth-service helpers, and `cotal service status` checked that a pidfile existed and then read it, so a record removed between the two calls threw: `cotal down manager` printed `✗ ENOENT` and `✗ not cleanly stopped` and exited 1, and `cotal down nats` aborted before stopping the broker. Each reader now reads the record once through the new `readPidfile` helper in `@cotal-ai/workspace`. A record that is gone takes the no-record path, and any other read error still throws.
+- ec2f68a: `cotal status --components` no longer aborts every row when one component's PID record cannot be read. The pass checked that a pidfile existed and then read it, so a component that removed its own record between those two calls, or a record the pass could not read, threw out of the whole pass: it printed the header with no rows and exited 1, the same code as `absent`. The record is now read once. A record that is gone reads as `absent`, and any other read error makes that component `refused`, naming the error, while the other rows print as before. Bare `cotal status` reads each local process record once as well, and a record it cannot read marks only that process row `pidfile unreadable`, naming the error. It reads the manager's delivery-aware marker only after the manager's own record, so a marker left behind by a stopped manager is not read. A process that exits while status runs, or a process record status cannot read, no longer aborts the command before the component pass.
+- Updated dependencies [568f718]
+  - @cotal-ai/workspace@0.66.1
+  - @cotal-ai/core@0.66.1
+
+## 0.66.0
+
+### Patch Changes
+
+- 84cead6: A foreground `cotal spawn` on an open mesh now publishes its AG-UI events. The launch passed the seat no id, so its endpoint made up a random actor for each process and the event emitter refused to start with `events are not available for a session with a self-minted identity`. The seat's Graph stayed empty although the spawn had succeeded. The foreground launcher now allocates an id on an open mesh, as the manager already does for detached seats, so this works for every connector with an event plane. The Jcode connector used to work around this by itself, using the seat name as its actor on an open mesh. That workaround is gone, and an open-mesh Jcode seat now gets the allocated id like every other seat.
+- 3808751: `cotal status --components` now probes the web dashboard at the address the dashboard bound. The dashboard records its socket's host and port in `web.session` once it is listening, and status reads that record. Before, status parsed `--host` and `--port` out of the dashboard's command line and fell back to `127.0.0.1:7799`, so a port spelled any way other than plain digits (`--port 0x1f90` binds 8080) was probed at 7799, and `--port 0` was refused as an invalid port while the dashboard listened on an ephemeral one. A live dashboard pid with no readable recorded address, including a dashboard still writing its record and one started by an earlier build, is now `refused` with `no bound address recorded`.
+- Updated dependencies [a07f732]
+- Updated dependencies [be53e2d]
+- Updated dependencies [658c1b8]
+- Updated dependencies [af779f9]
+  - @cotal-ai/core@0.66.0
+  - @cotal-ai/workspace@0.66.0
+
 ## 0.65.0
 
 ### Patch Changes

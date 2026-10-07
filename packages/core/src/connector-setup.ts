@@ -8,7 +8,9 @@ export interface ConnectorSetupAction<Input = void> {
   readonly title: string;
   readonly explain: string;
   readonly context?: readonly string[];
-  run(input: Input): Promise<string> | string;
+  /** Declared as a property because TypeScript checks method parameters bivariantly: as a method, a
+   * provider whose action narrows `Input` past what the CLI sends would still compile. */
+  readonly run: (input: Input) => Promise<string> | string;
 }
 
 /** Inputs shared by connector-specific skills installers. The authored skills themselves use the
@@ -34,8 +36,9 @@ export interface ConnectorAssist {
   /** Harness name the recovery menu shows ("Debug it with <title>"). */
   readonly title: string;
   /** Hand the terminal to the harness primed with `prompt`. Resolves when the operator exits it;
-   * rejects when the harness cannot be launched. */
-  run(prompt: string): Promise<void>;
+   * rejects when the harness cannot be launched. A property so a narrowed `prompt` fails to compile,
+   * as {@link ConnectorSetupAction.run} explains. */
+  readonly run: (prompt: string) => Promise<void>;
 }
 
 /** Generic Cotal inputs a provider's status check compares against. */
@@ -69,6 +72,7 @@ export interface ConnectorSetupProvider extends Extension {
    * spawns. First-run setup runs it; a share list the cotal config already declares is kept. */
   readonly mcpServers?: ConnectorSetupAction<ConnectorShareSetupInput>;
   readonly assist?: ConnectorAssist;
-  /** Read-only health of what this provider installs, for `cotal status` and the setup card. */
-  status?(input: ConnectorStatusInput): readonly ConnectorStatusRow[];
+  /** Read-only health of what this provider installs, for `cotal status` and the setup card. A
+   * property so a narrowed `input` fails to compile, as {@link ConnectorSetupAction.run} explains. */
+  readonly status?: (input: ConnectorStatusInput) => readonly ConnectorStatusRow[];
 }

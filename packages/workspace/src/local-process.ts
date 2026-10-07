@@ -1,8 +1,8 @@
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, normalize, dirname, basename } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceKey } from "./auth-paths.js";
-import { parsePid, probeLiveness } from "./pid.js";
+import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 
 /** Context supplied to local process providers by workstation commands such as `down` and `status`. */
 export interface LocalProcessContext {
@@ -39,6 +39,10 @@ export interface LocalProcess extends Extension {
    *  target-resolved from any directory and records its pidfile under the TARGET mesh's root; a
    *  cwd-only stop would miss the live process. Bare whole-stack sweeps stay folder-scoped. */
   readonly rootedAt?: "target";
+  /** Whether a live process's command line is this process's. A stop never signals a live pid this
+   *  rejects: the record outlived its process and the pid was reused, so the stale record is cleared.
+   *  A function cannot be cached for an installed extension, so only this CLI's own processes set it. */
+  readonly isOwnCommand?: (command: string) => boolean;
 }
 
 // ---- the runtime records, per space -------------------------------------------------------------
@@ -54,6 +58,10 @@ export interface LocalProcess extends Extension {
  *  space booting in that root overwrote the first space's record and every reader then answered
  *  about the wrong process. `auth-service.{space}.pid` was already templated; these were not. */
 export const MANAGER_PIDFILE = "manager.{space}.pid";
+
+/** The stop reservation beside a resolved pidfile: whoever holds it is the one process stopping that
+ *  record, and a manager reads it to bind a `--with-agents` intent to the exact stop attempt. */
+export const stopReservationPath = (pidPath: string): string => `${pidPath}.stopping`;
 
 /** `.cotal/manager.<spaceKey>.log` — where a detached manager's output goes. Per-space for the same
  *  reason the pidfile is: two spaces' managers sharing one log interleave two meshes' console URLs
@@ -176,7 +184,8 @@ export function reclaimDeadPreUpgradeRecord(template: string, context: LocalProc
   const [, ...legacy] = localProcessPathCandidates(template, context);
   for (const path of legacy) {
     if (!existsByteExact(path)) continue;
-    const raw = readFileSync(path, "utf8").trim();
+    const raw = readPidfile(path);
+    if (raw === undefined) continue; // gone since the listing: its owner exited or a concurrent start reclaimed it
     if (raw === "") {
       rmSync(path, { force: true }); // empty husk: nothing is behind it, as the canonical claim treats it
       continue;
@@ -205,7 +214,8 @@ export interface RecordedRuntimeSpace {
   /** False only when EVERY record for this space is provably not a process (empty husk, or a pid
    *  ESRCH-proven dead). An unparsable record or a pid the kernel will not answer for counts as
    *  possibly running: the same fail-closed direction `down`'s dependant guard takes, because the
-   *  cost of the other reading is walking past a live daemon. */
+   *  cost of the other reading is walking past a live daemon. A record that exists but cannot be
+   *  read is less attributable still, so the enumeration throws its read error rather than answering. */
   readonly mayBeRunning: boolean;
 }
 
@@ -229,8 +239,9 @@ export function recordedRuntimeSpaces(root: string): RecordedRuntimeSpace[] {
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    return []; // no `.cotal` → nothing is recorded here
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no `.cotal` → nothing is recorded here
+    throw e;
   }
   const found = new Map<string, boolean>();
   for (const name of names)
@@ -260,12 +271,8 @@ function spaceFromRecordName(template: string, name: string): string | undefined
 /** Whether a record file might still front a process. See {@link RecordedRuntimeSpace.mayBeRunning}
  *  for the direction and why it is that one. */
 function recordMayBeRunning(path: string): boolean {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8").trim();
-  } catch {
-    return false; // removed under us → nothing to address
-  }
+  const raw = readPidfile(path);
+  if (raw === undefined) return false; // removed under us → nothing to address
   if (raw === "") return false; // pre-protocol husk: no process behind it
   const pid = parsePid(raw);
   if (pid === undefined) return true; // unattributable: cannot prove it gone
@@ -278,8 +285,9 @@ function recordMayBeRunning(path: string): boolean {
 function existsByteExact(p: string): boolean {
   try {
     return readdirSync(dirname(p)).includes(basename(p));
-  } catch {
-    return false; // parent absent → not present
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; // parent absent → not present
+    throw e;
   }
 }
 

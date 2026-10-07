@@ -1,10 +1,8 @@
 # Carrying a resumed session to another manager
 
-> **Design** (non-normative, not shipped) · Phase 1 for [#1499](https://github.com/Cotal-AI/Cotal/issues/1499).
-> Measured against `22e210acd`. Phase 2 implements this record as written, in the same change, once
-> it is reviewed. Phase 2 builds the transfer that `cotal spawn --resume <id> --detach --on <instance>`
-> needs. Streaming over the same path is designed here (section 8) and is not built in this change,
-> so the change refers to #1499 and leaves it open.
+> **Design** (non-normative) · Phase 1 for [#1499](https://github.com/Cotal-AI/Cotal/issues/1499).
+> Measured against `22e210acd`. Status: the carry for `cotal spawn --resume <id> --detach --on <instance>`
+> shipped in 0.67.0. Streaming over the same path (section 8) is not built, and #1499 stays open for it.
 
 ## 0. What this settles
 
@@ -389,8 +387,8 @@ A fresh config home starts Claude's first-run setup and asks to trust the workin
 connector writes `<home>/.claude.json` with two facts: onboarding is complete, and the launch `cwd` is
 trusted when, and only when, the Claude home the manager's environment names already trusts it. An untrusted `cwd` is
 refused with the remedy of opening `claude` in that directory on the manager host once. A seat
-launched today in the shared home meets the same trust prompt, so the rule keeps parity and grants
-nothing new. The keys are internal to Claude, so the connector pins them to its supported Claude
+launched in the shared home is refused the same way, so the rule keeps parity and grants nothing
+new. The keys are internal to Claude, so the connector pins them to its supported Claude
 range, and hand test H6 proves a carried seat reaches its first turn with no prompt.
 
 ### 7.5 What this boundary is

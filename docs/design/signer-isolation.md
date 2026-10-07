@@ -106,12 +106,14 @@ object.** `Manager.runStart` constructs it with `auth: this.auth` (`manager.ts`)
 | `run-operator` | `withOperator` (one-shot read / answer) |
 
 **Barrier helpers take `opts.auth: SpaceAuth` from the manager (or from the CLI below) and mint
-in-process today:**
+in-process today, each through `withScopedEndpoint` (`endpoint-evict.ts`), which fixes the 60s
+lifetime:**
 
 | Profile | Function |
 |---|---|
-| `endpoint-evictor` | `makeManagerEndpointEvictionEvidence` (`endpoint-evict.ts`) |
+| `endpoint-evictor` | `makeManagerEndpointEvictionEvidence` and `makeManagerEndpointHolderEvictor` (`endpoint-evict.ts`) |
 | `endpoint-evictor` | `makeManagerHolderLivenessProbe` (`holder-liveness.ts`) |
+| `observer` | `makeManagerHolderLivenessProbe`, for its `lease.0` diagnosis read |
 
 **Operator commands in the manager package load their own bundle with `getSpaceAuth` and mint.
 They are not `this.auth`, but they are the same seed on this host:**
@@ -176,7 +178,7 @@ service is a sibling signer client on the same host. After §3 it dials the same
 
 ### 1.3 What is not the account signer
 
-`loadManagerInstanceIdentity` / `saveManagerInstanceIdentity` (`auth-paths.ts`) persist the
+`loadManagerInstanceIdentity` / `createManagerInstanceIdentity` (`auth-paths.ts`) persist the
 manager's serve nkey seed. That is the instance's own user identity (SPEC 13.6), not the account
 signing seed. Isolation of the account signer does not move it.
 

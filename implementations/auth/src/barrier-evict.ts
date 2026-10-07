@@ -112,12 +112,12 @@ export function makeDeliveryAdminEvictor(opts: {
 }
 
 /**
- * The gate repair's family evictor: verify-evict a SET of holders over ONE per-call connection, with
- * one `evictPrincipals` request (one shared daemon sweep) per {@link EVICT_PRINCIPALS_MAX} holders.
- * Answers `verifiedGone` per holder in input order, with the same fail-closed mapping: a refusal, an
- * unreachable rail or an unusable reply leaves every holder it covers unverified.
+ * The family evictor: verify-evict a SET of holders over ONE per-call connection, with one
+ * `evictPrincipals` request (one shared daemon sweep) per {@link EVICT_PRINCIPALS_MAX} holders.
+ * Answers one `EvictionResult` per holder in input order, with the same fail-closed mapping: a
+ * refusal, an unreachable rail or an unusable reply leaves every holder it covers unverified.
  */
-export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliveryAdminEvictor>[0]): (holderPrincipals: readonly string[]) => Promise<boolean[]> {
+export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliveryAdminEvictor>[0]): (holderPrincipals: readonly string[]) => Promise<EvictionResult[]> {
   const auth: SpaceAuth = {
     space: opts.space,
     operator: { seed: "", jwt: "" },
@@ -131,7 +131,7 @@ export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliv
   return async (principals) => {
     const id = newIdentity();
     let ep: CotalEndpoint | undefined;
-    const verified: boolean[] = [];
+    const evictions: EvictionResult[] = [];
     try {
       const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
       ep = new CotalEndpoint({
@@ -154,14 +154,14 @@ export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliv
         const why = !r.ok
           ? `the delivery daemon refused the family eviction: ${r.error ?? "(no error copy)"}`
           : `the delivery daemon answered a family eviction result set that does not match the ${chunk.length} holder(s) asked about`;
-        chunk.forEach((p, j) => verified.push((results ? checkedEviction(p, results[j], failClosed) : failClosed(p, why)).verifiedGone));
+        chunk.forEach((p, j) => evictions.push(results ? checkedEviction(p, results[j], failClosed) : failClosed(p, why)));
       }
     } catch (e) {
       const note = `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`;
-      for (const p of principals.slice(verified.length)) verified.push(failClosed(p, note).verifiedGone);
+      for (const p of principals.slice(evictions.length)) evictions.push(failClosed(p, note));
     } finally {
       await ep?.stop().catch(() => {});
     }
-    return verified;
+    return evictions;
   };
 }

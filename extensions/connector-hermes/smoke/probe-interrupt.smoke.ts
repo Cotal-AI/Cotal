@@ -17,6 +17,7 @@
 import { strict as nodeAssert } from "node:assert";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 
 let cells = 0;
 const assert: typeof nodeAssert = new Proxy(nodeAssert, {
@@ -32,11 +33,7 @@ const assert: typeof nodeAssert = new Proxy(nodeAssert, {
 
 const EXPECTED_CELLS = 5;
 
-if (process.platform === "win32") {
-  console.log("✓ probe-interrupt smoke skipped on Windows (the Hermes connector is Unix-only)");
-  console.log("COTAL_SMOKE_SENTINEL cells=1 passed=1 failed=0");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
 const pkgDir = fileURLToPath(new URL("..", import.meta.url));
 const probe = fileURLToPath(new URL("./reconnect-effect.probe.py", import.meta.url));

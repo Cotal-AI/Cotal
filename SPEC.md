@@ -318,7 +318,8 @@ a conformant delivery message MUST validate against it, and where this document'
 tables and the schema diverge on a shape, the schema wins. Delivery *semantics* (routing,
 guarantees, rejection) are defined by this document's prose. The schema is generated from
 the reference source, [`packages/core/src/types.ts`](packages/core/src/types.ts)
-(`pnpm gen:schema`), and committed; the published copy lives at
+(`pnpm gen:schema`), and committed; `pnpm check:docsbundle` fails when the committed file
+differs from the generator's output. The published copy lives at
 `https://docs.cotal.ai/cotal.schema.json`.
 
 **Rejection reasons.** The three permanent anomalies in §4 are terminated, never redelivered.
@@ -595,6 +596,20 @@ mode.
 | `DM_<space>` | `cotal.<space>.inst.>` | Limits | file storage, no Direct Get |
 | `TASK_<space>` | `cotal.<space>.svc.>` | WorkQueue | file storage, no Direct Get |
 
+**Resume transfer bucket.** A manager instance that receives a carried resume transcript holds one
+JetStream Object Store bucket, `cotal_xfer_<space>_<instanceId>` (stream
+`OBJ_cotal_xfer_<space>_<instanceId>`): file storage, `discard=new`, `max_age=0`, rollup headers and
+Direct Get allowed, every other limit `-1`. An object is named `sha256:<hex>` for the transcript's
+digest and is written in the stock Object Store layout with its `nuid` set to `<hex>`, so every
+attempt at the same bytes writes one chunk subject, `$O.<bucket>.C.<hex>`. Each chunk is a
+JetStream publish carrying `Cotal-Offset` (transcript bytes through this chunk), `Cotal-Chunk`
+(chunks through this chunk) and `Nats-Expected-Last-Subject-Sequence` (the previous chunk's stream
+sequence, `0` for the first); the acknowledged chain is the upload's only checkpoint, and a writer
+continues from its last chunk. The commit is the stock meta record, published with `Nats-Rollup:
+sub` and an expected last subject sequence. The target manager stages a committed object, verified
+against its digest, removes the object whole, and removes any transfer idle for ten minutes; no
+message expires by age.
+
 Channel **live** delivery is a native core-NATS subscription to `cotal.<space>.chat.*.*.<channel>`
 (wildcard sender owner+actor) bounded by `sub.allow` (§9), not a durable consumer; join/leave is the
 subscribe/unsubscribe and needs no privileged mediation. The legacy v0.2 `chat_<owner>-<actor>`
@@ -729,6 +744,8 @@ credential diverge (§2): the principal keys subjects/durables/presence; the con
 | `agent` | own `chat.<owner>.<actor>.<ch>` for each `allowPublish` channel (post ACL, default-deny), `inst.*.*.<owner>.<actor>`, `svc.*.<owner>.<actor>`; endpoint request forms per minted capability (`ep.one`/`ep.all`/`ep.inst` with the capability's authz-mode/target pattern, caller triple `<owner>.<actor>.<uid>` pinned; `describe` by default; `epj` submissions for journaled capabilities; §13.9); own presence key | own `_INBOX_<connId>.>` + own endpoint reply rail (`ep.reply.*.*.*.<owner>.<actor>.<uid>.*`, exact arity); channel live tail via native `sub.allow` subscriptions to `chat.*.*.<channel>` per `allowSubscribe` (wildcards preserved); `STREAM.INFO` (stream-level state only, no body read) on `CHAT` and the world-readable KVs, plus `TASK` when the credential carries a `role`; presence and channel-registry KV watches, including create/info/delete of their client-managed ordered consumers on those two streams only; CHAT history via single-filter `chathist_<owner>-<actor>-<uid>` creates, one per `allowSubscribe` channel (ACL-bounded); own lifecycle-scoped `dm_…`/`svc_…` bind-only; durable backstop via own bind-only lifecycle-scoped `dlv_…` DELIVER consumer, **no** grant on the mixed pre-auth fan-out stream; granted record-key/event-topic read subtrees per capability | read bounded by `allowSubscribe`; ordered-consumer cleanup cannot delete KV records or streams; durable copies re-authorized (current ACL + membership + lifecycle) by the trusted reader before the `dlv` handoff; no Direct Get; DM/TASK/DLV create denied. The `manager-caller` view narrows this endpoint control set to `ep.inst.manager.<managerInstanceId>.<command>` only, plus the exact instance `describe`, contract reads, own reply/progress rows, and own inbox. It carries no agent messaging, delivery, class, or scatter rows. |
 | `observer` | none | chat, CHAT history, presence, channel registry | DMs invisible |
 | `admin` | none | whole space live tap plus DM history | plaintext god-view, opt-in |
+| `transfer-writer` | one carried transcript's chunk and meta subjects in one manager instance's transfer bucket (§8) | a last-message Direct Get on those two subjects | one-shot per CLI call, minted after the transcript is hashed; no consumer and no other object |
+| `transfer-reader` | the stock delete marker on its own transfer bucket's meta subjects | its own `OBJ_cotal_xfer_<space>_<instanceId>` stream: info, message get, its push consumer, purge | one-shot per `transcript-receive` or sweep; no other instance's bucket |
 | scoped host profiles | least-privilege per function | least-privilege per function | The former allow-all `manager` is **deleted**; its host duties split into scoped, single-function creds (`supervisor`, `provisioner`, `delivery`, `membership-rw`, `operator`, `purger`, `teardown`, `channel-writer`, …). No allow-all credential exists. Appendix B summarizes them; the concrete grant lists are **generated from the §13.9 ownership matrix** into `provision.ts` (the matrix is the single oracle; `provision.ts` is its artifact, Appendix B its summary). |
 
 DM and TASK confidentiality, and the CHAT read boundary, close the leak paths:
@@ -888,8 +905,13 @@ one session and binds the minted connection's expiry to the grant's, which is th
 expiry, rather than the bearer's. The auth service's host-issuer connection performs both reads and
 holds only `STREAM.INFO` and the leader-served `STREAM.MSG.GET` on `KV_cotal_sessions_<space>`: no
 Direct Get and no write on that store.
-On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, and `session-caller`
-MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
+The `transfer-writer` view carries a required `act.transferWriter` claim `{instanceId, hex}` and is
+valid with no other view; `act.transferWriter` is valid only with it. It needs ledger scope `admin`,
+the scope of the `transcript-receive` row it serves. The human exchange accepts it only together with a
+`transferWriter` body (each without the other is a 400), and the callout mints the `transfer-writer`
+profile for that one object of that one instance's transfer bucket (§8).
+On a public exchange face, `channel-writer`, `channel-purger`, `manager-caller`, `session-caller`, and
+`transfer-writer` MAY be issued. `admin`, `purger`, `deployer`, and `manager-service` MUST remain loopback-only. A
 managed-agent secret exchange MUST refuse every view other than `manager-caller`.
 
 ---
@@ -1319,11 +1341,13 @@ credentials. A manager-service credential is ledgered and gated exactly as this 
 its `holderPrincipal` is the derived-owner/fixed-actor principal, never the endpoint name.
 
 The typed protocol includes two host-owned registration-maintenance operations. An
-`evict-family-principal` request names one principal, but the host MUST enumerate the authenticated
-caller instance's `epcred.manager.<instanceId>.*` family and refuse unless that principal is one of
-its holders. The host, using its signer, then mints the bounded delivery-admin caller, requests
-`evictPrincipal`, and returns the closed `EvictionResult`; a garbled, foreign, or contradictory
-result MUST NOT authorize. The participant never receives that credential. A
+`evict-family-principal` request names `principals`, 1 to 256 distinct holders, so a restart's
+family eviction costs one request and one family scan per 256 holders. The host MUST enumerate the
+authenticated caller instance's `epcred.manager.<instanceId>.*` family once per request and refuse
+unless every named principal is one of its holders. The host, using its signer, then mints the
+bounded delivery-admin caller, requests `evictPrincipals` for the set, and returns `evictions`, one
+closed `EvictionResult` per principal in request order; a garbled, foreign, misordered, or
+contradictory result MUST NOT authorize. The participant never receives that credential. A
 `reconcile-registration` request MAY name another manager instance in the same space only to clear
 an abandoned governance-slot holder. The host MUST observe that target's frozen registration gate,
 prove the freeze-holder `gone` under a complete liveness sweep, run the normal registration repair
@@ -1351,7 +1375,22 @@ authenticated owner, and its `opId` MUST equal `managedRetirementOpId(target.lif
 recomputed by the host rather than trusted, so one lifecycle never carries two terminal operations.
 
 These two operations mutate host-owned storage, so an implementation that owns no such storage MUST
-refuse them with `unimplemented` rather than answering a manager-lifecycle phase for them. A host
+refuse them with `unimplemented` rather than answering a manager-lifecycle phase for them. An auth
+service that owns the actor ledger and the space's provisioning authority answers both itself, after
+the same decision. Its enrollment writes the managed grant at a fresh host-minted lifecycle UID with
+the request's supervising actor as the grant's parent, so the ledger's delegation envelope bounds it,
+and then provisions that UID's durables; a provisioning failure revokes the grant and releases the
+footprint before the refusal. An enrollment whose token digest matches the agent's standing grant is
+a retry of that enrollment: it walks the held grant through the supervising actor's current
+delegation envelope and refuses as a fresh enrollment would when the grant falls outside it;
+otherwise it answers the held UID and provisions it again, and its failure leaves that grant in
+place. While the agent holds a grant with another digest, enrollment MUST be refused
+with `conflict` until that lifecycle's retirement is prepared, so a successor never takes a running
+agent's grant. Its prepare-retirement releases the target UID's broker footprint and then revokes the
+grant, only while the grant still names that UID, so a repeated request is harmless. The service runs
+enrollment and prepare-retirement of one agent one at a time, and every revoke it performs names the
+UID it releases. The enrolled agent's bearer exchanges at the public exchange face, so an auth
+service without that face MUST refuse enrollment with `failed-precondition`. A host
 platform that owns the writers MAY intercept them on its own authenticated route and obtain the
 decision alone from the auth service's loopback door
 `POST /manager-service-authority/verify-enrollment`, which carries the same loopback guards as the
@@ -1726,6 +1765,13 @@ revision-pinned `(alias, lifecycleUid)` mapping, §13.1) immediately before effe
 any request whose body target disagrees with the subject target tokens (`target-mismatch`) or
 whose expected target lifecycle UID does not match the current mapping (`expired`). The
 subject, never the body, is the authorization boundary; handler policy only narrows.
+
+A responder that finds no current mapping for the target refuses `expired` with `outcome:
+not-executed` and `details[].kind = ai.cotal.ep.target-unmapped`, which says the instance that
+answered holds no mapping for it. A responder whose mappings are instance-local, as a manager's
+are for the agents it hosts, cannot tell a target another instance hosts from one retired
+everywhere. A caller that reached it on the class rail MAY therefore re-resolve and re-issue, as
+after a bind refusal; on the `inst` rail the refusal is that instance's answer.
 
 **Replies.** Every reply rides the dedicated reply rail above, **deterministically derived
 from the authenticated request subject**: the responder copies the caller triple and nonce
@@ -2465,7 +2511,7 @@ host-validated at every request, and loss of that validation also refuses a new 
 
 **Platform control registration.** A platform-run control manager registers, activates, renews,
 and retires through the same typed `prepare → activate → renew` protocol and operations as the
-remote manager service above: `session`, `retire`, `renewStandingBundle`, `renewRunDriver`, the
+remote manager service above: `session`, `retire`, `transferReader`, `renewStandingBundle`, `renewRunDriver`, the
 host-owned maintenance operations, retained-agent validation, the goal-index scan, admin
 authorization, and run admission and attempt. Each request rides inside one closed
 `platform-control-authority` envelope that adds only the space, the assigned account, and the
@@ -2994,8 +3040,10 @@ instance's `registrationRevision`**, the value scatter freezes (§13.5): it adva
 when the mediated registration path writes the spec key, so an advance during a scatter is
 exactly a re-registration. The `processEpoch` of the instance's issuance gate (§13.1) is 0 after
 the first registration of its `instanceId`, and each later registration of it commits the previous
-epoch plus one. Epoch 0 is open and serving like any later epoch, and a consumer or sweeper MUST NOT
-treat it as absent or not ready. `describe` is a reserved untargeted
+epoch plus one. A registration is the first when the gate's `registrationRevision` is still 0; a
+deregistration leaves the gate unchanged, so the registration after it is a later one. Epoch 0 is
+open and serving like any later epoch, and a consumer or sweeper MUST NOT treat it as absent or not
+ready. `describe` is a reserved untargeted
 ephemeral command every endpoint MUST serve, returning the descriptor with clusters inline or
 by digest. **Authorization-scoped answers use a trusted authorization source only**: the
 answer is intersected against a fresh view of the caller's authority obtained from the
@@ -3553,6 +3601,8 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Versioned-rail request, reply, serve (§13.15) | as the four rows above | the same rows with `ep.v1` for `ep` and one more pinned token: the caller's `<generation>` literal in its request-publish and reply-subscribe rows (`ep.v1.reply.*.*.*.<cO>.<cA>.<cUid>.<generation>.*`), a spanned token in the serve credential's reply-publish row (`ep.v1.reply.<endpoint>.<instanceId>.<epoch>.*.*.*.*.*`) and its three serve-subscribe shapes per command | direct; broker-confined on the generation exactly as on the caller triple |
 | Issuance (§13.15) | the `issuer` principal (one-shot, minted per issuance or per lifecycle terminal by the party holding the space signer) | `$KV.cotal_issued_<space>.>` and `$KV.cotal_accepted_<space>.>` publish, `STREAM.INFO`/`STREAM.MSG.GET` on `KV_cotal_issued_<space>`, its own ordered consumers on that store, and ONE leader-served `STREAM.MSG.GET` on `KV_cotal_auth_<space>` for source liveness; NO auth-store write, no rail row | mediated; create-only CAS on evidence, revision-CAS on the attempt row |
 | Run admission (§14.8) | the `run-admitter` principal (one-shot, 60 s, minted per run by the hosting endpoint or the local operator) | exactly `$KV.cotal_admission_<space>.admission.v1.<endpoint>.<runId>` and `….revoked.v1.<endpoint>.<runId>` publish plus `STREAM.MSG.GET` on that store; nothing else | mediated; create-only |
+| Resume transfer write (§8) | the `transfer-writer` principal (one-shot, 5 min, per `cotal spawn --resume --detach --on` call after the CLI hashes the transcript: minted by the operator holding the space signer, or on a user-auth space exchanged as the `transfer-writer` view, §10) | publish exactly `$O.cotal_xfer_<space>_<instanceId>.C.<hex>` and `$O.cotal_xfer_<space>_<instanceId>.M.<name>` (one object of one instance's bucket), plus `$JS.API.DIRECT.GET.OBJ_cotal_xfer_<space>_<instanceId>.` followed by each of those two subjects; no consumer, no stream API, no other object | direct; object-pinned |
+| Resume transfer read (§8) | the `transfer-reader` principal (one-shot, 5 min, minted per `transcript-receive` or sweep by the receiving manager from the space signer, or issued to a remote manager by the host's `transferReader` authority operation for that manager's own instance) | `STREAM.CREATE`, `STREAM.INFO`, `STREAM.MSG.GET`, `STREAM.PURGE` and `CONSUMER.CREATE` on its own `OBJ_cotal_xfer_<space>_<instanceId>` only, publish `$O.cotal_xfer_<space>_<instanceId>.M.>` (the stock delete marker), `$JS.API.INFO`, and that stream's `$JS.FC.OBJ_cotal_xfer_<space>_<instanceId>.>` flow control; every other credential, seats, the spawn capability, the supervisor, the provisioner and other instances' readers included, holds nothing that names `OBJ_cotal_xfer_` or `$O.cotal_xfer_` | mediated; instance-pinned |
 | Run admission read (§14.8) | the `run-mediator` and `run-operator` principals | `STREAM.MSG.GET` on `KV_cotal_admission_<space>` (leader-served; body-selected, stream-wide, the same residual as every records reader); the `run-driver` holds NO row on this store | mediated read; fail-closed |
 | Journal submission append | capability holder | `epj.<endpoint>.<command>[.<mode>[.<target tokens per mode>]].<cO>.<cA>.<cUid>` | direct, explicitly untrusted input |
 | Canonicalizer consume | the endpoint's canonicalizer principal (singleton, §13.4) | its durable on `EPJ_<space>`: `$JS.API.CONSUMER.CREATE.EPJ_<space>.<canonD>.cotal.<space>.epj.<endpoint>.>` (full-tail single filter), `$JS.API.CONSUMER.INFO.EPJ_<space>.<canonD>`, `$JS.API.CONSUMER.MSG.NEXT.EPJ_<space>.<canonD>`, plus `$JS.ACK.EPJ_<space>.<canonD>.>` (ack/term after durable decision only, and, for pool-admitted acceptances, after the enqueue, §13.4) | mediated |
@@ -3964,13 +4014,17 @@ frontiers close over live work. The exclusion is broker-visible, not host-local:
 - **Clean close.** Scan-capable clients close FIRST, then the row CASes `held → released`
   (never released while either scanner can still act), then the barrier. A crash leaves
   `held`; the successor reclaims through the oracle. A `released` row is claimed without an
-  oracle round.
+  oracle round. A close whose release did not commit (the row is no longer this plane's, or
+  the write failed) still closes the barrier and then reports the failure to its caller.
 - **Operator faces.** The three refusal states carry DISTINCT copy: a live peer ("stop the
   other auth process", with the space and connection identities), an inconclusive observation
   (fail-safe wait/retry wording that never says "stop the other process"; when the oracle rail
   is down it names the delivery daemon and the restart order), and a mid-life scanner death
   (a deliberate fail-closed stop naming the restart path). An unparseable claim row refuses
-  loudly and is never overwritten automatically.
+  loudly and is never overwritten automatically. Every claim refusal also carries the
+  `ai.cotal.auth.plane-claim-refused` detail (§13.3), whose `reason` names the state
+  (`corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released`, `lost`), so a host
+  never parses the copy to tell contention from corruption.
 - **Host belt.** Launchers additionally claim an exclusive per-space pidfile, published
   ATOMICALLY and PRE-POPULATED: the claimant writes its pid to a unique temp inode, then
   publishes it as the slot with an atomic no-overwrite `link(2)` — no create-then-write window
@@ -4413,12 +4467,13 @@ there is no read-then-publish window because there is no read. Takeover is repla
 
 1. The successor replays the run subject from the beginning, through a **per-takeover replay
    durable** it creates on the stream (`wfj_<runId>_<takeoverId>`, filtered to the run's subject,
-   explicit ack, deliver-all) and deletes when done. `<takeoverId>` is an id token (§13.2) minted by
-   whoever hands the driver its lease and its journal grant (§14.6), one per takeover of a run and
-   never reused for that run; the driver does not choose it, because a consumer name is one subject
-   token that no grant pattern covers in part, so it has to be known when the grant is minted. The
-   last replayed record's stream sequence is the only authoritative head there is (`STREAM.INFO`'s
-   `last_seq` is stream-wide, and its subject filter answers counts, not sequences).
+   explicit ack, deliver-all, memory storage) and deletes when done. `<takeoverId>` is an id token
+   (§13.2) minted by whoever hands the driver its lease and its journal grant (§14.6), one per
+   takeover of a run and never reused for that run; the driver does not choose it, because a consumer
+   name is one subject token that no grant pattern covers in part, so it has to be known when the
+   grant is minted. The last replayed record's stream sequence is the only authoritative head there
+   is (`STREAM.INFO`'s `last_seq` is stream-wide, and its subject filter answers counts, not
+   sequences).
 2. Its first act is an **activation record** appended at that expected sequence, and it drives
    nothing before that record lands. Its authority is checked against the activation the journal
    already holds: a lower `fencingToken` is refused (stale lease); an equal token is refused unless
@@ -4601,13 +4656,18 @@ caller-requested resume and every principal answer or amendment ride the version
 forwards the request subject it served with the attempt or operator issuance it asks for, and the
 issuing host re-parses that subject, requires a user caller's owner to be the run's admitted owner
 for a resume and the registered owner for an answer, resolves the caller's own issuance as live, and
-requires its publish ceiling to permit that subject. The issuing host subscribes to those resume and
-answer request subjects itself and never replies on them, and it issues for a forwarded subject only
-when it observed a caller publish that request and has not issued for it before, so a manager cannot
-forward a request its caller never sent. It reads what that request's envelope asked for and issues
-only that: a resume attempt for the run its `runId` names, and an answering issuance for the
-endpoint the answer names, the manager's own when it names none, that amends when the request set
-`amend: true` and answers when it did not. When the request carries a `bind` (§13.2) naming
+requires its publish ceiling to permit that subject. The issuing host subscribes to the run-start,
+resume and answer request subjects itself and never replies on them. It admits a forwarded run-start,
+and issues for a forwarded resume or answer, only when it observed a caller publish that request and
+has not admitted or issued for it before, so a manager cannot forward a request its caller never
+sent. For a resume or answer it reads what that request's envelope asked for and issues only that: a
+resume attempt for the run its `runId` names, and an answering issuance for the endpoint the answer
+names, the manager's own when it names none, for the run and step its `runId` and `stepKey` name,
+that amends when the request set `amend: true` and answers when it did not. The
+manager's request names that run and step, never a token. Every manager instance's pauses share one
+token namespace, so the issuing host requires the run to be admitted on the manager's instance and
+reads the pause's token off that run's journal, under a read it mints for that one run, before it
+pins the token into the issuance. When the request carries a `bind` (§13.2) naming
 another instance or epoch than the manager's current registration, it issues nothing, since that
 manager refuses the request unrun. It issues nothing either for a request whose `class` or pinned
 `inputDigest` and `outputDigest` differ from the command's declaration in the manager's registered
@@ -4616,8 +4676,13 @@ the served subject. An amendment's issuance marks its pause with `amend: true`, 
 then requires that pause settled `resumed` with an accepted answer instead of waiting. A legacy-rail
 answer is accepted only from a
 managed seat of that owner whose actor-ledger row is live, on the relay path of §14.5. A boot
-reconcile forwards no subject and continues under the original admission. This revision hosts no
-user-auth run on the signer-holding host's own manager.
+reconcile forwards no subject and continues under the original admission. A run's own caller holds
+no actor-ledger row, so when a participant manager asks its issuing host whether a caller of a run it
+drives holds `admin` (§13.2), it asks for that run's admitted caller, whose current row decides. The
+issuing host pins every run mediator it signs for a participant manager, at issuance and at renewal,
+to a placement on that manager's own instance, the only instance such a run may place a spawn on.
+The participant manager refuses a program that places a spawn on any other instance with
+`unimplemented`. This revision hosts no user-auth run on the signer-holding host's own manager.
 
 ---
 
@@ -4827,7 +4892,16 @@ single-function profiles, each granting only the verbs its function needs and no
   `<root>/.cotal/<spaceSegment(space)>/delivery.creds`; the file's own directory otherwise, an injected coordinate,
   the declared identity of an injected adapter, or the workstation root of the canonical arm; never a
   `findCotalRoot` ancestor walk). The first-party workspace filesystem adapter declares its workstation
-  root, so passing that store explicitly names the real operator layout without an ambient coordinate. Uninjected `--creds`
+  root, so passing that store explicitly names the real operator layout without an ambient coordinate.
+  A filesystem identity is `{kind: "fs", root, id}`: `id` is a random value the store records once in
+  `store.id` inside its own directory (`.cotal/store.id` for a workstation root, beside a `--creds`
+  file otherwise, so that directory must be writable or already hold one). No key of a filesystem
+  store and no `--creds` file may be its `store.id`, under that name or any other the filesystem
+  resolves to the same file (a case-insensitive spelling or a link, found by device and inode), and a
+  `store.id` that is a symbolic link or holds anything but a lowercase UUID is refused, because the id is published and a
+  secret stored there would be published with it. Two filesystem identities
+  match only when both `root` and `id` match, because a root is a local path and two hosts can mount
+  different directories at one path. An answer whose filesystem identity has no `id` is refused. Uninjected `--creds`
   that names one real workstation while process cwd resolves another is refused at start, because
   membership-rw still uses `findCotalRoot`; a `--creds` path that is not under any `.cotal` tree is not that
   case. A manager whose remint store diverges is not that daemon's renewal owner: it starts and
@@ -4864,11 +4938,20 @@ single-function profiles, each granting only the verbs its function needs and no
   `delivery-admin` control tier is deleted with the v0 rail (§13.11).
 - `membership-rw`: the derived channel-membership graph feed reader/writer.
 - `operator`, `purger`, `teardown`, `channel-writer`, `control-caller-*`, `deployer`, `probe`: the
-  human-CLI and maintenance surfaces, each scoped to its verbs.
+  human-CLI and maintenance surfaces, each scoped to its verbs. `teardown` also lists stream names,
+  so space deletion finds the transfer buckets (§8), and holds `STREAM.INFO` and `STREAM.DELETE` on
+  each transfer stream named at its mint.
 - `issuer`: one issuance window (§13.15), minted per mint or per lifecycle terminal by the party
   holding the space signer; the issued and accepted stores plus one auth-store liveness read.
 - `run-admitter`: one run's admission record or revocation marker (§14.8), minted per run for
   60 seconds; two exact keys and nothing else.
+- `transfer-writer`: one carried resume transcript (§8), minted per CLI call for five minutes, or on
+  a user-auth space exchanged per call as the `transfer-writer` view; the object's chunk and meta
+  subjects in one instance's transfer bucket and a last-message direct get on each.
+- `transfer-reader`: one manager instance's `transcript-receive` or sweep (§8), minted per call for
+  five minutes; its own transfer bucket's stream and nothing of any other instance. A remote manager
+  receives it from the host's `transferReader` authority operation, which binds it to the
+  authenticated manager's own instance.
 - `manager-service` is NOT a generic host profile: on a per-user-auth space only the
   loopback/operator exchange may issue this closed, one-owner/one-fixed-manager-actor/one-instance
   view to a signed-in user with ledger scope `supervise` (§13.1/§13.6). It reaches exactly the
@@ -4924,6 +5007,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-10-07 | **A refusal for a target with no current mapping says that nothing ran (§13.2), additive.** It stays `expired` and now carries `outcome: not-executed` and `details[].kind = ai.cotal.ep.target-unmapped`. A manager resolves targets against the agents it hosts, so in a space with several managers the class queue could hand a targeted `despawn` to a sibling, which refused it the same way it refuses a retired target, with no outcome. The caller could not tell "this agent is gone" from "this manager does not host it", and repaired neither. With the marker a class-rail caller re-resolves and re-issues within its split-repair bound, and a target retired everywhere still ends in the same `expired` refusal once that bound runs out. A caller that ignores the marker sees the old code. |
 | 2026-10-04 | **Managed lifecycle handoff (§13.17), additive.** A managed agent already enrolled through §13.1 may run where the enrolling manager's filesystem is not visible. The manager releases one closed `cotal-managed-handoff/v1` document by value into that one child, carrying the issued owner, actor, lifecycle UID, sentinel, pinned exchange base, and the raw actor token, which the host never receives. The child's entry point removes the handoff file and its variable before it parses its arguments or does anything else, refuses a mismatched owner, actor, or lifecycle UID before any plane opens, never enrolls or mints, and uses the existing agent-bearer exchange unchanged. The manager refuses a spawn choice only its own host can honour before enrolling. Readiness stays presence-observed, a lost create acknowledgement stays held as uncertain and is never retried, a provider's answer that no resource exists is not an exit, and a close by the lifecycle-derived key is fenced against a create that could still land. A provider resource is bound to that key only by the provider's authenticated answer to its create, never by a derived identifier, a name or a listing. Retirement reuses prepare-retirement, then the known runtime handle's fenced close, then the terminal barrier, including after the manager is gone. A preservation cut that holds a handed-off lifecycle is refused, and a manager stop after a refused cut retires it. |
 | 2026-10-04 | **Platform control authority (§13.1, §13.6, §13.9), additive.** A closed server-authored `platform-control` view, beside the unchanged human `manager-service` view, lets a host run one pooled control manager per assigned account. Its holder's owner is a host-derived `p_` platform owner token, disjoint from every `u_` owner. The host's fresh platform-control assignment authorizes it in place of a ledger `supervise` scope. One closed envelope carries the existing typed manager requests through an in-process door of the host's authority context, served on no listener. The unchanged registration proof, process epoch, and all-duty renewal renew and fence it. Its host-owned maintenance reaches only the assigned instance under its own gate. An account has one assignment and so one control instance, which keeps its instance id and lifecycle UID across restarts and enters a deployment only after the assignment's named predecessor manager has left through its own path, read and never written by the host. It refuses human tokens, takeover of another owner's instance, local or custodial runtime, generic signing, exchange issuance, and cross-owner descendants. The reference host is `startAuthService` in `@cotal-ai/auth`. |
 | 2026-10-02 | **Plane liveness (§6.1), additive.** A credentialed peer can ask whether the manager or delivery plane has a bound responder, on `live.<plane>.<owner>.<actor>` with the reply under `<request>.reply.<nonce>`. The reply is `LivenessAnswer`: `plane`, a `ResponderState` verdict, and an optional opaque per-bind `instance` token that distinguishes responders without identifying them. Only the broker's no-responders answer grades `unbound`; every other failure to get a readable reply grades `unknown`. Agents gain the per-plane request and reply rows; the `delivery`, `supervisor` and remote-manager supervisor credentials gain their plane's serve filter and bounded reply grant. A responder binds again on every connection that replaces the one it bound on, and the manager is not `bound` while its service connection is closed or disconnected. |

@@ -20,7 +20,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstream } from "@nats-io/jetstream";
@@ -57,7 +57,7 @@ import {
   type EpCaller,
   type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveManagerInstanceIdentity, saveSpaceAuth } from "@cotal-ai/workspace";
+import { authDir, createManagerInstanceIdentity, saveSpaceAuth, workspaceSecretStore } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { activateStaticLifecycle, casStaticSlot, readStaticSlot, staticLifecycleTransport } from "../src/static-lifecycle.js";
@@ -93,7 +93,7 @@ const managerInstanceId = mintLifecycleUid();
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 const managerServeIdentity = newIdentity();
-saveManagerInstanceIdentity(workspaceRoot, space, { instanceId: managerInstanceId, serveIdentity: managerServeIdentity });
+createManagerInstanceIdentity(workspaceRoot, space, { instanceId: managerInstanceId, serveIdentity: managerServeIdentity });
 for (let n = 0; n < ORPHANS; n++)
   writeFileSync(join(workspaceRoot, ".cotal", "agents", `orphan-${n}.md`), `---\nname: orphan-${n}\nrole: worker\n---\nbody\n`);
 // The connector is deliberately valid. If the alias guard is removed, the request gets past
@@ -174,7 +174,7 @@ try {
       return {
         ok: true,
         data: {
-          identity: { kind: "fs", root: resolve(workspaceRoot) },
+          identity: workspaceSecretStore(workspaceRoot).identity,
           responder: principalKey("local", deliveryIdentity.id).key,
           holdsDeliveryLease: holds,
         },
@@ -688,7 +688,7 @@ try {
         return {
           ok: true,
           data: {
-            identity: { kind: "fs", root: holderStore === "foreign" ? join(workspaceRoot, "holder-store") : resolve(workspaceRoot) },
+            identity: workspaceSecretStore(holderStore === "foreign" ? join(workspaceRoot, "holder-store") : workspaceRoot).identity,
             responder: CARD(holderId.id),
             holdsDeliveryLease: holds,
           },
@@ -732,7 +732,7 @@ try {
         // what refuses this answer.
         return {
           ok: true,
-          data: { identity: { kind: "fs", root: resolve(workspaceRoot) }, responder: CARD(nonHolderId.id), holdsDeliveryLease: true },
+          data: { identity: workspaceSecretStore(workspaceRoot).identity, responder: CARD(nonHolderId.id), holdsDeliveryLease: true },
         };
       }
       return evict(req);

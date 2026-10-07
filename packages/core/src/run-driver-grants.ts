@@ -127,10 +127,13 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     `$KV.${membersBucket(space)}.>`,
     `$JS.API.STREAM.MSG.GET.KV_${membersBucket(space)}`,
     // The manager's lifecycle commands, as the run's own caller: describe (the resolve), spawn
-    // (untargeted creation), turn and despawn (owner mode, pinned to the caller's owner).
+    // (untargeted creation), turn and despawn (owner mode, pinned to the caller's owner), and the
+    // reserved goal cancel that withdraws a turn the run cancelled (untargeted: it reaches only
+    // the caller's own goals).
     epDescribeAllGrantRow(space, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "spawn" }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "turn", target: { mode: "owner", tOwner: caller.owner } }, caller),
+    ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "cancel" }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: caller.owner } }, caller),
     // #1616 TARGET-BOUND PLACEMENT REACH. Minted ONLY when the program named an explicit target,
     // and then only for that ONE validated instance and only these three operations. `routes: []`

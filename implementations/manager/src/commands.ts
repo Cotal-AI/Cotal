@@ -39,7 +39,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunAdmission, remoteRunAdmissionRequest, remoteRunAttemptCredentials, remoteRunAttemptRequest, remoteRunRenewalCredentials } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -242,8 +242,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
         throw new Error("the host returned manager-service material for different lifecycle coordinates");
-      const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principal?: string) => {
-        const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principal);
+      const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principals?: string[]) => {
+        const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals);
         const response = await provider.maintainRemoteManager!({
           store: workspaceSecretStore(findCotalRoot()),
           dir: join(findCotalRoot(), ".cotal", "auth", space),
@@ -259,7 +259,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         serveActor: actors.serve,
         prepareCreds: materialCredential(material, "executor", state.identities.executor),
         tlsRequired: target.tlsRequired,
-        evict: async (principal) => (await maintain("evict-family-principal", state.instanceId, principal)).eviction!.verifiedGone,
+        evict: async (principals) => (await maintain("evict-family-principal", state.instanceId, [...principals])).evictions!.map((e) => e.verifiedGone),
         reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
       });
       const artifacts = managerClusterArtifacts();
@@ -268,12 +268,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       // the bounded values the host validates to reconstruct the serve grant. Re-sending the full
       // schema closure here exceeded the typed protocol's 64-artifact cap as the command set grew.
       const contractArtifacts = [artifacts.document, artifacts.manifest];
-      const registrationProof = remoteManagerRegistrationProof(material.owner,
-        remoteManagerAuthorityRequest(state, "cli", "activate", `sha256:${"0".repeat(64)}`, contractArtifacts));
+      const registrationProof = remoteManagerRegistrationProof(material.owner, state, contractArtifacts);
       const activate = await provider.managerServiceAuthority({
         store: workspaceSecretStore(findCotalRoot()),
         dir: join(findCotalRoot(), ".cotal", "auth", space),
-        request: remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof, contractArtifacts),
+        request: remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof, contractArtifacts }),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
       const supervisorCreds = materialCredential(material, "supervisor", state.identities.supervisor);
@@ -289,7 +288,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         }),
       });
       const runCall = { store: workspaceSecretStore(findCotalRoot()), dir: join(findCotalRoot(), ".cotal", "auth", space) };
-      const runBase = () => ({ proof: retainedRegistrationProof, account: standing.accountPublicKey, epoch: registered.processEpoch });
       remoteAuthority = {
         ...standing,
         owner: material.owner,
@@ -303,62 +301,35 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const renewed = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "renew", retainedRegistrationProof),
+            request: remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: retainedRegistrationProof }),
           });
           return materialCredential(renewed, "executor", state.identities.executor);
         },
         serveCreds: materialCredential(activate, "serve", state.identities.serve),
         goalWriterCreds: materialCredential(activate, "goalWriter", state.identities.goalWriter),
         sessionLedgerCreds: materialCredential(activate, "sessionLedger", state.identities.sessionLedger),
-        runHosting: {
-          admitRun: async (run) => {
-            const { proof, account, epoch } = runBase();
-            const request = remoteRunAdmissionRequest(state, proof, account, epoch, { runId: run.runId, subject: run.subject });
-            const result = await provider.requestRemoteRunAdmission!({ ...runCall, request });
-            return remoteRunAdmission(result, request);
-          },
-          issueAttempt: async ({ runId, takeoverId, epoch, fencingToken, driver, mediator, served }) => {
-            const base = runBase();
-            const request = remoteRunAttemptRequest(state, base.proof, base.account, base.epoch,
-              { attempt: { runId, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id, ...(served !== undefined ? { served } : {}) } });
-            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
-            const pair = remoteRunAttemptCredentials(result, request, material.owner, { driver, mediator });
-            if (!("driver" in pair)) throw new Error("host returned an operator instead of a run pair");
-            return pair;
-          },
-          issueOperator: async ({ identity, takeoverId, runId, answers, served }) => {
-            const { proof, account, epoch } = runBase();
-            const request = remoteRunAttemptRequest(state, proof, account, epoch,
-              { operator: { id: identity.id, takeoverId, ...(runId !== undefined ? { runId } : {}), ...(answers !== undefined ? { answers } : {}), ...(served !== undefined ? { served } : {}) } });
-            const result = await provider.requestRemoteRunAttempt!({ ...runCall, request });
-            const credential = remoteRunAttemptCredentials(result, request, material.owner, { operator: identity });
-            if (!("operator" in credential)) throw new Error("host returned a run pair instead of an operator");
-            return credential.operator;
-          },
-          renewRun: async ({ runId, holder, takeoverId, epoch, fencingToken, driver, mediator }) => {
-            const base = runBase();
-            const request = {
-              ...remoteManagerAuthorityRequest(state, "cli", "renewRunDriver", base.proof),
-              accountPublicKey: base.account, processEpoch: base.epoch,
-              run: { runId, holder, takeoverId, epoch, fencingToken, driverId: driver.id, mediatorId: mediator.id },
-            };
-            const result = await provider.managerServiceAuthority!({ ...runCall, request });
-            return remoteRunRenewalCredentials(result, request, material.owner, driver, mediator);
-          },
-        },
+        runHosting: remoteRunHosting({
+          state, owner: material.owner, registrationProof: retainedRegistrationProof,
+          accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
+          requestRunAdmission: (request) => provider.requestRemoteRunAdmission!({ ...runCall, request }),
+          requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...runCall, request }),
+          call: (request) => provider.managerServiceAuthority!({ ...runCall, request }),
+        }),
         serveGrant: registered.serveGrant,
         agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
           const sessionMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "session", remoteManagerRegistrationProof(material.owner,
-              remoteManagerAuthorityRequest(state, "cli", "session", `sha256:${"0".repeat(64)}`)), undefined, {
-              id: session.identity.id,
-              endpoint: session.endpoint,
-              sessionId: session.sessionId,
-              epoch: session.epoch,
-              exp: session.exp,
+            request: remoteManagerAuthorityRequest(state, "cli", "session", {
+              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              session: {
+                id: session.identity.id,
+                endpoint: session.endpoint,
+                sessionId: session.sessionId,
+                epoch: session.epoch,
+                exp: session.exp,
+              },
             }),
           });
           return materialCredential(sessionMaterial, "sessionServing", session.identity);
@@ -367,17 +338,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           const retirementMaterial = await provider.managerServiceAuthority!({
             store: workspaceSecretStore(findCotalRoot()),
             dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request: remoteManagerAuthorityRequest(state, "cli", "retire", remoteManagerRegistrationProof(material.owner,
-              remoteManagerAuthorityRequest(state, "cli", "retire", `sha256:${"0".repeat(64)}`, undefined, undefined, {
+            request: remoteManagerAuthorityRequest(state, "cli", "retire", {
+              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              retirement: {
                 id: identity.id,
                 target: retirementTarget,
                 opId,
                 serveEpoch,
-              })), undefined, undefined, {
-              id: identity.id,
-              target: retirementTarget,
-              opId,
-              serveEpoch,
+              },
             }),
           });
           if (retirementMaterial.retirement?.opId !== opId ||
@@ -385,6 +353,17 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
               retirementMaterial.retirement?.serveEpoch !== serveEpoch)
             throw new Error("manager-service retirement material does not echo the requested target, operation, and serve epoch");
           return materialCredential(retirementMaterial, "retirementRequester", identity);
+        },
+        mintTransferReader: async (identity) => {
+          const readerMaterial = await provider.managerServiceAuthority!({
+            store: workspaceSecretStore(findCotalRoot()),
+            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            request: remoteManagerAuthorityRequest(state, "cli", "transferReader", {
+              registrationProof: remoteManagerRegistrationProof(material.owner, state),
+              transferReader: { id: identity.id },
+            }),
+          });
+          return materialCredential(readerMaterial, "transferReader", identity);
         },
         // #1972: the host-owned halves of the managed agent lifecycle. Both ride the one verified
         // manager-authority transport, and both are present only when the registered provider

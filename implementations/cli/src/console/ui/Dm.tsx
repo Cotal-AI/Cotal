@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
+import { peerLabel } from "@cotal-ai/core";
 import type { DmMessage, DmThread, DmPeer } from "../../view/mesh-view.js";
 import { agentColor, STATUS, fmtTime, wrapText } from "./theme.js";
 import type { FocusId } from "../mesh.js";
@@ -162,37 +163,35 @@ export function Dm({
           if (r.kind === "peer") {
             const p = dms[r.pi];
             const caret = r.pi === peerClamped ? "▾" : "▸";
-            const role = p.role ? "/" + p.role : "";
+            const label = peerLabel(p);
             if (sel)
               return (
                 <Text key={"p" + r.pi} inverse bold color="cyan" wrap="truncate-end">
-                  {caret + " " + STATUS[p.status].dot + " " + p.name + role}
+                  {caret + " " + STATUS[p.status].dot + " " + label}
                 </Text>
               );
             return (
               <Text key={"p" + r.pi} wrap="truncate-end">
                 <Text dimColor>{caret + " "}</Text>
                 <Text color={STATUS[p.status].color}>{STATUS[p.status].dot + " "}</Text>
-                <Text color={agentColor(p.name)}>{p.name}</Text>
-                {role ? <Text dimColor>{role}</Text> : null}
+                <Text color={agentColor(p.name)}>{label}</Text>
                 <Text dimColor>{"  " + p.conversations.length + "t"}</Text>
               </Text>
             );
           }
           const c = dms[r.pi].conversations[r.ci];
-          const role = c.role ? "/" + c.role : "";
+          const label = peerLabel({ name: c.with, role: c.role });
           if (sel)
             return (
               <Text key={"c" + r.pi + "." + r.ci} inverse bold color="cyan" wrap="truncate-end">
-                {"  ↳ " + STATUS[c.status].dot + " " + c.with + role}
+                {"  ↳ " + STATUS[c.status].dot + " " + label}
               </Text>
             );
           return (
             <Text key={"c" + r.pi + "." + r.ci} wrap="truncate-end">
               <Text dimColor>{"  ↳ "}</Text>
               <Text color={STATUS[c.status].color}>{STATUS[c.status].dot + " "}</Text>
-              <Text color={agentColor(c.with)}>{c.with}</Text>
-              {role ? <Text dimColor>{role}</Text> : null}
+              <Text color={agentColor(c.with)}>{label}</Text>
             </Text>
           );
         })}

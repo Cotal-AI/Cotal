@@ -9,12 +9,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { mkSecretDir, writeSecretFile } from "@cotal-ai/core";
 import {
-  authDir,
   createManagerInstanceIdentity,
   loadManagerInstanceIdentity,
   retireManagerInstanceIdentity,
-  saveManagerInstanceIdentity,
+  spaceSegment,
   type ManagerInstanceIdentity,
   type RetireManagerInstanceIdentityOpts,
 } from "../src/auth-paths.js";
@@ -26,7 +26,10 @@ let refused = 0;
 let removed = 0;
 const check = (name: string, ok: boolean) => { assert.ok(ok, name); console.log(`  ✓ ${name}`); passed++; };
 const ident = (n: string, seed = `seed-${n}`): ManagerInstanceIdentity => ({ instanceId: `inst-${n}`, serveIdentity: { id: `U${n}`, seed } });
-const file = (space: string) => join(authDir(root), `manager-instance.${Buffer.from(space, "utf8").toString("hex")}.json`);
+const dir = (space: string) => join(root, ".cotal", spaceSegment(space));
+const file = (space: string) => join(dir(space), "manager-instance.json");
+// A successor that replaced the record is the state these cells retire against; no shipped path overwrites one.
+const plant = (space: string, identity: ManagerInstanceIdentity) => { mkSecretDir(dir(space)); writeSecretFile(file(space), JSON.stringify(identity)); };
 const retire = (space: string, expected: ManagerInstanceIdentity, opts?: RetireManagerInstanceIdentityOpts) => {
   examined++;
   try {
@@ -39,7 +42,7 @@ const retire = (space: string, expected: ManagerInstanceIdentity, opts?: RetireM
     return { outcome: "refused" as const, error: (e as Error).message };
   }
 };
-const noStrays = () => readdirSync(authDir(root)).every((n) => !n.includes(".retiring."));
+const noStrays = () => readdirSync(join(root, ".cotal")).every((d) => readdirSync(join(root, ".cotal", d)).every((n) => !n.includes(".retiring.")));
 const childWrite = (action: "b" | "c" | "d" | "remove") => {
   // Whatever runs this suite may be a managed agent session, so the inherited environment can carry
   // a live credential and a live broker URL. Strip every COTAL_ key from the copy before the child
@@ -64,7 +67,7 @@ try {
 
   // Provisioned A, then a successor replaced it: compensation for A must not delete the successor.
   const successor = ident("s");
-  saveManagerInstanceIdentity(root, "alpha", successor);
+  plant("alpha", successor);
   check("compensating the provisioned identity refuses once a successor holds the space", retire("alpha", created).outcome === "refused");
   check("the successor survives the refused compensation", JSON.stringify(loadManagerInstanceIdentity(root, "alpha")) === JSON.stringify(successor));
 
@@ -86,7 +89,7 @@ try {
   check("a directory at the record path refuses", retire("alpha", successor).outcome === "refused");
   rmSync(file("alpha"), { recursive: true });
 
-  saveManagerInstanceIdentity(root, "alpha", successor);
+  plant("alpha", successor);
   check("the complete expected identity is removed", retire("alpha", successor).outcome === "removed");
   check("the removed record is gone and no capture file remains", !existsSync(file("alpha")) && noStrays());
   check("a retry after removal reports absent, not removed", retire("alpha", successor).outcome === "absent");
@@ -96,11 +99,11 @@ try {
   // A non-ENOENT rename failure is uncertain, not an absent/removed retirement.
   let renameFailure: unknown;
   try {
-    retireManagerInstanceIdentity(root, "beta", sibling, { onBeforeRename: () => chmodSync(authDir(root), 0o500) });
+    retireManagerInstanceIdentity(root, "beta", sibling, { onBeforeRename: () => chmodSync(dir("beta"), 0o500) });
   } catch (error) {
     renameFailure = error;
   } finally {
-    chmodSync(authDir(root), 0o700);
+    chmodSync(dir("beta"), 0o700);
   }
   check("a non-ENOENT rename error refuses by name", renameFailure instanceof Error &&
     renameFailure.message.startsWith("manager-instance-identity-retire-refused") &&
@@ -116,7 +119,7 @@ try {
   const genD = ident("race-d");
   const genE = ident("race-e");
 
-  saveManagerInstanceIdentity(root, raceSpace, genA);
+  plant(raceSpace, genA);
   check("identity file is written with 0600 permissions", (statSync(file(raceSpace)).mode & 0o777) === 0o600);
 
   // Race 1: Competing writer writes foreign successor genB before renameSync
@@ -142,8 +145,8 @@ try {
     },
     onBeforeLinkBack: () => {
       racesTriggered++;
-      const strays = readdirSync(authDir(root)).filter((n) => n.includes(".retiring."));
-      if (strays.length > 0) capturedCollisionPath = join(authDir(root), strays[0]);
+      const strays = readdirSync(dir(raceSpace)).filter((n) => n.includes(".retiring."));
+      if (strays.length > 0) capturedCollisionPath = join(dir(raceSpace), strays[0]);
       childWrite("d");
     },
   });
@@ -159,7 +162,7 @@ try {
   rmSync(capturedCollisionPath);
 
   // Race 3: Competing removal before rename (competing process unlinks canonical file)
-  saveManagerInstanceIdentity(root, raceSpace, genD);
+  plant(raceSpace, genD);
   const r3 = retire(raceSpace, genD, {
     onBeforeRename: () => {
       racesTriggered++;
@@ -170,7 +173,7 @@ try {
   check("no stray files remain after competing removal", noStrays());
 
   // Clean retirement of true owned complete identity
-  saveManagerInstanceIdentity(root, raceSpace, genE);
+  plant(raceSpace, genE);
   check("a true owned complete identity can retire cleanly", retire(raceSpace, genE).outcome === "removed");
   check("the retired identity is gone and no strays remain", !existsSync(file(raceSpace)) && noStrays());
   check("a retry after retirement reports absent", retire(raceSpace, genE).outcome === "absent");

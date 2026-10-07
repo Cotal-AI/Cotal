@@ -101,7 +101,7 @@
     },
     {
       "name": "M5 a join link stops counting as a direct carrier",
-      "file": "extensions/connector-core/src/config.ts",
+      "file": "extensions/connector-core/src/session-env.ts",
       "find": "  \"COTAL_LINK\",\n] as const;",
       "replace": "] as const;",
       "expectRed": "A7: a launch carrying both a material file and a join link resolved by precedence instead of refusing",
@@ -110,7 +110,7 @@
     },
     {
       "name": "M6 half a control pair reads as no control plane instead of throwing",
-      "file": "extensions/connector-core/src/config.ts",
+      "file": "extensions/connector-core/src/session-env.ts",
       "find": "  if (path && token) return { path, token };\n  if (!path && !token) return undefined;",
       "replace": "  if (path && token) return { path, token };\n  if (true) return undefined;",
       "expectRed": "A8: a socket with no resolvable token was reported as no control plane rather than a broken one",

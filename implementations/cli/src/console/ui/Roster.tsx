@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import type { Presence } from "@cotal-ai/core";
+import { peerLabel, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
 import { agentColor, STATUS, ago } from "./theme.js";
 
@@ -28,7 +28,7 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
     const act = p.activity ? "  " + p.activity : "";
     return (
       <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? s.dot : "⚙") + " " + p.card.name + (tag ? " " + tag : "") + kind + act + "  " + age}
+        {(isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "") + kind + act + "  " + age}
       </Text>
     );
   }
@@ -36,7 +36,7 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
     <Text wrap="truncate-end">
       <Text color={isAgent ? s.color : "gray"}>{isAgent ? s.dot : "⚙"} </Text>
       <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
-        {p.card.name}
+        {peerLabel(p.card)}
       </Text>
       {tag ? <Text dimColor>{" " + tag}</Text> : null}
       {wide ? (

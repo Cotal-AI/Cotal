@@ -84,18 +84,15 @@ async function preservedFixture(label: string, residue: Residue): Promise<{
             const stream = args[0];
             const config = bucket._buildCC(">", KvWatchInclude.AllHistory, { headers_only: false });
             if (residue === "wrong-filter") config.filter_subject = "$KV.not_the_channel_registry.>";
-            const consumer = await realGet(stream, config);
-            // Simulate a process disappearing before its best-effort cleanup reaches the broker. The
-            // consumer and every config field are real; only this fixture's delete is suppressed so
-            // backup can inspect the residue after the connection is gone.
-            return Object.assign(Object.create(consumer as object), {
-              delete: async () => true,
-            });
+            return realGet(stream, config);
           },
         },
       },
     });
-    await liveKvEntries(victim);
+    // Simulate a process disappearing before its best-effort cleanup reaches the broker. The
+    // consumer and every config field are real; only this fixture's delete is suppressed so
+    // backup can inspect the residue after the connection is gone.
+    await liveKvEntries(victim, { deleteOwnConsumer: async () => true });
     await nc.close();
     await stopBroker();
 

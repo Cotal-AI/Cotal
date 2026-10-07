@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # mesh-face.sh <agent-name> [agent-file] — launch ONE mesh agent rendered as its pixel face.
 #
-# Thin wrapper over the example-local launcher (mesh-face.mjs): it starts a headless `opencode serve`
-# with the Cotal plugin (which joins the mesh and creates the agent's session), then attaches the
-# animated face (face-term.mjs) to that session. The OpenCode connector itself is face-agnostic — face
-# rendering is this example's concern, so the example owns the viewer attach.
+# Thin wrapper over the example-local launcher (mesh-face.mjs): it runs the OpenCode connector's
+# launcher lifecycle — a headless `opencode serve` with the Cotal plugin (which joins the mesh and
+# creates the agent's session) — with the animated face (face-term.mjs) attached as its viewer. The
+# connector itself is face-agnostic; face rendering is this example's concern.
 # Persona + model come from the agent file's `face:` / `model:` frontmatter.
 #
 #   env: COTAL_SPACE (demo) · COTAL_SERVERS (nats://127.0.0.1:4222) · MODEL (overrides agent file)

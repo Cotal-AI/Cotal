@@ -191,21 +191,22 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
 
 /** Reject inline credentials in the broker config: a `nats://user:pass@host` URL must use the
  *  auth creds/profile path, not embedded secrets (critic, round-6); `host` is a bind address, not
- *  a URL. Each server entry must parse as a URL (no silent fallback). */
+ *  a URL. Each server entry must parse as a URL (no silent fallback). A message names an entry by
+ *  position and never repeats it: in the token form `nats://<token>@host` the user part is the secret. */
 function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
   if (broker.host?.includes("://"))
     add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
   if (broker.servers)
-    for (const s of broker.servers.split(",").map((x) => x.trim()).filter(Boolean)) {
+    for (const [i, s] of broker.servers.split(",").map((x) => x.trim()).filter(Boolean).entries()) {
       let u: URL;
       try {
         u = new URL(s);
       } catch {
-        add(`broker.servers entry "${s}" is not a valid URL (e.g. nats://127.0.0.1:4222)`, ["broker", "servers"]);
+        add(`broker.servers entry ${i + 1} is not a valid URL (e.g. nats://127.0.0.1:4222)`, ["broker", "servers"]);
         continue;
       }
       if (u.username || u.password)
-        add(`broker.servers must not embed credentials ("${u.username}:***@…") - use auth creds/profile, not inline secrets`, ["broker", "servers"]);
+        add(`broker.servers entry ${i + 1} must not embed credentials - use auth creds/profile, not inline secrets`, ["broker", "servers"]);
     }
   // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a
   // silently-ignored identity provider is exactly the kind of drift the no-fallback rule exists for.

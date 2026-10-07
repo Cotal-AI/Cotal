@@ -1,5 +1,41 @@
 # @cotal-ai/web
 
+## 0.70.0
+
+### Patch Changes
+
+- 60328b2: Source comments that sent readers to docs pages retired in the docs restructure now name the current pages. The `MeshView` header points at `docs/mesh-view.md`, and the console space picker and the web dashboard's Agent Detail frame point at `docs/watch-a-mesh.md`. These comments ship in the built packages, and `docs/protocol-view.md` and `docs/web.md` no longer exist.
+- a8f2f38: The dashboard escapes `"` in peer-supplied text. A peer whose activity contained a double quote could close the roster row's `title` attribute and add attributes of its choosing to that row in every dashboard watching the space. The same escaper fills the other double-quoted attributes on the page, such as agent ids, channel keys and the harness badge title, so they are covered too.
+- 020138b: The web dashboard now writes the `web.pid.identity` pin beside `web.pid` when it claims its pidfile, and removes both when it exits. `cotal down web` used to read every dashboard record as one that predates identity pinning: it warned that a relaunch would pin it, which no relaunch did, and signalled the recorded pid with no identity check, so after a SIGKILL left `web.pid` behind it would signal whatever process had reused that pid. A dashboard's record is now verified like the broker's and the daemons', and a reused pid is refused and preserved.
+- 906de06: `cotal web` now refuses a `--port` that is not a decimal number from 1 to 65535 before it connects to the broker or claims the dashboard pidfile, with an error that names `--port`. `--port 0` used to bind an ephemeral port while the printed link, the recorded launch link and the console's allowed Origin all named port 0, and a detached launch probed port 0 until it timed out. A hex or exponent spelling such as `0x1f90` was accepted, and `abc` or `70000` failed only after connecting, with `Invalid URL`. An empty `--port` no longer falls back to 7799.
+- 668f6b0: The web dashboard's `web.session` record and its `x-cotal-readiness` header now have one definition, in `@cotal-ai/workspace`: the file name, the record's fields, the one reader, and the header name. The dashboard writes and reads the record through it and `cotal status` reads it there. Renaming the file, a field or the header on the dashboard side used to typecheck cleanly while `cotal status --components` read the live dashboard as `refused` and the `Web process` row read `down`; now it is a compile error on both sides.
+
+## 0.69.0
+
+## 0.68.0
+
+### Patch Changes
+
+- e6b48bf: `cotal status --components` now presents the dashboard's readiness nonce from `web.session` when it probes `/api/meta`, so a live dashboard at its recorded address grades `web serving`. The probe used to ask anonymously, the dashboard's auth gate refused it with 401, and the row could only read `not-serving · http identity mismatch`.
+- f2af439: The dashboard's channel-delete route comment now names the cred it purges with: the `channel-purger` cred minted at startup, the connection creds on open and `--creds` meshes, or a per-delete `channel-purger` view in user mode. It used to name a `manager` cred that no longer exists. The observer's `tls` comment now states only why the client's own TLS requirement is the fence, without narrating the change that added it. No behavior changes.
+
+## 0.67.0
+
+### Patch Changes
+
+- cefb3c7: `cotal web` on the default host and port now prints its launch link a second time at
+  `http://127.0.0.1:7799/`, carrying the same single-use token, so a browser or system resolver with
+  no answer for `cotal.localhost` (Safari, WSL2) still has a printed way in.
+- 35504fe: The dashboard's ONLINE roster now groups live peers by the machine each one reports as its host (`card.meta.host`), with a count per machine, so an operator can see where seats run and how they are spread across machines without opening each agent. A peer that reports no host, such as a manager, is listed last under "host not reported". Seats do not report which manager runs them, so there is no manager grouping yet.
+
+## 0.66.1
+
+## 0.66.0
+
+### Patch Changes
+
+- 3808751: `cotal status --components` now probes the web dashboard at the address the dashboard bound. The dashboard records its socket's host and port in `web.session` once it is listening, and status reads that record. Before, status parsed `--host` and `--port` out of the dashboard's command line and fell back to `127.0.0.1:7799`, so a port spelled any way other than plain digits (`--port 0x1f90` binds 8080) was probed at 7799, and `--port 0` was refused as an invalid port while the dashboard listened on an ephemeral one. A live dashboard pid with no readable recorded address, including a dashboard still writing its record and one started by an earlier build, is now `refused` with `no bound address recorded`.
+
 ## 0.65.0
 
 ### Patch Changes

@@ -3,8 +3,8 @@
  *
  * Starts the real CLI supervisor from a registry-only participant root. The host authority is served
  * through an owned HTTPS proxy. A retained managed actor is resumed through the public manager service,
- * then despawned. Stock supervision intentionally has no hosted release composition, so teardown must
- * fail closed before it asks the host for a retirement requester or reaches the terminal rail.
+ * then despawned. The stock host prepares the release itself, so teardown goes on to ask for a
+ * retirement requester and reaches the terminal rail.
  *
  * All state is disposable. Requires Linux, nats-server, and openssl.
  */
@@ -522,7 +522,7 @@ try {
   writeFileSync(personaPath, "---\nname: stock-retained\nagent: stock-acceptance\n---\nstock retained child\n");
   const digest = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
   const inventory: ManagerResumeInventory = {
-    version: "cotal-manager-resume/v1", space, createdAt: new Date().toISOString(),
+    version: "cotal-manager-resume/v2", space, createdAt: new Date().toISOString(),
     agents: [{
       space, name: actor,
       identity: {
@@ -665,32 +665,21 @@ registry.register({
     target: { mode: "any", owner, actor, lifecycleUid }, deadlineMs: 10_000,
   });
   check("stock targeted despawn accepts the retained lifecycle", stopped.reply.ok === true, stopped.reply.error?.message);
-  // #1972: stock supervision now HAS a prepare-retirement client, so the deprovision prerequisite
-  // reaches host dispatch instead of throwing locally. Stock dispatch answers `unimplemented` (the
-  // managed-agent lifecycle needs a hosted storage composition), and the manager must surface that
-  // refusal and stop there: no retirement requester, alias still held, supervisor still serving.
-  const hostRefusal = "signed in, but managed agent retirement preparation was refused: " +
-    "managed agent enrollment and retirement preparation must be handled by host platform interception";
-  for (let tries = 0; tries < 200 && !supervisorOutput.includes(hostRefusal); tries++) await wait(100);
+  // #1972: the stock host prepares the release itself (footprint, then grant), so the manager goes
+  // on to the terminal rail with its retirement requester and the alias's grant is gone.
+  for (let tries = 0; tries < 200 && retirementRequests === beforeRetirementRequests; tries++) await wait(100);
   const aliasHold = findManagedActor(hostDir, owner, actor);
-  check("stock hosted deprovision fails closed at the host's unimplemented release refusal",
-    supervisorOutput.includes(hostRefusal) && prepareRetirementRequests >= 1 &&
-      retirementRequests === beforeRetirementRequests && aliasHold?.lifecycleUid === lifecycleUid,
+  check("stock hosted deprovision prepares at the host and reaches the terminal rail",
+    prepareRetirementRequests >= 1 && retirementRequests > beforeRetirementRequests && aliasHold === undefined,
     {
-      refusalObserved: supervisorOutput.includes(hostRefusal),
       prepareRetirementRequests,
       retirementRequestsBefore: beforeRetirementRequests,
       retirementRequestsAfter: retirementRequests,
       aliasHeld: aliasHold !== undefined,
-      aliasLifecycleUid: aliasHold?.lifecycleUid,
       output: supervisorOutput.slice(-1200),
     });
-  check("the retained findManagedActor(owner, alias) row keeps the exact alias held",
-    aliasHold?.lifecycleUid === lifecycleUid,
-    { aliasHeld: aliasHold !== undefined, aliasLifecycleUid: aliasHold?.lifecycleUid });
-  check("stock refusal issues zero retirement requester and leaves the supervisor running",
-    retirementRequests === 0 && supervisor.exitCode === null,
-    { retirementRequests, supervisorExitCode: supervisor.exitCode });
+  check("the supervisor keeps serving after the hosted retirement", supervisor.exitCode === null,
+    { supervisorExitCode: supervisor.exitCode });
 
   const firstState = loadOrCreateRemoteManagerIdentity(participantRoot, space);
   const firstSpecKey = recordSpecKey(RECORD_KINDS.svc, ["manager", firstState.instanceId]);

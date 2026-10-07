@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
 import {
@@ -10,18 +9,23 @@ import {
   assertValidChannel,
   channelInAllow,
   resolvePeer as resolvePeerInRoster,
+  peerLabel,
   CotalEndpoint,
   BASELINE_LIFECYCLE_ENDPOINT,
+  BIND_SPLIT_REISSUES,
   assertLifecycleToken,
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
   renderLifecycleBlocked,
+  controlReplyFrom,
+  runAgentBearer,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
   type Delivery,
   partsToText,
+  routeToken,
   type MessageMeta,
   type Presence,
   type PresenceCondition,
@@ -84,15 +88,10 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 /** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
  *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
  *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr.trim() || err.message));
-      const bearer = stdout.trim();
-      if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
-      resolve(bearer);
-    });
-  });
+async function execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
+  const bearer = await runAgentBearer(argv, { signal, timeoutMs });
+  if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
+  return bearer;
 }
 
 /** A message that has arrived for us, normalized for the agent to read. */
@@ -209,8 +208,8 @@ const FOCUS_EXCLUSION_CAP = 4096;
 /** #662: history reads one channel's recall makes while an id-less copy keeps arriving mid-read. */
 const IDLESS_READS = 3;
 const PROTECTED_DISPOSITION_CAP = 4096;
-/** How many unanswered directed messages, and how many asked questions, one session remembers for
- *  reply correlation. */
+/** How many unanswered directed messages, asked questions, and DM or anycast senders one session
+ *  remembers for reply correlation. */
 const MAX_CORRELATIONS = 1024;
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
  * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
@@ -220,6 +219,9 @@ const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
  *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
  *  Deadlines are minutes-scale; fifteen seconds of intake lag is invisible to a run. */
 const TURN_POLL_MS = 15_000;
+/** The manager's namespaced detail on an `inspect` miss that found a durable slot. The manager owns
+ *  the shape; this keys only on the discriminator and the owning instance it may name. */
+const STATIC_SLOT_OBSERVATION_DETAIL = "ai.cotal.manager.static-slot-observation";
 /** How many turns the run settled before this seat yielded them one session remembers. The
  *  manager serves a seat one turn at a time, so a short memory covers every late yield. */
 const MAX_SETTLED_TURNS = 32;
@@ -823,7 +825,7 @@ export class MeshAgent extends EventEmitter {
         await this.ep.start();
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
         this.log(
-          `connected to ${this.config.servers} as ${this.who()} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
+          `connected to ${this.config.servers} as ${peerLabel(this.config)} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,
         );
         // The one user-visible surface of the boot backfill (M2, issue #545): the count is exact
         // right here, before anything else can drain the pull-only lane the backfill filled.
@@ -1554,14 +1556,15 @@ export class MeshAgent extends EventEmitter {
    *  - NORMAL automatic ambient → only under global `open` (today's behavior);
    *  - receive-time pull-only ambient → never.
    *  Subsumes {@link directedPendingCount}: in `dnd`/`focus` (no override) the open term is false, so it
-   *  equals the directed count; in `open` it adds normal ambient but excludes quiet-channel ambient. */
-  pendingWake(): number {
+   *  equals the directed count; in `open` it adds normal ambient but excludes quiet-channel ambient.
+   *  `skip` leaves out items the caller has already woken the session for. */
+  pendingWake(skip?: (item: InboxItem) => boolean): number {
     // An unsurfaced run turn is directed-strength: it wakes regardless of attention, exactly like
     // a DM — a run is waiting on this seat, and holding it costs the run its deadline.
     const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced).length;
     return turns + this.inbox.filter((p) => {
       const it = p.item;
-      if (p.pullOnly) return false;
+      if (p.pullOnly || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;
       return this._attention === "open";
     }).length;
@@ -1828,20 +1831,50 @@ export class MeshAgent extends EventEmitter {
       throw new Error(
         `unknown mention${unknown.length > 1 ? "s" : ""}: ${unknown.map((u) => `@${u}`).join(", ")} — no such peer observed in space "${this.config.space}"`,
       );
-    const condition =
-      after.state === "stale"
-        ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
-        : "the presence view is unpopulated — the watch has not completed its initial snapshot";
-    throw new Error(
-      `cannot verify mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")} in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The send was not published.`,
+    throw this.cannotVerify(
+      `mention${unknown.length > 1 ? "s" : ""} ${unknown.map((u) => `@${u}`).join(", ")}`,
+      after,
+      "The send was not published.",
     );
   }
 
-  async anycast(role: string, text: string): Promise<CotalMessage> {
+  /** The mention guard and `dm` refuse an unverifiable name through this one sentence, so the two
+   *  refusals cannot explain one view state differently. */
+  private cannotVerify(subject: string, view: Exclude<PresenceView, { state: "current" }>, outcome: string): Error {
+    return new Error(
+      `cannot verify ${subject} in space "${this.config.space}": ${presenceViewCondition(view)}, so absence is not a verdict — the peer may be present but unobserved. ${outcome}`,
+    );
+  }
+
+  async anycast(
+    role: string,
+    text: string,
+  ): Promise<{
+    msg: CotalMessage;
+    ack: { seq: number; duplicate: boolean };
+    /** The work queue the request was stored on: `role` as routing spells it in the subject. */
+    queue: string;
+    /** Live roster rows whose role routes to `queue`, ourselves included; absent when the presence
+     *  view was not current, since only a current view can say that no holder exists (#1229). */
+    holdersAtSend?: number;
+  }> {
     await this.requireConnected();
+    // Like a DM's recipient status, the only holder count we can truthfully attribute is the roster
+    // snapshot taken right before the publish. Our own task consumer competes for our own request,
+    // so we count when we hold the role. Routing rewrites a role into a subject token, so a holder
+    // is any seat whose role routes to the same queue, whatever its spelling.
+    const queue = routeToken(role);
+    const holdersAtSend =
+      this.ep.presenceView().state === "current"
+        ? this.ep
+            .getRoster()
+            .filter((p) => !!p.card.role && routeToken(p.card.role) === queue && p.status !== "offline")
+            .length
+        : undefined;
     const { stamp, own } = this.stamp();
     this.recordQuestion(own, { role });
-    return this.ep.anycast(role, text, stamp);
+    const { msg, ack } = await this.ep.anycastAttributed(role, text, stamp);
+    return { msg, ack, queue, holdersAtSend };
   }
 
   /** Resolve a peer by instance id (exact) or display name. Deterministic and fail-loud: returns
@@ -1906,13 +1939,7 @@ export class MeshAgent extends EventEmitter {
       const after = this.ep.presenceView();
       if (after.state === "current")
         throw new Error(`no peer "${target}" in space "${this.config.space}"`);
-      const condition =
-        after.state === "stale"
-          ? `the presence view is stale since ${new Date(after.staleSince).toISOString()} (${Math.max(0, Date.now() - after.staleSince)}ms silent)`
-          : "the presence view is unpopulated — the watch has not completed its initial snapshot";
-      throw new Error(
-        `cannot verify peer "${target}" in space "${this.config.space}": ${condition}, so absence is not a verdict — the peer may be present but unobserved. The DM was not sent.`,
-      );
+      throw this.cannotVerify(`peer "${target}"`, after, "The DM was not sent.");
     }
     // The only status we can truthfully attribute is the roster snapshot taken right before the
     // publish: recipient state can change the instant after, and the ack never tells us either way.
@@ -1942,7 +1969,7 @@ export class MeshAgent extends EventEmitter {
    *  the exact connector-selected readiness budget carried by the acceptance.
    *  How it lands — a detached PTY, a tmux window, a cmux tab — is the manager's
    *  runtime; from here it just joins the mesh as a lateral peer. `opts.agent` picks
-   *  the harness (default the manager's `COTAL_DEFAULT_AGENT`, else `cotal`/Claude), `opts.model` /
+   *  the harness (absent it, the persona's `agent:` pin, else the manager's default), `opts.model` /
    *  `opts.variant` override the persona file's model selectors, `opts.prompt` submits the new
    *  peer's first turn, and `opts.cwd` roots it at a different folder/repo
    *  than the manager's workspace — the same knobs the operator's `cotal spawn --detach` carries, so
@@ -1987,7 +2014,8 @@ export class MeshAgent extends EventEmitter {
           `requested model ${JSON.stringify(requested)} but ${recordedLabel} for "${seat}" — refusing a spawn whose pin did not land. The seat may already be live; inspect it before retrying, because a retry duplicates the spawn`,
       };
     }
-    if (!reply.ok) {
+    // An uncertain launch stays managed with its pin recorded, so it carries the pin like a started one.
+    if (!reply.ok && reply.code !== "uncertain") {
       return {
         ok: false,
         error: `${reply.error ?? "manager refused"} (requested model ${JSON.stringify(requested)}; ${recordedLabel} for "${seat}")`,
@@ -2001,7 +2029,7 @@ export class MeshAgent extends EventEmitter {
       };
     }
     return {
-      ok: true,
+      ...reply,
       data: { ...(reply.data as Record<string, unknown> | undefined), model: recorded.model },
     };
   }
@@ -2092,15 +2120,7 @@ export class MeshAgent extends EventEmitter {
         };
       return { ok: false, error: (e as Error).message };
     }
-    if (r.reply.ok !== true) {
-      const raw = r.reply.error?.message ?? r.reply.error?.code ?? "error";
-      return {
-        ok: false,
-        error: renderLifecycleBlocked(raw, r.reply.error),
-        ...(r.reply.error?.details ? { details: r.reply.error.details } : {}),
-      };
-    }
-    return { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) };
+    return controlReplyFrom(r.reply);
   }
 
   /** Resolve a managed agent's CURRENT principal triple (owner-mode targets are (owner, actor,
@@ -2110,7 +2130,12 @@ export class MeshAgent extends EventEmitter {
    *  block's subject arity. The owner-mode standing mint pins the caller's OWN owner, so a
    *  foreign-owner target is broker-denied at publish (the same own-domain boundary as ctl). */
   private async managerTargetFor(name: string): Promise<{ target: EpVerbTarget } | { error: ControlReply }> {
-    const info = await this.managerInvoke("inspect", { name });
+    let info = await this.managerInvoke("inspect", { name });
+    // `inspect` is instance-local, and in a multi-manager space the class queue can hand it to a
+    // sibling that answers with the owning instance instead of the row. A static credential cannot
+    // address that instance, so the read is asked again until the queue reaches the owner (#443).
+    for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && info.details?.some((d) => d.kind === STATIC_SLOT_OBSERVATION_DETAIL && d.ownerInstanceId !== undefined); reissues++)
+      info = await this.managerInvoke("inspect", { name });
     if (!info.ok) return { error: info };
     const row = info.data as { id: string; lifecycleUid: string };
     const dot = row.id.indexOf(".");
@@ -2715,10 +2740,6 @@ export class MeshAgent extends EventEmitter {
 
   // ---- internals -----------------------------------------------------------
 
-  private who(): string {
-    return this.config.role ? `${this.config.name}/${this.config.role}` : this.config.name;
-  }
-
   /** The connectedness gate every mesh op goes through. Waits out the initial connect window
    *  rather than failing into it (see CONNECT_GRACE_MS), so the common startup race resolves as
    *  a slightly slow first call instead of a false "mesh is down". */
@@ -2802,6 +2823,15 @@ export class MeshAgent extends EventEmitter {
   private log(msg: string): void {
     process.stderr.write(`[cotal-connector] ${msg}\n`);
   }
+}
+
+/** Why a presence view that is not `current` cannot support an absence verdict (#1229). The roster,
+ *  the orientation card and the mention and DM refusals all print this clause, so none of them can
+ *  word one view state differently. */
+export function presenceViewCondition(view: Exclude<PresenceView, { state: "current" }>): string {
+  return view.state === "stale"
+    ? `the presence watch has been silent since ${new Date(view.staleSince).toISOString()}`
+    : "the presence watch has not completed its initial snapshot";
 }
 
 /** Names already known that differ from `channel` by one insertion, deletion, or substitution. */

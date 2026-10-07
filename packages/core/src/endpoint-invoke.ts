@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   parseGoalResultFact,
@@ -141,7 +141,7 @@ export async function describeEndpoint(
     // {@link openPublishDenialWatch}: a refused publish is otherwise indistinguishable
     // from an unanswered describe.
     denialWatch = openPublishDenialWatch(nc, subject, () => new EpEnvelopeError("permission-denied",
-      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`), "describe");
+      `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`, undefined, "not-executed"), "describe");
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
@@ -337,6 +337,13 @@ export async function resolveService(
   return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
 }
 
+/** How many times a call is re-issued after a `not-executed` bind refusal. Every
+ *  re-issue is a first attempt, so this is a loop guard and not a duplication guard. Each attempt
+ *  splits with probability (m-1)/m in a space of m managers, so seventeen attempts leave a
+ *  three-manager space about 1 in 1000 where the unrepaired call failed 2 in 3 (#398). An attempt
+ *  costs an answered describe and invoke, never an elapsed deadline. */
+export const BIND_SPLIT_REISSUES = 16;
+
 /**
  * INVOKE one named command on a resolved service: validate nothing here (the compiled input
  * contract in {@link epCall}'s request builder gates args before publish, and the responder's
@@ -446,6 +453,55 @@ export async function invokeCommand(
   });
 }
 
+/**
+ * {@link invokeCommand} with a SPEC 13.2 bind refusal repaired rather than surfaced.
+ *
+ * An unpinned handle binds the instance that answered its describe, and the invoke is a second,
+ * independent trip through the same class queue, so in a multi-instance space another member
+ * routinely receives it and refuses before dispatching. That refusal states the command did not
+ * run ({@link replyRefusedBeforeEffect}), so re-resolving and re-issuing is a first attempt and is
+ * safe for any command, mutations included. A targeted call that reaches a member holding no
+ * mapping for its target ({@link replyTargetUnmapped}) is re-issued the same way, because with an
+ * instance-local resolver only the member hosting the target can serve it. The re-issue repeats
+ * until a member serves the call or {@link BIND_SPLIT_REISSUES} runs out, and then the last refusal
+ * surfaces unchanged, or the last no-mapping refusal when there was one.
+ *
+ * `reresolve` defaults to a fresh class resolve as the handle's caller; a caller that memoizes its
+ * handle passes one that drops the memo first, so later calls do not start from the refused bind.
+ * When it throws, the refusal surfaces, because it states that nothing ran, which the resolve
+ * failure raised in its place would lose.
+ *
+ * A pinned handle is never repaired: it names its instance, so a refusal from it is that instance
+ * answering about itself, and re-resolving on the class rail would reach another one.
+ */
+export async function invokeRepairingSplit(
+  nc: NatsConnection,
+  space: string,
+  service: ResolvedService,
+  command: string,
+  args: Record<string, unknown> | undefined,
+  opts: Parameters<typeof invokeCommand>[5],
+  reresolve: () => Promise<ResolvedService> = () =>
+    resolveService(nc, space, service.endpoint, service.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) }),
+): Promise<EpAttributedReply> {
+  let handle = service;
+  // A member that looked the target up and found no mapping says more about it than a bind refusal,
+  // which says nothing, so a call that runs out of re-issues surfaces the latest such refusal.
+  let unmapped: EpAttributedReply | undefined;
+  for (let reissues = 0; ; reissues += 1) {
+    const r = await invokeCommand(nc, space, handle, command, args, opts);
+    if (replyTargetUnmapped(r.reply.error)) unmapped = r;
+    else if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
+    if (handle.pinnedInstanceId !== undefined) return r;
+    if (reissues === BIND_SPLIT_REISSUES) return unmapped ?? r;
+    try {
+      handle = await reresolve();
+    } catch {
+      return unmapped ?? r;
+    }
+  }
+}
+
 export interface SubmitAndFollowGoalOptions {
   /** Read through the current authorized transport. Cancellation owns this read, not the goal. */
   reconcile?: (goalId: string, attributed: EpAttributedReply, context: {
@@ -454,11 +510,17 @@ export interface SubmitAndFollowGoalOptions {
   currentNc?: () => NatsConnection | undefined;
   onReconnect?: (handler: (newNc: NatsConnection) => void) => () => void;
   signal?: AbortSignal;
+  /** Work that must finish before the submission and cannot itself carry out the command, such as
+   *  resolving the endpoint. Its failures surface unchanged, and a stop or the deadline while it
+   *  runs reports `not-executed`. */
+  prepare?: (signal: AbortSignal) => Promise<void>;
 }
 
 /** Subscribe before a single submission, then observe its accepted goal through live progress and
  *  mediated canonical reads. Local failures before an attributed reply throw; they never invent a
- *  responder. Once accepted, observation failures retain that responder and never authorize retry. */
+ *  responder. Once accepted, observation failures retain that responder and never authorize retry.
+ *  A terminal other than `succeeded` keeps the acceptance as its data, so the caller still holds the
+ *  allocated identity of a goal that settled `uncertain` and may yet converge. */
 export async function submitAndFollowGoal(
   nc: NatsConnection,
   space: string,
@@ -502,9 +564,8 @@ export async function submitAndFollowGoal(
       : "goal observation stopped or exceeded its deadline before submission; the manager request WAS NOT RUN",
     undefined, submitted ? "unknown" : "not-executed");
   let deadline = Date.now() + deadlineMs;
-  const bounded = async <T>(operation: () => Promise<T>, until: number): Promise<T> => {
+  const bounded = async <T>(operation: () => Promise<T>, until: number, remaining = until - Date.now()): Promise<T> => {
     if (stopped || completed) throw phaseError("unavailable");
-    const remaining = until - Date.now();
     if (remaining <= 0) throw phaseError("deadline-exceeded");
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -559,6 +620,15 @@ export async function submitAndFollowGoal(
   try {
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
     if (stopped) throw phaseError("unavailable");
+    if (opts?.prepare) {
+      const prepare = opts.prepare;
+      // The whole budget rather than what is left of it: the deadline timer then has the duration of
+      // a describe in the prepare given that budget and arms after it in the same tick. Node fires
+      // equal-duration timers in the order they were armed, so a describe that drew no reply still
+      // reports itself as unanswered, while a slower step such as a stalled store read ends here.
+      try { await bounded(() => prepare(work.signal), deadline, deadlineMs); }
+      catch (err) { throw stopped ? phaseError("unavailable") : err; }
+    }
     subscribe(opts?.currentNc?.() ?? nc);
     unbindReconnect = opts?.onReconnect?.(replaceConnection);
     // A borrowed submit can publish on another connection. Confirm broker interest first,
@@ -659,7 +729,7 @@ export async function submitAndFollowGoal(
     const message = renderLifecycleBlocked(raw, details ? { details } : undefined);
     const fromAccept = lifecycleBlockedFrom(attributed.reply.error);
     const merged = details ?? (fromAccept ? [fromAccept] : undefined);
-    return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
+    return { ...attributed, reply: { ...attributed.reply, ok: false, error: { code: terminal.state, message, ...(merged ? { details: merged } : {}) } } };
   } finally {
     completed = true;
     opts?.signal?.removeEventListener("abort", onAbort);

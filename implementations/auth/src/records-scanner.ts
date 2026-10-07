@@ -51,6 +51,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerToken, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import type { ScanGuard } from "./plane-claim.js";
+import { serializedFor } from "./serialized.js";
 
 /** The ONE literal consumer name every obligation scan over the records stream reuses (the grant
  *  pins exactly this token; separate from the auth-ledger scanner's — fact-5, one name per stream).
@@ -63,12 +64,6 @@ const MANAGER_GOAL_INDEX_SCANNER_CONSUMER_NAME = "cotal-manager-goalidx-scan";
  *  and can never interleave pre-clean/create/fetch/delete on that name (a per-instance lock cannot
  *  see a sibling instance). */
 const SPACE_SCAN_CHAINS = new Map<string, Promise<unknown>>();
-const serializedForSpace = <T>(space: string, fn: () => Promise<T>): Promise<T> => {
-  const tail = SPACE_SCAN_CHAINS.get(space) ?? Promise.resolve();
-  const run = tail.then(fn, fn);
-  SPACE_SCAN_CHAINS.set(space, run.then(() => undefined, () => undefined));
-  return run;
-};
 
 /** Does a concrete delivered subject match the requested consumer filter (`*` one token, trailing
  *  `>` a non-empty remainder)? Revalidated PER MESSAGE in the drain: bind-verify proves the config
@@ -444,14 +439,14 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   const scanner: RecordsScanner = Object.freeze({
     // The PLANE guard (#29 HIGH 3, SPEC 13.13) wraps the scan INSIDE the serialized critical
     // section: claim re-validated before (refuse to enumerate) and after (discard the result).
-    scanObligations: (filter: string) => serializedForSpace(space, async () => {
+    scanObligations: (filter: string) => serializedFor(SPACE_SCAN_CHAINS, space, async () => {
       if (guard === undefined) return scanOnce(filter);
       await guard.assertHeld("before");
       const out = await scanOnce(filter);
       await guard.assertHeld("after");
       return out;
     }),
-    scanManagerGoalIndex: (owner: string) => serializedForSpace(space, async () => {
+    scanManagerGoalIndex: (owner: string) => serializedFor(SPACE_SCAN_CHAINS, space, async () => {
       if (guard === undefined) return scanManagerGoalIndexOnce(owner);
       await guard.assertHeld("before");
       const out = await scanManagerGoalIndexOnce(owner);

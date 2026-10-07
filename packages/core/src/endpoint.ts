@@ -12,6 +12,8 @@ import {
   UserAuthenticationExpiredError,
   NoRespondersError,
   RequestError,
+  TimeoutError,
+  ClosedConnectionError,
   type NatsConnection,
   type Subscription,
 } from "@nats-io/transport-node";
@@ -34,9 +36,9 @@ import {
   parseSecretStoreIdentity,
   type SecretStoreIdentity,
 } from "./secret-store.js";
-import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
+import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
-import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
+import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
@@ -63,7 +65,7 @@ import {
   type JetStreamPublishOptions,
 } from "@nats-io/jetstream";
 import { type PushConsumer } from "@nats-io/jetstream";
-import { Kvm, type KV, type KvEntry, type KvWatchEntry } from "@nats-io/kv";
+import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 
 import type {
@@ -390,15 +392,19 @@ const READ_HISTORY_MAX_LIMIT = 200;
  *  nothing about messages already aged out by retention — no reader can see those. */
 export type HistoryPage = { items: CotalMessage[]; complete: boolean };
 
-/** The NEWEST prefix-from-the-end of `items` whose serialized size fits `budget` bytes, order
- *  preserved. Returns `[]` when not even the newest single message fits — the caller must refuse
- *  loudly there rather than serve an empty page, which would read as "no history".
+/** The NEWEST prefix-from-the-end of `items` whose serialized `readHistory` reply fits `budget`
+ *  bytes, order preserved. Returns `[]` when not even the newest single message fits — the caller
+ *  must refuse loudly there rather than serve an empty page, which would read as "no history".
+ *
+ *  The `ControlReply` around the items rides the same NATS message, so it is charged too: items
+ *  that fit on their own can still make a reply the broker refuses.
  *
  *  Measured in ENCODED bytes, not `string.length`: a page of multi-byte text would otherwise be
  *  undercounted and still overflow the broker. Same discipline as `assertFactFits`. */
 export function fitHistoryPage(items: CotalMessage[], budget: number): CotalMessage[] {
   const enc = new TextEncoder();
-  let used = 2; // the enclosing `[]`
+  // The reply with no items, at its longer `complete` value.
+  let used = enc.encode(JSON.stringify({ ok: true, data: { items: [], complete: false } satisfies HistoryPage })).length;
   let first = items.length; // index of the oldest kept item
   for (let i = items.length - 1; i >= 0; i--) {
     const size = enc.encode(JSON.stringify(items[i])).length + 1; // + the `,` separator
@@ -586,9 +592,6 @@ export class CotalEndpoint extends EventEmitter {
    *  EXPECTED async permission violation that joinChannel turns into a clean throw, so watchStatus
    *  suppresses it rather than surfacing a spurious connection error. */
   private readonly confirmingChatSubs = new Set<string>();
-  /** Delete subjects of this endpoint's own consumers whose refusal watchStatus has not consumed yet
-   *  (see {@link deleteOwnConsumer}). */
-  private readonly ownConsumerDeletes = new Set<string>();
   /** `$JS.API.CONSUMER.DELETE.<stream>.<prefix>_` for each of this connection's own KV watches,
    *  running membership scans and running history reads (see {@link recordOwnWatchConsumer}). */
   private readonly ownWatchDeletePrefixes = new Set<string>();
@@ -704,8 +707,9 @@ export class CotalEndpoint extends EventEmitter {
   /** Active goal followers awaiting outcome, tracked so endpoint stop can cancel them immediately
    *  and connection replacement / reconnect can trigger reconciliation. */
   private readonly activeGoalFollowers = new Set<{ cancel: () => void; reconnected: (nc: NatsConnection) => void }>();
-  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) — the
-   *  class-queue splits this endpoint hit and survived.
+  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) or a
+   *  member holding no mapping for the target (§13.3) — the class-queue splits this endpoint hit
+   *  and survived.
    *
    *  Counted because it is recovered: handling the split is what makes it invisible, so this is the
    *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
@@ -1585,7 +1589,6 @@ export class CotalEndpoint extends EventEmitter {
     this.chatSubs.clear();
     this.chatSubDenied.clear();
     this.confirmingChatSubs.clear();
-    this.ownConsumerDeletes.clear();
     this.ownWatchDeletePrefixes.clear();
     this.roster.clear();
     // #1356: the presence-refusal record is connection-scoped like everything else torn down here.
@@ -2235,6 +2238,18 @@ export class CotalEndpoint extends EventEmitter {
     text: string,
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<CotalMessage> {
+    const { msg } = await this.anycastAttributed(service, text, opts);
+    return msg;
+  }
+
+  /** Anycast, returning the JetStream publish ack alongside the message: the broker stored the
+   *  request on the role's work queue at a sequence, which proves neither a holder nor a read. */
+  async anycastAttributed(
+    service: string,
+    text: string,
+    opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
+  ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
@@ -2245,8 +2260,15 @@ export class CotalEndpoint extends EventEmitter {
       replyTo: opts?.replyTo,
       contextId: opts?.contextId,
     };
-    await this.publishMsg(anycastSubject(this.space, service, this.owner, this.actor), msg);
-    return msg;
+    assertPartsSerializable(msg.parts);
+    // Publish DIRECTLY rather than through publishMsg, the way unicastAttributed does: this path
+    // must read the ack, and publishMsg deliberately discards it.
+    const ack = await this.js.publish(
+      anycastSubject(this.space, service, this.owner, this.actor),
+      JSON.stringify(msg),
+      { msgID: msg.id },
+    );
+    return { msg, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
   }
 
   /** Subscribe to a read-only observer feed. Defaults to the whole space; an observer under
@@ -2305,8 +2327,9 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", new Error(`rejected ${service} request on ${m.subject}: reply target "${m.reply ?? "(none)"}" is not under the sender's own reply subtree`));
           continue;
         }
-        let reply: ControlReply;
+        let body: string;
         try {
+          let reply: ControlReply;
           const req = m.json<ControlRequest>();
           // Authenticity guard (fail closed): control is the most privileged surface
           // (start/stop). The sender is encoded in the subject (ctl.<svc>.<sender>), which
@@ -2325,13 +2348,22 @@ export class CotalEndpoint extends EventEmitter {
           } else {
             reply = await handler(req);
           }
+          body = JSON.stringify(reply);
         } catch (e) {
-          reply = { ok: false, error: (e as Error).message };
+          body = JSON.stringify({ ok: false, error: (e as Error).message } satisfies ControlReply);
         }
         try {
-          m.respond(JSON.stringify(reply));
-        } catch {
-          /* no reply inbox */
+          m.respond(body);
+        } catch (e) {
+          // `respond` signals a missing reply inbox by returning false; it throws when the reply exceeds the
+          // broker's `max_payload`. Silence would leave the caller a bare timeout it cannot tell apart from
+          // a dead service.
+          const refused: ControlReply = { ok: false, error: `the ${service} reply is ${Buffer.byteLength(body)} bytes and was not published: ${(e as Error).message}` };
+          try {
+            m.respond(JSON.stringify(refused));
+          } catch (err) {
+            this.emit("error", new Error(`could not answer ${service} request on ${m.subject}: ${refused.error}, and the refusal failed too: ${(err as Error).message}`));
+          }
         }
       }
     })().catch((e) => this.emit("error", e as Error));
@@ -2383,7 +2415,7 @@ export class CotalEndpoint extends EventEmitter {
     endpoint: string,
     submit: (signal?: AbortSignal) => Promise<EpAttributedReply>,
     deadlineMs = 10_000,
-    opts: Pick<SubmitAndFollowGoalOptions, "reconcile" | "signal"> = {},
+    opts: Pick<SubmitAndFollowGoalOptions, "reconcile" | "signal" | "prepare"> = {},
   ): Promise<EpAttributedReply> {
     if (!this.nc) throw new Error(this.notLiveMsg());
     if (this.stopped) throw new Error("endpoint stopped - cannot follow goal");
@@ -2417,6 +2449,7 @@ export class CotalEndpoint extends EventEmitter {
           return () => { reconnectHandler = undefined; };
         },
         signal: abortController.signal,
+        prepare: opts.prepare,
       });
     } finally {
       opts.signal?.removeEventListener("abort", onAbort);
@@ -2432,9 +2465,12 @@ export class CotalEndpoint extends EventEmitter {
    *  and only knowing someone answered:
    *   - the RESPONDER fenced it on the request's `bind` (§13.2, an `ok:false` reply marked
    *     {@link replyRefusedBeforeEffect}): the command did not run, so the bind is dropped and the
-   *     call re-issued ONCE for any command. If that re-issue cannot be resolved, the refusal
+   *     call re-issued for any command, up to {@link BIND_SPLIT_REISSUES} times while each re-issue
+   *     is refused the same way. If a re-issue cannot be resolved, the refusal
    *     surfaces — still saying the command did not run — naming the resolve failure as why the
-   *     repair could not be attempted.
+   *     repair could not be attempted. An unpinned targeted call that reached a member holding no
+   *     mapping for its target ({@link replyTargetUnmapped}) is repaired the same way, and when the
+   *     re-issues run out, the latest such refusal is the one surfaced.
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
    *     `failed-precondition`; the same instance at any other epoch, `expired`), which is what a
    *     responder too old to know the field produces. A live instance received and answered it, so
@@ -2480,10 +2516,20 @@ export class CotalEndpoint extends EventEmitter {
       }
       return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, signal });
     };
-    const doInvoke = async (signal = opts.signal): Promise<EpAttributedReply> => {
+    // A `failed-precondition` from the resolve is its own refusal, raised before any command was
+    // published, so resolving once more is a repair.
+    const resolveFirst = async (signal = opts.signal): Promise<ResolvedService> => {
+      try {
+        return await resolve(signal);
+      } catch (e) {
+        if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
+        return await resolve(signal);
+      }
+    };
+    const doInvoke = async (service: ResolvedService, signal = opts.signal): Promise<EpAttributedReply> => {
       signal?.throwIfAborted();
       try {
-        const r = await invokeResolved(await resolve(signal), signal);
+        let r = await invokeResolved(service, signal);
         // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
         // was bound to a different incarnation and refused BEFORE running the command.
         //
@@ -2492,9 +2538,17 @@ export class CotalEndpoint extends EventEmitter {
         // otherwise keep its stale bind and meet the same refusal forever.
         //
         // The re-issue is NOT gated on {@link isRepeatSafeCommand}: the responder states the command
-        // did not run, so this is a FIRST attempt, not a second. Exactly once; a second refusal
-        // surfaces.
-        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
+        // did not run, so each re-issue is a FIRST attempt, not a second. It repeats up to the bound
+        // the CLI uses, because the re-issue rides the same class queue and splits again at the same
+        // rate; repairing once left a quarter of all calls in a two-manager space failing (#443).
+        // A member that holds no mapping for the target also ran nothing, and on the class rail a
+        // sibling may host it. A pinned call named its instance, so that refusal is its answer.
+        // That member looked the target up, so when the re-issues run out its refusal is surfaced
+        // in place of a trailing bind refusal, which says nothing about the target.
+        const unmappedHere = (x: EpAttributedReply) => opts.instanceId === undefined && replyTargetUnmapped(x.reply.error);
+        let unmapped = unmappedHere(r) ? r : undefined;
+        for (let reissues = 0; reissues < BIND_SPLIT_REISSUES && r.reply.ok === false
+          && (replyRefusedBeforeEffect(r.reply.error) || unmappedHere(r)); reissues++) {
           // Counted before it is repaired: a recovery that leaves no trace takes the split rate with it.
           this.splitsRecovered++;
           // `boundTo` is the other half of `servedBy`: who the handle THOUGHT it was talking to,
@@ -2549,11 +2603,11 @@ export class CotalEndpoint extends EventEmitter {
               "not-executed",
             );
           }
-          return await invokeResolved(reissueTarget, signal);
+          r = await invokeResolved(reissueTarget, signal);
+          if (unmappedHere(r)) unmapped = r;
         }
-        return r;
+        return replyRefusedBeforeEffect(r.reply.error) ? unmapped ?? r : r;
       } catch (e) {
-        if (!(e instanceof EpEnvelopeError)) throw e;
         // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
         // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
         // afterwards, so core cannot tell a repair from a duplicate and the allowlist is the only
@@ -2585,21 +2639,19 @@ export class CotalEndpoint extends EventEmitter {
           if (!isRepeatSafeCommand(endpoint, command)) throw e;
           return await invokeResolved(await resolve(signal), signal);
         }
-        // An UNMARKED `failed-precondition` is the resolve's own refusal, raised before any command
-        // was published, so re-resolving once is a repair. The `replyRefusedBeforeEffect` half keeps
-        // out the refusal THIS method raises after a failed re-issue: it carries that same code, and
-        // would otherwise fall into the re-resolve below as a THIRD attempt at a command whose
-        // second could not even be resolved. A marker means the disposition is already decided,
-        // whichever code carries it.
-        if (e.code !== "failed-precondition" || replyRefusedBeforeEffect(e.toEpError())) throw e;
-        this.resolvedServices.delete(endpoint);
-        return await invokeResolved(await resolve(signal), signal);
+        throw e;
       }
     };
     // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
     // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
-    if (!opts.follow) return doInvoke();
-    return this.followServiceGoal(endpoint, doInvoke, opts.deadlineMs ?? 10_000, { signal: opts.signal });
+    if (!opts.follow) return doInvoke(await resolveFirst());
+    // Resolved before the submission starts: the follow reports an unmarked failure inside the
+    // submission as a command that may have run, and the resolve publishes none of this call.
+    let service: ResolvedService;
+    return this.followServiceGoal(endpoint, (signal) => doInvoke(service, signal), opts.deadlineMs ?? 10_000, {
+      signal: opts.signal,
+      prepare: async (signal) => { service = await resolveFirst(signal); },
+    });
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
@@ -2981,7 +3033,6 @@ export class CotalEndpoint extends EventEmitter {
     let scanPrefix: string | undefined;
     const entries = await liveKvEntries(kv, {
       onConsumer: (info) => { scanPrefix = this.recordOwnWatchConsumer(info); },
-      deleteOwnConsumer: (stream, name, del) => this.deleteOwnConsumer(stream, name, del),
     }).finally(() => {
       // The scan's own last delete goes out after nats.js closed its consumer, so every predecessor
       // delete the library sent is answered ahead of it on this connection.
@@ -3053,13 +3104,9 @@ export class CotalEndpoint extends EventEmitter {
     watch.consumer = consumer;
     watch.consumerStream = info.stream_name;
     watch.consumerName = info.name;
-    let pending = info.num_pending;
     let iter: Awaited<ReturnType<PushConsumer["consume"]>>;
-    try { iter = await consumer.consume({ callback: (msg) => {
-      const isUpdate = pending === 0 || --pending === 0;
-      const entry: KvWatchEntry = kv.jmToWatchEntry(msg, isUpdate);
+    try { iter = await consumer.consume({ callback: () => {
       if (!watch.stopped && watch.consumer === consumer) watch.onChange();
-      void entry;
     } }); }
     catch (err) {
       await this.disarmMembershipWatch(watch);
@@ -3099,24 +3146,12 @@ export class CotalEndpoint extends EventEmitter {
     watch.rejectStop = undefined;
   }
 
-  /** Run one delete of a consumer this endpoint created. A profile without the delete row is refused
-   *  by design (#691), and nats.js reports a refused request twice: as the request's rejection, which
-   *  the caller handles, and on the connection status, which watchStatus would emit as an `error`.
-   *  A refused subject stays recorded until watchStatus drops that echo, since the two settle in
-   *  either order. */
-  private async deleteOwnConsumer(stream: string, name: string, del: () => Promise<boolean>): Promise<boolean> {
-    const subject = `$JS.API.CONSUMER.DELETE.${stream}.${name}`;
-    this.ownConsumerDeletes.add(subject);
-    let refused = false;
-    try { return await del(); }
-    catch (err) { refused = isPublishPermissionDenied(err); throw err; }
-    finally { if (!refused) this.ownConsumerDeletes.delete(subject); }
-  }
-
   /** Record the consumer behind one of this connection's own KV watches, membership scans or history
    *  reads, and return the delete-subject prefix it recorded. nats.js names it `<prefix>_<serial>` and,
    *  rebuilding it after a stall or a sequence gap, deletes the predecessor itself with no hook before
-   *  the send, so a profile without the delete row (#691) has that delete refused. A watch's prefix
+   *  the send, so a profile without the delete row (#691) has that delete refused. A stalled link can
+   *  time that delete out before its refusal arrives, and nats.js then hands the refusal to no request,
+   *  so {@link trackRequestDenials} cannot own it and the consumer's name has to. A watch's prefix
    *  stays recorded for the connection because a retired watch's last rebuild can be refused after
    *  the watch has stopped; {@link readMembership} and {@link drainWindow} retire theirs after their own
    *  last delete, which goes out once nats.js has stopped the consumer and so is answered after every
@@ -3137,8 +3172,7 @@ export class CotalEndpoint extends EventEmitter {
    *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
    *  consumer at its inactive threshold. */
   private async deleteReaderConsumer(consumer: Consumer): Promise<void> {
-    const { stream_name, name } = await consumer.info(true);
-    try { await this.deleteOwnConsumer(stream_name, name, () => consumer.delete()); }
+    try { await consumer.delete(); }
     catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
     }
@@ -3146,7 +3180,7 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Delete one membership-watch consumer, swallowing ONLY already-gone and a refused delete. */
   private async deleteMembershipConsumer(jsm: JetStreamManager, stream: string, name: string): Promise<boolean> {
-    try { return await this.deleteOwnConsumer(stream, name, () => jsm.consumers.delete(stream, name)); }
+    try { return await jsm.consumers.delete(stream, name); }
     catch (err) {
       if (membershipConsumerReleased(err)) return true;
       throw err;
@@ -3164,16 +3198,15 @@ export class CotalEndpoint extends EventEmitter {
     try { iter?.stop(); } catch { /* already closed */ }
     if (consumer) {
       try {
-        const { stream_name, name } = await consumer.info(true);
-        const deleted = await this.deleteOwnConsumer(stream_name, name, () => consumer.delete());
+        const deleted = await consumer.delete();
         if (deleted) { watch.consumerStream = undefined; watch.consumerName = undefined; }
       } catch (err) {
         if (membershipConsumerReleased(err)) {
           watch.consumerStream = undefined;
           watch.consumerName = undefined;
         } else {
-          const closedEpoch = (err as Error).name === "ClosedConnectionError" || /^closed connection$/i.test((err as Error).message);
-          const timeout = isTimeoutError(err);
+          const closedEpoch = err instanceof ClosedConnectionError;
+          const timeout = err instanceof TimeoutError;
           const dyingEpochTimeout = timeout && (this.reconnecting || !this.nc || this.nc.isClosed());
           // Cleanup of an ordered consumer: a delete timeout means the broker did not answer in time,
           // not that the endpoint is unusable. The broker reaps an idle/ephemeral consumer anyway.
@@ -3685,14 +3718,17 @@ export class CotalEndpoint extends EventEmitter {
 
   /**
    * Surface the connection's async status errors on our `error` event. NATS reports
-   * publish permission violations *only* here (subscription/request ones too), never on
-   * the failing call — so without this an over-tight ACL silently drops the agent's
-   * traffic and it just looks "absent". We annotate permission denials explicitly so a
-   * denial is never mistaken for absence (which already has a benign cause: MCP reconnect).
+   * publish permission violations *only* here (subscription ones too), never on the
+   * failing call — so without this an over-tight ACL silently drops the agent's
+   * traffic and it just looks "absent". A denied request is the exception: nats.js also
+   * rejects that request with the denial, so its caller owns it (see {@link trackRequestDenials}).
+   * We annotate permission denials explicitly so a denial is never mistaken for absence
+   * (which already has a benign cause: MCP reconnect).
    */
   private watchStatus(): void {
     const nc = this.nc;
     if (!nc) return;
+    const handedToRequest = this.trackRequestDenials(nc);
     void (async () => {
       for await (const s of nc.status()) {
         // A rebuild can replace `this.nc` before the old iterator finishes. Late disconnect/close
@@ -3720,11 +3756,11 @@ export class CotalEndpoint extends EventEmitter {
         // and turns into a clean throw — it is not a connection error to surface.
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
           continue;
-        // The echo of a refused delete of this endpoint's own consumer: one its caller already handled,
-        // or the predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
-        // history reads.
+        if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
+        // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
+        // history reads, whose refusal can arrive after that delete timed out.
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
-          && (this.ownConsumerDeletes.delete(s.error.subject) || this.isOwnWatchDelete(s.error.subject)))
+          && this.isOwnWatchDelete(s.error.subject))
           continue;
         this.emit("error", describeStatusError(s.error));
       }
@@ -3745,6 +3781,29 @@ export class CotalEndpoint extends EventEmitter {
     // through a real pending dial, a stopped endpoint announced a live transport it never had.
     if (this.stopped) return;
     this.emit("transport", { connected: true, server: nc.getServer() } satisfies TransportState);
+  }
+
+  /** Wrap `nc.request` to record each publish denial nats.js rejects one of this connection's requests
+   *  with. nats.js rejects the pending request on the denied subject with the denial and then dispatches
+   *  that same error instance on the connection status, so the caller that received it (an empty history
+   *  read, a refused consumer delete, nats.js's own delete of a rebuilt watch's predecessor) owns it and
+   *  the status loop skips it. nats.js settles the request before it dispatches the status and this
+   *  reaction sits directly on the promise it returns, so it runs before the status loop body, which is
+   *  further microtasks away behind the status iterator. Any other denial is a different instance and is
+   *  not recorded, including one on the same subject and one that arrives after its request timed out.
+   *  A refused request inbox is rejected into every pending request but breaks every later one, so it
+   *  is not recorded either. */
+  private trackRequestDenials(nc: NatsConnection): WeakSet<PermissionViolationError> {
+    const handed = new WeakSet<PermissionViolationError>();
+    const request = nc.request.bind(nc);
+    nc.request = (subject, payload, opts) => {
+      const reply = request(subject, payload, opts);
+      reply.catch(({ cause }: Error) => {
+        if (cause instanceof PermissionViolationError && cause.operation === "publish") handed.add(cause);
+      });
+      return reply;
+    };
+    return handed;
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
@@ -4715,30 +4774,21 @@ export class CotalEndpoint extends EventEmitter {
     const wanted = reachedStart ? page : page.slice(-limit);
 
     // A page that cannot be SENT is not a page. The reply rides one NATS message, so `limit` alone is
-    // the wrong bound: 200 large messages serialize past `max_payload`, `m.respond` throws inside
-    // `serveControl`'s swallow, and the caller sees a bare request timeout it cannot tell apart from a
-    // dead daemon. Measured, not predicted: 200 x ~6 KB timed out at 5s with the message "timeout".
+    // the wrong bound: 200 large messages serialize past `max_payload`, and `serveControl` can then only
+    // answer with a refusal in place of the page.
     //
     // So bound by BYTES too, keeping the NEWEST that fit — which needs no new vocabulary, because
     // `complete: false` already means "older history remains behind this page". Trimming here is the
     // documented truncation signal doing its job, not a silent degradation.
-    const fitted = fitHistoryPage(wanted, this.payloadBudget());
+    const fitted = fitHistoryPage(wanted, this.maxPayload);
     // `wanted.length > 0` is load-bearing, not defensive: an EMPTY channel also fits nothing, and
     // without this guard a channel nobody has posted to was refused with "the newest message exceeds
     // the payload budget" — a confident, entirely wrong explanation for a legitimately empty result.
     // Genuine emptiness is `{ items: [], complete: true }`; only a message too large to ever send is
     // the error.
     if (wanted.length > 0 && fitted.length === 0)
-      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.payloadBudget()} bytes) - refused loudly rather than served as an empty page` };
+      return { ok: false, error: `readHistory: the newest message on "${channel}" alone exceeds the broker payload budget (${this.maxPayload} bytes) - refused loudly rather than served as an empty page` };
     return { ok: true, data: { items: fitted, complete: reachedStart && fitted.length === wanted.length } satisfies HistoryPage };
-  }
-
-  /** Bytes a control reply may occupy: the broker's `max_payload` less headroom for the `ControlReply`
-   *  envelope wrapped around the items. Read from the live server info rather than assumed, since an
-   *  operator can raise or lower it. */
-  private payloadBudget(): number {
-    const max = this.nc?.info?.max_payload ?? 1_048_576;
-    return Math.max(1, Math.floor(max * 0.9));
   }
 
   /** Stop serving Plane-3 WITHOUT tearing down the connection, so a daemon that has just learned its
@@ -5038,9 +5088,7 @@ export class CotalEndpoint extends EventEmitter {
    *  is about something being wedged). Neither may ever mean health. */
   private probeFailureOutcome(e: unknown): ProbeOutcome {
     if (e instanceof AuthorizationError || e instanceof PermissionViolationError) return "refused";
-    const name = (e as Error)?.name;
-    const msg = (e as Error)?.message ?? "";
-    if (name === "TimeoutError" || /timeout/i.test(msg)) return "timeout";
+    if (e instanceof TimeoutError) return "timeout";
     // Anything else is a transport or client failure: it says something about our link, not about
     // the plane, so it is graded like a refusal rather than guessed at.
     return "refused";
@@ -5674,7 +5722,9 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** Drive one consumer: decode, drop our own echo, and hand each message to listeners with ack control. */
+  /** Drive one consumer: decode and hand each message to listeners with ack control. Our own sends are
+   *  delivered too: on the DM inbox and the role queue they were addressed to us, so none is an echo,
+   *  and acking one unseen on the work queue would delete the only copy of the request. */
   private async pump(stream: string, durable: string): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
     const consumer = await this.js.consumers.get(stream, durable);
@@ -5709,10 +5759,6 @@ export class CotalEndpoint extends EventEmitter {
                 `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
             ),
           );
-          continue;
-        }
-        if (msg.from.id === this.card.id) {
-          m.ack(); // our own echo — advance past it
           continue;
         }
         // No-replay + dedup (chat only): drop a message at/below this channel's join watermark
@@ -6275,24 +6321,25 @@ export class CotalEndpoint extends EventEmitter {
     };
   }
 
-  /** Bind a presence watch on the current connection. Resolves true when the watch was
-   *  installed, false when the endpoint stopped or rebuilt while the bind was in flight: that
-   *  bind's iterator is released here and nothing is installed, because the epoch that asked
-   *  for it is gone and the epoch that replaced it binds its own watch through
+  /** Bind a presence watch on the current connection. Resolves the bound consumer's info when
+   *  the watch was installed, undefined when the endpoint stopped or rebuilt while the bind was
+   *  in flight: that bind's iterator is released here and nothing is installed, because the
+   *  epoch that asked for it is gone and the epoch that replaced it binds its own watch through
    *  {@link connectAndBind}. Without this fence a bind that completes after {@link stop} would
    *  resurrect a watch on a stopped endpoint, and one that completes after a rebuild would
    *  overwrite the fresh epoch's watch with a dead-connection iterator. */
-  private async startPresenceWatch(): Promise<boolean> {
-    if (!this.kv) return false;
+  private async startPresenceWatch(): Promise<ConsumerInfo | undefined> {
+    if (!this.kv) return undefined;
     const epoch = this.presenceEpoch;
     let hydrated!: () => void;
     this.presenceSnapshot = new Promise<void>((resolve) => { hydrated = resolve; });
     const iter = await this.kv.watch();
-    this.recordOwnWatchConsumer(await kvWatchConsumer(iter).info(true));
+    const info = await kvWatchConsumer(iter).info(true);
+    this.recordOwnWatchConsumer(info);
     if (epoch !== this.presenceEpoch) {
       try { iter.stop(); } catch { /* its connection may already be gone */ }
       hydrated();
-      return false;
+      return undefined;
     }
     this.presenceWatchIter = iter;
     void (async () => {
@@ -6312,7 +6359,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       hydrated();
     })().catch((e) => this.emit("error", e as Error));
-    return true;
+    return info;
   }
 
   /**
@@ -6339,18 +6386,17 @@ export class CotalEndpoint extends EventEmitter {
         // one a held link never answers must leave the old watch in place: on a plain stall that
         // watch is the one that recovers by itself, and its replay is still guarded against
         // expired PUTs. Only a successfully bound watch retires its predecessor.
-        const installed = await this.startPresenceWatch();
+        const info = await this.startPresenceWatch();
         // Retired mid-bind (stop or rebuild moved the epoch): the late iterator is already
         // released and the old watch was torn down by whoever moved the epoch. Nothing to
         // retire, nothing to report.
-        if (!installed) return;
+        if (!info) return;
         if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
         // A bucket with no keys replays nothing, so the new watch cannot refresh
-        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. Read
-        // the consumer's initial pending count for that one fact; nats.js's KV watch computed it
-        // from the same `info(true)` it used to place the isUpdate marker.
-        const pending = (this.presenceWatchIter as { _data?: { _info?: { num_pending?: number } } } | undefined)?._data?._info?.num_pending;
-        if (pending === 0) await this.onPresenceBucketEmpty();
+        // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
+        // bind's consumer info carries the initial pending count for that one fact; nats.js's KV
+        // watch placed the isUpdate marker from the same `info(true)`.
+        if (info.num_pending === 0) await this.onPresenceBucketEmpty();
         this.emit("warning", new Error(
           `presence watch silent for ${silentMs}ms with the connection up; rebound it from the bucket's current state`,
         ));
@@ -7270,15 +7316,6 @@ export type ProbeResult =
   | { ok: false; reason: "unreachable" }
   | { ok: false; reason: "timeout" };
 
-/** True when `err` is a dial/consumer-op timeout rather than a real refusal — the one shared test
- *  for "the operation ran out of its own budget", used both by {@link classifyProbeFailure} (#851:
- *  a probe timeout must never collapse into `unreachable`, which a TLS-required target then
- *  misreads as a trust failure) and by {@link Endpoint#disarmMembershipWatch}'s consumer-delete
- *  cleanup, which predates it. */
-function isTimeoutError(err: unknown): boolean {
-  return err instanceof Error && (err.name === "TimeoutError" || /timeout/i.test(err.message));
-}
-
 /** Like {@link isReachable}, but distinguishes "up but won't take these creds" from "nothing there".
  *  `spawn` needs the difference: auth-required → name the trust dir + next step; unreachable → the
  *  mesh is down (prune the stale entry, tell the user to `cotal up`). Pass `creds` to confirm a
@@ -7342,9 +7379,9 @@ function classifyProbeFailure(e: unknown, opts: AuthOpts): ProbeResult {
   if (e instanceof UserAuthenticationExpiredError) return { ok: false, reason: "stale-auth" };
   // The broker answered but rejected these creds (so it IS up) — auth-required, not stale-auth.
   if (e instanceof AuthorizationError) return { ok: false, reason: "auth-required" };
-  // A dial that ran out of its own budget is neither a refusal nor a dead broker — it is latency.
-  // `e` is undefined when the tcpDialable gate refused before any connect() attempt; that path has
-  // no timeout to inspect and must stay `unreachable` (nothing answered at all).
-  if (e !== undefined && isTimeoutError(e)) return { ok: false, reason: "timeout" };
+  // A dial that ran out of its own budget is neither a refusal nor a dead broker — it is latency,
+  // and grading it `unreachable` made a TLS-required target read as a trust failure (#851). Only
+  // nats-core's TimeoutError means that: a peer's `-ERR` that mentions a timeout answered at once.
+  if (e instanceof TimeoutError) return { ok: false, reason: "timeout" };
   return { ok: false, reason: "unreachable" };
 }

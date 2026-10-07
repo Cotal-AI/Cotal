@@ -249,9 +249,16 @@ A logged-in user starts runs on that remote manager with `cotal run start`. The 
 the user's manager connection against the user's actor-ledger row, the CLI reads the generation
 back from the connection's accepted row, and every `run` verb rides the versioned rail. The issuing
 host admits a run only for the owner who registered the manager, and on every resume and answer it
-checks that owner and that the caller's issuance is still live. It also watches the resume and
-answer requests on the broker itself, and issues for one the manager forwards only if it saw that
-request, once, and only for the run, endpoint and amendment that request named. A request bound to another manager instance or epoch gets nothing, and so does one whose class or pinned contract is not the one the manager registered. Another user's start, answer or resume is refused, and so is a revoked actor's. [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+checks that owner and that the caller's issuance is still live. It also watches the start, resume
+and answer requests on the broker itself, and admits or issues for one the manager forwards only if
+it saw that request, and only once. A resume or answer gets issuance only for the run, step, endpoint
+and amendment that request named. An answer's
+credential reaches one pause, and the host reads which one off the run's own journal, for a run
+admitted on that manager's instance. A request bound to another manager instance or epoch gets nothing, and so does one whose class or pinned contract is not the one the manager registered. Another user's start, answer or resume is refused, and so is a revoked actor's.
+Such a run spawns, turns and despawns agents owned by that user. A spawn has the reach of the user
+who started the run, as their actor-ledger row reads at that moment, and the host enrolls each agent
+through its managed-agent enrollment. A spawn may be placed on the manager that hosts the run and on
+no other instance. [User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
 records the path.
 
 A hosted run is **admitted** under the caller that started it. The caller's credential is an
@@ -441,7 +448,9 @@ that is already dead succeeds, and the death is the wait's to observe. `wait(dow
 a monitored agent, and refuses one the run never performed `monitor` on. It reads the death off presence liveness, the
 same witness a conclave join resolves members through: the value carries the handle, the reason
 (`lapsed` when nothing live holds the name any more, `superseded` when a live row holds it under
-a different incarnation) and the time of observation. A superseded incarnation is down at once. A
+a different incarnation) and the time of observation. Presence liveness skips any value without a
+string `card.id` and `card.name`, so a participant that publishes a malformed row under its own key
+cannot fail another run's wait, turn or conclave join. A superseded incarnation is down at once. A
 lapsed one is down only after its presence row has stayed gone for 30 seconds, because a seat whose
 connector stalls past the row's 6-second TTL, under host load or across a reconnect, renews it under
 the same incarnation and is still working. The 30 seconds count only across presence reads that
@@ -479,6 +488,17 @@ or cancelled turn is never a reply, so an unanswered wait rides its own mediated
 `null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
 are observable. A turn the run itself ended without an accepted yield (its deadline, a
 cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
+A cancelled branch also withdraws what it relayed to a seat before its cancellation completes: its
+turn, its ask attempt or its escalation ends `cancelled` through the manager's reserved `cancel`
+(SPEC §13.6), so the seat is not shown it after the branch's scope settles and the next turn to
+that seat does not wait behind it. Only the manager that accepted the relay holds it, so in a
+space with more than one manager the run sends the cancel again while another manager refuses it,
+until the accepting one answers. A cancel the accepting manager refuses is sent again until it
+lands or the relay's deadline passes, so the branch's cancellation does not complete while the
+seat can still be shown the relay. The run reads that deadline from the relay's goal and retries
+a failed read, since the relay may still be served until the deadline is known. A goal record
+that can never yield a deadline, such as one that is not JSON, fails the branch's step at once,
+and so does a refusal that lasts past the deadline.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
 the handle carries the id, and the run enforces the one rule the language states about it: two
 agents never share a worktree concurrently. The validator rejects the literal case up front
@@ -508,7 +528,7 @@ A turn handoff across worktrees is the L4004 described above. Recovery keeps the
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on. The
-same sweep withdraws a cancelled branch's undelivered notices: a notice waits on the run for its
+same sweep withdraws a cancelled branch's relays and undelivered notices: a notice waits on the run for its
 addressee's next turn, so a decision the run cancelled would otherwise arrive at an agent with
 nothing to distinguish it from one that stood.
 
@@ -521,11 +541,13 @@ compiled engine is version `2`, two languages rather than two speeds of one (`sp
 executed by the compiled engine**. The program runs in its own locked-down worker thread with
 nothing in its global scope, while the effects and the durable journal stay in the driver's process,
 bridged over a message port. No socket or credential enters the isolate holding the program,
-and **every version-`1` record keeps replaying on the walker**, which is the walker's job. The
-driver serves a declared set of versions, and a record whose version it does not serve is refused
-by name (**L5023**) with the run left untouched, instead of being replayed by whichever engine
-happens to be present. Records do not cross between versions in either direction; the repair is to
-resume on the recorded version, or to fork.
+and **every version-`1` record keeps replaying on the walker**, which is the walker's job. On either
+engine the driver bounds an effect's `ok` result at the broker's `max_payload` less 4096 bytes: a
+larger result is refused ahead of the settling append (**L5006**), the step stays pending, and the
+run is released. The driver serves a declared set of versions, and a record whose version it does
+not serve is refused by name (**L5023**) with the run left untouched, instead of being replayed by
+whichever engine happens to be present. Records do not cross between versions in either
+direction; the repair is to resume on the recorded version, or to fork.
 
 **The engine needs node 22 or newer** and refuses below it as `EngineUnavailable`, which is an
 implementation limit and not a language error: it carries no `L` code, so there is nothing to look

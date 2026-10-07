@@ -59,6 +59,7 @@ try {
     observeManagerGate: async () => gate,
     readAdmission: (runId) => readRunAdmission(jsm, SPACE, "manager", runId),
     readRunStatus: async (runId) => (await readRunRecord(records, "manager", runId))?.status?.value,
+    readJournal: async () => [],
     checkpointWaiting: async (token) => (await readCheckpointStatus(records, { endpoint: "manager", token }))?.value.state === "waiting",
     checkpointSettled: async () => false,
   });
@@ -105,8 +106,8 @@ try {
   const read = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), runId: first } }));
   c("a read operator is pinned to the one admitted run and holds no answer row",
     typeof read === "object" && JSON.stringify((read as { operator: { runOperator: unknown } }).operator.runOperator) === JSON.stringify({ endpoint: "manager", takeoverId: "o".repeat(16), runId: first }), read);
-  const answer = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), answers: { token: "cp_absent" } } }));
-  c("an answering operator for a pause that is not waiting refuses", String(answer).includes("still waiting"), answer);
+  const answer = await outcome(authorize({ operator: { id: newIdentity().id, takeoverId: "o".repeat(16), answers: { runId: first, stepKey: "/checkpoint:absent#0" } } }));
+  c("an answering operator for a step with no open pause refuses", String(answer).includes("no open checkpoint"), answer);
 
   // RunHosting: the signerless callback set is all or nothing, and no local signer rides with it.
   const ctx = { space: SPACE, servers, endpoint: "manager", instanceId, holder: { id: identities.supervisor.id, lifecycleUid: mintLifecycleUid() }, auth: undefined, log: () => undefined };

@@ -14,7 +14,9 @@ is **configure-only**: it checks prerequisites, installs the Claude Code
 plugin, and seeds persona files, and it **launches nothing**: no mesh, no web dashboard, no
 manager, no delivery daemon, no cmux/tmux session, no demo. Starting the stack is `cotal up`; the
 dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via `provenance.wrote`)
-on stderr, or on stdout with the error when a stderr write fails.
+on stderr, or on stdout with the error when a stderr write fails. Each announcement is one line: a
+control character or Unicode line separator in a path, such as a newline in `HOME`, is printed as
+a `\uXXXX` escape.
 It is two-tier, gated on a machine marker. Persona seeding resolves the selected mesh root first,
 then uses the same `.cotal/agents` catalog as spawn. With no mesh it names a cwd fallback; an
 ambiguous or broken target refuses rather than choosing a root.
@@ -37,7 +39,7 @@ ambiguous or broken target refuses rather than choosing a root.
 persona if it's missing,
 re-offer the **global install** (`offerGlobalInstall`, same `isNpx()` + PATH-scan gate as first
 run, so a repeat `npx cotal-ai setup` on a machine that still lacks a durable `cotal` finally
-installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`webUp`/`managerUp` for NATS, the rows
+installs it), then print the **status card** (`readyCard`). The card is **read-only probes** (`machineStatus`/`connectorStatusRows`/`meshStatus`/`recordedWebUrl`/`managerUp` for NATS, the rows
 connector setup providers report, the mesh, the web dashboard, and the manager) and for anything down it prints the exact command to start it
 (`cotal up --detach`, `cotal web`, `cotal supervise`). Displaying state never depends on it; setup
 still launches nothing.
@@ -77,10 +79,13 @@ name is written into `setup.ts`. `setupConnectorCandidates` turns that surface i
 reads each hint off the connector's own declarations: `requires` names the executables a candidate
 still needs on PATH, `setup` says whether it owns setup actions at all, and `pluginRoot` says
 whether those actions install plugin assets. A selected candidate runs its connector-owned
-`connector` action through `connectorSetupStep`, which receives the `Connector` itself; a candidate
+`connector` action as a narrated step built by `actionStep`, which takes the action with the input its
+type declares, so the compiler checks each pairing. The provider side is checked too. Each action's
+`run`, `assist.run` and `status` are function-typed properties, which TypeScript checks strictly, so a
+provider whose callback narrows the input the CLI hands it does not compile. A candidate
 that declares no provider is simply marked ready (OpenCode auto-wires at spawn, injecting its
 plugin via `buildLaunch` and never writing the user's config). A selected candidate's `mcpServers` action runs next
-through the same seam: the Claude provider reads the user-scope servers from Claude Code's config and
+the same way: the Claude provider reads the user-scope servers from Claude Code's config and
 records them through the `seed` input the CLI hands it. That is workspace's `seedConnectorServers`,
 which writes the operator-level cotal config under a lock and only when it declares no list for that
 connector, so two setups run at once record one list. The `skills` action runs for every
@@ -122,9 +127,12 @@ address is already held by another root or an unrecorded broker; an explicit `--
 fail-loud on collision.
 
 - **Mesh:** `startMeshDetached`
-  ([`commands/up.ts`](../implementations/cli/src/commands/up.ts)) is the one place that boots a
-  background nats-server (foreground `up` and `up --detach` both route through it). Writes
-  `.cotal/nats.pid` and tails `.cotal/nats.log`.
+  ([`commands/up.ts`](../implementations/cli/src/commands/up.ts)) boots the background
+  nats-server for `up --detach` and `up -f`, and writes `.cotal/nats.pid` and `.cotal/nats.log`.
+  Foreground `up` runs the broker as its own child. Both modes then run one listener-ready
+  sequence: space setup, user-auth service, mesh record, transport policy, control plane. When the
+  space setup of a fresh boot fails, `up` stops the listener and removes `.cotal/nats.pid` before
+  it exits.
 - **Delivery daemon:** `startDeliveryDetached` / `ensureDelivery`
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
   deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable
@@ -146,7 +154,10 @@ the built-in connectors (`SEEDED_EXTENSIONS`), so it always matches the CLI vers
 separate install. Start it with `cotal web`; it records
 `.cotal/web.pid`, self-registers that process with `down`, and is addressed as
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
-Safari may need plain `127.0.0.1`). `webUp()` probes the port for setup's status card.
+Safari may need plain `127.0.0.1`). Setup's status card prints the address the dashboard recorded in
+`.cotal/web.session` once it was listening, while the PID in `.cotal/web.pid` is alive. A
+`.cotal/web.pid` that exists but cannot be read is named on the row as `pidfile unreadable`, and the
+rest of the card still prints.
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
 the full set and stops it in dependency order; `cotal down manager` (or another component name)
@@ -174,7 +185,7 @@ writes its child marker, so a refusal on those paths leaves none of them behind.
 
 For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal-ai`
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
-(`cotalOnPath()`, not `onPath("cotal")`, since `cotal --version` is not a real command). The
+(`cotalOnPath()`, not an exec probe, since `cotal --version` is not a real command). The
 interactive prompt defaults to yes, the non-interactive path (`--yes` or no TTY) takes the
 default, and a failed install is non-fatal (warn plus manual command). The same `self-exec.ts`
 exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in the
@@ -230,7 +241,8 @@ after that stamp commits. An older CLI includes those fields in its refusal when
 generation-only stamps stay valid and retain the shorter refusal. A CLI whose package root is the
 repo `bin/` (a source checkout, including a suite child of `bin/cotal.ts`) refuses that write, stamp,
 and generation GC rather than migrating the operator-global store. The refusal names
-`$XDG_CONFIG_HOME` as the isolation remedy; `COTAL_HOME` does not relocate this store. Isolated
+`COTAL_SKIP_CONNECTOR_SEED=1` as the way to run other commands from a checkout, since an isolated
+`$XDG_CONFIG_HOME` alone does not lift it; `COTAL_HOME` does not relocate this store. Isolated
 in-tree seed smokes set `COTAL_ALLOW_CHECKOUT_SEED=1` after pointing `$XDG_CONFIG_HOME` at a scratch
 dir. An unproven entry is refused the same way: a missing identity answer is not treated as a
 released install.

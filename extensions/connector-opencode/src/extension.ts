@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
-import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
+import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -15,7 +15,7 @@ import { opencodeLine } from "./opencode-line.js";
 const PLUGIN_DIR = fileURLToPath(new URL("./plugin", import.meta.url));
 
 /** The launcher shim (`dist/serve.js`): starts `opencode serve` with the plugin, then attaches a
- *  foreground `opencode` TUI to the exact session the plugin drives (see serve.ts). */
+ *  foreground `opencode` TUI to the exact session the plugin drives (see launch.ts). */
 const SERVE_SHIM = fileURLToPath(new URL("./serve.js", import.meta.url));
 
 function discoveryEnv(): NodeJS.ProcessEnv {
@@ -78,7 +78,7 @@ function parseModels(stdout: string): ModelInfo[] {
 
 function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
   const env = discoveryEnv();
-  // Detect the line first (same rule serve.ts uses), on the same binary the discovery below would
+  // Detect the line first (same rule launch.ts uses), on the same binary the discovery below would
   // run, before running any 2.x-incompatible subcommand: `opencode models --pure --verbose` exits 1
   // on 2.x with the help text (measured, fx105/measurements.md M4) rather than a real catalog.
   const versionRaw = execFileSync("opencode", ["--version"], {
@@ -108,7 +108,7 @@ function listOpenCodeModels(opts: { refresh?: boolean } = {}): ModelCatalog {
 
 /**
  * The OpenCode connector: launches a watchable `opencode` TUI bound to the agent's session, using
- * OpenCode's client/server split (see serve.ts). The Cotal mesh bridge runs as an in-process plugin
+ * OpenCode's client/server split (see launch.ts). The Cotal mesh bridge runs as an in-process plugin
  * inside a headless `opencode serve`: it holds the {@link MeshAgent}, registers the cotal_* tools
  * natively (from the shared specs, at parity with Claude Code), reports presence off the event bus,
  * and owns ONE session it drives — injecting each incoming peer batch through the authenticated
@@ -228,11 +228,11 @@ export const opencodeConnector: Connector = {
         );
       env.COTAL_OPENCODE_PROMPT = prompt;
     }
-    // Where serve.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
+    // Where launch.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
     // workspace root so a per-agent launch cwd (which the manager can point at any repo) doesn't
     // drop `.cotal/opencode/<name>` into the target tree. Standalone `cotal spawn` has no manager
     // workspace → root it at the launch dir (this process's cwd, which the child inherits), the
-    // prior behavior. serve.ts requires this env (no silent cwd fallback).
+    // prior behavior. launch.ts requires this env (no silent cwd fallback).
     env.COTAL_OPENCODE_HOME = opts.workspaceRoot ?? process.cwd();
 
     const config: Record<string, unknown> = {
@@ -254,22 +254,14 @@ export const opencodeConnector: Connector = {
       },
     };
 
-    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona + model/variant.
-    // The model/variant are config defaults (the session — and the attached TUI — use them); the persona is
-    // applied in-session by the plugin (opencode has no `--append-system-prompt`).
-    let model = opts.model;
-    let variant = opts.variant;
-    if (opts.configPath) {
-      const path = resolve(opts.configPath);
-      env.COTAL_AGENT_FILE = path; // plugin reads persona from it
-      const def = loadAgentFile(path);
-      model ??= def.model;
-      variant ??= def.variant;
-    }
-    // The `--model` / `--variant` flags win over the agent file, and apply even with no agent file.
-    // Pin them to a dedicated primary agent made the default, so an operator's own `default_agent` in
+    // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona, which the
+    // plugin applies in-session (opencode has no `--append-system-prompt`).
+    if (opts.configPath) env.COTAL_AGENT_FILE = resolve(opts.configPath);
+    // The model/variant are config defaults (the session — and the attached TUI — use them). Pin
+    // them to a dedicated primary agent made the default, so an operator's own `default_agent` in
     // ~/.config/opencode (with its own model) can't override what a Cotal spawn asks for — the session
     // the plugin drives runs the persona's selectors, not the operator's default agent's.
+    const { model, variant } = opts;
     const cotalAgent: Record<string, unknown> = { mode: "primary" };
     if (model) {
       config.model = model;

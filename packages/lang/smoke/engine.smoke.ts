@@ -1294,10 +1294,10 @@ await parallel({
   const arm = root.branch("parallel", null, occurrence, "a");
 
   ok("a concurrent branch raises the depth", arm.depth === root.depth + 1, { root: root.depth, arm: arm.depth });
-  // `conclave` opens a scope but not a race: one body, nothing running beside it, so a write from
-  // inside it is as ordered as a write anywhere else (interpret.ts, Frame.branch).
+  // `conclave` has no sibling to race, but a settled conclave is replayed without entering its
+  // body, so a write from inside it would happen on the live run only (interpret.ts, Frame.branch).
   const room = root.branch("conclave", null, root.keys.nextScope("conclave", null), "0");
-  ok("and a conclave body does NOT, because it has no sibling to race", room.depth === root.depth, room.depth);
+  ok("and so does a conclave body", room.depth === root.depth + 1, room.depth);
 
   // A branch inherits the clock it forked from and then moves on its own. Sharing one clock would
   // let a sibling's effect decide a race the recorded clocks should decide.
@@ -1329,8 +1329,8 @@ await parallel({
   const inArm = await caught(() => withFrame(arm, () => h.ctx.set(outer, "n", 1)));
   ok("a value born outside a concurrent branch refuses a write inside it", codeOf(inArm) === "L2032", String(inArm));
   const inRoom = await caught(() => withFrame(room, () => h.ctx.set(outer, "n", 2)));
-  ok("and the same write inside a conclave body is allowed, because the depth did not move", inRoom === undefined, String(inRoom));
-  ok("and it actually landed", outer.n === 2, outer.n);
+  ok("and so does the same write inside a conclave body", codeOf(inRoom) === "L2032", String(inRoom));
+  ok("and neither landed", outer.n === 0, outer.n);
 }
 
 {
@@ -1772,8 +1772,8 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     (e: unknown) => e as EffectError,
   );
   ok("a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
-    refused.ok === false && refused.code === walkerRefusal?.code && refused.kind === walkerRefusal?.kind && refused.code === "L4009" && refused.kind === "sim-refusal",
-    { bridged: refused.ok === false ? { code: refused.code, kind: refused.kind } : refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
+    refused.ok === false && refused.class === "effect" && refused.code === walkerRefusal?.code && refused.kind === walkerRefusal?.kind && refused.code === "L4009" && refused.kind === "sim-refusal",
+    { bridged: refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
 
   // A CAPABILITY REFUSAL CROSSES AS A HOLD, matching the walker: the refusal crosses the bridge
   // as its class (never a plain Error), the thread settles the entry `refused`, and the run comes
@@ -1794,11 +1794,11 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     (e: unknown) => e as Error & { reason?: string; step?: string },
   );
   ok("a capability refusal crosses both boundaries as the hold, matching the walker's own raise",
-    held.ok === false && held.code === "L5025" && held.name === "RunHeld"
+    held.ok === false && held.class === "held" && held.name === "RunHeld"
     && walkerHeld?.name === "RunHeld"
     && held.reason === walkerHeld?.reason
     && held.step === walkerHeld?.step,
-    { bridged: held.ok === false ? { code: held.code, name: held.name, step: held.step } : held, walker: { name: walkerHeld?.name, step: walkerHeld?.step } });
+    { bridged: held, walker: { name: walkerHeld?.name, step: walkerHeld?.step } });
   ok("and the thread's journal settled the entry refused under the handler's own code",
     heldStored.some((e) => e.state === "settled" && e.status === "refused" && e.error?.code === "L5016"),
     heldStored.map((e) => `${e.kind}:${e.state}:${e.status ?? ""}`));
@@ -2041,8 +2041,8 @@ log("winner", r.index)
   // thread that died and left the host to guess.
   ok(
     "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
-    refused.code === "L5024" && !/exited/.test(refused.message),
-    { code: refused.code, message: refused.message.slice(0, 120) },
+    refused.class === "error" && refused.code === "L5024" && !/exited/.test(refused.message),
+    JSON.stringify(refused).slice(0, 160),
   );
 }
 
@@ -2879,7 +2879,7 @@ let n = 1;
     // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
     // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
     const KINDS = ["log", "result"];
-    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "runId", "seed", "source", "stepBudget"];
+    const REQUEST_FIELDS = ["cutAt", "effectCeiling", "entries", "file", "handler", "module", "pins", "resultBytes", "runId", "seed", "source", "stepBudget"];
     const WORKER_DATA = ["bridge", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });

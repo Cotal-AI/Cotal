@@ -26,13 +26,11 @@ import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configFromEnv, cotalToolSpecs, type MeshAgent } from "@cotal-ai/connector-core";
+import { skipSuite } from "@cotal-ai/smoke-kit";
 import { startBridgeServer } from "../src/bridge.js";
 import { hermesToolDescriptors } from "../src/tool-schema.js";
 
-if (process.platform === "win32") {
-  console.log("✓ hermes tool-closed skipped on Windows (the Hermes connector is Unix-only)");
-  process.exit(0);
-}
+if (process.platform === "win32") skipSuite("the Hermes connector is Unix-only");
 
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {

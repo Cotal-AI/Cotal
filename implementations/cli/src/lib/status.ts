@@ -1,8 +1,5 @@
-import { accessSync, constants } from "node:fs";
-import { connect } from "node:net";
-import { delimiter, join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, resolveMeshTarget, type MeshEntry } from "@cotal-ai/workspace";
+import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -15,29 +12,28 @@ export interface MeshStatus {
   reachable?: boolean;
   server: string;
   space: string;
+  root: string;
   auth: boolean;
   origin?: MeshEntry["origin"];
 }
 
-/** The dashboard's default port + branded URL. The `web` command moved out to the `@cotal-ai/web`
- *  extension (stage 4); the CLI keeps these constants and the port probe so the setup ready-card
- *  can report the dashboard without importing it. */
-export const WEB_PORT = 7799;
-export const WEB_URL = `http://cotal.localhost:${WEB_PORT}/`;
+/** The address the dashboard recorded in `web.session` once `listen()` succeeded, with the readiness
+ * nonce recorded beside it, or `undefined` while no whole record is readable. */
+export function webBoundAddress(path: string): { host: string; port: number; url: string; readiness: string } | undefined {
+  const session = readWebSession(path);
+  if (!session) return undefined;
+  const { host, port, readiness } = session;
+  return { host, port, url: `http://${host.includes(":") ? `[${host}]` : host}:${port}/`, readiness };
+}
 
-/** True if something is already listening on the dashboard port (loopback). */
-export function webUp(port: number = WEB_PORT): Promise<boolean> {
-  return new Promise((res) => {
-    const sock = connect(port, "127.0.0.1");
-    sock.setTimeout(400);
-    const done = (up: boolean) => {
-      sock.destroy();
-      res(up);
-    };
-    sock.once("connect", () => done(true));
-    sock.once("timeout", () => done(false));
-    sock.once("error", () => done(false));
-  });
+/** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.
+ * Only its own records place it: `--port` moves it off its default port, and any other program can
+ * own that port. */
+export function recordedWebUrl(context: LocalProcessContext): string | undefined {
+  const raw = readPidfile(localProcessPath("web.pid", context));
+  const pid = raw === undefined ? undefined : parsePid(raw);
+  if (pid === undefined || probeLiveness(pid) !== "alive") return undefined;
+  return webBoundAddress(localProcessPath(WEB_SESSION_FILE, context))?.url;
 }
 
 /** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers
@@ -49,6 +45,7 @@ export async function meshStatus(cwd: string): Promise<MeshStatus> {
       reachable: target.origin === "catalog" ? undefined : await isReachable(target.server, target.tlsRequired ? { tls: true } : {}),
       server: target.server,
       space: target.space,
+      root: target.root,
       auth: target.mode !== "open",
       ...(target.origin ? { origin: target.origin } : {}),
     };
@@ -56,11 +53,13 @@ export async function meshStatus(cwd: string): Promise<MeshStatus> {
     // With no resolvable mesh, retain the configure-only card's local default state.
   }
   const server = DEFAULT_SERVER;
-  const auth = loadSoleSpaceAuth(authDir(findCotalRoot(cwd)));
+  const root = findCotalRoot(cwd);
+  const auth = loadSoleSpaceAuth(authDir(root));
   return {
     reachable: await isReachable(server),
     server,
     space: auth?.space ?? DEFAULT_SPACE,
+    root,
     auth: Boolean(auth),
   };
 }
@@ -101,7 +100,7 @@ export function connectorHarnesses(): HarnessStatus[] {
     declared.set(connector.name, { requires: connector.requires ?? [], setup: connector.setup ?? null });
   return [...declared]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !onPath(bin)), setup }));
+    .map(([name, { requires, setup }]) => ({ name, requires, missing: requires.filter((bin) => !resolveOnPath(bin)), setup }));
 }
 
 /** The rows each connector's setup provider reports about what it installed. Only a connector that
@@ -124,25 +123,4 @@ export async function connectorStatusRows(harnesses: readonly HarnessStatus[]): 
     }
   }
   return rows;
-}
-
-export function onPath(bin: string): boolean {
-  const exts = process.platform === "win32"
-    ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";")
-    : [""];
-  for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    for (const ext of exts) {
-      const name = process.platform === "win32" && ext && !bin.toUpperCase().endsWith(ext.toUpperCase())
-        ? `${bin}${ext}`
-        : bin;
-      const candidate = join(dir, name);
-      try {
-        accessSync(candidate, constants.X_OK);
-        return true;
-      } catch {
-        /* try the next PATH entry */
-      }
-    }
-  }
-  return false;
 }

@@ -63,6 +63,8 @@ import {
   epRequestSubject,
   isIssuedCaller,
   EP_UNBOUND_CALLER_AUTHORITY,
+  runDriverCaller,
+  type EpCaller,
   type EpServeContext,
   type RunAdmission,
   type RunAdmissionView,
@@ -120,7 +122,7 @@ export interface RunHostingContext {
     served?: string }) => Promise<{ driver: string; mediator: string }>;
   /** Signerless host: one served read or answer's `run-operator` creds for a caller-held nkey (the
    *  callback combines the host JWT with the local seed, as `renewRun` does). */
-  readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { token: string; amend?: true };
+  readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { runId: string; stepKey: string; amend?: true };
     /** The served `run-answer` subject, carried with `answers`. */
     served?: string }) => Promise<string>;
 }
@@ -138,6 +140,9 @@ interface HostedRun {
   readonly identity: Identity;
   readonly mediatorIdentity: Identity;
   placements: readonly { endpoint: string; instanceId: string }[];
+  /** The caller the run was admitted for, set at launch: whose grant the run's own caller is
+   *  checked against ({@link RunHosting.admittedCaller}). */
+  caller?: EpCaller;
   /** Set once the connection is up; a slot reserved before that holds neither. */
   nc?: NatsConnection;
   mediatorNc?: NatsConnection;
@@ -416,7 +421,7 @@ export class RunHosting {
       throw e;
     }
     await authorize?.(open);
-    return await this.withOperator({ endpoint, answers: { token: open.token }, ...(served !== undefined ? { served } : {}) }, (planes) =>
+    return await this.withOperator({ endpoint, answers: { runId: args.runId, stepKey: args.stepKey, token: open.token }, ...(served !== undefined ? { served } : {}) }, (planes) =>
       host.answer(planes, {
         endpoint,
         open,
@@ -450,7 +455,7 @@ export class RunHosting {
       throw e;
     }
     await authorize?.(accepted);
-    return await this.withOperator({ endpoint, answers: { token: accepted.token }, amend: true, ...(served !== undefined ? { served } : {}) }, (planes) =>
+    return await this.withOperator({ endpoint, answers: { runId: args.runId, stepKey: args.stepKey, token: accepted.token, amend: true }, ...(served !== undefined ? { served } : {}) }, (planes) =>
       host.amend(planes, {
         endpoint,
         accepted,
@@ -632,6 +637,17 @@ export class RunHosting {
     }));
   }
 
+  /** The admitted caller of the run this manager drives under `caller`, the run's own derived
+   *  caller (SPEC 14.8); `undefined` for any other caller. */
+  admittedCaller(caller: EpCaller): EpCaller | undefined {
+    for (const run of this.runs.values()) {
+      if (run.caller === undefined) continue;
+      const derived = runDriverCaller(run.runId, run.caller.owner);
+      if (derived.owner === caller.owner && derived.actor === caller.actor && derived.uid === caller.uid) return run.caller;
+    }
+    return undefined;
+  }
+
   /** How many drives this incarnation holds; the status surface reads it. */
   get liveCount(): number {
     return this.runs.size;
@@ -688,8 +704,8 @@ export class RunHosting {
   ): Promise<void> {
     const { takeoverId, identity, mediatorIdentity } = slot;
     const auth = this.ctx.auth;
-    if (this.remote && slot.placements.length !== 0)
-      throw new EpEnvelopeError("unimplemented", `run ${req.runId}: a signerless host issues no placed-spawn mediator; drive a program with a placed spawn from a static-auth manager`);
+    if (this.remote && slot.placements.some((p) => p.instanceId !== this.ctx.instanceId))
+      throw new EpEnvelopeError("unimplemented", `run ${req.runId}: a signerless host places a spawn only on its own instance ${this.ctx.instanceId}; drive a program placing one elsewhere from a static-auth manager`);
     const issued = this.remote
       ? await this.ctx.issueAttempt!({ runId: req.runId, takeoverId, epoch: req.epoch, fencingToken: req.fencingToken, driver: identity, mediator: mediatorIdentity, ...(req.served !== undefined ? { served: req.served } : {}) })
       : undefined;
@@ -706,7 +722,7 @@ export class RunHosting {
       : undefined;
     // The attempt's coordinates on the slot before the connection: the renewal loop re-mints from
     // these, and the epoch is a per-attempt fact.
-    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
+    const holder: HostedRun = Object.assign(slot, { epoch: req.epoch, fencingToken: req.fencingToken, caller: req.admission.admission.caller, ...(creds !== undefined ? { creds, mediatorCreds } : {}) });
     const enc = new TextEncoder();
     // A STANDING connection: the drive may park for hours inside a pause, so it reconnects without
     // bound and presents whatever credential the renewal loop last minted.
@@ -803,7 +819,7 @@ export class RunHosting {
     const deadline = Date.now() + RUN_ACTIVATION_WAIT_MS;
     for (;;) {
       if (await recorded()) return;
-      const early = await Promise.race([settled, new Promise<undefined>((r) => setTimeout(r, 50))]);
+      const early = await Promise.race([settled, new Promise<undefined>((r) => setTimeout(() => r(undefined), 50))]);
       if (early !== undefined) {
         if (await recorded()) return;
         throw new EpEnvelopeError(
@@ -821,23 +837,25 @@ export class RunHosting {
    *  durable the credential admits. Only an answering call holds the answer and settle writes,
    *  and those are pinned to the one pause it names. */
   private async withOperator<T>(
-    scope: { endpoint?: string; runId?: string; answers?: { token: string }; amend?: true; served?: string },
+    scope: { endpoint?: string; runId?: string; answers?: { runId: string; stepKey: string; token: string; amend?: true }; served?: string },
     fn: (planes: RunHostPlanes, kv: KV, takeoverId: string) => Promise<T>,
   ): Promise<T> {
     const takeoverId = newTakeoverId();
     const endpoint = scope.endpoint ?? this.ctx.endpoint;
     const auth = this.ctx.auth;
-    const pin = { takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}), ...(scope.answers !== undefined ? { answers: scope.answers } : {}) };
+    const pin = { takeoverId, ...(scope.runId !== undefined ? { runId: scope.runId } : {}) };
+    const answers = scope.answers;
     if (this.remote && endpoint !== this.ctx.endpoint)
       throw new EpEnvelopeError("permission-denied", `a signerless host serves reads and answers for its own endpoint ${this.ctx.endpoint} only`);
     const operator = newIdentity();
     const creds = this.remote
       ? await this.ctx.issueOperator!({
           identity: operator, ...pin,
-          ...(scope.answers !== undefined && scope.amend === true ? { answers: { ...scope.answers, amend: true } } : {}),
+          // The host reads the pause's token off the run's journal itself; it is never handed one.
+          ...(answers !== undefined ? { answers: { runId: answers.runId, stepKey: answers.stepKey, ...(answers.amend === true ? { amend: true as const } : {}) } } : {}),
           ...(scope.served !== undefined ? { served: scope.served } : {}),
         })
-      : auth ? await mintCreds(auth, operator, "run-operator", { runOperator: { endpoint, ...pin } }) : undefined;
+      : auth ? await mintCreds(auth, operator, "run-operator", { runOperator: { endpoint, ...pin, ...(answers !== undefined ? { answers: { token: answers.token } } : {}) } }) : undefined;
     const nc = await dialerFor(this.ctx.servers ?? DEFAULT_SERVER)({
       servers: this.ctx.servers ?? DEFAULT_SERVER,
       ...(creds !== undefined

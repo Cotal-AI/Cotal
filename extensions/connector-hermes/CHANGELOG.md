@@ -1,5 +1,25 @@
 # @cotal-ai/connector-hermes
 
+## 0.70.0
+
+### Patch Changes
+
+- 7986785: The connector and the CLI now print every peer with one label, from the new `peerLabel` in `@cotal-ai/core`: `name/role`, or the bare name for a peer with no role, with any line break or bracket shown as a space. Before, `cotal console` dropped a role equal to the name and its roster pane showed the name alone, the console's managed-agent row and the spawn line printed `name (role)`, and only message attribution sanitized the role, so `cotal_roster`, the orientation card, the ambiguous-DM candidate list, `cotal endpoints`, `cotal status` and `cotal ps` printed a role holding `]` or a newline verbatim. The DM target check that refuses a pasted label compares against the same label.
+
+## 0.69.0
+
+## 0.68.0
+
+### Minor Changes
+
+- 585fdb2: Connectors launch on the model and variant their launcher resolved. `LaunchOpts.model` and `LaunchOpts.variant` are now the launcher's resolved values (the flag, else the agent file's `model:` / `variant:`), and every connector renders them as given instead of reading the agent file again in `buildLaunch`. Before, a model the launcher did not resolve was taken from a later read of a file that could have changed since, so the seat could run a model the launcher never checked or recorded, and a supervised restart re-read it each time. The in-session config takes the model and variant from `COTAL_MODEL` / `COTAL_VARIANT` only, so the card and the orientation pin no longer report a model the seat was not launched on. The Hermes connector no longer falls back to `HERMES_MODEL` from the spawning process, including one `spawn.env` forwards; set the model with `--model` or the persona's `model:`. Code that calls `buildLaunch` directly must pass `model` and `variant` itself.
+
+## 0.67.0
+
+## 0.66.1
+
+## 0.66.0
+
 ## 0.65.0
 
 ## 0.64.0

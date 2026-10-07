@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   createSpaceAuth, credsClaims, credsFromJwt, isReachable, jwtFromCreds, mintCreds, mintLifecycleUid, newIdentity, remoteManagerActors, serverConfig,
-  type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SpaceAuth,
+  type HostedRunAttempt, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type SpaceAuth,
 } from "@cotal-ai/core";
 import { authorizeRemoteManagerRenewal, issueRemoteManagerAuthority } from "../../auth/src/manager-authority.js";
 import { remoteManagerCurrentRegistrationProof } from "../../auth/src/retained-manager-validation.js";
@@ -131,7 +131,7 @@ try {
   const mediator = newIdentity();
   const run = { runId: `run-${"d".repeat(32)}`, holder: `holder.${"c".repeat(16)}`, takeoverId: "c".repeat(16), epoch: 2, fencingToken: 5, driverId: driver.id, mediatorId: mediator.id };
   const runRequest = { ...request, operation: "renewRunDriver" as const, run } as RemoteManagerAuthorityRequest;
-  const runIssue = (observed: typeof run & { state: string; instanceId: string } | null) => issueRemoteManagerAuthority({
+  const runIssue = (observed: HostedRunAttempt | null) => issueRemoteManagerAuthority({
     request: runRequest, owner, scope: ["supervise"],
     authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
       request: r, owner: o, space, accountPublicKey: auth.account.pub, proofSecret: "proof-secret",
@@ -150,7 +150,7 @@ try {
       return { credentials };
     },
   });
-  const active = { ...run, state: "running", instanceId };
+  const active = { ...run, state: "running" as const, instanceId };
   await cell("activated run holder renews its driver and mediator pair on the broker", async () => {
     const pair = remoteRunRenewalCredentials(await runIssue(active), runRequest, owner, driver, mediator);
     assert.equal(await brokerAccepts(pair.driver), true);

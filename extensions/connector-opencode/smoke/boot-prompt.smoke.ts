@@ -31,7 +31,7 @@ import { join } from "node:path";
 import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { opencodeLine } from "../src/opencode-line.js";
-import { bootPlugin, bootPlugin2, fakeOpenCode2Context } from "./_boot-plugin.js";
+import { bootPlugin, bootPlugin2, fakeOpenCode2Context, disposeInProcess } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -109,7 +109,7 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     delete process.env.COTAL_OPENCODE_BIN;
   }
 
-  // The line is `serve.ts`'s own fact (detected from the running binary's `--version`), not the
+  // The line is `launch.ts`'s own fact (detected from the running binary's `--version`), not the
   // connector's launch spec — the spec stays binary-free.
   const plain = opencodeConnector.buildLaunch({ space: "bootspace", name: "boot-line", events: false });
   check(
@@ -303,7 +303,7 @@ try {
   await sleep(1500);
   check("no later readiness event re-issues the boot prompt", prompts.length === 1, prompts);
 
-  await armA.dispose?.();
+  await disposeInProcess(armA);
   armA = undefined;
 
   // ARM C, A NATIVE TURN GETS IN FRONT OF THE BOOT PROMPT, and the prompt must still be delivered.
@@ -343,7 +343,7 @@ try {
     prompts.length === beforeC + 1 && prompts[beforeC]?.text.includes(cText) === true,
     prompts.slice(beforeC));
 
-  await armC.dispose?.();
+  await disposeInProcess(armC);
   armC = undefined;
   sessionGate = undefined;
   forcedSessionId = undefined;
@@ -393,7 +393,7 @@ try {
   check("boot+wake: the wake that arrived first was delivered rather than parked into the boot",
     dPrompts().some((p) => /mentioned by/i.test(p.text)), dPrompts());
 
-  await armD.dispose?.();
+  await disposeInProcess(armD);
   armD = undefined;
   sessionGate = undefined;
   forcedSessionId = undefined;
@@ -413,10 +413,10 @@ try {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
 } finally {
-  await armA?.dispose?.();
-  await armC?.dispose?.();
-  await armD?.dispose?.();
-  await armB?.dispose?.();
+  await disposeInProcess(armA);
+  await disposeInProcess(armC);
+  await disposeInProcess(armD);
+  await disposeInProcess(armB);
   await watcher?.stop?.();
   nats.kill("SIGKILL");
   oc.close();
@@ -470,7 +470,7 @@ try {
   await once(oc2, "listening");
   const ocPort2 = (oc2.address() as { port: number }).port;
 
-  // Cell 2's persona: `loadAgentFile`'s minimal accepted shape (packages/core/src/agent-file.ts:123-150) —
+  // Cell 2's persona: `loadAgentFile`'s minimal accepted shape (packages/core/src/agent-file.ts) —
   // frontmatter `name`, `role`, `agent`, a one-line body.
   const PERSONA_TEXT = "You are Booty2, the boot-prompt probe.";
   const agentFile = join(dir2, "booty2.md");
@@ -485,7 +485,8 @@ try {
     OPENCODE_SERVER_USERNAME: "opencode",
     OPENCODE_SERVER_PASSWORD: "test-secret-3",
   });
-  // No COTAL_MODEL set for the 2.x arms — the `GET /api/model` check is skipped (plugin2.ts:110-113).
+  // No COTAL_MODEL set for the 2.x arms — the `GET /api/model` check is skipped (`modelReady` in
+  // plugin2.ts).
 
   const clearSetupGuard = () => delete (globalThis as { __cotalOpencodeSetup?: boolean }).__cotalOpencodeSetup;
   const waitForPrompts2 = async (n: number, ms = 8000): Promise<void> => {

@@ -167,7 +167,7 @@ export async function seedChannelRegistry(opts: {
 }): Promise<void> {
   const nc = await dialerFor(opts.servers)({ servers: opts.servers, ...standaloneConnectOpts({ ...opts, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }) });
   try {
-    // The seed path is privileged (manager creds or open) so it may CREATE the bucket — this
+    // The seed path is privileged (`provisioner` or `channel-writer` creds, or open) so it may CREATE the bucket — this
     // makes `cotal channels` work on a space whose bucket wasn't pre-created (e.g. one set up
     // before this feature). Idempotent when `cotal up` already created it.
     const kv = await openChannelRegistry(nc, opts.space, { create: true });

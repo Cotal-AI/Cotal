@@ -1,8 +1,8 @@
 # Platform-owned pooled control authority
 
-Status: the door is implemented in `@cotal-ai/core` and `@cotal-ai/auth` and not released. The
-platform's own Runtime and composition root are not part of Cotal. Section 9 lists what landed and
-what did not. The source inventory in section 1 was checked at
+Status: the door shipped in `@cotal-ai/core` and `@cotal-ai/auth` 0.60.0, and its readiness read in
+0.62.0. The platform's own Runtime and composition root are not part of Cotal. Section 9 lists
+what landed and what did not. The source inventory in section 1 was checked at
 `06f48f40473f809bcb31f2ba21b3ceb1d33ccc18` (v0.58.0), before the door existed.
 
 The question is how a platform runs one administrative control manager per account in `pooled`
@@ -318,10 +318,10 @@ which mints both locally. Stock `cotal supervise` is unchanged and gains no flag
 - `remoteStandingBundleRenewal` is called unchanged. Its `call` wraps each inner request in the
   envelope. Its echo validation (`remoteManagerRenewalCredentials`) is unchanged: same owner, same
   identities, same account, same process epoch, all five credentials or none.
-- The registration proof is unchanged. `remoteManagerRegistrationProof(owner, request)` and the
-  host-keyed `remoteManagerCurrentRegistrationProof(secret, owner, request, gate)` both bind the
-  owner. Because `p_` and `u_` owners are disjoint, a proof from one door never validates on the
-  other.
+- The registration proof is unchanged.
+  `remoteManagerRegistrationProof(owner, registration, contractArtifacts)` and the host-keyed
+  `remoteManagerCurrentRegistrationProof(secret, owner, request, gate)` both bind the owner.
+  Because `p_` and `u_` owners are disjoint, a proof from one door never validates on the other.
 - The process epoch fence is unchanged. `authorizeRemoteManagerRenewal` requires an open gate, a
   gate principal equal to `<p_owner>.manager_serve_<instanceId>`, a gate `processEpoch` equal to the
   request's, and a timing-safe proof match. The assignment check runs first.

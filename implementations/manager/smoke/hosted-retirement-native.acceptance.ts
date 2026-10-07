@@ -749,8 +749,8 @@ try {
   const prepare = await cotalAuthProvider.managerServiceAuthority!({ store: participantStore, dir: participantDir, request: prepareRequest });
   const actors = remoteManagerActors(state.instanceId);
   const artifacts = managerClusterArtifacts();
-  const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principal?: string) => {
-    const request = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principal);
+  const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principals?: string[]) => {
+    const request = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals);
     return remoteManagerMaintenanceResult(
       await cotalAuthProvider.maintainRemoteManager!({ store: participantStore, dir: participantDir, request }),
       request,
@@ -760,7 +760,7 @@ try {
   const registered = await registerRemoteManagerAuthority({
     space, server, owner, instanceId: state.instanceId, serveActor: actors.serve,
     prepareCreds: materialCredential(prepare, "executor", state.identities.executor), tlsRequired: false,
-    evict: async (principal) => (await maintain("evict-family-principal", state.instanceId, principal)).eviction!.verifiedGone,
+    evict: async (principals) => (await maintain("evict-family-principal", state.instanceId, [...principals])).evictions!.map((e) => e.verifiedGone),
     reconcileForeignRegistration: async (instanceId) => { await maintain("reconcile-registration", instanceId); },
   });
   // The activation door is intentionally bounded to 64 canonical values. Registration publishes the
@@ -773,7 +773,7 @@ try {
     artifactDigests: contractArtifacts.map((value) => rawDigest(JSON.stringify(value))),
   }));
   const activateRequest = {
-    ...remoteManagerAuthorityRequest(state, "cli", "activate", registrationProof),
+    ...remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof }),
     contractArtifacts,
   };
   const parsedActivate = parseRemoteManagerAuthorityRequest(activateRequest);
@@ -806,7 +806,7 @@ try {
       const renew = await cotalAuthProvider.managerServiceAuthority!({
         store: participantStore,
         dir: participantDir,
-        request: remoteManagerAuthorityRequest(state, "cli", "renew", retainedRegistrationProof),
+        request: remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: retainedRegistrationProof }),
       });
       return materialCredential(renew, "executor", state.identities.executor);
     },
@@ -820,8 +820,9 @@ try {
       retirementMints++;
       const response = await cotalAuthProvider.managerServiceAuthority!({
         store: participantStore, dir: participantDir,
-        request: remoteManagerAuthorityRequest(state, "cli", "retire", terminalProof, undefined, undefined, {
-          id: identity.id, target, opId, serveEpoch,
+        request: remoteManagerAuthorityRequest(state, "cli", "retire", {
+          registrationProof: terminalProof,
+          retirement: { id: identity.id, target, opId, serveEpoch },
         }),
       });
       return materialCredential(response, "retirementRequester", identity);
@@ -907,7 +908,7 @@ try {
     };
   }
   const inventoryOf = (agent: ManagerResumeAgent): ManagerResumeInventory => ({
-    version: "cotal-manager-resume/v1", space, createdAt: new Date().toISOString(), agents: [agent],
+    version: "cotal-manager-resume/v2", space, createdAt: new Date().toISOString(), agents: [agent],
   });
   const livenessDiagnostic = (actor: string, handle: ChildHandle) => {
     const principal = `${owner}.${actor}`;

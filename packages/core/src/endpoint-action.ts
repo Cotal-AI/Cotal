@@ -42,7 +42,7 @@ import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader } from "./endpoint-records.js";
+import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
 import { readCheckpointSpec, readCheckpointSettle } from "./endpoint-checkpoint.js";
 import {
@@ -417,7 +417,7 @@ export async function readGoalSpec(ctx: ActionContext, ref: GoalRef): Promise<{ 
   if (!entry) return undefined;
   if (entry.operation !== "PUT")
     throw new EpEnvelopeError("failed-precondition", `the goal spec ${key} carries a ${entry.operation} marker; a deletion never erases an accepted goal - reconcile the store (SPEC 13.4)`);
-  return { value: parseSpec(JSON.parse(new TextDecoder().decode(entry.value)), key, snap), revision: entry.revision };
+  return { value: parseSpec(decodeEntry(entry, key), key, snap), revision: entry.revision };
 }
 
 /** The goal STATUS value: the current state projection. State-dependent fields are CLOSED. */
@@ -771,16 +771,15 @@ export function goalTombstone(fact: GoalResultFact): GoalResultFact {
  *  here, exactly as the real executor would be. Create-only CAS conditions on subject ABSENCE and
  *  cannot express "only if my epoch is still current", so the write fence is the §13.1 barrier.
  *
- *  AND THE BARRIER'S WINDOW IS WIDER THAN "BYTES IN FLIGHT", which an earlier revision of this
- *  comment claimed. A gate FREEZE neither kills the predecessor's connection nor advances the
- *  epoch, and the currency belt compares `processEpoch` alone, so a deposed manager's belt STILL
- *  PASSES from barrier start through PHASE 1-2 until the reopen. Revoking an `epcred` row marks a
- *  ledger row; it does not re-check a live JWT mid-publish on an already-open connection. What
- *  durably kills that publisher is the CLUSTER-VERIFIED EVICTION in PHASE 2, not the revoke. So
- *  the window in which a deposed manager can still INITIATE a new terminal publish runs from
- *  barrier start until eviction is verified — not merely the bytes already on the wire. On an OPEN
- *  mesh no credential family exists, so that eviction is vacuous and there is no durable fence at
- *  all; the belt there is cooperative only. */
+ *  AND THE BARRIER'S WINDOW IS WIDER THAN "BYTES IN FLIGHT". A gate FREEZE neither kills the
+ *  predecessor's connection nor advances the epoch, and the currency belt compares `processEpoch`
+ *  alone, so a deposed manager's belt STILL PASSES from barrier start through PHASE 1-2 until the
+ *  reopen. Revoking an `epcred` row marks a ledger row; it does not re-check a live JWT
+ *  mid-publish on an already-open connection. What durably kills that publisher is the
+ *  CLUSTER-VERIFIED EVICTION in PHASE 2, not the revoke. So the window in which a deposed manager
+ *  can still INITIATE a new terminal publish runs from barrier start until eviction is verified —
+ *  not merely the bytes already on the wire. On an OPEN mesh no credential family exists, so that
+ *  eviction is vacuous and there is no durable fence at all; the belt there is cooperative only. */
 function assertTerminalAttribution(fact: GoalResultFact, spec: GoalSpecValue, goalId: string): void {
   const accepted = spec.acceptedEpoch;
   const committed = fact.committer?.epoch;
@@ -1178,7 +1177,9 @@ export async function commitGoalResult(
 /** The reverse-DNS detail kind carrying a goal's cached terminal fact on an error (§13.3). */
 export const GOAL_TERMINAL_DETAIL_KIND = "ai.cotal.goal.terminal";
 
-function alreadyTerminal(goalId: string, fact: GoalResultFact): EpEnvelopeError {
+/** The §13.6 item 4 refusal of a cancel addressed to a goal that already ended: `failed-precondition`
+ *  with the cached outcome attached. */
+export function goalAlreadyTerminal(goalId: string, fact: GoalResultFact): EpEnvelopeError {
   return new EpEnvelopeError("failed-precondition",
     `goal "${goalId}" is already terminal (${fact.state}); the cached outcome is attached (SPEC 13.6)`,
     [{ kind: GOAL_TERMINAL_DETAIL_KIND, fact }]);
@@ -1199,7 +1200,7 @@ export async function requestGoalCancel(
     throw new EpEnvelopeError("failed-precondition", `cancel mode must be "graceful" or "terminate"; got ${JSON.stringify(args.mode)} (SPEC 13.6)`);
   const ref = goalRefOf(args.request, args.goalId);
   const cached = await readGoalResult(ctx, ref);
-  if (cached !== undefined) throw alreadyTerminal(ref.goalId, cached);
+  if (cached !== undefined) throw goalAlreadyTerminal(ref.goalId, cached);
   let projected: GoalStatusValue | undefined;
   for (let pass = 0; pass < 2 && projected === undefined; pass++) {
     const status = await readGoalStatus(ctx, ref);
@@ -1210,7 +1211,7 @@ export async function requestGoalCancel(
       const fact = await readGoalResult(ctx, ref);
       if (fact === undefined)
         throw new EpEnvelopeError("internal", `goal "${ref.goalId}" status is terminal but no result fact is readable; a projection never leads the journal (SPEC 13.6)`);
-      throw alreadyTerminal(ref.goalId, fact);
+      throw goalAlreadyTerminal(ref.goalId, fact);
     }
     try { projected = await transitionGoal(ctx, ref, "cancelling", { fields: { cancelMode: args.mode } }); }
     catch (e) { if (!(e instanceof EpEnvelopeError && e.code === "conflict")) throw e; }
@@ -1220,7 +1221,7 @@ export async function requestGoalCancel(
   const raced = await readGoalResult(ctx, ref);
   if (raced !== undefined) {
     await projectGoalTerminal(ctx, ref);
-    throw alreadyTerminal(ref.goalId, raced);
+    throw goalAlreadyTerminal(ref.goalId, raced);
   }
   return projected;
 }
