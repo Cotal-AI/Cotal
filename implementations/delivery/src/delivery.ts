@@ -382,6 +382,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
     }
     throw e;
   }
+  await new Promise<void>(() => {}); // CLI runs until signalled
 }
 
 /** Start one independently owned delivery context. No cwd, process signal, pidfile, or exit
@@ -396,24 +397,33 @@ export async function startDeliveryService(inputs: HostedContextInputs): Promise
     throw new Error("delivery: hosted SecretStore identity does not match the assigned store identity");
   let releaseOnStartupFailure: (() => Promise<void>) | undefined;
   try {
-    return await runStartedDelivery(
+    const started = await runStartedDelivery(
       { values: { space: inputs.space, server: inputs.servers }, positionals: [], raw: [] } as ParsedArgs,
       inputs.store,
       (release) => { releaseOnStartupFailure = release; },
       inputs,
-    ) as HostedServiceHandle;
+    );
+    return {
+      readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }),
+      drain: started.close,
+      close: started.close,
+    };
   } catch (error) {
     await releaseOnStartupFailure?.();
     throw error;
   }
 }
 
+type DeliveryStatus = { state: "ready" | "draining" } | { state: "unavailable"; cause: string };
+
+/** Both entries get the same result, so a start-up path that hands back nothing fails to compile.
+ * The hosted entry stamps the status with its context; the CLI runner owns its own wait. */
 async function runStartedDelivery(
   args: ParsedArgs,
   store: SecretStore | undefined,
   publishReleaser: (release: () => Promise<void>) => void,
   hosted?: HostedContextInputs,
-): Promise<void | HostedServiceHandle> {
+): Promise<{ status(): DeliveryStatus; close(): Promise<void> }> {
   const v = args.values as Values;
   const shard = v.shard ? Number(v.shard) : 0;
   const shards = v.shards ? Number(v.shards) : 1;
@@ -657,7 +667,6 @@ async function runStartedDelivery(
     await ep.stop();
     if (hosted !== undefined) throw e;
     process.exit(1);
-    return;
   }
 
   // SIGNAL HANDLING IS ARMED HERE, THE STATEMENT AFTER THE SHARD BECOMES OURS, not at the end of
@@ -1334,17 +1343,9 @@ async function runStartedDelivery(
 
   // Native transport health is driven by DeliveryTransportHealth above (resident transport events).
 
-  if (hosted !== undefined) {
-    const context = hosted.context;
-    return {
-      readiness(): HostedServiceState {
-        return unavailable !== undefined
-          ? { state: "unavailable", context, cause: unavailable }
-          : { state: stopping ? "draining" : "ready", context };
-      },
-      async drain(): Promise<void> { await close(); },
-      close,
-    };
-  }
-  await new Promise<void>(() => {}); // CLI runs until signalled
+  return {
+    status: (): DeliveryStatus =>
+      unavailable !== undefined ? { state: "unavailable", cause: unavailable } : { state: stopping ? "draining" : "ready" },
+    close,
+  };
 }
