@@ -5722,7 +5722,9 @@ export class CotalEndpoint extends EventEmitter {
     }
   }
 
-  /** Drive one consumer: decode, drop our own echo, and hand each message to listeners with ack control. */
+  /** Drive one consumer: decode and hand each message to listeners with ack control. Our own sends are
+   *  delivered too: on the DM inbox and the role queue they were addressed to us, so none is an echo,
+   *  and acking one unseen on the work queue would delete the only copy of the request. */
   private async pump(stream: string, durable: string): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
     const consumer = await this.js.consumers.get(stream, durable);
@@ -5757,10 +5759,6 @@ export class CotalEndpoint extends EventEmitter {
                 `does not match subject sender ${parsed?.sender ?? "(unparseable)"}`,
             ),
           );
-          continue;
-        }
-        if (msg.from.id === this.card.id) {
-          m.ack(); // our own echo — advance past it
           continue;
         }
         // No-replay + dedup (chat only): drop a message at/below this channel's join watermark
