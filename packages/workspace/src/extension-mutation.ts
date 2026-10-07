@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { acquireLock, inspectLock, processStartToken } from "./advisory-lock.js";
+import { acquireLock, acquireLockAsync, inspectLock, processStartToken } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
 
 function extensionUpdatePassLockPath(): string {
@@ -71,6 +71,52 @@ export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}):
     };
   } catch (e) {
     releasePass();
+    throw e;
+  }
+}
+
+/** {@link claimExtensionMutationLock} for async callers: the wait is an awaited timer, not a blocked
+ *  event loop, and `waitMs` is one deadline shared by the pass and the writer acquisition. */
+export async function claimExtensionMutationLockAsync(opts: ExtensionMutationOptions = {}): Promise<() => void> {
+  const waitMs = opts.waitMs ?? 0;
+  const deadline = Date.now() + waitMs;
+  const releasePass = opts.borrowUpdateParent === undefined
+    ? await claimExtensionUpdatePassAsync({ waitMs })
+    : (() => {
+        if (!extensionUpdatePassOwnedBy(opts.borrowUpdateParent))
+          throw new Error("the extension update parent no longer owns its pass lock");
+        assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+        return () => {};
+      })();
+  try {
+    const held = await acquireLockAsync(extensionMutationLockPath(), {
+      label: opts.label ?? "an extension mutation",
+      waitMs: Math.max(0, deadline - Date.now()),
+      onTimeout: (owner) => new Error(
+        opts.timeoutMessage?.(owner.pid) ?? `another extension mutation is in progress (pid ${owner.pid}) - retry once it finishes`,
+      ),
+    });
+    return () => {
+      held.release();
+      releasePass();
+    };
+  } catch (e) {
+    releasePass();
+    throw e;
+  }
+}
+
+async function claimExtensionUpdatePassAsync(opts: { waitMs?: number } = {}): Promise<() => void> {
+  const held = await acquireLockAsync(extensionUpdatePassLockPath(), {
+    label: "a `cotal update` extension pass",
+    waitMs: opts.waitMs ?? 0,
+    onTimeout: (owner) => new Error(`another extension update or mutation is in progress (pid ${owner.pid}) - retry once it finishes`),
+  });
+  try {
+    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    return () => held.release();
+  } catch (e) {
+    held.release();
     throw e;
   }
 }

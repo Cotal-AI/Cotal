@@ -278,13 +278,43 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
       sleepSync(Math.min(pollMs, 50));
       continue;
     }
-    if (Date.now() >= deadline) {
-      throw (opts.onTimeout?.(inspection.owner)) ??
-        new Error(
-          `${opts.label ?? "a lock"} is held by a live process (pid ${inspection.owner.pid}) and did not release within ${Math.round(waitMs / 1000)}s - retry, or if it is wedged, remove ${path}`,
-        );
-    }
+    if (Date.now() >= deadline) throw lockTimeoutError(path, opts, inspection.owner, waitMs);
     sleepSync(pollMs);
+  }
+}
+
+function lockTimeoutError(path: string, opts: AcquireOptions, owner: LockOwner, waitMs: number): Error {
+  return opts.onTimeout?.(owner) ??
+    new Error(
+      `${opts.label ?? "a lock"} is held by a live process (pid ${owner.pid}) and did not release within ${Math.round(waitMs / 1000)}s - retry, or if it is wedged, remove ${path}`,
+    );
+}
+
+class LockBusy extends Error {
+  constructor(readonly owner: LockOwner) {
+    super("lock is held by a live process");
+  }
+}
+
+/**
+ * {@link acquireLock} for callers on a live event loop: the wait between attempts is an awaited timer,
+ * so timers, RPCs and cancellation keep running while a live holder is outstanding. Each attempt is the
+ * synchronous zero-wait acquire (including its brief stale-lock reclaim). `opts.waitMs` bounds the whole
+ * wait; pass the time left to a later acquisition to share one deadline.
+ */
+export async function acquireLockAsync(path: string, opts: AcquireOptions = {}): Promise<HeldLock> {
+  const waitMs = opts.waitMs ?? 300000;
+  const pollMs = opts.pollMs ?? 200;
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      return acquireLock(path, { label: opts.label, waitMs: 0, onTimeout: (owner) => new LockBusy(owner) });
+    } catch (e) {
+      if (!(e instanceof LockBusy)) throw e;
+      const left = deadline - Date.now();
+      if (left <= 0) throw lockTimeoutError(path, opts, e.owner, waitMs);
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.min(pollMs, left)));
+    }
   }
 }
 

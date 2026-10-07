@@ -19,6 +19,7 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
 import {
+  claimExtensionMutationLockAsync,
   claimExtensionUpdatePass,
   extensionsDir,
   importInstalledExtension,
@@ -32,6 +33,27 @@ const cells = counted.cells;
 // (node walks up to packages/workspace/node_modules), sharing this process's registry singleton.
 const tmp = mkdtempSync(join(import.meta.dirname, ".mat-concurrency-"));
 process.env.XDG_CONFIG_HOME = tmp;
+
+/** Spawn a child that runs `body` (after `release` is bound) and print "held" once it holds the lock for `ms`. */
+function spawnHolder(lockExpr: string, ms: number) {
+  const child = spawn(
+    process.execPath,
+    [
+      "--import", "tsx", "--input-type=module", "-e",
+      `import { acquireLock, extensionMutationLockPath } from "@cotal-ai/workspace";
+       const held = ${lockExpr};
+       console.log("held");
+       setTimeout(() => { held.release(); process.exit(0); }, ${ms});`,
+    ],
+    { cwd: import.meta.dirname, env: process.env, stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const ready = new Promise<void>((resolve, reject) => {
+    child.stdout.on("data", (d) => String(d).includes("held") && resolve());
+    child.on("error", reject);
+    child.on("exit", () => reject(new Error("holder exited before holding the lock")));
+  });
+  return { child, ready };
+}
 
 let seq = 0;
 /** Write a self-registering ESM package that registers `refs` on import; return its manifest row. */
@@ -108,27 +130,41 @@ try {
   {
     const ref: ExtensionRef = { kind: "connector", name: "queued" };
     const ext = fakePackage([ref]);
-    const holder = spawn(
-      process.execPath,
-      [
-        "--import", "tsx", "--input-type=module", "-e",
-        `import { claimExtensionMutationLock } from "@cotal-ai/workspace";
-         const release = claimExtensionMutationLock({ label: "holder" });
-         console.log("held");
-         setTimeout(() => { release(); process.exit(0); }, 1500);`,
-      ],
-      { cwd: import.meta.dirname, env: process.env, stdio: ["ignore", "pipe", "inherit"] },
-    );
+    const holder = spawnHolder(`acquireLock(extensionMutationLockPath(), { waitMs: 0 })`, 1500);
     try {
-      await new Promise<void>((resolve, reject) => {
-        holder.stdout.on("data", (d) => String(d).includes("held") && resolve());
-        holder.on("error", reject);
-        holder.on("exit", () => reject(new Error("holder exited before holding the lock")));
-      });
-      await assert.doesNotReject(importInstalledExtension(ext, ref), "load must wait for a briefly held lock");
+      await holder.ready;
+      // The wait must not block the event loop: a 50 ms timer keeps firing while the load is queued.
+      let ticks = 0;
+      const timer = setInterval(() => ticks++, 50);
+      try {
+        await assert.doesNotReject(importInstalledExtension(ext, ref), "load must wait for a briefly held lock");
+      } finally {
+        clearInterval(timer);
+      }
+      assert.ok(ticks >= 10, `event loop was blocked while waiting for the lock (${ticks} timer ticks)`);
       assert.equal(registry.resolve("connector", "queued").name, "queued");
     } finally {
-      holder.kill();
+      holder.child.kill();
+    }
+  }
+
+  // 7. One deadline covers the pass AND writer acquisitions. The pass is free after ~0.6 s but the writer
+  //    stays held for 3 s, so a 1.5 s bound must refuse at ~1.5 s, not restart the clock for the writer.
+  {
+    const passHolder = spawnHolder(`acquireLock(extensionMutationLockPath() + ".update", { waitMs: 0 })`, 600);
+    const writerHolder = spawnHolder(`acquireLock(extensionMutationLockPath(), { waitMs: 0 })`, 3000);
+    try {
+      await Promise.all([passHolder.ready, writerHolder.ready]);
+      const started = Date.now();
+      await assert.rejects(
+        claimExtensionMutationLockAsync({ waitMs: 1500, label: "deadline test" }),
+        /another extension mutation is in progress/,
+      );
+      const took = Date.now() - started;
+      assert.ok(took >= 1400 && took < 2000, `refusal came after ${took} ms instead of the 1500 ms bound`);
+    } finally {
+      passHolder.child.kill();
+      writerHolder.child.kill();
     }
   }
 
