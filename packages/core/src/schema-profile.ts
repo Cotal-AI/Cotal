@@ -11,7 +11,7 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { assertSafePattern } from "./safe-pattern.js";
-import type { ContractClosureManifest } from "./endpoint-contract-store.js";
+import { buildContractClosureManifest, type ContractClosureManifest } from "./contract-manifest.js";
 
 /** Registration-time bounds (SPEC §13.7/§13.8). Fixed by the profile, not caller-tunable, and
  *  RUNTIME-frozen (the afa715b class): a post-import `maxDepth = MAX_SAFE_INTEGER` would remove
@@ -163,7 +163,7 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
  *  not beside that reader because `VOID_SCHEMA_DIGEST` is built from it at load and
  *  `endpoint-cluster` already imports this module. */
 export function singleDocumentClosure(root: unknown): { manifest: ContractClosureManifest; closureDigest: string } {
-  const manifest: ContractClosureManifest = { v: 1, root: contractDigest(root), members: [] };
+  const manifest = buildContractClosureManifest(contractDigest(root), []);
   return { manifest, closureDigest: contractDigest(manifest) };
 }
 
@@ -466,7 +466,7 @@ function assertClosureProfile(bundle: SchemaBundle): string {
   const extras = Object.keys(members).filter((d) => !seen.has(d));
   if (extras.length > 0)
     throw new ContractInvalidError(`bundle carries ${extras.length} member(s) unreachable from the root (${extras.slice(0, 3).join(", ")}${extras.length > 3 ? ", …" : ""})`);
-  return contractDigest({ v: 1, root: digestOrInvalid(bundle.root, "root schema"), members: [...seen].sort() });
+  return contractDigest(buildContractClosureManifest(digestOrInvalid(bundle.root, "root schema"), [...seen]));
 }
 
 /** The size of the widest map-valued keyword (`properties`, `patternProperties`, `$defs`,

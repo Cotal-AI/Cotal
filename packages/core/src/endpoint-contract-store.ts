@@ -39,6 +39,8 @@ import { canonicalJson } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { epcSubject } from "./endpoint-subjects.js";
 import { epcStreamName } from "./endpoint-binding.js";
+import { contractRefToHex, sha256Ref, type ContractClosureManifest } from "./contract-manifest.js";
+export { buildContractClosureManifest, contractRefToHex, type ContractClosureManifest } from "./contract-manifest.js";
 
 /** The §13.7 artifact bound: a document above it cannot ride one message and is refused. */
 export const CONTRACT_ARTIFACT_MAX_BYTES = 256 * 1024;
@@ -48,8 +50,6 @@ export const CONTRACT_CLOSURE_MAX_BYTES = 1024 * 1024;
 export const CONTRACT_CLOSURE_MAX_REF_DEPTH = 32;
 /** The artifact-count ceiling: a walk that would exceed it fails loud, never truncates. */
 export const CONTRACT_CLOSURE_MAX_ARTIFACTS = 64;
-
-const HEX64 = /^[0-9a-f]{64}$/;
 
 /** A trusted, space-bonded contract-store context: an OPAQUE token carrying only the space. Its
  *  JS + JSM resources DERIVE from one binding-layer connection by the constructor and live in a
@@ -104,15 +104,6 @@ function resources(ctx: ContractStoreContext): StoreResources {
  *  publication and verify-on-read enforce that ({@link assertCanonicalArtifactBytes}). */
 export function contractArtifactDigestHex(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
-}
-
-/** Normalize a digest reference (`<hex>` or `sha256:<hex>`) to the bare subject token; a
- *  malformed reference fails loud (a garbled ref never fetches an unintended subject). */
-export function contractRefToHex(ref: string): string {
-  const hex = ref.startsWith("sha256:") ? ref.slice("sha256:".length) : ref;
-  if (!HEX64.test(hex))
-    throw new EpEnvelopeError("contract-invalid", `contract reference ${JSON.stringify(ref)} is not a sha256 digest; a garbled reference never resolves (SPEC 13.7)`);
-  return hex;
 }
 
 /** A value's canonical artifact bytes (strict RFC 8785 over I-JSON): what publication stores
@@ -252,19 +243,6 @@ export async function fetchContractArtifact(
 
 // ---- the closure manifest (§13.7 "Two digests, never conflated") ------------------------------
 
-/** The §13.7 closure MANIFEST artifact: contract identity is THIS artifact's digest (the
- *  closure digest), never the root document digest alone. Digest fields carry the one scalar
- *  shape `sha256:<hex>`. */
-export interface ContractClosureManifest {
-  v: 1;
-  root: string;
-  /** Every artifact transitively reachable through by-digest references from `root` (the root
-   *  appears only if a reference re-reaches it), sorted lexicographically, deduplicated. */
-  members: string[];
-}
-
-const sha256Ref = (hex: string): string => `sha256:${hex}`;
-
 /** A manifest digest field is EXACTLY `sha256:<64-hex>` (frozen SPEC 13.7:1858-1861), never a
  *  bare `<hex>` or any other spelling (distsys 8dcad72 HIGH): two manifests differing only in
  *  digest spelling are both canonical JSON, receive DIFFERENT closure digests, yet verify the same
@@ -274,16 +252,6 @@ const SHA256_REF = /^sha256:[0-9a-f]{64}$/;
 function assertManifestDigest(ref: unknown, what: string): void {
   if (typeof ref !== "string" || !SHA256_REF.test(ref))
     throw new EpEnvelopeError("contract-invalid", `${what} must be exactly "sha256:<64-hex>" (SPEC 13.7); a bare-hex or otherwise-spelled digest gives one closure two identities and never names it`);
-}
-
-/** Build the canonical manifest for a walked closure: refs normalize, members sort + dedup.
- *  The ROOT is named by its own field and belongs in `members` only when a reference
- *  re-reaches it (the §13.7 "reachable THROUGH references" rule, pinned here so two
- *  implementations always mint the identical manifest). */
-export function buildContractClosureManifest(rootRef: string, memberRefs: readonly string[]): ContractClosureManifest {
-  const root = sha256Ref(contractRefToHex(rootRef));
-  const members = [...new Set(memberRefs.map((r) => sha256Ref(contractRefToHex(r))))].sort();
-  return { v: 1, root, members };
 }
 
 function parseClosureManifest(value: unknown, what: string): ContractClosureManifest {
