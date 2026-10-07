@@ -135,21 +135,24 @@ export function censusCustodians(run?: string): CustodianSighting[] {
 /** Why `rec`'s pids cannot be tied to the processes it recorded, or undefined when they can. A
  *  start token counts ticks since ITS OWN boot, so it only tells two processes apart within one boot,
  *  and a record may have outlived a reboot on disk. A record with no start identity or no boot
- *  identity proves nothing about whatever holds those pid numbers now, so it is neither signalled nor
- *  reported as running or gone. */
-function unprovedIdentity(id: string, rec: SeatRecord): string | undefined {
+ *  identity proves nothing about whatever holds those pid numbers now, and neither does any record
+ *  while this host's own `boot` is unknown, so such a record is neither signalled nor reported as
+ *  running or gone. */
+function unprovedIdentity(id: string, rec: SeatRecord, boot: string | undefined): string | undefined {
   if (rec.custodianStart === undefined)
     return `seat ${id} record carries no process start identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (a bare pid may belong to an unrelated process)`;
   if (rec.bootId === undefined)
     return `seat ${id} record carries no boot identity; refusing to signal pid ${rec.custodianPid}/${rec.childPid} (its start tokens cannot be compared across a reboot)`;
+  if (boot === undefined)
+    return `seat ${id}: this host publishes no boot identity; refusing to compare start tokens for pid ${rec.custodianPid}/${rec.childPid} (record boot ${rec.bootId} cannot be tied to this boot)`;
   return undefined;
 }
 
-/** Whether `rec` was written on an earlier boot. No process outlives a reboot, so every process it
- *  names is gone, and whatever holds those pid numbers now is one of this boot's and is never signalled. */
-function fromEarlierBoot(rec: SeatRecord): boolean {
-  const boot = bootToken();
-  return boot !== undefined && rec.bootId !== boot;
+/** Whether `rec` was written on an earlier boot than `boot`, this host's. No process outlives a
+ *  reboot, so every process it names is gone, and whatever holds those pid numbers now is one of this
+ *  boot's and is never signalled. */
+function fromEarlierBoot(rec: SeatRecord, boot: string): boolean {
+  return rec.bootId !== boot;
 }
 
 /**
@@ -185,10 +188,11 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
       throw new Error(`seat ${id} record at ${path} is unreadable: ${(e as Error).message}`);
     }
   }
-  const unproved = unprovedIdentity(id, rec);
+  const boot = bootToken();
+  const unproved = unprovedIdentity(id, rec, boot);
   if (unproved !== undefined) throw new Error(unproved);
   const custodianStart = rec.custodianStart!;
-  const earlierBoot = fromEarlierBoot(rec);
+  const earlierBoot = fromEarlierBoot(rec, boot!);
   // Read before anything is signalled, so a SIGKILL sent below is never reported as how the child ended.
   const recorded = recordedExit(exitPath(path));
   const exit = recorded.exit;
@@ -270,7 +274,7 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
  *  recorded start identity, so the seat is a running agent and is never signalled. `childless`: the
  *  child is gone, so a drain would retire the seat. `drained`: a drain proved the seat gone and
  *  removed its record. `refused`: the record could not be read, carries no start or boot identity,
- *  or the reap did not prove exit; the record stays on disk. */
+ *  this host publishes no boot identity, or the reap did not prove exit; the record stays on disk. */
 export interface SeatInventoryEntry {
   id: string;
   state: "live-child" | "childless" | "drained" | "refused";
@@ -301,6 +305,7 @@ export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw e;
   }
+  const boot = bootToken();
   const out: SeatInventoryEntry[] = [];
   for (const id of ids) {
     let rec: SeatRecord;
@@ -311,12 +316,12 @@ export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?
       continue;
     }
     const seen = { id, name: rec.name, custodianPid: rec.custodianPid, childPid: rec.childPid };
-    const unproved = unprovedIdentity(id, rec);
+    const unproved = unprovedIdentity(id, rec, boot);
     if (unproved !== undefined) {
       out.push({ ...seen, state: "refused", detail: unproved });
       continue;
     }
-    const earlierBoot = fromEarlierBoot(rec);
+    const earlierBoot = fromEarlierBoot(rec, boot!);
     if (!earlierBoot && rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live") {
       out.push({ ...seen, state: "live-child", detail: `child ${rec.childPid} is running; kept` });
       continue;

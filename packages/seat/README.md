@@ -74,7 +74,8 @@ world-readable, so a reaper can find and attribute orphans without walking `/pro
 
 `drainSeats(root, { drain })` lists the custody records under a root. A record that cannot be
 read, or whose start and boot identity do not tie its pids to this boot, is reported as `refused`
-and left on disk, with or without `drain`. A seat whose child still holds its recorded start
+and left on disk, with or without `drain`. On a host that publishes no boot identity, no record
+can be tied to this boot, so every one is refused. A seat whose child still holds its recorded start
 identity is reported as `live-child` and never signalled. With `drain`, every other seat goes
 through `reapSeat`. One it cannot prove gone is reported as `refused` and left on disk, and
 `reapSeat` may already have sent `SIGKILL` to its custodian.

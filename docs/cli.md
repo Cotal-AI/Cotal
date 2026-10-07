@@ -1826,12 +1826,14 @@ records under `COTAL_SEAT_ROOT` (default `~/.cotal/seats`), one line per seat:
 | `live-child` | The agent process still runs. The seat is never signalled, and a manager can still adopt it |
 | `childless` | The agent has exited, or the record comes from an earlier boot. `--drain` retires the seat |
 | `drained` | `--drain` proved the custodian and the agent gone and removed the record |
-| `refused` | The record cannot be read, carries no start or boot identity, or the reap could not prove the processes gone. The record stays on disk |
+| `refused` | The record cannot be read, carries no start or boot identity, this host publishes no boot identity, or the reap could not prove the processes gone. The record stays on disk |
 
 A drain signals only a custodian whose recorded start identity still matches the live process, so
 a reused pid is never touched. No process outlives a reboot, so a record from an earlier boot is
 reported childless and `--drain` removes it without signalling anything. A record with no start or
 boot identity is refused with or without `--drain`, and is never reported as running or exited.
+On a host that publishes no boot identity (`/proc/sys/kernel/random/boot_id`) every record is
+refused the same way, because no record can be tied to this boot.
 That refusal and an unreadable record signal nothing. A refusal from the reap itself can come after the drain already
 sent `SIGKILL` to the custodian. Its detail names the pid or process group the reap could not prove
 gone, so check those processes before you retry. The command exits non-zero when any record is
