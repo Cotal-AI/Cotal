@@ -158,11 +158,13 @@ function rewriteLinks(md, srcDir) {
 }
 
 // The title comes from the lexed first block, so a `#` comment in a code fence is never read as the
-// H1. Starlight renders the title itself, so the H1 is dropped from the body.
+// H1. Starlight renders the title itself, so the H1 is dropped from the body. The lexer measures its
+// spans in the text after turning CR and CRLF into LF, so the body is cut from that same text.
 function splitH1(md, rel) {
-  const [h1] = marked.lexer(md);
+  const lf = md.replace(/\r\n?/g, '\n');
+  const [h1] = marked.lexer(lf);
   if (h1?.type !== 'heading' || h1.depth !== 1) throw new Error(`page does not open with an H1: ${rel}`);
-  return { title: h1.text, body: md.slice(h1.raw.length).replace(/^\n+/, '') };
+  return { title: h1.text, body: lf.slice(h1.raw.length).replace(/^\n+/, '') };
 }
 
 // A hard line break renders as a br with no text, but it separates the words on either side.
