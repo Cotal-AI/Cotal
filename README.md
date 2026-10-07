@@ -28,7 +28,7 @@ Distributed programming for agents.</sub>
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen)](https://nodejs.org)
 
-[Examples](#examples) · [Supported agents](#supported-agents) · [FAQ](#faq)
+[Live demo](https://booth.apps.cotal.ai) · [Examples](#examples) · [Supported agents](#supported-agents) · [FAQ](#faq)
 
 </div>
 
@@ -211,6 +211,11 @@ Read-only and least-privilege (it self-mints a narrow cred, then drops the signi
 terminal `cotal console` watches the same space. See [docs/watch-a-mesh.md](docs/watch-a-mesh.md).
 
 ## Examples
+
+**See it first:** [booth.apps.cotal.ai](https://booth.apps.cotal.ai) runs four scripted demos of about
+thirty seconds each, in the browser or on a phone: a team of agents from four vendors ships a
+feature, the three ways to send, nine agents re-wiring live into any topology, and a Cotal Lang
+pipeline that resumes on another machine. Nothing to install.
 
 <table>
 <tr>
