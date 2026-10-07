@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, normalize, dirname, basename } from "node:path";
 import type { Extension } from "@cotal-ai/core";
 import { spaceKey } from "./auth-paths.js";
@@ -214,7 +214,8 @@ export interface RecordedRuntimeSpace {
   /** False only when EVERY record for this space is provably not a process (empty husk, or a pid
    *  ESRCH-proven dead). An unparsable record or a pid the kernel will not answer for counts as
    *  possibly running: the same fail-closed direction `down`'s dependant guard takes, because the
-   *  cost of the other reading is walking past a live daemon. */
+   *  cost of the other reading is walking past a live daemon. A record that exists but cannot be
+   *  read is less attributable still, so the enumeration throws its read error rather than answering. */
   readonly mayBeRunning: boolean;
 }
 
@@ -238,8 +239,9 @@ export function recordedRuntimeSpaces(root: string): RecordedRuntimeSpace[] {
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    return []; // no `.cotal` → nothing is recorded here
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no `.cotal` → nothing is recorded here
+    throw e;
   }
   const found = new Map<string, boolean>();
   for (const name of names)
@@ -269,12 +271,8 @@ function spaceFromRecordName(template: string, name: string): string | undefined
 /** Whether a record file might still front a process. See {@link RecordedRuntimeSpace.mayBeRunning}
  *  for the direction and why it is that one. */
 function recordMayBeRunning(path: string): boolean {
-  let raw: string;
-  try {
-    raw = readFileSync(path, "utf8").trim();
-  } catch {
-    return false; // removed under us → nothing to address
-  }
+  const raw = readPidfile(path);
+  if (raw === undefined) return false; // removed under us → nothing to address
   if (raw === "") return false; // pre-protocol husk: no process behind it
   const pid = parsePid(raw);
   if (pid === undefined) return true; // unattributable: cannot prove it gone
@@ -287,8 +285,9 @@ function recordMayBeRunning(path: string): boolean {
 function existsByteExact(p: string): boolean {
   try {
     return readdirSync(dirname(p)).includes(basename(p));
-  } catch {
-    return false; // parent absent → not present
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false; // parent absent → not present
+    throw e;
   }
 }
 
