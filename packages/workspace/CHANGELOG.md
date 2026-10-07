@@ -1,5 +1,33 @@
 # @cotal-ai/workspace
 
+## 0.70.0
+
+### Minor Changes
+
+- c088c5c: The persisted identity records now share one reader and one first mint. The manager instance identity, the manager sibling identities, the auth plane instance identity and a participant manager's remote authority state each read through the same regular-file and nkey checks and publish a first mint by exclusive create through the new `claimIdentityRecord` and `identityOf`, adopting the winner when a concurrent start created the record first. Before, the manager start and the auth plane followed a symlinked record that retirement refused, and a participant manager published its first mint with a last-writer-wins rename, so concurrent first starts on one root each kept a different identity, and it accepted an empty nkey id or seed that the local loaders refused. A lost race now refuses with `identity-record-create-lost`. `saveManagerInstanceIdentity` and `saveAuthInstanceIdentity` are removed: nothing shipped overwrote a stored identity, and the exports let any caller bypass the exclusive create.
+- 2639a13: `AuthProvider.userCredentials` no longer returns `managerInstanceId`. A `manager-caller` credential's instance is the signed `act.managerInstanceId` claim in its bearer, the one `userViewAuth` checks. The reference provider copied the exchange response's field beside it, and nothing compared the two, so a provider whose result named a different instance than its bearer satisfied the contract while the CLI used the bearer's. `userViewAuth` also decodes each minted bearer once, through one typed decoder, where the manager-caller check read a second untyped decode.
+
+### Patch Changes
+
+- 392bfeb: The user-auth service's instance identity no longer travels with a mesh's trust folder. It now lives in the root's own space segment, `.cotal/space.<space-hex>/auth-instance.json`, beside the manager's identity. It used to land in `.cotal/auth/space.<space-hex>/.cotal/auth/auth-instance.<space-hex>.json`, because the auth plane passed its user-auth state dir where the identity helpers expected a workspace root, so copying `.cotal/auth` to another root, as the docs describe for a mesh you did not start, copied it too and an auth service started there came up as the original instance. A record at the older place is moved on the first start and the instance is kept; both places holding a record is refused, and so is a symlink or other non-regular entry at the older place of the auth or manager identity, which the manager used to skip, minting a new identity. A hosted context started through `startAuthService` keeps its identity in its own `stateDir`, moved the same way from `<stateDir>/.cotal/auth/` to `<stateDir>/.cotal/space.<space-hex>/`. `openAuthAuthorityPlane` now takes a required `identityRoot`, the root whose space segment keeps that identity, and no longer derives it from `dir`.
+- 1b11c4e: The auth plane's instance identity file and the remote manager's authority state file now take their names from `spaceKey`. They used to hex-encode the space themselves, so an empty space wrote `auth-instance..json` or `remote-manager..json`, and a space holding an unpaired surrogate shared a file with the space named `U+FFFD`: the second auth plane adopted the first one's identity, and the second remote manager was refused as malformed. Both names are now refused before an identity file is written. A valid space keeps the same file name, so nothing on disk moves.
+- 668f6b0: The web dashboard's `web.session` record and its `x-cotal-readiness` header now have one definition, in `@cotal-ai/workspace`: the file name, the record's fields, the one reader, and the header name. The dashboard writes and reads the record through it and `cotal status` reads it there. Renaming the file, a field or the header on the dashboard side used to typecheck cleanly while `cotal status --components` read the live dashboard as `refused` and the `Web process` row read `down`; now it is a compile error on both sides.
+- 15b7920: A runtime record, or a `.cotal` listing, that exists but cannot be read now fails with its read error instead of reading as absent. An unreadable record used to count as not running and an unlistable `.cotal` as holding no records, so `cotal status`, `cotal down`, `cotal clean` and the start helpers scoped a root running two spaces to the readable one, and a start went ahead past a live pre-upgrade record it could not list. Only a missing file or directory still reads as absent.
+- Updated dependencies [66df6c0]
+- Updated dependencies [0ec35c2]
+- Updated dependencies [015f805]
+- Updated dependencies [2cbfe9c]
+- Updated dependencies [b413e2a]
+- Updated dependencies [7986785]
+- Updated dependencies [12bfc34]
+- Updated dependencies [4dcfa0b]
+- Updated dependencies [fd07b1e]
+- Updated dependencies [8dc360c]
+- Updated dependencies [cce8dad]
+- Updated dependencies [c7e0c0a]
+- Updated dependencies [2639a13]
+  - @cotal-ai/core@0.70.0
+
 ## 0.69.0
 
 ### Minor Changes

@@ -23876,6 +23876,66 @@ function contractDigest(value) {
 // ../../packages/core/dist/safe-pattern.js
 var CHOICE_SAT = 1 << 20;
 
+// ../../packages/core/dist/endpoint-error.js
+var EP_ERROR_CODES = Object.freeze([
+  "bad-request",
+  "unsupported-version",
+  "op-mismatch",
+  "class-mismatch",
+  "target-mismatch",
+  "sender-mismatch",
+  "unauthenticated",
+  "permission-denied",
+  "not-found",
+  "already-exists",
+  "conflict",
+  "contract-mismatch",
+  "contract-invalid",
+  "failed-precondition",
+  "deadline-exceeded",
+  "cancelled",
+  "expired",
+  "unavailable",
+  "unimplemented",
+  "resource-exhausted",
+  "internal"
+]);
+var EpEnvelopeError = class extends Error {
+  code;
+  details;
+  outcome;
+  constructor(code, message, details, outcome) {
+    super(message);
+    this.code = code;
+    this.details = details;
+    this.outcome = outcome;
+    this.name = "EpEnvelopeError";
+  }
+  toEpError() {
+    return {
+      code: this.code,
+      message: this.message,
+      ...this.details ? { details: this.details } : {},
+      ...this.outcome ? { outcome: this.outcome } : {}
+    };
+  }
+};
+
+// ../../packages/core/dist/contract-manifest.js
+var HEX64 = /^[0-9a-f]{64}$/;
+function contractRefToHex(ref) {
+  const hex3 = ref.startsWith("sha256:") ? ref.slice("sha256:".length) : ref;
+  if (!HEX64.test(hex3))
+    throw new EpEnvelopeError("contract-invalid", `contract reference ${JSON.stringify(ref)} is not a sha256 digest; a garbled reference never resolves (SPEC 13.7)`);
+  return hex3;
+}
+var sha256Ref = (hex3) => `sha256:${hex3}`;
+function buildContractClosureManifest(rootRef, memberRefs) {
+  const root = sha256Ref(contractRefToHex(rootRef));
+  const members = [...new Set(memberRefs.map((r) => sha256Ref(contractRefToHex(r))))].sort();
+  return { v: 1, root, members };
+}
+
 // ../../packages/core/dist/schema-profile.js
 var SCHEMA_PROFILE = Object.freeze({
   /** One schema document's canonical form, bytes. */
@@ -24005,9 +24065,13 @@ var AJV_PROFILE_OPTIONS = Object.freeze({
   // worth more than inlining's marginal speed.
   inlineRefs: false
 });
+function singleDocumentClosure(root) {
+  const manifest = buildContractClosureManifest(contractDigest(root), []);
+  return { manifest, closureDigest: contractDigest(manifest) };
+}
 var VOID_SCHEMA = Object.freeze({ type: "null" });
 var VOID_SCHEMA_ARTIFACT_DIGEST = contractDigest(VOID_SCHEMA);
-var VOID_SCHEMA_DIGEST = contractDigest({ v: 1, root: VOID_SCHEMA_ARTIFACT_DIGEST, members: [] });
+var VOID_SCHEMA_DIGEST = singleDocumentClosure(VOID_SCHEMA).closureDigest;
 var SCHEMA_VALUED_KEYS = ["not", "if", "then", "else", "items", "contains", "additionalProperties", "propertyNames", "unevaluatedItems", "unevaluatedProperties", "contentSchema", "additionalItems"];
 var SCHEMA_VALUED_MAP_KEYS = ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependencies"];
 var SCHEMA_VALUED_LIST_KEYS = ["allOf", "anyOf", "oneOf", "prefixItems"];
@@ -24052,51 +24116,6 @@ var SCALAR_KEYS = [
   "$vocabulary"
 ];
 var ADMITTED = /* @__PURE__ */ new Set([...SCHEMA_VALUED_KEYS, ...SCHEMA_VALUED_MAP_KEYS, ...SCHEMA_VALUED_LIST_KEYS, ...SCALAR_KEYS]);
-
-// ../../packages/core/dist/endpoint-error.js
-var EP_ERROR_CODES = Object.freeze([
-  "bad-request",
-  "unsupported-version",
-  "op-mismatch",
-  "class-mismatch",
-  "target-mismatch",
-  "sender-mismatch",
-  "unauthenticated",
-  "permission-denied",
-  "not-found",
-  "already-exists",
-  "conflict",
-  "contract-mismatch",
-  "contract-invalid",
-  "failed-precondition",
-  "deadline-exceeded",
-  "cancelled",
-  "expired",
-  "unavailable",
-  "unimplemented",
-  "resource-exhausted",
-  "internal"
-]);
-var EpEnvelopeError = class extends Error {
-  code;
-  details;
-  outcome;
-  constructor(code, message, details, outcome) {
-    super(message);
-    this.code = code;
-    this.details = details;
-    this.outcome = outcome;
-    this.name = "EpEnvelopeError";
-  }
-  toEpError() {
-    return {
-      code: this.code,
-      message: this.message,
-      ...this.details ? { details: this.details } : {},
-      ...this.outcome ? { outcome: this.outcome } : {}
-    };
-  }
-};
 
 // ../../packages/core/dist/endpoint-envelope.js
 var EP_ERROR_SET = new Set(EP_ERROR_CODES);
@@ -24496,144 +24515,6 @@ var GOVERNED_TRAIT_URNS = Object.freeze([TRAIT_GUARDED, TRAIT_PRICED]);
 
 // ../../packages/core/dist/evict.js
 var import_transport_node3 = __toESM(require_transport_node(), 1);
-
-// ../../packages/core/dist/endpoint-service.js
-var SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,64}";
-var SOURCE_CHAIN_ELEMENT = new RegExp(`^(root|handle\\.${SOURCE_CHAIN_ID}\\.${SOURCE_CHAIN_ID}|session\\.${SOURCE_CHAIN_ID})$`);
-
-// ../../packages/core/dist/endpoint-signing.js
-var import_nkeys = __toESM(require_mod2(), 1);
-var ANCHOR_ROLES = Object.freeze([
-  "handles",
-  "traits",
-  "receipts",
-  "resume",
-  "sessions",
-  "authz-slots",
-  "obligations",
-  "payments"
-]);
-
-// ../../packages/core/dist/endpoint-checkpoint.js
-var import_jetstream3 = __toESM(require_mod4(), 1);
-var import_transport_node4 = __toESM(require_transport_node(), 1);
-var MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
-
-// ../../packages/core/dist/endpoint-action.js
-var import_jetstream5 = __toESM(require_mod4(), 1);
-var import_transport_node6 = __toESM(require_transport_node(), 1);
-
-// ../../packages/core/dist/endpoint-receipt.js
-var import_jetstream4 = __toESM(require_mod4(), 1);
-var import_transport_node5 = __toESM(require_transport_node(), 1);
-
-// ../../packages/core/dist/endpoint-action.js
-var BRANDED_CONTEXTS = /* @__PURE__ */ new WeakSet();
-function assertCtx(ctx) {
-  if (!BRANDED_CONTEXTS.has(ctx))
-    throw new EpEnvelopeError("failed-precondition", `the action context was not constructed by actionContext(); a hand-assembled resource bundle never authorizes - the space bond is constructed, not asserted (SPEC 13.4)`);
-}
-var GUARD_CLEARANCES = /* @__PURE__ */ new WeakMap();
-var clearanceMintClaimed = false;
-function claimGuardClearanceMint() {
-  if (clearanceMintClaimed)
-    throw new EpEnvelopeError("permission-denied", "the guard-clearance mint is already claimed by THE gate; a guarded goal's edge into running opens only through it (SPEC 13.6)");
-  clearanceMintClaimed = true;
-  return (ctx, goalId) => {
-    assertCtx(ctx);
-    const clearance = Object.freeze({ goalId: assertIdToken(goalId, "goalId") });
-    GUARD_CLEARANCES.set(clearance, ctx);
-    return clearance;
-  };
-}
-var GOAL_STATES = Object.freeze(["accepted", "running", "waiting", "cancelling", "succeeded", "failed", "cancelled", "expired", "uncertain"]);
-var GOAL_TERMINAL_STATES = Object.freeze(["succeeded", "failed", "cancelled", "expired", "uncertain"]);
-
-// ../../packages/core/dist/endpoint-guard.js
-var mintGuardClearance = claimGuardClearanceMint();
-
-// ../../packages/core/dist/endpoint-traits.js
-var TRAIT_SELECTORS = Object.freeze(["cluster", "command", "attribute", "event"]);
-
-// ../../packages/core/dist/endpoint-publish-denial.js
-var import_transport_node7 = __toESM(require_transport_node(), 1);
-
-// ../../packages/core/dist/endpoint-invoke.js
-var import_transport_node9 = __toESM(require_transport_node(), 1);
-var import_jetstream7 = __toESM(require_mod4(), 1);
-
-// ../../packages/core/dist/endpoint-contract-store.js
-var import_jetstream6 = __toESM(require_mod4(), 1);
-var import_transport_node8 = __toESM(require_transport_node(), 1);
-var CONTRACT_ARTIFACT_MAX_BYTES = 256 * 1024;
-var CONTRACT_CLOSURE_MAX_BYTES = 1024 * 1024;
-
-// ../../packages/core/dist/endpoint-invoke.js
-var dec5 = new TextDecoder();
-var enc4 = new TextEncoder();
-
-// ../../packages/core/dist/endpoint-work.js
-var import_jetstream8 = __toESM(require_mod4(), 1);
-var import_transport_node10 = __toESM(require_transport_node(), 1);
-
-// ../../packages/core/dist/run-journal.js
-var import_jetstream9 = __toESM(require_mod4(), 1);
-var import_transport_node11 = __toESM(require_transport_node(), 1);
-
-// ../../packages/core/dist/endpoint-goaleff.js
-var COMMON_FIELDS = ["v", "executor", "attemptId", "ts", "phase"];
-var PHASE_FIELDS = {
-  claimed: COMMON_FIELDS,
-  launching: [...COMMON_FIELDS, "addr"],
-  launched: [...COMMON_FIELDS, "addr"],
-  settled: [...COMMON_FIELDS, "addr"]
-  // `addr` optional here, and ONLY here
-};
-
-// ../../packages/core/dist/endpoint-epname.js
-var BASE = ["v", "ts", "state", "claimant"];
-var STATE_FIELDS = {
-  claimed: BASE,
-  launching: [...BASE, "lifecycleUid", "launchAttemptId", "executor"],
-  live: [...BASE, "lifecycleUid", "runtimeOwner"],
-  preserved: [...BASE, "lifecycleUid", "runtimeOwner"],
-  relaunching: [...BASE, "lifecycleUid", "launchAttemptId", "executor"],
-  draining: [...BASE, "lifecycleUid", "runtimeOwner", "enteredAt"],
-  released: BASE
-};
-
-// ../../packages/core/dist/endpoint-serve-kv.js
-var enc5 = new TextEncoder();
-var dec6 = new TextDecoder();
-
-// ../../packages/core/dist/endpoint-handle.js
-var HANDLE_MAX_LIVE_TTL_MS = 24 * 60 * 60 * 1e3;
-var HANDLE_MAX_STURDY_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
-var HANDLE_MAX_BYTES = 64 * 1024;
-
-// ../../packages/core/dist/endpoint-session.js
-var SESSION_GRANT_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
-var SESSION_GRANT_MAX_BYTES = 16 * 1024;
-var SESSION_TERMINAL_STATES = Object.freeze(["closed", "expired", "superseded", "retired"]);
-var TERMINAL_STATE_SNAP = new Set(SESSION_TERMINAL_STATES);
-
-// ../../packages/core/dist/session-terminal-frames.js
-var MAX_B64_CHARS = 4 * 1024 * 1024;
-var B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-var B64_INV = (() => {
-  const m = new Int16Array(128).fill(-1);
-  for (let i = 0; i < B64_ALPHABET.length; i++)
-    m[B64_ALPHABET.charCodeAt(i)] = i;
-  return m;
-})();
-
-// ../../packages/core/dist/endpoint-virtual.js
-var import_jetstream10 = __toESM(require_mod4(), 1);
-var td = new TextDecoder();
-
-// ../../packages/core/dist/signing-key-rotation.js
-var RENEW_AT_FRACTION = 1 / 3;
-var OVERLAP_MS = 10 * 60 * 1e3;
 
 // ../../node_modules/.pnpm/@nats-io+jwt@0.0.10-5/node_modules/@nats-io/jwt/esm/jwt.js
 var Types;
@@ -26243,7 +26124,145 @@ var Algorithms;
 })(Algorithms || (Algorithms = {}));
 
 // ../../packages/core/dist/identity.js
+var import_nkeys = __toESM(require_mod2(), 1);
+
+// ../../packages/core/dist/endpoint-service.js
+var SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,64}";
+var SOURCE_CHAIN_ELEMENT = new RegExp(`^(root|handle\\.${SOURCE_CHAIN_ID}\\.${SOURCE_CHAIN_ID}|session\\.${SOURCE_CHAIN_ID})$`);
+
+// ../../packages/core/dist/endpoint-signing.js
 var import_nkeys2 = __toESM(require_mod2(), 1);
+var ANCHOR_ROLES = Object.freeze([
+  "handles",
+  "traits",
+  "receipts",
+  "resume",
+  "sessions",
+  "authz-slots",
+  "obligations",
+  "payments"
+]);
+
+// ../../packages/core/dist/endpoint-checkpoint.js
+var import_jetstream3 = __toESM(require_mod4(), 1);
+var import_transport_node4 = __toESM(require_transport_node(), 1);
+var MAX_SCHEDULE_MS = Date.UTC(9999, 11, 31, 23, 59, 59, 999);
+
+// ../../packages/core/dist/endpoint-action.js
+var import_jetstream5 = __toESM(require_mod4(), 1);
+var import_transport_node6 = __toESM(require_transport_node(), 1);
+
+// ../../packages/core/dist/endpoint-receipt.js
+var import_jetstream4 = __toESM(require_mod4(), 1);
+var import_transport_node5 = __toESM(require_transport_node(), 1);
+
+// ../../packages/core/dist/endpoint-action.js
+var BRANDED_CONTEXTS = /* @__PURE__ */ new WeakSet();
+function assertCtx(ctx) {
+  if (!BRANDED_CONTEXTS.has(ctx))
+    throw new EpEnvelopeError("failed-precondition", `the action context was not constructed by actionContext(); a hand-assembled resource bundle never authorizes - the space bond is constructed, not asserted (SPEC 13.4)`);
+}
+var GUARD_CLEARANCES = /* @__PURE__ */ new WeakMap();
+var clearanceMintClaimed = false;
+function claimGuardClearanceMint() {
+  if (clearanceMintClaimed)
+    throw new EpEnvelopeError("permission-denied", "the guard-clearance mint is already claimed by THE gate; a guarded goal's edge into running opens only through it (SPEC 13.6)");
+  clearanceMintClaimed = true;
+  return (ctx, goalId) => {
+    assertCtx(ctx);
+    const clearance = Object.freeze({ goalId: assertIdToken(goalId, "goalId") });
+    GUARD_CLEARANCES.set(clearance, ctx);
+    return clearance;
+  };
+}
+var GOAL_STATES = Object.freeze(["accepted", "running", "waiting", "cancelling", "succeeded", "failed", "cancelled", "expired", "uncertain"]);
+var GOAL_TERMINAL_STATES = Object.freeze(["succeeded", "failed", "cancelled", "expired", "uncertain"]);
+
+// ../../packages/core/dist/endpoint-guard.js
+var mintGuardClearance = claimGuardClearanceMint();
+
+// ../../packages/core/dist/endpoint-traits.js
+var TRAIT_SELECTORS = Object.freeze(["cluster", "command", "attribute", "event"]);
+
+// ../../packages/core/dist/endpoint-publish-denial.js
+var import_transport_node7 = __toESM(require_transport_node(), 1);
+
+// ../../packages/core/dist/endpoint-invoke.js
+var import_transport_node9 = __toESM(require_transport_node(), 1);
+var import_jetstream7 = __toESM(require_mod4(), 1);
+
+// ../../packages/core/dist/endpoint-contract-store.js
+var import_jetstream6 = __toESM(require_mod4(), 1);
+var import_transport_node8 = __toESM(require_transport_node(), 1);
+var CONTRACT_ARTIFACT_MAX_BYTES = 256 * 1024;
+var CONTRACT_CLOSURE_MAX_BYTES = 1024 * 1024;
+
+// ../../packages/core/dist/endpoint-invoke.js
+var dec5 = new TextDecoder();
+var enc4 = new TextEncoder();
+
+// ../../packages/core/dist/endpoint-work.js
+var import_jetstream8 = __toESM(require_mod4(), 1);
+var import_transport_node10 = __toESM(require_transport_node(), 1);
+
+// ../../packages/core/dist/run-journal.js
+var import_jetstream9 = __toESM(require_mod4(), 1);
+var import_transport_node11 = __toESM(require_transport_node(), 1);
+
+// ../../packages/core/dist/endpoint-goaleff.js
+var COMMON_FIELDS = ["v", "executor", "attemptId", "ts", "phase"];
+var PHASE_FIELDS = {
+  claimed: COMMON_FIELDS,
+  launching: [...COMMON_FIELDS, "addr"],
+  launched: [...COMMON_FIELDS, "addr"],
+  settled: [...COMMON_FIELDS, "addr"]
+  // `addr` optional here, and ONLY here
+};
+
+// ../../packages/core/dist/endpoint-epname.js
+var BASE = ["v", "ts", "state", "claimant"];
+var STATE_FIELDS = {
+  claimed: BASE,
+  launching: [...BASE, "lifecycleUid", "launchAttemptId", "executor"],
+  live: [...BASE, "lifecycleUid", "runtimeOwner"],
+  preserved: [...BASE, "lifecycleUid", "runtimeOwner"],
+  relaunching: [...BASE, "lifecycleUid", "launchAttemptId", "executor"],
+  draining: [...BASE, "lifecycleUid", "runtimeOwner", "enteredAt"],
+  released: BASE
+};
+
+// ../../packages/core/dist/endpoint-serve-kv.js
+var enc5 = new TextEncoder();
+var dec6 = new TextDecoder();
+
+// ../../packages/core/dist/endpoint-handle.js
+var HANDLE_MAX_LIVE_TTL_MS = 24 * 60 * 60 * 1e3;
+var HANDLE_MAX_STURDY_TTL_MS = 30 * 24 * 60 * 60 * 1e3;
+var HANDLE_MAX_BYTES = 64 * 1024;
+
+// ../../packages/core/dist/endpoint-session.js
+var SESSION_GRANT_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+var SESSION_GRANT_MAX_BYTES = 16 * 1024;
+var SESSION_TERMINAL_STATES = Object.freeze(["closed", "expired", "superseded", "retired"]);
+var TERMINAL_STATE_SNAP = new Set(SESSION_TERMINAL_STATES);
+
+// ../../packages/core/dist/session-terminal-frames.js
+var MAX_B64_CHARS = 4 * 1024 * 1024;
+var B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+var B64_INV = (() => {
+  const m = new Int16Array(128).fill(-1);
+  for (let i = 0; i < B64_ALPHABET.length; i++)
+    m[B64_ALPHABET.charCodeAt(i)] = i;
+  return m;
+})();
+
+// ../../packages/core/dist/endpoint-virtual.js
+var import_jetstream10 = __toESM(require_mod4(), 1);
+var td = new TextDecoder();
+
+// ../../packages/core/dist/signing-key-rotation.js
+var RENEW_AT_FRACTION = 1 / 3;
+var OVERLAP_MS = 10 * 60 * 1e3;
 
 // ../../packages/core/dist/streams.js
 var import_jetstream15 = __toESM(require_mod4(), 1);
@@ -26329,9 +26348,9 @@ var CREDENTIAL_LIFETIMES = {
   "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
-  supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source (D5 slice 5 class 1)" },
-  delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop (D5 slice 5 class 2)" },
-  "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top (D5 slice 5 class 2)" },
+  supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source" },
+  delivery: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "server-side Plane-3 daemon; seed-less - the manager re-signs .cotal/delivery.creds for the SAME nkey, requests delivery-admin reloadCreds for explicit adoption, and the endpoint source re-read is only a backstop" },
+  "membership-rw": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "membership feed writer; seed-less - the manager re-signs the membership-rw.creds store key for the SAME nkey, the feed adopts it on a 75% preflight-proven renewal timer (its active self-heal), and delivery-admin reloadCreds is the explicit adoption on top" },
   provisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "setup/spawn provisioning window only" },
   deprovisioner: { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "target-pinned teardown window only" },
   "retirement-requester": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one despawn's retirement request window; request+reply only" },
@@ -26349,10 +26368,10 @@ var CREDENTIAL_LIFETIMES = {
   "control-caller-admin": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "stop/attach admin control call" },
   deployer: { class: "one-shot", note: "manifest deploy spans planning/launch/ledger; needs near-expiry guard or remint before default exp" },
   "endpoint-serve": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "per-instance endpoint serve credential (SPEC 13.9); the managing authority re-mints on renewal and on takeover (new epoch), and the 13.1 barrier revokes the superseded one" },
-  "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action (P2 item 2); the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential (Q2)" },
-  "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred (P2 item 6): rails-only for ONE \xA713.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
-  "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred (P2 item 6): rails-only for ONE \xA713.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
-  "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER (P2 item 6): the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
+  "goal-writer": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "self-mediated goal-writer for spawn-as-action; the manager re-mints for the SAME nkey on renewal, disjoint from the serve credential" },
+  "session-caller": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session console/CLI caller cred: rails-only for ONE \xA713.6 session; TTL-BOUND to the session (the face mints with expiresAt = the session exp; the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred" },
+  "session-serving": { class: "one-shot", defaultTtlSeconds: 24 * 60 * 60, note: "per-session SERVING cred: rails-only for ONE \xA713.6 session, the mirror of session-caller with the directions swapped; minted at redemption and TTL-BOUND to the session (the 24h default is the SESSION_GRANT_MAX_TTL ceiling, never a standing lifetime); NEVER renewed - a new session mints a new cred, and the session's terminal revokes this one by name" },
+  "session-ledger": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's session LEDGER: the dedicated sessions-bucket `session.<id>` rows and NOTHING else - no session rail of any shape. Standing because SPEC 13.6 makes it the durable revocation authority that must survive the serving endpoint; the manager re-mints for the SAME nkey on the half-TTL loop (the goal-writer precedent)" },
   "run-driver": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "one workflow run's driver, per takeover attempt (SPEC 14.6): the hosting manager mints it when it takes the run over and re-mints for the SAME nkey on renewal; a new takeover mints a new one" },
   "run-mediator": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "trusted workflow host operations, bound to one run and attempt; kept on the hosting process's connection" },
   "run-operator": { class: "one-shot", defaultTtlSeconds: 60, note: "one served run-status / run-ps / run-answer call (SPEC 14.3): the hosting manager mints it per call on its own connection, never the serve rails; 60s bounds a copied cred to a minute" },
@@ -26360,10 +26379,10 @@ var CREDENTIAL_LIFETIMES = {
   "run-admitter": { class: "one-shot", defaultTtlSeconds: 60, note: "one hosted run's admission record create, or its revocation marker (SPEC 14.8); 60s bounds a copied cred to a minute" },
   "transfer-writer": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one carried resume per CLI call: one object's chunk and meta subjects in one instance's transfer bucket" },
   "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
-  "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window (P2 item 3): a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
+  "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window: a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
-  "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred (D5 slice 4); same rotation-renewed posture as the observer" }
+  "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred; same rotation-renewed posture as the observer" }
 };
 for (const p of Object.values(CREDENTIAL_LIFETIMES))
   Object.freeze(p);

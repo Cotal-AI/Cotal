@@ -1,5 +1,43 @@
 # @cotal-ai/manager
 
+## 0.70.0
+
+### Minor Changes
+
+- c088c5c: The persisted identity records now share one reader and one first mint. The manager instance identity, the manager sibling identities, the auth plane instance identity and a participant manager's remote authority state each read through the same regular-file and nkey checks and publish a first mint by exclusive create through the new `claimIdentityRecord` and `identityOf`, adopting the winner when a concurrent start created the record first. Before, the manager start and the auth plane followed a symlinked record that retirement refused, and a participant manager published its first mint with a last-writer-wins rename, so concurrent first starts on one root each kept a different identity, and it accepted an empty nkey id or seed that the local loaders refused. A lost race now refuses with `identity-record-create-lost`. `saveManagerInstanceIdentity` and `saveAuthInstanceIdentity` are removed: nothing shipped overwrote a stored identity, and the exports let any caller bypass the exclusive create.
+- fd07b1e: `remoteManagerClient.remoteManagerAuthorityRequest` takes an operation's coordinates as one named object instead of trailing positional arguments, and `remoteManagerRegistrationProof(owner, registration, contractArtifacts?)` computes the registration proof from the manager's identity coordinates instead of a request built with a placeholder proof. The proof digest and the wire request are unchanged.
+
+### Patch Changes
+
+- 70191ff: The manager's refusal of a superseded incarnation's goal terminal no longer cites an internal plan label. The error, logged as `! goal terminal commit for <goalId> failed: ...`, now ends with `a superseded incarnation never commits a goal terminal (SPEC 13.6)`. Its code is still `expired`. The goal-writer comments in the manager name the mechanism they describe instead of the plan item.
+- 06dd61b: A spawn accepted by a participant manager whose host enrolls its agents now names the lifecycle UID the agent runs at. The manager used to reply the acceptance with its own provisional UID before the host picked the real one, so a caller that addressed the agent by its acceptance was refused `expired`. On that arm the acceptance now waits for the host's enrollment answer, and a host refusal refuses the spawn without binding a goal.
+- 1b11c4e: The auth plane's instance identity file and the remote manager's authority state file now take their names from `spaceKey`. They used to hex-encode the space themselves, so an empty space wrote `auth-instance..json` or `remote-manager..json`, and a space holding an unpaired surrogate shared a file with the space named `U+FFFD`: the second auth plane adopted the first one's identity, and the second remote manager was refused as malformed. Both names are now refused before an identity file is written. A valid space keeps the same file name, so nothing on disk moves.
+- 9e97536: When a managed seat exits during launch or a supervised restart fails, the manager's `last output` line is now read off the seat's rendered terminal. It used to strip the escape sequences from the screen backlog and drop every non-ASCII character, so a TUI footer drawn with cursor moves between its words, such as Claude Code's `Enter to confirm · Esc to cancel`, was reported as `EntertoconfirmEsctocancel`. Words keep their spacing and separators such as `·` survive.
+- 729bc56: A resume whose exact host session cannot be rebound now frees the seat it started only once the seat's exit is proved. It used to stop the seat best effort and free it at once, and a resumed seat keeps its retained credentials, so freeing it ran no deprovision: when the runtime's stop failed, the seat kept running while the manager no longer listed, stopped or reaped it. A seat whose stop cannot be proved now stays managed, the resume's error says so, and the manager's own stop then stops it or reports that it could not prove the exit.
+- cce8dad: `@cotal-ai/core` exports `singleDocumentClosure(document)`, which returns the §13.7 closure manifest `{ v: 1, root, members: [] }` of one self-contained document and the manifest's closure digest. It builds the manifest with `buildContractClosureManifest`, so every closure manifest core mints follows one rule. The auth and manager service contracts and `VOID_SCHEMA_DIGEST` now build their closures with it instead of each writing the manifest by hand, and the platform host example in `docs/embedding.md` uses it. Every digest they produce is unchanged.
+- Updated dependencies [392bfeb]
+- Updated dependencies [66df6c0]
+- Updated dependencies [0ec35c2]
+- Updated dependencies [015f805]
+- Updated dependencies [2cbfe9c]
+- Updated dependencies [1b11c4e]
+- Updated dependencies [c088c5c]
+- Updated dependencies [b413e2a]
+- Updated dependencies [7986785]
+- Updated dependencies [12bfc34]
+- Updated dependencies [4dcfa0b]
+- Updated dependencies [fd07b1e]
+- Updated dependencies [8dc360c]
+- Updated dependencies [d949bc8]
+- Updated dependencies [cce8dad]
+- Updated dependencies [c7e0c0a]
+- Updated dependencies [2639a13]
+- Updated dependencies [668f6b0]
+- Updated dependencies [15b7920]
+  - @cotal-ai/workspace@0.70.0
+  - @cotal-ai/core@0.70.0
+  - @cotal-ai/seat@0.70.0
+
 ## 0.69.0
 
 ### Minor Changes

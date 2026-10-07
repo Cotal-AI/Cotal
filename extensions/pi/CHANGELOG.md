@@ -1,5 +1,16 @@
 # @cotal-ai/pi
 
+## 0.70.0
+
+### Minor Changes
+
+- 76113ce: `AguiEmitterHolder` now takes its hooks as one named object after the emitter factory, `new AguiEmitterHolder(startEmitter, { onError, onRunClosed, waitLive, runMeta })`, typed by the exported `AguiEmitterHolderHooks`, where only `onError` is required. Before, the four hooks were positional, and a `runMeta` provider passed third was accepted as `onRunClosed`: it typechecked, ran after the run had already closed, and its metadata was dropped with no error. A caller no longer fills earlier slots with `undefined` to reach a later hook. The Claude Code, Codex, jcode, OpenCode and pi connectors pass their hooks by name, with no change in behavior.
+
+### Patch Changes
+
+- 95788eb: A seat whose AG-UI event plane stops for good now follows the space's policy on every connector. On a space that requires events the seat stops, where Pi, Claude Code and OpenCode used to keep it running without events. On any other space the seat keeps running and its log records `AG-UI emitter stopped`, where Jcode used to stop the seat and refuse further turns. Codex no longer rebuilds a stopped plane at its next turn boundary on any space, and it now waits for the mesh before starting its emitter, as the other connectors do. The rule is `eventPlaneStopped` in connector-core, which each connector passes its log sink and its stop hook.
+- 8dbfb8e: A pi seat now marks a run turn as shown once the provider takes the request that carries it, instead of after the whole Pi turn ends. A `cotal_yield` made during that turn used to be refused with "no turn is active — nothing to yield", and the run then recorded `done` where the seat had said `blocked` or `handoff`. On a transport that reports the provider response, the unshown turn was also injected again after every response, so the Pi turn never ended and the run turn ran out its deadline. A transport without that report shows the turn when Pi runs a tool from the answer, or at the clean end of the turn.
+
 ## 0.69.0
 
 ## 0.68.0

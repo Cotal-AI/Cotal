@@ -1,5 +1,43 @@
 # @cotal-ai/auth
 
+## 0.70.0
+
+### Minor Changes
+
+- 392bfeb: The user-auth service's instance identity no longer travels with a mesh's trust folder. It now lives in the root's own space segment, `.cotal/space.<space-hex>/auth-instance.json`, beside the manager's identity. It used to land in `.cotal/auth/space.<space-hex>/.cotal/auth/auth-instance.<space-hex>.json`, because the auth plane passed its user-auth state dir where the identity helpers expected a workspace root, so copying `.cotal/auth` to another root, as the docs describe for a mesh you did not start, copied it too and an auth service started there came up as the original instance. A record at the older place is moved on the first start and the instance is kept; both places holding a record is refused, and so is a symlink or other non-regular entry at the older place of the auth or manager identity, which the manager used to skip, minting a new identity. A hosted context started through `startAuthService` keeps its identity in its own `stateDir`, moved the same way from `<stateDir>/.cotal/auth/` to `<stateDir>/.cotal/space.<space-hex>/`. `openAuthAuthorityPlane` now takes a required `identityRoot`, the root whose space segment keeps that identity, and no longer derives it from `dir`.
+- b543926: `validateUserToken` no longer takes `maxTtlSec`. It caps a bearer's lifetime at the cap of the bearer's view, the same cap the issuer applies at mint: 900 seconds, or 300 for a `transfer-writer` bearer. Nothing in the repository passed the option, and a `NaN` value, such as `Number()` of an unset environment variable, turned the lifetime check off so a bearer of any lifetime was accepted. A caller that needs a shorter-lived bearer mints one.
+- fd07b1e: `remoteManagerClient.remoteManagerAuthorityRequest` takes an operation's coordinates as one named object instead of trailing positional arguments, and `remoteManagerRegistrationProof(owner, registration, contractArtifacts?)` computes the registration proof from the manager's identity coordinates instead of a request built with a placeholder proof. The proof digest and the wire request are unchanged.
+- 2639a13: `AuthProvider.userCredentials` no longer returns `managerInstanceId`. A `manager-caller` credential's instance is the signed `act.managerInstanceId` claim in its bearer, the one `userViewAuth` checks. The reference provider copied the exchange response's field beside it, and nothing compared the two, so a provider whose result named a different instance than its bearer satisfied the contract while the CLI used the bearer's. `userViewAuth` also decodes each minted bearer once, through one typed decoder, where the manager-caller check read a second untyped decode.
+
+### Patch Changes
+
+- 2cbfe9c: `@cotal-ai/core` exports `isUserNkey`, the shape rule for a user nkey public key, and every parser in core and `@cotal-ai/auth` that checks a user nkey calls it. `mintPublicUserJwt` now refuses a non-string `publicId`, such as a boxed `String`, as every other site already did. Decisions for string ids do not change.
+- b413e2a: `authorizeRemoteManagerRenewal` now takes its run observation as the exported `ObserveManagerRun`, built on core's new `HostedRunAttempt`, instead of an inline shape whose `state` was a plain `string`. `observeHostedRunAttempt` returns `HostedRunAttempt`, so its `state` is a `RunState`. A misspelled or unknown run state in an observation, or in a comparison against one, now fails the typecheck where it used to compile. Renewal accepts and refuses the same runs as before.
+- 4dcfa0b: The run admission and run attempt requests from a registered manager now refuse a `requestId` outside the 22-64 character idempotency token grammar and an `actor` that is not an owner token, as the other registered-manager requests already did. The manager-service authority request also refuses such an `actor`. Core exports `parseRemoteManagerEnvelope`, the one parser for the fields every registered-manager request carries, and the auth parsers call it in place of their own copies.
+- cce8dad: `@cotal-ai/core` exports `singleDocumentClosure(document)`, which returns the §13.7 closure manifest `{ v: 1, root, members: [] }` of one self-contained document and the manifest's closure digest. It builds the manifest with `buildContractClosureManifest`, so every closure manifest core mints follows one rule. The auth and manager service contracts and `VOID_SCHEMA_DIGEST` now build their closures with it instead of each writing the manifest by hand, and the platform host example in `docs/embedding.md` uses it. Every digest they produce is unchanged.
+- Updated dependencies [392bfeb]
+- Updated dependencies [66df6c0]
+- Updated dependencies [0ec35c2]
+- Updated dependencies [015f805]
+- Updated dependencies [2cbfe9c]
+- Updated dependencies [1b11c4e]
+- Updated dependencies [c088c5c]
+- Updated dependencies [b413e2a]
+- Updated dependencies [7986785]
+- Updated dependencies [12bfc34]
+- Updated dependencies [4dcfa0b]
+- Updated dependencies [fd07b1e]
+- Updated dependencies [8dc360c]
+- Updated dependencies [cce8dad]
+- Updated dependencies [c7e0c0a]
+- Updated dependencies [2639a13]
+- Updated dependencies [668f6b0]
+- Updated dependencies [83a6352]
+- Updated dependencies [15b7920]
+  - @cotal-ai/workspace@0.70.0
+  - @cotal-ai/core@0.70.0
+  - @cotal-ai/lang@0.70.0
+
 ## 0.69.0
 
 ### Minor Changes
