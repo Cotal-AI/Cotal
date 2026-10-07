@@ -941,6 +941,7 @@ console.log("6b. the trusted run-mediator profile: operations stay on the host")
         `$JS.API.STREAM.MSG.GET.KV_cotal_members_${S}`,
         `cotal.${S}.ep.one.*.describe.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.spawn.${cO}.${cA}.${cU}.*`,
+        `cotal.${S}.ep.one.${EP}.inspect.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.turn.owner.${cO}.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.cancel.${cO}.${cA}.${cU}.*`,
         `cotal.${S}.ep.one.${EP}.despawn.owner.${cO}.${cO}.${cA}.${cU}.*`,

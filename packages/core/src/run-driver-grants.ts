@@ -127,11 +127,12 @@ export function runMediatorGrants(space: string, args: RunDriverGrantArgs, connI
     `$KV.${membersBucket(space)}.>`,
     `$JS.API.STREAM.MSG.GET.KV_${membersBucket(space)}`,
     // The manager's lifecycle commands, as the run's own caller: describe (the resolve), spawn
-    // (untargeted creation), turn and despawn (owner mode, pinned to the caller's owner), and the
-    // reserved goal cancel that withdraws a turn the run cancelled (untargeted: it reaches only
-    // the caller's own goals).
+    // (untargeted creation), inspect (whether a seat whose presence lapsed is still running), turn
+    // and despawn (owner mode, pinned to the caller's owner), and the reserved goal cancel that
+    // withdraws a turn the run cancelled (untargeted: it reaches only the caller's own goals).
     epDescribeAllGrantRow(space, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "spawn" }, caller),
+    ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "inspect" }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "turn", target: { mode: "owner", tOwner: caller.owner } }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "cancel" }, caller),
     ...epRequestGrantRows(space, { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "despawn", target: { mode: "owner", tOwner: caller.owner } }, caller),

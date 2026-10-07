@@ -190,10 +190,15 @@ const DESPAWN_OUTPUT = {
   type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
   properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
+// A run asks the manager before it reads a lapsed seat as down, so the stand-in serves `inspect`:
+// it runs no seat process, so every seat whose presence lapsed is one it no longer holds.
+const INSPECT_INPUT = { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } } as const;
+const INSPECT_OUTPUT = { type: "object" } as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  inspect: { input: cc(INSPECT_INPUT), output: cc(INSPECT_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.turnmgr", revision: 1, attributes: [], events: [],
@@ -201,6 +206,7 @@ const DOCUMENT = {
     { name: "spawn", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED.spawn.input.closureDigest, outputDigest: COMPILED.spawn.output.closureDigest },
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
+    { name: "inspect", class: "ephemeral" as const, targeted: false, capability: "manager.read", inputDigest: COMPILED.inspect.input.closureDigest, outputDigest: COMPILED.inspect.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -212,7 +218,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -395,6 +401,9 @@ const defs: EpCommandDef[] = [
   { command: "despawn", contract: COMPILED.despawn, handler: (ctx: EpServeContext) => {
     const t = ctx.request.target as { owner: string; actor: string };
     return { name: `${t.owner}.${t.actor}`, stopped: true, graceful: ((ctx.request.args ?? {}) as { graceful?: unknown }).graceful !== false };
+  } },
+  { command: "inspect", contract: COMPILED.inspect, handler: (ctx: EpServeContext) => {
+    throw new EpEnvelopeError("not-found", `no agent "${String((ctx.request.args as { name?: unknown }).name)}"`);
   } },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
