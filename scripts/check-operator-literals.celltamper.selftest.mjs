@@ -1012,38 +1012,51 @@ try {
   // body through the same block-scoped helper every discriminator tamper uses, then remove its one
   // registration entry with the same exact-once refusal. The pinned total must reject the copy
   // before any remaining cell runs.
-  const removedCellBody = tamperCell(
-    tracked,
-    "missing-subject",
-    "  scanCell('missing-subject', 'broken', 'missing', 1, missingSubjectResult),",
-    "",
-  );
-  const emptyCellBlock = [
-    "// SELFTEST_CELL missing-subject START",
-    "",
-    "  // SELFTEST_CELL missing-subject END",
-  ].join("\n");
-  const cellBlockOccurrences = removedCellBody.split(emptyCellBlock).length - 1;
-  if (cellBlockOccurrences !== 1) {
-    throw new Error(
-      `cell missing-subject: empty block occurs ${cellBlockOccurrences} time(s), expected exactly 1`,
+  //
+  // A refusal here fails the check below and lets every case after it run. Thrown, it ended the
+  // run first: with `tamperCell` reduced to `return source;` the suite died on the empty-block
+  // count, so the mutation naming `the tamper lands inside the named cell block` graded WRONG-RED.
+  let missingCellSource;
+  let missingCellRefusal;
+  try {
+    const removedCellBody = tamperCell(
+      tracked,
+      "missing-subject",
+      "  scanCell('missing-subject', 'broken', 'missing', 1, missingSubjectResult),",
+      "",
     );
+    const emptyCellBlock = [
+      "// SELFTEST_CELL missing-subject START",
+      "",
+      "  // SELFTEST_CELL missing-subject END",
+    ].join("\n");
+    const cellBlockOccurrences = removedCellBody.split(emptyCellBlock).length - 1;
+    if (cellBlockOccurrences !== 1) {
+      throw new Error(
+        `cell missing-subject: empty block occurs ${cellBlockOccurrences} time(s), expected exactly 1`,
+      );
+    }
+    const removedCellBlock = removedCellBody.replace(`${emptyCellBlock}\n`, "");
+    const removedRegistration = "  ['missing-subject', 'scanner=broken missing=1/1'],\n";
+    const registrationOccurrences = removedCellBlock.split(removedRegistration).length - 1;
+    if (registrationOccurrences !== 1) {
+      throw new Error(
+        `cell missing-subject: registration tamper occurs ${registrationOccurrences} time(s), expected exactly 1`,
+      );
+    }
+    missingCellSource = removedCellBlock.replace(removedRegistration, "");
+    if (missingCellSource === removedCellBlock) {
+      throw new Error("cell missing-subject: registration tamper was a no-op");
+    }
+  } catch (error) {
+    missingCellRefusal = error.message;
   }
-  const removedCellBlock = removedCellBody.replace(`${emptyCellBlock}\n`, "");
-  const removedRegistration = "  ['missing-subject', 'scanner=broken missing=1/1'],\n";
-  const registrationOccurrences = removedCellBlock.split(removedRegistration).length - 1;
-  if (registrationOccurrences !== 1) {
-    throw new Error(
-      `cell missing-subject: registration tamper occurs ${registrationOccurrences} time(s), expected exactly 1`,
-    );
+  let missingCellRun = { exitCode: undefined, rows: [] };
+  if (missingCellRefusal === undefined) {
+    const missingCellPath = join(workdir, "tampered-missing-cell-registration.mjs");
+    writeFileSync(missingCellPath, missingCellSource);
+    missingCellRun = runSelftest(missingCellPath);
   }
-  const missingCellSource = removedCellBlock.replace(removedRegistration, "");
-  if (missingCellSource === removedCellBlock) {
-    throw new Error("cell missing-subject: registration tamper was a no-op");
-  }
-  const missingCellPath = join(workdir, "tampered-missing-cell-registration.mjs");
-  writeFileSync(missingCellPath, missingCellSource);
-  const missingCellRun = runSelftest(missingCellPath);
   const countMismatchRows = missingCellRun.rows
     .filter((row) => row.startsWith("SELFTEST_CELL_COUNT_ROW "))
     .map((row) => /\bexpected=(\d+) registered=(\d+) status=FAIL\b/.exec(row))
@@ -1055,13 +1068,15 @@ try {
   );
   check(
     "pinned cell total: removing one registration and its cell body reports both totals and exits nonzero before any cell runs",
-    missingCellRun.exitCode === 2 && countMismatchRows.length === 1
+    missingCellRefusal === undefined
+      && missingCellRun.exitCode === 2 && countMismatchRows.length === 1
       && baseSummary !== undefined
       && mismatchExpected === baseSummary.total
       && mismatchRegistered === baseSummary.total - 1
       && missingCellRun.rows.some((row) => row.includes("increment EXPECTED_SELFTEST_CELL_TOTAL deliberately"))
       && missingCellResultRows.length === 0,
-    `exit=${missingCellRun.exitCode}/2 expected=${mismatchExpected}/${baseSummary?.total} registered=${mismatchRegistered}/${baseSummary === undefined ? "undefined" : baseSummary.total - 1} mismatch_rows=${countMismatchRows.length}/1 result_rows=${missingCellResultRows.length}/0`,
+    missingCellRefusal
+      ?? `exit=${missingCellRun.exitCode}/2 expected=${mismatchExpected}/${baseSummary?.total} registered=${mismatchRegistered}/${baseSummary === undefined ? "undefined" : baseSummary.total - 1} mismatch_rows=${countMismatchRows.length}/1 result_rows=${missingCellResultRows.length}/0`,
   );
 
   // THE CENSUS, over CELLS. The denominator is every cell the scanner declares, not every factory.
