@@ -103,11 +103,14 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // web moved out to the @cotal-ai/web extension package (stage 4)
   // Stage 2a: spawn absorbs the detached mode — the full launch grammar (launchFlags) + --detach,
   // and gains --model/--cwd (parity) + --creds (control-caller, --detach only, guarded in run).
+  // `--expect-owner` / `--expect-lifecycle-uid` (2026-10, #2420): the owner and lifecycle UID a
+  // delegated child's COTAL_MANAGED_HANDOFF_FILE must carry; refused without that handoff.
   spawn: {
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
-      "events:boolean", "file:string:f", "live-only:boolean", "model:string", "name:string", "no-events:boolean",
+      "events:boolean", "expect-lifecycle-uid:string", "expect-owner:string", "file:string:f",
+      "live-only:boolean", "model:string", "name:string", "no-events:boolean",
       "on:string", "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
       "server:string", "share-tools:string", "space:string", "subscribe:string", "variant:string",
     ],
