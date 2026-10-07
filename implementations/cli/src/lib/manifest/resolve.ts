@@ -191,8 +191,9 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
 
 /** Reject inline credentials in the broker config: a `nats://user:pass@host` URL must use the
  *  auth creds/profile path, not embedded secrets (critic, round-6); `host` is a bind address, not
- *  a URL. Each server entry must parse as a URL (no silent fallback). A message names an entry by
- *  position and never repeats it: in the token form `nats://<token>@host` the user part is the secret. */
+ *  a URL. Each server entry and `idp` must parse as a URL (no silent fallback). A message never
+ *  repeats a value and names a server entry by position: in the token form `nats://<token>@host`
+ *  the user part is the secret. */
 function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
   if (broker.host?.includes("://"))
     add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
@@ -216,7 +217,7 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
     try {
       new URL(broker.idp);
     } catch {
-      add(`broker.idp "${broker.idp}" is not a valid URL (Better Auth: <origin>/api/auth)`, ["broker", "idp"]);
+      add(`broker.idp is not a valid URL (Better Auth: <origin>/api/auth)`, ["broker", "idp"]);
     }
   }
 }
