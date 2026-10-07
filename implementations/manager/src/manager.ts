@@ -5139,17 +5139,6 @@ export class Manager {
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
   private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
-    // `resume`, when present, must be a non-empty session id. An empty/whitespace value is a
-    // malformed request, not an implicit "spawn fresh" (no fallbacks). The CLI surfaces reject it,
-    // but a raw control message could otherwise slip an empty value through and silently start fresh.
-    if (args.resume !== undefined && !String(args.resume).trim())
-      return Promise.resolve({ ok: false, error: "resume: session id must not be empty" });
-    if (args.model !== undefined && !String(args.model).trim())
-      return Promise.resolve({ ok: false, error: "model: must not be empty" });
-    if (args.variant !== undefined && !String(args.variant).trim())
-      return Promise.resolve({ ok: false, error: "variant: must not be empty" });
-    if (args.defaultAgent !== undefined && !String(args.defaultAgent).trim())
-      return Promise.resolve({ ok: false, error: "defaultAgent: must not be empty" });
     // Opaque launch options, when present, must be a mapping — a raw control message could send a
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
@@ -5214,21 +5203,21 @@ export class Manager {
     return this.startAgent(
       {
         name: String(args.name ?? "").trim(),
-        agent: args.agent ? String(args.agent) : undefined,
-        defaultAgent: args.defaultAgent ? String(args.defaultAgent) : undefined,
-        role: args.role ? String(args.role) : undefined,
-        config: args.config ? String(args.config) : undefined,
-        identity: args.identity ? String(args.identity) : undefined,
-        model: args.model ? String(args.model) : undefined,
-        variant: args.variant ? String(args.variant) : undefined,
+        agent: args.agent as string | undefined,
+        defaultAgent: args.defaultAgent as string | undefined,
+        role: args.role as string | undefined,
+        config: args.config as string | undefined,
+        identity: args.identity as string | undefined,
+        model: args.model as string | undefined,
+        variant: args.variant as string | undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
-        resume: args.resume ? String(args.resume) : undefined,
-        resumeClaim: args.resumeClaim !== undefined ? String(args.resumeClaim) : undefined,
-        resumeAgent: args.resumeAgent !== undefined ? String(args.resumeAgent) : undefined,
+        resume: args.resume as string | undefined,
+        resumeClaim: args.resumeClaim as string | undefined,
+        resumeAgent: args.resumeAgent as string | undefined,
         events,
         eventsNotice,
-        cwd: args.cwd ? String(args.cwd) : undefined,
-        prompt: args.prompt ? String(args.prompt) : undefined,
+        cwd: args.cwd as string | undefined,
+        prompt: args.prompt as string | undefined,
         subscribe,
         allowSubscribe,
         allowPublish,
