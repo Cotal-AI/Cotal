@@ -5,12 +5,12 @@ built to be **agent-native** — the docs a protocol for agents ships should be
 readable by agents.
 
 The canonical Markdown stays in [`/docs`](../docs) and [`/SPEC.md`](../SPEC.md);
-this site renders it. `scripts/sync-docs.mjs` derives a frontmatter title from each
-file's first H1 and a description from its first paragraph of text after the banner
+this site renders it. `scripts/sync-docs.mjs` derives a frontmatter title from the H1
+each file opens with and a description from its first paragraph of text after the banner
 and any headings, and rewrites `*.md` cross-links to site routes, then writes the
-result into `src/content/docs/` (git-ignored). A page with no such paragraph, or whose
-long paragraph opens with a character too long to shorten, fails the sync. Edit the
-source files, not the generated copies.
+result into `src/content/docs/` (git-ignored). A page that does not open with an H1, a
+page with no such paragraph, or one whose long paragraph opens with a character too long
+to shorten, fails the sync. Edit the source files, not the generated copies.
 
 ## Develop
 
