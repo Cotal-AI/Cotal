@@ -28,7 +28,6 @@ export class DeliveryTransportHealth {
     if (connected) {
       this.connected = true;
       if (this.expired) return; // a stale JWT can reconnect briefly before the broker closes it again
-      this.expired = false;
       this.disconnectedAt = 0;
       this.clear();
       return;
