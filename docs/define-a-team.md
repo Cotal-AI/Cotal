@@ -165,6 +165,10 @@ agents:
 | `cwd` | no | The agent's working directory, resolved against the manager's workspace root. It must exist |
 | `share-tools` | no | The declared MCP servers to share, as a list. See [the config file](config.md#the-config-file) |
 
+Any other key, in an entry or beside `agents:`, is refused by name before the manager starts. A
+misspelling such as `share_tools` or `cdw` would otherwise boot the agent with the default it was
+meant to override.
+
 ---
 
 See **[manifest.md](manifest.md)** for the complete field reference and the resolution rules,
