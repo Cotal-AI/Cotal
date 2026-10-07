@@ -224,11 +224,7 @@ export async function liveKvEntries(
         }
       } finally {
         opts?.signal?.removeEventListener("abort", onAbort);
-        if (typeof (iter as { close?: () => Promise<unknown> }).close === "function") {
-          await (iter as { close: () => Promise<unknown> }).close().catch(() => {});
-        } else {
-          iter.stop();
-        }
+        await iter.close();
       }
     }
     complete = expected === 0 || sawTerminal;

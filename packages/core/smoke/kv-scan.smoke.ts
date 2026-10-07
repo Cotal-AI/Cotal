@@ -164,7 +164,7 @@ try {
     Object.defineProperty(victim, "js", {
       value: { ...rjs, consumers: { ...rjs.consumers, getPushConsumer: async (...a: unknown[]) => {
         const oc = await rjs.consumers.getPushConsumer.apply(rjs.consumers, a);
-        const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown>>).bind(oc);
+        const realConsume = (oc.consume as () => Promise<AsyncIterable<unknown> & { close: () => Promise<unknown> }>).bind(oc);
         // Real consumer, real bind-time num_pending; the ONLY thing altered is that the iterator
         // stops early and cleanly, exactly as the client does when the connection drops.
         return Object.assign(Object.create(oc as object), {
@@ -174,8 +174,8 @@ try {
               let n = 0;
               for await (const m of inner) { if (n++ >= cut) return; yield m; }
             })();
-            // The helper stops the iterator in its finally, so the stand-in must carry `stop` too.
-            return Object.assign(gen, { stop: () => (inner as { stop?: () => void }).stop?.() });
+            // The helper closes the iterator in its finally, so the stand-in must carry `close` too.
+            return Object.assign(gen, { close: () => inner.close() });
           },
         });
       } } },
