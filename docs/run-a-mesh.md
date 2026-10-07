@@ -209,7 +209,10 @@ the `staticReconciliation` state, the last sweep counts, and each failed alias w
 phase and literal disposition. `cotal status --components` reports the state and per-alias failure
 details. A failed exact terminal is retried in the same process after 1, 5,
 and 30 seconds. Each attempt re-reads the durable slot and re-enters the same deterministic terminal
-operation; the delays only schedule work and never release the lifecycle fence.
+operation; the delays only schedule work and never release the lifecycle fence. The terminal's
+cleanup removes the lifecycle's credential file and its broker durables and read-ACL row as separate
+steps. A file that cannot be removed does not leave the broker footprint behind, and its failure
+keeps the alias held for the next attempt.
 
 On shutdown, the manager fences new reconciliation work and waits for an exact terminal that already
 started. The current serial sweep stops before its next alias, and startup cannot publish the manager
