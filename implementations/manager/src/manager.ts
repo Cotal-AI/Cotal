@@ -336,12 +336,17 @@ function caughtEnvelope(e: unknown): EpEnvelopeError | undefined {
 /** The failed terminal a post-accept fallback commits for `error` and `source`'s optional details.
  *  `commitGoalResult` refuses a payload that is not interchangeable JSON, and this terminal must commit
  *  whatever failed, so a lone surrogate in the text becomes U+FFFD and details it cannot read or carry
- *  (a Proxy's throwing getter, an accessor, a cycle) are dropped. */
+ *  (a Proxy's throwing getter, an accessor, a cycle) are dropped. A Proxy can answer the check and the
+ *  serializer differently, so the detached copy is checked again before it commits. */
 function failedTerminal(error: string, source: { details?: unknown } | undefined): { error: string; details?: EpEnvelopeError["details"] } {
   const text = error.replace(/\p{Cs}/gu, "\uFFFD");
   try {
     const details = source?.details;
-    if (details) return { error: text, details: JSON.parse(canonicalJson(details)) };
+    if (details) {
+      const copy = JSON.parse(canonicalJson(details));
+      canonicalJson(copy);
+      return { error: text, details: copy };
+    }
   } catch { /* unreadable or not interchangeable */ }
   return { error: text };
 }
