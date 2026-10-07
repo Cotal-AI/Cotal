@@ -357,6 +357,35 @@ with such a name in `envAllow` gets the same error.
 Remove those names from `spawn.env`. Give each seat its role, model and channels with `--role`,
 `--model` and `--subscribe`, or in its persona's `role:`, `model:` and `subscribe:`.
 
+## Role addresses in 0.71.0
+
+A role must be one `[A-Za-z0-9_-]` token. Before 0.71.0 any other spelling was rewritten into one:
+` probe ` reached the `probe` queue and `pro.be` reached `pro_be`, while the message kept the
+spelling sent. An anycast to `*` was accepted and stored where no holder reads it.
+
+### What stops working
+
+An agent whose role is outside the token set no longer starts, however it is launched:
+`cotal join --role`, `cotal spawn --role`, an agent file's `role:`, `COTAL_ROLE` and an embedded
+endpoint's `card.role` are all refused before the agent joins.
+
+A send to such a role, or to `*`, through `cotal send ask`, `/anycast` or `cotal_anycast` is refused,
+and nothing is stored.
+
+`routeToken` is no longer exported from `@cotal-ai/core`. A role routes as spelled, so code that
+used it to name a role's queue uses the role itself, and `assertValidRole` checks one.
+
+### What migrates on its own
+
+Every task queue. A `svc_<role>` durable was always named from the rewritten token, so its pending
+requests and its holders carry over.
+
+### Before the upgrade
+
+Rename each role outside the token set to the token it already routed to: remove the surrounding
+spaces and replace every other character outside the set with `_`. Rename it where the holder is
+launched and in every script or prompt that sends to it.
+
 ## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

@@ -116,6 +116,7 @@ import {
 } from "./channels.js";
 import {
   anycastSubject,
+  assertValidRole,
   CHANNEL_DEFAULTS_KEY,
   chatStream,
   chatHistDurable,
@@ -754,8 +755,10 @@ export class CotalEndpoint extends EventEmitter {
     this.space = opts.space;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
-    // point every join/spawn path flows through.
+    // point every join/spawn path flows through. A role is an address too, refused here before
+    // presence can advertise it.
     assertValidName(opts.card.name);
+    if (opts.card.role !== undefined) assertValidRole(opts.card.role);
     // Auth mode is EITHER static creds (dev/no-login) OR a user bearer (login → callout) — never both.
     if (opts.bearer) {
       if (opts.creds || opts.token || opts.user || opts.pass)
@@ -2250,6 +2253,8 @@ export class CotalEndpoint extends EventEmitter {
     opts?: { parts?: Part[]; replyTo?: string; contextId?: string },
   ): Promise<{ msg: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
     if (!this.js) throw new Error(this.notLiveMsg());
+    // The subject builder admits `*` for allow rules; a publish needs one concrete role.
+    assertValidRole(service);
     const msg: CotalMessage = {
       id: randomUUID(),
       ts: Date.now(),
