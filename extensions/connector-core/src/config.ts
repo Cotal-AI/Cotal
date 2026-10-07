@@ -140,6 +140,11 @@ function splitList(v: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** A boolean `COTAL_*` flag with a value outside its spellings. Its own type because the message is
+ *  only the variable and the operator's value, so a host that hides unclassified startup errors can
+ *  still show it. */
+export class EnvFlagError extends Error {}
+
 /** One boolean `COTAL_*` flag: `1`/`true`/`yes`/`on` or `0`/`false`/`no`/`off` in any case, and
  *  `undefined` when unset or blank so the caller keeps its own default. Any other value throws,
  *  because reading it as off starts the session with the feature quietly disabled. */
@@ -148,7 +153,7 @@ export function envFlag(env: NodeJS.ProcessEnv, name: string): boolean | undefin
   if (!value) return undefined;
   if (/^(1|true|yes|on)$/i.test(value)) return true;
   if (/^(0|false|no|off)$/i.test(value)) return false;
-  throw new Error(`COTAL config: ${name} must be 1/true/yes/on or 0/false/no/off, got "${env[name]}"`);
+  throw new EnvFlagError(`COTAL config: ${name} must be 1/true/yes/on or 0/false/no/off, got "${env[name]}"`);
 }
 
 /**
