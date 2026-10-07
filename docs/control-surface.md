@@ -273,6 +273,13 @@ use the same bound. A pinned call is never re-issued. An agent's own manager
 tools, such as `cotal_spawn` and `cotal_despawn`, re-describe and re-issue with the same bound,
 including the goal-result read that follows a spawn to its outcome.
 
+An unpinned targeted call, such as `cotal_despawn` or a hosted run's turn relay, can also reach a
+manager that does not host its target, because each manager resolves targets against the agents
+it runs. That manager refuses with `expired` and `not-executed` and says it holds no mapping for
+the target, and the same re-issue repairs it within the same bound. An agent that no manager hosts
+still ends in that refusal once the re-issues run out. A pinned call gets the refusal of the
+instance it named.
+
 A manager whose boot inventory marked every declared connector unavailable does not subscribe
 `spawn` or `launch` on the class `one` rail. Those commands stay on scatter and on this
 instance's `inst` rail, so a sibling that can launch them can take an unpinned spawn, and a

@@ -223,6 +223,23 @@ export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
 }
 
 /**
+ * `details[].kind` for a targeted request refused because the instance that received it holds no
+ * mapping for the target (§13.3). A resolver that knows only the targets its own instance hosts, as
+ * a manager's does, cannot tell a target a sibling hosts from one retired everywhere, so it says the
+ * one thing it knows. The code is `expired`, as for any missing mapping, and the refusal carries
+ * `not-executed`: a caller that reached the instance through the class queue may re-resolve and
+ * re-issue, and one that addressed the instance has its answer. The marker carries no payload, because the target is the request's own
+ * and the refusing instance is the reply subject's.
+ */
+export const EP_TARGET_UNMAPPED = "ai.cotal.ep.target-unmapped";
+
+/** True iff an `EpError` is a {@link EP_TARGET_UNMAPPED} refusal that states `not-executed`. An
+ *  absent outcome reads as `unknown` (§13.3), so the marker alone licenses no re-issue. */
+export function replyTargetUnmapped(e: EpError | undefined): boolean {
+  return e?.outcome === "not-executed" && (e.details ?? []).some((d) => d.kind === EP_TARGET_UNMAPPED);
+}
+
+/**
  * `details[].kind` for a refusal raised because a lifecycle barrier already holds the actor
  * (or the manager instance) being spawned. The manager already knows the blocked op, the
  * head/gate state, the `opId`, and often the remedy; without this marker those facts die at

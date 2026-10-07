@@ -20,7 +20,7 @@ import { randomBytes } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom, replyRefusedBeforeEffect } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   parseGoalResultFact,
@@ -460,8 +460,11 @@ export async function invokeCommand(
  * independent trip through the same class queue, so in a multi-instance space another member
  * routinely receives it and refuses before dispatching. That refusal states the command did not
  * run ({@link replyRefusedBeforeEffect}), so re-resolving and re-issuing is a first attempt and is
- * safe for any command, mutations included. The re-issue repeats until the describe and the invoke
- * agree or {@link BIND_SPLIT_REISSUES} runs out, and then the last refusal surfaces unchanged.
+ * safe for any command, mutations included. A targeted call that reaches a member holding no
+ * mapping for its target ({@link replyTargetUnmapped}) is re-issued the same way, because with an
+ * instance-local resolver only the member hosting the target can serve it. The re-issue repeats
+ * until a member serves the call or {@link BIND_SPLIT_REISSUES} runs out, and then the last refusal
+ * surfaces unchanged, or the last no-mapping refusal when there was one.
  *
  * `reresolve` defaults to a fresh class resolve as the handle's caller; a caller that memoizes its
  * handle passes one that drops the memo first, so later calls do not start from the refused bind.
@@ -482,14 +485,19 @@ export async function invokeRepairingSplit(
     resolveService(nc, space, service.endpoint, service.caller, { deadlineMs: opts.deadlineMs ?? 10_000, ...(opts.signal ? { signal: opts.signal } : {}) }),
 ): Promise<EpAttributedReply> {
   let handle = service;
+  // A member that looked the target up and found no mapping says more about it than a bind refusal,
+  // which says nothing, so a call that runs out of re-issues surfaces the latest such refusal.
+  let unmapped: EpAttributedReply | undefined;
   for (let reissues = 0; ; reissues += 1) {
     const r = await invokeCommand(nc, space, handle, command, args, opts);
-    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
-    if (handle.pinnedInstanceId !== undefined || reissues === BIND_SPLIT_REISSUES) return r;
+    if (replyTargetUnmapped(r.reply.error)) unmapped = r;
+    else if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;
+    if (handle.pinnedInstanceId !== undefined) return r;
+    if (reissues === BIND_SPLIT_REISSUES) return unmapped ?? r;
     try {
       handle = await reresolve();
     } catch {
-      return r;
+      return unmapped ?? r;
     }
   }
 }
