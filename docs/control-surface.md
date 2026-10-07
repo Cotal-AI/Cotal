@@ -221,6 +221,15 @@ terminal is recorded; it does not prove the goal is running or permit another su
 existing trusted goal-writer's leader-served EPF read is space-wide at the broker; the handler
 confines it to this endpoint and caller triple.
 
+The manager's reserved `cancel` command accepts `{goalId, mode?}` and returns `{goalId, state}`.
+It is served for a turn the manager relays. The goal is the authenticated caller's own, so a caller
+withdraws only a turn it submitted. The turn ends `cancelled`, its seat is not shown it again, and a
+later yield of it is answered with that terminal. A goal that already ended is refused
+`failed-precondition` with its cached outcome attached, and a goal this manager does not relay is
+refused without being changed. So is a second cancel that arrives while a first is still ending the
+turn; a first that fails leaves the turn pending unless something ended it meanwhile. A workflow
+run sends it for the turn, ask attempt or escalation of a branch it cancelled.
+
 A followed mutation requires a manager whose attributed describe includes `goal-result`. Update
 the manager, issuer and client together before using that recovery path. Reloading an issuer alone
 cannot change an already-running participant manager. Recovery re-resolves the accepting instance's

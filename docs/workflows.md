@@ -488,6 +488,17 @@ or cancelled turn is never a reply, so an unanswered wait rides its own mediated
 `null`, and a handle the run never spawned or turned refuses loudly, since only this run's turns
 are observable. A turn the run itself ended without an accepted yield (its deadline, a
 cancellation, a refused handoff) is never a reply, whatever the seat yields to the relay later.
+A cancelled branch also withdraws what it relayed to a seat before its cancellation completes: its
+turn, its ask attempt or its escalation ends `cancelled` through the manager's reserved `cancel`
+(SPEC §13.6), so the seat is not shown it after the branch's scope settles and the next turn to
+that seat does not wait behind it. Only the manager that accepted the relay holds it, so in a
+space with more than one manager the run sends the cancel again while another manager refuses it,
+until the accepting one answers. A cancel the accepting manager refuses is sent again until it
+lands or the relay's deadline passes, so the branch's cancellation does not complete while the
+seat can still be shown the relay. The run reads that deadline from the relay's goal and retries
+a failed read, since the relay may still be served until the deadline is known. A goal record
+that can never yield a deadline, such as one that is not JSON, fails the branch's step at once,
+and so does a refusal that lasts past the deadline.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):
 the handle carries the id, and the run enforces the one rule the language states about it: two
 agents never share a worktree concurrently. The validator rejects the literal case up front
@@ -517,7 +528,7 @@ A turn handoff across worktrees is the L4004 described above. Recovery keeps the
 reseeds its roster, holders and handoff memos from its own journal, and the driver re-issues any
 recorded-but-undischarged cancellation at adoption, before the engine performs a new step, so a
 loser a crash left alive does not keep its seat or its tree while the resumed run works on. The
-same sweep withdraws a cancelled branch's undelivered notices: a notice waits on the run for its
+same sweep withdraws a cancelled branch's relays and undelivered notices: a notice waits on the run for its
 addressee's next turn, so a decision the run cancelled would otherwise arrive at an agent with
 nothing to distinguish it from one that stood.
 

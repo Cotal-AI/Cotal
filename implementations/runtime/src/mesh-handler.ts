@@ -56,6 +56,8 @@ import {
   replyRefusedBeforeEffect,
   readGoalResult,
   readGoalStatus,
+  readGoalSpec,
+  readGoalIndex,
   resolveService,
   listRunNotices,
   listRunMigrations,
@@ -609,6 +611,10 @@ export class MeshHandler {
     for (const e of owed) {
       if (e.requestId === undefined) continue;
       await this.endPause(e);
+      // A relay to a seat rides its step's pause token (a turn's goal, an ask's attempt, an
+      // escalation), and a decision the run withdrew must not reach the seat afterwards.
+      if (e.kind === "turn" || e.kind === "ask" || e.kind === "checkpoint")
+        for (const token of pauseTokens(e)) await this.withdrawRelay(token);
       if (e.kind === "spawn") {
         await this.dischargeSpawn(e);
         continue;
@@ -633,8 +639,8 @@ export class MeshHandler {
   /**
    * End the pauses a step armed: claim every token {@link pauseTokens} says it owns and, for a
    * `wait`, close its consumer. A cancelled loser's discharge calls it, and so does a hold before
-   * its first bind (spec/cotal-lang.md §7.8), which claims the held step's open attempt. An `ask`'s
-   * relay goal is left as the discharge leaves it.
+   * its first bind (spec/cotal-lang.md §7.8), which claims the held step's open attempt. The relay
+   * an `ask` attempt rode is the discharge's to withdraw, not this.
    */
   async endPause(e: JournalEntry): Promise<void> {
     if (e.requestId === undefined) return;
@@ -752,7 +758,7 @@ export class MeshHandler {
       if (!unrun && code !== "not-found" && code !== "expired")
         throw new Error(`the spawn's agent could not be despawned: ${reply.reply.error?.message ?? "refused"}`);
       if (!unrun && (allocator === undefined || reply.responder.instanceId === allocator)) return;
-      if (attempt === DESPAWN_ROUTE_ATTEMPTS)
+      if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the spawn goal "${goalId}" was allocated by manager instance ${allocator ?? "(unrecorded)"}, but none of ${attempt + 1} despawns was answered by it, and neither another manager's miss nor a refusal that ran nothing means it is gone; the discharge stays open to retry`);
       this.managerService = undefined;
     }
@@ -895,7 +901,7 @@ export class MeshHandler {
 
     await this.arm(ref, deadline);
 
-    const settled = await this.settle(ref, ctx.signal);
+    const settled = await this.settle(ref, ctx.signal, true);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
     // The settle NAMES its answer, and the record is read under that name rather than by looking
     // for "the answer to this token": two resolvers can have filed answers and only one of them
@@ -1612,6 +1618,7 @@ export class MeshHandler {
         for (;;) {
         if (ctx.signal.cancelled) {
           await this.cancelTimer(primary);
+          await this.withdrawCancelledRelay(goalId);
           throw new Cancelled(ctx.signal.reason ?? "cancelled");
         }
         const fact = await readGoalResult(actx, ref);
@@ -1791,7 +1798,7 @@ export class MeshHandler {
       await this.relayAsk(seat, ctx, token, { attempt, attempts, deadlineAt, ...(refused !== undefined ? { refused } : {}) });
       const ref: CheckpointRef = { endpoint: this.binding.endpoint, token };
       await this.arm(ref, deadlineAt);
-      const settled = await this.settle(ref, ctx.signal);
+      const settled = await this.settle(ref, ctx.signal, true);
       if (settled.settle === "expired") {
         // The deadline is the ask's whole budget of time: passing it with no conforming record
         // is the same outcome exhausted attempts name (L4006), never a turn's deadline (L4003).
@@ -1946,6 +1953,67 @@ export class MeshHandler {
       if (err?.code === "expired")
         throw new EffectError("L4002", kind, `${kind}(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
       throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
+    }
+  }
+
+  /**
+   * Withdraw the relay a cancelled step sent to a seat, through the manager's reserved `cancel`
+   * (SPEC 13.6 item 4), so the seat is not shown it again. A token no relay rode has no goal and
+   * nothing to withdraw, and a relay that already ended is the outcome either way: the manager
+   * refuses it with the cached terminal, so a repeated withdrawal is a no-op. Any other refusal
+   * throws, which leaves a discharge open to retry.
+   *
+   * Only the manager that accepted the relay holds it, and the class rail reaches any member, so a
+   * refusal is final only from the accepter its index entry names. One from another member is
+   * re-issued on the class rail, as the spawn discharge's despawn is.
+   */
+  private async withdrawRelay(goalId: string): Promise<void> {
+    const ref: GoalRef = { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId };
+    const actx = await this.actionCtx();
+    if ((await readGoalStatus(actx, ref)) === undefined) return;
+    const accepter = (await readGoalIndex(actx, ref))?.iid;
+    for (let attempt = 0; ; attempt += 1) {
+      const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
+      if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
+      if (accepter === undefined || reply.responder.instanceId === accepter)
+        throw new Error(`the relay "${goalId}" could not be withdrawn from its seat: ${reply.reply.error?.message ?? "refused with no message"}`);
+      if (attempt === MANAGER_ROUTE_ATTEMPTS)
+        throw new Error(`the relay "${goalId}" was accepted by manager instance ${accepter}, but none of ${attempt + 1} cancels was answered by it; the discharge stays open to retry`);
+      this.managerService = undefined;
+    }
+  }
+
+  /**
+   * Withdraw a cancelled step's relay before the cancellation leaves the step, so the scope it
+   * settles shows the seat nothing the run withdrew. A withdrawal that fails is tried again rather
+   * than left to the discharge, which runs only when the run ends: until then the relay would stay
+   * first on the seat and hold back the run's next turn to it. The retries stop when the relay's
+   * deadline passes, because the manager no longer serves it then, and a failure that outlasts it
+   * is the step's error.
+   *
+   * That deadline is the one the accepting manager recorded on the relay's goal, not the step's.
+   * An `ask` attempt or an escalation sends its relay a duration the manager counts from its own
+   * acceptance, so the relay outlives the pause by the submit's trip (#3044), and retries that
+   * stopped at the pause's deadline would let the scope settle while the seat can still pull it.
+   * No deadline is known until that goal is read, and the relay may be served until then, so a
+   * failed read is tried again as well. A goal record that can never yield a deadline is thrown.
+   */
+  private async withdrawCancelledRelay(goalId: string): Promise<void> {
+    let deadlineAt: number | undefined;
+    for (;;) {
+      try {
+        if (deadlineAt === undefined) {
+          const spec = (await readGoalSpec(await this.actionCtx(), { endpoint: this.binding.endpoint, caller: this.binding.caller, goalId }))?.value;
+          if (spec === undefined) return;
+          if (spec.readinessDeadlineMs === undefined)
+            throw new EpEnvelopeError("internal", `the relay "${goalId}" was accepted with no deadline on its goal; a garbled acceptance never authorizes (SPEC 13.6)`);
+          deadlineAt = spec.acceptedAt + spec.readinessDeadlineMs;
+        }
+        return await this.withdrawRelay(goalId);
+      } catch (e) {
+        if (deadlineAt === undefined ? e instanceof EpEnvelopeError : this.now() >= deadlineAt) throw e;
+      }
+      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
     }
   }
 
@@ -2384,12 +2452,18 @@ export class MeshHandler {
    * optimization, it is the difference between resuming and waiting forever for an event that is
    * already in the past.
    */
-  private async settle(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
+  private async settle(ref: CheckpointRef, signal?: CancelSignal, relayed = false): Promise<CheckpointSettleFact> {
     // #1508, and the load-bearing half: this is where a `sleep` spends its whole duration, so this
     // is where a starved host was reporting its own scheduling as the effect's failure. The pause
     // and its timer are durable facts on the plane; re-reading them observes the same world, and a
     // sleep whose deadline passed while this process was blocked settles `ok`, late.
-    return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+    try {
+      return await servedDespiteStarvation(() => this.settleOnce(ref, signal), this.lag, `waiting on the pause ${ref.token}`, this.onStarved);
+    } catch (e) {
+      // An `ask` attempt or an escalation may have relayed this token to a seat.
+      if (e instanceof Cancelled && relayed) await this.withdrawCancelledRelay(ref.token);
+      throw e;
+    }
   }
 
   private async settleOnce(ref: CheckpointRef, signal?: CancelSignal): Promise<CheckpointSettleFact> {
@@ -2592,12 +2666,13 @@ const GOAL_POLL_MS = 2_000;
 const SPAWN_ACCEPT_DEADLINE_MS = 30_000;
 /** Bound on the manager's synchronous `turn` ACCEPT reply (the relay registration, not the yield). */
 const TURN_ACCEPT_DEADLINE_MS = 30_000;
-/** How many class-rail despawns a discharge sends before it stops waiting for the allocating
- *  manager to answer. Each is one {@link MeshHandler.invokeManager} call, whose describe and invoke
- *  both land on the allocator with probability 1/m^2 per trip in a space of m managers, so one call
- *  reaches it with probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All
- *  65 then miss with probability about 2^-65 and 9e-9. */
-const DESPAWN_ROUTE_ATTEMPTS = 64;
+/** How many class-rail calls a despawn or a relay withdrawal sends before it stops waiting for the
+ *  one manager that holds its goal (the spawn's allocator, the relay's accepter) to answer. Each is
+ *  one {@link MeshHandler.invokeManager} call, whose describe and invoke both land on that manager
+ *  with probability 1/m^2 per trip in a space of m managers, so one call reaches it with
+ *  probability (1 - ((m-1)/m)^17) / m: about 1/2 for m = 2 and 0.25 for m = 4. All 65 then miss
+ *  with probability about 2^-65 and 9e-9. */
+const MANAGER_ROUTE_ATTEMPTS = 64;
 /** A step key's enclosing scope: the journal's own rendering (`entry.scope`), re-derived so the
  *  live path and the adoption rebuild key the handoff memos identically. */
 function scopeOf(key: Parameters<typeof stepKeyString>[0]): string {

@@ -523,6 +523,17 @@ const TURN_YIELD_OUTPUT_SCHEMA = {
     state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] },
   },
 } as const;
+/** `cancel` (SPEC 13.6 item 4): the reserved goal cancel, served for a turn this manager relays.
+ *  Untargeted, because it names a goal rather than a seat: the goal ref derives from the
+ *  authenticated caller, so a caller withdraws only a relay it submitted. It answers with the
+ *  terminal the goal reached, which is the yield's own output shape. */
+const CANCEL_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: {
+    goalId: { type: "string", minLength: 1 },
+    mode: { enum: ["graceful", "terminate"] },
+  },
+} as const;
 
 const MODELS_INPUT_SCHEMA = {
   type: "object", additionalProperties: false,
@@ -867,6 +878,7 @@ const ROWS: CommandRow[] = [
   { name: "turn", capability: "manager.lifecycle", input: TURN_INPUT_SCHEMA, output: TURN_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "turn" },
   { name: "turn-pending", capability: "manager.self", input: VOID_SCHEMA, output: TURN_PENDING_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnPending" },
   { name: "turn-yield", capability: "manager.self", input: TURN_YIELD_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "turnYield" },
+  { name: "cancel", capability: "manager.lifecycle", input: CANCEL_INPUT_SCHEMA, output: TURN_YIELD_OUTPUT_SCHEMA, targeted: false, handler: "cancel" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   // The workflow-run family (SPEC 14.3): untargeted, a run is not an agent. The writes ride the
   // `manager.run` class (minted by the `run` capability and the privileged instrument); the reads
@@ -1026,7 +1038,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  22 = `spawn` input's `shareTools` is the list of MCP server names rather than the
  *  `--share-tools` flag string. A changed input contract is a changed described surface even
- *  though the command name is unchanged. */
+ *  though the command name is unchanged.
+ *
+ *  23 = the reserved `cancel` (SPEC 13.6 item 4) is served for a relayed turn, so a run withdraws
+ *  a turn, an ask attempt or an escalation from a branch it cancelled. A new served command cannot
+ *  fold into 22. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1044,7 +1060,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 22,
+    revision: 23,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1111,6 +1127,7 @@ export interface ManagerServiceHandlers {
   turn(ctx: EpServeContext): unknown | Promise<unknown>;
   turnPending(ctx: EpServeContext): unknown | Promise<unknown>;
   turnYield(ctx: EpServeContext): unknown | Promise<unknown>;
+  cancel(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   runStart(ctx: EpServeContext): unknown | Promise<unknown>;
   runResume(ctx: EpServeContext): unknown | Promise<unknown>;
