@@ -860,6 +860,39 @@ interface PreparedResume {
 /** What the host returned for one managed-agent enrollment (#1972). */
 type ManagedEnrollment = Awaited<ReturnType<NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>>>;
 
+/** A user-mode spawn's provisioning options. Both arms take this one declaration because
+ *  {@link Manager.provisionUserAgent} forwards it to {@link Manager.enrollUserAgent} on the
+ *  hosted arm. */
+interface ProvisionUserAgentOpts {
+  spawner?: string;
+  specOwner?: string;
+  subscribe?: string[];
+  allowSubscribe: string[];
+  allowPublish?: string[];
+  role?: string;
+  capabilities?: string[];
+  label: string;
+  /** The incarnation's lifecycle UID: recorded on the ledger row (the callout mints the agent's
+   *  lifecycle-keyed grants from it) AND used for the provisioned durables/ACL row, so the
+   *  credential names and the broker footprint can never diverge. On the HOSTED enrollment arm
+   *  this is the participant's provisional uid only: the host picks the authoritative one (it
+   *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
+  lifecycleUid: string;
+  delegatedIntent?: StartAgentOpts["delegatedIntent"];
+  /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
+   *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
+  onEnrolled?: (enrolled: Pick<ProvisionedUserAgent, "owner" | "lifecycleUid" | "files">) => void;
+}
+
+/** A provisioned user-mode agent, from either arm. Only the hosted arm sets `enrolled`. */
+interface ProvisionedUserAgent {
+  owner: string;
+  lifecycleUid: string;
+  files: { actorToken: string; sentinelCreds: string; health: string };
+  launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
+  enrolled?: { material: ManagedEnrollment; actorToken: string };
+}
+
 interface ManagedAgent {
   name: string;
   role?: string;
@@ -3971,29 +4004,7 @@ export class Manager {
    *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
    *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
    *  rolled back. */
-  private async provisionUserAgent(
-    name: string,
-    opts: {
-      spawner?: string;
-      specOwner?: string;
-      subscribe?: string[];
-      allowSubscribe: string[];
-      allowPublish?: string[];
-      role?: string;
-      capabilities?: string[];
-      label: string;
-      /** The incarnation's lifecycle UID: recorded on the ledger row (the callout mints the agent's
-       *  lifecycle-keyed grants from it) AND used for the provisioned durables/ACL row, so the
-       *  credential names and the broker footprint can never diverge. On the HOSTED enrollment arm
-       *  this is the participant's provisional uid only: the host picks the authoritative one (it
-       *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
-      lifecycleUid: string;
-      delegatedIntent?: StartAgentOpts["delegatedIntent"];
-      /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
-       *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
-      onEnrolled?: (enrolled: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } }) => void;
-    },
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] }; enrolled?: { material: ManagedEnrollment; actorToken: string } } | { error: string }> {
+  private async provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | { error: string }> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.
       const execute = this.remoteAuthority!.executeDelegatedUserIntent!;
@@ -4125,20 +4136,9 @@ export class Manager {
    */
   private async enrollUserAgent(
     name: string,
-    opts: {
-      spawner?: string;
-      specOwner?: string;
-      subscribe?: string[];
-      allowSubscribe: string[];
-      allowPublish?: string[];
-      role?: string;
-      capabilities?: string[];
-      label: string;
-      lifecycleUid: string;
-      onEnrolled?: (enrolled: { owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string } }) => void;
-    },
+    opts: Omit<ProvisionUserAgentOpts, "delegatedIntent">,
     enroll: NonNullable<NonNullable<ManagerOptions["remoteAuthority"]>["enrollManagedAgent"]>,
-  ): Promise<{ owner: string; lifecycleUid: string; files: { actorToken: string; sentinelCreds: string; health: string }; launch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] }; enrolled?: { material: ManagedEnrollment; actorToken: string } } | { error: string }> {
+  ): Promise<ProvisionedUserAgent | { error: string }> {
     let provider;
     try {
       provider = resolveAuthProvider();
