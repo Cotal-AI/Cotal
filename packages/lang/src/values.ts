@@ -9,6 +9,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { RuntimeFault } from "./errors.js";
 import type { ScopeFrame } from "./keys.js";
 import { scopePathString, scopeTraits } from "./keys.js";
 
@@ -60,6 +61,56 @@ export function born<T>(value: T, depth: number): T {
 export function birthDepth(value: object): number {
   const d = (value as Record<symbol, unknown>)[BIRTH];
   return typeof d === "number" ? d : 0;
+}
+
+/** What a write check reads of a frame: its depth, and the scope path that raised it there. */
+export interface WritingFrame {
+  readonly depth: number;
+  readonly keys: { readonly path: readonly ScopeFrame[] };
+}
+
+/**
+ * May this frame write into this container? Two refusals, and they are the whole of the value
+ * half of freeze-on-share (design D4, §3.4 rule 4), held once so the two engines cannot drift:
+ *
+ * - a FROZEN value crossed an effect boundary, and what crossed is what was recorded (L2031);
+ * - a value born OUTSIDE this frame's scope and written inside it is L2032's defect reached
+ *   through a value instead of a binding, and just as silent on resume.
+ *
+ * `binding` is the binding a compiled cell holds, so the engine refuses that write in the walker's
+ * binding words rather than as a value.
+ */
+export function assertWritable(target: object, frame: WritingFrame, binding?: string): void {
+  if (Object.isFrozen(target)) {
+    throw new RuntimeFault(
+      "L2031",
+      "this value crossed an effect boundary and is frozen: what crossed is what the journal recorded, so it cannot change afterwards. Build a new value instead: `{ ...record, field: value }` or `[...list, item]`.",
+    );
+  }
+  if (birthDepth(target) < frame.depth) throw crossedWrite(frame, binding);
+}
+
+/**
+ * L2032's run-time refusal, naming `binding` when the write is to one.
+ *
+ * Why the write is unsafe depends on the scope, as it does for the static rule (`capturedWrite` in
+ * grammar.ts): branches whose results are assembled race to write, while a scope that settles one
+ * body's value is replayed without entering it. A refused write always crosses the scope that
+ * raised the frame to its depth, so that scope's reason is the one that applies.
+ */
+export function crossedWrite(frame: WritingFrame, binding?: string): RuntimeFault {
+  const { kind } = frame.keys.path[frame.depth - 1];
+  const what = binding === undefined ? "this value was built" : `${binding} is declared`;
+  if (scopeTraits(kind)?.assembles === true) {
+    return new RuntimeFault(
+      "L2032",
+      `${what} outside this \`${kind}\` branch and written inside it. Live, the branches write in completion order; on resume the recorded effects return instantly and they write in launch order, so the run reads a different value and takes a path it never recorded, with no divergence raised. Return the value from the branch and read it out of \`${kind}\`'s result, or use \`race\`, which yields its winner.`,
+    );
+  }
+  return new RuntimeFault(
+    "L2032",
+    `${what} outside this \`${kind}\` and written inside it. A settled \`${kind}\` is replayed without entering its body, so the write happens on the live run and never on resume, and the resumed run reads the old value and takes a path it never recorded, with no divergence raised. Return the value from the body and read it out of \`${kind}\`'s result.`,
+  );
 }
 
 /**

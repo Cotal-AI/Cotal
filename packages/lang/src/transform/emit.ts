@@ -468,17 +468,17 @@ class Emitter {
   // ---- bindings ---------------------------------------------------------------------------------
 
   /**
-   * Write a cell's field: `set(cell, "v", value)`, with the binding NAME where the write can land
-   * in the binding's dead zone.
+   * Assign a cell's field: `set(cell, "v", value, name)`.
    *
-   * The name is passed on every write to a hoisted (dead-zone) cell and on NO other, which is what
-   * the host reads as "refuse if the declaration has not run". The declaration's own initializing
-   * write is the one that ends the dead zone, so it never carries it, and passing it there would make
-   * a binding refuse its own initialisation.
+   * The host refuses on the NAME twice: L2004 when the write lands in a hoisted cell's dead zone,
+   * and L2032 in the walker's binding words when it comes from inside a scope the binding was
+   * declared outside. A cell that is one for the write rule alone is built holding its value, so its
+   * dead-zone check always passes. The declaration's own initializing write is the one that ends the
+   * dead zone, so it never comes through here, and passing the name there would make a binding
+   * refuse its own initialisation.
    */
-  private cellWrite(b: Binding | undefined, target: string, value: string): string {
-    const named = b !== undefined && b.deadZone;
-    return this.seam("set", `${target}, ${q("v")}, ${value}${named ? `, ${q((b as Binding).name)}` : ""}`);
+  private cellWrite(b: Binding, target: string, value: string): string {
+    return this.seam("set", `${target}, ${q("v")}, ${value}, ${q(b.name)}`);
   }
 
   /**

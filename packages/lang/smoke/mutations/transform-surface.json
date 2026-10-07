@@ -308,8 +308,8 @@
     {
       "name": "a dead-zone write is emitted without the binding's name, so the host has nothing to refuse on",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "    const named = b !== undefined && b.deadZone;",
-      "replace": "    const named = false;",
+      "find": "    return this.seam(\"set\", `${target}, ${q(\"v\")}, ${value}, ${q(b.name)}`);",
+      "replace": "    return this.seam(\"set\", `${target}, ${q(\"v\")}, ${value}`);",
       "expectRed": "and carries the binding name, which is what the host refuses on",
       "cell": "and carries the binding name, which is what the host refuses on",
       "completionMarker": "ok the resolver names a free identifier when one exists",
