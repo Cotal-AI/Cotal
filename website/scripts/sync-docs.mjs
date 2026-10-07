@@ -1,8 +1,8 @@
 // Sync the repo's canonical Markdown (/docs/*.md + /SPEC.md) into Starlight's
 // content collection. The repo files stay the single source of truth; this only
-// derives a frontmatter title from the first H1 and a description from the first
-// paragraph, and rewrites cross-links to Starlight routes. Generated files are
-// git-ignored (see .gitignore).
+// derives a frontmatter title from the H1 each page opens with and a description
+// from the first paragraph, and rewrites cross-links to Starlight routes. Generated
+// files are git-ignored (see .gitignore).
 //
 // The group map below IS the site's information architecture. It publishes the same
 // pages docs/README.md (the docs index) links, and the sync refuses when the two
@@ -157,9 +157,12 @@ function rewriteLinks(md, srcDir) {
   });
 }
 
-function firstH1(md) {
-  const m = md.match(/^\s*#\s+(.+?)\s*$/m);
-  return m ? m[1].trim() : null;
+// The title comes from the lexed first block, so a `#` comment in a code fence is never read as the
+// H1. Starlight renders the title itself, so the H1 is dropped from the body.
+function splitH1(md, rel) {
+  const [h1] = marked.lexer(md);
+  if (h1?.type !== 'heading' || h1.depth !== 1) throw new Error(`page does not open with an H1: ${rel}`);
+  return { title: h1.text, body: md.slice(h1.raw.length).replace(/^\n+/, '') };
 }
 
 // A hard line break renders as a br with no text, but it separates the words on either side.
@@ -239,12 +242,10 @@ for (const group of groups) {
     const src = join(repoRoot, rel);
     const name = basename(rel).replace(/\.md$/, '');
     const slug = slugFor(name);
-    let md = readFileSync(src, 'utf8');
-    const title = firstH1(md) ?? name;
-    const description = firstParagraph(md, rel);
-    md = md.replace(/^\s*#\s+.+\n+/, ''); // drop the H1 (Starlight renders title)
+    const { title, body } = splitH1(readFileSync(src, 'utf8'), rel);
+    const description = firstParagraph(body, rel);
     const srcDir = dirname(rel);
-    md = rewriteLinks(md, srcDir === '.' ? '' : srcDir);
+    let md = rewriteLinks(body, srcDir === '.' ? '' : srcDir);
     const fm = ['---', `title: ${yamlEscape(title)}`, `description: ${yamlEscape(description)}`, '---', ''].join('\n');
     let ext = 'md';
     let imports = '';
