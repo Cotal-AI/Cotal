@@ -1727,9 +1727,10 @@ export class Manager {
     // dir) - two managers in ONE space are two workspace roots.
     //
     // First mint on a fresh root is exclusive create (#1263). Two processes that both observe no
-    // file must not keep different in-memory ids: of N concurrent starts exactly one creates the
-    // file (`link` / O_EXCL) and the others adopt that identity before taking a lease, or refuse
-    // with identity-record-create-lost. Atomic rename is not enough, because the loser
+    // file must not keep different in-memory ids: of N concurrent starts exactly one publishes the
+    // file by hard link and the others adopt that identity before taking a lease, or refuse with
+    // identity-record-create-lost. A filesystem without hard links refuses the first start with
+    // atomic-publish-unsupported. Atomic rename is not enough, because the loser
     // of a replace would still serve under the id it minted.
     {
       if (this.remoteAuthority) {
