@@ -10,8 +10,11 @@
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { mintCreds, newIdentity, setupSpaceStreams, type SecretStore } from "@cotal-ai/core";
-import { startAuthService, type AuthServiceHandle } from "../src/index.js";
+import { epAuthBucket, mintCreds, newIdentity, setupSpaceStreams, type SecretStore } from "@cotal-ai/core";
+import { Kvm } from "@nats-io/kv";
+import { openAuthorityClient, authorityBarrierGrants } from "../src/authority-client.js";
+import { planeClaimRefusal, startAuthService, type AuthServiceHandle } from "../src/index.js";
+import { parsePlaneClaimRow, PLANE_CLAIM_KEY } from "../src/plane-claim.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
@@ -75,6 +78,25 @@ try {
   await second.close();
   await second.close();
   ok((await health(second)) === undefined, "B closes idempotently");
+  const retry = await startAuthService(inputs[0]);
+  handles.push(retry);
+  await fx.stopBroker();
+  let closeFailure: unknown;
+  try { await retry.close(); } catch (e) { closeFailure = e; }
+  ok(planeClaimRefusal(closeFailure) === "release-unreachable", "hosted close exposes a typed retryable release refusal");
+  ok((await retry.readiness()).state !== "ready", "failed close does not report hosted context ready");
+  await fx.restartBroker();
+  const verifier = await openAuthorityClient({ server: fx.servers, space: a.space, dataAccount: { pub: a.auth.account.pub, signingSeed: a.auth.account.signingSeed! }, label: `cotal:auth-barrier:${a.space}`, grants: (id) => authorityBarrierGrants(a.space, id), log: () => {} });
+  try {
+    const kv = await new Kvm(verifier.nc).open(epAuthBucket(a.space));
+    ok(parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "held", "hosted failed close leaves the row held");
+    // The independent verifier can connect before the existing barrier has reconnected.
+    await new Promise((r) => setTimeout(r, 1000));
+    let retryFailure: unknown;
+    try { await retry.close(); } catch (e) { retryFailure = e; }
+    ok(retryFailure === undefined && parsePlaneClaimRow((await kv.get(PLANE_CLAIM_KEY))!.value)?.state === "released",
+      "hosted close retries the release after the broker returns");
+  } finally { await verifier.close(); }
   console.log(`hosted auth lifetime: ${count} two-account assertions passed`);
   emitSentinel({ passed: count, failed: 0 });
 } finally {

@@ -85,7 +85,7 @@ import { ensureRootCredential } from "./root-credential.js";
 import { activateLifecycleAtUid, observeGate, openLifecycleRegistry, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
 import { openAuthLedgerScannerCandidate, type AuthLedgerScanner, type LedgerScannerCandidate } from "./ledger-scanner.js";
 import { openRecordsScannerCandidate, type RecordsScanner, type RecordsScannerCandidate } from "./records-scanner.js";
-import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
+import { acquirePlaneClaim, makeDeliveryAdminPlaneOracle, makeDeliveryAdminPrincipalOracle, scannerDeathCopy, planeClaimRefusal, type PlaneClaimHold, type PlaneLivenessOracle } from "./plane-claim.js";
 import { enumerateOperationIntents, resumeAgentTakeover, type EvictPrincipal } from "./credential-ledger.js";
 import { makeDeliveryAdminEvictor, makeDeliveryAdminHolderEvictor } from "./barrier-evict.js";
 import { resumeAgentRetirement, runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
@@ -492,6 +492,7 @@ export async function openAuthAuthorityPlane(opts: {
   let recordsScanner: RecordsScanner | undefined;
   let barrierReg;
   let closing = false;
+  let closeScanners: Promise<void> | undefined;
   // A failed open throws its own error, so a release failing on the way out is only logged: the
   // row stays held and the next open reclaims it like a crash.
   const releaseAfterFailedOpen = async () => hold?.release().catch((r: Error) => log(r.message));
@@ -1531,18 +1532,27 @@ export async function openAuthAuthorityPlane(opts: {
     close: async () => {
       // Clean-close order (SPEC 13.13): the rail stops answering first, then scan-capable
       // clients down, then `held → released` (never released while either scanner can still
-      // act), then the barrier that wrote it.
+      // act), then the barrier that wrote it. An unreachable release keeps the barrier alive
+      // for a later close retry; the scanner teardown is not run a second time.
       closing = true;
-      await authAdmin?.close();
-      await reader.close();
-      await recordsScanner.close();
-      await scanner.close();
+      await (closeScanners ??= (async () => {
+        await authAdmin?.close();
+        await reader.close();
+        await recordsScanner.close();
+        await scanner.close();
+      })());
+      let retryable = false;
       try {
         await hold.release();
+      } catch (e) {
+        retryable = planeClaimRefusal(e) === "release-unreachable";
+        throw e;
       } finally {
-        await barrier.close();
-        await remoteIssuer.close();
-        await writer.close();
+        if (!retryable) {
+          await barrier.close();
+          await remoteIssuer.close();
+          await writer.close();
+        }
       }
     },
   };
@@ -1809,8 +1819,8 @@ export interface PlatformControlInput {
  *  and the loopback listener are bound. A failed start releases what it acquired and throws. A
  *  mid-life fence or broker loss makes only this context `unavailable` and closes its resources.
  *  `close()` rejects when the context did not release its plane claim (SPEC 13.13): the row was
- *  no longer its own, or the release write failed. The next start reclaims a row left held through
- *  the liveness oracle. */
+ *  no longer its own, or the release write failed. A retryable release refusal keeps the barrier
+ *  open so `close()` can be retried after reconnection; the context stays draining. */
 export async function startAuthService(inputs: HostedContextInputs & {
   port?: number;
   /** Absent: the handle has no `publicUrl` and nothing serves the discovery bundle. */
@@ -2047,33 +2057,41 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     let state: HostedServiceState["state"] = "ready";
     let cause: string | undefined;
     let closePromise: Promise<void> | undefined;
+    let closeAdmission: Promise<void> | undefined;
+    let closeStarted = false;
     // The readiness reader: one standing connection pinned to the assigned instance, replaced when
     // the assignment names another instance.
     let reader: { instanceId: string; caller: EpCaller; client: Promise<AuthorityClient> } | undefined;
     const close = (): Promise<void> => {
       if (closePromise !== undefined) return closePromise;
+      closeStarted = true;
       if (state === "ready") state = "draining";
-      closePromise = (async () => {
-        await Promise.all([closeServer(http), closeServer(publicHttp)]);
-        await reader?.client.then((c) => c.close(), () => {});
+      const flight = (async () => {
+        await (closeAdmission ??= (async () => {
+          await Promise.all([closeServer(http), closeServer(publicHttp)]);
+          await reader?.client.then((c) => c.close(), () => {});
+        })());
         try {
           await plane.close();
         } finally {
           await callNc.close();
         }
       })();
-      return closePromise;
+      closePromise = flight;
+      void flight.catch((e: unknown) => {
+        if (planeClaimRefusal(e) === "release-unreachable" && closePromise === flight) closePromise = undefined;
+      });
+      return flight;
     };
     const ended: Promise<AuthContextEnd> = Promise.race([
       (callNc as { closed(): Promise<Error | void> }).closed().then((err): AuthContextEnd => ({ kind: "broker", ...(err ? { cause: err.message } : {}) })),
       plane.fenced.then((reason): AuthContextEnd => ({ kind: "fenced", cause: reason })),
     ]).then((end) => {
       // A clean broker close after this context's own close() is the orderly end, not a failure.
-      if (end.kind === "fenced" || end.cause !== undefined || closePromise === undefined) {
+      if (end.kind === "fenced" || end.cause !== undefined || !closeStarted) {
         state = "unavailable";
         cause = end.kind === "fenced" ? end.cause : `broker connection closed${end.cause !== undefined ? ` (${end.cause})` : ""}`;
-        // A later close() returns this same promise, so its failure still reaches the host.
-        close().catch(() => {});
+        if (!closeStarted) close().catch(() => {});
       }
       return end;
     });
@@ -2181,7 +2199,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       close,
     };
     const status = (): AuthContextStatus =>
-      state === "unavailable" ? { state, cause: cause ?? "auth-service context is unavailable" } : { state: closePromise === undefined ? "ready" : "draining" };
+      state === "unavailable" ? { state, cause: cause ?? "auth-service context is unavailable" } : { state: closeStarted ? "draining" : "ready" };
     return { handle: service, status, ended };
   } catch (e) {
     // A failed start releases only what THIS context acquired, in reverse order.
