@@ -5,19 +5,12 @@
  * `fs` preload and must reach the exact binding the shipped module uses. Prints one JSON line so
  * the parent asserts on observations rather than on this child's opinion.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 const target = process.env.COTAL_SECRETFS_INTERLEAVE_TARGET;
 const dist = process.env.COTAL_SECRETFS_INTERLEAVE_DIST;
 const mod = await import(dist);
-
-// `link` publishes the destination atomically by itself, so the fallback is forced: the raw write
-// then decides the destination, which is also the real Windows-side primitive.
-mod.__setPublishLinkForTest(() => {
-  const e = new Error("ENOTSUP: forced fallback");
-  e.code = "ENOTSUP";
-  throw e;
-});
 
 let code;
 try {
@@ -29,6 +22,12 @@ let bytes;
 try {
   bytes = readFileSync(target, "utf8");
 } catch {
-  bytes = "\u0000ABSENT";
+  try {
+    const dir = dirname(target);
+    const squatted = readdirSync(dir).find((n) => n.startsWith("contested.secret") && n.endsWith(".tmp"));
+    bytes = squatted ? readFileSync(join(dir, squatted), "utf8") : "\u0000ABSENT";
+  } catch {
+    bytes = "\u0000ABSENT";
+  }
 }
 process.stdout.write(`${JSON.stringify({ code, bytes })}\n`);

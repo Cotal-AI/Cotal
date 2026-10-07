@@ -184,14 +184,12 @@ function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void
 /**
  * Publish a completed temp inode at its final name. Separated from {@link writeSecretFileCreateOnly}
  * because the hard-link primitive is the one part of exclusive create whose AVAILABILITY is
- * platform-dependent: some Windows volumes and some network filesystems reject `link` outright, and
- * the caller must then fall back to `O_EXCL` on the destination. Naming that seam also makes the
- * fallback branch reachable from a suite, so the Windows-side primitive can carry a refusing case
- * instead of being the one accepting branch nothing grades.
+ * platform-dependent: some Windows volumes and some network filesystems reject `link` outright.
+ * Naming that seam makes the refusal reachable from a suite.
  */
 let publishLink: (from: string, to: string) => void = linkSync;
 
-/** Test-only: drive the `link`-unavailable fallback, which no POSIX CI host can reach naturally.
+/** Test-only: drive the `link`-unavailable refusal, which no POSIX CI host can reach naturally.
  *  Pass `undefined` to restore. Not exported from the package index. */
 export function __setPublishLinkForTest(fn: ((from: string, to: string) => void) | undefined): void {
   publishLink = fn ?? linkSync;
@@ -208,8 +206,9 @@ export function __setPublishLinkForTest(fn: ((from: string, to: string) => void)
  * the identity it minted in memory. Exclusive create is the mutual-exclusion primitive; atomic
  * replace is not.
  *
- * When the filesystem cannot hard-link (some Windows volumes), the fallback is `wx`
- * (`O_CREAT|O_EXCL`) on `path` itself, which is still exclusive create, not a replace.
+ * When the filesystem cannot hard-link (some Windows volumes or network filesystems), the function
+ * refuses rather than falling back to an in-place create, so a concurrent reader is never exposed
+ * to a partially written file.
  *
  * The TEMP write is exclusive for the same reason the publish is. A temp name is unique only by
  * probability (pid plus clock plus `Math.random`), and probability is not a concurrency argument:
@@ -229,10 +228,13 @@ export function writeSecretFileCreateOnly(path: string, data: string | Buffer): 
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
       if (code === "ENOTSUP" || code === "EPERM" || code === "ENOSYS") {
-        writeSecretFileCreateOnlyRaw(path, data);
-      } else {
-        throw e;
+        const err: NodeJS.ErrnoException = new Error(
+          `atomic-publish-unsupported: filesystem at '${path}' cannot publish a file atomically (${code})`,
+        );
+        err.code = code;
+        throw err;
       }
+      throw e;
     }
   } catch (e) {
     try {
