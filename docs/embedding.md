@@ -366,6 +366,10 @@ signing seed lands on the hosted disk. What remains is signer **isolation**. The
 in-process at the manager's uid. That issue needs an OS sandbox or remote signer; it is no longer a
 custody problem. The other knobs are `workspaceRoot` and the process-global `COTAL_HOME`.
 
+A store, runtime or extension the manager calls may reject with any value, including `null`. The
+manager logs or refuses with that value's `message`, or with the value itself as text when it has
+none, and keeps serving. A value it cannot read reports as `an unreadable rejection`.
+
 > Scope note: the **static-auth** operator paths (`cotal spawn`/`join`/`status`/`web`, via
 > `mesh-target` → `connect`/`preflight`) still read the signer from the local split records (sync
 > `loadSpaceAuth`). That is the single-machine composition, where the signer is on local disk by the
