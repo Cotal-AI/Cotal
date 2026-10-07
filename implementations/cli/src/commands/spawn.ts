@@ -1,4 +1,4 @@
-import { spawn as spawnProcess, execFile } from "node:child_process";
+import { spawn as spawnProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, statSync } from "node:fs";
 import { hostname } from "node:os";
@@ -29,7 +29,7 @@ import {
   registry,
   resolveAuthProvider,
   resolveReadAcl,
-  bearerCommandFailure,
+  runAgentBearer,
   CotalEndpoint,
   transferBucket,
   writeTransfer,
@@ -1624,13 +1624,5 @@ async function provisionUserForeground(
 export async function runBearerPreflight(bearerCmd: string[], env: NodeJS.ProcessEnv = process.env): Promise<void> {
   const childEnv = { ...env };
   scrubEnrollmentEnv(childEnv);
-  const timeout = 30_000;
-  await new Promise<void>((resolve, reject) => {
-    execFile(
-      bearerCmd[0],
-      bearerCmd.slice(1),
-      { timeout, maxBuffer: 64 * 1024, env: childEnv },
-      (err, _stdout, stderr) => err ? reject(bearerCommandFailure(err, stderr, timeout)) : resolve(),
-    );
-  });
+  await runAgentBearer(bearerCmd, { env: childEnv });
 }

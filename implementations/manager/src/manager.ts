@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
 import { credsAuthenticator } from "@nats-io/transport-node";
@@ -63,7 +62,7 @@ import {
   registry,
   resolveAuthProvider,
   resolveReadAcl,
-  bearerCommandFailure,
+  runAgentBearer,
   saveAgentFile,
   subjectMatches,
   AUTH_ENDPOINT,
@@ -326,19 +325,6 @@ async function attemptCleanup(failed: string[], what: string, step: () => unknow
   } catch (err) {
     failed.push(`${what}: ${rejectionText(err)}`);
   }
-}
-
-/** Run the agent's bearer argv once, pre-launch — the end-to-end auth preflight (state dir, daemon,
- *  ledger row, secret). Its stderr is the provider command's operator-exact sentence; surface it
- *  verbatim as the spawn refusal. */
-function execBearerPreflight(argv: string[]): Promise<void> {
-  const timeout = 30_000;
-  return new Promise((res, rej) => {
-    execFile(argv[0], argv.slice(1), { timeout, maxBuffer: 64 * 1024 }, (err, _stdout, stderr) => {
-      if (err) return rej(bearerCommandFailure(err, stderr, timeout));
-      res();
-    });
-  });
 }
 
 /** Reject `p` with `Error(msg)` if it hasn't settled within `ms`; clears the timer when `p` settles so it
@@ -4037,7 +4023,9 @@ export class Manager {
         "--token-file", tokenPath,
         "--health-file", healthPath,
       ];
-      await execBearerPreflight(bearerCmd);
+      // One bearer run before the launch is the end-to-end auth preflight (state dir, daemon, ledger
+      // row, secret); its failure sentence is the spawn refusal.
+      await runAgentBearer(bearerCmd);
       return { owner, lifecycleUid: opts.lifecycleUid, files, launch: { owner, actor: name, sentinelCredsPath: sentinelPath, bearerCmd } };
     } catch (e) {
       // Roll back everything this attempt materialized — a refused spawn must leave no standing
@@ -4154,7 +4142,7 @@ export class Manager {
         "--token-file", files.actorToken,
         "--health-file", files.health,
       ];
-      await execBearerPreflight(bearerCmd);
+      await runAgentBearer(bearerCmd);
       return {
         owner: material.owner,
         lifecycleUid: material.lifecycleUid,

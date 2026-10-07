@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { execFile } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { hostname } from "node:os";
 import {
@@ -20,7 +19,7 @@ import {
   unansweredRequest,
   renderLifecycleBlocked,
   controlReplyFrom,
-  bearerCommandFailure,
+  runAgentBearer,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -89,15 +88,10 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
 /** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
  *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
  *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-function execBearerCmd(argv: string[], signal?: AbortSignal, timeout = 30_000): Promise<string> {
-  return new Promise((resolve, reject) => {
-    execFile(argv[0], argv.slice(1), { timeout, signal, maxBuffer: 64 * 1024 }, (err, stdout, stderr) => {
-      if (err) return reject(bearerCommandFailure(err, stderr, timeout));
-      const bearer = stdout.trim();
-      if (!bearer) return reject(new Error(`bearer command printed nothing (${argv[0]})`));
-      resolve(bearer);
-    });
-  });
+async function execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
+  const bearer = await runAgentBearer(argv, { signal, timeoutMs });
+  if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
+  return bearer;
 }
 
 /** A message that has arrived for us, normalized for the agent to read. */
