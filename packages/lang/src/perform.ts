@@ -1411,7 +1411,12 @@ export async function performScope(
         // scope that carried it. A live scope wraps a branch's failure so it can record the
         // cancellation intent with it; a walk records nothing and cancels nobody, so the wrapper
         // would only hide a `RunDivergence` behind a generic scope fault.
-        throw unwrapScope(e).reason;
+        const reason = unwrapScope(e).reason;
+        // A VALUE THE PROGRAM THREW out of a scope recorded as failed is that failure walked again,
+        // so the record below delivers it, as it does for the live run and a resume: the raw value is
+        // one neither of them binds. An `Error` is never the program's own and keeps propagating,
+        // the walk's divergence and refusals among them.
+        if (reason instanceof Error || verdict.verdict !== "replay-failed") throw reason;
       }
       if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
       if (verdict.verdict === "replay-failed") throw scopeFailure(entry.error as EntryError);
