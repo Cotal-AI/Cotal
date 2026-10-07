@@ -10,8 +10,9 @@
  */
 import {
   compileContract,
-  contractDigest,
+  singleDocumentClosure,
   type CompiledContract,
+  type ContractClosureManifest,
   type EpAuthzMode,
   type EpCommandDef,
   type EpServeContext,
@@ -86,11 +87,6 @@ function pairFor(name: string): ContractPair {
   return pair;
 }
 
-/** §13.7 closure digest of a self-contained schema root, WITHOUT compiling. */
-function closureDigestOfSource(root: unknown): string {
-  return contractDigest({ v: 1, root: contractDigest(root), members: [] });
-}
-
 /** Per-command compiled contract pairs, exported for CALLERS (mirrors `MANAGER_CONTRACTS`). Lazy:
  *  a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
 export const AUTH_CONTRACTS: Readonly<Record<string, { input: CompiledContract; output: CompiledContract }>> =
@@ -108,10 +104,10 @@ export function authContractArtifactValues(): unknown[] {
   const seen = new Set<string>();
   for (const r of ROWS) {
     for (const source of [r.input, r.output]) {
-      const rootDigest = contractDigest(source);
-      if (seen.has(rootDigest)) continue;
-      seen.add(rootDigest);
-      values.push(source, { v: 1, root: rootDigest, members: [] });
+      const { manifest } = singleDocumentClosure(source);
+      if (seen.has(manifest.root)) continue;
+      seen.add(manifest.root);
+      values.push(source, manifest);
     }
   }
   return values;
@@ -145,8 +141,8 @@ export function authClusterDocument(): {
       targeted: r.targeted,
       ...(r.modes ? { modes: r.modes } : {}),
       capability: r.capability,
-      inputDigest: closureDigestOfSource(r.input),
-      outputDigest: closureDigestOfSource(r.output),
+      inputDigest: singleDocumentClosure(r.input).closureDigest,
+      outputDigest: singleDocumentClosure(r.output).closureDigest,
     })),
   };
 }
@@ -157,14 +153,12 @@ export function authClusterDocument(): {
 export function authClusterArtifacts(): {
   document: ReturnType<typeof authClusterDocument>;
   rootDigest: string;
-  manifest: { v: 1; root: string; members: string[] };
+  manifest: ContractClosureManifest;
   closureDigest: string;
 } {
   const document = authClusterDocument();
-  const rootDigest = contractDigest(document);
-  const manifest = { v: 1 as const, root: rootDigest, members: [] as string[] };
-  const closureDigest = contractDigest(manifest);
-  return { document, rootDigest, manifest, closureDigest };
+  const { manifest, closureDigest } = singleDocumentClosure(document);
+  return { document, rootDigest: manifest.root, manifest, closureDigest };
 }
 
 /** The handler the auth plane supplies to back `retire-lifecycle`. Receives the serve CONTEXT

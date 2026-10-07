@@ -11,6 +11,7 @@
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { assertSafePattern } from "./safe-pattern.js";
+import type { ContractClosureManifest } from "./endpoint-contract-store.js";
 
 /** Registration-time bounds (SPEC §13.7/§13.8). Fixed by the profile, not caller-tunable, and
  *  RUNTIME-frozen (the afa715b class): a post-import `maxDepth = MAX_SAFE_INTEGER` would remove
@@ -155,6 +156,17 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   inlineRefs: false,
 } as const);
 
+/** The §13.7 closure of one self-contained document: the manifest naming it with no members, and
+ *  that manifest's digest, the closure digest a registration or an `op` digest carries. It needs no
+ *  compile, and `compileContract` returns the same digest for a member-free schema. Producers build
+ *  it here so none drifts from {@link import("./endpoint-cluster.js").verifyClusterManifest}; it is
+ *  not beside that reader because `VOID_SCHEMA_DIGEST` is built from it at load and
+ *  `endpoint-cluster` already imports this module. */
+export function singleDocumentClosure(root: unknown): { manifest: ContractClosureManifest; closureDigest: string } {
+  const manifest: ContractClosureManifest = { v: 1, root: contractDigest(root), members: [] };
+  return { manifest, closureDigest: contractDigest(manifest) };
+}
+
 /** The canonical void schema (§13.7): the one artifact a side with no payload declares, so both
  *  `op` digests exist for every command. Validation against it means the payload is absent or
  *  `null`. */
@@ -163,7 +175,7 @@ export const VOID_SCHEMA = Object.freeze({ type: "null" } as const);
 export const VOID_SCHEMA_ARTIFACT_DIGEST = contractDigest(VOID_SCHEMA);
 /** The void schema's CLOSURE digest (the §13.7 manifest of a self-contained document) — the
  *  value `op.inputDigest`/`op.outputDigest` carry for a payload-free side. */
-export const VOID_SCHEMA_DIGEST = contractDigest({ v: 1, root: VOID_SCHEMA_ARTIFACT_DIGEST, members: [] });
+export const VOID_SCHEMA_DIGEST = singleDocumentClosure(VOID_SCHEMA).closureDigest;
 
 /** The digest-pinned contract-store reference scheme: `cotal:sha256:<hex>[#/json/pointer]`. */
 const STORE_REF = /^cotal:(sha256:[0-9a-f]{64})(#.*)?$/;

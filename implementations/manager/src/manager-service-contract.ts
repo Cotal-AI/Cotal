@@ -36,9 +36,10 @@
  */
 import {
   compileContract,
-  contractDigest,
+  singleDocumentClosure,
   VOID_SCHEMA,
   type CompiledContract,
+  type ContractClosureManifest,
   type EpAuthzMode,
   type EpCommandDef,
   type EpServeContext,
@@ -913,15 +914,6 @@ function pairFor(name: string): ContractPair {
   return pair;
 }
 
-/** The §13.7 closure digest of a self-contained schema root, WITHOUT compiling: the manifest
- *  `{ v: 1, root, members: [] }` over the source document's artifact digest — the identical value
- *  `compileContract` returns as `closureDigest` for a member-free closure (schema-profile's
- *  `assertClosureProfile` derives it the same way, from the source, before any Ajv work). The
- *  cluster document pins these, so `describe`-only readers never pay the compile. */
-function closureDigestOfSource(root: unknown): string {
-  return contractDigest({ v: 1, root: contractDigest(root), members: [] });
-}
-
 /** Per-command compiled contract pairs, exported for CALLERS (`epCall` pins the same digests the
  *  cluster document registers; the generic invoke CLI compiles these from the STORE instead).
  *  LAZY: a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
@@ -943,10 +935,10 @@ export function managerContractArtifactValues(): unknown[] {
   const seen = new Set<string>();
   for (const r of ROWS) {
     for (const source of [r.input, r.output]) {
-      const rootDigest = contractDigest(source);
-      if (seen.has(rootDigest)) continue;
-      seen.add(rootDigest);
-      values.push(source, { v: 1, root: rootDigest, members: [] });
+      const { manifest } = singleDocumentClosure(source);
+      if (seen.has(manifest.root)) continue;
+      seen.add(manifest.root);
+      values.push(source, manifest);
     }
   }
   return values;
@@ -1061,8 +1053,8 @@ export function managerClusterDocument(): {
       targeted: r.targeted,
       ...(r.modes ? { modes: r.modes } : {}),
       capability: r.capability,
-      inputDigest: closureDigestOfSource(r.input),
-      outputDigest: closureDigestOfSource(r.output),
+      inputDigest: singleDocumentClosure(r.input).closureDigest,
+      outputDigest: singleDocumentClosure(r.output).closureDigest,
     })),
   };
 }
@@ -1092,14 +1084,12 @@ export function managerAuthorityContractSource(): { document: ReturnType<typeof 
 export function managerClusterArtifacts(): {
   document: ReturnType<typeof managerClusterDocument>;
   rootDigest: string;
-  manifest: { v: 1; root: string; members: string[] };
+  manifest: ContractClosureManifest;
   closureDigest: string;
 } {
   const document = managerClusterDocument();
-  const rootDigest = contractDigest(document);
-  const manifest = { v: 1 as const, root: rootDigest, members: [] as string[] };
-  const closureDigest = contractDigest(manifest);
-  return { document, rootDigest, manifest, closureDigest };
+  const { manifest, closureDigest } = singleDocumentClosure(document);
+  return { document, rootDigest: manifest.root, manifest, closureDigest };
 }
 
 /** The handlers the manager supplies to back each served command. Each receives the serve
