@@ -27,8 +27,10 @@ import {
 } from "./scene";
 
 const JUNCTION: Pt = { x: 400, y: 410 };
-// the peers are the reviewer pool; carol, the free one, claims
-const CLAIMER = 1;
+// the peers are the reviewer pool; the first idle one claims, so the shared
+// presence decides who
+const CLAIMER = MODE_PEERS.findIndex((p) => p.status === "idle");
+if (CLAIMER < 0) throw new Error("anycast: no idle peer in MODE_PEERS to claim");
 
 // The role's bracket is measured from the first and last peer so it follows the
 // pool when the cast moves; below the last peer it leaves room for its name.
@@ -58,7 +60,7 @@ const T = {
   claimStart: 64,
   claimEnd: 90,
   flashEnd: 116,
-  carolBack: 148,
+  claimerBack: 148,
 };
 
 export const ANYCAST_DURATION = 162;
@@ -73,8 +75,8 @@ export const ModeAnycast: React.FC = () => {
   const breath = probing ? 0.5 + 0.5 * Math.sin(((frame - T.sendEnd) / 20) * Math.PI * 2) : 0;
 
   const flash = frame >= T.claimEnd ? Math.max(0, 1 - fade(frame, T.claimEnd, T.flashEnd)) : 0;
-  const carolStatus: "idle" | "working" =
-    frame >= T.claimEnd && frame < T.carolBack ? "working" : "idle";
+  const claimerStatus: "idle" | "working" =
+    frame >= T.claimEnd && frame < T.claimerBack ? "working" : "idle";
   const emit =
     frame >= T.sendStart ? Math.max(0, 1 - fade(frame, T.sendStart, T.sendStart + 20)) : 0;
   const dimOthers = probing || (t2 > 0 && t2 < 1) || flash > 0 ? 0.5 : 0;
@@ -84,7 +86,10 @@ export const ModeAnycast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH1, ...OUT_PATHS]} glow={[inGlow, 0, claimGlow, 0]} />
+      <Wires
+        paths={[PATH1, ...OUT_PATHS]}
+        glow={[inGlow, ...OUT_PATHS.map((_, i) => (i === CLAIMER ? claimGlow : 0))]}
+      />
 
       {/* the role: a quiet bracket around the pool, labelled on its top edge */}
       <div
@@ -115,7 +120,7 @@ export const ModeAnycast: React.FC = () => {
         <AgentNode
           key={p.name}
           {...p}
-          status={i === CLAIMER ? carolStatus : p.status}
+          status={i === CLAIMER ? claimerStatus : p.status}
           flash={i === CLAIMER ? flash : 0}
           dimmed={i !== CLAIMER ? dimOthers : 0}
           type={CARD_TYPE}
