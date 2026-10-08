@@ -138,9 +138,9 @@ when it starts, naming the variable.
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
 | `COTAL_LINK` | connector session | `cotal://token@host/space` join link: supplies server, auth, space | none |
 | `COTAL_AGENT_FILE` | connector session | Path to a persona file: supplies name, role, kind, channels | none |
-| `COTAL_SUBSCRIBE` | connector session | Active channel read set | agent file / link, else no channels |
-| `COTAL_ALLOW_SUBSCRIBE` | connector session | Read ACL (channels the agent *may* read) | = `COTAL_SUBSCRIBE` |
-| `COTAL_ALLOW_PUBLISH` | connector session | Post ACL (channels the agent *may* post to) | deny (empty) |
+| `COTAL_SUBSCRIBE` | connector session | Active channel read set. Set but empty means no channels | agent file / link, else no channels |
+| `COTAL_ALLOW_SUBSCRIBE` | connector session | Read ACL (channels the agent *may* read). Set but empty means the read set alone | agent file's, else = `COTAL_SUBSCRIBE` |
+| `COTAL_ALLOW_PUBLISH` | connector session | Post ACL (channels the agent *may* post to). Set but empty means deny | agent file's, else deny (empty) |
 | `COTAL_MODEL` | connector session | Model label (display metadata), set by the launcher | none |
 | `COTAL_KIND` | connector session | Endpoint kind | `agent` |
 | `COTAL_TLS` | connector session | Connect over TLS (`1`) | off |
