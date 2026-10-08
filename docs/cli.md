@@ -399,7 +399,10 @@ publish leaves the new record whole.
 
 The web dashboard claims `web.pid` with an exclusive create, so a second dashboard for the same mesh
 is refused, and writes its pin right after the claim. A stop that runs between the two reads a
-legacy record.
+legacy record. A refused claim calls the record stale, and points at `cotal down web`, only when the
+file is empty or its pid is proven gone. Content that is not a pid, or a pid whose liveness the
+kernel will not report, is refused as possibly fronting a running process, as `cotal down web`
+refuses it.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
 the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
