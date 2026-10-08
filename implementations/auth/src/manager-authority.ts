@@ -7,7 +7,6 @@ import {
   assertValidOwnerToken,
   managedRetirementOpId,
   parseRemoteManagerEnvelope,
-  parseRemoteManagerIdentities,
   remoteManagerActors,
   type RemoteManagerAuthorityMaterial,
   type RemoteManagerAuthorityRequest,
@@ -110,19 +109,9 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   const o = raw as Record<string, unknown>;
   const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run", "transferReader"]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "manager-service-authority") requestError('must carry { v: 1, kind: "manager-service-authority" }');
   if (o.operation !== "prepare" && o.operation !== "activate" && o.operation !== "renew" && o.operation !== "session" && o.operation !== "retire" && o.operation !== "renewStandingBundle" && o.operation !== "renewRunDriver" && o.operation !== "transferReader")
     requestError('operation must be "prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", or "transferReader"');
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
-    if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, "manager authority instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "manager authority lifecycleUid");
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) requestError("requestId must be a 22-64 character idempotency token");
-  if (o.operation === "prepare" && (o.registrationProof !== undefined || o.contractArtifacts !== undefined))
-    requestError("prepare must not carry registrationProof or contractArtifacts");
-  if (o.operation !== "prepare" && (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof)))
-    requestError(`${o.operation} requires a sha256 registrationProof`);
+  const envelope = parseRemoteManagerEnvelope(o, "manager-service-authority", "manager-service authority", o.operation !== "prepare");
   if (o.operation === "activate" && (!Array.isArray(o.contractArtifacts) || o.contractArtifacts.length === 0 || o.contractArtifacts.length > 64))
     requestError("activate requires 1-64 canonical manager contractArtifacts");
   if (o.operation !== "activate" && o.contractArtifacts !== undefined)
@@ -188,24 +177,17 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     if (!t || Object.keys(t).join(",") !== "id" || !isUserNkey(t.id))
       requestError("transferReader requires transferReader exactly { id } with a user nkey");
   } else if (o.transferReader !== undefined) requestError(`${o.operation} must not carry transferReader`);
-  const identities = parseRemoteManagerIdentities(o.identities, requestError);
   return {
     v: 1,
     kind: "manager-service-authority",
     operation: o.operation,
-    space: o.space as string,
-    actor: o.actor as string,
-    instanceId: o.instanceId as string,
-    managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string,
-    ...(typeof o.registrationProof === "string" ? { registrationProof: o.registrationProof } : {}),
+    ...envelope,
     ...(renewal ? { accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number } : {}),
     ...(run ? { run } : {}),
     ...(o.session && typeof o.session === "object" ? { session: o.session as RemoteManagerAuthorityRequest["session"] } : {}),
     ...(retirement ? { retirement } : {}),
     ...(o.operation === "transferReader" ? { transferReader: { id: (o.transferReader as { id: string }).id } } : {}),
     ...(Array.isArray(o.contractArtifacts) ? { contractArtifacts: o.contractArtifacts } : {}),
-    identities,
   };
 }
 
