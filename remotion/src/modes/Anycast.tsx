@@ -12,6 +12,7 @@ import {
   CARD_TYPE,
   Dot,
   fade,
+  fanWire,
   GOLD,
   INK,
   Labels,
@@ -32,15 +33,10 @@ const SEG1: [Pt, Pt] = [
   { x: MODE_ALICE.at.x + 52, y: MODE_ALICE.at.y },
   { x: JUNCTION.x - 10, y: JUNCTION.y },
 ];
-// same fan geometry as multicast, so the two cards glance alike
-const outCtrl = (r: Pt): [Pt, Pt] => [
-  { x: JUNCTION.x + 60, y: JUNCTION.y },
-  { x: r.x - 90, y: r.y },
-];
-const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
+const FAN = MODE_PEERS.map((p) => fanWire(JUNCTION, p.at));
 
 const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
-const OUT_PATHS = MODE_PEERS.map((p) => wirePath(JUNCTION, ...outCtrl(p.at), OUT_END(p.at)));
+const OUT_PATHS = FAN.map((w) => wirePath(...w));
 
 const T = {
   sendStart: 14,
@@ -120,7 +116,7 @@ export const ModeAnycast: React.FC = () => {
       {probing && <Dot at={JUNCTION} breath={breath} />}
       <Beam
         d={OUT_PATHS[CLAIMER]!}
-        pos={(t) => bez(JUNCTION, ...outCtrl(MODE_PEERS[CLAIMER].at), OUT_END(MODE_PEERS[CLAIMER].at), t)}
+        pos={(t) => bez(...FAN[CLAIMER]!, t)}
         t={t2}
         visible={t2 > 0 && t2 < 1}
       />
