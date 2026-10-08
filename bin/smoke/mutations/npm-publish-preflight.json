@@ -100,8 +100,8 @@
     {
       "name": "partial release begins OIDC exchanges before the complete registry census",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n  }\n",
-      "replace": "  for (const pkg of packages) {\n    const exchanged = env.ACTIONS_ID_TOKEN_REQUEST_URL ? await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) : { oidc: \"not-run\", token: null };\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: exchanged.oidc, direct: \"not-run\" });\n  }\n",
+      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n    try {\n      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n    } catch (error) {\n      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);\n    }\n  }\n",
+      "replace": "  for (const pkg of packages) {\n    if (env.ACTIONS_ID_TOKEN_REQUEST_URL) await exchangePackageIdentity(pkg, registryBase, env, fetchImpl);\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n    try {\n      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n    } catch (error) {\n      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);\n    }\n  }\n",
       "expectRed": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call",
       "cell": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call"
     },
