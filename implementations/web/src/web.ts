@@ -997,13 +997,6 @@ export async function web(args: ParsedArgs): Promise<void> {
       // ONE READ FOR ALL OF CHAT. The CHAT stream interleaves every channel into one sequence space,
       // so the globally newest N is the tail of that ONE stream, filtered to the chat channels and
       // merged here. A full page per channel would move (channels + 1) times what the page displays.
-      // Counted on the wire over a seeded corpus of 69 chat channels plus 24 event channels at limit
-      // 200, the 143,401-byte page costs 143 broker requests and about 0.91 MB. The counts and the
-      // page size repeat exactly across runs with no link cost; the byte total moves by tens of
-      // bytes, which is why it is rounded. The event channels are load-bearing rather than scenery:
-      // they are what makes each chat filter sparse inside the stream.
-      // `pnpm smoke:web-activity-read-cost` reproduces these counts next to a frozen per-channel read
-      // on this build's read primitive.
       //
       // WHAT SELECTS THE PAGE, precisely. The newest `limit` chat messages in the broker's own
       // arrival order are merged with the newest `limit` DMs, ordered by `ts`, and the newest
