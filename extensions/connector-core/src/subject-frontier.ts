@@ -1,18 +1,17 @@
 /**
  * The SUBJECT frontier, scoped to the PRINCIPAL rather than to one thread.
  *
- * **WHY THIS FILE EXISTS.** The write-ahead log is keyed per thread, so a new native session opens
- * `virgin` with `lastSubjectSeq: 0` and publishes that value as its expectation. The subject is
- * keyed per PRINCIPAL: `eventChannelForSession` returns `eventChannel(ep.principal)`, so every
- * thread of one agent shares `events.<owner>.<actor>`. A virgin frontier therefore expected an
- * empty subject that the agent's own previous session had already filled, the broker refused the
- * publish, and the emitter halted permanently. Measured before this file was written: thread 1
- * published, threads 2 and 3 halted identically. Two correct components with a false assumption
- * between them.
+ * **ONE TIP FOR EVERY THREAD.** The write-ahead log is keyed per thread, so a new native session
+ * opens `virgin` with `lastSubjectSeq: 0`. The subject is keyed per PRINCIPAL:
+ * `eventChannelForSession` returns `eventChannel(ep.principal)`, so every thread of one agent
+ * shares `events.<owner>.<actor>`. Every publish therefore expects the tip this record holds, which
+ * every thread of the principal advances. A thread's own log cannot stand in for it: a new thread
+ * would expect an empty subject that the agent's previous sessions already filled, the broker would
+ * refuse the publish, and the emitter would halt permanently.
  *
  * **WHAT IT IS NOT.** It is not a cache of something readable. Agent credentials hold neither read
- * shape for the stream, so the tip cannot be looked up, and guessing it is the failure this
- * replaces. It is writable without any read capability for one reason: the writer learns the
+ * shape for the stream, so the tip cannot be looked up, and guessing it is the halt described
+ * above. It is writable without any read capability for one reason: the writer learns the
  * assigned sequence from its OWN ack, so it only ever records what it was told about a publish it
  * made.
  *
@@ -222,17 +221,13 @@ export class FileSubjectFrontier implements SubjectFrontier {
       if (seq <= this.doc.tip)
         throw new Error(`subject frontier ${this.path}: seq=${seq} does not advance the tip ${this.doc.tip}`);
       // THE FILE IS THE FRONTIER; THIS OBJECT IS ONLY A VIEW OF IT, AND THE CHECK ABOVE GRADES THE
-      // VIEW. The header of this file says a decrease is refused because it is lower than the one
-      // ON DISK, and until this line the comparison was against memory, so two views of one record
-      // took it backwards with no error at all: `A.advance(10)` then `B.advance(6)` left 6 on disk.
+      // VIEW. A decrease is refused against the value ON DISK, so the record is re-read here: two
+      // views of one record compared only against memory would take it backwards with no error at
+      // all, `A.advance(10)` then `B.advance(6)` leaving 6 on disk.
       //
-      // NOT REACHABLE THROUGH A PUBLISH TODAY, AND THAT IS EXACTLY WHY IT IS GUARDED. A view that
-      // has gone stale publishes a stale `E`, and the broker's compare-and-set refuses it before
-      // any ack exists to record, so JetStream is what holds this file monotone right now.
-      // Measured, not assumed: two emitters on one principal, the second opened early, halted on
-      // `wrong last sequence` with the record still holding the first one's number. That is the
-      // same shape the released defect shipped on, two correct components with an assumption
-      // standing where a guard belongs, so the assumption becomes a guard here too.
+      // A publish does not reach that state, because a stale view publishes a stale `E` and the
+      // broker's compare-and-set refuses it before any ack exists to record. The re-read keeps the
+      // record monotone without resting that on the broker.
       const disk = await this.readDiskTip();
       // ABSENT IS NOT ZERO, and this is the third place in this plane where conflating them is the
       // bug. A missing record is legal only for a view that has not written one either; a view
@@ -279,12 +274,9 @@ export class FileSubjectFrontier implements SubjectFrontier {
    * Recover the tip from the THREAD LOGS beside this record, for an installation upgrading from a
    * release where this record did not exist.
    *
-   * **THIS IS THE WHOLE UPGRADE PATH AND LEAVING IT OUT MAKES THE FIX APPLY TO NOBODY WHO ALREADY
-   * RAN THE BROKEN VERSION.** My first attempt seeded from the log of the thread being opened, which
-   * is empty in the case that matters: upgrading restarts the seat, so the first session after the
-   * upgrade is a NEW thread with a virgin log, while the sequence it needs sits in the PREVIOUS
-   * thread's log. A cell in `smoke:agui-multi-session` failed on exactly that and is the reason this
-   * function exists rather than the reasoning that produced the first version.
+   * **EVERY THREAD LOG OF THE PRINCIPAL IS SCANNED.** Upgrading restarts the seat, so the first
+   * session after the upgrade is a NEW thread with a virgin log, while the sequences the principal
+   * was assigned sit in the logs of its PREVIOUS threads. The recovered tip is the highest of them.
    *
    * **ONLY WHEN THE RECORD IS ABSENT, NEVER WHEN IT READS ZERO.** A record holding zero is what
    * abandonment writes after a filtered purge, and re-seeding it from a thread log would silently
@@ -394,31 +386,24 @@ export class FileSubjectFrontier implements SubjectFrontier {
       }
       // A `sent_unacked` PENDING IS PASSED OVER DELIBERATELY, AND NOT BECAUSE NOTHING WAS ASSIGNED.
       //
-      // An earlier description of this scan said the broker assigned nothing to such a frame. That
-      // is the one thing the state does not know: the frame went out and the acknowledgement was
-      // never observed, so the subject may or may not have taken it. What is certain is structural
-      // and about the log rather than the broker: `sent_unacked` carries no `ackSeq` at all, and a
-      // document that pairs the two is refused as contradicting its own tag. There is therefore no
-      // sequence in it to fold, and inventing one, `frontier.lastSubjectSeq + 1` for instance, would
-      // assert an assignment nobody saw.
+      // Whether the broker assigned a sequence to such a frame is the one thing the state does not
+      // know: the frame went out and the acknowledgement was never observed, so the subject may or
+      // may not have taken it. What is certain is structural and about the log rather than the
+      // broker: `sent_unacked` carries no `ackSeq` at all, and a document that pairs the two is
+      // refused as contradicting its own tag. There is therefore no sequence in it to fold, and
+      // inventing one, `frontier.lastSubjectSeq + 1` for instance, would assert an assignment
+      // nobody saw.
       //
       // The residue is real and is left standing on purpose. If the broker did assign a sequence to
       // that frame, this scan recovers a number one short of the tip, and the next publish halts on
       // a moved tip rather than publishing into a gap or overwriting anything. That is the safe
-      // direction of the two, it is the halt this file's message now explains, and its remedy is the
-      // one the message names. The owning session would have republished the frozen id and let the
-      // broker deduplicate, but that session is exactly what an upgrade forks away from, which is
-      // why the case reaches here at all.
+      // direction of the two, it is the halt the emitter's `cas-loss` message explains, and its
+      // remedy is the one that message names. The owning session would have republished the frozen
+      // id and let the broker deduplicate, but that session is exactly what an upgrade forks away
+      // from, which is why the case reaches here at all.
     }
     return best;
   }
-
-  // `seedFromThread` used to live here, and it is GONE rather than kept for a caller that might
-  // want it. Recovery moved into `open`, which is the only place that can see every sibling log,
-  // and what was left behind was a public method that writes a tip into a record whose only
-  // precondition is that the record reads 0. A record reading 0 is exactly what abandonment writes
-  // after a channel purge, so the leftover was a supported route back into the state this file
-  // exists to prevent, with no shipped caller to justify it.
 
   async reset(): Promise<void> {
     // UNCONDITIONAL, and deliberately not re-read. Abandonment is the one thing that legitimately
@@ -460,12 +445,12 @@ export class FileSubjectFrontier implements SubjectFrontier {
     // The rename itself must be durable, or a crash can lose the new name and leave the old file:
     // the record would silently go backwards, which is the one direction `advance` refuses.
     //
-    // THE SHARED HELPER, NOT A SECOND STRICTER COPY. This was an inline open/sync that let every
-    // error propagate, and it sits on the ACK path: on a filesystem that refuses to fsync a
-    // directory handle, or under a permission that refuses the open, the same conditions the
-    // directory-creating path already tolerates would throw HERE, after the broker has acknowledged
-    // the frame, leaving an ack with no durable record and a halt on the next start. Two paths over
-    // the same operation disagreeing about which errors are fatal is a divergence, not a policy.
+    // THE SHARED HELPER, NOT A SECOND STRICTER COPY. This sits on the ACK path: on a filesystem
+    // that refuses to fsync a directory handle, or under a permission that refuses the open, a copy
+    // that let every error propagate would throw HERE on the conditions the directory-creating path
+    // already tolerates, after the broker has acknowledged the frame, leaving an ack with no
+    // durable record and a halt on the next start. Two paths over the same operation disagreeing
+    // about which errors are fatal is a divergence, not a policy.
     await fsyncDir(dirname(this.path));
     this.doc = next;
   }
