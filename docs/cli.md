@@ -467,6 +467,10 @@ listed with its byte size and sha256, so an operator verifies the whole artifact
 and `git bundle verify`. No secret values, no operator keys and no source-host launch material
 enter it.
 
+The generation is the highest one this root has claimed for the seat in `.cotal/auth`. A
+generation entry there that is a symlink, a directory or anything else that is not a regular file
+refuses the cut, as every other auth record does.
+
 The continuity class is what the connector declares, capped by what the checkpoint carries. A
 connector declaring session continuation classifies as `exact`, but reopening a session takes both
 halves, the pointer that names it and the store that holds its transcript. A checkpoint missing
