@@ -1502,7 +1502,8 @@ inventories are not readable from the serve credential. See [control surface](co
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
-an orphan still holds broker rails. After an abrupt manager death, the same logical successor
+an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
+once and its error names the refusal as `stop failed: <message>`. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
 process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
@@ -1514,7 +1515,8 @@ same-lifecycle restart or a resume records the new seat's reference on the slot 
 when the slot does not take it the restart or resume fails and stops any seat it started, so the
 slot never names a seat that has already exited while its replacement runs. A resumed seat keeps
 its retained credentials, so the resume frees it only once its exit is proved; a seat whose stop
-cannot be proved stays managed, and the resume's error says so. A spawn
+cannot be proved stays managed, and the resume's error says so, naming a stop the runtime refused
+as `stop failed: <message>`. A spawn
 that launched its seat and then failed is rolled back by the manager that launched it, and that
 rollback reaps the seat through the same reserved reference before the lifecycle retires. Missing or unverified broker evidence keeps the slot
 terminalizing, and so does a runtime that cannot reap by reference.
