@@ -889,9 +889,10 @@ membership feed). Stale Claude skills and out-of-date `.agents` skills recommend
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing. The manager row asks the service endpoint once: a live process that does not answer is
 `not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
-A process row whose PID record exists but cannot be read reads `pidfile unreadable` with the error,
-and the other rows still print. A live manager whose delivery-aware marker cannot be read keeps its row
-and names the failure as `delivery-aware marker unreadable` with the error. The `Web process` row
+A process row whose PID record exists but cannot be read, or exists under both its current and a
+pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows still print. A live
+manager whose delivery-aware marker cannot be read keeps its row and names the failure as
+`delivery-aware marker unreadable` with the error. The `Web process` row
 prints the address the selected mesh's dashboard recorded in `web.session` once it was listening,
 while the PID in its `web.pid` is alive. Otherwise it reads `down`, or `not installed` without the
 web extension.
@@ -940,8 +941,9 @@ state wins):
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
-absent component or a clean zero. A PID record that exists but cannot be read refuses only its own
-row. A record that its component removes while the pass runs reads as `absent`.
+absent component or a clean zero. A PID record that exists but cannot be read, or exists under both
+its current and a pre-upgrade name, refuses only its own row. A record that its component removes
+while the pass runs reads as `absent`.
 
 ## spawn
 
