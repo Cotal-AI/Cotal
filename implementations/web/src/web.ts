@@ -1269,8 +1269,9 @@ async function launchDetachedWeb(
 
   const url = webUrl(host, port);
   const sessionPath = localProcessPath(WEB_SESSION_FILE, context);
+  let session: WebSession;
   try {
-    await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
+    session = await waitForDetachedWeb(child, { pidPath, sessionPath, url: boundUrl(host, port), space, timeoutMs: DETACHED_READY_TIMEOUT_MS });
   } catch (e) {
     let cleanupError: Error | undefined;
     try { await terminateDetachedWeb(child, pidPath); }
@@ -1279,16 +1280,14 @@ async function launchDetachedWeb(
     throw new Error(`${(e as Error).message}${cleanupError ? `; ${cleanupError.message}` : ""} - see ${logPath}${tail ? `\n${tail}` : ""}`);
   }
 
-  // The child minted the token, so the parent reads the link rather than reconstructing it. If there
-  // is no whole record the dashboard is still up and the operator is told where the link lives,
-  // instead of being handed a URL that will refuse them.
-  const launchUrl = readWebSession(sessionPath)?.launchUrl;
+  // The child minted the token, so the parent prints the link from the record that proved readiness
+  // rather than reconstructing it. Reading the file again here, outside the cleanup above, would let a
+  // read error report a failed start over a dashboard that is up.
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
-  if (launchUrl) printLaunchLink(launchUrl, host, port, "(single-use link)");
-  else console.log(c.dim(`  launch link: see ${sessionPath}`));
+  printLaunchLink(session.launchUrl, host, port, "(single-use link)");
   console.log(c.dim(`  log: ${logPath}`));
   console.log(c.dim("  stop: cotal down web"));
-  if (!noOpen && launchUrl) openBrowser(launchUrl);
+  if (!noOpen) openBrowser(session.launchUrl);
 }
 
 /** Open the persistent detached log privately even when it pre-existed with permissive metadata. */
@@ -1324,8 +1323,8 @@ export function detachedArgs(raw: readonly string[], space: string, server: stri
 
 export async function waitForDetachedWeb(
   child: ChildProcess,
-  opts: { pidPath: string; sessionPath?: string; url: string; space: string; timeoutMs: number },
-): Promise<void> {
+  opts: { pidPath: string; sessionPath: string; url: string; space: string; timeoutMs: number },
+): Promise<WebSession> {
   let spawnError: Error | undefined;
   const spawnErrorPromise = new Promise<Error>((resolve) => child.once("error", (e) => {
     spawnError = e;
@@ -1346,17 +1345,17 @@ export async function waitForDetachedWeb(
       // partial file simply means "not up yet" and the loop keeps waiting — exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
-      const session = opts.sessionPath === undefined ? undefined : readWebSession(opts.sessionPath);
+      const session = readWebSession(opts.sessionPath);
       const meta = await fetch(`${opts.url}api/meta`, {
         signal: AbortSignal.timeout(500),
         headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
       })
         .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
         .catch(() => undefined);
-      if (meta?.space === opts.space && meta.pid === pid) {
+      if (session && meta?.space === opts.space && meta.pid === pid) {
         if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
           throw new Error(`web dashboard exited during readiness (pid ${pid})`);
-        return;
+        return session;
       }
     }
     await sleep(100);
