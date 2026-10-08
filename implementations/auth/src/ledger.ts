@@ -43,6 +43,7 @@ import {
   mintLifecycleUid,
   mkSecretDir,
   parseActorLedgerSource,
+  parsePrincipalKey,
   patternInAllow,
   writeSecretFile,
   type IssuedSourceRef,
@@ -526,6 +527,11 @@ export function ledgerAclResolver(dir: string): AclResolver {
       throw new Error("bearer carries no lifecycle claim - re-exchange for a fresh bearer (lifecycle-bound from v0.4)");
     if (t.act.lifecycleUid !== row.lifecycleUid)
       throw new Error(`bearer lifecycle ${t.act.lifecycleUid} is not the actor's current incarnation - re-exchange for a fresh bearer`);
+    // Issuance eligibility is separate from envelope containment, which exempts an admin parent.
+    // Read the direct parent at this mint, never the bearer's audit link or a cached spawn grant.
+    const parent = row.kind === "managed-agent" && typeof row.parent === "string" ? parsePrincipalKey(row.parent) : null;
+    const parentHasRun = parent !== null && parent.owner === row.owner && parent.actor !== row.actor
+      && findActorUnified(dir, parent.owner, parent.actor)?.scope.includes("run") === true;
     return {
       allowSubscribe: row.allowSubscribe,
       allowPublish: row.allowPublish,
@@ -535,6 +541,7 @@ export function ledgerAclResolver(dir: string): AclResolver {
       // as of THIS read (the callout's fresh-row re-check), not only as of the connect gate.
       scope: row.scope,
       kind: row.kind,
+      ...(row.kind === "managed-agent" ? { parentHasRun } : {}),
     };
   };
 }

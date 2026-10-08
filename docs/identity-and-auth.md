@@ -116,6 +116,16 @@ lifecycle uid. Only workflow `run-start` requires the binding today: a request f
 rail is refused with `permission-denied` and the detail `ai.cotal.ep.unbound-caller-authority`
 naming the caller. Every other command serves both rails.
 
+A user-auth `manager-caller` view is issued at the auth callout for an interactive row, or for a
+managed seat whose current persona-derived scope contains `run` and whose direct parent's fresh
+same-owner grant also contains `run`. An admin parent's containment bypass does not count. The
+single source is the child's own actor row and lifecycle, and evidence records the signed ceiling
+without adding capabilities. Same-nonce renewal requires the same triple and byte-identical ceiling.
+The existing view policy and manager instance gate are unchanged, with no new request kind. A seat
+missing either `run` input keeps ordinary legacy commands. Without signed `run`, the broker refuses
+`run-start`; with signed `run` but no eligible parent, the manager refuses with
+`ai.cotal.ep.unbound-caller-authority`. A failed issuance never retries on that rail.
+
 ## Declared capabilities
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
