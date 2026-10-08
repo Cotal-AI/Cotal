@@ -64,6 +64,24 @@ needed. Cross-owner arming still requires `admin`, and the child's own-channel r
 envelope are unchanged. A silent non-owner caller in a space without the policy still has the
 plane disarmed, with a notice if provisioning succeeds.
 
+## Hosted auth plane identity in the store (unreleased)
+
+A hosted context started through `startAuthService` keeps its auth plane instance identity in the
+injected `SecretStore` under `authInstanceKey(space)`, with the other auth secret kinds. It used to
+sit under `stateDir` at `.cotal/space.<hex>/auth-instance.json`, though `stateDir` holds non-secret
+state and the record holds the plane's private serve seed. The first start of an upgraded context
+puts that record into the store, removes the file and keeps the instance. A CLI root is unchanged.
+
+### What stops working
+
+A start refuses when the store and `stateDir` hold different instance identities, and names both. A
+store that refuses a put of the new key fails the start.
+
+### Before the upgrade
+
+Let the store accept a put of `authInstanceKey(space)`. A copy of `stateDir` taken before the upgrade
+still holds the serve seed, so delete it or protect it as secret material.
+
 ## Hermes model from the environment in 0.68.0
 
 A connector now launches on the model and variant its launcher resolved (the `--model` or

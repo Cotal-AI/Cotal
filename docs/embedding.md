@@ -136,7 +136,9 @@ and closes any resources created by that late completion.
 
 `startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
-under the explicit `stateDir`, and the auth plane's instance identity in its `.cotal/space.<hex>/`.
+under the explicit `stateDir`. The auth plane's instance identity holds its private serve seed, so it
+lives in the store under `authInstanceKey(space)`. A record an earlier release kept under `stateDir`
+moves into the store on the first start.
 The context never resolves a workspace root from the working directory and has no local manager, so
 only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A start that
@@ -737,6 +739,7 @@ place and keep:
 |---|---|---|---|
 | full `SpaceAuth` trust chain (`auth/broker.json` + `auth/account.<key>.json`, composed; a stripped signer bundle may instead be mounted at the legacy `auth/auth.json` key) | signing authority | `SecretStore` | `SecretStore` (manager + renewal) |
 | auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
+| auth plane instance identity (instance id + serve nkey seed) | restart identity | root `.cotal/space.<hex>/auth-instance.json` | `SecretStore` (`startAuthService`) |
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
 | `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
