@@ -81,7 +81,10 @@ in-process plugin does everything.
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
   agents don't lock each other or drop files into a target repo. A launch checks the agent's
   `serve.pid` before it starts a server. A record that the previous launcher removes during that
-  check counts as no record, and so does a recorded server that exits during it.
+  check counts as no record, and so does a recorded server that exits during it. An empty
+  directory at that path also counts as no record and is removed, and one that vanishes before
+  that removal still counts as no record. The launch refuses a directory that holds files and
+  leaves it in place.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
