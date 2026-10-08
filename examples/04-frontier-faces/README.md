@@ -118,10 +118,10 @@ node face-term.mjs --demo
 node tools/serve-wall.mjs      # then open the printed URL
 ```
 
-`face-term.mjs` flags: `--persona <key>` (`--list` prints all), `--server`, `--model
-<provider/id>`, `--session <id>` to attach to an existing session, `--password` (default: the
-`OPENCODE_SERVER_PASSWORD` env) for password-protected servers, `--dump` to print the grid as
-ASCII.
+`face-term.mjs` flags: `--persona <key>` (`--list` prints all, and any other key is refused),
+`--server`, `--model <provider/id>`, `--session <id>` to attach to an existing session,
+`--password` (default: the `OPENCODE_SERVER_PASSWORD` env) for password-protected servers,
+`--dump` to print the grid as ASCII.
 
 ## What's here
 
