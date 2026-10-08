@@ -156,8 +156,8 @@ separate install. Start it with `cotal web`; it records
 `http://cotal.localhost:7799` (binds loopback; `*.localhost` resolves in Chrome/Firefox/Edge,
 Safari may need plain `127.0.0.1`). Setup's status card prints the address the dashboard recorded in
 `.cotal/web.session` once it was listening, while the PID in `.cotal/web.pid` is alive. A
-`.cotal/web.pid` that exists but cannot be read is named on the row as `pidfile unreadable`, and the
-rest of the card still prints.
+`.cotal/web.pid` that exists but cannot be read is named on the row as `pidfile unreadable`, an
+unreadable `.cotal/web.session` as `web.session unreadable`, and the rest of the card still prints.
 
 All recorded local processes self-register `local-process` descriptors. Bare `cotal down` resolves
 the full set and stops it in dependency order; `cotal down manager` (or another component name)

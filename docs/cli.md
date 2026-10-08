@@ -894,8 +894,9 @@ pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows 
 manager whose delivery-aware marker cannot be read keeps its row and names the failure as
 `delivery-aware marker unreadable` with the error. The `Web process` row
 prints the address the selected mesh's dashboard recorded in `web.session` once it was listening,
-while the PID in its `web.pid` is alive. Otherwise it reads `down`, or `not installed` without the
-web extension.
+while the PID in its `web.pid` is alive. A `web.pid` or `web.session` that exists but cannot be read
+is named on the row with the error. Otherwise it reads `down`, or `not installed` without the web
+extension.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
@@ -933,9 +934,10 @@ state wins):
 - **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
   `web.session` once it was listening, which must name the same PID. The probe presents the
   readiness nonce recorded beside that address, the one credential the dashboard accepts on
-  `/api/meta`. A live PID with no readable recorded address (the dashboard is still writing it, or
-  an earlier build started it), or an unrecognizable process record, is `refused`, not a green
-  default-port guess.
+  `/api/meta`. A live PID with no recorded address (the dashboard is still writing it, or an
+  earlier build started it), or an unrecognizable process record, is `refused`, not a green
+  default-port guess. A `web.session` that exists but cannot be read is also `refused`, and the row
+  names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`

@@ -1279,8 +1279,8 @@ async function launchDetachedWeb(
     throw new Error(`${(e as Error).message}${cleanupError ? `; ${cleanupError.message}` : ""} - see ${logPath}${tail ? `\n${tail}` : ""}`);
   }
 
-  // The child minted the token, so the parent reads the link rather than reconstructing it. If the
-  // file is unreadable the dashboard is still up and the operator is told where the link lives,
+  // The child minted the token, so the parent reads the link rather than reconstructing it. If there
+  // is no whole record the dashboard is still up and the operator is told where the link lives,
   // instead of being handed a URL that will refuse them.
   const launchUrl = readWebSession(sessionPath)?.launchUrl;
   console.log(c.green(`✓ web dashboard ready at ${url} (pid ${child.pid})`));
@@ -1342,8 +1342,8 @@ export async function waitForDetachedWeb(
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
     if (pidFileOwned(opts.pidPath, pid)) {
-      // The child writes its readiness nonce only after `listen()` succeeded, so an absent or
-      // unreadable file simply means "not up yet" and the loop keeps waiting — exactly as it did
+      // The child writes its readiness nonce only after `listen()` succeeded, so an absent, empty or
+      // partial file simply means "not up yet" and the loop keeps waiting — exactly as it did
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = opts.sessionPath === undefined ? undefined : readWebSession(opts.sessionPath);

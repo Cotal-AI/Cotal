@@ -477,14 +477,14 @@ export async function readyCard(cwd: string): Promise<void> {
   );
 }
 
-/** The card's web row from the mesh's dashboard records. An unreadable `web.pid` is named on the row,
- *  like the status Machine section, so the rest of the card still prints. */
+/** The card's web row from the mesh's dashboard records. An unreadable `web.pid` or `web.session` is
+ *  named on the row, like the status Machine section, so the rest of the card still prints. */
 function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
   try {
     const url = recordedWebUrl({ root: mesh.root, space: mesh.space });
     if (url) return { up: true, text: url };
   } catch (e) {
-    return { up: false, text: `pidfile unreadable · ${(e as Error).message}` };
+    return { up: false, text: (e as Error).message };
   }
   return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
 }

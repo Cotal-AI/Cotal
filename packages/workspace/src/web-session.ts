@@ -24,10 +24,18 @@ export interface WebSession {
 
 /** The whole record, or `undefined` while there is none to read: the dashboard writes it only once it
  *  is listening, truncates the file before writing, and removes it on exit, so an absent, empty or
- *  partial file is an ordinary moment in its life. */
+ *  partial file is an ordinary moment in its life. A file that exists and cannot be read is not, and
+ *  reading it as absent would report a live dashboard as down, so that error throws. */
 export function readWebSession(path: string): WebSession | undefined {
+  let text: string;
   try {
-    const { launchUrl, readiness, host, port } = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
+    text = readFileSync(path, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  try {
+    const { launchUrl, readiness, host, port } = JSON.parse(text) as Record<string, unknown>;
     if (typeof launchUrl !== "string" || typeof readiness !== "string" || typeof host !== "string" || typeof port !== "number")
       return undefined;
     return { launchUrl, readiness, host, port };

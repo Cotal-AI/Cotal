@@ -18,7 +18,8 @@ export interface MeshStatus {
 }
 
 /** The address the dashboard recorded in `web.session` once `listen()` succeeded, with the readiness
- * nonce recorded beside it, or `undefined` while no whole record is readable. */
+ * nonce recorded beside it, or `undefined` while there is no whole record. A record that exists and
+ * cannot be read throws. */
 export function webBoundAddress(path: string): { host: string; port: number; url: string; readiness: string } | undefined {
   const session = readWebSession(path);
   if (!session) return undefined;
@@ -28,12 +29,22 @@ export function webBoundAddress(path: string): { host: string; port: number; url
 
 /** The address a mesh's dashboard recorded once it was listening, while the pid it recorded is alive.
  * Only its own records place it: `--port` moves it off its default port, and any other program can
- * own that port. */
+ * own that port. A record that exists and cannot be read throws an error that names it, because a
+ * read error such as EISDIR carries no path. */
 export function recordedWebUrl(context: LocalProcessContext): string | undefined {
-  const raw = readPidfile(localProcessPath("web.pid", context));
+  let raw: string | undefined;
+  try {
+    raw = readPidfile(localProcessPath("web.pid", context));
+  } catch (e) {
+    throw new Error(`pidfile unreadable · ${(e as Error).message}`);
+  }
   const pid = raw === undefined ? undefined : parsePid(raw);
   if (pid === undefined || probeLiveness(pid) !== "alive") return undefined;
-  return webBoundAddress(localProcessPath(WEB_SESSION_FILE, context))?.url;
+  try {
+    return webBoundAddress(localProcessPath(WEB_SESSION_FILE, context))?.url;
+  } catch (e) {
+    throw new Error(`${WEB_SESSION_FILE} unreadable · ${(e as Error).message}`);
+  }
 }
 
 /** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers
