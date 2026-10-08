@@ -667,9 +667,8 @@ export function loadSeatWriterGeneration(root: string, space: string, name: stri
   for (const entry of readdirSync(dir)) {
     if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue;
     const f = join(dir, entry);
-    let parsed: SeatWriterGeneration;
-    try { parsed = JSON.parse(readFileSync(f, "utf8")) as SeatWriterGeneration; }
-    catch (e) { throw new Error(`the persisted seat writer generation at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh generation over it - that is how a stale host becomes authoritative again`); }
+    const parsed = readAuthRecord<SeatWriterGeneration>(f, "a seat writer generation");
+    if (parsed === undefined) continue;
     if (parsed === null || typeof parsed !== "object"
       || parsed.space !== space || parsed.name !== name
       || typeof parsed.lifecycleUid !== "string" || parsed.lifecycleUid.length === 0
