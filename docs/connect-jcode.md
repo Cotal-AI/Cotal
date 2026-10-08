@@ -40,7 +40,8 @@ A detached seat is managed normally: `cotal ps`, `cotal attach`, and `cotal stop
 same process the connector starts. In a terminal, Jcode opens on the managed session. With piped
 output it stays headless; set `COTAL_JCODE_TUI=1` or `COTAL_JCODE_TUI=0` in the environment of the
 process building the launch to override that choice. For a detached spawn, that is the manager's
-environment.
+environment. The connector refuses any value outside the on/off spellings in
+[Configuration](config.md#environment-variables) when it starts.
 
 ## How it binds
 

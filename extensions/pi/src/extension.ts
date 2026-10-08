@@ -5,6 +5,7 @@ import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import {
   MeshAgent,
   configFromEnv,
+  envFlag,
   hasIdentity,
   startControlServer,
   type AgentConfig,
@@ -134,7 +135,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   const config = configFromEnv();
-  const eventsEnabled = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired;
+  const eventsEnabled = envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired;
   if (eventsEnabled) resolveEventsStateRoot(process.env);
   // CLI startup opens/creates/forks the session BEFORE extension factories run, so the first
   // session_start may already be past. Pi publishes the active id through PI_SESSION_ID for exactly

@@ -124,7 +124,10 @@ after maintenance.
 These are the operator-facing variables. Most of the connector-session ones (space, name, role, …)
 are set **for you** by `cotal spawn` / the manager when they launch an agent; you set them by hand
 only when you drive a connector session yourself (e.g. your own `claude` with the plugin) or a custom
-launcher. Comma-separated lists are trimmed.
+launcher. Comma-separated lists are trimmed. The connector on/off flags (`COTAL_CHANNEL`,
+`COTAL_EVENTS`, `COTAL_EVENTS_REQUIRED`, `COTAL_CODEX_TUI`, `COTAL_JCODE_TUI`) take `1`, `true`,
+`yes` or `on` and `0`, `false`, `no` or `off` in any case. The connector refuses any other value
+when it starts, naming the variable.
 
 | Variable | Consumed by | Meaning | Default |
 |---|---|---|---|

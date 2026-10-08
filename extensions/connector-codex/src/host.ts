@@ -53,6 +53,7 @@ import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
 import {
   MeshAgent,
   configFromEnv,
+  envFlag,
   feedbackLine,
   formatInjection,
   fmtFrom,
@@ -369,7 +370,7 @@ export async function runCodexHost(): Promise<void> {
    *  adopt, because its source is the rollout file, whose path is not known until the thread
    *  exists, and because `start()` reaches the broker, work that must not run for a thread that
    *  never publishes. */
-  const eventsArmed = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "");
+  const eventsArmed = envFlag(process.env, "COTAL_EVENTS") === true;
   /** TEST ONLY, and the reason it exists rather than a fixture doing this from outside.
    *
    *  The window this whole boundary rule is about is the emitter's own asynchronous setup: the
@@ -1098,8 +1099,7 @@ export async function runCodexHost(): Promise<void> {
   // none, so the host stays headless and keeps its line feed instead — the same peer either way,
   // only the UI differs. COTAL_CODEX_TUI decides explicitly when set (1/0), for callers that know
   // better than the tty check.
-  const tuiPref = process.env.COTAL_CODEX_TUI?.trim();
-  const wantTui = tuiPref ? /^(1|true|yes|on)$/i.test(tuiPref) : process.stdout.isTTY === true;
+  const wantTui = envFlag(process.env, "COTAL_CODEX_TUI") ?? process.stdout.isTTY === true;
   let tuiChild: ChildProcess | undefined;
   let tuiGen = 0; // bumped whenever an exit becomes EXPECTED (restart or shutdown)
 

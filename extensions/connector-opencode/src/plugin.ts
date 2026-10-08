@@ -39,6 +39,7 @@
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
+  envFlag,
   hasIdentity,
   MeshAgent,
   startControlServer,
@@ -203,6 +204,8 @@ export const cotal: Plugin = async () => {
   if (guard.__cotalOpencodeHooks) return guard.__cotalOpencodeHooks; // one agent; reuse the hooks
   const config = configFromEnv();
   const control = controlFromEnv();
+  // Read before the agent start below is queued, so a bad value refuses with nothing started.
+  const eventsArmed = envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired;
   // Both readers of the launch material have now read it, so the pointer is dropped: the shells and
   // tools this seat runs from here on inherit no reference to its credential or control token.
   scrubLaunchMaterial();
@@ -343,7 +346,7 @@ export const cotal: Plugin = async () => {
       },
     );
   }
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "") || config.eventsRequired) events = newEventHolder();
+  if (eventsArmed) events = newEventHolder();
 
   /**
    * Give this principal's event WAL lock back, ONCE, at the final event teardown.

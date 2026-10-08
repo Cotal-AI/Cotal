@@ -16,6 +16,7 @@
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
+  envFlag,
   hasIdentity,
   MeshAgent,
   formatInjection,
@@ -91,7 +92,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   if (guard.__cotalOpencodeSetup) return; // one agent; a later boot in this process is a no-op
   guard.__cotalOpencodeSetup = true;
 
-  if (process.env.COTAL_EVENTS === "1") {
+  if (envFlag(process.env, "COTAL_EVENTS")) {
     log(EVENTS_REFUSAL);
     process.exit(1);
   }

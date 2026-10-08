@@ -1,3 +1,4 @@
+import { EnvFlagError } from "@cotal-ai/connector-core";
 import { runJcodeHost } from "./host.js";
 import {
   JcodeEffortRefusal,
@@ -71,6 +72,9 @@ runJcodeHost().catch((error) => {
     writeJcodeDiagnostic(
       `[cotal-jcode] fatal: Jcode host startup failed (sessions_unwritable): the harness cannot persist sessions at ${error.sessionsPath} (${error.errnoCode}); fix the directory's permissions on the seat's private state\n`,
     );
+  } else if (error instanceof EnvFlagError) {
+    // The message is only the flag's name and the operator's own value, never child output.
+    writeJcodeDiagnostic(`[cotal-jcode] fatal: ${error.message}\n`);
   } else {
     writeJcodeDiagnostic(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
   }
