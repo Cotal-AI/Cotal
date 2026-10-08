@@ -74,7 +74,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
-import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
+import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -905,18 +905,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           }
         });
       }
+      const observeManagerRun = async (r: RemoteManagerAuthorityRequest, runId: string) => observeHostedRunAttempt(
+        await openRecordsBucket(remoteIssuer.nc, space), "manager", runId,
+        { supervisorId: r.identities.supervisor.id, instanceId: r.instanceId },
+      );
       const material = await issueRemoteManagerAuthority({
         ...holder,
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
           request: r, owner: o, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed,
           observeManagerGate,
-          observeRun: async (runId: string) => {
-            const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
-            return await observeHostedRunAttempt(recordsKv, "manager", runId, {
-              supervisorId: r.identities.supervisor.id,
-              instanceId: r.instanceId,
-            });
-          },
+          observeRun: (runId) => observeManagerRun(r, runId),
         }),
         issue: async ({ actors, request: r }) => {
           const signer = { space, account: dataAccount };
@@ -1081,14 +1079,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             if (!observed || observed.state !== "open" || observed.processEpoch !== r.processEpoch)
               throw new EpEnvelopeError("conflict", "manager-service run renewal gate moved before issuance");
 
-            const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
-            const run = await observeHostedRunAttempt(recordsKv, "manager", r.run!.runId, {
-              supervisorId: r.identities.supervisor.id,
-              instanceId: r.instanceId,
-            });
-            if (!run || run.state !== "running" || run.instanceId !== r.instanceId ||
-                run.holder !== r.run!.holder || run.takeoverId !== r.run!.takeoverId ||
-                run.epoch !== r.run!.epoch || run.fencingToken !== r.run!.fencingToken)
+            if (!holdsRunFence(await observeManagerRun(r, r.run!.runId), r))
               throw new EpEnvelopeError("conflict", "manager-service run renewal authority moved before issuance");
 
             const caller = runDriverCaller(r.run!.runId, owner);
