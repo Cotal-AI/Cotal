@@ -1328,8 +1328,10 @@ implementation staging, half-minted state, and tombstone fences live in a distin
 
 **Remote manager-service authority (user-auth only).** `manager-service` is one CLOSED,
 server-authored authority view, not a profile name, arbitrary bearer profile, or client-supplied
-permission set. It exists only for a signed-in human whose current actor-ledger row contains the
-dedicated `supervise` scope. `spawn` and `admin` never imply `supervise`, and `supervise` never
+permission set. The human exchange serves only a signed-in human whose current actor-ledger row
+contains the dedicated `supervise` scope. A trusted host composition may separately issue the
+owner-bound platform supervisor registration material defined in §13.15, without a human exchange.
+`spawn` and `admin` never imply `supervise`, and `supervise` never
 implies either. Only the loopback/operator exchange MAY issue this view; the public exchange and
 every managed-agent secret exchange MUST refuse it. The callout re-reads the ledger row at exchange
 and connect, so a missing, narrowed, or revoked `supervise` scope denies the next view exchange and
