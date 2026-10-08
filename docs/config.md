@@ -218,7 +218,9 @@ than the machine-wide knobs above is refused and the seat is not launched: the l
 names for each seat, so a value from the spawning process would become the seat's role, model or
 read set. An empty array adds nothing. A space-local `spawn` block replaces the operator-level one
 outright rather than merging, so a local list stays local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}`
-all add no names.
+all add no names. A `spawn` that is not an object, or an `env` that is not a list of non-empty names,
+is refused when the file is read, with the file and the field named, so every spawn and resume is
+refused until it is fixed.
 
 Be honest with yourself about what this buys: `HOME` is forwarded, so an agent with a shell reads
 `~/.aws`, `~/.ssh` and `~/.config` regardless. The boundary protects what a file on disk cannot hand
