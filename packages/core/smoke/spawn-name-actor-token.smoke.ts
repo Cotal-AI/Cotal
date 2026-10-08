@@ -19,6 +19,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import ts from "typescript";
 import { firstFreeName, spawnNameError } from "../src/agent-file.js";
 import { assertValidOwnerToken } from "../src/subjects.js";
 
@@ -157,17 +158,28 @@ check("the same hyphenated --name on a STATIC-mode target is accepted",
 // that is absent today is behaviourally indistinguishable from one that delegates faithfully, and
 // the only moment the difference shows is after the next grammar change. Comments stripped so a
 // cell cannot pass off the #867 comment for the call.
-const CLI_SRC = readFileSync(
+const CLI_RAW = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands", "spawn.ts"),
   "utf8",
-)
+);
+const CLI_SRC = CLI_RAW
   .replace(/\/\*[\s\S]*?\*\//g, "")
   .replace(/\/\/[^\n]*/g, "");
 check("instrument control: the CLI's spawn source was located, comments stripped",
   CLI_SRC.includes("async function spawnDetached") && CLI_SRC.includes("export async function spawn"),
   { len: CLI_SRC.length });
+// Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
+const CORE_IMPORTS = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest).statements
+  .filter(ts.isImportDeclaration)
+  .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
+  .flatMap((d) => {
+    const named = d.importClause?.namedBindings;
+    return named && ts.isNamedImports(named) ? named.elements : [];
+  })
+  .filter((e) => !e.isTypeOnly && (e.propertyName ?? e.name).text === e.name.text)
+  .map((e) => e.name.text);
 check("the CLI calls the shared name door (import present)",
-  /spawnNameError,/.test(CLI_SRC.slice(CLI_SRC.indexOf("} from \"@cotal-ai/core\";") - 400, CLI_SRC.indexOf("} from \"@cotal-ai/core\";"))));
+  CORE_IMPORTS.includes("spawnNameError"));
 check("the CLI calls the shared name door (call sites: detached + foreground)",
   (CLI_SRC.match(/refuseUnmintableNameOrExit\(/g) ?? []).length === 3,
   { sites: CLI_SRC.match(/refuseUnmintableNameOrExit\(/g)?.length });
