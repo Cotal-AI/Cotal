@@ -8,23 +8,13 @@
  * imported from `connector-core` and nothing about Claude goes back the other way.
  *
  * ---------------------------------------------------------------------------------------------
- * THREE THINGS THE PLAN DOES NOT SETTLE, RECORDED AS GAPS RATHER THAN DECIDED HERE.
+ * THREE THINGS THE PLAN DID NOT SETTLE.
  *
- * **(A) The run brackets have no vehicle, and this is a real plan defect, not a detail.** §3.1
- * sources `RUN_STARTED` from the `UserPromptSubmit` hook and `RUN_FINISHED` from the `Stop` hook
- * (`mcp.ts:72`, `:96`). But `[P6]`/§5.4 makes the durable plane READ A FILE, and the emitter's
- * mapper is `(record) => events` — a hook fires in a different process at a different time and
- * produces NO JSONL record, so there is no vehicle by which a hook-sourced event can enter a
- * record-sourced stream. The two halves of the design were specified against different inputs.
- *
- * What this file does instead is stated plainly so a ruling can replace it in one function:
- * **brackets are derived from the record stream.** A human prompt opens a run; the NEXT human
- * prompt closes the previous one. Two consequences, both of which a reader must know:
- *   1. `RUN_FINISHED` lags by one turn. It is emitted when the next turn starts, not when the turn
- *      ends, so a consumer sees the finish later than the `Stop` hook would have said it.
- *   2. **The last run of a session never closes.** There is no record after it to close it on.
- * Neither is silently absorbed: {@link closeOpenRun} exists so the connector's `Stop` hook can shut
- * the run at the real boundary once a vehicle is ruled, and until then the lag is honest.
+ * **(A) The record stream cannot see a turn end.** A hook fires in a different process and writes
+ * no JSONL record, so on records alone a run closes only when the next prompt opens one, and the
+ * last run of a session never closes. The `Stop` and `StopFailure` hooks therefore close the open
+ * run through the emitter holder (`AguiEmitterHolder.closeRun`) at the real boundary, and the
+ * holder reports the closed run back through {@link ClaudeMapper.forgetOpenRun}.
  *
  * **(B) `origin.kind === "human"` OPENS NO RUN IN ANY AGENT-DRIVEN SESSION — MEASURED on three, and
  * this is why the mapping smoke reads a real session rather than a fixture.** §3.1's rule is right
@@ -61,8 +51,7 @@
  * peer-initiated turn can be a turn without re-emitting the peer's content. See
  * {@link ORIGIN_RULE} and {@link ABSENT_ORIGIN_RULE}, which are where this lives.
  *
- * On the 5938-record session the real mapper opens **67 runs** and emits **5217 events**, and
- * `diagnose()` returns `null`.
+ * On the 5938-record session the real mapper opens **67 runs** and emits **5217 events**.
  *
  * **DO NOT "FIX" THIS BY TREATING ABSENT `origin` AS HUMAN.** In a Claude session `user` is also the
  * role of a TOOL RESULT: that predicate selects **825** of the interactive session's 892 user
@@ -290,20 +279,9 @@ export interface ClaudeMapperOptions {
   now?: () => number;
 }
 
-/** What {@link createClaudeMapper} returns: the mapper plus the out-of-band run close. */
+/** What {@link createClaudeMapper} returns: the mapper plus the report of a run the emitter closed. */
 export interface ClaudeMapper {
   map: RecordMapper<ClaudeEntry>;
-  /**
-   * Close the open run, if there is one, at a boundary the record stream cannot see — the `Stop`
-   * hook. Returns `null` when no run is open, so calling it twice is not an error and cannot
-   * manufacture a second `RUN_FINISHED` the bracket machine would refuse.
-   *
-   * It exists because gap (A) above is a gap: the durable plane has no way to hear a hook today,
-   * and this is the seam a ruling plugs into rather than a rewrite.
-   */
-  closeOpenRun: (timestamp: number, stopReason?: string) => { runId: string; events: AguiEvent[] } | null;
-  /** The run currently open, or `null`. Read-only view for a caller that needs to know. */
-  openRun: () => string | null;
   /**
    * Forget a run the EMITTER closed out of band, so this mapper stops treating it as open.
    *
@@ -321,19 +299,6 @@ export interface ClaudeMapper {
    * send. A run that is not the one named is left exactly as it is.
    */
   forgetOpenRun: (runId: string) => void;
-  /**
-   * **WHY THIS SESSION OPENED NO RUNS** — a sentence, or `null` once any run has opened.
-   *
-   * A mapper that opens zero runs is byte-indistinguishable from a session nobody prompted, and
-   * from a mapper that is simply broken. Refusing a record is a legitimate outcome; refusing it
-   * SILENTLY is not, and the silence is the defect, not the refusal. This is the production
-   * statement of that — it lives in the shipped mapper, not in a smoke summary, so the connector
-   * and any operator reading it get the same sentence the suite does.
-   *
-   * It is deliberately NOT a throw. Some sessions genuinely contain no prompt yet, and a mapper
-   * that threw on one would take down a live connector over an empty file.
-   */
-  diagnose: () => string | null;
 }
 
 /** Parse the entry timestamp, or say honestly that we used arrival time. */
@@ -354,31 +319,6 @@ function resultContent(raw: unknown): string {
 export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
   const now = opts.now ?? (() => Date.now());
   let open: string | null = null;
-
-  // The three counters `diagnose()` reports on. They count what was SEEN and what was REFUSED, so
-  // a zero-run session can say which of the two reasons it was.
-  let runsOpened = 0;
-  let promptShaped = 0; // string-content, non-compaction `user` records — candidates
-  let refusedUnattributable = 0; // ...of those, refused for want of an attribution
-
-  const closeOpenRun = (timestamp: number, stopReason?: string) => {
-    if (open === null) return null;
-    const runId = open;
-    open = null;
-    // No `outcome`. The Claude source reports that a turn ended and nothing more, so manufacturing
-    // a `success` would assert what it never said — the tolerated no-outcome case (§3.1).
-    return {
-      runId,
-      events: [
-        runFinished({
-          threadId: opts.threadId,
-          runId,
-          timestamp,
-          ...(stopReason ? { cotal: { stopReason } } : {}),
-        }),
-      ] as AguiEvent[],
-    };
-  };
 
   const map: RecordMapper<ClaudeEntry> = (entry) => {
     const { ts, arrival } = stampOf(entry, now);
@@ -455,17 +395,12 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // harness plumbing. `promptSource` is corroboration; it is not the gate.
       //
       // Anything not enumerated FAILS LOUD — including a value a future harness adds.
-      promptShaped += 1;
       const turnSource = runOpeningAttribution(entry);
-      if (turnSource === null) {
-        refusedUnattributable += 1;
-        return null;
-      }
+      if (turnSource === null) return null;
 
-      const prior = closeOpenRun(ts);
+      const prior = open;
       const runId = opts.mintRunId();
       open = runId;
-      runsOpened += 1;
       const messageId = `${uuid}#0`;
 
       /**
@@ -497,11 +432,13 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       // The previous run's close rides the SAME unit as this run's open. They are one observation
       // of the source and must not be split across frames: a frame names ONE run (`packUnits`), so
       // returning them together lets the packer flush at the boundary, while returning them
-      // separately would need a record that does not exist.
+      // separately would need a record that does not exist. That close carries no `outcome`: a new
+      // prompt says a turn began and nothing about how the last one ended, so a `success` would
+      // assert what the source never said (the tolerated no-outcome case, §3.1).
       return {
         runId,
         events: [
-          ...(prior?.events ?? []),
+          ...(prior === null ? [] : [runFinished({ threadId: opts.threadId, runId: prior, timestamp: ts })]),
           runStarted({
             threadId: opts.threadId,
             runId,
@@ -575,27 +512,9 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
     return runId === null ? null : { runId, events };
   };
 
-  const diagnose = (): string | null => {
-    if (runsOpened > 0) return null;
-    if (promptShaped === 0)
-      return (
-        `agui-map: no run opened — this session contains no prompt-shaped record at all ` +
-        `(no string-content, non-compaction \`user\` entry). Nothing was refused; there was nothing ` +
-        `to refuse.`
-      );
-    return (
-      `agui-map: NO RUN OPENED, and it was a refusal, not an empty session — ${refusedUnattributable} of ` +
-      `${promptShaped} prompt-shaped record(s) carry neither an \`origin.kind\` this mapper enumerates ` +
-      `nor \`promptSource: "sdk"\`, so none of them could be attributed and none opened a run. Every ` +
-      `event downstream of a run is therefore absent BY DECISION. If these are real prompts, the ` +
-      `harness has a provenance shape that has not been measured: measure it and add it to ` +
-      `ORIGIN_RULE or ABSENT_ORIGIN_RULE deliberately.`
-    );
-  };
-
   const forgetOpenRun = (runId: string): void => {
     if (open === runId) open = null;
   };
 
-  return { map, closeOpenRun, openRun: () => open, forgetOpenRun, diagnose };
+  return { map, forgetOpenRun };
 }
