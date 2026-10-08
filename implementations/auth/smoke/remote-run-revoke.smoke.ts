@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SignJWT } from "jose";
@@ -15,10 +15,11 @@ import {
   ensureAdmissionStore, ensureAuthorityStores, ensureIssuedStores, epAuthBucket, epgateKey,
   epRequestSubject, issuanceGateKey, issuedBucket, mintGeneration, mintLifecycleUid, newIdentity,
   newTakeoverId, openIssuedStore, openRecordsBucket, readRunAdmission, readRunRevocation,
-  remoteManagerActors, revocationKey, type RemoteRunRevokeResult, type RunRevocation,
+  remoteManagerActors, revocationKey, serverConfig, mintCreds, standaloneConnectOpts, type RemoteRunRevokeResult, type RunRevocation,
 } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { deriveOwnerForIdpSubject, grantActor, openAuthAuthorityPlane, handleManagerServiceAuthority, type ManagerServiceAuthorityCtx } from "../src/index.js";
+import { openAuthorityClient, type AuthorityClient } from "../src/authority-client.js";
 import { remoteManagerCurrentRegistrationProof } from "../src/retained-manager-validation.js";
 import { RunHosting } from "../../manager/src/run-hosting.js";
 import { remoteRunHosting, type RemoteManagerIdentityState } from "../../manager/src/remote-authority.js";
@@ -39,15 +40,20 @@ const SPACE = "revokeroute", EP = "manager";
 const sd = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}revoke-`));
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
-const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(port), "-a", "127.0.0.1"], { stdio: "ignore" });
+const auth = await createSpaceAuth(SPACE);
+writeFileSync(join(sd, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(sd, "js") }));
+const probeCreds = await mintCreds(auth, newIdentity(), "probe");
+const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
 const release = teardownOnSignal(broker, sd);
-let nc: NatsConnection | undefined, httpServer: Server | undefined;
+let nc: NatsConnection | undefined, httpServer: Server | undefined, fixture: AuthorityClient | undefined;
 let plane: Awaited<ReturnType<typeof openAuthAuthorityPlane>> | undefined;
 try {
-  await awaitBrokerReady(() => connect({ servers }).then(n => n.close().then(() => true), () => false), { servers, attempts: 50, delayMs: 100 });
-  nc = await connect({ servers });
+  await awaitBrokerReady(() => connect({ servers, ...standaloneConnectOpts({ creds: probeCreds, tls: false }) }).then(n => n.close().then(() => true), () => false), { servers, attempts: 50, delayMs: 100 });
+  // Fixture setup/readback only. The shipped auth plane and both RunHosting arms open their own
+  // scoped credentials against this JWT-authenticated broker, never this fixture connection.
+  fixture = await openAuthorityClient({ server: servers, space: SPACE, dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed }, label: "revoke-fixture", grants: id => ({ publish: [">"], subscribe: [">", `_INBOX_${id}.>`] }), log: () => {} });
+  nc = fixture.nc;
   const js = jetstream(nc), jsm = await jetstreamManager(nc), kvm = new Kvm(nc);
-  const auth = await createSpaceAuth(SPACE);
   await ensureAuthorityStores(jsm, kvm, SPACE);
   await ensureAdmissionStore(jsm, kvm, SPACE);
   await ensureIssuedStores(jsm, kvm, SPACE);
@@ -205,7 +211,7 @@ try {
 } finally {
   if (httpServer !== undefined) await new Promise<void>((resolve, reject) => httpServer!.close(e => e ? reject(e) : resolve()));
   await plane?.close();
-  await nc?.close();
+  await fixture?.close();
   await killAndAwaitExit(broker);
   release();
   rmSync(sd, { recursive: true, force: true });
