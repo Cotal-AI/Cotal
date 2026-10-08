@@ -178,10 +178,11 @@ no em dashes, filler words such as `exactly` or `fold`, list-style headings, or 
 "this, not that" contrasts. `pnpm check:docs-voice` enforces the mechanical parts. An operator
 string a page quotes must be one the source still emits, with a substituted value written as a
 placeholder such as `<id>`; `pnpm check:docs-literals` checks that.
-A published page may link relatively only to another published page (the group map in
-`website/scripts/sync-docs.mjs`), and the docs index links the same `docs/*.md` pages and
-`SPEC.md` that the group map publishes; `pnpm check:docs-site` runs that sync and fails
-otherwise.
+A published page's relative link to `SPEC.md` or a top-level `docs/*.md` page must name a page
+the group map in `website/scripts/sync-docs.mjs` publishes. Any other relative link, a design note
+under `docs/design/` included, must name a file that exists and goes to GitHub. The docs index
+links the same `docs/*.md` pages and `SPEC.md` that the group map publishes.
+`pnpm check:docs-site` runs that sync and fails otherwise.
 `docs/` describes the **protocol** only; each example documents itself in its own
 `examples/*/README.md`.
 - **A doc comment sits directly above what it documents.** TypeScript attaches only the nearest

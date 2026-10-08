@@ -2342,7 +2342,7 @@ user-auth mesh the host's own manager refuses the family by name, and `--local` 
 there. A participant's manager started with `cotal supervise` hosts a logged-in user's runs through
 its issuing host: the auth callout issues the user's manager connection, and every `run` verb rides
 the versioned rail under that issuance.
-[User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+[User-auth run start](design/user-auth-run-start.md)
 records the path. The guide is [workflows](workflows.md).
 
 ## Server daemons

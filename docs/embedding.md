@@ -52,7 +52,7 @@ are marked; import them with `import type`.
 | `retireManagerInstanceIdentity(root, space, expected)` | `@cotal-ai/workspace` | remove a persisted manager identity only if its complete instance id and serve identity still match `expected`. Returns `removed` or `absent`; refuses malformed, nonregular, and changed records. `absent` is not proof of ownership or successful teardown. The caller must separately prove stop and retirement ownership before using it. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
-| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/platform-pooled-control-authority.md) design describes. |
+| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](design/platform-pooled-control-authority.md) design describes. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
@@ -484,7 +484,7 @@ No stock door lets a platform control holder launch or retire an agent for a sig
 managed-agent kinds above act only under the authenticated owner and refuse a caller that is not
 that user, so a platform could only run a user's agent by holding the user's login or by enrolling
 the agent under its own owner. Both are refused. The
-[delegated user launch intent](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/delegated-user-launch-intent.md)
+[delegated user launch intent](design/delegated-user-launch-intent.md)
 design and SPEC §13.16 define the smallest addition. The user admits one launch or one retirement
 on the host's authenticated route. The holder consumes that intent once, from its current
 registration, epoch and lifecycle. The host then enrolls the agent under the user's `u_` owner with
@@ -578,7 +578,7 @@ returns parsed `goalidx.manager.<owner>.>` entries for that owner only. The host
 consumer connection and its create/delete rights. The five-minute executor already renews through
 `remoteAuthority.renewExecutor`. The signerless supervisor, serve, goal-writer, session-ledger and
 per-run driver credentials do not yet have a complete remote renewal and adoption path. The
-[hosted runtime contract](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/hosted-runtime-contracts.md) records the bounded additions and
+[hosted runtime contract](design/hosted-runtime-contracts.md) records the bounded additions and
 their ownership; it is not a shipped pooled service.
 
 **Signer isolation needs an OS sandbox.** The default pty runtime
@@ -593,7 +593,7 @@ agents under this manager.
 
 ### Delegated seats outside the manager's filesystem
 
-The [portable lifecycle bootstrap](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/portable-lifecycle-bootstrap.md)
+The [portable lifecycle bootstrap](design/portable-lifecycle-bootstrap.md)
 design and SPEC §13.17 define how a managed agent that `enrollManagedAgent` already enrolled starts
 in a child that cannot see the manager's filesystem. The ordinary `spawn` path writes the token and
 sentinel under the manager's workspace root and hands the runtime a launch whose bearer command and

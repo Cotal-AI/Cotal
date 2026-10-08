@@ -344,7 +344,7 @@ connection, and the host binds each run to the owner who registered the manager.
 agents that user owns, enrolled by the host like any detached spawn, with the reach the user's own
 row grants when the spawn runs. A spawn may be placed on that manager and on no other instance. The
 host's own manager refuses user-auth runs by name.
-[User-auth run start](https://github.com/Cotal-AI/Cotal/blob/main/docs/design/user-auth-run-start.md)
+[User-auth run start](design/user-auth-run-start.md)
 records the path.
 
 The registry entry decides the broker URL `supervise` dials, so a mesh published over `wss://` is
