@@ -2889,12 +2889,15 @@ export class Manager {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(managed = [...this.agents.values()]): Promise<void> {
     const failures: string[] = [];
+    const stopped: ManagedAgent[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
       this.recordContinuityAtStop(a, "shutdown");
       this.agents.delete(a.name);
-      this.stopHandle(a, false);
+      const refused = this.stopHandle(a, false);
+      if (refused === undefined) stopped.push(a);
+      else failures.push(`${a.name}: stop failed: ${refused}`);
     }
     // The slot delete above bypasses freeSlot, which is where the reap line lives — so say it here,
     // once per seat, with the one stop cause that names this path: the shutdown itself. Without
@@ -2904,7 +2907,7 @@ export class Manager {
     // while any seat may still hold this instance's broker rails: that creates the exact orphan
     // window where a successor sees a dead manager but live predecessor authority. Every shipped
     // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
-    await Promise.all(managed.map(async (a) => {
+    await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
       } catch (e) {
@@ -3930,12 +3933,12 @@ export class Manager {
    *  grace window. POSIX delivers SIGTERM→SIGKILL natively, so it keeps the signal path. A hard stop
    *  (`graceful:false`, e.g. emergency reap) skips the cooperative step on every platform.
    *
-   *  BEST-EFFORT / never throws (#159 B2): a runtime hard-stop CAN throw (tmux `closeWindow` / cmux
-   *  `closeWorkspace` are direct calls), and every caller (despawn / self-stop / reap / shutdown) frees the
-   *  slot + deprovisions RIGHT AFTER — so a throwing stop must not abort that cleanup and leak the agent's
-   *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged loudly,
-   *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
-  private stopHandle(a: ManagedAgent, graceful: boolean): void {
+   *  Never throws (#159 B2): a runtime hard-stop CAN throw (tmux `closeWindow` / cmux `closeWorkspace`
+   *  are direct calls), and a throwing stop must not abort a caller's cleanup and leak the agent's
+   *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged and
+   *  returned: a caller that must prove exit (shutdown, a failed resume) reports it as the cause at
+   *  once instead of waiting out a stop the runtime already refused. */
+  private stopHandle(a: ManagedAgent, graceful: boolean): string | undefined {
     // The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY, before any await anywhere on
     // this stop path — later renewals refuse, while an already-admitted renewal drains before the
     // durable terminal begins.
@@ -3948,7 +3951,9 @@ export class Manager {
       if (a.handedOff) this.trackDeprovision({ ...a, delegatedHandle: a.handle });
       else a.handle.stop({ graceful });
     } catch (e) {
-      console.error(`stop ${a.name} (${a.id}): ${rejectionText(e)}`);
+      const failure = rejectionText(e);
+      console.error(`stop ${a.name} (${a.id}): ${failure}`);
+      return failure;
     }
   }
 
@@ -6977,12 +6982,13 @@ export class Manager {
    *  would reap it: it is freed only once its exit is proved, and otherwise stays managed until it
    *  exits or the manager stops it. */
   private async stopFailedResume(managed: ManagedAgent, cause: FreeSlotCause, detail: string): Promise<ControlReply> {
-    this.stopHandle(managed, false);
-    try {
-      await this.awaitHandleExit(managed.handle);
-    } catch (exit) {
+    const refused = this.stopHandle(managed, false);
+    const unproven = refused === undefined
+      ? await this.awaitHandleExit(managed.handle).then(() => undefined, rejectionText)
+      : `stop failed: ${refused}`;
+    if (unproven !== undefined) {
       this.watchExit(managed);
-      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${rejectionText(exit)}` };
+      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${unproven}` };
     }
     this.freeSlot(managed, true, cause, true);
     return { ok: false, error: detail };

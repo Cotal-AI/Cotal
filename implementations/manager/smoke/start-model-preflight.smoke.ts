@@ -506,7 +506,7 @@ registry.register(recNoResumeCon);
   try { await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents(); }
   catch (e) { teardownError = (e as Error).message; }
   check("teardown: a throwing hard-stop doesn't abort teardown (every child attempted)", stopped.includes("lease1") && stopped.includes("lease2"), stopped);
-  check("teardown: an unverified survivor makes shutdown fail loud (never releases into split brain)", /lease1.*still running/.test(teardownError), teardownError);
+  check("teardown: a refused stop makes shutdown fail loud with its cause (never releases into split brain)", /lease1: stop failed: simulated runtime close failure/.test(teardownError), teardownError);
   check("teardown: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
 }
 
