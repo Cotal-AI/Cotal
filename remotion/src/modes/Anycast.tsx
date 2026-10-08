@@ -27,10 +27,6 @@ import {
 } from "./scene";
 
 const JUNCTION: Pt = { x: 400, y: 410 };
-// the peers are the reviewer pool; the first idle one claims, so the shared
-// presence decides who
-const CLAIMER = MODE_PEERS.findIndex((p) => p.status === "idle");
-if (CLAIMER < 0) throw new Error("anycast: no idle peer in MODE_PEERS to claim");
 
 // The role's bracket is measured from the first and last peer so it follows the
 // pool when the cast moves; below the last peer it leaves room for its name.
@@ -67,6 +63,11 @@ export const ANYCAST_DURATION = 162;
 
 export const ModeAnycast: React.FC = () => {
   const frame = useCurrentFrame();
+  // the peers are the reviewer pool; the first idle one claims, so the shared
+  // presence decides who. Checked here, not at import: Root imports every card,
+  // so a module-scope throw would also refuse the cards that need no idle peer.
+  const claimer = MODE_PEERS.findIndex((p) => p.status === "idle");
+  if (claimer < 0) throw new Error("anycast: no idle peer in MODE_PEERS to claim");
 
   const t1 = prog(frame, T.sendStart, T.sendEnd);
   const t2 = prog(frame, T.claimStart, T.claimEnd);
@@ -88,7 +89,7 @@ export const ModeAnycast: React.FC = () => {
     <Card>
       <Wires
         paths={[PATH1, ...OUT_PATHS]}
-        glow={[inGlow, ...OUT_PATHS.map((_, i) => (i === CLAIMER ? claimGlow : 0))]}
+        glow={[inGlow, ...OUT_PATHS.map((_, i) => (i === claimer ? claimGlow : 0))]}
       />
 
       {/* the role: a quiet bracket around the pool, labelled on its top edge */}
@@ -120,9 +121,9 @@ export const ModeAnycast: React.FC = () => {
         <AgentNode
           key={p.name}
           {...p}
-          status={i === CLAIMER ? claimerStatus : p.status}
-          flash={i === CLAIMER ? flash : 0}
-          dimmed={i !== CLAIMER ? dimOthers : 0}
+          status={i === claimer ? claimerStatus : p.status}
+          flash={i === claimer ? flash : 0}
+          dimmed={i !== claimer ? dimOthers : 0}
           type={CARD_TYPE}
         />
       ))}
@@ -130,8 +131,8 @@ export const ModeAnycast: React.FC = () => {
       <Beam d={PATH1} pos={(t) => lerp(...SEG1, t)} t={t1} visible={t1 > 0 && t1 < 1} />
       {probing && <Dot at={JUNCTION} breath={breath} />}
       <Beam
-        d={OUT_PATHS[CLAIMER]!}
-        pos={(t) => bez(...FAN[CLAIMER]!, t)}
+        d={OUT_PATHS[claimer]!}
+        pos={(t) => bez(...FAN[claimer]!, t)}
         t={t2}
         visible={t2 > 0 && t2 < 1}
       />
