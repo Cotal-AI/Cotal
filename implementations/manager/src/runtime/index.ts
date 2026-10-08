@@ -227,27 +227,36 @@ function removeOwned(name: string, artifacts: readonly string[] | undefined): vo
 
 function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly string[]): void {
   let done = false;
-  let poll: ReturnType<typeof setInterval> | undefined;
   // Runs only once the exit is proved.
   const finish = () => {
     if (done) return;
     done = true;
-    clearInterval(poll);
     removeOwned(name, artifacts);
   };
   // Wrapped, never called at spawn: a runtime bounds its wait for a stop (tmux gives up after
   // seconds), so a wait started at spawn would give up on every seat that outlives that bound.
   const wait = handle.waitForExit?.bind(handle);
   if (wait) handle.waitForExit = () => wait().then(finish);
+  watchProvedExit(handle, finish, () => !done);
+}
+
+/** Call `onExit` once the runtime proves `handle`'s child gone, until `watching` turns false. A
+ *  handle with no exit stream is polled through `status()` and its `waitForExit` confirms the exit,
+ *  so a seat that ends on its own is seen as well as one that is stopped. Returns false when the
+ *  handle can do neither, so no exit of its child will ever be seen. */
+export function watchProvedExit(handle: AgentHandle, onExit: () => void, watching: () => boolean): boolean {
   let session: AttachSession;
   try {
     session = handle.attach();
   } catch {
-    // No exit stream. Poll the runtime's own status and let its wait prove the exit, so a seat that
-    // ends on its own is cleaned up as well as one that is stopped.
-    if (!wait) return;
+    const wait = handle.waitForExit?.bind(handle);
+    if (!wait) return false;
     let waiting = false;
-    poll = setInterval(() => {
+    const poll = setInterval(() => {
+      if (!watching()) {
+        clearInterval(poll);
+        return;
+      }
       if (waiting) return;
       let exited: boolean;
       try {
@@ -257,17 +266,23 @@ function discardOnExit(name: string, handle: AgentHandle, artifacts: readonly st
       }
       if (!exited) return;
       waiting = true;
-      wait()
-        .then(finish, () => {})
-        .then(() => {
+      wait().then(
+        () => {
+          clearInterval(poll);
+          onExit();
+        },
+        () => {
           waiting = false;
-        });
+        },
+      );
     }, EXIT_POLL_MS);
     poll.unref();
-    return;
+    return true;
   }
-  session.onExit(finish);
-  if (handle.status() === "exited") finish();
+  session.onExit(onExit);
+  // A child that exited before the subscription fires no event for it.
+  if (handle.status() === "exited") onExit();
+  return true;
 }
 
 /** Walk up from `startDir` to the pnpm workspace root (for spawning `pnpm cotal …`). */
