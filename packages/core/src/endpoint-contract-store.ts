@@ -262,13 +262,14 @@ export async function publishContractClosureManifest(
  *  bound, the reference-chain depth, the artifact-count ceiling (non-raiseable; a caller may
  *  narrow), a per-artifact reference cap, and ONE total monotonic time budget. `extractRefs`
  *  receives a DETACHED copy of each artifact's bytes (a mutating seam cannot poison the
- *  returned map) and its answer is size-capped. Returns digest → bytes (manifest excluded;
- *  root first, then first-visit order) plus the parsed manifest. */
+ *  returned map) and its answer is size-capped. An aborted `signal` rejects the walk with its
+ *  reason, settling a read in flight. Returns digest → bytes (manifest excluded; root first,
+ *  then first-visit order) plus the parsed manifest. */
 export async function fetchContractClosure(
   ctx: ContractStoreContext,
   closureDigestRef: string,
   extractRefs: (bytes: Uint8Array, digestHex: string) => string[],
-  opts: { maxArtifacts?: number; walkBudgetMs?: number; artifactMemo?: ArtifactMemo } = {},
+  opts: { maxArtifacts?: number; walkBudgetMs?: number; artifactMemo?: ArtifactMemo; signal?: AbortSignal } = {},
 ): Promise<{ manifest: ContractClosureManifest; artifacts: Map<string, Uint8Array> }> {
   resources(ctx); // brand-check (resources unused here; the delegated publish/fetch use them)
   const max = opts.maxArtifacts ?? CONTRACT_CLOSURE_MAX_ARTIFACTS;
@@ -285,13 +286,23 @@ export async function fetchContractClosure(
   // extractor (distsys 8dcad72 M1): every Direct Get is raced against the REMAINING budget (a stuck
   // read is a bounded deadline, never a hang), and overBudget() is checked after each extractRefs
   // and before returning, so a slow synchronous seam cannot blow the budget and still return success.
+  // The read is raced against `signal` too, so a cancelled walk settles without waiting for it.
   const raceBudget = async <T>(p: Promise<T>, what: string): Promise<T> => {
+    opts.signal?.throwIfAborted();
     const rem = budgetMs - (performance.now() - startedAt);
     if (rem <= 0)
       throw new EpEnvelopeError("deadline-exceeded", `the closure walk exhausted its ${budgetMs}ms budget before ${what} (SPEC 13.7/13.8)`);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const deadline = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `the closure walk exceeded its ${budgetMs}ms budget during ${what}; a closure fetch is bounded and fails loud, never hangs (SPEC 13.7/13.8)`)), rem); });
-    try { return await Promise.race([p, deadline]); } finally { clearTimeout(timer); }
+    let onAbort: (() => void) | undefined;
+    const bound = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `the closure walk exceeded its ${budgetMs}ms budget during ${what}; a closure fetch is bounded and fails loud, never hangs (SPEC 13.7/13.8)`)), rem);
+      onAbort = () => reject(opts.signal?.reason);
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+    });
+    try { return await Promise.race([p, bound]); } finally {
+      clearTimeout(timer);
+      if (onAbort) opts.signal?.removeEventListener("abort", onAbort);
+    }
   };
 
   // One RESOLVE reaches the same artifact from many closures (a shared void input, a common error

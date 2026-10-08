@@ -270,6 +270,10 @@ the manager has subscribed. If the connection closes while the resolver waits, t
 cleanly instead of throwing from the retry timer. The resolved command is never repeated by this
 readiness behavior.
 
+The describe and the contract store reads after it share the resolver's one deadline, so a slow
+store read fails the resolve with `deadline-exceeded` when that deadline expires. Cancelling a
+resolve settles a store read in flight instead of waiting for it to return.
+
 The resolve and the invoke are separate trips through the same anycast queue, so in a
 multi-manager space an unpinned call can land on an instance the caller did not resolve. Every
 call carries the incarnation it resolved against, and a manager that is not that incarnation
