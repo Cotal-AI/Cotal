@@ -39,7 +39,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, publicIdentities, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -439,10 +439,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             requestId: `scan${mintLifecycleUid()}`,
             registrationProof: retainedRegistrationProof,
             serveEpoch: registered.processEpoch,
-            identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as {
-              supervisor: { id: string }; executor: { id: string }; serve: { id: string };
-              goalWriter: { id: string }; sessionLedger: { id: string };
-            },
+            identities: publicIdentities(state),
           };
           const result = await provider.scanRemoteManagerGoalIndex!({
             store: workspaceSecretStore(findCotalRoot()),
