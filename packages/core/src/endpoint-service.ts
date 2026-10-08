@@ -1111,10 +1111,11 @@ export type ServiceDeregistration =
   | { removed: true; specRevision: number; statusRevision?: number }
   /** No live spec key at the coordinate: never registered, or already deregistered. */
   | { removed: false; reason: "absent" }
-  /** The spec is not at the caller's `registrationRevision`: another incarnation owns it. Or a key
-   *  moved between the read and its revision-pinned delete: something is WRITING to this
-   *  registration, so it is not the dead record that was inspected. Nothing was removed — the
-   *  status delete is attempted first precisely so this outcome leaves the record whole. */
+  /** The spec is not at the caller's `registrationRevision`: another incarnation owns it. Or the
+   *  status observed a later registration than the spec read, or a key moved between the read and
+   *  its revision-pinned delete: something is WRITING to this registration, so it is not the dead
+   *  record that was inspected. The spec was not removed. A status that was removed observed the
+   *  inspected registration or an earlier one. */
   | { removed: false; reason: "superseded" }
   /** This instance currently holds the endpoint governance slot at the live gate generation
    *  (a registration is in flight through spec publish and gate reopen). Nothing was removed. */
@@ -1141,7 +1142,10 @@ export type ServiceDeregistration =
  * BOTH DELETES ARE REVISION-PINNED to what this function just read. A blind delete of a registration
  * is a delete of whatever is there NOW, and what is there now may be a successor that re-registered
  * microseconds ago under the same instanceId — exactly the case a restart produces. A moved key
- * aborts with `superseded` and removes nothing.
+ * aborts with `superseded`. So does a status that observed a later registration than the spec read:
+ * that is a successor landing between the two reads, which the status pin cannot see because the
+ * status read returns it. `superseded` never removes the spec, and a status it removed observed the
+ * inspected registration or an earlier one.
  *
  * THAT PIN ONLY COVERS A WRITE AFTER THE READ. A successor that registered before the read is what
  * the read returns, and the instanceId persists across restarts, so the read alone cannot tell it
@@ -1210,6 +1214,9 @@ export async function deregisterServiceInstance(
   const casLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
   let statusRevision: number | undefined;
   if (statusEntry && statusEntry.operation === "PUT") {
+    // A successor's status: deleting it would leave that successor registered and never live.
+    if (parseServiceStatus(decodeJson(statusEntry.value, statusKey)).observedSpecRevision > specEntry.revision)
+      return { removed: false, reason: "superseded" };
     try {
       await deleteRecordEntry(kv, statusKey, statusEntry.revision);
       statusRevision = statusEntry.revision;

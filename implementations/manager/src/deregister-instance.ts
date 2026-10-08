@@ -223,7 +223,7 @@ export async function deregisterEndpointInstance(opts: {
   if (!outcome.removed)
     throw new InstanceDeregisterRefused(
       "superseded",
-      `the registration for ${endpoint}/${instanceId} MOVED while this ran, so the record inspected is not the record now stored - something is writing to it. Nothing was removed. Re-observe before retrying.`,
+      `the registration for ${endpoint}/${instanceId} MOVED while this ran, so the record inspected is not the record now stored - something is writing to it. The registration was not removed; a status that was removed observed the inspected registration or an earlier one. Re-observe before retrying.`,
     );
 
   log(`✓ removed the ${endpoint} registration for ${instanceId} (spec revision ${outcome.specRevision}${outcome.statusRevision !== undefined ? `, status revision ${outcome.statusRevision}` : ", no status key"})`);
