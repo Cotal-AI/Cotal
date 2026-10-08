@@ -245,8 +245,9 @@ runtime create and status kinds. For those it reads the manager actor's ledger r
 `{ authorized: true, owner, instanceId, actor, target }`.
 [embedding.md](embedding.md) documents the managed doors' contracts.
 
-The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`, and
-`GET /.well-known/cotal-mesh`; every other path is 404. It does **not** require the loopback
+The public listener has a closed surface: `GET /health`, `GET /jwks`, `POST /exchange`,
+`POST /manager-service-authority`, and `GET /.well-known/cotal-mesh`; every other path is 404. It
+does **not** require the loopback
 capability. That capability proves same-uid access to a 0600 local file and has no remote meaning;
 on the public face the credential is the proof. A human presents an EdDSA IdP JWT checked against
 the pinned JWKS, issuer, and audience. An agent presents its spawn-time actor token, whose hash must

@@ -25,8 +25,9 @@
  *
  * REMOTE EXCHANGE — the OPTIONAL second listener (`--exchange-public-port`, also binding
  * 127.0.0.1; TLS terminates at a reverse proxy — in-process TLS was rejected: it duplicates cert
- * renewal and forks deploy). It serves ONLY `GET /health`, `GET /jwks`, `POST /exchange`, and
- * `GET /.well-known/cotal-mesh` (the generated discovery bundle); everything else 404s. Its
+ * renewal and forks deploy). It serves ONLY `GET /health`, `GET /jwks`, `POST /exchange`,
+ * `POST /manager-service-authority`, and `GET /.well-known/cotal-mesh` (the generated discovery
+ * bundle); everything else 404s. Its
  * `/exchange` demands NO capability — honestly: the 0600 cap is a same-uid file-ACL boundary with
  * no remote meaning, so requiring its bytes from a remote caller would prove nothing. The proof on
  * the public face is the credential itself: the human arm presents an EdDSA IdP JWT verified
@@ -2338,10 +2339,6 @@ interface ExchangePolicy {
    *  false so every view still reaches the bridge; the public face keeps god-view, history-purge,
    *  deployer, and manager-service loopback-only. */
   refuseViews: boolean;
-  /** Permit the dedicated manager-service authority route. Public deployments opt in explicitly by
-   * advertising the public exchange; the route still authenticates an IdP proof and fresh ledger
-   * scope, while raw view/profile requests remain refused. */
-  allowManagerAuthority: boolean;
   /** Name the requesting peer for failure attribution. */
   peerKey(req: IncomingMessage): string;
   /** True when this face's refused-exchange budget (for `peer`) is exhausted; prunes the window. */
@@ -2355,7 +2352,6 @@ interface ExchangePolicy {
 const LOOPBACK_POLICY: ExchangePolicy = {
   requireCapability: true,
   refuseViews: false,
-  allowManagerAuthority: true,
   peerKey: (req) => req.socket.remoteAddress ?? "loopback",
   throttled: (ctx) => {
     const now = Date.now();
@@ -2388,7 +2384,6 @@ function makePublicPolicy(trustedProxy: boolean): ExchangePolicy {
   return {
     requireCapability: false,
     refuseViews: true,
-    allowManagerAuthority: true,
     peerKey: (req) => {
       if (trustedProxy) {
         const xff = req.headers["x-forwarded-for"];
@@ -2792,15 +2787,14 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
  *  context it builds itself is held by the compiler to every arm the dispatcher calls. */
 export type ManagerServiceAuthorityCtx = ManagerAuthorityDispatchCtx & Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret">;
 
-/** Loopback/operator-only typed manager authority exchange. The public route table never includes
- * this path, and the loopback capability is checked here in addition to the route separation. */
+/** The typed manager authority exchange, served on both faces. The face's policy decides whether the
+ *  loopback capability is demanded; on the public face the verified IdP JWT is the proof, and the
+ *  dispatcher reads the caller's scope from the ledger either way. */
 export async function handleManagerServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: ManagerServiceAuthorityCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json" });
-  if (!policy.allowManagerAuthority)
-    return send(res, 403, { error: "manager-service authority is not enabled on this exchange face" });
   if (policy.requireCapability && req.headers.authorization !== `Bearer ${ctx.cap}`)
     return send(res, 401, { error: "missing/invalid exchange capability - manager-service authority requires the operator exchange capability on this face" });
   const body = await readJsonBody(req) as { idpToken?: unknown; request?: unknown };
@@ -2907,7 +2901,8 @@ export function checkAgentProvisioningUrl(raw: string): string | undefined {
 }
 
 /** Build the PUBLIC listener's request handler: its own closed route table (/health, /jwks,
- *  /exchange under the public policy, /.well-known/cotal-mesh — 404 everything else), behind a
+ *  /exchange and /manager-service-authority under the public policy, /.well-known/cotal-mesh — 404
+ *  everything else), behind a
  *  global concurrent-admission cap and a hard wall-clock deadline. All of it is public-face-local
  *  state: nothing here touches the loopback face's windows. */
 function makePublicHandler(
