@@ -214,11 +214,14 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
   if (broker.idp !== undefined) {
     if (broker.auth !== "user")
       add(`broker.idp is for user-auth spaces - set broker.auth: "user" (or drop idp)`, ["broker", "idp"]);
+    let u: URL | undefined;
     try {
-      new URL(broker.idp);
+      u = new URL(broker.idp);
     } catch {
       add(`broker.idp is not a valid URL (Better Auth: <origin>/api/auth)`, ["broker", "idp"]);
     }
+    if (u?.username || u?.password)
+      add(`broker.idp must not embed credentials - give the IdP base URL only`, ["broker", "idp"]);
   }
 }
 
