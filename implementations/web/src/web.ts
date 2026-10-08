@@ -24,6 +24,8 @@ import {
   c,
   connectOrExit,
   localProcessPath,
+  parsePid,
+  probeLiveness,
   progressSignal,
   readWebSession,
   removePidPair,
@@ -221,16 +223,6 @@ export const webProcess: LocalProcess = {
   rootedAt: "target",
 };
 
-function pidAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
 /** Atomically claim this mesh's web pidfile so concurrent custom-port launches cannot overwrite it,
  *  then pin this process's identity beside it. The pin follows the exclusive create because
  *  `writePidPair` publishes by rename, which would replace a concurrent launch's claim. */
@@ -245,18 +237,24 @@ function claimPid(path: string): void {
     if (created) rmSync(path, { force: true });
     if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     const raw = readFileSync(path, "utf8").trim();
-    if (raw.startsWith("removing:")) {
-      const owner = Number(raw.slice("removing:".length));
+    const removal = raw.startsWith("removing:");
+    const pid = parsePid(removal ? raw.slice("removing:".length) : raw);
+    const liveness = pid === undefined ? undefined : probeLiveness(pid);
+    if (liveness === "alive")
       throw new Error(
-        pidAlive(owner)
-          ? `web extension removal is in progress (pid ${owner})`
-          : `web dashboard has a stale extension-removal reservation at ${path} - remove it and retry`,
+        removal
+          ? `web extension removal is in progress (pid ${pid})`
+          : `web dashboard is already running for this mesh (pid ${pid})`,
       );
-    }
-    const prior = Number(raw);
-    if (pidAlive(prior))
-      throw new Error(`web dashboard is already running for this mesh (pid ${prior})`);
-    throw new Error(`web dashboard has a stale pidfile at ${path} - clean it with \`cotal down web\`, then retry`);
+    // Stale is advice to clean the record, so it is given only for a pid proven gone or an empty husk
+    // (which `cotal down web` clears). Anything else may still front a live process.
+    if (liveness === "dead" || raw === "")
+      throw new Error(
+        removal
+          ? `web dashboard has a stale extension-removal reservation at ${path} - remove it and retry`
+          : `web dashboard has a stale pidfile at ${path} - clean it with \`cotal down web\`, then retry`,
+      );
+    throw new Error(`web dashboard pidfile at ${path} holds ${JSON.stringify(raw)}, which may still front a running process - stop that process and remove the file, then retry`);
   }
 }
 
@@ -1366,7 +1364,7 @@ export async function waitForDetachedWeb(
   const deadline = Date.now() + opts.timeoutMs;
   while (Date.now() < deadline) {
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
-    if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid))
+    if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
       throw new Error(`web dashboard exited before becoming ready (pid ${pid})`);
     if (pidFileOwned(opts.pidPath, pid)) {
       // The child writes its readiness nonce only after `listen()` succeeded, so an absent or
@@ -1381,7 +1379,7 @@ export async function waitForDetachedWeb(
         .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
         .catch(() => undefined);
       if (meta?.space === opts.space && meta.pid === pid) {
-        if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid))
+        if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
           throw new Error(`web dashboard exited during readiness (pid ${pid})`);
         return;
       }
@@ -1394,7 +1392,7 @@ export async function waitForDetachedWeb(
 export async function terminateDetachedWeb(child: ChildProcess, pidPath: string): Promise<void> {
   const pid = child.pid;
   if (!pid) return;
-  if (pidAlive(pid)) {
+  if (probeLiveness(pid) !== "dead") {
     try { child.kill("SIGTERM"); } catch { /* verify below */ }
     if (!(await waitForDeath(child, pid, DETACHED_STOP_TIMEOUT_MS))) {
       try { child.kill("SIGKILL"); } catch { /* verify below */ }
@@ -1411,12 +1409,12 @@ function pidFileOwned(path: string, pid: number): boolean {
 }
 
 async function waitForDeath(child: ChildProcess, pid: number, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null || child.signalCode !== null || !pidAlive(pid)) return true;
+  if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead") return true;
   await Promise.race([
     new Promise<void>((resolve) => child.once("exit", () => resolve())),
     sleep(timeoutMs),
   ]);
-  return child.exitCode !== null || child.signalCode !== null || !pidAlive(pid);
+  return child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead";
 }
 
 export function appendedLogTail(path: string, offset: number): string {
