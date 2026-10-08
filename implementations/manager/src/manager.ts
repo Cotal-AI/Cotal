@@ -17,6 +17,7 @@ import {
   assertLifecycleToken,
   discardLaunchArtifacts,
   divergentSecretStoreNotice,
+  injectedSecretStoreIdentity,
   parseDaemonStoreAnswer,
   parseSecretStoreIdentity,
   sameSecretStoreIdentity,
@@ -1145,16 +1146,6 @@ function resolveHarness(name: string, requires: readonly string[]): { binaries: 
 
 type LeaseState = "held" | "held-unrenewed" | "gone" | "unknown";
 
-function injectedManagerStoreIdentity(store: SecretStore): SecretStoreIdentity {
-  if (store.identity !== undefined) return parseSecretStoreIdentity(store.identity);
-  const coordinate = process.env.COTAL_SECRET_STORE;
-  if (!coordinate)
-    throw new Error(
-      "ManagerOptions.secretStore must declare its identity or set COTAL_SECRET_STORE so the manager and delivery daemon can name the same authority (never a silent local-root fallback)",
-    );
-  return { kind: "injected", coordinate };
-}
-
 /** True only when the delivery-admin rail has no bound responder. A timeout is a hung rail, not absence. */
 function isAbsentDeliveryAdmin(msg: string): boolean {
   if (/timeout/i.test(msg)) return false;
@@ -1514,7 +1505,7 @@ export class Manager {
       throw new Error("pooled control requires a proved assigned account for its initial supervisor credential");
     if (opts.remoteAuthority) this.managerLifecycleUid = opts.remoteAuthority.lifecycleUid;
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
-    if (opts.secretStore) this.secretStoreIdentity = injectedManagerStoreIdentity(opts.secretStore);
+    if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
     if (opts.pooled && isCustodialRuntime(this.runtime))
