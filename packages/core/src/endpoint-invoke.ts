@@ -196,11 +196,15 @@ export async function describeEndpoint(
   }
 }
 
+/** The options one {@link resolveService} closure walk runs under: the resolve's shared artifact
+ *  memo, what remains of its deadline, and its abort signal. */
+interface ClosureWalk { artifactMemo: ArtifactMemo; walkBudgetMs: number; signal?: AbortSignal }
+
 /** Fetch + verify ONE cluster document from the store at its closure digest (two-stage §13.7:
  *  the manifest at the closure digest, whose `root` names the document artifact). A cluster
  *  document declares no by-digest child references, so its closure is {root}. */
-async function fetchClusterDocument(store: ContractStoreContext, closureDigest: string, artifactMemo?: ArtifactMemo): Promise<ClusterDocument> {
-  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, () => [], { ...(artifactMemo ? { artifactMemo } : {}) });
+async function fetchClusterDocument(store: ContractStoreContext, closureDigest: string, walk: ClosureWalk): Promise<ClusterDocument> {
+  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, () => [], walk);
   const rootBytes = artifacts.get(contractRefToHex(manifest.root));
   if (rootBytes === undefined)
     throw new EpEnvelopeError("failed-precondition", `the cluster manifest ${closureDigest} names root ${manifest.root} but the root artifact is absent from the fetched closure (SPEC 13.7)`);
@@ -210,11 +214,11 @@ async function fetchClusterDocument(store: ContractStoreContext, closureDigest: 
 /** Fetch a schema CLOSURE from the store and PROFILE-recompile it, binding every by-digest member.
  *  The recompiled contract's closureDigest MUST equal the digest we fetched at — a store that
  *  served bytes hashing to a different closure is a tamper/bug and fails loud (§13.7). */
-async function recompileClosure(store: ContractStoreContext, closureDigest: string, artifactMemo?: ArtifactMemo): Promise<CompiledContract> {
+async function recompileClosure(store: ContractStoreContext, closureDigest: string, walk: ClosureWalk): Promise<CompiledContract> {
   // Walk the schema closure, resolving `cotal:sha256:<hex>` refs a document makes (the profile's
   // reference form) so a multi-document schema bundle rebuilds. A recompiled contract carries the
   // registered digest, so an equality check below is the tamper boundary.
-  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, (bytes) => extractSchemaRefs(bytes), { ...(artifactMemo ? { artifactMemo } : {}) });
+  const { manifest, artifacts } = await fetchContractClosure(store, closureDigest, (bytes) => extractSchemaRefs(bytes), walk);
   const members: Record<string, unknown> = {};
   for (const [hex, bytes] of artifacts) members[`sha256:${hex}`] = JSON.parse(dec.decode(bytes));
   const rootRef = manifest.root;
@@ -295,7 +299,11 @@ export async function resolveService(
   caller: EpCaller,
   opts: { deadlineMs?: number; instanceId?: string; signal?: AbortSignal } = {},
 ): Promise<ResolvedService> {
-  const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, opts);
+  // `deadlineMs` bounds the WHOLE resolve: the describe spends from it, and each closure walk is
+  // budgeted with what remains, so a slow store read fails the resolve at the caller's deadline.
+  const startedAt = performance.now();
+  const deadlineMs = opts.deadlineMs ?? 10_000;
+  const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, { ...opts, deadlineMs });
   const store = await contractStoreContext(nc, space);
   const visible = new Set<string>(answer.descriptor.clusters.flatMap((cl) => cl.commands));
   // The store reads dominate a resolve's wall time and are all caller->broker round-trips, so they
@@ -304,9 +312,15 @@ export async function resolveService(
   // that is the whole latency). Each closure walk is still internally sequential and its §13.7
   // bounds are still counted per walk — the concurrency is BETWEEN walks, so no limit is widened.
   const artifactMemo: ArtifactMemo = new Map();
+  const walk = (): ClosureWalk => {
+    const walkBudgetMs = Math.floor(deadlineMs - (performance.now() - startedAt));
+    if (walkBudgetMs <= 0)
+      throw new EpEnvelopeError("deadline-exceeded", `resolving ${endpoint} exhausted its ${deadlineMs}ms deadline before a contract-store read`);
+    return { artifactMemo, walkBudgetMs, ...(opts.signal ? { signal: opts.signal } : {}) };
+  };
   const docs = await pooled(answer.descriptor.clusters, RESOLVE_MAX_INFLIGHT_READS, (cl) => {
     opts.signal?.throwIfAborted();
-    return fetchClusterDocument(store, cl.digest, artifactMemo);
+    return fetchClusterDocument(store, cl.digest, walk());
   });
   // Flattened in DOCUMENT ORDER first, then resolved concurrently and inserted in that same order:
   // when two clusters declare one command name, last-in-document-order still wins, exactly as the
@@ -319,8 +333,8 @@ export async function resolveService(
     // Each command recompiles its OWN validators (cheap, CPU-only) even when two commands share a
     // closure digest: a compiled contract is not shared, only the artifact bytes behind it are.
     const [input, output] = await Promise.all([
-      recompileClosure(store, cmd.inputDigest, artifactMemo),
-      recompileClosure(store, cmd.outputDigest, artifactMemo),
+      recompileClosure(store, cmd.inputDigest, walk()),
+      recompileClosure(store, cmd.outputDigest, walk()),
     ]);
     return {
       command: cmd.name,

@@ -27,9 +27,7 @@
  * phase 1 goes red on the refetch count; revert the concurrency and phase 2 goes red on
  * max-in-flight; revert either and the occupancy cell goes red.
  *
- * NOT fixed by this change, and still asserted as an open finding: `deadlineMs` bounds only the
- * describe leg. The store reads run under `fetchContractClosure`'s own 30s budget, PER walk, so
- * the resolve still has no total bound — it is merely fast now.
+ * `deadlineMs` bounds the whole resolve: each closure walk is budgeted with what remains of it.
  *
  * Run: pnpm tsx implementations/manager/smoke/resolve-rtt-probe.smoke.ts
  *      (needs nats-server + node on PATH; boots its own broker on a free port)
@@ -218,15 +216,11 @@ try {
   console.log(`   now: ${m1.total} reads, but overlapped — serial-equivalent would be ${serialSecs.toFixed(1)}s`);
   console.log(`   measured wall time at ~${WAN_RTT}ms/read is phase 5 below, not this arithmetic`);
 
-  // ---- 5. WHAT DEADLINE ACTUALLY BOUNDS THE RESOLVE? -------------------------------------------
-  // The brief (and #385) say resolveService "can overrun its OWN 10s deadline". Reading the code,
-  // `deadlineMs` is forwarded ONLY to describeEndpoint; the store reads run under
-  // fetchContractClosure's separate walkBudgetMs (default 30_000, endpoint-contract-store.ts:307),
-  // one budget PER closure walk. If that reading is right, a resolve whose reads take far longer
-  // than 10s still SUCCEEDS — no deadline fires — and the caller's 10s is not a bound on the call.
-  // Predicted named cell: resolves OK, elapsed > 10s, no throw.
+  // ---- 5. THE WAN PROFILE INSIDE THE CALLER'S DEADLINE ------------------------------------------
+  // `deadlineMs` bounds the whole resolve, store reads included, so the overlapped reads must finish
+  // inside the caller's 10s at the reported ~160ms per read; serialized they would not.
   const SLOW_MS = 160; // 70 reads x 160ms ~ 11.2s, comfortably past the nominal 10s
-  console.log(`\n5. is the caller's deadlineMs:10_000 a bound on the WHOLE resolve? (${SLOW_MS}ms/read)`);
+  console.log(`\n5. does the WAN-profile resolve fit the caller's deadlineMs:10_000? (${SLOW_MS}ms/read)`);
   const m3 = newMeter();
   const t2 = performance.now();
   let outcome: string;
@@ -249,12 +243,6 @@ try {
     m3.delayOccupancyMs < slowSerialInject * 0.5 && m3.maxInFlight >= 8,
     { serialInject: slowSerialInject, delayOccupancyMs: Math.round(m3.delayOccupancyMs), maxInFlight: m3.maxInFlight, wallObserved: Math.round(slowTotal) });
   check("...and still resolves the full shipped command surface", outcome === `RESOLVED ${shipped.commandCount} commands`, outcome);
-  // The no-total-deadline FINDING is unchanged by this fix and is still worth asserting: deadlineMs
-  // never bounded the store reads, it only bounds the describe leg. The fix made the call fast; it
-  // did not give it a bound. Recorded so the deadline inversion is not quietly assumed fixed.
-  console.log(`\n   NOTE: deadlineMs still bounds only the describe leg — the reads run under`);
-  console.log(`   fetchContractClosure's own 30s budget, PER walk. Batching made the call fast;`);
-  console.log(`   it did not give the resolve a total bound. That defect stands (#385).`);
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
   await rawNc.drain().catch(() => rawNc.close());
