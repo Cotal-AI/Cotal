@@ -148,26 +148,21 @@ function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity)
     boundTo: { instanceId: b.instanceId, epoch: b.epoch },
     servedBy: { instanceId: identity.instanceId, epoch: identity.epoch },
   };
-  // §13.3: a responder refusing BEFORE dispatching to the handler MUST carry `not-executed`, and
-  // an omitted outcome MUST be read as `unknown` — so the marker alone is not enough. `bind-refused`
-  // is this implementation's vocabulary and `outcome` is the spec's, so a conformant peer that has
-  // never heard of the detail reads only the latter; emitting one without the other is what makes
-  // two implementations disagree about whether the command ran.
   if (b.instanceId !== identity.instanceId)
     throw new EpEnvelopeError("failed-precondition",
       `this request reached ${identity.endpoint} instance ${identity.instanceId}, but the caller bound to ${b.instanceId}; the class queue chose a different member and "${env.op.command}" WAS NOT RUN - no effect of it exists here. Re-resolve and re-issue, or address one instance (SPEC 13.2)`,
-      [detail], "not-executed");
+      [detail]);
   throw new EpEnvelopeError("expired",
     `this request reached ${identity.endpoint} instance ${identity.instanceId} at epoch ${identity.epoch}, but the caller bound to epoch ${b.epoch} of the same instance; this incarnation is not the one it resolved against and "${env.op.command}" WAS NOT RUN - no effect of it exists here (SPEC 13.2)`,
-    [detail], "not-executed");
+    [detail]);
 }
 
 /** §13.3 target currency at the pre-effect seam, for EVERY body-targeted request (call or
  *  cast; a cast has effects too). Fail-closed: no resolver seam means targeted modes are
  *  REFUSED (`unavailable`), never dispatched unchecked; a resolver failure is `unavailable`;
  *  a missing/superseded mapping, a UID mismatch, or a pinned `mappingRevision` mismatch is
- *  `expired` (§13.3). A missing mapping is also {@link EP_TARGET_UNMAPPED} and `not-executed`,
- *  because the resolver may know only this instance's targets and a sibling may host this one. */
+ *  `expired` (§13.3). A missing mapping is also {@link EP_TARGET_UNMAPPED}, because the
+ *  resolver may know only this instance's targets and a sibling may host this one. */
 async function assertTargetCurrent(env: EndpointRequest, resolve: EpTargetResolver | undefined): Promise<void> {
   const t = env.target;
   if (t === undefined) return;
@@ -181,7 +176,7 @@ async function assertTargetCurrent(env: EndpointRequest, resolve: EpTargetResolv
   }
   if (mapping === undefined)
     throw new EpEnvelopeError("expired", `this instance holds no current lifecycle mapping for target ${t.owner}.${t.actor} and ran nothing (SPEC 13.3)`,
-      [{ kind: EP_TARGET_UNMAPPED }], "not-executed");
+      [{ kind: EP_TARGET_UNMAPPED }]);
   if (mapping.lifecycleUid !== t.lifecycleUid)
     throw new EpEnvelopeError("expired", `target ${t.owner}.${t.actor} expected lifecycle ${t.lifecycleUid} but the current mapping is ${mapping.lifecycleUid} (SPEC 13.3: expired on mapping mismatch)`);
   if (t.mappingRevision !== undefined && mapping.mappingRevision !== t.mappingRevision)
@@ -454,6 +449,7 @@ export function serveEndpoint(
     const parsed = parseEpSubject(msg.subject);
     if (!parsed || parsed.plane !== "request") return; // no sender: MUST NOT be handled (§13.2)
     let env: EndpointRequest | undefined;
+    let dispatched = false;
     let reply: EndpointReply;
     try {
       env = parseEndpointRequest(JSON.parse(dec.decode(msg.data)));
@@ -510,6 +506,7 @@ export function serveEndpoint(
           await assertTargetCurrent(env, opts.resolveTarget);
       }
       const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
+      dispatched = true;
       if (!env.replyExpected) {
         await def.handler(ctx);
         return; // cast: the responder MUST NOT reply (§13.5)
@@ -525,9 +522,12 @@ export function serveEndpoint(
       const error = err instanceof EpEnvelopeError
         ? err.toEpError()
         : { code: "internal", message: (err as Error)?.message ?? String(err) };
+      // §13.3: a refusal raised before dispatch MUST say nothing ran, and an omitted outcome reads
+      // as `unknown`. Deciding it here, from where the loop stands, covers every check ahead of the
+      // handler, including one added later and a body that never parsed into an envelope.
       // The id echoes the request where one parsed; the reply subject is already nonce-scoped
       // to exactly this request's caller, so attribution never rides the echo.
-      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error };
+      reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: dispatched ? error : { ...error, outcome: "not-executed" } };
     }
     let bytes: Uint8Array;
     try {
