@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, type Cell, type Dot } from "../_shared";
+import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, WM_WIDTH, type Cell, type Dot } from "../_shared";
 import { Grid, PhaseLabel, Ticker, Tagline } from "../components";
 
 // Peers on a loop, connected around the ring — a circle of equals, no center.
@@ -18,7 +18,7 @@ const RAW: string[] = [
   gridLine([LV, "|"], [RV, "|"]),
   gridLine([18, "(dave)"], [25, "-".repeat(41)], [66, "(carol)"]),
 ];
-const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 9, (W - 42) >> 1);
+const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 9, (W - WM_WIDTH) >> 1);
 
 // One continuous clockwise loop around the ring.
 const LOOP: Cell[] = [
