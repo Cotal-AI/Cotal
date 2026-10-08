@@ -529,12 +529,15 @@ export function serveEndpoint(
       // to exactly this request's caller, so attribution never rides the echo.
       reply = { v: 1, id: env?.id ?? "invalid", ok: false, error: dispatched ? error : { ...error, outcome: "not-executed" } };
     }
+    // Replacing a reply that cannot be serialized or published changes nothing about whether the
+    // command ran, so each replacement below keeps the outcome the replaced reply stated.
+    const outcome = reply.error?.outcome;
     let bytes: Uint8Array;
     try {
       bytes = enc.encode(JSON.stringify(reply));
     } catch (err) {
-      // A non-serializable success payload (cycle, BigInt) must not silently drop the reply.
-      const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}` } };
+      // A non-serializable payload or refusal detail (cycle, BigInt) must not silently drop the reply.
+      const fallback: EndpointReply = { v: 1, id: reply.id, ok: false, error: { code: "internal", message: `the reply does not serialize: ${(err as Error).message}`, ...(outcome !== undefined ? { outcome } : {}) } };
       bytes = enc.encode(JSON.stringify(fallback));
     }
     const replySubject = deriveReplySubject(space, parsed, identity);
@@ -550,9 +553,7 @@ export function serveEndpoint(
       // outcome the non-serializable branch above already exists to prevent, so it gets the same
       // treatment. The replacement fits by construction — its message is one integer and a
       // bounded string — and `resource-exhausted` matches the §13.4 fact preflight, which refuses
-      // an over-`max_payload` acceptance loudly rather than spilling it. Failing to publish changes
-      // nothing about whether the command ran, so the outcome the refused reply stated carries over.
-      const outcome = reply.error?.outcome;
+      // an over-`max_payload` acceptance loudly rather than spilling it.
       const refused: EndpointReply = {
         v: 1, id: reply.id, ok: false,
         error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped`, ...(outcome !== undefined ? { outcome } : {}) },
