@@ -458,7 +458,7 @@ try {
   // 14. Foreign accountPublicKey refuses (403)
   const foreignAcctRes = await postHttp({
     ...baseReq,
-    accountPublicKey: "AFOREIGN",
+    accountPublicKey: `A${"B".repeat(55)}`,
     requestId: `req-${mintLifecycleUid()}`,
     registrationProof: proof,
     attempt: { runId: first, takeoverId: "t".repeat(16), epoch: 2, fencingToken: 2, driverId: newIdentity().id, mediatorId: newIdentity().id },

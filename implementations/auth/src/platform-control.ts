@@ -8,6 +8,7 @@
 import {
   EpEnvelopeError,
   assertPlatformOwnerToken,
+  isAccountNkey,
   remoteManagerActors,
   type EpAttributedReply,
   type EpGateState,
@@ -68,7 +69,7 @@ export function parsePlatformControlAuthorityRequest(raw: unknown): PlatformCont
   for (const key of Object.keys(o)) if (!allowed.has(key)) badRequest(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
   if (o.v !== 1 || o.kind !== "platform-control-authority") badRequest('must carry { v: 1, kind: "platform-control-authority" }');
   if (typeof o.space !== "string" || o.space.length === 0) badRequest("requires a space");
-  if (typeof o.accountPublicKey !== "string" || !/^A[A-Z2-7]{55}$/.test(o.accountPublicKey)) badRequest("requires an account public key");
+  if (!isAccountNkey(o.accountPublicKey)) badRequest("requires an account public key");
   if (typeof o.assignmentRevision !== "number" || !Number.isSafeInteger(o.assignmentRevision) || o.assignmentRevision < 0)
     badRequest("requires a non-negative integer assignmentRevision");
   const inner = o.request;
