@@ -240,12 +240,10 @@ async function reclaimIfOwnerIsGone(path: string): Promise<void> {
 }
 
 /**
- * Take this principal's lock and HOLD IT for the life of the process.
+ * Take this principal's lock and hold it until the returned lock's `release()`.
  *
- * The handle stays open deliberately. A lock released at the end of the acquiring function is a
- * lock that was never held, and the layout comment above has claimed single-emitter exclusion since
- * this module was written while `lockPath` was only ever COMPUTED — a path in a struct standing in
- * for a guarantee. This is that claim made real.
+ * The handle stays open deliberately: a lock released at the end of the acquiring function would
+ * exclude nobody.
  */
 export async function acquirePrincipalLock(lockPath: string): Promise<PrincipalLock> {
   const already = held.get(lockPath);
