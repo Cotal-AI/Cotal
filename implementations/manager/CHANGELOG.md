@@ -1,5 +1,30 @@
 # @cotal-ai/manager
 
+## 0.75.0
+
+### Minor Changes
+
+- b48a740: Add the closed manager-run-revoke issuing-host request, authorized by the recorded admission owner or a fresh admin grant. Route signerless RunHosting revocation through it and return the existing create-only marker on repeats.
+
+### Patch Changes
+
+- e619255: A seat on a runtime that cannot stream its terminal (tmux, cmux, orca, herdr) and exits on its own is now freed once the runtime proves the exit. Before, it stayed managed and held a capacity slot until someone stopped it. The manager asks the runtime for the seat's status every five seconds and confirms an exit with the runtime's `waitForExit`, the same proof the launch-file cleanup already used. A failed resume whose stop was not proved in time is freed the same way once its exit is proved. A runtime that can neither stream nor prove an exit now logs that its seats stay managed until stopped.
+- 35cdf94: A manager shutdown and a failed resume now report a runtime that refused to stop a seat as `stop failed: <message>` at once. Before, the refusal reached only stderr, and both waited out the exit timeout and then blamed the timeout.
+- 5f5196f: When a seat's declared startup confirmation never appears, the pty runtime now records its own reason, `Cotal startup confirmation failed: prompt "<prompt>" did not appear within 15000ms.`, as the exit's diagnostic. Before, it only painted that line into the seat's screen, so the reap line carried no diagnostic and the launch failure named whatever row the screen ended on, such as a dialog's footer. The launch failure now names the exit diagnostic beside the last output when the two differ, or says the runtime's exit detail was unreadable when its reader throws, and the reap lines label it `diagnostic` because it is no longer only a connector's line. A connector diagnostic over 240 characters is now cut on a code point, so it never carries half a surrogate pair into a launch terminal, and a lone surrogate in a runtime's exit diagnostic or reader error is replaced with U+FFFD, so the failed terminal still commits.
+- d269d1d: Core exports `serviceContractTable(rows)`, which builds a service's command contracts, compiled on first access, and the schema artifacts its registration publishes. The auth, manager and Linear service contracts call it instead of carrying their own copies of the lazy table and the artifact loop, so a fix to either reaches all three. Importing a contract module still compiles nothing, and the published artifacts and the behaviour of `AUTH_CONTRACTS`, `MANAGER_CONTRACTS` and `MANAGER_STATUS_CONTRACT` are unchanged.
+- Updated dependencies [6286d29]
+- Updated dependencies [ed0785d]
+- Updated dependencies [625659e]
+- Updated dependencies [0c924f4]
+- Updated dependencies [b48a740]
+- Updated dependencies [597fa25]
+- Updated dependencies [cb3a177]
+- Updated dependencies [5f5196f]
+- Updated dependencies [d269d1d]
+  - @cotal-ai/core@0.75.0
+  - @cotal-ai/workspace@0.75.0
+  - @cotal-ai/seat@0.75.0
+
 ## 0.74.0
 
 ### Patch Changes

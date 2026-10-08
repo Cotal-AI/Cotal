@@ -1,5 +1,13 @@
 # @cotal-ai/web
 
+## 0.75.0
+
+### Patch Changes
+
+- 92e7846: The comments on the dashboard's activity aggregation and its `/api/membership` route, which ship in `dist/web.js` and `dist/web.d.ts`, now state the aggregation deadline, the concurrency bound, the two named partial sources and the membership read's 503 as the current contract. They narrated earlier revisions ("used to", "no longer", "this change", "since #1210"), and the `/api/activity` comment drops corpus measurements that set no constant. No runtime change.
+- 343c1ea: `cotal web` now judges an existing `web.pid` with the workspace's `parsePid` and tri-state `probeLiveness`, as `cotal down web` does. It calls the record stale and points at `cotal down web` only when the file is empty or its pid is proven gone. Content that is not a pid (`abc`, `12.5`, `0`, `-1`, an out-of-range number), or a pid whose liveness the kernel will not report, is now refused as possibly fronting a running process. Before, the dashboard called it stale and advised a cleanup that `cotal down web` then refused. An extension-removal reservation in `web.pid` is judged by the same rule. A detached launch also no longer reads an unconfirmed liveness answer as its child having exited, so termination signals the child instead of skipping it.
+- 2a06543: The dashboard's console and graph pages now escape peer-supplied text through one HTML escaper shared from `parts.js` instead of a copy each, so the two can no longer drift. A missing value now renders as empty text on the console page as it already did on the graph, where the console used to show the words `null` or `undefined`.
+
 ## 0.74.0
 
 ## 0.73.0
