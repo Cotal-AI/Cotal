@@ -166,8 +166,11 @@ const CLI_SRC = readFileSync(
 check("instrument control: the CLI's spawn source was located, comments stripped",
   CLI_SRC.includes("async function spawnDetached") && CLI_SRC.includes("export async function spawn"),
   { len: CLI_SRC.length });
+// Whole declarations, so the verdict does not depend on where the name sits in the list.
+const CORE_IMPORTS = [...CLI_SRC.matchAll(/import\s*\{([^}]*)\}\s*from\s*"@cotal-ai\/core"/g)]
+  .flatMap((m) => m[1].split(",").map((s) => s.trim()));
 check("the CLI calls the shared name door (import present)",
-  /spawnNameError,/.test(CLI_SRC.slice(CLI_SRC.indexOf("} from \"@cotal-ai/core\";") - 400, CLI_SRC.indexOf("} from \"@cotal-ai/core\";"))));
+  CORE_IMPORTS.includes("spawnNameError"));
 check("the CLI calls the shared name door (call sites: detached + foreground)",
   (CLI_SRC.match(/refuseUnmintableNameOrExit\(/g) ?? []).length === 3,
   { sites: CLI_SRC.match(/refuseUnmintableNameOrExit\(/g)?.length });
