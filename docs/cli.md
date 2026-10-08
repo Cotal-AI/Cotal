@@ -1785,9 +1785,10 @@ completing registration from a leftover. If that gate is absent or carries a del
 read fails and the command refuses the delete rather than guess. The caller receives an
 `unavailable` error, not a named refusal: the message begins `could not observe the issuance-gate
 generation for "<endpoint>/<instance>" while its governance slot is held` and ends with the reader's
-own explanation, either `no endpoint gate at <key>` or `the endpoint gate <key> carries a DEL
-(or PURGE) marker`. The two cases are told apart by that text alone; the error class and the exit
-are the same.
+own explanation, either `no endpoint gate at <key>` or `the endpoint gate <key> carries a
+<operation> marker; a gate is never deleted (corruption, not absence, SPEC 13.12)`, where
+`<operation>` is the single token `DEL` or `PURGE`. The two cases are told apart by that text
+alone; the error class and the exit are the same.
 Nothing was removed. A gate is never deleted in normal operation, so treat either text as a damaged
 issuance gate for that instance and repair it before re-running. A manager's own clean stop hits the
 same read; it logs the failure and finishes stopping, and its registration stays in place.
