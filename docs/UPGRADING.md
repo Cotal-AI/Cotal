@@ -82,6 +82,24 @@ store that refuses a put of the new key fails the start.
 Let the store accept a put of `authInstanceKey(space)`. A copy of `stateDir` taken before the upgrade
 still holds the serve seed, so delete it or protect it as secret material.
 
+## Injected SecretStore naming in 0.76.0
+
+The manager and the delivery daemon name an injected `SecretStore` through
+`injectedSecretStoreIdentity` from `@cotal-ai/core`. The rule is unchanged: the store's declared
+identity, else the coordinate in `COTAL_SECRET_STORE`, else a refusal. A running mesh needs nothing.
+
+### What stops working
+
+`reloadStoreIdentityOf` from `@cotal-ai/delivery` takes `{ injected: true, store }` or
+`{ injected: false, identity }`. A call that passes `injected: true` with no store fails to compile,
+and plain JavaScript gets a `TypeError`. Both processes refuse an unnamed injected store with one
+message, which starts `an injected SecretStore must declare its identity`, so a log match on either
+old message no longer matches.
+
+### Before the upgrade
+
+Pass the injected store to `reloadStoreIdentityOf`, or call `injectedSecretStoreIdentity(store)`.
+
 ## Manager-service authority policy flag in 0.75.0
 
 `handleManagerServiceAuthority` from `@cotal-ai/auth` no longer reads `allowManagerAuthority` from

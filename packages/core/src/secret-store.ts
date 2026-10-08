@@ -116,6 +116,21 @@ export function parseSecretStoreIdentity(raw: unknown): SecretStoreIdentity {
 }
 
 /**
+ * Name an injected store: its declared identity, else the coordinate in `COTAL_SECRET_STORE`. The
+ * manager and the delivery daemon both call this, because the store challenge compares their two
+ * answers and a second copy of the rule could name one shared store two ways.
+ */
+export function injectedSecretStoreIdentity(store: SecretStore): SecretStoreIdentity {
+  if (store.identity !== undefined) return parseSecretStoreIdentity(store.identity);
+  const coordinate = process.env.COTAL_SECRET_STORE;
+  if (!coordinate)
+    throw new Error(
+      "an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager and the delivery daemon name the same authority (never a silent local-root fallback)",
+    );
+  return { kind: "injected", coordinate };
+}
+
+/**
  * The delivery daemon's answer to the `reloadStoreIdentity` challenge: the store it reloads from,
  * PLUS the binding that says whose answer this is.
  *

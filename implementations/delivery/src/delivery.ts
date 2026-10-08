@@ -9,6 +9,7 @@ import {
   deliveryBucket,
   dialerFor,
   idFromCreds,
+  injectedSecretStoreIdentity,
   isCasLoss,
   isPermissionDenied,
   isReachable,
@@ -42,7 +43,10 @@ type Values = Record<string, string | undefined>;
  *  is the pre-P7 key and putting there leaves this daemon reading an empty location. */
 export { DELIVERY_CREDS_KIND, deliveryCredsKey };
 
-type CredsSource = { store: SecretStore; key: string; where: string; injected: boolean; identity: SecretStoreIdentity };
+type CredsSource = { store: SecretStore; key: string; where: string } & (
+  | { injected: true }
+  | { injected: false; identity: SecretStoreIdentity }
+);
 
 /**
  * The store identity THIS daemon will re-read on `reloadCreds`. It is the same store
@@ -54,18 +58,9 @@ type CredsSource = { store: SecretStore; key: string; where: string; injected: b
  * as a same-store proof.
  */
 export function reloadStoreIdentityOf(
-  src: Pick<CredsSource, "injected" | "identity"> & { store?: SecretStore },
+  src: { injected: true; store: SecretStore } | { injected: false; identity: SecretStoreIdentity },
 ): SecretStoreIdentity {
-  if (src.injected) {
-    if (src.store?.identity !== undefined) return parseSecretStoreIdentity(src.store.identity);
-    const coordinate = process.env.COTAL_SECRET_STORE;
-    if (!coordinate)
-      throw new Error(
-        "delivery: an injected SecretStore must declare its identity or name its coordinate in COTAL_SECRET_STORE so the manager can challenge the same authority (never a silent local-root fallback)",
-      );
-    return { kind: "injected", coordinate };
-  }
-  return src.identity;
+  return src.injected ? injectedSecretStoreIdentity(src.store) : src.identity;
 }
 
 /**
@@ -212,9 +207,6 @@ function resolveCredsStore(v: Values, space: string, root: string, injected?: Se
       key,
       where: `secret-store key "${key}"`,
       injected: true,
-      // Coordinate is named AFTER the cred is found. An absent key must still be
-      // the absent-key error, never a COTAL_SECRET_STORE throw that masks it.
-      identity: { kind: "injected", coordinate: process.env.COTAL_SECRET_STORE ?? "" },
     };
   }
   if (v.creds !== undefined) {

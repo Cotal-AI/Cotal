@@ -11,7 +11,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { sameSecretStoreIdentity, type SecretStoreIdentity } from "@cotal-ai/core";
+import { sameSecretStoreIdentity, type SecretStore, type SecretStoreIdentity } from "@cotal-ai/core";
 import { DELIVERY_CREDS_KIND, findCotalRoot, spaceSegment, workspaceSecretStore } from "@cotal-ai/workspace";
 import { assertUninjectedCredsSharesCwdRoot, reloadStoreIdentityFromCredsPath, reloadStoreIdentityOf, workspaceRootFromCredsPath } from "../src/delivery.js";
 
@@ -120,21 +120,18 @@ try {
 
   const prev = process.env.COTAL_SECRET_STORE;
   delete process.env.COTAL_SECRET_STORE;
+  const undeclared: SecretStore = { get: async () => undefined, put: async () => {}, delete: async () => {} };
   throws(
     "injected identity refuses a silent local-root fallback",
-    () => reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA, id: "dummy" } }),
+    () => reloadStoreIdentityOf({ injected: true, store: undeclared }),
     "COTAL_SECRET_STORE",
   );
   process.env.COTAL_SECRET_STORE = "vault:prod";
-  const injected = reloadStoreIdentityOf({ injected: true, identity: { kind: "fs", root: workspaceA, id: "dummy" } });
-  ok("injected identity is the coordinate, never the dummy fs root", injected.kind === "injected" && injected.coordinate === "vault:prod");
+  const injected = reloadStoreIdentityOf({ injected: true, store: undeclared });
+  ok("injected identity is the coordinate", injected.kind === "injected" && injected.coordinate === "vault:prod");
   delete process.env.COTAL_SECRET_STORE;
 
-  const explicitWorkspace = reloadStoreIdentityOf({
-    injected: true,
-    identity: { kind: "injected", coordinate: "" },
-    store: workspaceSecretStore(workspaceC),
-  });
+  const explicitWorkspace = reloadStoreIdentityOf({ injected: true, store: workspaceSecretStore(workspaceC) });
   ok(
     "an explicitly passed workspace store names its real filesystem authority without an ambient coordinate",
     explicitWorkspace.kind === "fs" && explicitWorkspace.root === resolve(workspaceC),
