@@ -62,7 +62,7 @@
     {
       "name": "renewed registration ceiling is no longer confirmed",
       "file": "implementations/auth/src/service.ts",
-      "find": "              await session.store.confirm(accepted.ref, permissions);",
+      "find": "              await session.store.confirm(existing, permissions);",
       "replace": "              // mutation: native ceiling confirmation removed",
       "expectRed": "FAIL: U7-5 signed permissions stay identical on renewal",
       "cell": "U7-5 signed permissions stay identical on renewal",
@@ -82,8 +82,8 @@
     {
       "name": "ended recorded lifecycle is treated as assigned",
       "file": "implementations/auth/src/platform-supervisor.ts",
-      "find": "    if (assignment.state !== \"assigned\" || !Number.isSafeInteger(assignment.expiresAt) || assignment.expiresAt <= Math.floor(Date.now() / 1000))",
-      "replace": "    if (!Number.isSafeInteger(assignment.expiresAt) || assignment.expiresAt <= Math.floor(Date.now() / 1000))",
+      "find": "    if (assignment.state === \"ended\") throw platformSupervisorEnded(envelope.owner);\n    if (assignment.state !== \"assigned\" || assignment.revision !== envelope.assignmentRevision)",
+      "replace": "    if (assignment.revision !== envelope.assignmentRevision)",
       "expectRed": "FAIL: U7-7 recorded lifecycle expiry refuses renewal and registration",
       "cell": "U7-7 recorded lifecycle expiry refuses renewal and registration",
       "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
