@@ -134,6 +134,10 @@ Herdr session (they survive the manager's terminal going away).
 - `**@cotal-ai/web**` (`implementations/web`): the browser dashboard as a `cotal ext`-installable
 extension package — it peer-depends on core + workspace (linked to the binary's copies at add
 time) and self-registers its command.
+- `**@cotal-ai/linear**` (`implementations/linear`): serves the official Linear MCP server as a
+registered endpoint that agents call with `cotal_describe` and `cotal_invoke`, plus the
+`cotal linear` operator command. A `cotal ext`-installable package that peer-depends on core +
+workspace.
 - `**@cotal-ai/manager**` (`implementations/manager`): the agent supervisor: spawns and manages
 nodes via a pluggable Runtime (`pty` built-in; `tmux`, `cmux`, `orca`, and `herdr` via extensions), with `start`/`stop`/`ps`/`attach` and
 a WebSocket attach endpoint.
