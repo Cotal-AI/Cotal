@@ -183,90 +183,6 @@ export const GoldDot: React.FC<{ at: Pt; breath?: number }> = ({ at, breath = 0 
   );
 };
 
-// --- variant 2: the invented wordmark (kept as an alternate) --------------------
-
-// A tiny gold "agents in a mesh" glyph: three nodes in a triangle joined by
-// hairlines. This was the first (invented) mark — kept as variant 2; the real
-// brand logo is `RingMark` / `Logo` below.
-export const MarkV2: React.FC<{ size: number }> = ({ size: s }) => {
-  const pts = [
-    { x: s * 0.5, y: s * 0.15 },
-    { x: s * 0.15, y: s * 0.83 },
-    { x: s * 0.85, y: s * 0.83 },
-  ];
-  return (
-    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} style={{ display: "block" }}>
-      <path
-        d={`M${pts[0]!.x} ${pts[0]!.y} L${pts[1]!.x} ${pts[1]!.y} L${pts[2]!.x} ${pts[2]!.y} Z`}
-        stroke={GOLD}
-        strokeOpacity={0.45}
-        strokeWidth={s * 0.03}
-        fill="none"
-      />
-      {pts.map((p, i) => (
-        <circle key={i} cx={p.x} cy={p.y} r={s * 0.12} fill={GOLD} />
-      ))}
-    </svg>
-  );
-};
-
-// Variant-2 centered "cotal" wordmark + optional tagline (invented lockup).
-export const WordmarkV2: React.FC<{
-  frame: number;
-  appear?: number;
-  tagline?: string;
-  size?: number;
-}> = ({ frame, appear = 0, tagline, size = 84 }) => {
-  const op = interpolate(frame, [appear, appear + 16], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.out(Easing.cubic),
-  });
-  const dy = interpolate(frame, [appear, appear + 20], [14, 0], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: Easing.out(Easing.cubic),
-  });
-  return (
-    <AbsoluteFill
-      style={{
-        justifyContent: "center",
-        alignItems: "center",
-        opacity: op,
-        transform: `translateY(${dy}px)`,
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: size * 0.34 }}>
-        <MarkV2 size={size * 0.82} />
-        <div
-          style={{
-            fontFamily,
-            fontSize: size,
-            color: INK.name,
-            letterSpacing: size * 0.02,
-            fontWeight: 500,
-          }}
-        >
-          cotal
-        </div>
-      </div>
-      {tagline ? (
-        <div
-          style={{
-            fontFamily,
-            fontSize: size * 0.22,
-            color: INK.text,
-            letterSpacing: 1,
-            marginTop: size * 0.3,
-          }}
-        >
-          {tagline}
-        </div>
-      ) : null}
-    </AbsoluteFill>
-  );
-};
-
 // A small gold phase caption (e.g. "supervised", "peer-to-peer"). Centered at
 // top by default, or left-aligned if `left` is given.
 export const Caption: React.FC<{
@@ -382,7 +298,7 @@ export const RingMark: React.FC<{
 );
 
 // The real centered brand lockup: animated RingMark + "Cotal" + optional tagline
-// and CTA. Same prop shape as the old wordmark, so it is a drop-in default.
+// and CTA.
 export const Logo: React.FC<{
   frame: number;
   appear?: number;
