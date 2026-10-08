@@ -541,7 +541,7 @@ export interface ManagerOptions {
     agentBearerExchangeUrl: string;
     /** The closed host run callbacks. Workflow runs are hosted only when ALL are supplied; a
      * partial set refuses at construction, and absent means run-start/resume stay unavailable. */
-    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun">;
+    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">;
     /** Host-owned execution of one admitted delegated user intent (SPEC 13.16). Absent: a delegated
      * spawn and a delegated retirement are refused before any request. */
     executeDelegatedUserIntent?: (
@@ -1957,6 +1957,7 @@ export class Manager {
         auth: undefined,
         log: (line) => console.error(line),
         admitRun: remoteRuns.admitRun,
+        revokeRun: remoteRuns.revokeRun,
         issueAttempt: remoteRuns.issueAttempt,
         issueOperator: remoteRuns.issueOperator,
         renewRun: remoteRuns.renewRun,

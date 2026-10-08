@@ -12,6 +12,9 @@ import {
   type RemoteManagerAuthorityRequest,
   type RemoteRunAdmissionRequest,
   type RemoteRunAttemptRequest,
+  type RemoteRunRevokeRequest,
+  type RemoteRunRevokeResult,
+  type RunRevocation,
   type RunAdmissionView,
   type RunStatusValue,
   type RunDriverGrantArgs,
@@ -28,6 +31,7 @@ import {
   admissionKey,
   admissionSnapshot,
   createRunAdmission,
+  revokeRunAdmission,
   isAccountNkey,
   isDerivedOwner,
   isIssuedCaller,
@@ -372,6 +376,58 @@ export async function admitRemoteRun(args: {
 }
 
 const ID_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
+
+/** Closed parser for the issuing-host revoke. It carries no asserted owner or attribution. */
+export function parseRemoteRunRevokeRequest(raw: unknown): RemoteRunRevokeRequest {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) admissionError("must be an object");
+  const o = raw as Record<string, unknown>;
+  if (o.kind !== "manager-run-revoke") admissionError("must be v1 manager-run-revoke");
+  const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "revoke"];
+  for (const key of Object.keys(o)) if (!allowed.includes(key)) admissionError(`has unknown field ${key}`);
+  const { revoke, ...rest } = o;
+  const base = parseRemoteRunAdmissionRequest({ ...rest, kind: "manager-run-admission", run: { runId: `run-${"0".repeat(32)}`, subject: "" } });
+  if (revoke === null || typeof revoke !== "object" || Array.isArray(revoke)) admissionError("requires revoke");
+  const r = revoke as Record<string, unknown>;
+  if (Object.keys(r).sort().join(",") !== "reason,runId" || typeof r.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(r.runId) ||
+      typeof r.reason !== "string" || r.reason.length === 0) admissionError("requires exactly revoke.runId and a non-empty revoke.reason");
+  const { run: _run, ...registered } = base;
+  return { ...registered, kind: "manager-run-revoke", revoke: { runId: r.runId, reason: r.reason } };
+}
+
+/** The door has authenticated the holder and read its current scope. The run's owner comes only
+ * from the recorded admission. A platform assignment is not an admin grant. */
+export async function revokeRemoteRun(args: ManagerAuthorityHolder & {
+  request: unknown;
+  space: string;
+  endpoint: string;
+  accountPublicKey: string;
+  proofSecret: string | Uint8Array;
+  observeManagerGate: ObserveManagerGate;
+  readAdmission: (runId: string) => Promise<RunAdmissionView>;
+  readRevocation: (runId: string) => Promise<RunRevocation | undefined>;
+  admissions: KV;
+  now?: () => number;
+}): Promise<RemoteRunRevokeResult> {
+  const r = parseRemoteRunRevokeRequest(args.request);
+  const view = await args.readAdmission(r.revoke.runId);
+  if (view.admission.instanceId !== r.instanceId)
+    throw new EpEnvelopeError("permission-denied", `run ${r.revoke.runId} was admitted on another manager instance; revoke refused`);
+  if (args.holder === "platform" || (view.admission.caller.owner !== args.owner && !args.scope.includes("admin")))
+    throw new EpEnvelopeError("permission-denied", `run ${r.revoke.runId}: revoke requires its admitted owner or a platform admin`);
+  // An admin may act for another owner, but the proof is still that registered manager's proof.
+  const gate = await args.observeManagerGate(r.instanceId);
+  const suffix = `.${remoteManagerActors(r.instanceId).serve}`;
+  if (!gate || !gate.principal.endsWith(suffix))
+    throw new EpEnvelopeError("failed-precondition", "manager run revoke has no current registered manager principal");
+  const managerOwner = gate.principal.slice(0, -suffix.length);
+  await authenticateRegisteredManager(r, { ...args, owner: managerOwner }, "run revoke");
+  await revokeRunAdmission(args.admissions, args.endpoint, {
+    version: 1, runId: r.revoke.runId, by: `${args.owner}.${r.actor}`, reason: r.revoke.reason, revokedAt: (args.now ?? Date.now)(),
+  });
+  const revocation = await args.readRevocation(r.revoke.runId);
+  if (revocation === undefined) throw new EpEnvelopeError("internal", `run ${r.revoke.runId}: revoke wrote no readable marker`);
+  return { v: 1, kind: "manager-run-revoke", requestId: r.requestId, runId: r.revoke.runId, revocation };
+}
 
 /** Closed parser for {@link RemoteRunAttemptRequest}. */
 export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequest {

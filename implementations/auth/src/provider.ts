@@ -68,6 +68,10 @@ export const cotalAuthProvider: AuthProvider = {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "issuing hosted run credentials");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run issuance") as Promise<RemoteRunAttemptResult>;
   },
+  async requestRemoteRunRevoke({ store, dir, request }) {
+    const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "revoking a hosted run");
+    return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run revoke") as Promise<import("@cotal-ai/core").RemoteRunRevokeResult>;
+  },
   async preloadAccounts({ store, space }) {
     const callout = await loadCalloutAuth(store, space);
     if (!callout) throw new Error(`space "${space}" has user auth enabled but its callout account is missing - restore it from backup before starting the broker`);

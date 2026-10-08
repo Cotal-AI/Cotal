@@ -763,3 +763,17 @@ the remaining non-injectable rows are the explicit ambient `workspaceRoot`/cwd p
 - [Identity and auth](identity-and-auth.md): the profile matrix, the signer, and the IdP callout contract.
 - [Delivery daemon](delivery-daemon.md): the Plane-3 durable backstop.
 - [Deploy](deploy.md): the reference container against an external broker.
+
+## Hosted run revocation
+
+The authenticated manager-service authority door accepts `manager-run-revoke` with the registered
+manager envelope and `revoke: { runId, reason }`. The issuing host reads the admission's recorded
+owner and requires the verified requester to be that owner or to hold `admin` in its fresh actor
+ledger row. It verifies the current manager registration proof, space, account and epoch. It accepts
+no owner or attribution from the body.
+
+`AuthAuthorityPlane.revokeManagerRun` implements the operation. `AuthProvider.requestRemoteRunRevoke`
+transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
+manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
+its own remote authority must supply that callback to revoke. No signer reaches the participant.
+CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).

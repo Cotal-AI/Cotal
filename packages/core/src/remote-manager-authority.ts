@@ -808,6 +808,22 @@ export interface RemoteRunAdmissionResult {
   admission: import("./run-admission.js").RunAdmission;
 }
 
+/** Revoke one admitted run through its issuing host. The authenticated holder, never the body,
+ * supplies the owner and attribution. The admission supplies the run's owner. */
+export interface RemoteRunRevokeRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-revoke";
+  revoke: { runId: string; reason: string };
+}
+
+/** The existing create-only marker, including on a repeated revoke. */
+export interface RemoteRunRevokeResult {
+  v: 1;
+  kind: "manager-run-revoke";
+  requestId: string;
+  runId: string;
+  revocation: import("./run-admission.js").RunRevocation;
+}
+
 /**
  * Closed first-attempt (and resume) driver/mediator issuance, or one served run-operator call, for
  * a registered signerless manager. Separate from `renewRunDriver`, which only renews an activated

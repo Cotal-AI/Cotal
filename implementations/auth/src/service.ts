@@ -59,7 +59,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -72,7 +72,7 @@ import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
-import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, type ObservedRunRequest } from "./manager-authority.js";
+import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
@@ -251,6 +251,8 @@ export interface AuthAuthorityPlane {
   admitManagerRun: (args: ManagerAuthorityHolder & {
     request: unknown;
   }) => Promise<import("@cotal-ai/core").RemoteRunAdmissionResult>;
+  /** Revoke under the authenticated holder and the recorded admission owner. */
+  revokeManagerRun: (args: ManagerAuthorityHolder & { request: unknown }) => Promise<import("@cotal-ai/core").RemoteRunRevokeResult>;
   /** First-attempt/resume or operator issuance for one hosted run, asked by a registered signerless manager.
    *  The plane authenticates the registration, derives coordinates from native admission/records/checkpoints,
    *  and signs ONLY the returned fixed grant args. JWT responses contain no seeds. */
@@ -1359,6 +1361,30 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         }
       });
     },
+    revokeManagerRun: async ({ request, ...holder }) => {
+      refuseIfFenced();
+      const req = parseRemoteRunRevokeRequest(request);
+      const admitterNc = await connect({
+        servers: server,
+        ...standaloneConnectOpts({
+          creds: await mintCreds(issuerAuth(), newIdentity(), "run-admitter", { runAdmitter: { endpoint: "manager", runId: req.revoke.runId }, expiresInSeconds: 60 }),
+          tls: false,
+        }),
+        maxReconnectAttempts: 0,
+      });
+      onConnection?.(admitterNc, `cotal:run-revoker:${space}`);
+      try {
+        return await revokeRemoteRun({
+          ...holder, request: req, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
+          observeManagerGate,
+          readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
+          readRevocation: (runId) => readRunRevocation(recordsJsm, space, "manager", runId),
+          admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
+        });
+      } finally {
+        await admitterNc.drain().catch(() => admitterNc.close());
+      }
+    },
     issueManagerRunAttempt: async ({ request, ...holder }) => {
       refuseIfFenced();
       const { owner } = holder;
@@ -1979,6 +2005,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
+      revokeManagerRun: plane.revokeManagerRun,
       issueManagerRunAttempt: plane.issueManagerRunAttempt,
       secrets,
       retireInteractiveLifecycle: plane.retireInteractiveLifecycle,
@@ -2222,6 +2249,7 @@ interface HandlerCtx {
   scanManagerGoalIndex: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest }) => ReturnType<AuthAuthorityPlane["scanManagerGoalIndex"]>;
   authorizeManagerAdmin: (args: HumanHolder & { request: RemoteManagerAdminAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerAdmin"]>;
   admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
+  revokeManagerRun?: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["revokeManagerRun"]>;
   issueManagerRunAttempt: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["issueManagerRunAttempt"]>;
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
@@ -2239,7 +2267,7 @@ interface HandlerCtx {
   verifySession: AuthAuthorityPlane["verifySession"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt">;
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
 
 /** Dispatch one already-authenticated manager-authority body through the fixed host validator. */
 export async function dispatchManagerAuthorityRequest(
@@ -2287,6 +2315,10 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.authorizeManagerAdmin({ owner, scope: row.scope ?? [], request: body.request as RemoteManagerAdminAuthorizationRequest });
   if (request.kind === "manager-run-admission")
     return ctx.admitManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  if (request.kind === "manager-run-revoke") {
+    if (ctx.revokeManagerRun === undefined) throw new EpEnvelopeError("unimplemented", "this issuing host has no run revoke handler");
+    return ctx.revokeManagerRun({ owner, scope: row.scope ?? [], request: body.request });
+  }
   if (request.kind === "manager-run-attempt")
     return ctx.issueManagerRunAttempt({ owner, scope: row.scope ?? [], request: body.request });
   if (request.kind === "manager-service-maintenance")
