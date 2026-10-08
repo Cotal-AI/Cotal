@@ -7,6 +7,7 @@ import { appendedLogTail, detachedArgs, terminateDetachedWeb, waitForDetachedWeb
 
 const root = mkdtempSync(join(tmpdir(), "cotal-web-detach-"));
 const pidPath = join(root, "web.pid");
+const sessionPath = join(root, "web.session");
 const readyPath = join(root, "child.ready");
 
 /** A deliberately SIGTERM-resistant, detached, unref'd fixture child. It still ignores SIGTERM
@@ -46,7 +47,7 @@ try {
 
   const missing = spawn(join(root, "missing-cotal-binary"), [], { stdio: "ignore" });
   await assert.rejects(
-    waitForDetachedWeb(missing, { pidPath, url: "http://127.0.0.1:1/", space: "fixture", timeoutMs: 100 }),
+    waitForDetachedWeb(missing, { pidPath, sessionPath, url: "http://127.0.0.1:1/", space: "fixture", timeoutMs: 100 }),
     /failed to start:.*(?:ENOENT|no such file)/i,
     "no-PID spawn failures retain the operating-system cause",
   );
@@ -79,6 +80,7 @@ try {
   await assert.rejects(
     waitForDetachedWeb(child, {
       pidPath,
+      sessionPath,
       url: "http://127.0.0.1:1/",
       space: "fixture",
       timeoutMs: 100,

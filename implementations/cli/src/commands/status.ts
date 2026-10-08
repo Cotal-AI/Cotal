@@ -144,14 +144,14 @@ async function printMachine(selected: Selected): Promise<void> {
   row("Web process", webProcessRow(selected, webExt));
 }
 
-/** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` is named on
- *  the row, like the folder's process rows, so the rest of status still prints. */
+/** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` or
+ *  `web.session` is named on the row, like the folder's process rows, so the rest of status still prints. */
 function webProcessRow(selected: Selected, installed: boolean): string {
   let url: string | undefined;
   try {
     url = selected.ok ? recordedWebUrl({ root: selected.target.root, space: selected.target.space }) : undefined;
   } catch (e) {
-    return c.red(`pidfile unreadable · ${(e as Error).message}`);
+    return c.red((e as Error).message);
   }
   return url ? c.green(url) : c.dim(installed ? "down" : "not installed");
 }
@@ -1140,7 +1140,12 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   // control surface cannot be located, which is a probe refusal rather than a not-serving answer.
   if (record.kind !== "live") throw new Error("web component record lost its live pid after classification");
   const pid = record.pid;
-  const bound = webBoundAddress(localProcessPath(WEB_SESSION_FILE, context));
+  let bound: ReturnType<typeof webBoundAddress>;
+  try {
+    bound = webBoundAddress(localProcessPath(WEB_SESSION_FILE, context));
+  } catch (e) {
+    return { name: "web", verdict: "refused", facts: [...facts, `${WEB_SESSION_FILE} unreadable: ${(e as Error).message}`] };
+  }
   if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {
     // The dashboard refuses an anonymous `/api/meta`; the readiness nonce is the one credential its
