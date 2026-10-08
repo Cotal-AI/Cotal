@@ -24,7 +24,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -146,13 +146,16 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
 
   // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. The
   // previous launcher removes this record when its serve exits, which can land anywhere in this
-  // check, so a record that vanishes under the read or the removal is no record.
+  // check, so a record that vanishes under the read or the removal is no record. A directory is no
+  // record either, but only an empty one is removed: one that holds files is refused, never deleted.
   const pidFile = join(agentHome, "serve.pid");
   let recorded: string | undefined;
   try {
     recorded = readFileSync(pidFile, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "EISDIR") rmdirSync(pidFile);
+    else if (code !== "ENOENT") throw e;
   }
   if (recorded !== undefined) {
     const pid = Number(recorded);
