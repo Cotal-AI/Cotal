@@ -76,8 +76,6 @@ try {
     context: { accountPublicKey: acct.accountPublicKey, lifecycleUid: `life-${i}` },
     space: acct.space, servers: fx.servers, store: acct.store, storeIdentity: acct.store.identity, stateDir: acct.stateDir,
   }));
-  const snapshot = (s: MemoryStore) => JSON.stringify([s.identity, [...s.values.entries()].sort()]);
-  const storesBefore = fx.accounts.map((acct) => snapshot(acct.store));
 
   const second = await startAuthService(inputs[1]);
   handles.push(second);
@@ -94,6 +92,10 @@ try {
   ok((await second.readiness()).state === "ready" && (await health(second)) === issB, "B stays ready and serving after A's failed start");
 
   // ---- 2. mid-life fence by native KICK of A's sealed scanner ----
+  // Each first start, A's refused one included, put its plane's instance identity into its store;
+  // nothing after that may change either store.
+  const snapshot = (s: MemoryStore) => JSON.stringify([s.identity, [...s.values.entries()].sort()]);
+  const storesBefore = fx.accounts.map((acct) => snapshot(acct.store));
   const first = await startAuthService(inputs[0]);
   handles.push(first);
   const issA = await health(first);
