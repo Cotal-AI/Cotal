@@ -1525,7 +1525,9 @@ cannot be proved stays managed, and the resume's error says so, naming a stop th
 as `stop failed: <message>`. A spawn
 that launched its seat and then failed is rolled back by the manager that launched it, and that
 rollback reaps the seat through the same reserved reference before the lifecycle retires. Missing or unverified broker evidence keeps the slot
-terminalizing, and so does a runtime that cannot reap by reference.
+terminalizing, and so does a runtime that cannot reap by reference. While the name stays held, a
+same-name spawn or a resume re-drives that teardown with the same recorded reference, so it reaps
+the seat again or keeps the name held.
 
 A `meshes add --mode user` entry is a **participant** registration, not hosting authority. A
 participant may run `supervise` only when the host advertises the remote manager authority service
