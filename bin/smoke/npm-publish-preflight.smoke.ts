@@ -96,7 +96,9 @@ type Seen = { method: string; url: string };
 type ScenarioOpts = {
   present?: Set<string>;
   workspacePackages?: typeof workspace;
-  exchangeStatus?: number;
+  exchangeStatus?: number | ((name: string) => number);
+  noRecord?: Set<string>;
+  recordStatus?: (name: string) => number | undefined;
   trust?: Record<string, unknown>;
   trustStatus?: number | ((name: string) => number);
   exactStatus?: (name: string) => number | undefined;
@@ -105,6 +107,8 @@ async function scenario({
   present = new Set(),
   workspacePackages = workspace,
   exchangeStatus = 201,
+  noRecord = new Set(),
+  recordStatus,
   trust,
   trustStatus = 200,
   exactStatus,
@@ -120,7 +124,8 @@ async function scenario({
       return;
     }
     if (req.url?.startsWith("/-/npm/v1/oidc/token/exchange/package/")) {
-      res.writeHead(exchangeStatus, { "content-type": "application/json" });
+      const name = decodeURIComponent(req.url.split("/").pop() ?? "");
+      res.writeHead(typeof exchangeStatus === "function" ? exchangeStatus(name) : exchangeStatus, { "content-type": "application/json" });
       res.end(JSON.stringify({ token: "opaque-exchange-token" }));
       return;
     }
@@ -131,6 +136,13 @@ async function scenario({
       const body = trust && Object.prototype.hasOwnProperty.call(trust, name) ? trust[name] : defaultTrust;
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
+      return;
+    }
+    const packument = req.url?.match(/^\/([^/]+)$/)?.[1];
+    if (packument) {
+      const name = decodeURIComponent(packument);
+      res.writeHead(recordStatus?.(name) ?? (noRecord.has(name) ? 404 : 200), { "content-type": "application/json" });
+      res.end(JSON.stringify({ name }));
       return;
     }
     const exact = req.url?.match(/^\/(.+)\/9\.9\.9$/)?.[1] ?? "";
@@ -163,6 +175,7 @@ type RegistryState = "all-present" | "mixed" | "all-absent";
 async function repositoryEntrypoint(
   registryState: RegistryState = "all-absent",
   credentialEnv: NodeJS.ProcessEnv = {},
+  noRecord = new Set<string>(),
 ) {
   const seen: Seen[] = [];
   const server = createServer((req, res) => {
@@ -176,6 +189,10 @@ async function repositoryEntrypoint(
     } else if (req.url?.includes("/trust")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify([githubClaimsPublisher(["createPackage", "createStagedPackage"])]));
+    } else if (req.url?.match(/^\/([^/]+)$/)) {
+      const name = decodeURIComponent(req.url.slice(1));
+      res.writeHead(noRecord.has(name) ? 404 : 200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ name }));
     } else {
       const exact = req.url?.match(/^\/(.+)\/[^/]+$/)?.[1] ?? "";
       const name = decodeURIComponent(exact);
@@ -368,8 +385,66 @@ check(
   allPresentCensus.error ?? allPresentCensus.result,
 );
 
+const missingRecord = await scenario({ noRecord: new Set(["@cotal-ai/seat"]) });
+const missingRecordExchanges = missingRecord.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length;
+const missingRecordMessage = missingRecord.error instanceof Error ? missingRecord.error.message : "";
+check(
+  "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+  missingRecordExchanges === 0
+    && missingRecordMessage.includes("@cotal-ai/seat")
+    && missingRecordMessage.includes("no npm record")
+    && missingRecordMessage.includes("package owner")
+    && missingRecordMessage.includes("npm publish --access=public")
+    && missingRecordMessage.includes("npm token")
+    && missingRecordMessage.includes("OIDC cannot create a package")
+    && missingRecordMessage.includes("trusted publisher")
+    && missingRecordMessage.includes("changesets.yml")
+    && missingRecordMessage.includes("npm-publish")
+    && missingRecordMessage.includes("re-run")
+    && missingRecordMessage.includes("docs/release.md#adding-a-publishable-package"),
+  { exchanges: missingRecordExchanges, message: missingRecordMessage },
+);
+check(
+  "a no-record package stops before the GitHub requester, trust reads, or registry writes",
+  missingRecord.seen.every((call) => !call.url.startsWith("/oidc?") && !call.url.includes("/trust") && !isWriteShaped(call)),
+  missingRecord.seen,
+);
+const multipleMissingRecords = await scenario({ noRecord: new Set(["@cotal-ai/core", "@cotal-ai/seat"]) });
+check(
+  "one refusal message names every package with no npm record",
+  multipleMissingRecords.error instanceof Error
+    && multipleMissingRecords.error.message.includes("@cotal-ai/core, @cotal-ai/seat"),
+  multipleMissingRecords.error,
+);
+const noRecordEntrypoint = await repositoryEntrypoint("all-absent", {}, new Set(["@cotal-ai/linear"]));
+check(
+  "the shipped repository entrypoint refuses a new workspace package before exchange with the remedy",
+  noRecordEntrypoint.code !== 0
+    && noRecordEntrypoint.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 0
+    && noRecordEntrypoint.output.includes("@cotal-ai/linear")
+    && noRecordEntrypoint.output.includes("npm publish --access=public")
+    && noRecordEntrypoint.output.includes("docs/release.md#adding-a-publishable-package"),
+  { code: noRecordEntrypoint.code, output: noRecordEntrypoint.output },
+);
+const recordedExchange404 = await scenario({ exchangeStatus: (name) => name === "@cotal-ai/seat" ? 404 : 201 });
+check(
+  "an exchange 404 with every npm record present retains refused:404 and names the trusted-publisher cause",
+  recordedExchange404.error instanceof Error
+    && recordedExchange404.logs.some((line) => line.includes("@cotal-ai/seat\t9.9.9\tabsent\trefused:404\tnot-run"))
+    && recordedExchange404.logs.some((line) => line.includes("@cotal-ai/seat")
+      && line.includes("no trusted publisher") && line.includes("changesets.yml") && line.includes("npm-publish")),
+  recordedExchange404.logs,
+);
+
 const clean = await scenario();
 check("clean full-group census passes", clean.result?.state === "ready", clean.error);
+check(
+  "every package record is read with GET before the first exchange",
+  fixed.every((name) => clean.seen.some((call) => call.method === "GET" && decodeURIComponent(call.url) === `/${name}`))
+    && clean.seen.filter((call) => fixed.some((name) => decodeURIComponent(call.url) === `/${name}`)).every((call) => clean.seen.indexOf(call)
+      < clean.seen.findIndex((entry) => entry.url.startsWith("/-/npm/v1/oidc/token/exchange/package/"))),
+  clean.seen,
+);
 check(
   "clean preflight exchanges OIDC for every package before publishing",
   clean.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === fixed.length,
@@ -456,6 +531,16 @@ check(
   "an inconclusive census prints the complete package and version census before exiting",
   fixed.every((name) => serviceUnavailable.logs.some((line) => line.includes(`${name}\t9.9.9\t`))),
   serviceUnavailable.logs,
+);
+
+const unreadableRecord = await scenario({ recordStatus: (name) => name === "@cotal-ai/seat" ? 503 : undefined });
+check(
+  "an unreadable package record refuses before exchange rather than assuming the record exists",
+  unreadableRecord.error instanceof Error
+    && unreadableRecord.error.message.includes("package record census was inconclusive")
+    && unreadableRecord.error.message.includes("@cotal-ai/seat: package record read returned 503")
+    && unreadableRecord.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 0,
+  unreadableRecord.error,
 );
 
 // A redirect is not an answer either: `redirect: "manual"` means a 3xx arrives as a status,
@@ -2096,6 +2181,11 @@ const noEnvOidc = await (async () => {
     if (req.url?.startsWith("/oidc?")) {
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ value: noEnvIdToken }));
+      return;
+    }
+    if (req.url?.match(/^\/([^/]+)$/)) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end("{}");
       return;
     }
     res.writeHead(404, { "content-type": "application/json" });
