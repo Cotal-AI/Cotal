@@ -9,7 +9,7 @@ workspace packages under `packages/*`, `extensions/*`, and `implementations/*` t
 ## 0.11 runtime migration
 
 The published binary no longer bundles the optional tmux and cmux runtimes. Existing operators
-must run `cotal ext add @cotal-ai/tmux` or `cotal ext add @cotal-ai/cmux` once after upgrading,
+must run `cotal ext add <runtime-package>` once after upgrading,
 before using `runtime: tmux|cmux` in a manifest or passing `--runtime tmux|cmux`. Missing runtimes
 fail loudly with the matching install command; they never fall back to pty.
 
