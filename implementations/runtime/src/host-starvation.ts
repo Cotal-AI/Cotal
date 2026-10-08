@@ -43,6 +43,7 @@
  * clock that only moves forward at its own rate.
  */
 import { EffectError } from "@cotal-ai/lang";
+import { delay } from "./delay.js";
 
 /**
  * The host's two clocks, as ONE injectable object.
@@ -406,8 +407,7 @@ export async function servedDespiteStarvation<T>(
         // while looks identical to one whose plane reads keep timing out, and the operator is the
         // person who can act on the difference.
         onStarved(`${what}: attempt ${attempt} reached its client deadline while this host WAS scheduling the run's process (${evidence}); the plane's reply was late, retrying rather than failing the step`);
-        // Unrefed, as below: a retry loop is not a reason for a finished process to stay alive.
-        await new Promise((r) => setTimeout(r, Math.min(POLL_BACKOFF_MS * 2 ** (unanswered - 1), POLL_BACKOFF_MAX_MS)).unref?.());
+        await delay(Math.min(POLL_BACKOFF_MS * 2 ** (unanswered - 1), POLL_BACKOFF_MAX_MS));
         continue;
       }
       starved += 1;
@@ -425,8 +425,7 @@ export async function servedDespiteStarvation<T>(
       // can act on this, and "the host is overloaded" is not deducible from a run that is merely
       // taking a while.
       onStarved(`${what}: attempt ${attempt} reached its client deadline while this host was not scheduling the run's process (${evidence}); retrying rather than failing the step`);
-      // Unrefed: a retry loop is not a reason for a finished process to stay alive.
-      await new Promise((r) => setTimeout(r, STARVED_YIELD_MS).unref?.());
+      await delay(STARVED_YIELD_MS);
     }
   }
 }

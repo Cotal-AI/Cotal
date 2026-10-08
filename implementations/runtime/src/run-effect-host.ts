@@ -4,6 +4,7 @@ import { MeshHandler, type MeshHandlerBinding } from "./mesh-handler.js";
 import { createRunPauseHost } from "./run-pause-host.js";
 import { createRunWaitHost } from "./run-wait-host.js";
 import { RunScopeAuthority, isHold } from "./run-scope-authority.js";
+import { delay } from "./delay.js";
 
 export interface RunEffectHost extends EffectHandler {
   adopted(entries: readonly JournalEntry[]): Promise<string[]>;
@@ -28,7 +29,7 @@ export function createRunEffectHost(
       for (;;) {
         const settled = await pauses.readSettle(ref.token);
         if (settled !== undefined) return settled;
-        await new Promise((resolve) => setTimeout(resolve, 2_000).unref());
+        await delay(2_000);
       }
     },
   }, Date.now, { pauses, waits, authority, admission });
