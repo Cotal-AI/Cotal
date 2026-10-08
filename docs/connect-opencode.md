@@ -79,11 +79,12 @@ in-process plugin does everything.
   not-yet-built feature (see [Limits](#limits)).
 - **Per-agent database.** The session SQLite DB is moved per agent
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
-  agents don't lock each other or drop files into a target repo. A launch claims the agent's
-  `serve.pid` before it starts a server, so only one of two overlapping launches of one name
-  starts one. A recorded server that exits during that claim counts as not running. A launcher
-  removes the record only while it still names its own server, so a launcher whose server exits
-  late leaves a newer launch's record in place.
+  agents don't lock each other or drop files into a target repo. Before it starts a server, a
+  launch claims the agent by creating the next numbered record under
+  `.cotal/opencode/<name>/claims/`, and only while the newest record names no live launcher or
+  server. A recorded server that exits during that check counts as not running. Only one of two
+  overlapping launches can create that number, and no record is removed while it is the newest, so
+  a launcher whose server exits late can't free a newer launch's claim.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived

@@ -24,7 +24,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -143,30 +143,41 @@ function putRecord(pidFile: string, content: string, place: typeof linkSync | ty
   }
 }
 
-/** Removes the record only while it still holds `held`, so a launcher whose serve exits late leaves
- *  a newer launch's record in place. */
-function releaseRecord(pidFile: string, held: string): void {
-  if (readRecord(pidFile) === held) rmSync(pidFile, { force: true });
+function claimNumbers(dir: string): number[] {
+  return readdirSync(dir).filter((f) => /^\d+$/.test(f)).map(Number);
 }
 
-/** Claims the agent's `serve.pid` for this launch, or throws while a live launcher or serve holds it.
- *  The record names this launcher until its serve is spawned, so an overlapping launch reads a live
- *  claim rather than no record. A record released under the check is no record. */
-function claimRecord(pidFile: string, name: string): void {
+/** Claims the agent for this launch and returns the claim's path, or throws while a live launcher or
+ *  serve holds the newest claim. A launch takes the number after the newest claim with an exclusive
+ *  create, so of two launches that find the same dead claim only one gets it, and no claim is removed
+ *  while it is the newest, so nothing a launcher does late can free a newer launch's claim. The claim
+ *  names this launcher until its serve is spawned, so an overlapping launch reads a live claim. */
+function claimServe(dir: string, name: string): string {
   for (;;) {
+    const newest = Math.max(0, ...claimNumbers(dir));
+    if (newest) {
+      const recorded = readRecord(join(dir, String(newest)));
+      if (recorded === undefined) continue; // pruned by a newer claim since the listing
+      const launcher = /^launcher (\d+)$/.exec(recorded);
+      const pid = Number(launcher?.[1] ?? recorded);
+      if (launcher ? isAlive(pid) : isLiveOpencodeServe(pid))
+        throw new Error(`agent "${name}" is already running (${launcher ? "launcher" : "opencode serve"} pid ${pid}) — kill it first`);
+    }
+    const claim = join(dir, String(newest + 1));
     try {
-      putRecord(pidFile, `launcher ${process.pid}`, linkSync);
-      return;
+      putRecord(claim, `launcher ${process.pid}`, linkSync);
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      continue;
     }
-    const recorded = readRecord(pidFile);
-    if (recorded === undefined) continue;
-    const launcher = /^launcher (\d+)$/.exec(recorded);
-    const pid = Number(launcher?.[1] ?? recorded);
-    if (launcher ? isAlive(pid) : isLiveOpencodeServe(pid))
-      throw new Error(`agent "${name}" is already running (${launcher ? "launcher" : "opencode serve"} pid ${pid}) — kill it first`);
-    releaseRecord(pidFile, recorded);
+    // A launch that listed long ago can re-create a number a newer claim has since pruned.
+    const numbers = claimNumbers(dir);
+    if (Math.max(...numbers) !== newest + 1) {
+      rmSync(claim, { force: true });
+      continue;
+    }
+    for (const n of numbers) if (n <= newest) rmSync(join(dir, String(n)), { force: true });
+    return claim;
   }
 }
 
@@ -194,10 +205,10 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const dbPath = join(agentHome, "opencode.db");
 
   // Two serves on one agent DB share the SQLite file and stall each other, so a launch claims the
-  // agent's record before it starts one, and only one of two overlapping launches can.
-  mkdirSync(agentHome, { recursive: true });
-  const pidFile = join(agentHome, "serve.pid");
-  claimRecord(pidFile, name);
+  // agent before it starts one, and only one of two overlapping launches can.
+  const claimsDir = join(agentHome, "claims");
+  mkdirSync(claimsDir, { recursive: true });
+  const claim = claimServe(claimsDir, name);
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
   // plugin and the viewer below can each act on it without probing anything themselves.
@@ -216,8 +227,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  putRecord(pidFile, String(serve.pid), renameSync);
-  serve.on("exit", () => releaseRecord(pidFile, String(serve.pid)));
+  putRecord(claim, String(serve.pid), renameSync);
 
   // Scan the server's output for the plugin's session handshake; forward boot logs to our stderr
   // until the TUI takes over the terminal (after that, drop them so they can't corrupt its display).
