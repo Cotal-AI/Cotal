@@ -560,6 +560,9 @@ export class CotalEndpoint extends EventEmitter {
    *  `chathist_<id>` consumer, so overlapping reads would delete/recreate it under one another. */
   private histLock: Promise<unknown> = Promise.resolve();
   private readonly subs: Subscription[] = [];
+  /** Broker refusals that ended a core subscription {@link subscriptionFaultReporter} watches. That
+   *  subscription reports each one, so {@link watchStatus} skips it. */
+  private readonly subscriptionRefusals = new WeakSet<Error>();
   /** The liveness responders {@link serveLiveness} was asked for, by plane. This is INTENT, re-bound
    *  by {@link bindLiveness} on every (re)connect: a rebuild closes the old connection and every
    *  subscription on it, so a responder bound once would leave its plane to the broker's
@@ -2304,7 +2307,7 @@ export class CotalEndpoint extends EventEmitter {
         }
         handler(m.subject, decoded);
       }
-    })().catch((e) => this.emitSubscriptionFault(e as Error));
+    })().catch(this.subscriptionFaultReporter(sub));
   }
 
   // ---- control plane (request/reply) --------------------------------------
@@ -2377,7 +2380,7 @@ export class CotalEndpoint extends EventEmitter {
           }
         }
       }
-    })().catch((e) => this.emitSubscriptionFault(e as Error));
+    })().catch(this.subscriptionFaultReporter(sub));
     return sub;
   }
 
@@ -3773,6 +3776,7 @@ export class CotalEndpoint extends EventEmitter {
         if (s.error instanceof PermissionViolationError && this.confirmingChatSubs.has(s.error.subject))
           continue;
         if (s.error instanceof PermissionViolationError && handedToRequest.has(s.error)) continue;
+        if (this.subscriptionRefusals.has(s.error)) continue;
         // The predecessor nats.js deleted while rebuilding one of this connection's watches, scans or
         // history reads, whose refusal can arrive after that delete timed out.
         if (s.error instanceof PermissionViolationError && s.error.operation === "publish"
@@ -3822,11 +3826,22 @@ export class CotalEndpoint extends EventEmitter {
     return handed;
   }
 
-  /** Emit the fault that ended one of this endpoint's core subscriptions, except a broker refusal:
-   *  nats.js ends the subscription with the refusal and dispatches that same instance on the
-   *  connection status, where {@link watchStatus} reports it. */
-  private emitSubscriptionFault(e: Error): void {
-    if (!(e instanceof PermissionViolationError)) this.emit("error", e);
+  /** Report the broker refusal that ends `sub`, and return the catch for its loop. nats.js ends a
+   *  refused subscription with the refusal and then dispatches that same instance on the connection
+   *  status. `closed` settles with it ahead of the status loop body, so it is recorded before
+   *  {@link watchStatus} looks and is reported here once, described. Reporting from `closed` also
+   *  covers a refusal that lands while the loop holds a batch, which nats.js ends without throwing.
+   *  The catch waits for `closed` too, then emits any other fault as thrown, such as a tap handler's
+   *  own PermissionViolationError, which is a different instance. */
+  private subscriptionFaultReporter(sub: Subscription): (e: Error) => void {
+    void sub.closed.then((ended) => {
+      if (!(ended instanceof PermissionViolationError)) return;
+      this.subscriptionRefusals.add(ended);
+      this.emit("error", describeStatusError(ended));
+    });
+    return (e) => void sub.closed.then(() => {
+      if (!this.subscriptionRefusals.has(e)) this.emit("error", e);
+    });
   }
 
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
@@ -5040,7 +5055,7 @@ export class CotalEndpoint extends EventEmitter {
       // caught, and the respond is caught. So this arm stays on `error` — it reports that this
       // responder has stopped answering at all, which is a fault an embedder should not be able to
       // miss, and no credentialed peer can reach it.
-    })().catch((e) => this.emitSubscriptionFault(e as Error));
+    })().catch(this.subscriptionFaultReporter(sub));
   }
 
   /** Bind the liveness responder for the DELIVERY plane, grading itself from its own shard-0 lease
