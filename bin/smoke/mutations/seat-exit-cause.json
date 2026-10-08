@@ -85,8 +85,8 @@
     {
       "name": "an absent exitInfo is defaulted to a clean exit (the fabricated code 0)",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      detail = info === undefined\n        ? `exit detail unavailable from runtime \"${a.handle.kind}\"`\n        : `exit code ${info.code ?? \"unknown\"}${info.signal === undefined ? \"\" : `, signal ${info.signal}`}${info.diagnostic ? `; last connector diagnostic: ${info.diagnostic}` : \"\"}`;",
-      "replace": "      const seen = info ?? { code: 0 };\n      detail = `exit code ${seen.code ?? \"unknown\"}${seen.signal === undefined ? \"\" : `, signal ${seen.signal}`}${seen.diagnostic ? `; last connector diagnostic: ${seen.diagnostic}` : \"\"}`;",
+      "find": "      detail = info === undefined\n        ? `exit detail unavailable from runtime \"${a.handle.kind}\"`\n        : `exit code ${info.code ?? \"unknown\"}${info.signal === undefined ? \"\" : `, signal ${info.signal}`}${info.diagnostic ? `; diagnostic: ${info.diagnostic}` : \"\"}`;",
+      "replace": "      const seen = info ?? { code: 0 };\n      detail = `exit code ${seen.code ?? \"unknown\"}${seen.signal === undefined ? \"\" : `, signal ${seen.signal}`}${seen.diagnostic ? `; diagnostic: ${seen.diagnostic}` : \"\"}`;",
       "expectRed": "a runtime that cannot see the exit says UNAVAILABLE, never a fabricated code 0",
       "cell": "a runtime that cannot see the exit says UNAVAILABLE, never a fabricated code 0",
       "note": "The tidy-looking convenience. Every runtime that cannot observe its child now reports a clean exit it never measured, on exactly the seats whose death is unexplained."

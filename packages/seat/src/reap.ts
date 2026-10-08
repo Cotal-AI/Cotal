@@ -254,7 +254,7 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   // A child already gone when the reap began ended on its own, and its custodian's record is the
   // only account of how, so a missing or unreadable one is said rather than left out.
   const ended = exit
-    ? `; its custodian recorded exit code ${exit.code ?? "unknown"}${exit.signal === undefined ? "" : `, signal ${exit.signal}`}${exit.diagnostic ? `, last connector diagnostic: ${exit.diagnostic}` : ""}`
+    ? `; its custodian recorded exit code ${exit.code ?? "unknown"}${exit.signal === undefined ? "" : `, signal ${exit.signal}`}${exit.diagnostic ? `, diagnostic: ${exit.diagnostic}` : ""}`
     : recorded.unreadable !== undefined
       ? `; its custodian's exit record is unreadable: ${recorded.unreadable}`
       : child === "gone"
