@@ -2304,7 +2304,7 @@ export class CotalEndpoint extends EventEmitter {
         }
         handler(m.subject, decoded);
       }
-    })().catch((e) => this.emit("error", e as Error));
+    })().catch((e) => this.emitSubscriptionFault(e as Error));
   }
 
   // ---- control plane (request/reply) --------------------------------------
@@ -2377,7 +2377,7 @@ export class CotalEndpoint extends EventEmitter {
           }
         }
       }
-    })().catch((e) => this.emit("error", e as Error));
+    })().catch((e) => this.emitSubscriptionFault(e as Error));
     return sub;
   }
 
@@ -3822,6 +3822,13 @@ export class CotalEndpoint extends EventEmitter {
     return handed;
   }
 
+  /** Emit the fault that ended one of this endpoint's core subscriptions, except a broker refusal:
+   *  nats.js ends the subscription with the refusal and dispatches that same instance on the
+   *  connection status, where {@link watchStatus} reports it. */
+  private emitSubscriptionFault(e: Error): void {
+    if (!(e instanceof PermissionViolationError)) this.emit("error", e);
+  }
+
   /** The error message for a guard that finds the endpoint unbound: "reconnecting" during a
    *  rebuild's null window OR an inter-retry backoff (so a concurrent op reports the real
    *  reason, not "not started" — `reestablishing` spans the whole retry loop incl. backoff),
@@ -5033,7 +5040,7 @@ export class CotalEndpoint extends EventEmitter {
       // caught, and the respond is caught. So this arm stays on `error` — it reports that this
       // responder has stopped answering at all, which is a fault an embedder should not be able to
       // miss, and no credentialed peer can reach it.
-    })().catch((e) => this.emit("error", e as Error));
+    })().catch((e) => this.emitSubscriptionFault(e as Error));
   }
 
   /** Bind the liveness responder for the DELIVERY plane, grading itself from its own shard-0 lease
