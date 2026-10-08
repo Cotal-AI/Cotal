@@ -70,9 +70,7 @@ let modes = new Set(MODES); // delivery modes currently shown
 let paused = false; // freeze auto-scroll so a value can be read
 let expandAll = false; // channel-wide: expand every clamped message body (else per-message toggle)
 
-// Also used for values inside double-quoted attributes, where an unescaped `"` would end the value.
-const esc = (s) =>
-  String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+const esc = window.COTAL_PARTS.esc;
 const time = (ts) => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 // Shared with graph.js via parts.js (loaded before this file). It names a part kind it cannot
 // draw instead of rendering it as the empty string, which read as "nothing arrived".

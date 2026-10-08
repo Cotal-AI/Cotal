@@ -1,4 +1,4 @@
-// Rendering message parts as the flat text the dashboard displays.
+// Rendering message parts as the flat text the dashboard displays, and escaping text for its HTML.
 //
 // WHY THIS FILE EXISTS. `app.js` and `graph.js` each carried their own copy of
 //   (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ")
@@ -140,5 +140,11 @@ window.COTAL_PARTS = (() => {
     return (parts || []).map(partText).join(" ");
   }
 
-  return { partsToText };
+  /** Text escaped for the pages' HTML. `"` is escaped because values also land inside double-quoted
+   *  attributes, and an absent value is empty text because the graph passes a nameless sender as is. */
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+  }
+
+  return { partsToText, esc };
 })();
