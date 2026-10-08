@@ -81,6 +81,7 @@ import {
   requireRuntimeAdopt,
   requireRuntimeReap,
   RuntimeReapUnproven,
+  watchProvedExit,
   type AgentHandle,
   type CustodialRuntime,
   type Runtime,
@@ -7177,23 +7178,14 @@ export class Manager {
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
-   *  its children (P4b/P4c). Only pty streams exit (via the attach session's `onExit`); external runtimes'
-   *  attach() throws, so this is a no-op there — a self-EXITED agent under those runtimes is reaped
-   *  by nothing until it's explicitly despawned (graceful-stop runs on despawn, not self-exit). The
-   *  cap still holds (a lingering corpse counts toward it); runtime-agnostic exit-reaping (a real
-   *  per-runtime `status()` → exited-sweep at the availability gate) is a tracked follow-up. */
+   *  its children (P4b/P4c). The watch is bound to the current handle: a restart swaps in a new one
+   *  and watches it, so a late exit proved for the old handle must not retire the row. */
   private watchExit(a: ManagedAgent): void {
-    try {
-      const session = a.handle.attach();
-      session.onExit(() => this.onAgentExit(a));
-      // Close the TOCTOU between the early-exit probe's unsubscribe and this subscribe: if the child
-      // exited in that gap, the `onExit` above never fires (a late subscriber can't hear a past event),
-      // so the agent would leak (never reaped, never deprovisioned). Re-check status right after
-      // subscribing and reap it now if it already went. onAgentExit is idempotent (freeSlot's guard).
-      if (a.handle.status() === "exited") this.onAgentExit(a);
-    } catch {
-      /* runtime doesn't stream an exit signal — nothing to wire */
-    }
+    const handle = a.handle;
+    const current = (): boolean => this.agents.get(a.name) === a && a.handle === handle;
+    const watched = watchProvedExit(handle, () => { if (current()) this.onAgentExit(a); }, current);
+    if (!watched)
+      console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
   }
 
   /** Prune expired cooling stamps (drop those at/before now) and return the live count — the
