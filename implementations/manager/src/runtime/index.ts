@@ -266,7 +266,8 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
       }
       if (!exited) return;
       waiting = true;
-      wait().then(
+      // Called from a continuation so a wait that throws is retried like one that rejects.
+      Promise.resolve().then(wait).then(
         () => {
           clearInterval(poll);
           onExit();
