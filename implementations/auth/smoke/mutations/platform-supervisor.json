@@ -1,0 +1,133 @@
+{
+  "suite": [
+    "implementations/auth/smoke/platform-supervisor.smoke.ts"
+  ],
+  "guard": "A trusted platform issues only one assigned owner supervisor on the stock registration rail, with a strict administrative boundary, closed selectors, native renewal ceiling and finite credential lifecycle, and an ended assignment retires its gate and issued generations so held unexpired material is refused",
+  "command": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/platform-supervisor.json",
+  "why": [
+    "Each named cell drives the real hosted auth service and built stock manager registration on a real broker. Each restore reruns the whole eight-cell suite. Registration JWT permissions are signed by the authority plane, not by the user-token callout."
+  ],
+  "mutations": [
+    {
+      "name": "owner authority material is attributed to a platform principal",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "    return await args.issue(envelope.owner, assignment.expiresAt, request);",
+      "replace": "    return await args.issue(\"p_\" + \"a\".repeat(26), assignment.expiresAt, request);",
+      "expectRed": "FAIL: U7-1 registration attributes the manager to owner A",
+      "cell": "U7-1 registration attributes the manager to owner A",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "bound owner check is removed",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "    if (envelope.owner !== args.owner)\n      throw new EpEnvelopeError(\"permission-denied\", `platform supervisor for owner ${args.owner} refuses requested owner ${envelope.owner}`);\n",
+      "replace": "",
+      "expectRed": "FAIL: U7-2 an owner A issuance refuses a request naming owner B",
+      "cell": "U7-2 an owner A issuance refuses a request naming owner B",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "manager parser ignores a generic profile selector",
+      "file": "implementations/auth/src/manager-authority.ts",
+      "find": "  for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);",
+      "replace": "  for (const key of Object.keys(o)) if (!allowed.has(key) && key !== \"profile\") requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);",
+      "expectRed": "FAIL: U7-3 the supervisor credential cannot mint",
+      "cell": "U7-3 the supervisor credential cannot mint",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "supervisor door admits the transfer-reader mint operation",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "    if (![\"prepare\", \"activate\", \"renew\", \"renewStandingBundle\"].includes(request.operation))",
+      "replace": "    if (![\"prepare\", \"activate\", \"renew\", \"renewStandingBundle\", \"transferReader\"].includes(request.operation))",
+      "expectRed": "FAIL: U7-3 the supervisor credential cannot mint",
+      "cell": "U7-3 the supervisor credential cannot mint",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "supervisor envelope ignores interactive view selector",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "    if (![\"v\", \"kind\", \"owner\", \"assignmentRevision\", \"request\"].includes(key))",
+      "replace": "    if (![\"v\", \"kind\", \"owner\", \"assignmentRevision\", \"request\", \"view\"].includes(key))",
+      "expectRed": "FAIL: U7-4 supervisor material cannot exchange for a human view",
+      "cell": "U7-4 supervisor material cannot exchange for a human view",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "renewed registration ceiling is no longer confirmed",
+      "file": "implementations/auth/src/service.ts",
+      "find": "              await session.store.confirm(existing, permissions);",
+      "replace": "              // mutation: native ceiling confirmation removed",
+      "expectRed": "FAIL: U7-5 signed permissions stay identical on renewal",
+      "cell": "U7-5 signed permissions stay identical on renewal",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "administrative authority check removed",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "  if (await input.authorizePlatformAdmin(owner) !== true)\n    throw new EpEnvelopeError(\"permission-denied\", `platform-admin authority is required for supervisor owner ${owner}`);\n",
+      "replace": "",
+      "expectRed": "FAIL: U7-6 a caller without platform-admin cannot obtain issuance",
+      "cell": "U7-6 a caller without platform-admin cannot obtain issuance",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "ended recorded lifecycle is treated as assigned",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "    if (assignment.state === \"ended\") throw platformSupervisorEnded(envelope.owner);\n    if (assignment.state !== \"assigned\" || assignment.revision !== envelope.assignmentRevision)",
+      "replace": "    if (assignment.revision !== envelope.assignmentRevision)",
+      "expectRed": "FAIL: U7-7 recorded lifecycle expiry refuses renewal and registration",
+      "cell": "U7-7 recorded lifecycle expiry refuses renewal and registration",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "credential expiry is not capped at lifecycle",
+      "file": "implementations/auth/src/service.ts",
+      "find": "            return { ...rest, expiresAt: Math.min(holder.supervisorExpiresAt, expiresAt ?? now + (expiresInSeconds ?? standingTtl)) };",
+      "replace": "            return { ...rest, expiresAt: expiresAt ?? now + (expiresInSeconds ?? standingTtl) };",
+      "expectRed": "FAIL: U7-7 recorded lifecycle expiry refuses renewal and registration",
+      "cell": "U7-7 recorded lifecycle expiry refuses renewal and registration",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "ending an assignment no longer retires the manager gate",
+      "file": "implementations/auth/src/service.ts",
+      "find": "          await authKv.update(key, new TextEncoder().encode(JSON.stringify({ ...rest, state: \"retired\", op: { opId, kind: \"retirement\" } })), entry.revision);\n",
+      "replace": "          // mutation: the gate is left open when the assignment ends\n",
+      "expectRed": "FAIL: U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
+      "cell": "U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "ending an assignment no longer retires its issued generations",
+      "file": "implementations/auth/src/service.ts",
+      "find": "          if (ref !== undefined) await session.store.retire(ref);\n",
+      "replace": "          void ref; // mutation: issued generations stay active when the assignment ends\n",
+      "expectRed": "FAIL: U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
+      "cell": "U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
+      "name": "plane issuance ignores a retired issued generation",
+      "file": "implementations/auth/src/service.ts",
+      "find": "              await session.store.resolve(ref, session.sourceIsLive);\n            } catch (error) {\n              throw platformSupervisorEnded(owner, error instanceof Error ? error.message : String(error));",
+      "replace": "              void ref;\n            } catch (error) {\n              throw platformSupervisorEnded(owner, error instanceof Error ? error.message : String(error));",
+      "expectRed": "FAIL: U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
+      "cell": "U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    }
+  ]
+}

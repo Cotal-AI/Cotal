@@ -44,6 +44,53 @@ and checks the served caller on every resume and principal answer. The run-hosti
 participant manager already has (admission, attempts, renewal, operator credentials) is reused
 unchanged.
 
+## Platform supervisor registration
+
+A hosted auth context may also issue manager registration material for a platform-owned supervisor
+under one derived user owner. This uses `PlatformSupervisorInput` and
+`AuthServiceHandle.platformSupervisorAuthority(owner)` in `@cotal-ai/auth`. The trusted host
+composition authenticates platform-admin authority and observes a recorded assignment. The assignment
+names the owner, account, space, instance, lifecycle UID, revision, finite expiry and only `supervise`.
+A worker receives a door bound to that owner. Every request rechecks administration and assignment,
+then uses the existing manager authority parser, fixed actors, registration proof and issuer.
+
+Two options were considered. A new bearer row and callout view would require a new exchange proof,
+a third ledger row kind and another manager authentication arm. A typed in-process assignment door
+reuses the existing material and registration protocol without adding a human bearer or public HTTP
+route. The latter is used. Its closed envelope is `PlatformSupervisorAuthorityRequest`; its inner
+request remains `RemoteManagerAuthorityRequest`. Only prepare, activate and standing renewal are
+served. Enrollment, mint, participant control and interactive exchange remain separate host operations.
+
+Every returned JWT is capped at the assignment's recorded expiry. Ending an assignment is a
+recorded state at the authority plane. The host records the assignment `ended` and calls
+`endPlatformSupervisorAssignment(owner)`. That retires the manager gate and the issued supervisor
+and executor generations, all terminal rows. Every door reads them on each call. Registration
+refuses on the retired gate. Prepare, activate and both renewals refuse on the retired generation,
+so material returned earlier is refused even though it has not expired. The refusal names the
+ended assignment. No timer or cache is involved, and no host view can reopen a retired row.
+
+The material's own broker connection is not evicted by this. It lives to its capped expiry and can
+still write its own gate row, so a client that bypasses stock registration could rewrite that row.
+The authority-plane doors still refuse it. Immediate termination still requires stopping the worker
+and completing the retirement barrier. The host must not claim that an unexpired credential was evicted.
+
+Before returning supervisor or executor material, the authority plane persists the signed native
+publish and subscribe ceiling in `cotal_issued_<space>`, using existing prepare, release and
+accepted-row storage. The accepted token is derived from the owner, manager instance, lifecycle UID
+and duty. The recorded permission set is byte-identical to the native set the authority plane
+signs at issuance and every renewal. A renewal resolves the same reference and confirms its ceiling
+through `IssuedStore`, without widening it. This ceiling contract applies to the authority plane's
+JWTs, rather than a user-token callout result. The in-process assignment door remains the selected
+design; it adds no third bearer row or callout view.
+Serving, goal-writing and session-ledger duties retain their existing registered gate and credential
+family. No caller rail or generation claim is added to a registration credential.
+
+The native smoke drives `startAuthService`, the built manager's registration function and real broker
+connections. It checks owner attribution, named cross-owner refusal, mint and human exchange refusal,
+signed permission equality and native ceiling confirmation, platform-admin authorization and expired
+registration material. These are authority-plane JWTs. They are not callout-signed user connections,
+so their proof must not be described as execution of the callout path in section 4.
+
 ## 1. What happens today
 
 The refusal was reproduced at `3b616a239` through shipped entrypoints: a user-auth host with no

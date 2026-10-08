@@ -1328,8 +1328,10 @@ implementation staging, half-minted state, and tombstone fences live in a distin
 
 **Remote manager-service authority (user-auth only).** `manager-service` is one CLOSED,
 server-authored authority view, not a profile name, arbitrary bearer profile, or client-supplied
-permission set. It exists only for a signed-in human whose current actor-ledger row contains the
-dedicated `supervise` scope. `spawn` and `admin` never imply `supervise`, and `supervise` never
+permission set. The human exchange serves only a signed-in human whose current actor-ledger row
+contains the dedicated `supervise` scope. A trusted host composition may separately issue the
+owner-bound platform supervisor registration material defined in §13.15, without a human exchange.
+`spawn` and `admin` never imply `supervise`, and `supervise` never
 implies either. Only the loopback/operator exchange MAY issue this view; the public exchange and
 every managed-agent secret exchange MUST refuse it. The callout re-reads the ledger row at exchange
 and connect, so a missing, narrowed, or revoked `supervise` scope denies the next view exchange and
@@ -4150,6 +4152,37 @@ accepted row. When the row names the same triple and the ceiling being minted is
 the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
 client adopts a fresh generation only through a new connection under a new nonce. A managed row's
 view, the `agent` profile and every other view keep the legacy rail.
+
+**Platform-owned user supervisor.** A trusted host composition MAY issue the closed manager-service
+registration material for one ordinary derived owner without that owner's IdP proof. This is an
+in-process administrative door, not a user-token exchange. Its recorded assignment MUST name one
+owner, space, account, manager instance, lifecycle UID, revision and finite expiry, and MUST carry
+only `supervise`. The host MUST authenticate platform-admin authority and re-read the assignment
+on every request. The worker's door MUST be bound to that owner and refuse another owner by name.
+It MUST NOT export an administrative bearer, signer, mint surface, human exchange or cross-owner
+enrollment. The existing fixed manager actors, public nkeys and registration proof remain unchanged.
+
+The host MUST cap every returned credential at the assignment expiry and refuse issuance after the
+assignment ends. The supervisor and executor registration ceilings MUST be persisted through the
+existing issued evidence and accepted-row stores before material is returned, with expiry as their
+recorded lifetime. The recorded permission set MUST be byte-identical to the native permission set
+signed by the authority plane at issuance and every renewal. Renewal MUST resolve and confirm the
+original ceiling and MUST NOT widen it. These JWTs are signed by the authority plane, not the
+user-token callout. These registration
+credentials hold no caller rail, so no generation claim is added to their request subjects. The
+other standing duties retain their endpoint gate and credential-family protocol.
+
+When the platform ends an assignment, the host MUST record it `ended` and then end its issuance at
+the authority plane. Ending retires the instance's manager gate (`retired`, op kind `retirement`)
+and retires the issued supervisor and executor generations. Both are terminal rows. From then on,
+every door that accepts this material MUST refuse it by name, even when the material has not
+expired. Stock registration refuses on the retired gate. Prepare, activate, `renew` and
+`renewStandingBundle` refuse on the retired generation, read on every call before anything is
+signed, so a stale host read that still reports the assignment `assigned` reopens nothing. The
+door reports `platform supervisor assignment for owner <owner> has ended`. The material's own
+broker connection lives until its capped expiry: its gate row is writable under its own grant, so
+a client that bypasses stock registration can still rewrite that one row. Live eviction remains the
+host's retirement barrier.
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
 §14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
