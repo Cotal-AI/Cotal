@@ -69,7 +69,11 @@ barrier. The host must not call an assignment ended and claim that an unexpired 
 Before returning supervisor or executor material, the authority plane persists the signed native
 publish and subscribe ceiling in `cotal_issued_<space>`, using existing prepare, release and
 accepted-row storage. The accepted token is derived from the owner, manager instance, lifecycle UID
-and duty. A renewal resolves the same reference and confirms its ceiling through `IssuedStore`.
+and duty. The recorded permission set is byte-identical to the native set the authority plane
+signs at issuance and every renewal. A renewal resolves the same reference and confirms its ceiling
+through `IssuedStore`, without widening it. This ceiling contract applies to the authority plane's
+JWTs, rather than a user-token callout result. The in-process assignment door remains the selected
+design; it adds no third bearer row or callout view.
 Serving, goal-writing and session-ledger duties retain their existing registered gate and credential
 family. No caller rail or generation claim is added to a registration credential.
 
@@ -580,4 +584,3 @@ placement on another instance is refused at `run start`. User B's resume of A's 
 participant manager, and B's answer are refused by the issuing host as admitted on another manager
 instance. Revoking A's row between two spawns of one run refuses the second spawn, and A's next
 start is refused.
-

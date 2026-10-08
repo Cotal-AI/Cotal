@@ -9,10 +9,14 @@ import {
 import { Kvm } from "@nats-io/kv";
 import { managerClusterArtifacts, registerRemoteManagerAuthority, remoteManagerClient } from "../../manager/dist/index.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
-import { startAuthService, type AuthServiceHandle, type PlatformSupervisorAssignment, type PlatformSupervisorAuthorityRequest } from "../src/index.js";
+import type { AuthServiceHandle, PlatformSupervisorAssignment, PlatformSupervisorAuthorityRequest } from "../src/index.js";
 import { authorityBarrierGrants, openAuthorityClient, remoteManagerRegistrationProof } from "../src/authority-client.js";
 import { withIssuerSession } from "@cotal-ai/core";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
+
+const { startAuthService } = process.argv.includes("--built-auth")
+  ? await import("../dist/index.js")
+  : await import("../src/index.js");
 
 const names = [
   "U7-1 registration attributes the manager to owner A",
@@ -129,7 +133,12 @@ try {
         const token = connectionAcceptedToken(`platform-supervisor:${owner}:${state.instanceId}:${state.lifecycleUid}:${duty}`);
         const ref = await readAcceptedRow(session.nc,a.space,token);
         const resolved = await session.store.resolve(ref,session.sourceIsLive);
-        assert.deepEqual(resolved.evidence.permissions,importNativeSubjectPermissions({pub:claims(prepared!.credentials[duty]!.jwt).nats.pub,sub:claims(prepared!.credentials[duty]!.jwt).nats.sub}));
+        const recorded = JSON.stringify(resolved.evidence.permissions);
+        for (const material of [prepared!, renewed]) {
+          const signed = claims(material.credentials[duty]!.jwt).nats;
+          assert.equal(recorded, JSON.stringify(importNativeSubjectPermissions({ pub: signed.pub, sub: signed.sub })),
+            `${duty} recorded permissions must be byte-identical to the signed permissions before and after renewal`);
+        }
         assert.equal(resolved.evidence.ref.owner,owner);
       }
     });

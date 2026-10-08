@@ -4165,7 +4165,10 @@ enrollment. The existing fixed manager actors, public nkeys and registration pro
 The host MUST cap every returned credential at the assignment expiry and refuse issuance after the
 assignment ends. The supervisor and executor registration ceilings MUST be persisted through the
 existing issued evidence and accepted-row stores before material is returned, with expiry as their
-recorded lifetime. Renewal MUST resolve and confirm the original ceiling. These registration
+recorded lifetime. The recorded permission set MUST be byte-identical to the native permission set
+signed by the authority plane at issuance and every renewal. Renewal MUST resolve and confirm the
+original ceiling and MUST NOT widen it. These JWTs are signed by the authority plane, not the
+user-token callout. These registration
 credentials hold no caller rail, so no generation claim is added to their request subjects. The
 other standing duties retain their endpoint gate and credential-family protocol. An ended assignment
 denies further issuance. Already-returned material remains broker-valid only until its capped

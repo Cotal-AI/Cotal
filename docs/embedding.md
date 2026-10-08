@@ -54,7 +54,8 @@ The host carries only the bound door over its authenticated worker channel.
 Use `remoteManagerClient` and `registerRemoteManagerAuthority` from `@cotal-ai/manager` for the
 existing registration ceremony. The result keeps the stock manager material shape and five nkeys.
 All returned credentials expire no later than the assignment. The supervisor and executor ceilings
-are recorded in the native issued store and must remain unchanged when material is renewed.
+are recorded in the native issued store. The recorded permission set must be byte-identical to the
+authority plane's signed native permission set at issuance and every renewal, and must never widen.
 These JWTs are signed by the authority plane, not returned by the user-token callout. The door
 adds no human bearer, callout view, owner ledger grant or enrollment authority. Run admission,
 host-backed enrollment and shutdown maintenance need their own host composition.
