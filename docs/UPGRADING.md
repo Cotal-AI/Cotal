@@ -445,6 +445,25 @@ as they are. Owners derive from the issuer, so existing grants keep matching. Ch
 have each person run `cotal login --idp http://127.0.0.1:<port>/api/auth` again, because sessions
 are cached under the URL.
 
+## Terminal layout `Pane.confirm` in 0.73.0
+
+`Pane.confirm` is removed from `@cotal-ai/core`, and the tmux and cmux terminal-layout providers no
+longer press Enter in the panes they open. The flag carried no prompt text, so both providers
+pressed Enter five times, one second apart: the first dialog a pane showed was answered with its
+default, and a prompt that never appeared went unreported. Nothing in Cotal sets it, so a running
+mesh needs nothing. Spawned agents are unaffected, because their runtimes match the startup prompt
+by its text.
+
+### What stops working
+
+A `Pane` object literal that sets `confirm` fails to compile with TS2353. Plain JavaScript that sets
+it runs without an error, and the pane stays at its prompt.
+
+### Before the upgrade
+
+Remove `confirm` from each `Pane`. Start a command that shows a startup prompt with the option that
+skips it, or answer the prompt in the pane.
+
 ## Carrying a resumed Claude session to another host in 0.67.0
 
 `cotal spawn --resume <id> --detach --on <instance>` now carries a Claude session held on the

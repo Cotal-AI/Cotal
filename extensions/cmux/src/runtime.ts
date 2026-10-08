@@ -22,12 +22,6 @@ const GRACE_MS = 1_500;
  *  loop; the driver bounds its reads. */
 const CONFIRM_CALL = { timeoutMs: 1_000 };
 
-/** Background snippet that auto-accepts a one-time confirm prompt by pressing Enter on the
- *  pane's own cmux surface a few times. Gated on the cmux env vars so it's a no-op off cmux. */
-const ENTER_LOOP =
-  '[ -n "$CMUX_SURFACE_ID" ] && [ -n "$CMUX_BUNDLED_CLI_PATH" ] && ' +
-  '( for _ in 1 2 3 4 5; do sleep 1; "$CMUX_BUNDLED_CLI_PATH" send-key --surface "$CMUX_SURFACE_ID" enter >/dev/null 2>&1; done ) &';
-
 function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
@@ -44,8 +38,7 @@ export function paneCommand(pane: Pane, login: boolean, isolate = false): string
   const env = Object.entries(pane.env ?? {}).map(([k, v]) => `${k}=${shellQuote(v)}`);
   const cmd = [...env, shellQuote(pane.command), ...(pane.args ?? []).map(shellQuote)].join(" ");
   const cd = pane.cwd ? `cd ${shellQuote(pane.cwd)}\n` : "";
-  const confirm = pane.confirm ? `${ENTER_LOOP}\n` : "";
-  const script = `#!/usr/bin/env bash\n${cd}${confirm}exec env ${isolate ? "-i " : ""}${cmd}\n`;
+  const script = `#!/usr/bin/env bash\n${cd}exec env ${isolate ? "-i " : ""}${cmd}\n`;
   // The script holds the pane's env inline (the agent's creds + control token, and any provider key).
   // Write it into a fresh 0o700 temp dir as a 0o600 file: never a world-readable script, and never a
   // predictable, symlink-attackable /tmp path. cmux runs it as the same user via `bash <path>`.
