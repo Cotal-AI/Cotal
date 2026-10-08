@@ -457,7 +457,7 @@ export function managedRetirementOpId(lifecycleUid: string): string {
 
 /** The five standing identities of a remote manager. A parsed `identities` object keeps this key
  *  order, which the registration proofs digest. */
-export const REMOTE_MANAGER_IDENTITY_NAMES = ["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const;
+export const REMOTE_MANAGER_IDENTITY_NAMES = Object.freeze(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"] as const);
 
 /** Closed parser for a request's `identities` field: exactly the five names, each exactly `{ id }`
  *  with a user nkey. `fail` throws the calling parser's error, so each request keeps its own prefix. */
