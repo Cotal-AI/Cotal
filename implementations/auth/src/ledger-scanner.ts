@@ -66,7 +66,7 @@ import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstre
 import type { NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
-import type { ScanGuard } from "./plane-claim.js";
+import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
 
 /** The ONE literal consumer name every scan over the auth stream reuses (the grant pins exactly
@@ -252,18 +252,6 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // chain: a second caller (or a sibling instance) waits rather than colliding on
   // pre-clean/create/fetch/delete.
   const serialized = <T>(fn: () => Promise<T>): Promise<T> => serializedFor(SPACE_SCAN_CHAINS, space, fn);
-  // The PLANE guard (#29 HIGH 3, SPEC 13.13), inside the serialized critical section: the claim
-  // is re-validated BEFORE the scan (refuse to enumerate under a lost claim) and AFTER it (a
-  // claim lost DURING the scan discards the result — a successor may already own the literal
-  // name). Intra-process serialization stays the module chain above; the guard is the
-  // CROSS-process authority.
-  const guarded = async <T>(fn: () => Promise<T>): Promise<T> => {
-    if (guard === undefined) return fn();
-    await guard.assertHeld("before");
-    const out = await fn();
-    await guard.assertHeld("after");
-    return out;
-  };
 
   // The RAW scan — MODULE-PRIVATE (a closure over the owned connection): no caller ever supplies
   // `prefix`; the closed ops below force it from a validated id.
@@ -389,15 +377,15 @@ function buildScanner(nc: NatsConnection, space: string, onClose: () => Promise<
   // freeze guarantees its ops are still the module's when an install seam asserts the brand — a
   // post-brand method swap throws (strict mode) instead of surviving as a silent-empty scanner.
   const scanner: AuthLedgerScanner = Object.freeze({
-    scanManagerGates: () => serialized(() => guarded(() => scanOnce("epgate.manager."))),
+    scanManagerGates: () => serialized(() => guardedScan(guard, () => scanOnce("epgate.manager."))),
     scanCredentialFamily: (lifecycleUid: string) =>
-      serialized(() => guarded(() => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`))),
+      serialized(() => guardedScan(guard, () => scanOnce(`cred.${assertLifecycleToken(lifecycleUid)}.`))),
     scanEndpointCredentialFamily: (endpoint: string, instanceId: string) =>
-      serialized(() => guarded(() => scanOnce(`epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.`))),
+      serialized(() => guardedScan(guard, () => scanOnce(`epcred.${endpointToken(endpoint)}.${assertLifecycleToken(instanceId, "instanceId")}.`))),
     scanBysrc: (issuerKeyId: string, id: string) =>
-      serialized(() => guarded(() => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`))),
-    scanStageFamily: () => serialized(() => guarded(() => scanOnce("stage."))),
-    scanSessions: () => serialized(() => guarded(() => scanOnce("session."))),
+      serialized(() => guardedScan(guard, () => scanOnce(`bysrc.${assertSegment(issuerKeyId, "issuerKeyId")}.${assertSegment(id, "handle id")}.`))),
+    scanStageFamily: () => serialized(() => guardedScan(guard, () => scanOnce("stage."))),
+    scanSessions: () => serialized(() => guardedScan(guard, () => scanOnce("session."))),
     close: onClose,
   });
   // BRAND the scanner with its exact space so the barrier registry's assertScannerSpace can reject a
