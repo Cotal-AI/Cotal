@@ -31,8 +31,9 @@ shipped symbols, with these differences:
   digests differ from the command's declaration in the manager's registered cluster, which
   `registeredCommand` reads at the gate's registration revision.
 
-The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
-head's.
+Section 1 preserves the pre-issuance source inventory at
+`6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Its line numbers and missing-authority statements describe
+that historical head, not the implemented path above or the managed-seat extension in section 4.
 
 The question is the smallest path by which a user who signed in with `cotal login --idp` can run
 `cotal run start` on a user-auth space, have the run admitted on the versioned rail under authority
@@ -92,7 +93,7 @@ signed permission equality and native ceiling confirmation, platform-admin autho
 registration material. These are authority-plane JWTs. They are not callout-signed user connections,
 so their proof must not be described as execution of the callout path in section 4.
 
-## 1. What happens today
+## 1. Original failure
 
 The refusal was reproduced at `3b616a239` through shipped entrypoints: a user-auth host with no
 manager of its own, a participant registered with `cotal meshes add --mode user`, stock
@@ -106,8 +107,8 @@ run-start binds a run to the caller's issued authority, and this request rode th
 The same binary and program on a static-auth mesh start, answer a checkpoint and complete. Main moved
 four commits since `3b616a239`, adding the platform control door. They change
 `manager-authority.ts` and `service.ts` around the holder type and leave `run-hosting.ts`,
-`manager.ts`, `connect.ts` and `permissions.ts` untouched, so the refusal path is the same. Every
-site below is read at the current head.
+`manager.ts`, `connect.ts` and `permissions.ts` untouched, so the refusal path at that historical head
+was the same. The table records the source before user-auth issuance was implemented.
 
 | Site | What it does |
 |---|---|
@@ -127,8 +128,8 @@ site below is read at the current head.
 | `implementations/manager/src/run-hosting.ts:317-360` | `resume` checks the admission and its revocation, never the caller. |
 | `packages/core/src/remote-manager-authority.ts:775-790` | `RemoteRunAttemptRequest` carries no served subject, so the issuing host cannot see who asked for a resume or an answer. |
 
-So the remote run arm is complete on the host side except for owner binding, and no user-auth caller
-can reach it, because no user credential is an issuance.
+At that historical head, the remote run arm lacked owner binding, and no user-auth caller could
+reach it because no user credential was an issuance.
 
 ## 2. Scope
 
@@ -552,6 +553,13 @@ A private probe, not a committed test, through shipped entrypoints under a fresh
 6. `cotal actor revoke` for A's `cli` row, then A's answer and resume: refused, source no longer live.
 7. A `run-start` that the probe publishes on the legacy rail under A's connection: refused as today.
 8. The signer-holding host's own manager still refuses user mode by name.
+
+The managed-seat extension is covered by `pnpm smoke:managed-run-issuance`, a committed 12-cell
+suite using the real auth service, broker, signerless Manager and persona-loaded enrollment.
+It covers interactive and managed start, answer and released-run resume, both eligibility inputs,
+fresh and invalid parent rows, signed-ceiling equality, nonce renewal, lifecycle invalidation and
+owner-confined run spawning. Each load-bearing mutation names its required red assertion in
+`implementations/auth/smoke/mutations/managed-run-issuance.json` and reruns the full suite after restore.
 
 ## 10. Owned agents
 
