@@ -40,6 +40,16 @@
       "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
     },
     {
+      "name": "supervisor door admits the transfer-reader mint operation",
+      "file": "implementations/auth/src/platform-supervisor.ts",
+      "find": "    if (![\"prepare\", \"activate\", \"renew\", \"renewStandingBundle\"].includes(request.operation))",
+      "replace": "    if (![\"prepare\", \"activate\", \"renew\", \"renewStandingBundle\", \"transferReader\"].includes(request.operation))",
+      "expectRed": "FAIL: U7-3 the supervisor credential cannot mint",
+      "cell": "U7-3 the supervisor credential cannot mint",
+      "completionMarker": "COTAL_SMOKE_SENTINEL cells=8",
+      "afterRestore": "pnpm exec tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    },
+    {
       "name": "supervisor envelope ignores interactive view selector",
       "file": "implementations/auth/src/platform-supervisor.ts",
       "find": "    if (![\"v\", \"kind\", \"owner\", \"assignmentRevision\", \"request\"].includes(key))",

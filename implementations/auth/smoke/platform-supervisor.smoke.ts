@@ -107,6 +107,22 @@ try {
       assert.ok(denied, "broker must refuse generic actor-ledger writes");
       await nc.close(); await statuses;
       await assert.rejects(door!({ ...wrap(remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","prepare")), request:{...remoteManagerClient.remoteManagerAuthorityRequest(state,"cli","prepare"), profile:"provisioner"} } as PlatformSupervisorAuthorityRequest),/unknown field.*profile/);
+      // Effect: the issuer behind the door can mint a transfer-reader credential for this owner and
+      // instance. The door must refuse that operation, so no new credential reaches the broker.
+      const transferIdentity = newIdentity();
+      let minted: RemoteManagerAuthorityMaterial | undefined;
+      try {
+        minted = await call(remoteManagerClient.remoteManagerAuthorityRequest(state, "cli", "transferReader", {
+          registrationProof: remoteManagerRegistrationProof(owner, state), transferReader: { id: transferIdentity.id },
+        }));
+      } catch (error) {
+        assert.match(error instanceof Error ? error.message : "", /operation transferReader is outside manager registration and renewal/);
+      }
+      if (minted) {
+        const leaked = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: remoteManagerClient.materialCredential(minted, "transferReader", transferIdentity), tls: false }) });
+        await leaked.close();
+        assert.fail("the supervisor door minted a transfer-reader credential that the broker accepted");
+      }
     } finally { await nc.close(); }
   });
   await cell(3, async () => {
