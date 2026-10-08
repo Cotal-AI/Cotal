@@ -3,7 +3,7 @@
     "implementations/auth/smoke/grant-cleanup-generation.smoke.ts"
   ],
   "guard": "fresh grant refusal and exact-token cleanup preserve another launch generation",
-  "command": "node --no-warnings --experimental-transform-types --experimental-loader /home/cotal/hack-lanes/cloud-efficient-exec-0928/staff/dm-session-collision-1008/source-loader.mjs implementations/auth/smoke/grant-cleanup-generation.smoke.ts",
+  "command": "pnpm exec tsx implementations/auth/smoke/grant-cleanup-generation.smoke.ts",
   "mutations": [
     {
       "name": "remove fresh grant occupancy refusal",

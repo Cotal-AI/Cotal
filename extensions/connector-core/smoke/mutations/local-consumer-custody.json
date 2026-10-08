@@ -3,7 +3,7 @@
     "extensions/connector-core/smoke/local-consumer-custody.smoke.ts"
   ],
   "guard": "actual consuming-process custody survives parent death and refuses replacing a live local control listener",
-  "command": "node --no-warnings --experimental-transform-types --experimental-loader /home/cotal/hack-lanes/cloud-efficient-exec-0928/staff/dm-session-collision-1008/source-loader.mjs extensions/connector-core/smoke/local-consumer-custody.smoke.ts",
+  "command": "pnpm exec tsx extensions/connector-core/smoke/local-consumer-custody.smoke.ts",
   "mutations": [
     {
       "name": "remove consuming process claim",
