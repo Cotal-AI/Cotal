@@ -1114,8 +1114,8 @@ export type ServiceDeregistration =
   /** The spec is not at the caller's `registrationRevision`: another incarnation owns it. Or the
    *  status observed a later registration than the spec read, or a key moved between the read and
    *  its revision-pinned delete: something is WRITING to this registration, so it is not the dead
-   *  record that was inspected. The spec was not removed; the status was removed only if the spec
-   *  moved after the status delete, and then it was the inspected registration's own. */
+   *  record that was inspected. The spec was not removed. A status that was removed observed the
+   *  inspected registration or an earlier one. */
   | { removed: false; reason: "superseded" }
   /** This instance currently holds the endpoint governance slot at the live gate generation
    *  (a registration is in flight through spec publish and gate reopen). Nothing was removed. */
@@ -1144,8 +1144,8 @@ export type ServiceDeregistration =
  * microseconds ago under the same instanceId — exactly the case a restart produces. A moved key
  * aborts with `superseded`. So does a status that observed a later registration than the spec read:
  * that is a successor landing between the two reads, which the status pin cannot see because the
- * status read returns it. `superseded` never removes the spec, and the only status it can have
- * removed is the inspected registration's own, when the spec moved after that delete.
+ * status read returns it. `superseded` never removes the spec, and a status it removed observed the
+ * inspected registration or an earlier one.
  *
  * THAT PIN ONLY COVERS A WRITE AFTER THE READ. A successor that registered before the read is what
  * the read returns, and the instanceId persists across restarts, so the read alone cannot tell it
