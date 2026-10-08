@@ -419,8 +419,8 @@ checkpoint-plane pause per attempt, answered through `cotal run answer` as a che
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
 token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
 seat's connector renders as the record wanted and the hosted command that answers it. The relay
-names the ask's absolute deadline and the manager holds it to that instant, refusing one already
-past, so the seat is never shown an attempt after its pause expired. When that
+names the ask's absolute deadline, so the manager stops serving an attempt at the instant its
+pause expires and refuses a relay already past it. When that
 literal command is run inside the managed seat, the CLI reuses the seat's lifecycle credential and
 issued caller identity rather than minting an operator instrument. The command
 does not take `--by`: the manager records the authenticated caller as the answerer. A spawned seat's
