@@ -53,12 +53,25 @@ export interface RemoteManagerIdentityState {
   };
 }
 
+/** Written out by name so the compiler checks the five names against both the state and the wire
+ *  type. The order is `REMOTE_MANAGER_IDENTITY_NAMES` because the host echoes its parsed copy in that
+ *  order and the result checks compare the serialized value. */
+export function publicIdentities({ identities }: RemoteManagerIdentityState): RemoteManagerAuthorityRequest["identities"] {
+  return {
+    supervisor: { id: identities.supervisor.id },
+    executor: { id: identities.executor.id },
+    serve: { id: identities.serve.id },
+    goalWriter: { id: identities.goalWriter.id },
+    sessionLedger: { id: identities.sessionLedger.id },
+  };
+}
+
 function runRequestBase(state: RemoteManagerIdentityState, registrationProof: string, accountPublicKey: string, processEpoch: number) {
   return {
     v: 1 as const, space: state.space, actor: "cli", instanceId: state.instanceId,
     managerLifecycleUid: state.lifecycleUid, requestId: `run${mintLifecycleUid()}`,
     registrationProof, accountPublicKey, processEpoch,
-    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerAuthorityRequest["identities"],
+    identities: publicIdentities(state),
   };
 }
 
@@ -201,7 +214,7 @@ export function remoteManagerAdminAuthorizationRequest(
     requestId: `admin${mintLifecycleUid()}`,
     registrationProof,
     serveEpoch,
-    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerAdminAuthorizationRequest["identities"],
+    identities: publicIdentities(state),
     caller,
   };
 }
@@ -282,13 +295,7 @@ export function remoteManagerAuthorityRequest(
     ...(session ? { session } : {}),
     ...(retirement ? { retirement } : {}),
     ...(transferReader ? { transferReader } : {}),
-    identities: {
-      supervisor: { id: state.identities.supervisor.id },
-      executor: { id: state.identities.executor.id },
-      serve: { id: state.identities.serve.id },
-      goalWriter: { id: state.identities.goalWriter.id },
-      sessionLedger: { id: state.identities.sessionLedger.id },
-    },
+    identities: publicIdentities(state),
   };
 }
 
@@ -308,7 +315,7 @@ export function remoteManagerMaintenanceRequest(
     instanceId: state.instanceId,
     managerLifecycleUid: state.lifecycleUid,
     requestId: `maintain${mintLifecycleUid()}`,
-    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagerMaintenanceRequest["identities"],
+    identities: publicIdentities(state),
     targetInstanceId,
     ...(principals ? { principals } : {}),
   };
@@ -386,13 +393,7 @@ export function remoteRetainedAgentValidationRequest(
     requestId: `validate${mintLifecycleUid()}`,
     registrationProof,
     serveEpoch,
-    identities: {
-      supervisor: { id: state.identities.supervisor.id },
-      executor: { id: state.identities.executor.id },
-      serve: { id: state.identities.serve.id },
-      goalWriter: { id: state.identities.goalWriter.id },
-      sessionLedger: { id: state.identities.sessionLedger.id },
-    },
+    identities: publicIdentities(state),
     target,
     actorToken,
     sentinelCreds,
@@ -605,7 +606,7 @@ export function remoteManagedAgentEnrollmentRequest(
     registrationProof,
     serveEpoch,
     target,
-    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagedAgentEnrollmentRequest["identities"],
+    identities: publicIdentities(state),
   };
 }
 
@@ -688,7 +689,7 @@ export function remoteManagedAgentPrepareRetirementRequest(
     serveEpoch,
     target,
     opId,
-    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagedAgentPrepareRetirementRequest["identities"],
+    identities: publicIdentities(state),
   };
 }
 
@@ -736,7 +737,7 @@ export function remoteManagedAgentRuntimeRequest<K extends RemoteManagedAgentRun
     registrationProof,
     serveEpoch,
     target: { owner: target.owner, actor: target.actor, lifecycleUid: target.lifecycleUid },
-    identities: Object.fromEntries(Object.entries(state.identities).map(([name, identity]) => [name, { id: identity.id }])) as RemoteManagedAgentRuntimeRequest["identities"],
+    identities: publicIdentities(state),
   } as Extract<RemoteManagedAgentRuntimeRequest, { kind: K }>;
 }
 
