@@ -7137,6 +7137,9 @@ export class Manager {
             // The backstop is already cleared, so a reader that throws must still let this settle.
             exitDetail = `; exit detail unreadable from runtime "${a.handle.kind}": ${rejectionText(e)}`;
           }
+          // A runtime's text can carry a lone surrogate, which is not I-JSON, and the failed terminal
+          // this detail becomes is refused with it.
+          exitDetail = exitDetail.replace(/\p{Cs}/gu, "\uFFFD");
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
