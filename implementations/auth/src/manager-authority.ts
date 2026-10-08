@@ -78,12 +78,15 @@ export async function authorizeRemoteManagerRenewal(args: {
   const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
   if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
     throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registration");
-  if (r.operation === "renewRunDriver") {
-    const run = await args.observeRun(r.run!.runId);
-    if (!run || run.state !== "running" || run.instanceId !== r.instanceId || run.holder !== r.run!.holder ||
-        run.takeoverId !== r.run!.takeoverId || run.epoch !== r.run!.epoch || run.fencingToken !== r.run!.fencingToken)
-      throw new EpEnvelopeError("conflict", "manager-service run renewal does not hold the activated run and takeover fence");
-  }
+  if (r.operation === "renewRunDriver" && !holdsRunFence(await args.observeRun(r.run!.runId), r))
+    throw new EpEnvelopeError("conflict", "manager-service run renewal does not hold the activated run and takeover fence");
+}
+
+/** Whether a renewRunDriver request still holds the observed run's activated attempt and takeover
+ * fence. The host re-applies it right before issuance because the run can move after the decision. */
+export function holdsRunFence(run: HostedRunAttempt | null, r: RemoteManagerAuthorityRequest): boolean {
+  return run !== null && run.state === "running" && run.instanceId === r.instanceId && run.holder === r.run!.holder &&
+    run.takeoverId === r.run!.takeoverId && run.epoch === r.run!.epoch && run.fencingToken === r.run!.fencingToken;
 }
 
 /** Host-only typed request after the IdP proof and ledger row (a human holder) or the platform
