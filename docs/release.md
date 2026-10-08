@@ -9,7 +9,7 @@ workspace packages under `packages/*`, `extensions/*`, and `implementations/*` t
 ## 0.11 runtime migration
 
 The published binary no longer bundles the optional tmux and cmux runtimes. Existing operators
-must run `cotal ext add @cotal-ai/tmux` or `cotal ext add @cotal-ai/cmux` once after upgrading,
+must run `cotal ext add <runtime-package>` once after upgrading,
 before using `runtime: tmux|cmux` in a manifest or passing `--runtime tmux|cmux`. Missing runtimes
 fail loudly with the matching install command; they never fall back to pty.
 
@@ -18,9 +18,8 @@ fail loudly with the matching install command; they never fall back to pty.
 Trusted publishing replaces the long-lived `NPM_TOKEN` secret with short-lived OIDC tokens
 issued by GitHub Actions. Each published package must be configured once on npmjs.com.
 
-The `fixed` group in [`.changeset/config.json`](../.changeset/config.json) is the list that
-gets versioned and published. Derive the package list from it instead of
-maintaining it by hand. It had drifted by six packages before this was last reconciled.
+The `fixed` group in [`.changeset/config.json`](../.changeset/config.json) gets versioned together.
+The preflight checks that it matches the publishable workspace census.
 
 ### Deployment Environment setup
 
@@ -44,11 +43,15 @@ every npm trusted-publisher record. All three must use the exact string `npm-pub
 
 ### Per-package trusted publisher configuration
 
-For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
-`@cotal-ai/workspace`, `@cotal-ai/cli`, `@cotal-ai/manager`, `@cotal-ai/delivery`,
-`@cotal-ai/web`, `@cotal-ai/cmux`, `@cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/herdr`,
-`@cotal-ai/connector-core`, `@cotal-ai/connector-claude-code`, `@cotal-ai/connector-hermes`,
-`@cotal-ai/connector-opencode`, `@cotal-ai/connector-codex`, `@cotal-ai/pi`, `@cotal-ai/auth`:
+Configure every workspace package that is not `private: true`. The preflight selects them
+from `pnpm list -r --depth -1 --json` and prints the package/version census with:
+
+```bash
+node scripts/preflight-npm-publish.mjs
+```
+
+Without the GitHub OIDC requester, this prints the census and refuses before publishing.
+Use that census for the following steps:
 
 1. Go to `https://www.npmjs.com/package/<name>/access` (e.g.
    `https://www.npmjs.com/package/@cotal-ai/core/access`).
@@ -61,13 +64,23 @@ For **every** published package, `cotal-ai` (the binary), `@cotal-ai/core`,
    - **Environment name:** `npm-publish`.
 5. Save. Repeat for every package.
 
-> The first time, you may need to publish a version manually (with a classic token) so the
-> package exists on npm. After that, OIDC takes over.
-
 > **Migration from blank Environment:** if packages were previously configured with a blank
 > Environment name, each must be updated to `npm-publish`. Delete the old trusted publisher
 > record and re-create it with the Environment name filled in. The preflight will refuse any
 > package whose trusted-publisher record does not carry the `npm-publish` environment.
+
+### Adding a publishable package
+
+A PR that adds a publishable package must have its npm record and trusted publisher created
+before the next release cut.
+
+1. A package owner publishes the first version with `npm publish --access=public` and an npm
+   token. OIDC cannot create a package. This manual publish is separate from `ci:publish`, which
+   refuses npm tokens.
+2. Add the trusted publisher for `changesets.yml` with environment `npm-publish`, using the
+   [per-package setup](#per-package-trusted-publisher-configuration).
+3. Check that the new package appears in the preflight census before the next cut. Re-run a cut
+   that was blocked by the missing npm record after completing the setup.
 
 ## Day-to-day flow
 
@@ -200,7 +213,10 @@ node scripts/preflight-npm-publish.mjs && pnpm build && node scripts/seat-assemb
 ```
 
 - `preflight-npm-publish.mjs`: derive and print the full fixed-group package/version census. In
-  GitHub Actions it exchanges a package-specific OIDC token, then GETs `/-/package/<name>/trust`
+  addition to each exact version, it reads every package record before any OIDC exchange. A
+  missing record refuses the run with the [new-package setup](#adding-a-publishable-package).
+  An exchange 404 for an existing package names the missing trusted publisher for this workflow
+  and environment. In GitHub Actions it exchanges a package-specific OIDC token, then GETs `/-/package/<name>/trust`
   and refuses unless THIS repository's `changesets.yml` publisher lists a direct-publish Allowed
   action. npm documents that identity on GET `/-/package/<name>/trust` as `claims.repository` and
   `claims.workflow_ref.file` with a `permissions` array. Other GitHub publishers on the same package

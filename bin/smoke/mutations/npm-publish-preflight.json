@@ -100,8 +100,8 @@
     {
       "name": "partial release begins OIDC exchanges before the complete registry census",
       "file": "scripts/preflight-npm-publish.mjs",
-      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n  }\n",
-      "replace": "  for (const pkg of packages) {\n    const exchanged = env.ACTIONS_ID_TOKEN_REQUEST_URL ? await exchangePackageIdentity(pkg, registryBase, env, fetchImpl) : { oidc: \"not-run\", token: null };\n    rows.push({ ...pkg, registry: await readExactVersion(pkg, registryBase, fetchImpl), oidc: exchanged.oidc, direct: \"not-run\" });\n  }\n",
+      "find": "  for (const pkg of packages) {\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n    try {\n      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n    } catch (error) {\n      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);\n    }\n  }\n",
+      "replace": "  for (const pkg of packages) {\n    if (env.ACTIONS_ID_TOKEN_REQUEST_URL) await exchangePackageIdentity(pkg, registryBase, env, fetchImpl);\n    rows.push({\n      ...pkg,\n      registry: await readExactVersion(pkg, registryBase, fetchImpl),\n      oidc: \"not-run\",\n      direct: \"not-run\",\n    });\n    try {\n      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n    } catch (error) {\n      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);\n    }\n  }\n",
       "expectRed": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call",
       "cell": "partial prior publish refuses before any OIDC exchange, trust GET, or publish call"
     },
@@ -547,6 +547,52 @@
       "expectRed": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
       "cell": "the absent rung's consumed callee resolves by symbol identity to the module's exported isAbsentRegistry, whose sole declaration is the top-level one",
       "note": "The ladder's only parameter is an ObjectBindingPattern, so a same-name predicate given a default inside it binds over the whole body and captures the absent rung's call. It leaves every bucket line byte-identical, so no control anchor is disturbed. This mutation also changes the emitted declaration, so the committed .d.mts must be regenerated for the run to isolate this cell; without that the dts-freshness cell reds instead, which is staleness and not detection. The kill must come from the absent binding's structural symbol-identity cell."
+    },
+    {
+      "name": "the packument read is dropped before the OIDC exchange",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);\n",
+      "replace": "",
+      "expectRed": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+      "cell": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+      "afterRestore": "pnpm smoke:npm-publish-preflight"
+    },
+    {
+      "name": "the no-record refusal runs after the first OIDC exchange",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  if (noRecord.length) {\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: no npm record for ${noRecord.join(\", \")}. A package owner must publish the first version with npm publish --access=public and an npm token (OIDC cannot create a package), then add the trusted publisher for changesets.yml with environment npm-publish and re-run the cut. See docs/release.md#adding-a-publishable-package`);\n  }\n",
+      "replace": "  if (noRecord.length) {\n    await exchangePackageIdentity(rows[0], registryBase, env, fetchImpl);\n    printPublishCensus(rows, log);\n    throw new Error(`publish preflight refused: no npm record for ${noRecord.join(\", \")}. A package owner must publish the first version with npm publish --access=public and an npm token (OIDC cannot create a package), then add the trusted publisher for changesets.yml with environment npm-publish and re-run the cut. See docs/release.md#adding-a-publishable-package`);\n  }\n",
+      "expectRed": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+      "cell": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+      "note": "Adds the first package exchange before the missing-record refusal. The named cell must observe zero exchanges, so the premature exchange turns it red.",
+      "afterRestore": "pnpm smoke:npm-publish-preflight"
+    },
+    {
+      "name": "the no-record refusal omits the package-owner bootstrap remedy",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "    throw new Error(`publish preflight refused: no npm record for ${noRecord.join(\", \")}. A package owner must publish the first version with npm publish --access=public and an npm token (OIDC cannot create a package), then add the trusted publisher for changesets.yml with environment npm-publish and re-run the cut. See docs/release.md#adding-a-publishable-package`);",
+      "replace": "    throw new Error(`publish preflight refused: no npm record for ${noRecord.join(\", \")}`);",
+      "expectRed": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+      "cell": "a no-record package refuses before any exchange and names the package and bootstrap remedy",
+      "afterRestore": "pnpm smoke:npm-publish-preflight"
+    },
+    {
+      "name": "an exchange 404 omits the existing-record trusted-publisher cause",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "      log(`${row.name}: no trusted publisher for this workflow (changesets.yml) and environment (npm-publish)`);\n",
+      "replace": "",
+      "expectRed": "an exchange 404 with every npm record present retains refused:404 and names the trusted-publisher cause",
+      "cell": "an exchange 404 with every npm record present retains refused:404 and names the trusted-publisher cause",
+      "afterRestore": "pnpm smoke:npm-publish-preflight"
+    },
+    {
+      "name": "an unreadable package record is assumed to exist",
+      "file": "scripts/preflight-npm-publish.mjs",
+      "find": "  throw new Error(`package record read returned ${response.status}`);\n",
+      "replace": "  return true;\n",
+      "expectRed": "an unreadable package record refuses before exchange rather than assuming the record exists",
+      "cell": "an unreadable package record refuses before exchange rather than assuming the record exists",
+      "afterRestore": "pnpm smoke:npm-publish-preflight"
     }
   ]
 }

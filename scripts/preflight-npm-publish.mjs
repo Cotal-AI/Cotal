@@ -6,7 +6,9 @@
  *   - the complete Changesets fixed group from .changeset/config.json;
  *   - the public workspace manifests that `pnpm publish -r` can select.
  *
- * It then reads every exact package@version from npm. A clean release has every version absent.
+ * It then reads every package record and exact package@version from npm. A new package must be
+ * created by its owner before trusted publishing can exchange credentials for it.
+ * A clean release has every version absent.
  * A mixed census is a prior partial publish and is refused. An all-present census is a no-op because
  * there is no version left to publish. Unknown registry answers refuse too.
  *
@@ -329,6 +331,22 @@ export function printPublishCensus(rows, log = console.log) {
   log("npm publish preflight census");
   log("package\tversion\tregistry\toidc\tdirect");
   for (const row of rows) log(`${row.name}\t${row.version}\t${row.registry}\t${row.oidc}\t${row.direct}`);
+  for (const row of rows) {
+    if (row.oidc === "refused:404") {
+      log(`${row.name}: no trusted publisher for this workflow (changesets.yml) and environment (npm-publish)`);
+    }
+  }
+}
+
+async function hasPackageRecord(pkg, registryBase, fetchImpl) {
+  const response = await fetchImpl(`${registryBase}/${encodeURIComponent(pkg.name)}`, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+    redirect: "manual",
+  });
+  if (response.status === 200) return true;
+  if (response.status === 404) return false;
+  throw new Error(`package record read returned ${response.status}`);
 }
 
 function blankCensusRow(pkg) {
@@ -378,6 +396,8 @@ export async function preflightNpmPublish({
     throw error;
   }
   const rows = [];
+  const noRecord = [];
+  const unreadableRecords = [];
   for (const pkg of packages) {
     rows.push({
       ...pkg,
@@ -385,6 +405,11 @@ export async function preflightNpmPublish({
       oidc: "not-run",
       direct: "not-run",
     });
+    try {
+      if (!await hasPackageRecord(pkg, registryBase, fetchImpl)) noRecord.push(pkg.name);
+    } catch (error) {
+      unreadableRecords.push(`${pkg.name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   const unknown = rows.filter((row) => isUnknownRegistry(row.registry));
@@ -400,6 +425,10 @@ export async function preflightNpmPublish({
           ? "mixed"
           : "incomplete";
 
+  if (noRecord.length) {
+    printPublishCensus(rows, log);
+    throw new Error(`publish preflight refused: no npm record for ${noRecord.join(", ")}. A package owner must publish the first version with npm publish --access=public and an npm token (OIDC cannot create a package), then add the trusted publisher for changesets.yml with environment npm-publish and re-run the cut. See docs/release.md#adding-a-publishable-package`);
+  }
   if (registryVerdict === "inconclusive") {
     printPublishCensus(rows, log);
     throw new Error(`registry census was inconclusive for ${unknown.length}/${rows.length} packages`);
@@ -411,6 +440,10 @@ export async function preflightNpmPublish({
   if (registryVerdict === "incomplete") {
     printPublishCensus(rows, log);
     throw new Error("the packages that would publish are not the complete fixed group");
+  }
+  if (unreadableRecords.length) {
+    printPublishCensus(rows, log);
+    throw new Error(`package record census was inconclusive: ${unreadableRecords.join(", ")}`);
   }
   if (registryVerdict === "all-present") {
     printPublishCensus(rows, log);
