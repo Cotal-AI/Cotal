@@ -1,6 +1,6 @@
 import { rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
-import { isUserNkey } from "./identity.js";
+import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
 
 /**
@@ -1034,7 +1034,7 @@ function parseOperation(raw: unknown, what: string, field: string): { operation:
 }
 
 function parseAccountPublicKey(value: unknown, what: string): string {
-  if (typeof value !== "string" || !/^A[A-Z2-7]{55}$/.test(value)) enrollmentError(what, "requires an account public key");
+  if (!isAccountNkey(value)) enrollmentError(what, "requires an account public key");
   return value;
 }
 

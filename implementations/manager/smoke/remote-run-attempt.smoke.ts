@@ -25,7 +25,7 @@ const outcome = (p: Promise<unknown>) => p.then((v) => v, (e: Error) => `refused
 
 const SPACE = "attempt";
 const OWNER = "local";
-const ACCOUNT = "AACCOUNT";
+const ACCOUNT = `A${"A".repeat(55)}`;
 const SECRET = "suite-proof-secret";
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -95,7 +95,7 @@ try {
   const foreign = await outcome(authorize(attempt(foreignRun)));
   c("a run admitted on another manager instance refuses", String(foreign).includes("another manager instance"), foreign);
   // Registration mismatches.
-  const acct = await outcome(authorize(attempt(first, 2, 2), { accountPublicKey: "AOTHER" }));
+  const acct = await outcome(authorize(attempt(first, 2, 2), { accountPublicKey: `A${"B".repeat(55)}` }));
   const epoch = await outcome(authorize(attempt(first, 2, 2), { processEpoch: 2 }));
   const badProof = await outcome(authorize(attempt(first, 2, 2), { registrationProof: `sha256:${"0".repeat(64)}` }));
   const profile = await outcome(authorize({ ...attempt(first, 2, 2), operator: { id: newIdentity().id, takeoverId: "x".repeat(16) } }));
