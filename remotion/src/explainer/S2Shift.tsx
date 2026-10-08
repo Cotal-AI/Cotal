@@ -3,7 +3,7 @@
 // every agent into one rounded shared space, then lateral peer wires light up
 // and gold beams travel sideways — "anyone can reach anyone."
 //
-// 1920x1080 @ 30fps, 150-frame seamless loop.
+// 1920x1080 @ 30fps, seamless loop.
 //
 //   Tree     ~0-30   orchestrator on top + three workers in a row, tree wires.
 //   Dissolve ~30-75  orchestrator eases DOWN into the row (4th peer), tree wires
@@ -32,7 +32,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 150;
+export const SHIFT_DURATION = 150;
 
 // --- layout (matches S1 for continuity) -----------------------------------------
 
@@ -164,7 +164,7 @@ export const S2Shift: React.FC = () => {
   const capOne = fade(frame, 18, 32) * (1 - fade(frame, 70, 82));
   const capTwo = fade(frame, 85, 99) * (1 - fade(frame, 140, 150));
 
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, SHIFT_DURATION);
 
   // orchestrator name shows only while it is the supervisor; once it drops into
   // the row it reads as another peer, "node-0".

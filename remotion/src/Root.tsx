@@ -18,30 +18,30 @@ import { HeaderMorph } from "./header/HeaderMorph";
 import { HeaderModesReel, REEL_DURATION } from "./header/HeaderModesReel";
 import { HeaderAssemble } from "./header/HeaderAssemble";
 import { HeaderBanner } from "./header/HeaderBanner";
-import { S1Problem } from "./explainer/S1Problem";
-import { S2Shift } from "./explainer/S2Shift";
-import { S3Modes } from "./explainer/S3Modes";
-import { S4CrossVendor } from "./explainer/S4CrossVendor";
-import { S5Topology } from "./explainer/S5Topology";
-import { S6Logo } from "./explainer/S6Logo";
-import { ExplainerCore } from "./explainer/ExplainerCore";
-import { ExplainerFull } from "./explainer/ExplainerFull";
-import { HeaderCut } from "./explainer/HeaderCut";
-import { S0Headline } from "./explainer/S0Headline";
-import { S7Command } from "./explainer/S7Command";
-import { DemoLoop } from "./explainer/DemoLoop";
-import { DemoCommand } from "./explainer/DemoCommand";
-import { DemoHeadline } from "./explainer/DemoHeadline";
-import { DemoShort } from "./explainer/DemoShort";
-import { S5TopologyVendors, S5TopologyVendorsCodex } from "./explainer/S5TopologyVendors";
-import { DemoMerged } from "./explainer/DemoMerged";
-import { DemoMergedCodex } from "./explainer/DemoMergedCodex";
-import { S5TopologyRotate } from "./explainer/S5TopologyRotate";
-import { S5TopologyShuffle } from "./explainer/S5TopologyShuffle";
-import { DemoCodexRotate } from "./explainer/DemoCodexRotate";
-import { DemoCodexShuffle } from "./explainer/DemoCodexShuffle";
-import { DemoReadme } from "./explainer/DemoReadme";
-import { ExplainerMerged } from "./explainer/ExplainerMerged";
+import { S1Problem, PROBLEM_DURATION } from "./explainer/S1Problem";
+import { S2Shift, SHIFT_DURATION } from "./explainer/S2Shift";
+import { S3Modes, MODES_DURATION } from "./explainer/S3Modes";
+import { S4CrossVendor, CROSS_VENDOR_DURATION } from "./explainer/S4CrossVendor";
+import { S5Topology, TOPOLOGY_DURATION } from "./explainer/S5Topology";
+import { S6Logo, LOGO_DURATION } from "./explainer/S6Logo";
+import { ExplainerCore, EXPLAINER_CORE_DURATION } from "./explainer/ExplainerCore";
+import { ExplainerFull, EXPLAINER_FULL_DURATION } from "./explainer/ExplainerFull";
+import { HeaderCut, HEADER_CUT_DURATION } from "./explainer/HeaderCut";
+import { S0Headline, HEADLINE_DURATION } from "./explainer/S0Headline";
+import { S7Command, COMMAND_DURATION } from "./explainer/S7Command";
+import { DemoLoop, DEMO_LOOP_DURATION } from "./explainer/DemoLoop";
+import { DemoCommand, DEMO_COMMAND_DURATION } from "./explainer/DemoCommand";
+import { DemoHeadline, DEMO_HEADLINE_DURATION } from "./explainer/DemoHeadline";
+import { DemoShort, DEMO_SHORT_DURATION } from "./explainer/DemoShort";
+import { S5TopologyVendors, S5TopologyVendorsCodex, TOPOLOGY_VENDORS_DURATION } from "./explainer/S5TopologyVendors";
+import { DemoMerged, DEMO_MERGED_DURATION } from "./explainer/DemoMerged";
+import { DemoMergedCodex, DEMO_MERGED_CODEX_DURATION } from "./explainer/DemoMergedCodex";
+import { S5TopologyRotate, TOPOLOGY_ROTATE_DURATION } from "./explainer/S5TopologyRotate";
+import { S5TopologyShuffle, TOPOLOGY_SHUFFLE_DURATION } from "./explainer/S5TopologyShuffle";
+import { DemoCodexRotate, DEMO_CODEX_ROTATE_DURATION } from "./explainer/DemoCodexRotate";
+import { DemoCodexShuffle, DEMO_CODEX_SHUFFLE_DURATION } from "./explainer/DemoCodexShuffle";
+import { DemoReadme, DEMO_README_DURATION } from "./explainer/DemoReadme";
+import { ExplainerMerged, EXPLAINER_MERGED_DURATION } from "./explainer/ExplainerMerged";
 
 const EXPL = { fps: 30, width: 1920, height: 1080 } as const;
 
@@ -75,35 +75,35 @@ export const Root: React.FC = () => {
       <Composition id="HeaderBanner" component={HeaderBanner} fps={30} width={1280} height={340} durationInFrames={180} />
 
       {/* Clear-message explainer: modular snippets + masters (1920x1080). */}
-      <Composition id="S1Problem" component={S1Problem} durationInFrames={150} {...EXPL} />
-      <Composition id="S2Shift" component={S2Shift} durationInFrames={150} {...EXPL} />
-      <Composition id="S3Modes" component={S3Modes} durationInFrames={210} {...EXPL} />
-      <Composition id="S4CrossVendor" component={S4CrossVendor} durationInFrames={150} {...EXPL} />
-      <Composition id="S5Topology" component={S5Topology} durationInFrames={150} {...EXPL} />
-      <Composition id="S6Logo" component={S6Logo} durationInFrames={120} {...EXPL} />
-      <Composition id="ExplainerCore" component={ExplainerCore} durationInFrames={780} {...EXPL} />
-      <Composition id="ExplainerFull" component={ExplainerFull} durationInFrames={930} {...EXPL} />
-      <Composition id="HeaderCut" component={HeaderCut} durationInFrames={270} {...EXPL} />
+      <Composition id="S1Problem" component={S1Problem} durationInFrames={PROBLEM_DURATION} {...EXPL} />
+      <Composition id="S2Shift" component={S2Shift} durationInFrames={SHIFT_DURATION} {...EXPL} />
+      <Composition id="S3Modes" component={S3Modes} durationInFrames={MODES_DURATION} {...EXPL} />
+      <Composition id="S4CrossVendor" component={S4CrossVendor} durationInFrames={CROSS_VENDOR_DURATION} {...EXPL} />
+      <Composition id="S5Topology" component={S5Topology} durationInFrames={TOPOLOGY_DURATION} {...EXPL} />
+      <Composition id="S6Logo" component={S6Logo} durationInFrames={LOGO_DURATION} {...EXPL} />
+      <Composition id="ExplainerCore" component={ExplainerCore} durationInFrames={EXPLAINER_CORE_DURATION} {...EXPL} />
+      <Composition id="ExplainerFull" component={ExplainerFull} durationInFrames={EXPLAINER_FULL_DURATION} {...EXPL} />
+      <Composition id="HeaderCut" component={HeaderCut} durationInFrames={HEADER_CUT_DURATION} {...EXPL} />
 
       {/* Cross-vendor demo cuts (remixable loops) + their two new snippets. */}
-      <Composition id="S0Headline" component={S0Headline} durationInFrames={110} {...EXPL} />
-      <Composition id="S7Command" component={S7Command} durationInFrames={135} {...EXPL} />
-      <Composition id="DemoLoop" component={DemoLoop} durationInFrames={420} {...EXPL} />
-      <Composition id="DemoCommand" component={DemoCommand} durationInFrames={555} {...EXPL} />
-      <Composition id="DemoHeadline" component={DemoHeadline} durationInFrames={665} {...EXPL} />
-      <Composition id="DemoShort" component={DemoShort} durationInFrames={380} {...EXPL} />
+      <Composition id="S0Headline" component={S0Headline} durationInFrames={HEADLINE_DURATION} {...EXPL} />
+      <Composition id="S7Command" component={S7Command} durationInFrames={COMMAND_DURATION} {...EXPL} />
+      <Composition id="DemoLoop" component={DemoLoop} durationInFrames={DEMO_LOOP_DURATION} {...EXPL} />
+      <Composition id="DemoCommand" component={DemoCommand} durationInFrames={DEMO_COMMAND_DURATION} {...EXPL} />
+      <Composition id="DemoHeadline" component={DemoHeadline} durationInFrames={DEMO_HEADLINE_DURATION} {...EXPL} />
+      <Composition id="DemoShort" component={DemoShort} durationInFrames={DEMO_SHORT_DURATION} {...EXPL} />
 
       {/* Vendor symbols AS the topology agents (cross-vendor + any-topology in one beat). */}
-      <Composition id="S5TopologyVendors" component={S5TopologyVendors} durationInFrames={240} {...EXPL} />
-      <Composition id="S5TopologyVendorsCodex" component={S5TopologyVendorsCodex} durationInFrames={240} {...EXPL} />
-      <Composition id="DemoMerged" component={DemoMerged} durationInFrames={605} {...EXPL} />
-      <Composition id="DemoMergedCodex" component={DemoMergedCodex} durationInFrames={605} {...EXPL} />
-      <Composition id="S5TopologyRotate" component={S5TopologyRotate} durationInFrames={240} {...EXPL} />
-      <Composition id="S5TopologyShuffle" component={S5TopologyShuffle} durationInFrames={240} {...EXPL} />
-      <Composition id="DemoCodexRotate" component={DemoCodexRotate} durationInFrames={605} {...EXPL} />
-      <Composition id="DemoCodexShuffle" component={DemoCodexShuffle} durationInFrames={605} {...EXPL} />
-      <Composition id="DemoReadme" component={DemoReadme} durationInFrames={350} {...EXPL} />
-      <Composition id="ExplainerMerged" component={ExplainerMerged} durationInFrames={1155} {...EXPL} />
+      <Composition id="S5TopologyVendors" component={S5TopologyVendors} durationInFrames={TOPOLOGY_VENDORS_DURATION} {...EXPL} />
+      <Composition id="S5TopologyVendorsCodex" component={S5TopologyVendorsCodex} durationInFrames={TOPOLOGY_VENDORS_DURATION} {...EXPL} />
+      <Composition id="DemoMerged" component={DemoMerged} durationInFrames={DEMO_MERGED_DURATION} {...EXPL} />
+      <Composition id="DemoMergedCodex" component={DemoMergedCodex} durationInFrames={DEMO_MERGED_CODEX_DURATION} {...EXPL} />
+      <Composition id="S5TopologyRotate" component={S5TopologyRotate} durationInFrames={TOPOLOGY_ROTATE_DURATION} {...EXPL} />
+      <Composition id="S5TopologyShuffle" component={S5TopologyShuffle} durationInFrames={TOPOLOGY_SHUFFLE_DURATION} {...EXPL} />
+      <Composition id="DemoCodexRotate" component={DemoCodexRotate} durationInFrames={DEMO_CODEX_ROTATE_DURATION} {...EXPL} />
+      <Composition id="DemoCodexShuffle" component={DemoCodexShuffle} durationInFrames={DEMO_CODEX_SHUFFLE_DURATION} {...EXPL} />
+      <Composition id="DemoReadme" component={DemoReadme} durationInFrames={DEMO_README_DURATION} {...EXPL} />
+      <Composition id="ExplainerMerged" component={ExplainerMerged} durationInFrames={EXPLAINER_MERGED_DURATION} {...EXPL} />
     </>
   );
 };

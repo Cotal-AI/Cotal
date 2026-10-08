@@ -31,7 +31,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 240;
+export const TOPOLOGY_SHUFFLE_DURATION = 240;
 
 // vendor symbol per NODE (Codex preset: four distinct vendors).
 const LOGOS = [
@@ -241,7 +241,7 @@ const TopologyShuffleBase: React.FC<{ logos: string[] }> = ({ logos }) => {
   const cap3 = fade(frame, 128, 144) * (1 - fade(frame, 168, 184));
   const cap4 = fade(frame, 187, 203);
 
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, TOPOLOGY_SHUFFLE_DURATION);
 
   return (
     <CreamStage>

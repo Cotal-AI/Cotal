@@ -4,7 +4,7 @@
 // the finished brand lockup and stays. A soft gold ripple blooms from behind the
 // rings as they lock, for a subtle premium flourish.
 //
-// 1920x1080 @ 30fps, 120 frames. Center (960, 540).
+// 1920x1080 @ 30fps. Center (960, 540).
 //
 //   Fade-in   0-10    the whole lockup eases up from black-zero opacity.
 //   Resolve   6-...   Logo draws the rings (interlock via internal RingMark
@@ -22,6 +22,8 @@ import {
   Ripple,
   useCurrentFrame,
 } from "../header/shared";
+
+export const LOGO_DURATION = 120;
 
 export const S6Logo: React.FC = () => {
   const frame = useCurrentFrame();

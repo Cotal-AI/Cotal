@@ -1,7 +1,7 @@
 // S4CrossVendor — "Any agent. One space." Three different-vendor agents
 // (Claude Code, OpenCode, Hermes) sit in ONE shared mesh and coordinate:
 // gold beams travel around the triangle, each badge flashes as a beam lands,
-// some flip to "working". 1920x1080, 30fps, exactly 150 frames, seamless loop.
+// some flip to "working". 1920x1080, 30fps, seamless loop.
 
 import React from "react";
 import {
@@ -24,7 +24,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 150;
+export const CROSS_VENDOR_DURATION = 150;
 
 // Three vendors in a triangle inside the shared space. Center (960,540).
 const CLAUDE: Pt = { x: 640, y: 520 };
@@ -122,7 +122,7 @@ export const S4CrossVendor: React.FC = () => {
 
   return (
     <CreamStage>
-      <AbsoluteFill style={{ opacity: loopEnvelope(frame, DURATION), fontFamily }}>
+      <AbsoluteFill style={{ opacity: loopEnvelope(frame, CROSS_VENDOR_DURATION), fontFamily }}>
         <SharedSpace x={430} y={300} w={1060} h={520} label="one mesh" />
 
         <WireLines paths={MESH} glow={meshGlow} />
