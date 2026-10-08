@@ -4170,9 +4170,19 @@ signed by the authority plane at issuance and every renewal. Renewal MUST resolv
 original ceiling and MUST NOT widen it. These JWTs are signed by the authority plane, not the
 user-token callout. These registration
 credentials hold no caller rail, so no generation claim is added to their request subjects. The
-other standing duties retain their endpoint gate and credential-family protocol. An ended assignment
-denies further issuance. Already-returned material remains broker-valid only until its capped
-expiry unless the host stops the worker and completes its retirement barrier sooner.
+other standing duties retain their endpoint gate and credential-family protocol.
+
+When the platform ends an assignment, the host MUST record it `ended` and then end its issuance at
+the authority plane. Ending retires the instance's manager gate (`retired`, op kind `retirement`)
+and retires the issued supervisor and executor generations. Both are terminal rows. From then on,
+every door that accepts this material MUST refuse it by name, even when the material has not
+expired. Stock registration refuses on the retired gate. Prepare, activate, `renew` and
+`renewStandingBundle` refuse on the retired generation, read on every call before anything is
+signed, so a stale host read that still reports the assignment `assigned` reopens nothing. The
+door reports `platform supervisor assignment for owner <owner> has ended`. The material's own
+broker connection lives until its capped expiry: its gate row is writable under its own grant, so
+a client that bypasses stock registration can still rewrite that one row. Live eviction remains the
+host's retirement barrier.
 
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
 §14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind

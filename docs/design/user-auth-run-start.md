@@ -61,10 +61,18 @@ route. The latter is used. Its closed envelope is `PlatformSupervisorAuthorityRe
 request remains `RemoteManagerAuthorityRequest`. Only prepare, activate and standing renewal are
 served. Enrollment, mint, participant control and interactive exchange remain separate host operations.
 
-Every returned JWT is capped at the assignment's recorded expiry. An ended assignment refuses any
-further call, while already-returned credentials live only to their capped broker-enforced expiry.
-Immediate host termination still requires stopping the worker and completing the existing retirement
-barrier. The host must not call an assignment ended and claim that an unexpired credential was evicted.
+Every returned JWT is capped at the assignment's recorded expiry. Ending an assignment is a
+recorded state at the authority plane. The host records the assignment `ended` and calls
+`endPlatformSupervisorAssignment(owner)`. That retires the manager gate and the issued supervisor
+and executor generations, all terminal rows. Every door reads them on each call. Registration
+refuses on the retired gate. Prepare, activate and both renewals refuse on the retired generation,
+so material returned earlier is refused even though it has not expired. The refusal names the
+ended assignment. No timer or cache is involved, and no host view can reopen a retired row.
+
+The material's own broker connection is not evicted by this. It lives to its capped expiry and can
+still write its own gate row, so a client that bypasses stock registration could rewrite that row.
+The authority-plane doors still refuse it. Immediate termination still requires stopping the worker
+and completing the retirement barrier. The host must not claim that an unexpired credential was evicted.
 
 Before returning supervisor or executor material, the authority plane persists the signed native
 publish and subscribe ceiling in `cotal_issued_<space>`, using existing prepare, release and

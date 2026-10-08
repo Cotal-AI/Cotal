@@ -37,6 +37,17 @@ export interface PlatformSupervisorInput {
   observeAssignment(owner: string): Promise<PlatformSupervisorAssignment | null>;
 }
 
+/** The refusal every door gives once the platform has ended an owner's assignment. */
+export function platformSupervisorEnded(owner: string, cause?: string): EpEnvelopeError {
+  return new EpEnvelopeError("permission-denied", `platform supervisor assignment for owner ${owner} has ended; its lifecycle has ended and material issued under it authorizes nothing${cause === undefined ? "" : ` (${cause})`}`);
+}
+
+/** The recorded assignment matches this owner, space and account, at any revision. */
+function namesAssignment(assignment: PlatformSupervisorAssignment | null, owner: string, space: string, accountPublicKey: string): assignment is PlatformSupervisorAssignment {
+  return !!assignment && assignment.v === 1 && assignment.kind === "platform-supervisor" &&
+    assignment.owner === owner && assignment.space === space && assignment.accountPublicKey === accountPublicKey;
+}
+
 export async function requirePlatformSupervisorAdmin(input: PlatformSupervisorInput, owner: string): Promise<void> {
   if (await input.authorizePlatformAdmin(owner) !== true)
     throw new EpEnvelopeError("permission-denied", `platform-admin authority is required for supervisor owner ${owner}`);
@@ -76,11 +87,12 @@ export function makePlatformSupervisorAuthority(args: PlatformSupervisorInput & 
       throw new EpEnvelopeError("permission-denied", `platform supervisor for owner ${args.owner} refuses requested owner ${envelope.owner}`);
     await requirePlatformSupervisorAdmin(args, envelope.owner);
     const assignment = await args.observeAssignment(envelope.owner);
-    if (!assignment || assignment.v !== 1 || assignment.kind !== "platform-supervisor" ||
-        assignment.owner !== envelope.owner || assignment.space !== args.space || assignment.accountPublicKey !== args.accountPublicKey ||
-        assignment.revision !== envelope.assignmentRevision)
+    if (!namesAssignment(assignment, envelope.owner, args.space, args.accountPublicKey))
       throw new EpEnvelopeError("permission-denied", `platform supervisor assignment does not name owner ${envelope.owner} in this account and revision`);
-    if (assignment.state !== "assigned" || !Number.isSafeInteger(assignment.expiresAt) || assignment.expiresAt <= Math.floor(Date.now() / 1000))
+    if (assignment.state === "ended") throw platformSupervisorEnded(envelope.owner);
+    if (assignment.state !== "assigned" || assignment.revision !== envelope.assignmentRevision)
+      throw new EpEnvelopeError("permission-denied", `platform supervisor assignment does not name owner ${envelope.owner} in this account and revision`);
+    if (!Number.isSafeInteger(assignment.expiresAt) || assignment.expiresAt <= Math.floor(Date.now() / 1000))
       throw new EpEnvelopeError("permission-denied", `platform supervisor lifecycle has ended for owner ${envelope.owner}`);
     if (!Array.isArray(assignment.scope) || assignment.scope.length !== 1 || assignment.scope[0] !== "supervise")
       throw new EpEnvelopeError("permission-denied", `platform supervisor scope must be only supervise for owner ${envelope.owner}`);
@@ -96,5 +108,28 @@ export function makePlatformSupervisorAuthority(args: PlatformSupervisorInput & 
     if (principal !== undefined && !principal.startsWith(`${envelope.owner}.`))
       throw new EpEnvelopeError("permission-denied", `platform supervisor instance belongs to another owner than ${envelope.owner}`);
     return await args.issue(envelope.owner, assignment.expiresAt, request);
+  };
+}
+
+/** Record that the platform ended one owner's assignment. The host's own record must already read
+ *  `ended`; the auth service never ends an assignment on a caller's claim. */
+export function makePlatformSupervisorEnd(args: PlatformSupervisorInput & {
+  space: string;
+  accountPublicKey: string;
+  ready(): void;
+  end(owner: string, instanceId: string, lifecycleUid: string): Promise<void>;
+}) {
+  return async (owner: string): Promise<void> => {
+    args.ready();
+    assertDerivedOwnerToken(owner);
+    await requirePlatformSupervisorAdmin(args, owner);
+    const assignment = await args.observeAssignment(owner);
+    if (!namesAssignment(assignment, owner, args.space, args.accountPublicKey))
+      throw new EpEnvelopeError("permission-denied", `platform supervisor assignment does not name owner ${owner} in this account`);
+    if (assignment.state !== "ended")
+      throw new EpEnvelopeError("failed-precondition", `platform supervisor assignment for owner ${owner} is still ${String(assignment.state)}; record it ended before ending its issuance`);
+    assertLifecycleToken(assignment.instanceId);
+    assertLifecycleToken(assignment.lifecycleUid);
+    await args.end(owner, assignment.instanceId, assignment.lifecycleUid);
   };
 }

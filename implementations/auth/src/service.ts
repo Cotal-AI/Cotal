@@ -59,14 +59,14 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, epgateKey, isCasLoss, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
-import { makePlatformSupervisorAuthority, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
+import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
@@ -198,6 +198,9 @@ export interface AuthAuthorityPlane {
    *  authority its first bearer exchange names, and mint nothing (SPEC 13.16). */
   activateManagedLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<void>;
   issueManagerServiceAuthority: (args: ManagerAuthorityHolder & { request: RemoteManagerAuthorityRequest; supervisorExpiresAt?: number }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
+  /** End one platform supervisor lifecycle at the authority plane: retire its manager gate and its
+   *  issued supervisor and executor generations. Both are terminal; nothing reopens them. */
+  endPlatformSupervisor: (args: { owner: string; instanceId: string; lifecycleUid: string }) => Promise<void>;
   maintainRemoteManager: (args: ManagerAuthorityHolder & { request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
   validateRetainedAgent: (args: ManagerAuthorityHolder & {
     request: RemoteRetainedAgentValidationRequest;
@@ -350,6 +353,24 @@ async function registerSelfAuthorizedInstance<R extends { registrationRevision: 
   if (observed?.state !== "open" || observed.processEpoch !== processEpoch || observed.registrationRevision !== registrationRevision)
     throw new EpEnvelopeError("conflict", `the issuance gate of ${endpoint}/${instanceId} is no longer open at this registration (process epoch ${processEpoch}, revision ${registrationRevision}); a later barrier fenced this start (SPEC 13.1)`);
   return registered;
+}
+
+/** The accepted-row token one platform supervisor duty's issued generation is recorded under. */
+function supervisorAcceptedToken(owner: string, instanceId: string, lifecycleUid: string, duty: "supervisor" | "executor"): string {
+  return connectionAcceptedToken(`platform-supervisor:${owner}:${instanceId}:${lifecycleUid}:${duty}`);
+}
+
+/** The issued generation recorded for one platform supervisor duty, or undefined when none was.
+ *  The accepted store is write-once per key, so the first row is the only row. */
+async function supervisorGeneration(session: IssuerSession, space: string, owner: string, instanceId: string, lifecycleUid: string, duty: "supervisor" | "executor"): Promise<IssuedAuthorityRef | undefined> {
+  const response = await session.nc.request(acceptedReadGrant(space, supervisorAcceptedToken(owner, instanceId, lifecycleUid, duty)), new Uint8Array(0), { timeout: 3000 });
+  const status = response.headers?.get("Status");
+  if (response.headers?.code === 404 || status?.startsWith("404")) return undefined;
+  if (status) throw new EpEnvelopeError("unavailable", "platform supervisor accepted-row read failed");
+  const accepted = JSON.parse(new TextDecoder().decode(response.data)) as { version: number; ref: IssuedAuthorityRef };
+  if (accepted.version !== 1 || accepted.ref.space !== space || accepted.ref.owner !== owner || accepted.ref.actor !== remoteManagerActors(instanceId)[duty] || accepted.ref.uid !== lifecycleUid)
+    throw new EpEnvelopeError("permission-denied", "platform supervisor accepted row names another owner or lifecycle");
+  return accepted.ref;
 }
 
 /** Inputs to the sealed authority-plane composition. */
@@ -861,6 +882,23 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     issueManagerServiceAuthority: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
+      // The ended-assignment fence (SPEC 13.16): read on every call, before anything is signed. The
+      // retired gate and the retired generations are terminal rows, so no host view reopens them.
+      if (holder.supervisorExpiresAt !== undefined) {
+        const gate = await observeManagerGate(holder.request.instanceId);
+        if (gate?.state === "retired") throw platformSupervisorEnded(owner);
+        await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
+          for (const duty of ["supervisor", "executor"] as const) {
+            const ref = await supervisorGeneration(session, space, owner, holder.request.instanceId, holder.request.managerLifecycleUid, duty);
+            if (ref === undefined) continue;
+            try {
+              await session.store.resolve(ref, session.sourceIsLive);
+            } catch (error) {
+              throw platformSupervisorEnded(owner, error instanceof Error ? error.message : String(error));
+            }
+          }
+        });
+      }
       const material = await issueRemoteManagerAuthority({
         ...holder,
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
@@ -1119,25 +1157,59 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const actor = remoteManagerActors(holder.request.instanceId)[duty as keyof ReturnType<typeof remoteManagerActors>];
             if (!actor || payload.sub !== holder.request.identities[duty as keyof RemoteManagerAuthorityRequest["identities"]]?.id)
               throw new EpEnvelopeError("internal", "platform supervisor issued a duty outside its fixed standing identities");
-            const acceptedToken = connectionAcceptedToken(`platform-supervisor:${owner}:${holder.request.instanceId}:${holder.request.managerLifecycleUid}:${duty}`);
-            const response = await session.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
-            if (response.headers?.code === 404 || response.headers?.get("Status")?.startsWith("404")) {
+            const acceptedToken = supervisorAcceptedToken(owner, holder.request.instanceId, holder.request.managerLifecycleUid, duty);
+            const existing = await supervisorGeneration(session, space, owner, holder.request.instanceId, holder.request.managerLifecycleUid, duty);
+            if (existing === undefined) {
               const ref = { space, owner, actor, uid: holder.request.managerLifecycleUid, generation: mintGeneration() };
               const prepared = await session.store.stage({ version: 1, ref, sources: [], permissions, expiresAt: holder.supervisorExpiresAt });
               await session.store.release(prepared, async () => {});
               await writeAcceptedRow(session.accepted, acceptedToken, ref);
             } else {
-              if (response.headers?.get("Status")) throw new EpEnvelopeError("unavailable", "platform supervisor accepted-row read failed");
-              const accepted = JSON.parse(new TextDecoder().decode(response.data)) as { version: number; ref: IssuedAuthorityRef };
-              if (accepted.version !== 1 || accepted.ref.space !== space || accepted.ref.owner !== owner || accepted.ref.actor !== actor || accepted.ref.uid !== holder.request.managerLifecycleUid)
-                throw new EpEnvelopeError("permission-denied", "platform supervisor accepted row names another owner or lifecycle");
-              await session.store.resolve(accepted.ref, session.sourceIsLive);
-              await session.store.confirm(accepted.ref, permissions);
+              await session.store.resolve(existing, session.sourceIsLive);
+              await session.store.confirm(existing, permissions);
             }
           }
         });
       }
       return material;
+    },
+    endPlatformSupervisor: async ({ owner, instanceId, lifecycleUid }) => {
+      refuseIfFenced();
+      // Retire the issued generations first, then the gate. Each step is idempotent, so a retry after
+      // a partial end completes it. The retired gate alone refuses a lifecycle that issued nothing.
+      await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
+        for (const duty of ["supervisor", "executor"] as const) {
+          const ref = await supervisorGeneration(session, space, owner, instanceId, lifecycleUid, duty);
+          if (ref !== undefined) await session.store.retire(ref);
+        }
+      });
+      const key = epgateKey("manager", instanceId);
+      const opId = managedRetirementOpId(lifecycleUid);
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const entry = await authKv.get(key);
+        if (entry === null) {
+          // No gate yet: create it retired, so a later registration finds the terminal row.
+          const row = { state: "retired", generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: `${owner}.${remoteManagerActors(instanceId).serve}`, op: { opId, kind: "retirement" } };
+          parseEndpointGate(new TextEncoder().encode(JSON.stringify(row)), key);
+          try { await authKv.create(key, new TextEncoder().encode(JSON.stringify(row))); return; }
+          catch (error) { if (isCasLoss(error)) continue; throw error; }
+        }
+        if (entry.operation !== "PUT")
+          throw new EpEnvelopeError("failed-precondition", `the manager gate ${key} carries a ${entry.operation} marker; a gate is never deleted (SPEC 13.12)`);
+        const row = parseEndpointGate(entry.value, key);
+        if (row.principal !== `${owner}.${remoteManagerActors(instanceId).serve}`)
+          throw new EpEnvelopeError("permission-denied", `the manager gate ${key} belongs to ${row.principal}, not owner ${owner}`);
+        if (row.state === "retired") return;
+        const { op: _op, ...rest } = row;
+        void _op;
+        try {
+          await authKv.update(key, new TextEncoder().encode(JSON.stringify({ ...rest, state: "retired", op: { opId, kind: "retirement" } })), entry.revision);
+          return;
+        } catch (error) {
+          if (!isCasLoss(error)) throw error;
+        }
+      }
+      throw new EpEnvelopeError("conflict", `ending the platform supervisor of ${owner} lost repeated CAS attempts on ${key}; retry`);
     },
     maintainRemoteManager: async (holder) => {
       refuseIfFenced();
@@ -1768,6 +1840,10 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   /** Bind one administrative composition caller to one owner's recorded supervisor assignment.
    * The returned door accepts only that owner's existing registration and renewal request family. */
   platformSupervisorAuthority?(owner: string): Promise<(request: PlatformSupervisorAuthorityRequest) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>>;
+  /** End one owner's supervisor issuance after the host recorded the assignment `ended`. It retires
+   *  the manager gate and the issued generations, so registration, activation and renewal refuse
+   *  material returned earlier even before that material expires. */
+  endPlatformSupervisorAssignment?(owner: string): Promise<void>;
   /** The manager gate the delegated user intent decisions read (SPEC 13.16). Present only with
    *  `platformControl`. It reads over the context's own authority connection, so a host opens no
    *  second data-account connection, and it returns the gate alone. */
@@ -2194,6 +2270,10 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
             }),
           });
         },
+        endPlatformSupervisorAssignment: makePlatformSupervisorEnd({
+          ...o.platformSupervisor, space, accountPublicKey: keys.dataAccount.pub, ready: refuseUnlessReady,
+          end: (owner, instanceId, lifecycleUid) => plane.endPlatformSupervisor({ owner, instanceId, lifecycleUid }),
+        }),
       } : {}),
       ...(platformDeps !== undefined ? {
         platformControlAuthority: makePlatformControlAuthority({

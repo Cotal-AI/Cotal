@@ -42,6 +42,14 @@ must authenticate the platform's administrative caller through the host's own au
 reads that owner's recorded `PlatformSupervisorAssignment` fresh on every call. An absent,
 ended, expired, foreign-account or wrong-revision assignment refuses issuance.
 
+To end a supervisor, record its assignment `ended` and call
+`handle.endPlatformSupervisorAssignment(owner)`. It rechecks platform-admin authority and refuses
+unless your record already reads `ended`. It retires the manager gate and the issued supervisor and
+executor generations. After that, registration, activation and renewal refuse material returned
+earlier, even before it expires, with `platform supervisor assignment for owner <owner> has ended`
+or the retired-gate refusal. Stop the worker as well: an open broker connection lives until its
+credential's capped expiry.
+
 The assignment has `kind: "platform-supervisor"`, `scope: ["supervise"]`, one derived owner,
 one manager instance, one lifecycle UID, a revision and a finite `expiresAt` in Unix seconds. It is
 not an interactive or managed-agent ledger row and grants no `admin`. The returned door is bound to

@@ -26,6 +26,7 @@ const names = [
   "U7-5 signed permissions stay identical on renewal",
   "U7-6 a caller without platform-admin cannot obtain issuance",
   "U7-7 recorded lifecycle expiry refuses renewal and registration",
+  "U7-8 an ended assignment refuses registration, activation and renewal with held unexpired material",
 ];
 let passed = 0;
 let failed = 0;
@@ -50,6 +51,9 @@ const assignment: PlatformSupervisorAssignment = {
 };
 const stateB = remoteManagerClient.loadOrCreateRemoteManagerIdentity(join(fx.dir, "mgr-b"), a.space);
 const assignmentB: PlatformSupervisorAssignment = { ...assignment, owner: other, instanceId: stateB.instanceId, lifecycleUid: stateB.lifecycleUid };
+const ended = `u_${"c".repeat(26)}`;
+const stateC = remoteManagerClient.loadOrCreateRemoteManagerIdentity(join(fx.dir, "mgr-c"), a.space);
+const assignmentC: PlatformSupervisorAssignment = { ...assignment, owner: ended, instanceId: stateC.instanceId, lifecycleUid: stateC.lifecycleUid, expiresAt: Math.floor(Date.now() / 1000) + 300 };
 let prepared: RemoteManagerAuthorityMaterial | undefined;
 let activated: RemoteManagerAuthorityMaterial | undefined;
 let registered: Awaited<ReturnType<typeof registerRemoteManagerAuthority>> | undefined;
@@ -64,7 +68,7 @@ try {
   service = await startAuthService({
     context: { accountPublicKey: a.accountPublicKey, lifecycleUid: mintLifecycleUid() }, space: a.space,
     servers: fx.servers, stateDir: a.stateDir, store: a.store, storeIdentity: a.store.identity,
-    platformSupervisor: { authorizePlatformAdmin: async () => admin, observeAssignment: async (requestedOwner) => requestedOwner === other ? assignmentB : assignment },
+    platformSupervisor: { authorizePlatformAdmin: async () => admin, observeAssignment: async (requestedOwner) => requestedOwner === other ? assignmentB : requestedOwner === ended ? { ...assignmentC } : assignment },
   });
   door = await service.platformSupervisorAuthority!(owner);
   await cell(0, async () => {
@@ -172,6 +176,60 @@ try {
       space:a.space,server:fx.servers,owner,instanceId:state.instanceId,serveActor:short.actors.serve,
       prepareCreds:remoteManagerClient.materialCredential(short,"executor",state.identities.executor),tlsRequired:false,evict:async()=>[],
     }),/expir|Authorization/i);
+  });
+  await cell(7, async () => {
+    const doorC = await service!.platformSupervisorAuthority!(ended);
+    const callC = (request: RemoteManagerAuthorityRequest) => doorC({ v: 1, kind: "platform-supervisor-authority", owner: ended, assignmentRevision: 1, request });
+    const held = await callC(remoteManagerClient.remoteManagerAuthorityRequest(stateC, "cli", "prepare"));
+    const register = () => registerRemoteManagerAuthority({
+      space: a.space, server: fx.servers, owner: ended, instanceId: stateC.instanceId, serveActor: held.actors.serve,
+      prepareCreds: remoteManagerClient.materialCredential(held, "executor", stateC.identities.executor),
+      tlsRequired: false, evict: async (principals) => principals.map(() => true),
+    });
+    const registeredC = await register();
+    const artifacts = managerClusterArtifacts();
+    const contractArtifacts = [artifacts.document, artifacts.manifest];
+    const activationProof = remoteManagerRegistrationProof(ended, stateC, contractArtifacts);
+    const activatedC = await callC(remoteManagerClient.remoteManagerAuthorityRequest(stateC, "cli", "activate", { registrationProof: activationProof, contractArtifacts }));
+    const now = Math.floor(Date.now() / 1000);
+    assert.ok(held.credentials.executor!.exp > now + 60, "the held executor credential must still be unexpired");
+    // The platform records the assignment ended, then ends its issuance at the authority plane.
+    assignmentC.state = "ended";
+    assignmentC.revision = 2;
+    await service!.endPlatformSupervisorAssignment!(ended);
+    const renewal = remoteManagerClient.remoteManagerAuthorityRequest(stateC, "cli", "renewStandingBundle", { registrationProof: remoteManagerClient.currentRegistrationProof(activatedC) });
+    renewal.accountPublicKey = a.accountPublicKey; renewal.processEpoch = registeredC.processEpoch;
+    const refusals: string[] = [];
+    const attempt = async (label: string, fn: () => Promise<unknown>) => {
+      try { await fn(); refusals.push(`${label}: SUCCEEDED`); }
+      catch (error) { refusals.push(`${label}: ${error instanceof Error ? error.message : String(error)}`); }
+    };
+    // A stale host read that still reports the old revision as assigned must not reopen anything.
+    for (const hostView of ["ended", "stale-assigned"] as const) {
+      if (hostView === "stale-assigned") { assignmentC.state = "assigned"; assignmentC.revision = 1; }
+      await attempt(`${hostView} registration`, register);
+      await attempt(`${hostView} activate`, () => callC(remoteManagerClient.remoteManagerAuthorityRequest(stateC, "cli", "activate", { registrationProof: activationProof, contractArtifacts })));
+      await attempt(`${hostView} renewal`, () => callC(renewal));
+    }
+    // Held executor material still holds a plain put on its own gate row. Rewriting the retired gate
+    // open must not reopen the authority plane: the retired issued generations refuse every door.
+    const heldNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds: remoteManagerClient.materialCredential(held, "executor", stateC.identities.executor), tls: false }) });
+    try {
+      const authKv = await new Kvm(heldNc).open(epAuthBucket(a.space));
+      const gateKey = epgateKey("manager", stateC.instanceId);
+      const retired = JSON.parse(new TextDecoder().decode((await authKv.get(gateKey))!.value)) as Record<string, unknown>;
+      assert.equal(retired.state, "retired");
+      delete retired.op;
+      await authKv.put(gateKey, new TextEncoder().encode(JSON.stringify({ ...retired, state: "open" })));
+    } finally { await heldNc.close(); }
+    await attempt("rewritten-gate activate", () => callC(remoteManagerClient.remoteManagerAuthorityRequest(stateC, "cli", "activate", { registrationProof: activationProof, contractArtifacts })));
+    await attempt("rewritten-gate renewal", () => callC(renewal));
+    await attempt("rewritten-gate prepare", () => callC(remoteManagerClient.remoteManagerAuthorityRequest(stateC, "cli", "prepare")));
+    const named = (line: string) => line.includes("registration: ")
+      ? /issuance gate for "[^"]+" is retired/.test(line)
+      : line.includes(`platform supervisor assignment for owner ${ended} has ended`);
+    const leaked = refusals.filter((line) => line.endsWith("SUCCEEDED") || !named(line));
+    assert.deepEqual(leaked, [], `every door must refuse held material by naming the ended assignment:\n${refusals.join("\n")}`);
   });
 } finally {
   await service?.close(); await reader?.close(); await fx.close();
