@@ -131,7 +131,7 @@ export function remoteRunAttemptCredentials(
   return { operator: materialize("operator", identities.operator) };
 }
 
-/** The four signerless run callbacks over one registration. A caller supplies only the transport,
+/** The signerless run callbacks over one registration. A caller supplies only the transport,
  *  so every composition sends the host the run requests the stock manager sends. */
 export function remoteRunHosting(args: {
   state: RemoteManagerIdentityState;
