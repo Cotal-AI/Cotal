@@ -1,5 +1,17 @@
 # @cotal-ai/cli
 
+## 0.74.0
+
+### Patch Changes
+
+- 05fc104: A manifest whose `broker.idp` does not parse as a URL is refused without quoting the value. The refusal printed whatever was typed into that field, so a mistyped IdP URL that carried a token, such as `<token>@idp.example/api/auth`, printed the token. It now reads `broker.idp is not a valid URL (Better Auth: <origin>/api/auth)`, located at `broker.idp`, and applies to `cotal topology view -f`, `cotal up -f` and `cotal spawn -f`.
+- Updated dependencies [f3e6f95]
+- Updated dependencies [328d59b]
+- Updated dependencies [ac251fd]
+- Updated dependencies [e3498d9]
+  - @cotal-ai/core@0.74.0
+  - @cotal-ai/workspace@0.74.0
+
 ## 0.73.0
 
 ### Minor Changes

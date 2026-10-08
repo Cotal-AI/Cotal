@@ -26620,6 +26620,7 @@ var registry2 = new Registry();
 var MANAGED_AGENT_RUNTIME_STATES = Object.freeze(["reserved", "creating", "bound", "create-unknown", "closing", "closed"]);
 var MANAGED_AGENT_RUNTIME_READINESS = Object.freeze(["ready", "bound-not-ready", "none"]);
 var MANAGED_AGENT_RETIREMENT_PHASES = Object.freeze(["intent", "released", "retired", "deprovisioned", "terminal"]);
+var REMOTE_MANAGER_IDENTITY_NAMES = Object.freeze(["supervisor", "executor", "serve", "goalWriter", "sessionLedger"]);
 
 // ../../packages/core/dist/agui-kind.js
 var AGUI_EVENT_TYPE = Object.freeze({
