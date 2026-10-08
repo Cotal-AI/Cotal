@@ -18,6 +18,7 @@ import {
   lerp,
   MODE_ALICE,
   MODE_PEERS,
+  NODE_R,
   prog,
   wirePath,
   Wires,
@@ -27,6 +28,18 @@ import {
 const JUNCTION: Pt = { x: 400, y: 410 };
 // the peers are the reviewer pool; carol, the free one, claims
 const CLAIMER = 1;
+
+// The role's bracket is measured from the first and last peer so it follows the
+// pool when the cast moves; below the last peer it leaves room for its name.
+const POOL_TOP = MODE_PEERS[0].at;
+const POOL_BOTTOM = MODE_PEERS[MODE_PEERS.length - 1].at;
+const BRACKET_TOP = POOL_TOP.y - NODE_R - 17;
+const BRACKET = {
+  left: POOL_TOP.x - NODE_R - 65,
+  top: BRACKET_TOP,
+  width: 2 * (NODE_R + 65),
+  height: POOL_BOTTOM.y + NODE_R + 73 - BRACKET_TOP,
+};
 
 const SEG1: [Pt, Pt] = [
   { x: MODE_ALICE.at.x + 52, y: MODE_ALICE.at.y },
@@ -81,10 +94,7 @@ export const ModeAnycast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: 590,
-          top: 178,
-          width: 220,
-          height: 520,
+          ...BRACKET,
           borderRadius: 26,
           border: `1px solid ${INK.line}`,
         }}
@@ -92,9 +102,9 @@ export const ModeAnycast: React.FC = () => {
       <div
         style={{
           position: "absolute",
-          left: 590,
-          top: 155,
-          width: 220,
+          left: BRACKET.left,
+          top: BRACKET.top - 23,
+          width: BRACKET.width,
           textAlign: "center",
           fontSize: 18 * CARD_TYPE,
           letterSpacing: 1,
