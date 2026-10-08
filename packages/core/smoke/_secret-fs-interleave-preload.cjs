@@ -15,15 +15,15 @@ const fs = require("node:fs");
 
 const target = process.env.COTAL_SECRETFS_INTERLEAVE_TARGET;
 if (target) {
-  const realWrite = fs.writeFileSync;
+  const realOpen = fs.openSync;
   let armed = true;
-  fs.writeFileSync = function patched(path, data, options) {
+  fs.openSync = function patched(path, flags, mode) {
     if (armed && (path === target || (typeof path === "string" && path.startsWith(target) && path.endsWith(".tmp")))) {
       armed = false;
-      fs.writeFileSync = realWrite; // one shot: the rest of the process sees the real function
+      fs.openSync = realOpen; // one shot: the rest of the process sees the real function
       // The competitor wins the name in the window a check-then-write has already walked past.
-      realWrite(path, "incumbent\n", { mode: 0o600 });
+      fs.writeFileSync(path, "incumbent\n", { mode: 0o600 });
     }
-    return realWrite.call(this, path, data, options);
+    return realOpen.call(this, path, flags, mode);
   };
 }

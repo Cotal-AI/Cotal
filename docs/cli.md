@@ -2134,7 +2134,8 @@ cotal mint <name> --identity <creds> [--expires-in <seconds>]
 
 Mints a NATS creds file for a space in **static** auth mode, scoped to a profile and (optionally)
 explicit read/post ACLs. `--signer` emits an account-signing file for delegating minting to another
-host. A per-user-auth space refuses `mint`: agents there join under a logged-in user
+host. On POSIX the file `mint` writes is mode `0600`, including when it replaces an existing file at
+`--out`. A per-user-auth space refuses `mint`: agents there join under a logged-in user
 ([`login`](#login) + [`actor grant`](#actor)), never via a handed-out creds file. See
 [Identity and auth](identity-and-auth.md).
 

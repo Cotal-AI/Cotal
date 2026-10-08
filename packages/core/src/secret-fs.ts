@@ -2,12 +2,24 @@
  * Private-by-owner file/dir helpers — the one place secret material (creds, signing keys, the
  * transient MCP config) is written so it is readable ONLY by the current user.
  *
- * On POSIX `writeFileSync(…, { mode: 0o600 })` does this. On Windows the Unix mode is a NO-OP — Node
- * honors only the write bit — so a secret written that way inherits its parent's ACL and can be
- * world-readable (e.g. a `.cotal/auth` under a project on a permissive path). The fix is to harden
- * the NTFS ACL explicitly with the built-in `icacls` (no new dependency). See {@link hardenPrivate}.
+ * On POSIX mode 0o600 does this, set on the open file before the bytes land. On Windows the Unix
+ * mode is a NO-OP — Node honors only the write bit — so a secret written that way inherits its
+ * parent's ACL and can be world-readable (e.g. a `.cotal/auth` under a project on a permissive
+ * path). The fix is to harden the NTFS ACL explicitly with the built-in `icacls` (no new
+ * dependency). See {@link hardenPrivate}.
  */
-import { chmodSync, linkSync, lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  closeSync,
+  fchmodSync,
+  linkSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 
@@ -39,7 +51,7 @@ const BROAD_SIDS = ["S-1-1-0", "S-1-5-11", "S-1-5-32-545"] as const;
 /**
  * Lock a file or directory down to the current user (+ SYSTEM + Administrators) only.
  *
- * POSIX: `chmod` (0o600 file / 0o700 dir) — a belt-and-braces reassert of the create-time mode.
+ * POSIX: `chmod` (0o600 file / 0o700 dir), which also tightens a path that already existed.
  * win32: harden the NTFS ACL with `icacls`: `/inheritance:r` drops inherited ACEs; `/remove:g` drops
  * any pre-existing EXPLICIT broad grant (Everyone / Authenticated Users / Users) that `/grant:r`
  * alone would leave intact (e.g. on a pre-planted or pre-existing target); `/grant:r` then sets ONLY
@@ -79,10 +91,10 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
 }
 
 /**
- * Write a private secret file: the bytes (mode 0o600 at create on POSIX), then {@link hardenPrivate}
- * for the win32 ACL. FAIL-CLOSED — if hardening throws, the hardening error propagates (the caller
- * never proceeds as if the secret were safe) and the just-written file is best-effort deleted so it
- * isn't left readable.
+ * Write a private secret file: mode 0o600 on the descriptor before the bytes, whether or not the
+ * name already existed, then {@link hardenPrivate} for the win32 ACL. FAIL-CLOSED — if hardening
+ * throws, the hardening error propagates (the caller never proceeds as if the secret were safe) and
+ * the just-written file is best-effort deleted so it isn't left readable.
  */
 export function writeSecretFile(path: string, data: string | Buffer): void {
   writePrivate(path, data, "w");
@@ -91,8 +103,15 @@ export function writeSecretFile(path: string, data: string | Buffer): void {
 /** The fail-closed write {@link writeSecretFile} documents, with the open flag as a parameter so
  *  {@link writeSecretFileCreateOnlyRaw} can pass `wx`. */
 function writePrivate(path: string, data: string | Buffer, flag: "w" | "wx"): void {
-  writeFileSync(path, data, { flag, mode: 0o600 });
-  if (!isWin) return; // POSIX mode set at create, nothing more to do
+  const fd = openSync(path, flag, 0o600);
+  try {
+    // The open mode applies only when the open creates the file; an existing one keeps its own.
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, data);
+  } finally {
+    closeSync(fd);
+  }
+  if (!isWin) return;
   try {
     hardenPrivate(path, "file");
   } catch (e) {
