@@ -4297,7 +4297,7 @@ export class Manager {
       const info = a.handle.exitInfo?.();
       detail = info === undefined
         ? `exit detail unavailable from runtime "${a.handle.kind}"`
-        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; last connector diagnostic: ${info.diagnostic}` : ""}`;
+        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; diagnostic: ${info.diagnostic}` : ""}`;
     } catch (e) {
       // A runtime that throws while being asked has told us something real; it must not take the
       // log line (or the free path it sits on) down with it.
@@ -7126,7 +7126,11 @@ export class Manager {
             finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
             return;
           }
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
+          // The screen's last row can be a dialog footer, so the exit's diagnostic is named beside it:
+          // it carries the runtime's own reason when it stopped the seat. A connector that ends on its
+          // diagnostic already shows it as the last row, and it is not repeated.
+          const diagnostic = a.handle.exitInfo?.()?.diagnostic;
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${diagnostic && diagnostic !== tail ? `; diagnostic: ${diagnostic}` : ""}` });
         })();
       };
       timer = setTimeout(

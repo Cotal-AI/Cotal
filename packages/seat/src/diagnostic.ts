@@ -16,17 +16,22 @@ function lastConnectorDiagnostic(text: string): string | undefined {
     .replace(/[\x00-\x09\x0b-\x1f\x7f-\x9f]/g, "");
   const line = plain.match(/^ *\[cotal-[a-z0-9-]+(?:\/[a-z0-9-]+)?\][^\n]*/gm)?.at(-1)?.trim();
   if (!line) return undefined;
-  return line.length > DIAGNOSTIC_MAX ? `${line.slice(0, DIAGNOSTIC_MAX)}…` : line;
+  // Cut on code points: half a surrogate pair is not I-JSON, and a launch terminal carrying it is refused.
+  const chars = [...line];
+  return chars.length > DIAGNOSTIC_MAX ? `${chars.slice(0, DIAGNOSTIC_MAX).join("")}…` : line;
 }
 
 /**
- * Keeps the last connector diagnostic a pty child printed, across arbitrary output chunks. Both pty
- * backends feed it, so a seat's exit reports the same diagnostic whichever one owned the child.
+ * Keeps the diagnostic a pty child's exit reports: the runtime's own reason when it stopped the child
+ * itself, otherwise the last connector diagnostic the child printed, read across arbitrary output
+ * chunks. Both pty backends feed it, so a seat's exit reports the same diagnostic whichever one owned
+ * the child.
  */
 export class ConnectorDiagnosticReader {
   private last: string | undefined;
   /** The start of the unfinished line the child may still be printing. */
   private lineHead = "";
+  private stopReason: string | undefined;
 
   push(chunk: string): void {
     // Only complete lines are scanned, so a diagnostic split across chunks is read whole. The start
@@ -37,8 +42,14 @@ export class ConnectorDiagnosticReader {
     this.lineHead = text.slice(cut + 1, cut + 1 + LINE_HEAD_MAX);
   }
 
-  /** The last diagnostic, counting a final line the child left unfinished. */
+  /** Records why the runtime is stopping the child. A TUI may never display it where an operator
+   *  looks, and it is the cause of the exit whatever the child prints next. */
+  recordStop(reason: string): void {
+    this.stopReason = reason;
+  }
+
+  /** The stop reason, or else the last diagnostic, counting a final line the child left unfinished. */
   read(): string | undefined {
-    return lastConnectorDiagnostic(this.lineHead) ?? this.last;
+    return this.stopReason ?? lastConnectorDiagnostic(this.lineHead) ?? this.last;
   }
 }

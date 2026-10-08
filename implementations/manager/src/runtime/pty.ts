@@ -77,7 +77,8 @@ export class LegacyPtyRuntime implements Runtime {
     // Retained here so `exitInfo` can answer after the fact; stays undefined while the child lives,
     // because "not exited yet" and "exited cleanly" must never read the same.
     let exit: { code?: number; signal?: number; diagnostic?: string } | undefined;
-    // The child's last connector diagnostic, carried on `exit` so the reap line can name it.
+    // Why the child ended, as far as its output and this runtime can say, carried on `exit` so the
+    // reap line and a launch failure can name it.
     const diagnostic = new ConnectorDiagnosticReader();
 
     let confirmTimer: ReturnType<typeof setTimeout> | undefined;
@@ -85,6 +86,7 @@ export class LegacyPtyRuntime implements Runtime {
       confirmTimer = setTimeout(() => {
         if (!alive) return;
         const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
+        diagnostic.recordStop(message);
         term.write(`\r\n${message}\r\n`);
         const b = Buffer.from(`\r\n${message}\r\n`, "utf8");
         for (const fn of dataSubs) fn(b);
