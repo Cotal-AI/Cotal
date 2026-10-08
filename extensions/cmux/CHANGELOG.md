@@ -1,5 +1,11 @@
 # @cotal-ai/cmux
 
+## 0.74.0
+
+### Minor Changes
+
+- ac251fd: `Pane.confirm` is removed, and the tmux and cmux terminal-layout providers no longer press Enter in the panes they open. The flag carried no prompt text, so both providers pressed Enter five times, one second apart, and answered the first dialog a pane showed with its default, while a prompt that never appeared went unreported. Nothing in Cotal set it. A `Pane` literal that sets `confirm` no longer compiles; see the upgrading guide.
+
 ## 0.73.0
 
 ## 0.72.1

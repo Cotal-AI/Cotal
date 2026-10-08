@@ -1,5 +1,18 @@
 # @cotal-ai/runtime
 
+## 0.74.0
+
+### Patch Changes
+
+- 5443012: The runtime's poll and retry loops now wait through one shared helper, whose timer never holds the process open. Each loop used to build its own wait inline, and the copies disagreed: the checkpoint answer's mint-window retry kept the process alive while every other wait did not. That retry now follows the same rule, which changes nothing a caller can see, because it reads over a broker connection that already keeps the process alive.
+- Updated dependencies [f3e6f95]
+- Updated dependencies [328d59b]
+- Updated dependencies [ac251fd]
+- Updated dependencies [e3498d9]
+  - @cotal-ai/core@0.74.0
+  - @cotal-ai/workspace@0.74.0
+  - @cotal-ai/lang@0.74.0
+
 ## 0.73.0
 
 ### Patch Changes

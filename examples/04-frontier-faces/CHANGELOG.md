@@ -1,5 +1,17 @@
 # @cotal-ai/example-04-frontier-faces
 
+## 0.0.113
+
+### Patch Changes
+
+- b45d606: `face-term.mjs` refuses a `--persona` that names no persona and lists the known keys, as the browser `<cotal-face>` engine does. It used to render the ray face and exit 0, so a typo in `--persona` or in an agent file's `face:` key put the wrong face on the wall with nothing to say why.
+- Updated dependencies [f3e6f95]
+- Updated dependencies [328d59b]
+- Updated dependencies [ac251fd]
+- Updated dependencies [e3498d9]
+  - @cotal-ai/core@0.74.0
+  - @cotal-ai/workspace@0.74.0
+
 ## 0.0.112
 
 ### Patch Changes
