@@ -1324,8 +1324,8 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
   return o as unknown as GoalIndexEntry;
 }
 
-/** Record an accepted goal in the endpoint's reconcile index, CREATE-ONLY and BEFORE the bind
- *  (must-5 Q-B): the atomicity is `index-CAS-before-bind`, so recoverability is clean either side
+/** Record an accepted goal in the endpoint's reconcile index, CREATE-ONLY and BEFORE the bind:
+ *  the atomicity is `index-CAS-before-bind`, so recoverability is clean either side
  *  of a crash — a crash AFTER this write and BEFORE the bind leaves an index entry whose goal
  *  status is absent (the sweep treats it as a no-goal and clears it); a crash BEFORE it leaves no
  *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
