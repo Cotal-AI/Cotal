@@ -467,6 +467,10 @@ listed with its byte size and sha256, so an operator verifies the whole artifact
 and `git bundle verify`. No secret values, no operator keys and no source-host launch material
 enter it.
 
+The generation is the highest one this root has claimed for the seat in `.cotal/auth`. A
+generation entry there that is a symlink, a directory or anything else that is not a regular file
+refuses the cut, as every other auth record does.
+
 The continuity class is what the connector declares, capped by what the checkpoint carries. A
 connector declaring session continuation classifies as `exact`, but reopening a session takes both
 halves, the pointer that names it and the store that holds its transcript. A checkpoint missing
@@ -889,12 +893,14 @@ membership feed). Stale Claude skills and out-of-date `.agents` skills recommend
 not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
 nothing. The manager row asks the service endpoint once: a live process that does not answer is
 `not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
-A process row whose PID record exists but cannot be read reads `pidfile unreadable` with the error,
-and the other rows still print. A live manager whose delivery-aware marker cannot be read keeps its row
-and names the failure as `delivery-aware marker unreadable` with the error. The `Web process` row
+A process row whose PID record exists but cannot be read, or exists under both its current and a
+pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows still print. A live
+manager whose delivery-aware marker cannot be read keeps its row and names the failure as
+`delivery-aware marker unreadable` with the error. The `Web process` row
 prints the address the selected mesh's dashboard recorded in `web.session` once it was listening,
-while the PID in its `web.pid` is alive. Otherwise it reads `down`, or `not installed` without the
-web extension.
+while the PID in its `web.pid` is alive. A `web.pid` or `web.session` that exists but cannot be read
+is named on the row with the error. Otherwise it reads `down`, or `not installed` without the web
+extension.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
@@ -932,16 +938,18 @@ state wins):
 - **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
   `web.session` once it was listening, which must name the same PID. The probe presents the
   readiness nonce recorded beside that address, the one credential the dashboard accepts on
-  `/api/meta`. A live PID with no readable recorded address (the dashboard is still writing it, or
-  an earlier build started it), or an unrecognizable process record, is `refused`, not a green
-  default-port guess.
+  `/api/meta`. A live PID with no recorded address (the dashboard is still writing it, or an
+  earlier build started it), or an unrecognizable process record, is `refused`, not a green
+  default-port guess. A `web.session` that exists but cannot be read is also `refused`, and the row
+  names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
 means the component record is live but its service/readiness surface did not answer or is not ready.
 Those are intentionally separate exit cases. A failed or unreadable probe is `refused`, never an
-absent component or a clean zero. A PID record that exists but cannot be read refuses only its own
-row. A record that its component removes while the pass runs reads as `absent`.
+absent component or a clean zero. A PID record that exists but cannot be read, or exists under both
+its current and a pre-upgrade name, refuses only its own row. A record that its component removes
+while the pass runs reads as `absent`.
 
 ## spawn
 
@@ -1500,7 +1508,8 @@ inventories are not readable from the serve credential. See [control surface](co
 On a normal `SIGINT`/`SIGTERM`, the manager stops every seat and requires the selected runtime to
 prove the seat is gone before it releases the manager lease or service registration. A stop that
 cannot prove exit fails loud and keeps manager authority instead of reporting a clean shutdown while
-an orphan still holds broker rails. After an abrupt manager death, the same logical successor
+an orphan still holds broker rails. When the runtime refuses the stop itself, the shutdown fails at
+once and its error names the refusal as `stop failed: <message>`. After an abrupt manager death, the same logical successor
 terminalizes only its own durable static slots, verify-evicts the predecessor's broker principal,
 records that result in the lifecycle's caller-readable audit detail, reaps the predecessor's seat
 process through the runtime's custody reference recorded on the slot (the pty runtime verifies the
@@ -1512,7 +1521,8 @@ same-lifecycle restart or a resume records the new seat's reference on the slot 
 when the slot does not take it the restart or resume fails and stops any seat it started, so the
 slot never names a seat that has already exited while its replacement runs. A resumed seat keeps
 its retained credentials, so the resume frees it only once its exit is proved; a seat whose stop
-cannot be proved stays managed, and the resume's error says so. A spawn
+cannot be proved stays managed, and the resume's error says so, naming a stop the runtime refused
+as `stop failed: <message>`. A spawn
 that launched its seat and then failed is rolled back by the manager that launched it, and that
 rollback reaps the seat through the same reserved reference before the lifecycle retires. Missing or unverified broker evidence keeps the slot
 terminalizing, and so does a runtime that cannot reap by reference.

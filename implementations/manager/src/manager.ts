@@ -81,6 +81,7 @@ import {
   requireRuntimeAdopt,
   requireRuntimeReap,
   RuntimeReapUnproven,
+  watchProvedExit,
   type AgentHandle,
   type CustodialRuntime,
   type Runtime,
@@ -541,7 +542,7 @@ export interface ManagerOptions {
     agentBearerExchangeUrl: string;
     /** The closed host run callbacks. Workflow runs are hosted only when ALL are supplied; a
      * partial set refuses at construction, and absent means run-start/resume stay unavailable. */
-    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun">;
+    runHosting?: Pick<import("./run-hosting.js").RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">;
     /** Host-owned execution of one admitted delegated user intent (SPEC 13.16). Absent: a delegated
      * spawn and a delegated retirement are refused before any request. */
     executeDelegatedUserIntent?: (
@@ -1957,6 +1958,7 @@ export class Manager {
         auth: undefined,
         log: (line) => console.error(line),
         admitRun: remoteRuns.admitRun,
+        revokeRun: remoteRuns.revokeRun,
         issueAttempt: remoteRuns.issueAttempt,
         issueOperator: remoteRuns.issueOperator,
         renewRun: remoteRuns.renewRun,
@@ -2889,12 +2891,15 @@ export class Manager {
    *  touches NEITHER the lease NOR the endpoints — the caller owns those. */
   private async teardownManagedAgents(managed = [...this.agents.values()]): Promise<void> {
     const failures: string[] = [];
+    const stopped: ManagedAgent[] = [];
     for (const a of managed) {
       // Free the slot + hard-stop each; `stopHandle` is best-effort (never throws — see it), so one bad
       // stop can't strand the rest, and every snapshot entry is deprovisioned below regardless.
       this.recordContinuityAtStop(a, "shutdown");
       this.agents.delete(a.name);
-      this.stopHandle(a, false);
+      const refused = this.stopHandle(a, false);
+      if (refused === undefined) stopped.push(a);
+      else failures.push(`${a.name}: stop failed: ${refused}`);
     }
     // The slot delete above bypasses freeSlot, which is where the reap line lives — so say it here,
     // once per seat, with the one stop cause that names this path: the shutdown itself. Without
@@ -2904,7 +2909,7 @@ export class Manager {
     // while any seat may still hold this instance's broker rails: that creates the exact orphan
     // window where a successor sees a dead manager but live predecessor authority. Every shipped
     // runtime now supplies waitForExit; absence or timeout is a failed shutdown, never a clean one.
-    await Promise.all(managed.map(async (a) => {
+    await Promise.all(stopped.map(async (a) => {
       try {
         await this.awaitHandleExit(a.handle);
       } catch (e) {
@@ -3930,12 +3935,12 @@ export class Manager {
    *  grace window. POSIX delivers SIGTERM→SIGKILL natively, so it keeps the signal path. A hard stop
    *  (`graceful:false`, e.g. emergency reap) skips the cooperative step on every platform.
    *
-   *  BEST-EFFORT / never throws (#159 B2): a runtime hard-stop CAN throw (tmux `closeWindow` / cmux
-   *  `closeWorkspace` are direct calls), and every caller (despawn / self-stop / reap / shutdown) frees the
-   *  slot + deprovisions RIGHT AFTER — so a throwing stop must not abort that cleanup and leak the agent's
-   *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged loudly,
-   *  never swallowed silently. Being the single stop chokepoint, guarding here covers all callers at once. */
-  private stopHandle(a: ManagedAgent, graceful: boolean): void {
+   *  Never throws (#159 B2): a runtime hard-stop CAN throw (tmux `closeWindow` / cmux `closeWorkspace`
+   *  are direct calls), and a throwing stop must not abort a caller's cleanup and leak the agent's
+   *  footprint, nor (in `reapChildrenOf`) abort the reap of later siblings. The failure is logged and
+   *  returned: a caller that must prove exit (shutdown, a failed resume) reports it as the cause at
+   *  once instead of waiting out a stop the runtime already refused. */
+  private stopHandle(a: ManagedAgent, graceful: boolean): string | undefined {
     // The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY, before any await anywhere on
     // this stop path — later renewals refuse, while an already-admitted renewal drains before the
     // durable terminal begins.
@@ -3948,7 +3953,9 @@ export class Manager {
       if (a.handedOff) this.trackDeprovision({ ...a, delegatedHandle: a.handle });
       else a.handle.stop({ graceful });
     } catch (e) {
-      console.error(`stop ${a.name} (${a.id}): ${rejectionText(e)}`);
+      const failure = rejectionText(e);
+      console.error(`stop ${a.name} (${a.id}): ${failure}`);
+      return failure;
     }
   }
 
@@ -4297,7 +4304,7 @@ export class Manager {
       const info = a.handle.exitInfo?.();
       detail = info === undefined
         ? `exit detail unavailable from runtime "${a.handle.kind}"`
-        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; last connector diagnostic: ${info.diagnostic}` : ""}`;
+        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; diagnostic: ${info.diagnostic}` : ""}`;
     } catch (e) {
       // A runtime that throws while being asked has told us something real; it must not take the
       // log line (or the free path it sits on) down with it.
@@ -6977,12 +6984,13 @@ export class Manager {
    *  would reap it: it is freed only once its exit is proved, and otherwise stays managed until it
    *  exits or the manager stops it. */
   private async stopFailedResume(managed: ManagedAgent, cause: FreeSlotCause, detail: string): Promise<ControlReply> {
-    this.stopHandle(managed, false);
-    try {
-      await this.awaitHandleExit(managed.handle);
-    } catch (exit) {
+    const refused = this.stopHandle(managed, false);
+    const unproven = refused === undefined
+      ? await this.awaitHandleExit(managed.handle).then(() => undefined, rejectionText)
+      : `stop failed: ${refused}`;
+    if (unproven !== undefined) {
       this.watchExit(managed);
-      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${rejectionText(exit)}` };
+      return { ok: false, error: `${detail}; it stays managed because its stop is unproven: ${unproven}` };
     }
     this.freeSlot(managed, true, cause, true);
     return { ok: false, error: detail };
@@ -7107,7 +7115,21 @@ export class Manager {
             finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
             return;
           }
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
+          // The screen's last row can be a dialog footer, so the exit's diagnostic is named beside it:
+          // it carries the runtime's own reason when it stopped the seat. A connector that ends on its
+          // diagnostic already shows it as the last row, and it is not repeated.
+          let exitDetail = "";
+          try {
+            const diagnostic = a.handle.exitInfo?.()?.diagnostic;
+            if (diagnostic && diagnostic !== tail) exitDetail = `; diagnostic: ${diagnostic}`;
+          } catch (e) {
+            // The backstop is already cleared, so a reader that throws must still let this settle.
+            exitDetail = `; exit detail unreadable from runtime "${a.handle.kind}": ${rejectionText(e)}`;
+          }
+          // A runtime's text can carry a lone surrogate, which is not I-JSON, and the failed terminal
+          // this detail becomes is refused with it.
+          exitDetail = exitDetail.replace(/\p{Cs}/gu, "\uFFFD");
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
       timer = setTimeout(
@@ -7156,23 +7178,14 @@ export class Manager {
   }
 
   /** Subscribe to a managed agent's process-exit so a self-driven exit frees its slot and reaps
-   *  its children (P4b/P4c). Only pty streams exit (via the attach session's `onExit`); external runtimes'
-   *  attach() throws, so this is a no-op there — a self-EXITED agent under those runtimes is reaped
-   *  by nothing until it's explicitly despawned (graceful-stop runs on despawn, not self-exit). The
-   *  cap still holds (a lingering corpse counts toward it); runtime-agnostic exit-reaping (a real
-   *  per-runtime `status()` → exited-sweep at the availability gate) is a tracked follow-up. */
+   *  its children (P4b/P4c). The watch is bound to the current handle: a restart swaps in a new one
+   *  and watches it, so a late exit proved for the old handle must not retire the row. */
   private watchExit(a: ManagedAgent): void {
-    try {
-      const session = a.handle.attach();
-      session.onExit(() => this.onAgentExit(a));
-      // Close the TOCTOU between the early-exit probe's unsubscribe and this subscribe: if the child
-      // exited in that gap, the `onExit` above never fires (a late subscriber can't hear a past event),
-      // so the agent would leak (never reaped, never deprovisioned). Re-check status right after
-      // subscribing and reap it now if it already went. onAgentExit is idempotent (freeSlot's guard).
-      if (a.handle.status() === "exited") this.onAgentExit(a);
-    } catch {
-      /* runtime doesn't stream an exit signal — nothing to wire */
-    }
+    const handle = a.handle;
+    const current = (): boolean => this.agents.get(a.name) === a && a.handle === handle;
+    const watched = watchProvedExit(handle, () => { if (current()) this.onAgentExit(a); }, current);
+    if (!watched)
+      console.error(`! ${a.name}: runtime "${handle.kind}" cannot prove a child exit (AgentHandle.waitForExit is not implemented) - it stays managed after it exits, until it is stopped`);
   }
 
   /** Prune expired cooling stamps (drop those at/before now) and return the live count — the

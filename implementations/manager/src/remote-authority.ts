@@ -2,6 +2,9 @@ import { join } from "node:path";
 import {
   credsFromJwt,
   admissionSnapshot,
+  revocationSnapshot,
+  type RemoteRunRevokeRequest,
+  type RemoteRunRevokeResult,
   accountFromCreds,
   managedRetirementOpId,
   mintLifecycleUid,
@@ -128,7 +131,7 @@ export function remoteRunAttemptCredentials(
   return { operator: materialize("operator", identities.operator) };
 }
 
-/** The four signerless run callbacks over one registration. A caller supplies only the transport,
+/** The signerless run callbacks over one registration. A caller supplies only the transport,
  *  so every composition sends the host the run requests the stock manager sends. */
 export function remoteRunHosting(args: {
   state: RemoteManagerIdentityState;
@@ -138,10 +141,20 @@ export function remoteRunHosting(args: {
   processEpoch: number;
   requestRunAdmission: (request: RemoteRunAdmissionRequest) => Promise<RemoteRunAdmissionResult>;
   requestRunAttempt: (request: RemoteRunAttemptRequest) => Promise<RemoteRunAttemptResult>;
+  requestRunRevoke?: (request: RemoteRunRevokeRequest) => Promise<RemoteRunRevokeResult>;
   call: (request: RemoteManagerAuthorityRequest) => Promise<RemoteManagerAuthorityMaterial>;
-}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun">> {
+}): Required<Pick<RunHostingContext, "admitRun" | "issueAttempt" | "issueOperator" | "renewRun" | "revokeRun">> {
   const { state, owner, registrationProof, accountPublicKey, processEpoch } = args;
   return {
+    revokeRun: async (revoke) => {
+      if (args.requestRunRevoke === undefined) throw new Error("the issuing host supplies no closed run revoke request");
+      const request: RemoteRunRevokeRequest = { ...runRequestBase(state, registrationProof, accountPublicKey, processEpoch), kind: "manager-run-revoke", revoke };
+      const result = await args.requestRunRevoke(request);
+      exactKeys(result, ["v", "kind", "requestId", "runId", "revocation"], "manager run revoke");
+      if (result.v !== 1 || result.kind !== request.kind || result.requestId !== request.requestId || result.runId !== revoke.runId)
+        throw new Error("manager run revoke returned different request or run coordinates");
+      return revocationSnapshot(result.revocation, revoke.runId);
+    },
     admitRun: async ({ runId, subject }) => {
       const request = remoteRunAdmissionRequest(state, registrationProof, accountPublicKey, processEpoch, { runId, subject });
       return remoteRunAdmission(await args.requestRunAdmission(request), request);

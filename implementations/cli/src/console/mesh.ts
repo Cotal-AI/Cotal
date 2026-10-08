@@ -1,5 +1,5 @@
 // useMesh() — the React binding for the Ink console. A thin adapter over the shared
-// `MeshView` model in @cotal-ai/core: it owns one MeshView over the read-only observer endpoint
+// `MeshView` model in ../view/mesh-view.ts: it owns one MeshView over the read-only observer endpoint
 // (built by the console command), subscribes to its batched "change" snapshots, and pushes
 // them into React state. All the normalization (classification, coalescing, windowing, roster
 // sort, rates, derived signals) lives in MeshView — see docs/mesh-view.md.

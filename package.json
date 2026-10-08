@@ -324,6 +324,7 @@
     "smoke:hosted-bootstrap-order": "tsx implementations/auth/smoke/hosted-bootstrap-order.smoke.ts",
     "smoke:manager-standing-renewal": "tsx implementations/auth/smoke/manager-standing-renewal.smoke.ts",
     "smoke:remote-run-admission": "tsx implementations/auth/smoke/remote-run-admission.smoke.ts",
+    "smoke:remote-run-revoke": "tsx implementations/auth/smoke/remote-run-revoke.smoke.ts",
     "smoke:remote-run-attempt-route": "tsx implementations/auth/smoke/remote-run-attempt-route.smoke.ts",
     "smoke:hosted-delivery-lifetime": "tsx implementations/delivery/smoke/hosted-delivery-lifetime.smoke.ts",
     "smoke:hosted-delivery-startup-isolation": "tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts",

@@ -592,11 +592,10 @@ export const cotal: Plugin = async () => {
   // hijacked or absent control plane.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
   /**
-   * THE ONE TEARDOWN, because there are two ways out and an invariant that holds on one of them
-   * is not an invariant. `dispose` is the host disposing the plugin's instance; the control op is
-   * the manager stopping a supervised seat over the control socket, which is the path a managed
-   * agent actually takes. Both must give the event work a bounded chance to settle before the
-   * process stops, so that wait lives here and neither caller owns a copy of it.
+   * THE ONE TEARDOWN, because a running seat stops in more than one way and an invariant that holds
+   * on only some of them is not an invariant. Every way it stops goes through `shutdown` and so
+   * through here, and each must give the event work a bounded chance to settle before the process
+   * stops, so that wait lives here and no caller owns a copy of it.
    *
    * A queued swap still holds a drain that flushes and closes a run, and it runs on its own chain
    * rather than on this one, so without waiting for it a stop can be followed by frames for a session
@@ -642,7 +641,7 @@ export const cotal: Plugin = async () => {
    *
    * THE PRINCIPAL LOCK GOES BACK ON THE LINE AFTER THEM, and this is the only place it does. A
    * lock is per PRINCIPAL while a holder is per THREAD, so a `/new` must keep it for the session
-   * that follows; only the final teardown may hand it back. Both ways out reach this routine, so a
+   * that follows; only the final teardown may hand it back. Every stop reaches this routine, so a
    * dispose releases it exactly as a supervised stop does. That was the reachable failure: the lock
    * was taken and never released, so its record went on naming a pid that was alive and no longer
    * publishing, and a replacement process for this principal was refused its own event plane.
@@ -701,9 +700,10 @@ export const cotal: Plugin = async () => {
     await agent.stop();
   };
   /**
-   * The manager's cooperative stop and the host's dispose. `process.exit` waits for the whole shared
-   * teardown, because an exit the teardown cannot delay cannot honour it. It runs once `quiesce`
-   * settles, whether it resolves or rejects, so a teardown that throws still ends the process.
+   * Every way a running seat stops calls this, and an event plane that stopped for good on a space
+   * that requires events exits 1 through it. `process.exit` waits for the whole shared teardown,
+   * because an exit the teardown cannot delay cannot honour it. It runs once `quiesce` settles,
+   * whether it resolves or rejects, so a teardown that throws still ends the process.
    */
   const shutdown = async (code = 0): Promise<void> => {
     try {

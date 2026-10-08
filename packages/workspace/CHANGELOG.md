@@ -1,5 +1,21 @@
 # @cotal-ai/workspace
 
+## 0.75.0
+
+### Patch Changes
+
+- 0c924f4: A hosted auth context started through `startAuthService` now keeps the auth plane's instance identity, whose serve seed is a private nkey, in its injected `SecretStore` under the new `authInstanceKey(space)`, with the other auth secret kinds. It used to write that record under `stateDir`, which the hosted contract documents as non-secret state. The first start of an upgraded context puts the earlier record into the store, removes the file and keeps the instance. A store and `stateDir` that hold different identities refuse the start. `@cotal-ai/workspace` exports `removeAuthInstanceIdentity`. A CLI root keeps its record where it was.
+- 597fa25: The check that a minted `manager-caller` bearer is bound to the caller and names one manager instance now lives in one `@cotal-ai/core` function, `managerCallerBinding`, which `userViewAuth` in `@cotal-ai/workspace` and the connector's manager calls both use. Before, each package kept its own copy and they had drifted: the CLI accepted a bearer with two or four segments that the connector refused, and the two gave different refusals for an undecodable bearer, a bearer with no `act.managerInstanceId` and a bearer with no `act.lifecycleUid`. Both now refuse those bearers with the connector's sentences.
+- Updated dependencies [6286d29]
+- Updated dependencies [ed0785d]
+- Updated dependencies [625659e]
+- Updated dependencies [b48a740]
+- Updated dependencies [597fa25]
+- Updated dependencies [cb3a177]
+- Updated dependencies [5f5196f]
+- Updated dependencies [d269d1d]
+  - @cotal-ai/core@0.75.0
+
 ## 0.74.0
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 import { rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-error.js";
-import { isUserNkey } from "./identity.js";
+import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
 
 /**
@@ -808,6 +808,22 @@ export interface RemoteRunAdmissionResult {
   admission: import("./run-admission.js").RunAdmission;
 }
 
+/** Revoke one admitted run through its issuing host. The authenticated holder, never the body,
+ * supplies the owner and attribution. The admission supplies the run's owner. */
+export interface RemoteRunRevokeRequest extends Omit<RemoteRunAdmissionRequest, "kind" | "run"> {
+  kind: "manager-run-revoke";
+  revoke: { runId: string; reason: string };
+}
+
+/** The existing create-only marker, including on a repeated revoke. */
+export interface RemoteRunRevokeResult {
+  v: 1;
+  kind: "manager-run-revoke";
+  requestId: string;
+  runId: string;
+  revocation: import("./run-admission.js").RunRevocation;
+}
+
 /**
  * Closed first-attempt (and resume) driver/mediator issuance, or one served run-operator call, for
  * a registered signerless manager. Separate from `renewRunDriver`, which only renews an activated
@@ -1034,7 +1050,7 @@ function parseOperation(raw: unknown, what: string, field: string): { operation:
 }
 
 function parseAccountPublicKey(value: unknown, what: string): string {
-  if (typeof value !== "string" || !/^A[A-Z2-7]{55}$/.test(value)) enrollmentError(what, "requires an account public key");
+  if (!isAccountNkey(value)) enrollmentError(what, "requires an account public key");
   return value;
 }
 

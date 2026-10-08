@@ -173,7 +173,9 @@ and closes any resources created by that late completion.
 
 `startAuthService` takes the same `HostedContextInputs`. The store must declare the assigned
 injected identity, and its data account must be the assigned account. The IdP pin and ledger live
-under the explicit `stateDir`, and the auth plane's instance identity in its `.cotal/space.<hex>/`.
+under the explicit `stateDir`. The auth plane's instance identity holds its private serve seed, so it
+lives in the store under `authInstanceKey(space)`. A record an earlier release kept under `stateDir`
+moves into the store on the first start.
 The context never resolves a workspace root from the working directory and has no local manager, so
 only remote manager gates can be selected. It returns after
 the authority plane, the callout subscription and the loopback listener are bound. A start that
@@ -543,10 +545,11 @@ manifest `{ v: 1, root, members }` at `clusterDigest`, then the cluster document
 `root`, and verifies each against its digest. `artifacts` therefore carries both, and `clusterDigest`
 is the digest of the manifest. `members` stays empty: SPEC §13.7 lists every reachable artifact
 there, but this implementation registers single-document clusters only and refuses a manifest that
-lists members. `singleDocumentClosure(document)` returns that manifest and its closure digest. The
-instance id is a lifecycle token, `[a-z0-9]{26,32}`. The minimal construction below has one command
-over the void schema. A host copies it, replaces `document` with its real cluster, and passes `host`
-as `platformControl: { observeAssignment, host }`.
+lists members. A manifest with any field beyond `v`, `root` and `members` is refused too, as the
+contract store refuses it. `singleDocumentClosure(document)` returns that manifest and its closure
+digest. The instance id is a lifecycle token, `[a-z0-9]{26,32}`. The minimal construction below has
+one command over the void schema. A host copies it, replaces `document` with its real cluster, and
+passes `host` as `platformControl: { observeAssignment, host }`.
 
 ```ts
 import { mintLifecycleUid, singleDocumentClosure, VOID_SCHEMA_DIGEST } from "@cotal-ai/core";
@@ -774,6 +777,7 @@ place and keep:
 |---|---|---|---|
 | full `SpaceAuth` trust chain (`auth/broker.json` + `auth/account.<key>.json`, composed; a stripped signer bundle may instead be mounted at the legacy `auth/auth.json` key) | signing authority | `SecretStore` | `SecretStore` (manager + renewal) |
 | auth kinds: callout account/creds/xkey, issuer private keys, owner-derivation secret, data-signer projection | signing/identity authority | four `SecretStore` kinds | `SecretStore` (auth-service) |
+| auth plane instance identity (instance id + serve nkey seed) | restart identity | root `.cotal/space.<hex>/auth-instance.json` | `SecretStore` (`startAuthService`) |
 | `delivery.creds` | standing scoped cred | `SecretStore` or `--creds` | `SecretStore` (delivery) |
 | actor ledger, IdP pin | authorization + trust config | ambient `userAuthStateDir(findCotalRoot(), space)` | none (root-relative; not `store`/`COTAL_HOME`) |
 | `membership-rw.creds` | standing scoped cred | `SecretStore` | `SecretStore` (delivery + manager renewal) |
@@ -796,3 +800,17 @@ the remaining non-injectable rows are the explicit ambient `workspaceRoot`/cwd p
 - [Identity and auth](identity-and-auth.md): the profile matrix, the signer, and the IdP callout contract.
 - [Delivery daemon](delivery-daemon.md): the Plane-3 durable backstop.
 - [Deploy](deploy.md): the reference container against an external broker.
+
+## Hosted run revocation
+
+The authenticated manager-service authority door accepts `manager-run-revoke` with the registered
+manager envelope and `revoke: { runId, reason }`. The issuing host reads the admission's recorded
+owner and requires the verified requester to be that owner or to hold `admin` in its fresh actor
+ledger row. It verifies the current manager registration proof, space, account and epoch. It accepts
+no owner or attribution from the body.
+
+`AuthAuthorityPlane.revokeManagerRun` implements the operation. `AuthProvider.requestRemoteRunRevoke`
+transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for a signerless
+manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
+its own remote authority must supply that callback to revoke. No signer reaches the participant.
+CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).

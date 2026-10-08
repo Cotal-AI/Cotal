@@ -143,8 +143,8 @@ Out of scope:
   adds none.
 - Hosting user runs on the signer-holding host's own manager. The issue requires a remote manager,
   and `manager.ts:3239-3240` keeps refusing.
-- A user-facing route that writes a run's revocation marker on a participant manager. Section 8 names
-  it as a residual.
+- CLI and MCP revoke verbs. The issuing-host request in section 11 is shipped, but these verbs need
+  a served manager command and caller observation, not a one-line routing change.
 - Platform authority and lifecycle intent. [Platform control authority](platform-pooled-control-authority.md)
   (on main) and the portable lifecycle bootstrap and delegated user launch intent records (on their
   own branches) cover a `p_` holder and its launches. This path does not use or change them, and it
@@ -502,9 +502,8 @@ No existing sentence is reworded.
   already issue once per invocation (`connect.ts:441`), and this matches that rate.
 - The callout opens one issuer connection per issued connect, which adds latency to the callout's
   reply.
-- Revoking a user's run on a participant manager has no user-facing route. `RunHosting.revoke` refuses
-  on a signerless host (`run-hosting.ts:309`), and the host operator's `cotal run revoke --local`
-  remains the only writer.
+- CLI and MCP revoke verbs remain follow-up. The authenticated issuing-host request and
+  `RunHosting.revoke` callback are available as section 11 describes.
 - User-mode seats spawned by the run answer through the relay path on the legacy rail. Their
   attribution rests on the managed row and the manager-held relay, as it does on a static mesh.
 - A participant manager forwards the `run-start` subject it served, and the issuing host checks that
@@ -592,3 +591,33 @@ placement on another instance is refused at `run start`. User B's resume of A's 
 participant manager, and B's answer are refused by the issuing host as admitted on another manager
 instance. Revoking A's row between two spawns of one run refuses the second spawn, and A's next
 start is refused.
+
+
+## 11. Revoke through the issuing host
+
+`manager-run-revoke` is served by the same authenticated manager-service authority door as
+`manager-run-admission` and `manager-run-attempt`. Its closed registered-manager envelope carries
+`revoke: { runId, reason }`. It carries no owner, caller, `by` or timestamp.
+
+The door verifies the IdP subject and reads the requesting actor's ledger row on every call.
+`revokeRemoteRun` reads the run's admission leader-served and requires its recorded `caller.owner`
+to equal that verified owner, or the requesting actor's scope to carry `admin`. The platform
+control assignment alone grants neither this operation nor admin. The host checks the manager's
+current registration proof, account, space and process epoch, and refuses an admission from
+another instance. The registration proof belongs to the registered manager even when a platform
+admin requests the revoke.
+
+The host derives `by` from the verified owner and actor and calls `revokeRunAdmission` under the
+one-run `run-admitter` credential. The result is `{ v: 1, kind, requestId, runId, revocation }`.
+`revocation` is the marker read back from the store. A second revoke returns that same marker and
+never changes `revokedAt`, `by` or `reason`. The existing admission readers, open-wait checks and
+resume refusal consume it unchanged.
+
+`RunHostingContext.revokeRun` routes a signerless host's existing `revoke` method through this
+request. `remoteRunHosting` binds the closed response to its request before returning the marker.
+The remote path does not forward its local `by` argument. That argument is not authenticated
+identity evidence to the issuer. The signer-holding path keeps trusted-operator attribution.
+
+`cotal run revoke` and the `cotal_run` revoke verb remain follow-up. They need a manager command
+schema, capability grants, observed request subjects, serve-time caller checks and CLI/tool
+parsing. Neither surface currently routes a revoke, so this is not a one-line addition.

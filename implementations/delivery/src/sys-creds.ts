@@ -1,4 +1,4 @@
-import { credsClaims, type SecretStore } from "@cotal-ai/core";
+import { credsClaims, isAccountNkey, type SecretStore } from "@cotal-ai/core";
 import {
   assertSingleSpaceBroker, authDir, connectionEvictorCredsKey, CONNECTION_EVICTOR_CREDS_KIND,
   membershipObserverCredsKey, MEMBERSHIP_OBSERVER_CREDS_KIND, segmentedKey,
@@ -117,8 +117,8 @@ export function repairAdvice(source: SysCredsSource, kinds: readonly string[]): 
  *  "Authorization Violation" into a line naming both accounts (design §4.3). */
 export function connzAccountOf(observerCreds: string): string | undefined {
   for (const subject of credsClaims(observerCreds).nats?.pub?.allow ?? []) {
-    const m = /^\$SYS\.REQ\.ACCOUNT\.(A[A-Z2-7]{55})\.CONNZ$/.exec(subject);
-    if (m) return m[1];
+    const account = /^\$SYS\.REQ\.ACCOUNT\.([^.]+)\.CONNZ$/.exec(subject)?.[1];
+    if (isAccountNkey(account)) return account;
   }
   return undefined;
 }

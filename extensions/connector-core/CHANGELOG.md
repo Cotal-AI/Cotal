@@ -1,5 +1,15 @@
 # @cotal-ai/connector-core
 
+## 0.75.0
+
+### Patch Changes
+
+- bcec75b: The `JsonlFileSource` seal comment, which ships in `dist/durable-source.js` and `dist/durable-source.d.ts`, no longer names an internal reviewer and a review verdict. No behavior changes.
+- 5865d2e: The event WAL's comment on why a nonzero frontier must carry its source cursor, which ships in the package's compiled output, now names the `DurableSource.read` contract for the rule that reading with no cursor adopts at the current end. It used to cite a line range in `durable-source.ts` that had drifted onto unrelated code, and that file is not in the published package. No behavior changes.
+- 597fa25: The check that a minted `manager-caller` bearer is bound to the caller and names one manager instance now lives in one `@cotal-ai/core` function, `managerCallerBinding`, which `userViewAuth` in `@cotal-ai/workspace` and the connector's manager calls both use. Before, each package kept its own copy and they had drifted: the CLI accepted a bearer with two or four segments that the connector refused, and the two gave different refusals for an undecodable bearer, a bearer with no `act.managerInstanceId` and a bearer with no `act.lifecycleUid`. Both now refuse those bearers with the connector's sentences.
+- 08828ac: The `acquirePrincipalLock` doc comment now states that the lock is held until the returned lock's `release()`, and no longer says it is held for the life of the process or recounts the module's earlier computed-only `lockPath`. No behavior changes.
+- b1bfe6a: Restate the subject-frontier comments, which ship in `dist/subject-frontier.js` and `dist/subject-frontier.d.ts`, as the rules they carry in the present tense. They no longer narrate the failure measured before the module existed, a first attempt at recovery, an earlier description of the scan, the removed `seedFromThread`, or the code that preceded the directory fsync helper. Every rule is kept: the subject tip belongs to the principal and every thread advances it, recovery scans every sibling thread log only when the record is absent and never when it reads zero, an unreadable sibling is fatal, `advance` re-reads the record before writing, and a `sent_unacked` pending contributes no sequence. No behavior changes.
+
 ## 0.74.0
 
 ### Minor Changes

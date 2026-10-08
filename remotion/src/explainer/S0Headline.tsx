@@ -1,6 +1,6 @@
 // S0Headline — the lead title card for the demo cuts.
 // The gold interlocking-rings mark settles, then three staccato lines reveal:
-// "Any agent." -> "Any topology." -> "One space." 110 frames @ 30fps.
+// "Any agent." -> "Any topology." -> "One space."
 
 import React from "react";
 import {
@@ -17,14 +17,14 @@ import {
   useCurrentFrame,
 } from "../header/shared";
 
-const DURATION = 110;
+export const HEADLINE_DURATION = 110;
 const LINES = ["Any agent", "Any topology", "One space"];
 
 export const S0Headline: React.FC = () => {
   const frame = useCurrentFrame();
   return (
     <CreamStage>
-      <AbsoluteFill style={{ opacity: loopEnvelope(frame, DURATION), justifyContent: "center", alignItems: "center" }}>
+      <AbsoluteFill style={{ opacity: loopEnvelope(frame, HEADLINE_DURATION), justifyContent: "center", alignItems: "center" }}>
         <div style={{ marginBottom: 54 }}>
           <RingMark size={132} frame={frame} appear={0} id="headline" />
         </div>

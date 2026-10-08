@@ -28,7 +28,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 150;
+export const TOPOLOGY_DURATION = 150;
 
 // glide windows (where node positions interpolate between layouts)
 const G12: [number, number] = [30, 48];
@@ -222,7 +222,7 @@ export const S5Topology: React.FC = () => {
   const cap3 = fade(frame, 80, 90) * (1 - fade(frame, 105, 115));
   const cap4 = fade(frame, 117, 127);
 
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, TOPOLOGY_DURATION);
 
   return (
     <CreamStage>

@@ -82,6 +82,7 @@ export * from "./environment.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";
+export * from "./manager-caller.js";
 export * from "./remote-manager-authority.js";
 export * from "./canonical.js";
 export * from "./artifact.js";

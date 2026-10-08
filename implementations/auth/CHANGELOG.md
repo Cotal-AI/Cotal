@@ -1,5 +1,30 @@
 # @cotal-ai/auth
 
+## 0.75.0
+
+### Minor Changes
+
+- b48a740: Add the closed manager-run-revoke issuing-host request, authorized by the recorded admission owner or a fresh admin grant. Route signerless RunHosting revocation through it and return the existing create-only marker on repeats.
+
+### Patch Changes
+
+- ed0785d: `@cotal-ai/core` exports `isAccountNkey`, the shape rule for an account nkey public key, and every site in core, `@cotal-ai/auth` and `@cotal-ai/delivery` that checks an account public key calls it. The run admission and run attempt parsers now refuse an `accountPublicKey` that is not an account nkey as a bad request. They accepted any non-empty string before, which only the later comparison with the assigned account refused.
+- 0c924f4: A hosted auth context started through `startAuthService` now keeps the auth plane's instance identity, whose serve seed is a private nkey, in its injected `SecretStore` under the new `authInstanceKey(space)`, with the other auth secret kinds. It used to write that record under `stateDir`, which the hosted contract documents as non-secret state. The first start of an upgraded context puts the earlier record into the store, removes the file and keeps the instance. A store and `stateDir` that hold different identities refuse the start. `@cotal-ai/workspace` exports `removeAuthInstanceIdentity`. A CLI root keeps its record where it was.
+- cb3a177: The manager-service authority and maintenance request parsers now check the registered-manager envelope through core's `parseRemoteManagerEnvelope` instead of their own copies of its rules, so a change to a shared envelope rule reaches them too. `parseRemoteManagerEnvelope` takes an optional fourth argument, `registrationProof`; pass `false` for a request that must carry no proof, such as `prepare`. Some refusal wording changes with it: a lifecycle-token refusal names `manager-service authority` or `manager-service maintenance`, a missing or malformed proof on any registered-manager request reads `requires a sha256 registrationProof` without the operation, and a proof on `prepare` reads `must not carry registrationProof`.
+- d269d1d: Core exports `serviceContractTable(rows)`, which builds a service's command contracts, compiled on first access, and the schema artifacts its registration publishes. The auth, manager and Linear service contracts call it instead of carrying their own copies of the lazy table and the artifact loop, so a fix to either reaches all three. Importing a contract module still compiles nothing, and the published artifacts and the behaviour of `AUTH_CONTRACTS`, `MANAGER_CONTRACTS` and `MANAGER_STATUS_CONTRACT` are unchanged.
+- Updated dependencies [6286d29]
+- Updated dependencies [ed0785d]
+- Updated dependencies [625659e]
+- Updated dependencies [0c924f4]
+- Updated dependencies [b48a740]
+- Updated dependencies [597fa25]
+- Updated dependencies [cb3a177]
+- Updated dependencies [5f5196f]
+- Updated dependencies [d269d1d]
+  - @cotal-ai/core@0.75.0
+  - @cotal-ai/workspace@0.75.0
+  - @cotal-ai/lang@0.75.0
+
 ## 0.74.0
 
 ### Patch Changes

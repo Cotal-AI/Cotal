@@ -623,3 +623,48 @@ export function createCompiledContractCache(capacity: number = SCHEMA_PROFILE.co
     size: () => lru.size,
   };
 }
+
+type ContractPair = { input: CompiledContract; output: CompiledContract };
+
+/** A service's compiled command contracts and the §13.7 artifacts its registration publishes,
+ *  from its command rows. `contracts` compiles a command's pair on its first access and keeps it,
+ *  so a module can build its table at load while a process that only reads digests pays no Ajv
+ *  compile. `artifactValues()` returns each distinct schema root followed by its closure manifest. */
+export function serviceContractTable(rows: ReadonlyArray<{ name: string; input: unknown; output: unknown }>): {
+  contracts: Readonly<Record<string, ContractPair>>;
+  artifactValues: () => unknown[];
+} {
+  const compiled = new Map<string, ContractPair>();
+  const declared = (name: string | symbol) => rows.some((r) => r.name === name);
+  const pairFor = (name: string | symbol): ContractPair | undefined => {
+    const row = rows.find((r) => r.name === name);
+    if (!row) return undefined;
+    let pair = compiled.get(row.name);
+    if (!pair) {
+      pair = { input: compileContract({ root: row.input as Record<string, unknown> }), output: compileContract({ root: row.output as Record<string, unknown> }) };
+      compiled.set(row.name, pair);
+    }
+    return pair;
+  };
+  return {
+    contracts: new Proxy({} as Record<string, ContractPair>, {
+      has: (_, name) => declared(name),
+      ownKeys: () => rows.map((r) => r.name),
+      getOwnPropertyDescriptor: (_, name) => (declared(name) ? { configurable: true, enumerable: true, get: () => pairFor(name) } : undefined),
+      get: (_, name) => pairFor(name),
+    }),
+    artifactValues: () => {
+      const values: unknown[] = [];
+      const seen = new Set<string>();
+      for (const r of rows) {
+        for (const source of [r.input, r.output]) {
+          const { manifest } = singleDocumentClosure(source);
+          if (seen.has(manifest.root)) continue;
+          seen.add(manifest.root);
+          values.push(source, manifest);
+        }
+      }
+      return values;
+    },
+  };
+}

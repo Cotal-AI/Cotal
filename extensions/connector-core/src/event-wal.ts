@@ -367,7 +367,7 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
   //
   // The cost of accepting it is silent loss, and it is not theoretical: the emitter resumes by
   // reading forward from this cursor, and `read(undefined)` does not resume — it ADOPTS AT THE
-  // CURRENT END (`durable-source.ts:155-156`). So an absent cursor makes every unread record
+  // CURRENT END (`DurableSource.read`). So an absent cursor makes every unread record
   // vanish, transition 4 durably commits the new end, and nothing is left to notice it: no frame
   // published, and therefore no gap in the consumer's `seq` either.
   //

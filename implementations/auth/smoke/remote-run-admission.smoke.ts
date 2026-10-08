@@ -26,7 +26,7 @@ const outcome = (p: Promise<unknown>) => p.then(() => "admitted", (e: Error) => 
 
 const SPACE = "admit";
 const OWNER = "local";
-const ACCOUNT = "AACCOUNT";
+const ACCOUNT = `A${"A".repeat(55)}`;
 const SECRET = "suite-proof-secret";
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -137,7 +137,7 @@ try {
   // Registration mismatches refuse before any write.
   const reg = runId();
   const run = { runId: reg, subject: subjectFor(alice) };
-  const acct = await outcome(admit(run, { accountPublicKey: "AOTHER" }));
+  const acct = await outcome(admit(run, { accountPublicKey: `A${"B".repeat(55)}` }));
   const epoch = await outcome(admit(run, { processEpoch: 2 }));
   const noGate = await outcome(admit(run, {}, null));
   const foreignOwner = await outcome(admit(run, {}, { principal: `other.${remoteManagerActors(instanceId).serve}` }));

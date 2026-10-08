@@ -1310,7 +1310,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   const base = commitPrincipalGrants(space, endpoint, connId);
   const e = endpointToken(endpoint);
   const bindLeaf = `${spacePrefix(space)}.epf.${e}.goal.*.*.*.*.bind`;
-  // must-5 Q-B — the reconcile index: the goal-writer records each accepted goal under
+  // The reconcile index: the goal-writer records each accepted goal under
   // `goalidx.<e>.<caller triple>.<goalId>` (create-only) before the bind and deletes it at the
   // terminal, so a successor incarnation can settle orphaned goals. Key-pinned to THIS endpoint's
   // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
@@ -1323,13 +1323,13 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // overlay inherits them. They were duplicated here while the commit builder listed only three of
   // the six, which made the overlay look like their source — a grant the SPEC gives every commit
   // principal reading as a privilege of this one profile.
-  // must-5 (a) — the own-gate currency belt: the manager reads its OWN issuance gate
+  // The own-gate currency belt: the manager reads its OWN issuance gate
   // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
   // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
   // leader `STREAM.MSG.GET` that cannot be key-pinned to the single gate key — the SAME residual
   // class the `endpoint-serve-executor` carries (reads any auth-bucket row = gate + ledger
   // metadata, never bearer bytes), here on a standing rather than one-shot connection. The manager
-  // reads ONLY `epgate.<e>.<iid>`; (a) is the fast-fail belt, (b) barrier-revoke is the durable fence.
+  // reads ONLY `epgate.<e>.<iid>`. This read is the fast-fail belt; the barrier revoke is the durable fence.
   const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
   return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
 }

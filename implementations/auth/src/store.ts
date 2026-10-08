@@ -13,7 +13,8 @@
  *    RE-KEYS EVERY OWNER in the space (same human → different `u_…`), which is a migration, never an
  *    accident — hence load-or-create with no overwrite path.
  *
- * These SECRET kinds (plus `service-keys.json`, the daemon's key projection) read and write through
+ * These SECRET kinds (plus `service-keys.json`, the daemon's key projection, and a hosted plane's
+ * `instance.json`) read and write through
  * the {@link SecretStore} seam — the caller composes the store (locally the workspace's
  * `.cotal`-rooted filesystem store, so keys land byte-for-byte on today's paths; a hosted
  * composition injects KMS/Vault) and nothing here discovers one ambiently. The store's atomic
@@ -30,7 +31,7 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { mkSecretDir, writeSecretFileAtomic, type SecretStore } from "@cotal-ai/core";
-import { spaceSegment } from "@cotal-ai/workspace";
+import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
 import {
@@ -59,6 +60,8 @@ export const authCalloutKey = (space: string): string => `auth/${spaceSegment(sp
 export const authIssuerKey = (space: string): string => `auth/${spaceSegment(space)}/issuer.json`;
 export const authOwnerSecretKey = (space: string): string => `auth/${spaceSegment(space)}/owner-secret.json`;
 export const authServiceKeysKey = (space: string): string => `auth/${spaceSegment(space)}/service-keys.json`;
+/** A hosted plane's instance identity. A CLI root keeps its own as a file of the root instead. */
+export const authInstanceKey = (space: string): string => `auth/${spaceSegment(space)}/instance.json`;
 
 /** The pinned `iss` for a space's Cotal user bearers — a stable URN, deliberately NOT the auth
  *  service's URL (the service port is ephemeral; an issuer pin must never change across restarts).
@@ -203,6 +206,38 @@ export async function ensureOwnerSecret(store: SecretStore, space: string): Prom
     JSON.stringify({ ver: STORE_VER, secretB64: Buffer.from(secret).toString("base64") } satisfies OwnerSecretFile, null, 2),
   );
   return new Uint8Array(secret);
+}
+
+// ---- the hosted auth plane's instance identity ----
+
+interface AuthInstanceFile extends AuthInstanceIdentity {
+  ver: number;
+}
+
+async function loadAuthInstance(store: SecretStore, space: string): Promise<AuthInstanceIdentity | undefined> {
+  const key = authInstanceKey(space);
+  const f = await readStoreValue<AuthInstanceFile>(store, key, "auth instance identity");
+  if (!f) return undefined;
+  const serveIdentity = identityOf(f.serveIdentity);
+  if (typeof f.instanceId !== "string" || !f.instanceId || !serveIdentity)
+    throw new Error(`${key}: malformed auth instance identity - restore it from backup; a new one registers a fresh instance that never fences this one`);
+  return { instanceId: f.instanceId, serveIdentity };
+}
+
+/** A hosted plane's instance identity (SPEC 13.6). Its serve seed is a private key, so it lives in
+ *  the injected store, never in the state dir the hosted contract calls non-secret. A record an
+ *  earlier release kept under `stateDir` moves into the store, removed only after the put, so an
+ *  upgraded context restarts as the same instance. A store and state dir that hold different
+ *  identities refuse: keeping either orphans the other's registration. */
+export async function claimAuthInstanceIdentity(store: SecretStore, space: string, stateDir: string, mint: () => AuthInstanceIdentity): Promise<AuthInstanceIdentity> {
+  const stored = await loadAuthInstance(store, space);
+  const earlier = loadAuthInstanceIdentity(stateDir, space);
+  if (stored && earlier && (stored.instanceId !== earlier.instanceId || stored.serveIdentity.seed !== earlier.serveIdentity.seed))
+    throw new Error(`${authInstanceKey(space)} and the record under ${stateDir} hold different auth instance identities for space "${space}" - refusing to guess which is this context's. Remove the one that did not come from this context, then retry.`);
+  const identity = stored ?? earlier ?? mint();
+  if (!stored) await store.put(authInstanceKey(space), JSON.stringify({ ver: STORE_VER, ...identity } satisfies AuthInstanceFile, null, 2));
+  if (earlier) removeAuthInstanceIdentity(stateDir, space);
+  return identity;
 }
 
 // ---- the pinned external IdP ----

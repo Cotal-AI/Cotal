@@ -1,6 +1,5 @@
 // S7Command — "one command to get started." A terminal window types the README
 // quickstart `npx cotal-ai setup --full`, then a ✓ confirmation line settles.
-// 135 frames @ 30fps.
 
 import React from "react";
 import {
@@ -16,7 +15,7 @@ import {
   useCurrentFrame,
 } from "../header/shared";
 
-const DURATION = 135;
+export const COMMAND_DURATION = 135;
 const CMD = "npx cotal-ai setup --full";
 
 export const S7Command: React.FC = () => {
@@ -33,7 +32,7 @@ export const S7Command: React.FC = () => {
 
   return (
     <CreamStage>
-      <AbsoluteFill style={{ opacity: loopEnvelope(frame, DURATION), justifyContent: "center", alignItems: "center" }}>
+      <AbsoluteFill style={{ opacity: loopEnvelope(frame, COMMAND_DURATION), justifyContent: "center", alignItems: "center" }}>
         <Subtitle place="top" text="One command to get started." />
 
         <div

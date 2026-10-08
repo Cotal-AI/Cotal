@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, type Cell, type Dot } from "../_shared";
+import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, WM_WIDTH, type Cell, type Dot } from "../_shared";
 import { Grid, Tagline } from "../components";
 
 // Educational: the three delivery modes side by side, the active one lit.
@@ -46,7 +46,7 @@ const RAW: string[] = Array.from({ length: 7 }, (_, r) =>
   ),
 );
 // wordmark below the panels at rows 8..13
-const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 8, (W - 42) >> 1);
+const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 8, (W - WM_WIDTH) >> 1);
 
 // Vertical drop on a given absolute column (rows 2→3 of a panel).
 const drop = (col: number): Cell[] => [

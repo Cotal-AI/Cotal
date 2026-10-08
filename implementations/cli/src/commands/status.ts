@@ -144,14 +144,14 @@ async function printMachine(selected: Selected): Promise<void> {
   row("Web process", webProcessRow(selected, webExt));
 }
 
-/** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` is named on
- *  the row, like the folder's process rows, so the rest of status still prints. */
+/** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` or
+ *  `web.session` is named on the row, like the folder's process rows, so the rest of status still prints. */
 function webProcessRow(selected: Selected, installed: boolean): string {
   let url: string | undefined;
   try {
     url = selected.ok ? recordedWebUrl({ root: selected.target.root, space: selected.target.space }) : undefined;
   } catch (e) {
-    return c.red(`pidfile unreadable · ${(e as Error).message}`);
+    return c.red((e as Error).message);
   }
   return url ? c.green(url) : c.dim(installed ? "down" : "not installed");
 }
@@ -343,13 +343,13 @@ async function printProject(root: string, cmd: string, selected: Selected, value
   printPersonas(root, cmd, selected, values);
   let nats: Proc | undefined;
   for (const component of localProcessSurface().filter((component) => localProcessVisible(component, context)).sort((a, b) => (a.order ?? 50) - (b.order ?? 50))) {
-    const pidPath = localProcessPath(component.pidFile, context);
     let state: Proc;
     try {
-      state = proc(pidPath);
+      state = proc(localProcessPath(component.pidFile, context));
     } catch (e) {
-      // `pidfileState` throws on a record it cannot read so `clean` and `down` refuse to act on it.
-      // Status is the recovery command: name the failed read on this row and report the rest.
+      // `localProcessPath` throws on an ambiguous record and `pidfileState` on one it cannot read, so
+      // `clean` and `down` refuse to act on either. Status is the recovery command: name the failed
+      // read on this row and report the rest.
       row(component.name, c.red(`pidfile unreadable · ${(e as Error).message}`));
       continue;
     }
@@ -785,13 +785,14 @@ function componentExit(components: readonly ComponentHealth[]): number {
   return Math.max(...components.map((component) => COMPONENT_EXIT[component.verdict]));
 }
 
-function processRecord(path: string): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
+function processRecord(template: string, context: LocalProcessContext): { kind: "absent" } | { kind: "unreadable"; error: string } | { kind: "dead"; pid: number } | { kind: "unattributable"; raw: string } | { kind: "live"; pid: number } | { kind: "unknown"; pid: number } {
   let raw: string;
   try {
-    raw = readFileSync(path, "utf8").trim();
+    raw = readFileSync(localProcessPath(template, context), "utf8").trim();
   } catch (e) {
     // A component removes its own record on exit, so the file can be gone by the time it is read:
-    // that is absence. Any other failed read refuses this component's row, never the whole pass.
+    // that is absence. An ambiguous record or any other failed read refuses this component's row,
+    // never the whole pass.
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { kind: "absent" };
     return { kind: "unreadable", error: (e as Error).message };
   }
@@ -962,7 +963,7 @@ async function managerServiceHealth(
 }
 
 async function managerHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath(MANAGER_PIDFILE, context));
+  const record = processRecord(MANAGER_PIDFILE, context);
   const facts = pidFacts(record);
   // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
   // permission to replace it with a network answer.  Name that failed local control surface first.
@@ -1052,7 +1053,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
  * adoption report is the renewal record it writes through the manager-owned renewal pass.  The
  * latter is intentionally not inferred from credential mtime or process output. */
 async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, credential: ComponentCredential): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath(DELIVERY_PIDFILE, context));
+  const record = processRecord(DELIVERY_PIDFILE, context);
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   // The renewal record is PER-SPACE (#1850): read THIS space's record through the workspace seam
@@ -1125,7 +1126,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
 /** The web dashboard owns the HTTP listener and identifies itself through `/api/meta`, including
  * the serving PID.  A raw TCP success is insufficient: another program could own its port. */
 async function webHealth(context: LocalProcessContext): Promise<ComponentHealth> {
-  const record = processRecord(localProcessPath("web.pid", context));
+  const record = processRecord("web.pid", context);
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   if (stopped) {
@@ -1139,7 +1140,12 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
   // control surface cannot be located, which is a probe refusal rather than a not-serving answer.
   if (record.kind !== "live") throw new Error("web component record lost its live pid after classification");
   const pid = record.pid;
-  const bound = webBoundAddress(localProcessPath(WEB_SESSION_FILE, context));
+  let bound: ReturnType<typeof webBoundAddress>;
+  try {
+    bound = webBoundAddress(localProcessPath(WEB_SESSION_FILE, context));
+  } catch (e) {
+    return { name: "web", verdict: "refused", facts: [...facts, `${WEB_SESSION_FILE} unreadable: ${(e as Error).message}`] };
+  }
   if (!bound) return { name: "web", verdict: "refused", facts: [...facts, "probe refused (no bound address recorded)"] };
   try {
     // The dashboard refuses an anonymous `/api/meta`; the readiness nonce is the one credential its

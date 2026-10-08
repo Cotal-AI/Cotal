@@ -494,6 +494,12 @@ export function createAuthInstanceIdentity(root: string, space: string, candidat
   return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, () => candidate);
 }
 
+/** Remove this root's auth-plane instance record for `space`. A hosted context calls it once its
+ *  injected store holds the record, so the serve seed no longer sits in its state dir. */
+export function removeAuthInstanceIdentity(root: string, space: string): void {
+  rmSync(authInstanceFile(root, space), { force: true });
+}
+
 /** The outcome of {@link retireManagerInstanceIdentity}. `removed` means this call deleted the
  *  record that matched `expected`. `absent` means no record exists for the space: a retry after an
  *  earlier `removed`, or a record that was never created. It never reports that this call deleted
@@ -661,9 +667,8 @@ export function loadSeatWriterGeneration(root: string, space: string, name: stri
   for (const entry of readdirSync(dir)) {
     if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue;
     const f = join(dir, entry);
-    let parsed: SeatWriterGeneration;
-    try { parsed = JSON.parse(readFileSync(f, "utf8")) as SeatWriterGeneration; }
-    catch (e) { throw new Error(`the persisted seat writer generation at ${f} does not parse (${(e as Error).message}); refusing to mint a fresh generation over it - that is how a stale host becomes authoritative again`); }
+    const parsed = readAuthRecord<SeatWriterGeneration>(f, "a seat writer generation");
+    if (parsed === undefined) continue;
     if (parsed === null || typeof parsed !== "object"
       || parsed.space !== space || parsed.name !== name
       || typeof parsed.lifecycleUid !== "string" || parsed.lifecycleUid.length === 0

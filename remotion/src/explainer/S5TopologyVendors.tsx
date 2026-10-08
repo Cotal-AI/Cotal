@@ -26,7 +26,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 240;
+export const TOPOLOGY_VENDORS_DURATION = 240;
 
 // vendor symbol per node. Two presets: the default duplicates Claude Code for
 // the 4th node; the Codex preset uses OpenAI Codex as a distinct 4th vendor.
@@ -198,7 +198,7 @@ const TopologyVendorsBase: React.FC<{ logos: string[] }> = ({ logos }) => {
   const cap3 = fade(frame, 128, 144) * (1 - fade(frame, 168, 184));
   const cap4 = fade(frame, 187, 203);
 
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, TOPOLOGY_VENDORS_DURATION);
 
   return (
     <CreamStage>

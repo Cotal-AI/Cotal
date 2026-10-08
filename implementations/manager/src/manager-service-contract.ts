@@ -35,7 +35,7 @@
  *                    run-status / run-ps ride manager.read
  */
 import {
-  compileContract,
+  serviceContractTable,
   singleDocumentClosure,
   VOID_SCHEMA,
   type CompiledContract,
@@ -916,55 +916,24 @@ const ROWS: CommandRow[] = [
 // registration, or a caller hand-importing `MANAGER_CONTRACTS` — compiles then. A compile failure
 // that import used to surface at module load now surfaces at that first read, as the same
 // ContractInvalidError from the same compileContract; nothing is swallowed or retried.
-type ContractPair = { input: CompiledContract; output: CompiledContract };
-
-const COMPILED = new Map<string, ContractPair>();
-
-function pairFor(name: string): ContractPair {
-  let pair = COMPILED.get(name);
-  if (!pair) {
-    const r = ROWS.find((row) => row.name === name);
-    if (!r) throw new Error(`unknown manager command contract "${name}"`);
-    pair = { input: compileContract({ root: r.input as Record<string, unknown> }), output: compileContract({ root: r.output as Record<string, unknown> }) };
-    COMPILED.set(name, pair);
-  }
-  return pair;
-}
+const TABLE = serviceContractTable(ROWS);
 
 /** Per-command compiled contract pairs, exported for CALLERS (`epCall` pins the same digests the
  *  cluster document registers; the generic invoke CLI compiles these from the STORE instead).
  *  LAZY: a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
-export const MANAGER_CONTRACTS: Readonly<Record<string, { input: CompiledContract; output: CompiledContract }>> =
-  new Proxy({} as Record<string, ContractPair>, {
-    has: (_, name: string) => ROWS.some((r) => r.name === name),
-    ownKeys: () => ROWS.map((r) => r.name) as Array<string | symbol>,
-    getOwnPropertyDescriptor: (_, name: string) => (ROWS.some((r) => r.name === name) ? { configurable: true, enumerable: true, get: () => pairFor(name) } : undefined),
-    get: (_, name: string | symbol) => (typeof name === "string" && ROWS.some((r) => r.name === name) ? pairFor(name) : undefined),
-  });
+export const MANAGER_CONTRACTS = TABLE.contracts;
 
 /** Every §13.7 contract artifact the manager PUBLISHES to the EPC store at registration (P2 item
  *  1, 1c): each DISTINCT schema root plus its single-member closure manifest — the two artifacts
  *  a caller fetches at a command's input/output CLOSURE digest (`fetchContractClosure` walks
  *  manifest → root) to recompile the digest-matching validators. The cluster document + ITS
  *  manifest ride separately ({@link managerClusterArtifacts}). */
-export function managerContractArtifactValues(): unknown[] {
-  const values: unknown[] = [];
-  const seen = new Set<string>();
-  for (const r of ROWS) {
-    for (const source of [r.input, r.output]) {
-      const { manifest } = singleDocumentClosure(source);
-      if (seen.has(manifest.root)) continue;
-      seen.add(manifest.root);
-      values.push(source, manifest);
-    }
-  }
-  return values;
-}
+export const managerContractArtifactValues = TABLE.artifactValues;
 
 /** The 1a `status` pair, kept as a named export (existing callers/smokes). */
 export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } =
   new Proxy({} as { input: CompiledContract; output: CompiledContract }, {
-    get: (_, key: string | symbol) => pairFor("status")[key as "input" | "output"],
+    get: (_, key: string | symbol) => MANAGER_CONTRACTS.status[key as "input" | "output"],
   });
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
@@ -1161,12 +1130,11 @@ export interface ManagerServiceHandlers {
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes: each command's provenance-branded compiled
  *  contracts (matching the document's pinned digests exactly) plus its handler. */
 export function managerCommandDefs(handlers: ManagerServiceHandlers): EpCommandDef[] {
-  // First use MATERIALIZES the compiled pairs (the Proxy compiles lazily; a compile failure
-  // surfaces here, at registration, exactly where serve would need the validators).
-  for (const r of ROWS) pairFor(r.name);
+  // Reading a pair compiles it (the table is lazy), so a compile failure surfaces here, at
+  // registration, where serve needs the validators.
   return ROWS.map((r) => ({
     command: r.name,
-    contract: pairFor(r.name),
+    contract: MANAGER_CONTRACTS[r.name],
     handler: (ctx: EpServeContext) => handlers[r.handler](ctx),
   }));
 }

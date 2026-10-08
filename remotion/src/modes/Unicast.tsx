@@ -25,9 +25,11 @@ import {
   type Pt,
 } from "./scene";
 
-// bob (top) is the addressee, carol/dave below are present but unaddressed. The
-// inbox sits on the alice -> bob route.
-const [BOB, CAROL, DAVE] = MODE_PEERS;
+// bob is the addressee, picked by name so reordering the shared cast cannot move
+// the delivery to another peer; the others are present but unaddressed. The inbox
+// sits on the alice -> bob route.
+const BOB = MODE_PEERS.find((p) => p.name === "bob");
+if (!BOB) throw new Error("the unicast card's addressee bob is not in MODE_PEERS");
 const INBOX: Pt = { x: 400, y: 325 };
 
 const SEG1: [Pt, Pt] = [
@@ -83,8 +85,9 @@ export const ModeUnicast: React.FC = () => {
 
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
       <AgentNode {...BOB} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
-      <AgentNode {...CAROL} type={CARD_TYPE} />
-      <AgentNode {...DAVE} type={CARD_TYPE} />
+      {MODE_PEERS.filter((p) => p !== BOB).map((p) => (
+        <AgentNode key={p.name} {...p} type={CARD_TYPE} />
+      ))}
 
       {/* durable inbox: a rounded slot matching the node language; gold while it holds */}
       <div
@@ -126,7 +129,7 @@ export const ModeUnicast: React.FC = () => {
         </>
       )}
 
-      <Labels mode="unicast" caption="deliver to one, durably" subject="cotal.demo.inst.bob" type={CARD_TYPE} />
+      <Labels mode="unicast" caption="deliver to one, durably" subject={`cotal.demo.inst.${BOB.name}`} type={CARD_TYPE} />
     </Card>
   );
 };
