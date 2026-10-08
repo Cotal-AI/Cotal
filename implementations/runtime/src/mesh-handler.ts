@@ -118,7 +118,7 @@ import {
   stepKeyString,
 } from "@cotal-ai/lang";
 
-import type { RunPauseHost } from "./run-pause-host.js";
+import { PauseOverdue, type RunPauseHost } from "./run-pause-host.js";
 import type { RunWaitHost } from "./run-wait-host.js";
 import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
@@ -1812,17 +1812,23 @@ export class MeshHandler {
       // re-entry finds the relay already accepted and submits nothing.
       await this.relayAsk(seat, ctx, token, { attempt, attempts, deadlineAt, ...(refused !== undefined ? { refused } : {}) });
       const ref: CheckpointRef = { endpoint: this.binding.endpoint, token };
-      await this.arm(ref, deadlineAt);
-      const settled = await this.settle(ref, ctx.signal, true);
-      if (settled.settle === "expired") {
-        // The deadline is the ask's whole budget of time: passing it with no conforming record
-        // is the same outcome exhausted attempts name (L4006), never a turn's deadline (L4003).
-        throw new EffectError(
-          "L4006",
-          "ask-deadline",
-          `ask(${stepKeyString(ctx.key)}) produced no conforming record before its recorded deadline: attempt ${attempt} of ${attempts} was still open when it passed`,
-        );
+      // The deadline is the ask's whole budget of time: passing it with no conforming record
+      // is the same outcome exhausted attempts name (L4006), never a turn's deadline (L4003),
+      // and that holds when it passed while the attempt was bound and relayed, before its pause
+      // could be minted.
+      const expired = () => new EffectError(
+        "L4006",
+        "ask-deadline",
+        `ask(${stepKeyString(ctx.key)}) produced no conforming record before its recorded deadline: attempt ${attempt} of ${attempts} was still open when it passed`,
+      );
+      try {
+        await this.arm(ref, deadlineAt);
+      } catch (e) {
+        if (e instanceof PauseOverdue) throw expired();
+        throw e;
       }
+      const settled = await this.settle(ref, ctx.signal, true);
+      if (settled.settle === "expired") throw expired();
       const answer = settled.answerId === undefined
         ? undefined
         : this.services ? await this.services.pauses.readAnswer(token) : await readCheckpointAnswer(this.kv, this.binding.endpoint, token, settled.answerId);
@@ -1942,7 +1948,8 @@ export class MeshHandler {
    * duration counted from the manager's acceptance would outlive the pause by the submit's trip
    * plus skew and show the seat an attempt whose answer is refused. A relay the manager refuses as
    * already past, and that is past on this clock too, has nobody left to tell, because the pause
-   * denies at that same instant and its own expiry is the outcome.
+   * denies at that same instant; the arm that follows meets the passed deadline and decides the
+   * outcome.
    */
   private async relayToSeat(
     seat: SeatAddress,
@@ -2317,6 +2324,7 @@ export class MeshHandler {
    * An already-passed deadline cannot be minted at all, correctly, because a due pause is not being
    * armed. It needs its schedule re-emitted at the status's current generation, which is the
    * reconciler's job — the same operation an attaching successor needs, so the two share the exit.
+   * A first arm whose deadline has passed has nothing to attach to and raises `PauseOverdue`.
    * A spec with no status that this holder cannot complete is unrepairable from here, so it is
    * raised rather than waited on.
    */
@@ -2336,6 +2344,7 @@ export class MeshHandler {
     if (prior === undefined) {
       // The first arm: this driver's own mint, under its own holder, at the deadline the caller
       // computed from the duration it was just handed.
+      if (deadline <= now) throw new PauseOverdue(ref.token, deadline, now);
       await mintCheckpoint(this.kv, this.js, this.binding.space, {
         ref,
         instanceId: this.binding.instanceId,

@@ -432,7 +432,8 @@ the seat nothing twice, and a seat gone at the relay is L4002. On the pause itse
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
 non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
 answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
-absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
+absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`),
+including one that passes before an attempt's pause is armed.
 `checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
 asked reading the source to find out what "approve" meant. The entry also records its deadline and
