@@ -499,17 +499,25 @@ export interface RemoteManagerEnvelope {
 
 /** Closed parser for the envelope of a request from a registered manager. `what` names the request
  *  in every refusal, so each request keeps its own prefix. The epoch differs per request
- *  (`serveEpoch` or `processEpoch`), so each caller checks its own. */
-export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string): RemoteManagerEnvelope {
+ *  (`serveEpoch` or `processEpoch`), so each caller checks its own. `registrationProof` is false for
+ *  a request that must carry none, such as manager-service `prepare`. */
+export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string): RemoteManagerEnvelope;
+export function parseRemoteManagerEnvelope(
+  o: Record<string, unknown>, kind: string, what: string, registrationProof: boolean,
+): Omit<RemoteManagerEnvelope, "registrationProof"> & { registrationProof?: string };
+export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: string, what: string, registrationProof = true) {
   if (o.v !== 1 || o.kind !== kind) enrollmentError(what, `must carry { v: 1, kind: ${JSON.stringify(kind)} }`);
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof"] as const)
+  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId"] as const)
     if (typeof o[key] !== "string" || (o[key] as string).length === 0) enrollmentError(what, `requires non-empty ${key}`);
   assertValidOwnerToken(o.actor as string);
   assertLifecycleToken(o.instanceId as string, `${what} instanceId`);
   assertLifecycleToken(o.managerLifecycleUid as string, `${what} lifecycleUid`);
   if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string))
     enrollmentError(what, "requestId must be a 22-64 character idempotency token");
-  if (!/^sha256:[0-9a-f]{64}$/.test(o.registrationProof as string)) enrollmentError(what, "requires a sha256 registrationProof");
+  if (registrationProof) {
+    if (typeof o.registrationProof !== "string" || !/^sha256:[0-9a-f]{64}$/.test(o.registrationProof))
+      enrollmentError(what, "requires a sha256 registrationProof");
+  } else if (o.registrationProof !== undefined) enrollmentError(what, "must not carry registrationProof");
   const identities = parseRemoteManagerIdentities(o.identities, (detail) => enrollmentError(what, detail));
   return {
     space: o.space as string,
@@ -517,7 +525,7 @@ export function parseRemoteManagerEnvelope(o: Record<string, unknown>, kind: str
     instanceId: o.instanceId as string,
     managerLifecycleUid: o.managerLifecycleUid as string,
     requestId: o.requestId as string,
-    registrationProof: o.registrationProof as string,
+    ...(registrationProof ? { registrationProof: o.registrationProof as string } : {}),
     identities,
   };
 }

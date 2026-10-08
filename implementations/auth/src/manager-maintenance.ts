@@ -2,11 +2,10 @@ import {
   EVICT_PRINCIPALS_MAX,
   EpEnvelopeError,
   assertLifecycleToken,
-  assertValidOwnerToken,
   epcredFamilyPrefix,
   parseLedgerRow,
+  parseRemoteManagerEnvelope,
   remoteManagerActors,
-  parseRemoteManagerIdentities,
   type RemoteManagerMaintenanceRequest,
   type RemoteManagerMaintenanceResult,
 } from "@cotal-ai/core";
@@ -26,35 +25,23 @@ export function parseRemoteManagerMaintenanceRequest(raw: unknown): RemoteManage
     "requestId", "identities", "targetInstanceId", "principals",
   ]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.v !== 1 || o.kind !== "manager-service-maintenance")
-    requestError('must carry { v: 1, kind: "manager-service-maintenance" }');
   if (o.operation !== "evict-family-principal" && o.operation !== "reconcile-registration")
     requestError('operation must be "evict-family-principal" or "reconcile-registration"');
-  for (const key of ["space", "actor", "instanceId", "managerLifecycleUid", "requestId", "targetInstanceId"] as const)
-    if (typeof o[key] !== "string" || o[key].length === 0) requestError(`requires non-empty ${key}`);
-  assertValidOwnerToken(o.actor as string);
-  assertLifecycleToken(o.instanceId as string, "manager maintenance instanceId");
-  assertLifecycleToken(o.managerLifecycleUid as string, "manager maintenance lifecycleUid");
-  assertLifecycleToken(o.targetInstanceId as string, "manager maintenance targetInstanceId");
-  if (!/^[A-Za-z0-9_-]{22,64}$/.test(o.requestId as string)) requestError("requestId must be a 22-64 character idempotency token");
+  const envelope = parseRemoteManagerEnvelope(o, "manager-service-maintenance", "manager-service maintenance", false);
+  if (typeof o.targetInstanceId !== "string" || o.targetInstanceId.length === 0) requestError("requires non-empty targetInstanceId");
+  assertLifecycleToken(o.targetInstanceId, "manager-service maintenance targetInstanceId");
   if (o.operation === "evict-family-principal") {
     const p = o.principals;
     if (!Array.isArray(p) || p.length === 0 || p.length > EVICT_PRINCIPALS_MAX ||
         p.some((x) => typeof x !== "string" || x.length === 0) || new Set(p).size !== p.length)
       requestError(`evict-family-principal requires 1 to ${EVICT_PRINCIPALS_MAX} distinct non-empty principals`);
   } else if (o.principals !== undefined) requestError("reconcile-registration must not carry principals");
-  const identities = parseRemoteManagerIdentities(o.identities, requestError);
   return {
     v: 1,
     kind: "manager-service-maintenance",
     operation: o.operation,
-    space: o.space as string,
-    actor: o.actor as string,
-    instanceId: o.instanceId as string,
-    managerLifecycleUid: o.managerLifecycleUid as string,
-    requestId: o.requestId as string,
-    identities,
-    targetInstanceId: o.targetInstanceId as string,
+    ...envelope,
+    targetInstanceId: o.targetInstanceId,
     ...(Array.isArray(o.principals) ? { principals: [...(o.principals as string[])] } : {}),
   };
 }
