@@ -122,7 +122,7 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
   return {
     // No gate => null, and the core mint refuses a null observe (fails closed). The state carries
     // the registered serving principal, so the core mint fence binds the minted owner.actor to it
-    // (§13.1:1056-1069: a sibling actor cannot win the gate).
+    // (§13.1: a sibling actor cannot win the gate).
     observe: () => endpointGateState(kv, space, endpoint, instanceId),
     stage: async (row: EpServeLedgerRow) => {
       // The staged row must BE this gate's instance — a foreign endpoint/instance row through this

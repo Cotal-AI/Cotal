@@ -252,9 +252,9 @@ export class MeshHandler {
   private managerService: Promise<ResolvedService> | undefined;
   private manager(instanceId?: string): Promise<ResolvedService> {
     // #1616 ITEM 3 — PINNED DISPATCH. An explicit placement target resolves through the EXISTING
-    // instance-dispatch API: `resolveService`'s `instanceId` opt (endpoint-invoke.ts:274-280)
-    // becomes `EpRoute { mode: "inst", instanceId }` at :113, and the handle it returns carries
-    // `pinnedInstanceId` (:315) so `invokeCommand` addresses that instance and never the class
+    // instance-dispatch API: `resolveService`'s `instanceId` opt becomes
+    // `EpRoute { mode: "inst", instanceId }`, and the handle it returns carries
+    // `pinnedInstanceId` so `invokeCommand` addresses that instance and never the class
     // queue. It is deliberately NOT served from `managerService`: that memo holds the class-anycast
     // resolution, and handing a pinned caller the anycast handle would reinstate the exact fallback
     // this item removes. A wrong, unavailable or replaced instance therefore fails to resolve —
@@ -314,7 +314,7 @@ export class MeshHandler {
       });
     } catch (err) {
       // An older manager does not list `resolve-cwd`, and `invokeCommand` refuses an unlisted
-      // command with `not-found` before it publishes anything (endpoint-invoke.ts:349-350). That is
+      // command with `not-found` before it publishes anything. That is
       // the fail-CLOSED direction and it stays closed: a host that cannot answer the question does
       // not get handed the caller's guess.
       throw cwdResolutionRefusal(req.persona, instanceId, cwd,
@@ -1385,7 +1385,7 @@ export class MeshHandler {
         try {
           const service = await this.manager(req.placement?.instanceId);
           if (req.cwd !== undefined && resolution === undefined) {
-            // `req.placement` is guaranteed here: a cwd without one refused above, at :1203.
+            // `req.placement` is guaranteed here: a cwd without one refused at the affinity gate above.
             resolution = await this.resolveCwd(req, service, req.cwd, req.placement?.instanceId ?? "");
             // PERSIST BEFORE SUBMITTING. The resolution is what phase B dispatches and what a
             // resume re-reads; binding it after the submission would leave a crash in between with
