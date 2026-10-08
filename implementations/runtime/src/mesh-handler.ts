@@ -882,7 +882,12 @@ export class MeshHandler {
     // entry on every re-entry, exactly as `ask` does. Recomputing `now + timeout` on a resume
     // handed the relay an instant the pause did not have: `arm` attaches to the recorded spec and
     // keeps ITS deadline, so the seat's hold and the checkpoint plane denied at different times.
-    const recorded = ctx.resume?.deadlineAt;
+    // The binding is this attempt's only if this attempt wrote it: an escalation reissues the entry
+    // with attempt 0's binding still on it, and read as attempt 1's it handed the hop a deadline
+    // that had already passed and skipped the hop's own bind. A binding with no index predates the
+    // index and is attempt 0's, as an entry with no `attempt` is.
+    const bound = (ctx.resume?.attempt ?? 0) === ctx.attempt ? ctx.resume : undefined;
+    const recorded = bound?.deadlineAt;
     const deadline = typeof recorded === "number"
       ? recorded
       : this.now() + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);
@@ -891,8 +896,8 @@ export class MeshHandler {
     // pending entry that says what it was going to ask, which is the harmless direction.
     // `onExpiry` rides beside them for the operator view, as this attempt was armed (`fail` when the
     // program sets none). What an expiry does is still decided from the source, never read from here.
-    if (ctx.resume?.asks === undefined)
-      await ctx.bind({ asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? "fail", ...(req.to !== undefined ? { addressee: req.to } : {}) });
+    if (bound?.asks === undefined)
+      await ctx.bind({ attempt: ctx.attempt, asks: req.prompt, deadlineAt: deadline, onExpiry: req.onExpiry ?? "fail", ...(req.to !== undefined ? { addressee: req.to } : {}) });
 
     // AN ESCALATION IS ADDRESSED, so where the addressee is an agent of this run it is TOLD.
     // Attempt 0 has no addressee (the reference allows `to` only with `onExpiry: "escalate"`,
