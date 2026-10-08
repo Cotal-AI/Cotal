@@ -11,6 +11,7 @@
  */
 
 import type { LangErrorCode } from "./errors.js";
+import { deepFreeze } from "./values.js";
 
 /** Node types the interpreter executes. A validated program is made of these and nothing else. */
 export const ADMITTED_NODES: ReadonlySet<string> = new Set([
@@ -71,7 +72,7 @@ export const STRUCTURAL_NODES: ReadonlySet<string> = new Set([
 /** Node types rejected outright, with the code and the repair to suggest. */
 export const FORBIDDEN_NODES: Readonly<
   Record<string, { readonly code: LangErrorCode; readonly cause: string; readonly fix: string }>
-> = Object.freeze({
+> = deepFreeze({
   ClassDeclaration: {
     code: "L1001",
     cause: "There are no classes in this language. State lives in records and behaviour lives in functions.",

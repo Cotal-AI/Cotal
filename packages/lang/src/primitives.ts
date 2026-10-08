@@ -8,6 +8,7 @@
  */
 
 import type { CalleeDoc } from "./errors.js";
+import { deepFreeze } from "./values.js";
 
 /** The journalled effect kinds. `channel` is pure and deliberately absent. */
 export const EFFECT_KINDS = [
@@ -90,7 +91,7 @@ export interface PrimitiveSpec extends CalleeDoc {
   readonly functionOptions?: readonly string[];
 }
 
-export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze({
+export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = deepFreeze({
   spawn: {
     kind: "spawn",
     nameRequired: false,
@@ -301,7 +302,7 @@ export const PRIMITIVES: Readonly<Record<string, PrimitiveSpec>> = Object.freeze
 });
 
 /** Event constructors. Pure: they build a descriptor and perform no effect. */
-export const EVENT_CONSTRUCTORS: Readonly<Record<string, CalleeDoc>> = Object.freeze({
+export const EVENT_CONSTRUCTORS: Readonly<Record<string, CalleeDoc>> = deepFreeze({
   replied: {
     signature: "replied(agent) -> Event",
     doc: "The agent finished a reply.",
@@ -325,7 +326,7 @@ export const EVENT_CONSTRUCTORS: Readonly<Record<string, CalleeDoc>> = Object.fr
 });
 
 /** Pure primitives that write no journal entry. */
-export const PURE_PRIMITIVES: Readonly<Record<string, CalleeDoc>> = Object.freeze({
+export const PURE_PRIMITIVES: Readonly<Record<string, CalleeDoc>> = deepFreeze({
   channel: {
     signature: "channel(name) -> ChannelHandle",
     doc: "Name a channel. Pure: a name is a name, and membership is what costs something.",
