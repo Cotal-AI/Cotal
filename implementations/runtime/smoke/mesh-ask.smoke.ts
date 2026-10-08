@@ -143,10 +143,10 @@ const SPAWN_OUTPUT = {
   },
 } as const;
 const TURN_INPUT = {
-  type: "object", additionalProperties: false, required: ["payload", "deadlineMs"],
+  type: "object", additionalProperties: false, required: ["payload", "deadlineAt"],
   properties: {
     payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineMs: { type: "integer", minimum: 1 },
+    deadlineAt: { type: "integer", minimum: 1 },
     handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
   },
 } as const;
@@ -271,7 +271,7 @@ const spawnHandler = async (ctx: EpServeContext): Promise<unknown> => {
 };
 
 /** Every relay the endpoint was handed, as submitted: the ask's payload is what the seat reads. */
-const turnInvokes: Array<{ goalId: string; payload: string; deadlineMs: number; target: { owner: string; actor: string; lifecycleUid: string } }> = [];
+const turnInvokes: Array<{ goalId: string; payload: string; deadlineAt: number; target: { owner: string; actor: string; lifecycleUid: string } }> = [];
 const turnAccepts = new Map<string, Record<string, unknown>>();
 /** Cell knob: refuse the next relay at accept, the way the real manager refuses a gone seat. */
 let refuseNextTurn: EpEnvelopeError | undefined;
@@ -280,7 +280,7 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const args = (ctx.request.args ?? {}) as Record<string, unknown>;
   const goalId = ctx.request.id;
   const t = ctx.request.target as { owner: string; actor: string; lifecycleUid: string };
-  turnInvokes.push({ goalId, payload: String(args.payload), deadlineMs: Number(args.deadlineMs), target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid } });
+  turnInvokes.push({ goalId, payload: String(args.payload), deadlineAt: Number(args.deadlineAt), target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid } });
   const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
   const prior = turnAccepts.get(goalId);
   if (prior !== undefined) {
@@ -297,16 +297,17 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const ref = goalRefOf(ctx.subject, goalId);
   const b = await bindGoal(goalCtx, ref, fingerprint);
   if (!b.bound) throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound (SPEC 13.6)`);
-  const deadlineMs = Number(args.deadlineMs);
+  const deadlineAt = Number(args.deadlineAt);
+  const acceptedAt = Date.now();
   await createGoal(goalCtx, ref, {
     fingerprint, command: "turn",
     caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
-    acceptedEpoch: EXEC_EPOCH, requestId: goalId, sourceSeq: 0, acceptedAt: Date.now(), readinessDeadlineMs: deadlineMs,
+    acceptedEpoch: EXEC_EPOCH, requestId: goalId, sourceSeq: 0, acceptedAt, readinessDeadlineMs: deadlineAt - acceptedAt,
     target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid, mappingRevision: 1 },
   });
   const acceptance = {
     name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint,
-    deadlineAt: Date.now() + deadlineMs, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
+    deadlineAt, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
   };
   turnAccepts.set(goalId, acceptance);
   return acceptance;
@@ -843,10 +844,9 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
     .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
   for (let i = 0; i < 100 && turnInvokes.length === before5; i += 1) await wait(100);
   const relay5 = turnInvokes[before5];
-  const slack = relay5 === undefined ? undefined : Math.abs(relay5.deadlineMs - (recordedAt - Date.now()));
   c("a resumed escalation relays the RECORDED deadline, so the seat's hold and the pause deny at one instant",
-    relay5 !== undefined && slack !== undefined && slack < 15_000 && Object.keys(k5.bound).length === 0,
-    JSON.stringify({ deadlineMs: relay5?.deadlineMs, expected: recordedAt - Date.now(), rebound: k5.bound }));
+    relay5 !== undefined && relay5.deadlineAt === recordedAt && Object.keys(k5.bound).length === 0,
+    JSON.stringify({ deadlineAt: relay5?.deadlineAt, expected: recordedAt, rebound: k5.bound }));
   k5.cancel("the cell has what it came for");
   await withDeadline(parked5, 15_000, "the resumed escalation");
 

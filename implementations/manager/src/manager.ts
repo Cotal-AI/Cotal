@@ -8679,9 +8679,11 @@ export class Manager {
 
     const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
     const payload = String(raw.payload);
-    const deadlineMs = Number(raw.deadlineMs);
+    const deadlineAt = raw.deadlineAt === undefined ? acceptedAt + Number(raw.deadlineMs) : Number(raw.deadlineAt);
+    if (deadlineAt <= acceptedAt)
+      throw new EpEnvelopeError("deadline-exceeded", `goal "${goalId}" names a deadline already past (${new Date(deadlineAt).toISOString()}); a turn with no time left to serve it is never accepted (SPEC 13.6)`);
+    const deadlineMs = deadlineAt - acceptedAt;
     const handoffFrom = raw.handoffFrom === undefined ? undefined : String(raw.handoffFrom);
-    const deadlineAt = acceptedAt + deadlineMs;
     const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
 
     // A goal that already ENDED is never accepted again, whatever the retry carries: the bind is

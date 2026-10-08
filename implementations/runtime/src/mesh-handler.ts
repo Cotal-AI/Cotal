@@ -1937,6 +1937,12 @@ export class MeshHandler {
    * a relay that landed and lost its reply is a relay that landed, and re-submitting it would put
    * a second turn on the seat for one request. A seat the serve boundary reports gone is the
    * agent-down failure (L4002); every other refusal is this endpoint's and is uncatchable.
+   *
+   * The relay carries the pause's own `deadlineAt` and the manager holds it to that instant: a
+   * duration counted from the manager's acceptance would outlive the pause by the submit's trip
+   * plus skew and show the seat an attempt whose answer is refused. A relay the manager refuses as
+   * already past, and that is past on this clock too, has nobody left to tell, because the pause
+   * denies at that same instant and its own expiry is the outcome.
    */
   private async relayToSeat(
     seat: SeatAddress,
@@ -1953,7 +1959,7 @@ export class MeshHandler {
     let reply: EpAttributedReply;
     try {
       reply = await this.invokeManager(await this.manager(), "turn",
-        { payload, deadlineMs: Math.max(1_000, deadlineAt - this.now()) }, {
+        { payload, deadlineAt }, {
           id: goalId,
           deadlineMs: TURN_ACCEPT_DEADLINE_MS,
           target: { mode: "owner", owner: seat.owner, actor: seat.actor, lifecycleUid: uid },
@@ -1967,6 +1973,7 @@ export class MeshHandler {
       const err = reply.reply.error;
       if (err?.code === "expired")
         throw new EffectError("L4002", kind, `${kind}(${step}) found ${name}#${uid} down before its relay began: ${err.message}`);
+      if (err?.code === "deadline-exceeded" && this.now() >= deadlineAt) return;
       throw new Error(`${kind}(${step}) was refused by the ${this.binding.endpoint} endpoint: ${err?.message ?? "refused with no message"}`);
     }
   }
@@ -2006,12 +2013,10 @@ export class MeshHandler {
    * deadline passes, because the manager no longer serves it then, and a failure that outlasts it
    * is the step's error.
    *
-   * That deadline is the one the accepting manager recorded on the relay's goal, not the step's.
-   * An `ask` attempt or an escalation sends its relay a duration the manager counts from its own
-   * acceptance, so the relay outlives the pause by the submit's trip (#3044), and retries that
-   * stopped at the pause's deadline would let the scope settle while the seat can still pull it.
-   * No deadline is known until that goal is read, and the relay may be served until then, so a
-   * failed read is tried again as well. A goal record that can never yield a deadline is thrown.
+   * That deadline is read from the relay's goal, where the accepting manager recorded the instant
+   * it stops serving the relay; a withdrawal holds only the goal id. No deadline is known until that
+   * goal is read, and the relay may be served until then, so a failed read is tried again as well.
+   * A goal record that can never yield a deadline is thrown.
    */
   private async withdrawCancelledRelay(goalId: string): Promise<void> {
     let deadlineAt: number | undefined;

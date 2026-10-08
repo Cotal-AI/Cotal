@@ -163,10 +163,10 @@ const SPAWN_OUTPUT = {
   },
 } as const;
 const TURN_INPUT = {
-  type: "object", additionalProperties: false, required: ["payload", "deadlineMs"],
+  type: "object", additionalProperties: false, required: ["payload", "deadlineAt"],
   properties: {
     payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineMs: { type: "integer", minimum: 1 },
+    deadlineAt: { type: "integer", minimum: 1 },
     handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
   },
 } as const;
@@ -294,16 +294,17 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   const ref = goalRefOf(ctx.subject, goalId);
   if (!(await bindGoal(goalCtx, ref, fingerprint)).bound)
     throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound (SPEC 13.6)`);
-  const deadlineMs = Number(args.deadlineMs);
+  const deadlineAt = Number(args.deadlineAt);
+  const acceptedAt = Date.now();
   await createGoal(goalCtx, ref, {
     fingerprint, command: "turn",
     caller: { id: `${ctx.subject.caller.owner}.${ctx.subject.caller.actor}`, lifecycleUid: ctx.subject.caller.uid },
-    acceptedEpoch: EXEC_EPOCH, requestId: goalId, sourceSeq: 0, acceptedAt: Date.now(), readinessDeadlineMs: deadlineMs,
+    acceptedEpoch: EXEC_EPOCH, requestId: goalId, sourceSeq: 0, acceptedAt, readinessDeadlineMs: deadlineAt - acceptedAt,
     target: { owner: t.owner, actor: t.actor, lifecycleUid: t.lifecycleUid, mappingRevision: 1 },
   });
   const acceptance = {
     name: `${t.owner}.${t.actor}`, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint,
-    deadlineAt: Date.now() + deadlineMs, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
+    deadlineAt, executor: { lifecycleUid: MGR_IID, epoch: EXEC_EPOCH },
   };
   turnAccepts.set(goalId, acceptance);
   return acceptance;
