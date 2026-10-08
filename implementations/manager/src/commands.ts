@@ -313,6 +313,10 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
           requestRunAdmission: (request) => provider.requestRemoteRunAdmission!({ ...runCall, request }),
           requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...runCall, request }),
+          requestRunRevoke: async (request) => {
+            if (provider.requestRemoteRunRevoke === undefined) throw new Error(`the registered auth provider "${provider.name}" does not implement closed hosted-run revoke`);
+            return provider.requestRemoteRunRevoke({ ...runCall, request });
+          },
           call: (request) => provider.managerServiceAuthority!({ ...runCall, request }),
         }),
         serveGrant: registered.serveGrant,

@@ -130,6 +130,12 @@ export interface AuthProvider extends Extension {
     dir: string;
     request: RemoteRunAttemptRequest;
   }): Promise<RemoteRunAttemptResult>;
+  /** Revoke through the issuing host under the authenticated owner's fresh ledger grant. */
+  requestRemoteRunRevoke?(opts: {
+    store: SecretStore;
+    dir: string;
+    request: import("./remote-manager-authority.js").RemoteRunRevokeRequest;
+  }): Promise<import("./remote-manager-authority.js").RemoteRunRevokeResult>;
   /** Host-owned registration maintenance for a remote manager. The provider must scope eviction to
    * the caller instance's credential family and guard reconciliation with affirmative liveness. */
   maintainRemoteManager?(opts: {

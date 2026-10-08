@@ -1,0 +1,75 @@
+{
+  "suite": [
+    "implementations/auth/smoke/remote-run-revoke.smoke.ts"
+  ],
+  "guard": "issuing-host revoke binds recorded owner or admin, preserves one marker, stops fetch and resume, and routes remote hosting",
+  "command": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke",
+  "completionMarker": "remote-run-revoke: 12 cells,",
+  "progressPattern": "[\u2713\u2717]",
+  "minTicks": 12,
+  "mutations": [
+    {
+      "name": "owner denied",
+      "file": "implementations/auth/src/manager-authority.ts",
+      "find": "  if (args.holder === \"platform\" || (view.admission.caller.owner !== args.owner && !args.scope.includes(\"admin\")))",
+      "replace": "  if (args.holder === \"platform\" || !args.scope.includes(\"admin\"))",
+      "expectRed": "U6-1 admitted owner revokes through issuing host and readRunRevocation reads marker",
+      "cell": "U6-1 admitted owner revokes through issuing host and readRunRevocation reads marker",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    },
+    {
+      "name": "foreign owner accepted",
+      "file": "implementations/auth/src/manager-authority.ts",
+      "find": "  if (args.holder === \"platform\" || (view.admission.caller.owner !== args.owner && !args.scope.includes(\"admin\")))",
+      "replace": "  if (args.holder === \"platform\")",
+      "expectRed": "U6-2 another owner is refused by name without a marker",
+      "cell": "U6-2 another owner is refused by name without a marker",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    },
+    {
+      "name": "admin denied",
+      "file": "implementations/auth/src/manager-authority.ts",
+      "find": "  if (args.holder === \"platform\" || (view.admission.caller.owner !== args.owner && !args.scope.includes(\"admin\")))",
+      "replace": "  if (args.holder === \"platform\" || view.admission.caller.owner !== args.owner)",
+      "expectRed": "U6-3 platform admin revokes and records verified revoker",
+      "cell": "U6-3 platform admin revokes and records verified revoker",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    },
+    {
+      "name": "repeat create conflict propagated",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "    if (!isCasLoss(e)) throw e;",
+      "replace": "    throw e;",
+      "expectRed": "U6-4 second revoke preserves existing revokedAt by reason and bytes",
+      "cell": "U6-4 second revoke preserves existing revokedAt by reason and bytes",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    },
+    {
+      "name": "open wait fetch skips admission read",
+      "file": "implementations/runtime/src/run-wait-host.ts",
+      "find": "      await admitted(channel);\n      const consumer = await broker.js.consumers.get(stream, waitConsumerName(requestId));",
+      "replace": "      const consumer = await broker.js.consumers.get(stream, waitConsumerName(requestId));",
+      "expectRed": "U6-5 open wait refuses its next fetch with revocation named",
+      "cell": "U6-5 open wait refuses its next fetch with revocation named",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    },
+    {
+      "name": "manager resume skips revocation",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "        if (admission.revoked !== undefined)\n          throw new EpEnvelopeError(\"permission-denied\", `run ${args.runId} was revoked by ${admission.revoked.by} (${admission.revoked.reason}); a revoked run is not resumed (SPEC 14.8)`);",
+      "replace": "        if (false)\n          throw new Error(\"disabled resume revocation guard\");",
+      "expectRed": "U6-6 manager resume of a revoked run is refused",
+      "cell": "U6-6 manager resume of a revoked run is refused",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    },
+    {
+      "name": "remote revoke remains unimplemented",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "      return await this.ctx.revokeRun({ runId, reason });",
+      "replace": "      throw new EpEnvelopeError(\"unimplemented\", \"a signerless host writes no revocation marker; revoke through the issuing host\");",
+      "expectRed": "U6-7 remote RunHosting produces identical marker bytes to signer path",
+      "cell": "U6-7 remote RunHosting produces identical marker bytes to signer path",
+      "afterRestore": "pnpm --dir packages/core build && pnpm smoke:remote-run-revoke"
+    }
+  ]
+}

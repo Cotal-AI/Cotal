@@ -4645,6 +4645,27 @@ takeover or boot reconcile continues it. Revocation authorizes no new resource a
 beyond what the run's own journal already justifies. Caller disconnect or credential expiry after
 admission does not revoke a run.
 
+The issuing host accepts the closed `manager-run-revoke` request through its authenticated
+manager-service authority door. The door verifies the IdP identity and reads that actor's current
+ledger scope. Revocation requires that verified owner to equal the recorded admission's
+`caller.owner`, or that actor's fresh scope to carry `admin`. An assigned platform control manager
+is not an admin grant. The request accepts no owner, caller, `by` or timestamp assertion. The host
+checks the current manager registration proof, space, account and process epoch, and requires the
+admission to name that manager instance. It derives `by` as `<verified-owner>.<actor>` and writes the
+same marker as a signer-holding host: `{ version: 1, runId, reason, by, revokedAt }`. A repeat returns
+the existing marker, including its original attribution and time, without an overwrite.
+
+| Issuing-host request kind | Operation-specific input | Result |
+| --- | --- | --- |
+| `manager-run-admission` | `run: { runId, subject }` | the immutable admission and revision |
+| `manager-run-attempt` | one `attempt` or `operator` | fixed JWTs for manager-held public nkeys |
+| `manager-run-revoke` | `revoke: { runId, reason }`, with non-empty reason | `{ v: 1, kind, requestId, runId, revocation }`, naming the stored marker |
+
+Each request carries the same registered-manager envelope: `v`, `kind`, `space`, `actor`,
+`instanceId`, `managerLifecycleUid`, `requestId`, `registrationProof`, `accountPublicKey`,
+`processEpoch` and public `identities`. Unknown fields refuse. These are issuing-host requests,
+not endpoint commands. CLI and MCP revoke verbs require a separate served-command path.
+
 **Resume, fork, local, restore.** A resume, takeover or reconcile continues under the ORIGINAL
 admission and the current marker; the resuming caller's own authority is not consulted and cannot
 widen it; a run with no admission stays parked, named in the host's log. A fork is a new run and

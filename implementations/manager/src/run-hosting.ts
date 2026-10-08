@@ -59,6 +59,8 @@ import {
   createRunAdmission,
   readRunAdmission,
   revokeRunAdmission,
+  readRunRevocation,
+  type RunRevocation,
   withIssuerSession,
   epRequestSubject,
   isIssuedCaller,
@@ -120,6 +122,8 @@ export interface RunHostingContext {
   readonly issueAttempt?: (args: { runId: string; takeoverId: string; epoch: number; fencingToken: number; driver: Identity; mediator: Identity;
     /** The served `run-resume` subject when a caller asked for this attempt; absent for a boot reconcile. */
     served?: string }) => Promise<{ driver: string; mediator: string }>;
+  /** Issuing-host revoke under the authenticated holder, never the local by argument. */
+  readonly revokeRun?: (args: { runId: string; reason: string }) => Promise<RunRevocation>;
   /** Signerless host: one served read or answer's `run-operator` creds for a caller-held nkey (the
    *  callback combines the host JWT with the local seed, as `renewRun` does). */
   readonly issueOperator?: (args: { identity: Identity; takeoverId: string; runId?: string; answers?: { runId: string; stepKey: string; amend?: true };
@@ -338,9 +342,15 @@ export class RunHosting {
   /** Revoke a hosted run (SPEC 14.8): the marker is create-only and independent of the immutable
    *  admission; every later channel effect of the run refuses on reading it, and a drive parked in
    *  a wait ends within one poll. Idempotent. */
-  async revoke(runId: string, by: string, reason: string): Promise<void> {
-    if (this.remote) throw new EpEnvelopeError("unimplemented", "a signerless host writes no revocation marker; revoke through the issuing host");
+  async revoke(runId: string, by: string, reason: string): Promise<RunRevocation> {
+    if (this.remote) {
+      if (this.ctx.revokeRun === undefined) throw new EpEnvelopeError("unimplemented", "the issuing host supplies no closed run revoke callback");
+      return await this.ctx.revokeRun({ runId, reason });
+    }
     await this.withAdmitter(runId, (kv) => revokeRunAdmission(kv, this.ctx.endpoint, { version: 1, runId, by, reason, revokedAt: Date.now() }));
+    const revocation = await this.withOperator({ runId }, (planes) => readRunRevocation(planes.jsm, this.ctx.space, this.ctx.endpoint, runId));
+    if (revocation === undefined) throw new EpEnvelopeError("internal", `run ${runId}: revoke wrote no readable marker`);
+    return revocation;
   }
 
   /** `run-resume`: take a recorded run over under a fresh takeover and continue it from its journal.
