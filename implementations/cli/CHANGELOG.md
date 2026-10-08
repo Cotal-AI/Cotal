@@ -1,5 +1,24 @@
 # @cotal-ai/cli
 
+## 0.75.0
+
+### Patch Changes
+
+- 5a537d6: The comment in `cotal ext remove`'s process description, which ships in the CLI's compiled output, now states the labelling rule in three lines: only a pid proven dead is called a "stale pidfile", because that label is advice to delete the record, while unattributable content and indeterminate liveness are named as such. It replaces three blocks that narrated earlier revisions and said "three labels" above code with four. No runtime change.
+- de17bdb: `cotal service uninstall` on macOS removes the launchd agent that `cotal service install` wrote. The plist records its mesh and root as `<!-- cotal-mesh: <mesh> -->` comments, and the reader kept the closing ` -->`, so `service status` reported the mesh and root with that suffix and `service uninstall --mesh <mesh>` always refused with a remedy that could not work. Each platform's unit now writes and reads its provenance header through one comment syntax, so the reader strips exactly what the writer added. Linux units are unchanged.
+- e3612f1: `cotal status` now names an ambiguous process record on that component's row and prints the rest of the report. When a root held both a current record such as `manager.<hex>.pid` and its pre-upgrade name such as `manager.pid`, which a manager that crashed before the upgrade leaves behind, `status` printed `✗ both … exist … ambiguous process record; remove the stale one` and exited 1 before the remaining process rows, Recorded Meshes and Selected Mesh. `status --components` stopped the same way at the first component. The folder row now reads `pidfile unreadable` with that error, the component row reads `refused`, and the other rows still print.
+- Updated dependencies [6286d29]
+- Updated dependencies [ed0785d]
+- Updated dependencies [625659e]
+- Updated dependencies [0c924f4]
+- Updated dependencies [b48a740]
+- Updated dependencies [597fa25]
+- Updated dependencies [cb3a177]
+- Updated dependencies [5f5196f]
+- Updated dependencies [d269d1d]
+  - @cotal-ai/core@0.75.0
+  - @cotal-ai/workspace@0.75.0
+
 ## 0.74.0
 
 ### Patch Changes
