@@ -12,7 +12,7 @@
 //                     claims it (beam to carol, carol flips idle->working), the
 //                     rest dim — any one of a role claims it.
 //
-// 1920x1080 @ 30fps, exactly 210 frames, seamless via loopEnvelope.
+// 1920x1080 @ 30fps, seamless via loopEnvelope.
 
 import React from "react";
 import {
@@ -33,7 +33,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 210;
+export const MODES_DURATION = 210;
 
 // --- beats ----------------------------------------------------------------------
 
@@ -103,7 +103,7 @@ const emitPulse = (frame: number, at: number): number =>
 
 export const S3Modes: React.FC = () => {
   const frame = useCurrentFrame();
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, MODES_DURATION);
 
   // which beat are we in, for global dimming of the header while a beat runs.
   const inB1 = frame < B2[0];
@@ -194,7 +194,7 @@ export const S3Modes: React.FC = () => {
   // ------------------------------------------------------------ captions
   const cap1 = fade(frame, B1[0] + 6, B1[0] + 20) * (1 - fade(frame, B2[0] - 12, B2[0]));
   const cap2 = fade(frame, B2[0] + 4, B2[0] + 18) * (1 - fade(frame, B3[0] - 12, B3[0]));
-  const cap3 = fade(frame, B3[0] + 4, B3[0] + 18) * (1 - fade(frame, DURATION - 12, DURATION));
+  const cap3 = fade(frame, B3[0] + 4, B3[0] + 18) * (1 - fade(frame, MODES_DURATION - 12, MODES_DURATION));
 
   // header dims slightly while a beat's bottom caption is up.
   const headerOp = 1 - 0.25 * Math.max(cap1, cap2, cap3);
