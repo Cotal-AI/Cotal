@@ -4151,6 +4151,24 @@ the recorded evidence, the callout renews that generation; otherwise it refuses 
 client adopts a fresh generation only through a new connection under a new nonce. A managed row's
 view, the `agent` profile and every other view keep the legacy rail.
 
+**Platform-owned user supervisor.** A trusted host composition MAY issue the closed manager-service
+registration material for one ordinary derived owner without that owner's IdP proof. This is an
+in-process administrative door, not a user-token exchange. Its recorded assignment MUST name one
+owner, space, account, manager instance, lifecycle UID, revision and finite expiry, and MUST carry
+only `supervise`. The host MUST authenticate platform-admin authority and re-read the assignment
+on every request. The worker's door MUST be bound to that owner and refuse another owner by name.
+It MUST NOT export an administrative bearer, signer, mint surface, human exchange or cross-owner
+enrollment. The existing fixed manager actors, public nkeys and registration proof remain unchanged.
+
+The host MUST cap every returned credential at the assignment expiry and refuse issuance after the
+assignment ends. The supervisor and executor registration ceilings MUST be persisted through the
+existing issued evidence and accepted-row stores before material is returned, with expiry as their
+recorded lifetime. Renewal MUST resolve and confirm the original ceiling. These registration
+credentials hold no caller rail, so no generation claim is added to their request subjects. The
+other standing duties retain their endpoint gate and credential-family protocol. An ended assignment
+denies further issuance. Already-returned material remains broker-valid only until its capped
+expiry unless the host stops the worker and completes its retirement barrier sooner.
+
 **Compatibility.** A command whose semantics require the binding (this revision: `run-start`,
 §14.8) MUST refuse a legacy-rail request with `permission-denied` carrying the detail kind
 `ai.cotal.ep.unbound-caller-authority` naming the caller triple, never route it through the

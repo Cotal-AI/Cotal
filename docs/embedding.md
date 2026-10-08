@@ -33,6 +33,34 @@ the full `up` orchestration are **not** public runners: `up` also does broker br
 process and registry management, and lifecycle work, and `supervise`'s orchestration is private (see
 [Supervisor signing authority](#supervisor-signing-authority)).
 
+## Owner-bound platform supervisors
+
+A host can start one user's supervisor without retaining that user's login. Pass
+`platformSupervisor: { authorizePlatformAdmin, observeAssignment }` to `startAuthService`, then call
+`handle.platformSupervisorAuthority(owner)` inside the trusted authority process. The first callback
+must authenticate the platform's administrative caller through the host's own authority. The second
+reads that owner's recorded `PlatformSupervisorAssignment` fresh on every call. An absent,
+ended, expired, foreign-account or wrong-revision assignment refuses issuance.
+
+The assignment has `kind: "platform-supervisor"`, `scope: ["supervise"]`, one derived owner,
+one manager instance, one lifecycle UID, a revision and a finite `expiresAt` in Unix seconds. It is
+not an interactive or managed-agent ledger row and grants no `admin`. The returned door is bound to
+that owner and accepts `PlatformSupervisorAuthorityRequest` with the same owner, assignment revision
+and an existing `RemoteManagerAuthorityRequest`. It serves only `prepare`, `activate`, `renew` and
+`renewStandingBundle`. Unknown fields, generic profiles, mint, human exchange and another owner
+are refused before issuance. Do not give the worker the auth handle, loopback capability or signer.
+The host carries only the bound door over its authenticated worker channel.
+
+Use `remoteManagerClient` and `registerRemoteManagerAuthority` from `@cotal-ai/manager` for the
+existing registration ceremony. The result keeps the stock manager material shape and five nkeys.
+All returned credentials expire no later than the assignment. The supervisor and executor ceilings
+are recorded in the native issued store and must remain unchanged when material is renewed.
+These JWTs are signed by the authority plane, not returned by the user-token callout. The door
+adds no human bearer, callout view, owner ledger grant or enrollment authority. Run admission,
+host-backed enrollment and shutdown maintenance need their own host composition.
+
+See [the issuance design](design/user-auth-run-start.md#platform-supervisor-registration).
+
 ## The export surface
 
 Everything below is a real export of a published package, reachable from the package root (each

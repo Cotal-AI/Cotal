@@ -66,6 +66,7 @@ import { decodeJwt } from "jose";
 import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
+import { makePlatformSupervisorAuthority, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
@@ -196,7 +197,7 @@ export interface AuthAuthorityPlane {
   /** Activate a managed agent's lifecycle at the uid its grant carries, under the same minting
    *  authority its first bearer exchange names, and mint nothing (SPEC 13.16). */
   activateManagedLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<void>;
-  issueManagerServiceAuthority: (args: ManagerAuthorityHolder & { request: RemoteManagerAuthorityRequest }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
+  issueManagerServiceAuthority: (args: ManagerAuthorityHolder & { request: RemoteManagerAuthorityRequest; supervisorExpiresAt?: number }) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>;
   maintainRemoteManager: (args: ManagerAuthorityHolder & { request: RemoteManagerMaintenanceRequest }) => Promise<import("@cotal-ai/core").RemoteManagerMaintenanceResult>;
   validateRetainedAgent: (args: ManagerAuthorityHolder & {
     request: RemoteRetainedAgentValidationRequest;
@@ -860,7 +861,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     issueManagerServiceAuthority: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
-      return issueRemoteManagerAuthority({
+      const material = await issueRemoteManagerAuthority({
         ...holder,
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
           request: r, owner: o, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed,
@@ -875,6 +876,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         }),
         issue: async ({ actors, request: r }) => {
           const signer = { space, account: dataAccount };
+          const bounded = (opts: Parameters<typeof mintPublicUserJwt>[3]) => {
+            if (holder.supervisorExpiresAt === undefined) return opts;
+            const now = Math.floor(Date.now() / 1000);
+            if (holder.supervisorExpiresAt <= now)
+              throw new EpEnvelopeError("permission-denied", `platform supervisor lifecycle has ended for owner ${owner}`);
+            const { expiresInSeconds, expiresAt, ...rest } = opts ?? {};
+            return { ...rest, expiresAt: Math.min(holder.supervisorExpiresAt, expiresAt ?? now + (expiresInSeconds ?? standingTtl)) };
+          };
           const registration = { space: r.space, instanceId: r.instanceId, lifecycleUid: r.managerLifecycleUid, identities: r.identities };
           const credential = async (
             key: keyof RemoteManagerAuthorityRequest["identities"],
@@ -885,7 +894,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             signer,
             r.identities[key].id,
             profile,
-            { ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid },
+            bounded({ ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid }),
           );
           const credentials: import("@cotal-ai/core").RemoteManagerAuthorityMaterial["credentials"] = {};
           const siblingOn = (gate: ReturnType<typeof serveIssuanceGateKv>, observed: EpGateState) => async (key: "goalWriter" | "sessionLedger", profile: "goal-writer" | "session-ledger", actor: string) => {
@@ -1009,13 +1018,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               signer,
               r.identities.serve.id,
               "endpoint-serve",
-              {
+              bounded({
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
                 expiresInSeconds: standingTtl,
                 endpointServe: remoteManagerServeGrantFromCluster(r, owner, await registeredManagerCluster(owner, r.instanceId, observed), observed),
                 serveIssuance: gate,
-              },
+              }),
             );
             const sibling = siblingOn(gate, observed);
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
@@ -1047,19 +1056,19 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               epoch: r.run!.epoch,
               owner,
             };
-            credentials.runDriver = await mintPublicUserJwt(signer, r.run!.driverId, "run-driver", {
+            credentials.runDriver = await mintPublicUserJwt(signer, r.run!.driverId, "run-driver", bounded({
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
               runDriver: binding,
               expiresInSeconds: standingTtl,
-            });
-            credentials.runMediator = await mintPublicUserJwt(signer, r.run!.mediatorId, "run-mediator", {
+            }));
+            credentials.runMediator = await mintPublicUserJwt(signer, r.run!.mediatorId, "run-mediator", bounded({
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
               // Renewed with the placement the attempt was issued with (authorizeRemoteRunAttempt).
               runMediator: { ...binding, placement: { instanceId: r.instanceId } },
               expiresInSeconds: standingTtl,
-            });
+            }));
             return { credentials };
           }
           if (r.operation === "activate") {
@@ -1078,13 +1087,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               signer,
               r.identities.serve.id,
               "endpoint-serve",
-              {
+              bounded({
                 principal: { owner, actor: actors.serve },
                 lifecycleUid: r.managerLifecycleUid,
                 expiresInSeconds: standingTtl,
                 endpointServe: reconstructRemoteManagerServeGrant(r, owner, observed),
                 serveIssuance: gate,
-              },
+              }),
             );
             const sibling = siblingOn(gate, observed);
             credentials.goalWriter = await sibling("goalWriter", "goal-writer", actors.goalWriter);
@@ -1100,6 +1109,35 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           return { credentials };
         },
       });
+      if (holder.supervisorExpiresAt !== undefined) {
+        await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
+          for (const duty of ["supervisor", "executor"] as const) {
+            const credential = material.credentials[duty];
+            if (!credential) continue;
+            const payload = decodeJwt(credential.jwt) as { nats?: Record<string, unknown>; sub?: string };
+            const permissions = importNativeSubjectPermissions({ pub: payload.nats?.pub, sub: payload.nats?.sub });
+            const actor = remoteManagerActors(holder.request.instanceId)[duty as keyof ReturnType<typeof remoteManagerActors>];
+            if (!actor || payload.sub !== holder.request.identities[duty as keyof RemoteManagerAuthorityRequest["identities"]]?.id)
+              throw new EpEnvelopeError("internal", "platform supervisor issued a duty outside its fixed standing identities");
+            const acceptedToken = connectionAcceptedToken(`platform-supervisor:${owner}:${holder.request.instanceId}:${holder.request.managerLifecycleUid}:${duty}`);
+            const response = await session.nc.request(acceptedReadGrant(space, acceptedToken), new Uint8Array(0), { timeout: 3000 });
+            if (response.headers?.code === 404 || response.headers?.get("Status")?.startsWith("404")) {
+              const ref = { space, owner, actor, uid: holder.request.managerLifecycleUid, generation: mintGeneration() };
+              const prepared = await session.store.stage({ version: 1, ref, sources: [], permissions, expiresAt: holder.supervisorExpiresAt });
+              await session.store.release(prepared, async () => {});
+              await writeAcceptedRow(session.accepted, acceptedToken, ref);
+            } else {
+              if (response.headers?.get("Status")) throw new EpEnvelopeError("unavailable", "platform supervisor accepted-row read failed");
+              const accepted = JSON.parse(new TextDecoder().decode(response.data)) as { version: number; ref: IssuedAuthorityRef };
+              if (accepted.version !== 1 || accepted.ref.space !== space || accepted.ref.owner !== owner || accepted.ref.actor !== actor || accepted.ref.uid !== holder.request.managerLifecycleUid)
+                throw new EpEnvelopeError("permission-denied", "platform supervisor accepted row names another owner or lifecycle");
+              await session.store.resolve(accepted.ref, session.sourceIsLive);
+              await session.store.confirm(accepted.ref, permissions);
+            }
+          }
+        });
+      }
+      return material;
     },
     maintainRemoteManager: async (holder) => {
       refuseIfFenced();
@@ -1727,6 +1765,9 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  over this context's own connection, whose grant is that instance's `describe` and `status`;
    *  neither the connection nor its credential leaves the process. */
   platformControlReadiness?(instanceId: string): Promise<EpAttributedReply>;
+  /** Bind one administrative composition caller to one owner's recorded supervisor assignment.
+   * The returned door accepts only that owner's existing registration and renewal request family. */
+  platformSupervisorAuthority?(owner: string): Promise<(request: PlatformSupervisorAuthorityRequest) => Promise<import("@cotal-ai/core").RemoteManagerAuthorityMaterial>>;
   /** The manager gate the delegated user intent decisions read (SPEC 13.16). Present only with
    *  `platformControl`. It reads over the context's own authority connection, so a host opens no
    *  second data-account connection, and it returns the gate alone. */
@@ -1799,6 +1840,8 @@ export async function startAuthService(inputs: HostedContextInputs & {
   publicFace?: PublicFaceInput;
   /** Present only in a platform composition. Absent: the handle has no platform control door. */
   platformControl?: PlatformControlInput;
+  /** Host-authenticated administrative issuance for one owner's supervisor, with no human login. */
+  platformSupervisor?: PlatformSupervisorInput;
   /** Trusted-host only. Forwarded unchanged to {@link openAuthAuthorityPlane}, which bounds it to
    *  5..86400 seconds. Absent: the 24h default. No CLI flag and no request field sets it. */
   standingRenewableTtlSeconds?: number;
@@ -1834,6 +1877,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     context: inputs.context,
     ...(inputs.publicFace !== undefined ? { publicFace: inputs.publicFace } : {}),
     ...(inputs.platformControl !== undefined ? { platformControl: inputs.platformControl } : {}),
+    ...(inputs.platformSupervisor !== undefined ? { platformSupervisor: inputs.platformSupervisor } : {}),
     ...(inputs.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: inputs.standingRenewableTtlSeconds } : {}),
   });
   return { ...started.handle, readiness: (): HostedServiceState => ({ ...started.status(), context: inputs.context }) };
@@ -1859,6 +1903,7 @@ interface AuthContextOptions {
   context?: HostedContextKey;
   /** Present only for a hosted platform composition: builds the platform control door. */
   platformControl?: PlatformControlInput;
+  platformSupervisor?: PlatformSupervisorInput;
   standingRenewableTtlSeconds?: number;
 }
 
@@ -2135,6 +2180,21 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       cap,
       closed: owned.closed,
       connections: () => owned.connections(),
+      ...(o.platformSupervisor !== undefined ? {
+        platformSupervisorAuthority: async (owner: string) => {
+          refuseUnlessReady();
+          assertDerivedOwnerToken(owner);
+          const input = o.platformSupervisor!;
+          await requirePlatformSupervisorAdmin(input, owner);
+          return makePlatformSupervisorAuthority({
+            ...input, owner, space, accountPublicKey: keys.dataAccount.pub, ready: refuseUnlessReady,
+            observePrincipal: async (instanceId) => (await plane.observeManagerInstance(instanceId)).gate?.principal,
+            issue: (boundOwner, supervisorExpiresAt, request) => plane.issueManagerServiceAuthority({
+              owner: boundOwner, scope: ["supervise"], supervisorExpiresAt, request,
+            }),
+          });
+        },
+      } : {}),
       ...(platformDeps !== undefined ? {
         platformControlAuthority: makePlatformControlAuthority({
           ...platformDeps,
