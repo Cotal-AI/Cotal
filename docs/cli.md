@@ -1791,7 +1791,7 @@ no connection and therefore no subscription, so a real corpse is still removed.
 | `liveness-unestablishable` | The probe itself failed, so nothing was learned | Fix the probe's path (credential, broker) and re-run. A probe that could not run is never read as death |
 | `not-registered` | No registration at that coordinate | Check `--instance` and `--endpoint`. This takes the whole id, never a prefix |
 | `registration-in-flight` | The instance holds the endpoint governance slot at the live issuance-gate generation, so a registration is still completing | Nothing was removed. Wait for that registration to finish, then re-run |
-| `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
+| `superseded` | The record moved between the read and the delete | Something is writing to it. The registration was not removed, and a status removed before it moved was the inspected record's own. Re-observe before retrying |
 
 There is no `--force` and no sweep: silence is not death, and a rule that removed rows on silence
 would eventually remove a live instance that was merely slow. An operator names one instance, the
