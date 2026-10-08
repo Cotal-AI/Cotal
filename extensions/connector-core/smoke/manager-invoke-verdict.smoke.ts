@@ -27,10 +27,9 @@
  * No broker: the MeshAgent constructor builds an endpoint but never connects, so `ep` is swapped for
  * one that throws. Run: pnpm smoke:manager-invoke-verdict
  */
-import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER } from "@cotal-ai/core";
+import { EpEnvelopeError, EP_UNANSWERED, EP_UNBOUND_RESPONDER, managerCallerBinding } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { managerCallerBinding } from "../src/manager-call.js";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict; it never throws. A throwing cell takes every cell below it with it,
@@ -105,9 +104,10 @@ const managerConfig: AgentConfig = {
 };
 const claims = { sub: owner, aud: cfg.space, act: { owner, actor: "caller", lifecycleUid: uid, view: "manager-caller", managerInstanceId: instanceId } };
 const token = (value: unknown) => `unused.${Buffer.from(JSON.stringify(value)).toString("base64url")}.unused`;
-const binding = managerCallerBinding(token(claims), managerConfig);
+const expected = { space: cfg.space, owner, actor: "caller", lifecycleUid: uid, instanceId };
+const binding = managerCallerBinding(token(claims), expected);
 check("manager control binds the exact server-selected instance and caller", binding.instanceId === instanceId && binding.caller.owner === owner && binding.caller.actor === "caller" && binding.caller.uid === uid);
-check("an unpinned client uses the issuer's concrete selection", managerCallerBinding(token(claims), { ...managerConfig, managerInstanceId: undefined }).instanceId === instanceId);
+check("an unpinned client uses the issuer's concrete selection", managerCallerBinding(token(claims), { ...expected, instanceId: undefined }).instanceId === instanceId);
 const wrongClaims = [
   { ...claims, aud: "other-space" },
   { ...claims, sub: `u_${"b".repeat(26)}` },
@@ -121,11 +121,11 @@ const wrongClaims = [
 ];
 for (const [index, value] of wrongClaims.entries()) {
   let refused = false;
-  try { managerCallerBinding(token(value), managerConfig); } catch { refused = true; }
+  try { managerCallerBinding(token(value), expected); } catch { refused = true; }
   check(`manager control refuses foreign or malformed coordinates ${index + 1}`, refused);
 }
 let malformedRefused = false;
-try { managerCallerBinding("not-a-bearer", managerConfig); } catch { malformedRefused = true; }
+try { managerCallerBinding("not-a-bearer", expected); } catch { malformedRefused = true; }
 check("manager control refuses an unparseable bearer", malformedRefused);
 
 // This constructed endpoint grades dispatch only, not renewal or broker delivery. It deliberately
