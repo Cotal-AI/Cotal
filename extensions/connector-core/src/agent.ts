@@ -11,6 +11,8 @@ import {
   resolvePeer as resolvePeerInRoster,
   peerLabel,
   CotalEndpoint,
+  acquireLocalConsumer,
+  type HeldLock,
   BASELINE_LIFECYCLE_ENDPOINT,
   BIND_SPLIT_REISSUES,
   assertLifecycleToken,
@@ -816,8 +818,16 @@ export class MeshAgent extends EventEmitter {
 
   /** Begin connecting with background retry. Resolves after the first completed mesh join. */
   start(retryMs = 3000): Promise<void> {
-    return this.connectLoop(retryMs);
+    if (this._stopping) throw new Error("cannot start a stopped mesh session");
+    if (!this.consumerClaim && this.config.lifecycleUid) {
+      const { owner, actor } = this.ep.principal;
+      this.consumerClaim = acquireLocalConsumer(this.config.servers, this.config.space, owner, actor, this.config.lifecycleUid);
+    }
+    return this.connectFlight ??= this.connectLoop(retryMs);
   }
+
+  private consumerClaim?: HeldLock;
+  private connectFlight?: Promise<void>;
 
   private async connectLoop(retryMs: number): Promise<void> {
     while (!this._stopping && !this._connected) {
@@ -890,8 +900,14 @@ export class MeshAgent extends EventEmitter {
     // endpoint must still stop, so ep.stop() runs directly once there. Every write admitted AFTER
     // this point is refused at once by inOrder() (see there) rather than queued behind departure,
     // so a straggler cannot land after offline and does not sit out setStatus's connect grace.
-    await Promise.race([this.inOrder(() => this.ep.stop(), true), sleep(3_000)]);
+    const departure = this.inOrder(() => this.ep.stop(), true);
+    await Promise.race([departure, sleep(3_000)]);
     await this.ep.stop();
+    await departure;
+    // A late initial bind must finish its stopped teardown before custody is released.
+    await this.connectFlight;
+    this.consumerClaim?.release();
+    this.consumerClaim = undefined;
   }
 
   /** Manual reconnect: tear down the mesh connection and rebuild it in-process, WITHOUT

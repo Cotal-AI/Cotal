@@ -1,4 +1,6 @@
 export * from "./types.js";
+export * from "./advisory-lock.js";
+export * from "./local-consumer-custody.js";
 export * from "./subjects.js";
 export * from "./endpoint-subjects.js";
 export * from "./endpoint-grants.js";

@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/local-consumer-custody.smoke.ts"
+  ],
+  "guard": "actual consuming-process custody survives parent death and refuses replacing a live local control listener",
+  "command": "node --no-warnings --experimental-transform-types --experimental-loader /home/cotal/hack-lanes/cloud-efficient-exec-0928/staff/dm-session-collision-1008/source-loader.mjs extensions/connector-core/smoke/local-consumer-custody.smoke.ts",
+  "mutations": [
+    {
+      "name": "remove consuming process claim",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "if (!this.consumerClaim && this.config.lifecycleUid) {",
+      "replace": "if (false && !this.consumerClaim && this.config.lifecycleUid) {",
+      "expectRed": "parent death does not free consuming child custody"
+    },
+    {
+      "name": "restore live socket replacement",
+      "file": "extensions/connector-core/src/control.ts",
+      "find": "  server.listen(path, () => {",
+      "replace": "  process.getBuiltinModule(\"fs\").rmSync(path, { force: true });\n  server.listen(path, () => {",
+      "expectRed": "second control listener cannot replace live owner"
+    }
+  ]
+}

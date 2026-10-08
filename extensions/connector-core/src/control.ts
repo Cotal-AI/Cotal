@@ -9,7 +9,6 @@
  * queued peer messages, in that runtime's own hook-output shape.
  */
 import { createServer, type Server, type Socket } from "node:net";
-import { existsSync, unlinkSync } from "node:fs";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { MeshAgent, InboxItem } from "./agent.js";
 import { fmtItem } from "./framing.js";
@@ -214,17 +213,8 @@ export function startControlServer(
 ): Server {
   const { path } = endpoint;
   const digest = createHash("sha256").update(endpoint.token).digest();
-  // Stale-socket cleanup is POSIX-only: a win32 named pipe is not a filesystem entry to unlink, and
-  // a live one there is a SQUATTER the fatal `EADDRINUSE` is meant to catch — never clear it. (With
-  // a token-random path a stale POSIX socket from a dead predecessor is itself near-impossible, but
-  // the unlink stays as cheap insurance against an exact-path leftover.)
-  if (process.platform !== "win32" && existsSync(path)) {
-    try {
-      unlinkSync(path);
-    } catch {
-      /* ignore */
-    }
-  }
+  // Never unlink an existing path: it may belong to a live listener. Random per-launch paths
+  // avoid stale reuse; an exact-path leftover is a loud refusal requiring explicit recovery.
   const server = createServer((sock) => {
     let buf = "";
     let handled = false; // one frame per connection — ignore anything after the first line

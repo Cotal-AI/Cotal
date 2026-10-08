@@ -91,7 +91,6 @@ async function main(): Promise<void> {
   // handler to its error hook and the session would run on with the flag unread.
   const channelFlag = envFlag(process.env, "COTAL_CHANNEL");
   const agent = new MeshAgent(config);
-  agent.start(); // background connect with retry — never blocks tool serving
 
   if (envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
@@ -219,6 +218,11 @@ async function main(): Promise<void> {
     claude.handle,
     { fatalBind: true, onShutdown: () => void shutdown(), onReply: claude.onReply },
   );
+  await new Promise<void>((resolve, reject) => {
+    controlServer!.once("listening", resolve);
+    controlServer!.once("error", reject);
+  });
+  agent.start(); // custody is claimed before background broker connect, after control bind
 
   const server = new McpServer(
     { name: "cotal", version: "0.0.0" },

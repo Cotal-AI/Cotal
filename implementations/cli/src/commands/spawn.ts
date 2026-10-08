@@ -31,6 +31,9 @@ import {
   resolveReadAcl,
   runAgentBearer,
   CotalEndpoint,
+  acquireLock,
+  inspectLock,
+  localConsumerClaimPath,
   transferBucket,
   writeTransfer,
   peerLabel,
@@ -1417,6 +1420,10 @@ async function provisionRemoteUserForeground(
   const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
   if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
   let body: unknown;
+  const materialClaim = acquireLock(`${paths.actorToken}.launch.lock`, {
+    waitMs: 0,
+    onTimeout: () => new Error(`foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`),
+  });
   if ("body" in source) {
     body = source.body;
   } else {
@@ -1437,6 +1444,10 @@ async function provisionRemoteUserForeground(
   if (!checked.ok) return fail(refusals?.bundle ?? checked.message);
   const material = checked.material;
   const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = paths;
+  if (inspectLock(localConsumerClaimPath(target.server, space, material.owner, name, material.lifecycleUid)).state === "active") {
+    materialClaim.release();
+    return fail(`local inbox already has a consuming session for ${material.owner}.${name}; no local material was replaced`);
+  }
   try {
     // Land both secrets 0600 through the store, exactly as the local path does — the bearer
     // re-exec and the launch handoff read FILES.
@@ -1468,7 +1479,9 @@ async function provisionRemoteUserForeground(
       // machine has no authority to retire them and must not pretend otherwise.
       cleanup: async () => {
         const failed: CleanupFailure[] = [];
-        await shredAgentMaterial(failed, store, space, name, composition, paths);
+        if (await store.get(agentActorTokenKey(space, name, composition)) === material.actorToken)
+          await shredAgentMaterial(failed, store, space, name, composition, paths);
+        materialClaim.release();
         if (failed.length) throw new Error(describeCleanupFailures(failed));
       },
     };
@@ -1477,7 +1490,9 @@ async function provisionRemoteUserForeground(
     // fixed sentence and names only the failed steps, because their errors quote paths named for
     // the handoff's actor.
     const failed: CleanupFailure[] = [];
-    await shredAgentMaterial(failed, store, space, name, composition, paths);
+    if (await store.get(agentActorTokenKey(space, name, composition)) === material.actorToken)
+      await shredAgentMaterial(failed, store, space, name, composition, paths);
+    materialClaim.release();
     const steps = refusals ? failed.map((f) => f.step).join("; ") : describeCleanupFailures(failed);
     const leftover = failed.length ? `; cleanup failed: ${steps}` : "";
     return fail(`${refusals?.bearer ?? `agent auth preflight failed for "${name}": ${rejectionText(e)}`}${leftover}`);
@@ -1523,13 +1538,30 @@ async function provisionUserForeground(
   if (!infra) return fail(`space "${space}" has user-auth state but no trust record under ${authDir(target.root)} (expected ${spaceAccountPath(authDir(target.root), space)} or the legacy auth.json) - re-run \`cotal up --user-auth\` here`);
   const paths = agentSecretFilePaths(target.root, space, name);
   const { actorToken: tokenPath, sentinelCreds: sentinelPath, health: healthPath } = paths;
+  const materialClaim = acquireLock(`${tokenPath}.launch.lock`, {
+    waitMs: 0,
+    onTimeout: () => new Error(`foreground actor material for "${name}" is already held; preserve its session and choose a distinct actor for a new launch`),
+  });
+  // An existing row is not this new launch's property. In particular, a dead launcher may
+  // leave its consuming child alive. Never overwrite the row to discover occupancy later.
+  if (await provider.actorScope({ dir, owner, actor: name }) !== undefined) {
+    materialClaim.release();
+    return fail(`actor "${name}" already has a grant; preserve its session and choose a distinct actor for a new launch`);
+  }
+  let ownedToken: string | undefined;
   // Revoke the row, shred the secret material, and retire the broker footprint the durable
   // provisioning below creates (DM/DLV durables + ACL row). Every step is attempted, so a failed
   // removal cannot strand the durables on the broker, and the failures go back to the caller.
   const teardown = async (): Promise<CleanupFailure[]> => {
     const failed: CleanupFailure[] = [];
-    await attemptCleanup(failed, "revoke agent grant", () => provider.revokeAgent({ dir, owner, actor: name }));
-    await shredAgentMaterial(failed, store, space, name, composition, paths);
+    if (ownedToken === undefined) return failed;
+    let revoked = false;
+    await attemptCleanup(failed, "revoke agent grant", async () => {
+      revoked = await provider.revokeAgent({ dir, owner, actor: name, lifecycleUid: opts.lifecycleUid, actorToken: ownedToken });
+    });
+    if (await store.get(agentActorTokenKey(space, name, composition)) === ownedToken)
+      await shredAgentMaterial(failed, store, space, name, composition, paths);
+    if (!revoked) return failed;
     const targetId = principalKey(owner, name).key;
     await attemptCleanup(failed, "deprovision", () =>
       mintCreds(infra, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid: opts.lifecycleUid } })
@@ -1553,7 +1585,9 @@ async function provisionUserForeground(
       parent: `${owner}.cli`,
       label: ref,
       lifecycleUid: opts.lifecycleUid,
+      fresh: true,
     });
+    ownedToken = grant.actorToken;
     const prov = new CotalEndpoint({
       space,
       servers: server,
@@ -1611,12 +1645,14 @@ async function provisionUserForeground(
       cleanup: async () => {
         const failed = await teardown();
         if (failed.length) throw new Error(describeCleanupFailures(failed));
+        materialClaim.release();
       },
     };
   } catch (e) {
     // Roll back EVERYTHING this attempt materialized: a refused spawn leaves no row, no secret, no
     // orphaned durables. What the teardown could not remove joins the refusal after its cause.
     const failed = await teardown();
+    materialClaim.release();
     const leftover = failed.length ? `; cleanup failed: ${describeCleanupFailures(failed)}` : "";
     return fail(`agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}`);
   }

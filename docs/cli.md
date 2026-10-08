@@ -1117,6 +1117,13 @@ carrying the spawn subject only when the seat's credential holds it. On an open 
 the TLS requirement the mesh records. `--creds`, `--server` with an unregistered `--space`, and a
 user-auth mesh keep the operator path.
 
+Foreground user-mode launches serialize their local actor material. A duplicate refuses
+without replacing the first launch's files. A new local-user foreground launch also refuses
+an existing grant before rotating it. Departure cleanup is conditional on the launch's token
+and lifecycle generation, so an earlier launch cannot revoke a successor's grant. Remote
+provisioning remains the mesh operator's authority and can reissue material before the
+client observes an existing same-host consumer.
+
 ## models
 
 ```bash

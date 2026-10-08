@@ -1962,6 +1962,11 @@ export class CotalEndpoint extends EventEmitter {
     // duration is computed from `Date.now()`, so a retained record does not merely go stale: it keeps
     // COUNTING UP for as long as the dead object is held.
     this.clearPresenceWriteFailure();
+    // Custody callers must not observe stop completion while a concurrent rebind can still
+    // publish a late consuming connection. doRebuild closes its stopped epoch before resolving.
+    await this.rebuildPromise;
+    if (this.nc && !this.nc.isClosed())
+      throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
   }
 
   // ---- messaging -----------------------------------------------------------
