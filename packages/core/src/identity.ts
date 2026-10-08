@@ -32,6 +32,12 @@ export function isUserNkey(value: unknown): value is string {
   return typeof value === "string" && /^U[A-Z2-7]{55}$/.test(value);
 }
 
+/** The wire rule for an account nkey public key (`A…`), shared by every parser. It checks shape
+ *  only; `fromPublic` also verifies the checksum. */
+export function isAccountNkey(value: unknown): value is string {
+  return typeof value === "string" && /^A[A-Z2-7]{55}$/.test(value);
+}
+
 /** The signing half an authority-bearing artifact needs: `signArtifact` / `mintSessionGrant`
  *  take exactly `{ sign(input): Uint8Array }`, and the matching `publicKey` is what the
  *  verifying anchor pins. An nkey KeyPair already satisfies both; this narrows it to the
@@ -99,7 +105,7 @@ export function accountFromCreds(creds: string): string {
   catch (e) { throw new Error(`creds: the NATS user JWT payload does not decode (${(e as Error).message}) - cannot determine the issuing account`); }
   const c = claims as { iss?: unknown; nats?: { issuer_account?: unknown } } | null;
   const account = typeof c?.nats?.issuer_account === "string" ? c.nats.issuer_account : c?.iss;
-  if (typeof account !== "string" || !/^A[A-Z2-7]{55}$/.test(account))
+  if (!isAccountNkey(account))
     throw new Error("creds: the NATS user JWT names no issuing account in account-nkey form (neither `nats.issuer_account` nor `iss`) - cannot determine the issuing account");
   return account;
 }

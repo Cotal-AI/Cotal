@@ -32,6 +32,7 @@ import {
   admissionSnapshot,
   createRunAdmission,
   revokeRunAdmission,
+  isAccountNkey,
   isDerivedOwner,
   isIssuedCaller,
   isUserNkey,
@@ -122,7 +123,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     requestError(`${o.operation} must not carry contractArtifacts`);
   const renewal = o.operation === "renewStandingBundle" || o.operation === "renewRunDriver";
   if (renewal) {
-    if (typeof o.accountPublicKey !== "string" || !/^A[A-Z2-7]{55}$/.test(o.accountPublicKey))
+    if (!isAccountNkey(o.accountPublicKey))
       requestError(`${o.operation} requires an accountPublicKey`);
     if (typeof o.processEpoch !== "number" || !Number.isSafeInteger(o.processEpoch) || o.processEpoch < 0)
       requestError(`${o.operation} requires a non-negative processEpoch`);
@@ -274,7 +275,7 @@ export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmission
   const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "run"];
   for (const k of Object.keys(o)) if (!allowed.includes(k)) admissionError(`has unknown field ${k}`);
   const envelope = parseRemoteManagerEnvelope(o, "manager-run-admission", "manager run admission");
-  if (typeof o.accountPublicKey !== "string" || o.accountPublicKey.length === 0) admissionError("requires accountPublicKey");
+  if (!isAccountNkey(o.accountPublicKey)) admissionError("requires an account public key");
   if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) admissionError("requires a non-negative processEpoch");
   const run = o.run as Record<string, unknown> | null;
   if (run === null || typeof run !== "object" || Object.keys(run).sort().join(",") !== "runId,subject" ||

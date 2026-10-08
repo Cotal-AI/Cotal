@@ -11,6 +11,7 @@ import {
   CARD_TYPE,
   ChannelPill,
   fade,
+  fanWire,
   Labels,
   lerp,
   MODE_ALICE,
@@ -32,14 +33,10 @@ const PILL_HALF = 92 * PILL_TYPE + 8;
 const IN_START: Pt = { x: MODE_ALICE.at.x + 52, y: MODE_ALICE.at.y };
 const IN_END: Pt = { x: PILL.x - PILL_HALF, y: PILL.y };
 const OUT_START: Pt = { x: PILL.x + PILL_HALF, y: PILL.y };
-const outCtrl = (r: Pt): [Pt, Pt] => [
-  { x: OUT_START.x + 60, y: OUT_START.y },
-  { x: r.x - 90, y: r.y },
-];
-const OUT_END = (r: Pt): Pt => ({ x: r.x - 54, y: r.y });
+const FAN = MODE_PEERS.map((p) => fanWire(OUT_START, p.at));
 
 const IN_PATH = wirePath(IN_START, lerp(IN_START, IN_END, 0.4), lerp(IN_START, IN_END, 0.6), IN_END);
-const OUT_PATHS = MODE_PEERS.map((p) => wirePath(OUT_START, ...outCtrl(p.at), OUT_END(p.at)));
+const OUT_PATHS = FAN.map((w) => wirePath(...w));
 
 const T = {
   sendStart: 18,
@@ -85,11 +82,11 @@ export const ModeMulticast: React.FC = () => {
         t={tIn}
         visible={tIn > 0 && tIn < 1}
       />
-      {MODE_PEERS.map((p, i) => (
+      {FAN.map((w, i) => (
         <Beam
           key={i}
           d={OUT_PATHS[i]!}
-          pos={(t) => bez(OUT_START, ...outCtrl(p.at), OUT_END(p.at), t)}
+          pos={(t) => bez(...w, t)}
           t={tOut}
           visible={tOut > 0 && tOut < 1}
         />

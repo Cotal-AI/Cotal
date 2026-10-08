@@ -280,6 +280,12 @@ export function wirePath(p0: Pt, c1: Pt, c2: Pt, p1: Pt): string {
   return `M ${p0.x} ${p0.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p1.x} ${p1.y}`;
 }
 
+// Multicast and anycast both fan out to the peers through this one wire shape,
+// so the two cards glance alike and cannot drift apart.
+export function fanWire(from: Pt, to: Pt): [Pt, Pt, Pt, Pt] {
+  return [from, { x: from.x + 60, y: from.y }, { x: to.x - 90, y: to.y }, { x: to.x - 54, y: to.y }];
+}
+
 // Resting hairlines, plus an optional gold "afterglow" that lingers on a wire
 // once a message has just traversed it (glow 0..1 per path), fading back to ink.
 export const Wires: React.FC<{ paths: string[]; glow?: number[] }> = ({ paths, glow = [] }) => (

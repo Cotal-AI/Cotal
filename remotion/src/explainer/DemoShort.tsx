@@ -1,22 +1,22 @@
 // DemoShort — punchy X loop: headline -> cross-vendor -> logo.
-// Seamless loop. 110+150+120 = 380f / 12.7s.
+// Seamless loop.
 
 import React from "react";
 import { AbsoluteFill, Series, loopEnvelope, useCurrentFrame } from "../header/shared";
-import { S0Headline } from "./S0Headline";
-import { S4CrossVendor } from "./S4CrossVendor";
-import { S6Logo } from "./S6Logo";
+import { S0Headline, HEADLINE_DURATION } from "./S0Headline";
+import { S4CrossVendor, CROSS_VENDOR_DURATION } from "./S4CrossVendor";
+import { S6Logo, LOGO_DURATION } from "./S6Logo";
 
-const DURATION = 380;
+export const DEMO_SHORT_DURATION = HEADLINE_DURATION + CROSS_VENDOR_DURATION + LOGO_DURATION;
 
 export const DemoShort: React.FC = () => {
   const frame = useCurrentFrame();
   return (
-    <AbsoluteFill style={{ opacity: loopEnvelope(frame, DURATION, 12) }}>
+    <AbsoluteFill style={{ opacity: loopEnvelope(frame, DEMO_SHORT_DURATION, 12) }}>
       <Series>
-        <Series.Sequence durationInFrames={110}><S0Headline /></Series.Sequence>
-        <Series.Sequence durationInFrames={150}><S4CrossVendor /></Series.Sequence>
-        <Series.Sequence durationInFrames={120}><S6Logo /></Series.Sequence>
+        <Series.Sequence durationInFrames={HEADLINE_DURATION}><S0Headline /></Series.Sequence>
+        <Series.Sequence durationInFrames={CROSS_VENDOR_DURATION}><S4CrossVendor /></Series.Sequence>
+        <Series.Sequence durationInFrames={LOGO_DURATION}><S6Logo /></Series.Sequence>
       </Series>
     </AbsoluteFill>
   );

@@ -75,6 +75,7 @@ export {
 export {
   AUTH_PROVIDER_NAME,
   authCalloutKey,
+  authInstanceKey,
   authIssuerKey,
   authOwnerSecretKey,
   authServiceKeysKey,

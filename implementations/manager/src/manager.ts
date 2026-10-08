@@ -4298,7 +4298,7 @@ export class Manager {
       const info = a.handle.exitInfo?.();
       detail = info === undefined
         ? `exit detail unavailable from runtime "${a.handle.kind}"`
-        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; last connector diagnostic: ${info.diagnostic}` : ""}`;
+        : `exit code ${info.code ?? "unknown"}${info.signal === undefined ? "" : `, signal ${info.signal}`}${info.diagnostic ? `; diagnostic: ${info.diagnostic}` : ""}`;
     } catch (e) {
       // A runtime that throws while being asked has told us something real; it must not take the
       // log line (or the free path it sits on) down with it.
@@ -7108,7 +7108,21 @@ export class Manager {
             finish({ ok: false, deliberate: true, detail: `${a.name} was stopped before it reported ready` });
             return;
           }
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}` });
+          // The screen's last row can be a dialog footer, so the exit's diagnostic is named beside it:
+          // it carries the runtime's own reason when it stopped the seat. A connector that ends on its
+          // diagnostic already shows it as the last row, and it is not repeated.
+          let exitDetail = "";
+          try {
+            const diagnostic = a.handle.exitInfo?.()?.diagnostic;
+            if (diagnostic && diagnostic !== tail) exitDetail = `; diagnostic: ${diagnostic}`;
+          } catch (e) {
+            // The backstop is already cleared, so a reader that throws must still let this settle.
+            exitDetail = `; exit detail unreadable from runtime "${a.handle.kind}": ${rejectionText(e)}`;
+          }
+          // A runtime's text can carry a lone surrogate, which is not I-JSON, and the failed terminal
+          // this detail becomes is refused with it.
+          exitDetail = exitDetail.replace(/\p{Cs}/gu, "\uFFFD");
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
       timer = setTimeout(

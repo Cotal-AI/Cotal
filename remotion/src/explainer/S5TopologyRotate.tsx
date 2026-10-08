@@ -31,7 +31,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 240;
+export const TOPOLOGY_ROTATE_DURATION = 240;
 
 // vendor symbol per node — four distinct vendors (Codex preset).
 const LOGOS = [
@@ -233,7 +233,7 @@ export const S5TopologyRotate: React.FC = () => {
   const cap3 = fade(frame, 128, 144) * (1 - fade(frame, 168, 184));
   const cap4 = fade(frame, 187, 203);
 
-  const rootOpacity = loopEnvelope(frame, DURATION);
+  const rootOpacity = loopEnvelope(frame, TOPOLOGY_ROTATE_DURATION);
 
   return (
     <CreamStage>

@@ -6,6 +6,7 @@ import {
   assertLifecycleToken,
   instancePinnedInstrumentCapabilities,
   isReachable,
+  managerCallerBinding,
   mintCreds,
   mintLifecycleUid,
   mintGeneration,
@@ -186,20 +187,9 @@ export async function userViewAuth(conn: Connection, view: string, opts: { manag
   const original = view === "manager-caller" ? principalFromBearer(conn.bearer) : undefined;
   const mint = async () => {
     const result = await provider.userCredentials(request);
-    const principal = principalFromBearer(result.bearer);
-    if (original) {
-      const { owner, actor, lifecycleUid, claims } = principal;
-      if (owner !== original.owner || actor !== original.actor || lifecycleUid !== original.lifecycleUid ||
-          claims.act?.owner !== owner || claims.act?.view !== view ||
-          !(claims.aud === conn.space || (Array.isArray(claims.aud) && claims.aud.length === 1 && claims.aud[0] === conn.space)) ||
-          typeof claims.act?.managerInstanceId !== "string")
-        throw new Error("manager control exchange returned different space, principal, lifecycle or view coordinates");
-      const instanceId = assertLifecycleToken(claims.act.managerInstanceId, "managerInstanceId");
-      if (request.managerInstanceId !== undefined && instanceId !== request.managerInstanceId)
-        throw new Error("manager control exchange selected a different manager instance");
-      request.managerInstanceId = instanceId;
-    }
-    return { ...result, principal };
+    if (!original) return { ...result, principal: principalFromBearer(result.bearer) };
+    request.managerInstanceId = managerCallerBinding(result.bearer, { space: conn.space, ...original, instanceId: request.managerInstanceId }).instanceId;
+    return { ...result, principal: original };
   };
   const { bearer, sentinelCreds, principal: { owner, actor, lifecycleUid } } = await mint();
   const managerInstanceId = request.managerInstanceId;
@@ -240,19 +230,14 @@ export async function userViewAuthOrExit(conn: Connection, view: string): Promis
 }
 
 /** A minted bearer's payload as the client reads it, before any field is checked. */
-type BearerClaims = {
-  sub?: unknown;
-  aud?: unknown;
-  act?: { owner?: unknown; actor?: unknown; lifecycleUid?: unknown; view?: unknown; managerInstanceId?: unknown };
-};
+type BearerClaims = { sub?: unknown; act?: { actor?: unknown; lifecycleUid?: unknown } };
 
 /** The (owner, actor, lifecycleUid) principal a minted bearer is bound to — read from the JWT
  *  payload WITHOUT verification (client side; the broker verifies). A bearer-source endpoint
  *  requires the principal pinned at construction, and the caller triple (1c.2c: the v0.4 ep-rail
  *  subjects the callout-minted rows pin) needs the ledger lifecycle claim too — the bearer is the
- *  one authoritative place all three live. It returns the decoded `claims` too, so the
- *  manager-caller check reads the same decode. */
-function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string; claims: BearerClaims } {
+ *  one authoritative place all three live. */
+function principalFromBearer(bearer: string): { owner: string; actor: string; lifecycleUid: string } {
   try {
     const mid = bearer.split(".")[1];
     if (!mid) throw new Error("not a compact JWS");
@@ -261,7 +246,7 @@ function principalFromBearer(bearer: string): { owner: string; actor: string; li
       throw new Error("missing sub/act.actor");
     if (typeof payload.act.lifecycleUid !== "string" || !payload.act.lifecycleUid)
       throw new Error("missing act.lifecycleUid (lifecycle-bound bearers are the v0.4 hard cut)");
-    return { owner: payload.sub, actor: payload.act.actor, lifecycleUid: payload.act.lifecycleUid, claims: payload };
+    return { owner: payload.sub, actor: payload.act.actor, lifecycleUid: payload.act.lifecycleUid };
   } catch (e) {
     throw new Error(`could not read the principal from the minted bearer (${e instanceof Error ? e.message : String(e)}) - the auth service's build may be stale; restart it with \`cotal up\``);
   }

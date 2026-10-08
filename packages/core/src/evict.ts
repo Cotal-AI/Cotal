@@ -32,7 +32,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
-import { isUserNkey } from "./identity.js";
+import { isAccountNkey, isUserNkey } from "./identity.js";
 import { connzRequestSubject, isPrincipalOwnerToken, parsePrincipalKey, principalFromConnz, serverKickSubject, MEMBERSHIP_INBOX_PREFIX } from "./subjects.js";
 
 const enc = (s: string) => new TextEncoder().encode(s);
@@ -641,7 +641,7 @@ export async function observeAccountLivenessWithCreds(opts: {
   accountId: string;
   options?: EvictOptions;
 }): Promise<LivenessSweep> {
-  if (!/^A[A-Z2-7]{55}$/.test(opts.accountId))
+  if (!isAccountNkey(opts.accountId))
     throw new Error("account liveness requires one account public key");
   const observer = await connect({
     servers: opts.servers,

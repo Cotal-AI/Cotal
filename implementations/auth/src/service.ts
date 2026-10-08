@@ -113,6 +113,7 @@ import {
 } from "./ledger.js";
 import {
   AUTH_PROVIDER_NAME,
+  claimAuthInstanceIdentity,
   clearAuthServiceInfo,
   loadCalloutAuth,
   loadIssuer,
@@ -360,9 +361,12 @@ export interface OpenAuthAuthorityPlaneOptions {
   /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
   dir: string;
   /** The root whose space segment keeps the plane's restart identity: a CLI composition's workspace
-   *  root, a hosted context's state dir. Never derived from `dir`, which for the CLI sits inside the
-   *  `.cotal/auth` an operator copies to another root. */
+   *  root. Never derived from `dir`, which for the CLI sits inside the `.cotal/auth` an operator
+   *  copies to another root. With `identityStore`, the state dir an earlier release kept it under. */
   identityRoot: string;
+  /** A hosted context's injected store, which then keeps the restart identity with the other auth
+   *  secret kinds: its serve seed is a private key. */
+  identityStore?: SecretStore;
   dataAccount: { pub: string; signingSeed: string };
   log: (line: string) => void;
   /** SMOKE-ONLY eviction override for the barrier executor's boot resume. Production
@@ -426,17 +430,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // #399 M2: register the auth plane itself as an ordinary `auth` service endpoint — the SAME
   // §13.7 registration ceremony the manager runs (`manager.ts:6562-6690`), before the listener
   // below serves a single request. The persisted instance id + serve nkey (in `identityRoot`,
-  // hardened the way the manager's own instance identity is) so a restart re-registers the
-  // SAME instance: `registerServiceInstance` advances the process epoch on a re-registration and
-  // fences the predecessor; a first registration stays at epoch 0.
+  // hardened the way the manager's own instance identity is, or in a hosted context's store) so a
+  // restart re-registers the SAME instance: `registerServiceInstance` advances the process epoch
+  // on a re-registration and fences the predecessor; a first registration stays at epoch 0.
   let authServeInstanceId: string;
   let authServeGrant: EpServeGrant;
   {
-    const persisted = loadAuthInstanceIdentity(opts.identityRoot, space);
-    const authIdentity = persisted ?? createAuthInstanceIdentity(opts.identityRoot, space, {
-      instanceId: mintLifecycleUid(),
-      serveIdentity: newIdentity(),
-    });
+    const mint = () => ({ instanceId: mintLifecycleUid(), serveIdentity: newIdentity() });
+    const authIdentity = opts.identityStore
+      ? await claimAuthInstanceIdentity(opts.identityStore, space, opts.identityRoot, mint)
+      : loadAuthInstanceIdentity(opts.identityRoot, space) ?? createAuthInstanceIdentity(opts.identityRoot, space, mint());
     const iid = authIdentity.instanceId;
     const artifacts = authClusterArtifacts();
     const values = [...authContractArtifactValues(), artifacts.document, artifacts.manifest];
@@ -1924,6 +1927,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     space,
     dir,
     identityRoot: o.identityRoot,
+    ...(o.context !== undefined ? { identityStore: secrets } : {}),
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log: (l) => console.error(l),
     localManager: o.localManager,

@@ -6,7 +6,7 @@
 // with an ✕ at its midpoint. The workers stay idle and siloed. The point: in a
 // tree, peers can't talk to each other.
 //
-// 1920x1080, 30fps, 150 frames. Center (960,540). Cream/gold, plus ONE brick-red
+// 1920x1080, 30fps. Center (960,540). Cream/gold, plus ONE brick-red
 // "blocked" cue. Reuses the comp-sized wire/beam primitives from header/shared.
 //
 // Beats (frames):
@@ -34,7 +34,7 @@ import {
   type Pt,
 } from "../header/shared";
 
-const DURATION = 150;
+export const PROBLEM_DURATION = 150;
 
 // The single allowed exception to the cream/gold palette: a muted brick-red,
 // used ONLY for the "blocked" sibling link + its ✕.
@@ -122,7 +122,7 @@ export const S1Problem: React.FC = () => {
 
   return (
     <CreamStage>
-      <div style={{ opacity: loopEnvelope(frame, DURATION) }}>
+      <div style={{ opacity: loopEnvelope(frame, PROBLEM_DURATION) }}>
         {/* tree wires from orchestrator down to each worker, with task afterglow */}
         <WireLines paths={TREE_PATHS} glow={treeGlow} />
 

@@ -159,6 +159,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     confirmTimer = setTimeout(() => {
       if (!alive) return;
       const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
+      diagnostic.recordStop(message);
       term.write(`\r\n${message}\r\n`);
       const encoded = Buffer.from(`\r\n${message}\r\n`, "utf8").toString("base64");
       for (const [sub, socks] of dataSubs) {
