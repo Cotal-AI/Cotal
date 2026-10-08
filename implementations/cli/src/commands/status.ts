@@ -139,27 +139,28 @@ async function printMachine(selected: Selected): Promise<void> {
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
   await printHarnesses();
   row("Skills (.agents)", skillsSkewRow());
-  let webExt: boolean;
+  let webExt: boolean | undefined;
   try {
     webExt = webInstalled();
+    row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
   } catch (e) {
     row("Web extension", c.red((e as Error).message));
-    return;
   }
-  row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
   row("Web process", webProcessRow(selected, webExt));
 }
 
 /** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` or
- *  `web.session` is named on the row, like the folder's process rows, so the rest of status still prints. */
-function webProcessRow(selected: Selected, installed: boolean): string {
+ *  `web.session` is named on the row, like the folder's process rows, so the rest of status still
+ *  prints. An install state that could not be read is `undefined` and reads `down`, since only a known
+ *  absence is `not installed`. */
+function webProcessRow(selected: Selected, installed: boolean | undefined): string {
   let url: string | undefined;
   try {
     url = selected.ok ? recordedWebUrl({ root: selected.target.root, space: selected.target.space }) : undefined;
   } catch (e) {
     return c.red((e as Error).message);
   }
-  return url ? c.green(url) : c.dim(installed ? "down" : "not installed");
+  return url ? c.green(url) : c.dim(installed === false ? "not installed" : "down");
 }
 
 /** The rows each connector's setup provider reports, then one row per installed connector, named by

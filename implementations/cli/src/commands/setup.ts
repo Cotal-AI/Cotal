@@ -465,8 +465,9 @@ export async function readyCard(cwd: string): Promise<void> {
   );
 }
 
-/** The card's web row from the mesh's dashboard records. An unreadable `web.pid` or `web.session` is
- *  named on the row, like the status Machine section, so the rest of the card still prints. */
+/** The card's web row from the mesh's dashboard records. An unreadable `web.pid`, `web.session` or
+ *  extension record is named on the row, like the status Machine section, so the rest of the card
+ *  still prints. */
 function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
   try {
     const url = recordedWebUrl({ root: mesh.root, space: mesh.space });
@@ -474,7 +475,11 @@ function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string 
   } catch (e) {
     return { up: false, text: (e as Error).message };
   }
-  return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
+  try {
+    return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
+  } catch (e) {
+    return { up: false, text: (e as Error).message };
+  }
 }
 
 /** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming
