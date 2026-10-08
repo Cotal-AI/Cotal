@@ -5859,7 +5859,7 @@ export class Manager {
     // incarnation REFUSES loud at accept, BEFORE any reserve/mint/bind (pin 1), never a silent `_2`
     // suffix (so an address-by-triple caller's pinned name can't be re-pointed). A PERSONA-DERIVED
     // base name (no pin) keeps uniqueName's collision numbering, so multi-peer `spawn reviewer` twice
-    // still yields reviewer + reviewer_2. The retiring-hold refuse (~2472) is orthogonal and already fired.
+    // still yields reviewer + reviewer_2. The alias-reuse gate above is orthogonal and already fired.
     const hardPinned = opts.identity !== undefined || opts.resolved !== undefined;
     let name: string;
     if (hardPinned) {

@@ -210,7 +210,7 @@ export async function enqueueWorkItem(
     // bytes match; a consumed-and-gone entry (no message) is a settled/in-flight item the caller
     // reconciles, not a mismatch.
     let stored;
-    // LEADER-SERVED STREAM.MSG.GET, never a follower Direct Get (SPEC 13.6:1797-1799): this read
+    // LEADER-SERVED STREAM.MSG.GET, never a follower Direct Get (SPEC 13.6): this read
     // gates the enqueue decision (a stale follower miss would re-arm settled work), so it is a
     // fencing read and must go to the stream leader that just rejected the CAS — read-your-writes.
     try { stored = await ctx.jsm.streams.getMessage(epwStreamName(ctx.space), { last_by_subj: subject }); }
@@ -620,7 +620,7 @@ export async function commitWorkItem(
 
   // A DUPLICATE (same worker, same lease tuple) always observes its cached terminal — the cache
   // lookup DOMINATES lease-expiry, so a slow-but-legitimate retry after its own commit never
-  // sees `expired` (§13.5:1517-1519). A stale/foreign caller does NOT get here (identity + tuple
+  // sees `expired` (§13.5). A stale/foreign caller does NOT get here (identity + tuple
   // must match the settled lease).
   if (stored.state === "settled") {
     const dup = stored.sourceSeq === tuple.sourceSeq && stored.attempt === tuple.attempt
@@ -720,7 +720,7 @@ export type WorkReconcileVerdict =
  *      publish the derived terminal → EXPIRED-SETTLED; with no lease record, a worker-less
  *      `settled:expired` lease is CAS-CREATED on the same key first, so a racing FIRST lease
  *      contends there instead of assigning dead work behind the expiry;
- *   4. a live pool entry exists (subject-confined LEADER-SERVED STREAM.MSG.GET, §13.6:1797-1799 —
+ *   4. a live pool entry exists (subject-confined LEADER-SERVED STREAM.MSG.GET, §13.6 —
  *      a fencing read whose stale follower miss would re-arm settled work) → LIVE;
  *   5. else re-check the terminal (a commit may have landed since step 1), then re-enqueue the
  *      SAME acceptance-derived bytes create-only — the ONLY re-enqueueable state.
@@ -861,7 +861,7 @@ export async function retireWorkItem(
 
 /** The §13.6 liveness read: the subject-confined LEADER-SERVED last-by-subject probe on the
  *  item's own subject (an acked item has LEFT the WorkQueue; an in-flight one remains readable).
- *  STREAM.MSG.GET, never a follower Direct Get (SPEC 13.6:1797-1799): the result gates the
+ *  STREAM.MSG.GET, never a follower Direct Get (SPEC 13.6): the result gates the
  *  re-enqueue decision, so a stale follower miss would re-arm settled work. ONLY the broker's
  *  no-message result is absence; every other failure is `unavailable`, never fabricated as "no
  *  live entry" (which would drive an incorrect re-enqueue). */

@@ -170,7 +170,7 @@ console.log("B. no profile's credential can reach a session rail that is not its
     for (const row of rows) for (const rail of foreignRails) if (subjectMatches(row, rail)) leaks.push({ profile, row, reaches: rail });
   }
   c("every profile constructs (an unconstructible profile FAILS, never skips)", unconstructible.length === 0, unconstructible);
-  c("NO profile's rows match a foreign session's `in`/`out` rail — no standing EPS grant on either side (SPEC 13.9:2526)",
+  c("NO profile's rows match a foreign session's `in`/`out` rail — no standing EPS grant on either side (SPEC 13.9)",
     leaks.length === 0, leaks);
 }
 

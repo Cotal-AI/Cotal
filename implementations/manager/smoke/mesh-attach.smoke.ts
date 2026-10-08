@@ -13,10 +13,11 @@
  * SCOPE NOTE (coordinator's binding call, end-loaded reviews): item 6 builds the STATIC redeem
  * enforcement (this smoke) + the CLI/console clients + restart termination; the auth-service
  * USER-MODE redemption handler (callout-minted per-session creds) and the barrier session
- * reconciler (implementations/auth/src/service.ts:358) are the #29 auth-trigger slice, OUT of item
- * 6. A user-mode attach REFUSES LOUD naming the unwired path (no fallback) — asserted below. This
- * smoke drives the redemption seam with an in-memory faithful ledger (the core-smoke pattern), so
- * it needs no auth broker; the 6b live gate exercises the STATIC-auth end to end.
+ * reconciler (the auth session ledger's `reconcileSessionForTakeover`) are the #29 auth-trigger
+ * slice, OUT of item 6. A user-mode attach REFUSES LOUD naming the unwired path (no fallback) —
+ * asserted below. This smoke drives the redemption seam with an in-memory faithful ledger (the
+ * core-smoke pattern), so it needs no auth broker; the 6b live gate exercises the STATIC-auth end
+ * to end.
  *
  * Proven here: (A) redeem enforcement — one-use (second redeem refuses), holder-bound (a foreign
  * presenter refuses), expiry; the user-mode seam refuses loud. (B) the PTY bridge over a REAL

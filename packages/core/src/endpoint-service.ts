@@ -1729,13 +1729,13 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export type EpGateState = GateStateOp & {
   /** The gate's space. In production the gate physically lives in the per-space
-   *  `KV_cotal_auth_<space>` bucket (§13.9:2393), so the space is the bucket and cannot be crossed;
+   *  `KV_cotal_auth_<space>` bucket (§13.12), so the space is the bucket and cannot be crossed;
    *  carrying it here is defense-in-depth for the in-memory seam/fake, so a mint/registration
    *  handed a gate constructed for another space is refused rather than trusting the caller wired
    *  the right bucket. */
   space: string;
   /** The gate's OWN instance identity, `(endpoint, lifecycleUid)` (§13.1). For an endpoint the
-   *  lifecycle identity is `instanceId`, which SPEC 13.1:1008-1013 makes unique only within
+   *  lifecycle identity is `instanceId`, which SPEC 13.1 makes unique only within
    *  `(space, endpoint)` (its ≥128-bit CSPRNG entropy is what makes the SPEC's `gate.<lifecycleUid>`
    *  key collision-free within the space bucket). Binding the ENDPOINT here is the explicit
    *  identity check that does not rely on that entropy: a caller that passes a DIFFERENT endpoint's
@@ -1750,7 +1750,7 @@ export type EpGateState = GateStateOp & {
   endpoint: string;
   lifecycleUid: string;
   /** The registered serving instance's CONNZ-attributable connection principal (`<owner>.<actor>`
-   *  dot-form, §13.1:1056-1069): the eviction target, and the value every `epcred` row MUST copy
+   *  dot-form, §13.1): the eviction target, and the value every `epcred` row MUST copy
    *  as its `holderPrincipal`. The mint is bound to it — a credential whose minting `owner.actor`
    *  is not this principal (a SIBLING ACTOR under the registered owner) cannot win the gate — so
    *  the ledger/eviction target can never diverge from the registered serving principal. */
@@ -1905,7 +1905,7 @@ export interface EpServeCredential {
  *  mint records `["root"]` for a serve credential minted directly by the provisioner authority.
  *  Ids are the record grammar `[A-Za-z0-9_-]` (uppercase admitted), bounded, and every segment is
  *  non-empty — so `handle.x`, `handle.x.`, and `session.x.y` all refuse. */
-const SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,64}"; // the §13.2:1248 / assertIdToken id bound
+const SOURCE_CHAIN_ID = "[A-Za-z0-9_-]{1,64}"; // the §13.2 / assertIdToken id bound
 const SOURCE_CHAIN_ELEMENT = new RegExp(`^(root|handle\\.${SOURCE_CHAIN_ID}\\.${SOURCE_CHAIN_ID}|session\\.${SOURCE_CHAIN_ID})$`);
 
 /**
@@ -1962,7 +1962,7 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     throw new EpEnvelopeError("expired", `the issuance gate is at registrationRevision ${obs.registrationRevision}, not the authorized ${snap.registrationRevision}; a re-registration superseded the branded surface (SPEC 13.5/13.9)`);
   if (obs.nameAuthorityRevision !== snap.nameAuthorityRevision)
     throw new EpEnvelopeError("expired", `the issuance gate is at nameAuthorityRevision ${obs.nameAuthorityRevision}, not the authorized ${snap.nameAuthorityRevision}; a name transfer superseded the serving owner (SPEC 13.9)`);
-  // SERVING-PRINCIPAL BINDING (§13.1:1056-1069): the mint is bound to the gate's REGISTERED serving
+  // SERVING-PRINCIPAL BINDING (§13.1): the mint is bound to the gate's REGISTERED serving
   // principal, not merely the registered owner. authorizeServeGrant proves owner == registered
   // owner, but a SIBLING ACTOR under that owner would otherwise win the real gate and be
   // ledgered/evicted in place of the registered serving instance. The minted `owner.actor` MUST

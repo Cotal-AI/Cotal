@@ -45,7 +45,7 @@ export function buildContractClosureManifest(rootRef: string, memberRefs: readon
 /** The artifact-count ceiling: a walk that would exceed it fails loud, never truncates. */
 export const CONTRACT_CLOSURE_MAX_ARTIFACTS = 64;
 
-/** A manifest digest field is EXACTLY `sha256:<64-hex>` (frozen SPEC 13.7:1858-1861), never a
+/** A manifest digest field is EXACTLY `sha256:<64-hex>` (frozen SPEC 13.7), never a
  *  bare `<hex>` or any other spelling (distsys 8dcad72 HIGH): two manifests differing only in
  *  digest spelling are both canonical JSON, receive DIFFERENT closure digests, yet verify the same
  *  walked graph - so one closure would have two identities. Normalization belongs in the BUILDER's

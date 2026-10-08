@@ -60,7 +60,7 @@ function cpQualifiers(ref: CheckpointRef): string[] {
 }
 
 /** The checkpoint SPEC (written once at mint): what is paused and who may resume. `holder` is
- *  MANDATORY (§13.6:1622/§13.10:2315: checkpoint resume is holder-bound — an omitted holder
+ *  MANDATORY (§13.6/§13.10: checkpoint resume is holder-bound — an omitted holder
  *  would make the token a BEARER credential resumable by anyone who learns it). The deep
  *  signature verification is the capability-handle slice; this seam enforces the recorded
  *  identity. `goal` is present iff the checkpoint pauses an action goal. */

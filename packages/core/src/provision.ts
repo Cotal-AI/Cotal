@@ -2067,7 +2067,7 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
   const rows = epServeGrantRows(space, {
     endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, ephemeralCommands,
   });
-  // §13.9:2473 bind rows, from the BRANDED snapshot only (journal class is registered truth,
+  // §13.9 bind rows, from the BRANDED snapshot only (journal class is registered truth,
   // pools are the authorizing provisioner's pre-created durables): a journal-class instance
   // binds the shared `eff_<e>` effects durable, a pool-owning one binds each owned
   // `pool_<e>_<pool>` — all bind-only (INFO/MSG.NEXT/ACK, never create/delete), plus the one

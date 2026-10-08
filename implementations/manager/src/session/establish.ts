@@ -4,8 +4,8 @@
  *
  * Item 6 owns the offer mint + the STATIC redeem enforcement (this module) + the PTY bridge + the
  * CLI/console clients + restart termination. The auth-service USER-MODE redemption handler
- * (callout-minted per-session credentials) and the barrier session reconciler
- * (implementations/auth/src/service.ts:358) are the #29 auth-trigger slice — OUT of item 6. This
+ * (callout-minted per-session credentials) and the barrier session reconciler (the auth session
+ * ledger's `reconcileSessionForTakeover`) are the #29 auth-trigger slice — OUT of item 6. This
  * module exposes both halves through ONE {@link RedemptionSeam} interface: {@link
  * staticRedemptionSeam} (wired) and {@link userModeRedemptionSeam} (a loud refusal until #29 lands
  * — a user-mode attach must fail, never silently degrade to the static path).
@@ -184,7 +184,7 @@ export interface StaticRedemptionDeps {
  *    (`eps.<endpoint>.<sessionId>.<epoch>.{in,out}`), TTL-bound to the session, staged into this
  *    instance's §13.1 `epcred.<endpoint>.<instanceId>` family under the open-and-commit fence, and
  *    revoked BY NAME at the session's terminal. It replaces a STANDING wildcard credential that
- *    reached every live session's bytes at its epoch (SPEC 13.9:2526).
+ *    reached every live session's bytes at its epoch (SPEC 13.9).
  *  - CALLER half: NOT minted, staged, or revoked here, and `releaseCredential` returns a MARKER with
  *    no usable bytes for it. The caller's `session-caller` JWT is minted OUT OF BAND from the local
  *    space seed — by the console establisher and by CLI attach — after redemption.
