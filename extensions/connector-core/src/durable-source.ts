@@ -136,8 +136,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
    *
    * `dev`/`ino` catch unlink-and-recreate, but **not an in-place rewrite** (`writeFileSync` with no
    * unlink keeps the inode), and that case resumes at a byte offset inside a different document and
-   * emits fragments of it as records (`fmae-rev-eng`, CONFIRMED). Size cannot catch it either when
-   * the replacement is larger.
+   * emits fragments of it as records. Size cannot catch it either when the replacement is larger.
    *
    * Note what this deliberately does NOT flag: a rewrite that reproduces the same preceding bytes.
    * There the consumed prefix is genuinely unchanged, so resuming is correct — the seal states an
