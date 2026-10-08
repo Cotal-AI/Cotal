@@ -151,11 +151,14 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const pidFile = join(agentHome, "serve.pid");
   let recorded: string | undefined;
   try {
-    recorded = readFileSync(pidFile, "utf8");
+    try {
+      recorded = readFileSync(pidFile, "utf8");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
+      rmdirSync(pidFile);
+    }
   } catch (e) {
-    const code = (e as NodeJS.ErrnoException).code;
-    if (code === "EISDIR") rmdirSync(pidFile);
-    else if (code !== "ENOENT") throw e;
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
   if (recorded !== undefined) {
     const pid = Number(recorded);
