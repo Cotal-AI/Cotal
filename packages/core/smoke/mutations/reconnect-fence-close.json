@@ -14,8 +14,8 @@
     {
       "name": "a reconnect-disabled teardown drains instead of closing",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.close();\n",
-      "replace": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.drain();\n",
+      "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n",
+      "replace": "    this.disableLibraryReconnect(nc);\n    await nc.drain();\n",
       "expectRed": "stop() after a reconnect-disable on a half-open socket returns without waiting for a drain PONG",
       "cell": "stop() after a reconnect-disable on a half-open socket returns without waiting for a drain PONG",
       "note": "With drain restored, nats-core waits for a PONG that the cut relay never delivers. The child is killed at the 8s budget without printing STOPPED, and the parent reds this named cell."
