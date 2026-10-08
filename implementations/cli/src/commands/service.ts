@@ -162,15 +162,29 @@ function systemdUnitStatus(unit: string): { state: string; enabled: boolean | "u
   return { state: state === "not-found" ? "not-found" : state, enabled };
 }
 
+/** A unit file's comment syntax. The provenance header is written and read through the same one,
+ *  so a field reads back without the delimiters the writer wrapped it in. */
+interface CommentSyntax { open: string; close: string }
+const SYSTEMD_COMMENT: CommentSyntax = { open: "# ", close: "" };
+const LAUNCHD_COMMENT: CommentSyntax = { open: "<!-- ", close: " -->" };
+
+const comment = (syntax: CommentSyntax, text: string): string => `${syntax.open}${text}${syntax.close}`;
+
+const provenanceHeader = (syntax: CommentSyntax, mesh: string, root: string): string[] =>
+  [MARKER, `cotal-mesh: ${mesh}`, `cotal-root: ${root}`].map((text) => comment(syntax, text));
+
 /** Read the provenance fields a unit/plist carries. The marker must be a WHOLE LINE at the
  *  very start of the file, exactly as this command writes it: a substring anywhere else (a
  *  Description= that quotes the phrase, a comment mid-file) is how an operator-written unit
  *  comes to look owned, and looking owned is what uninstall keys on. */
-function readUnitFields(path: string, meshPrefix: string, rootPrefix: string, markerLine: string): { mesh?: string; root?: string; marked: boolean } {
+function readUnitFields(path: string, syntax: CommentSyntax): { mesh?: string; root?: string; marked: boolean } {
   const lines = readFileSync(path, "utf8").split("\n");
-  const mesh = lines.find((l) => l.startsWith(meshPrefix))?.slice(meshPrefix.length).trim();
-  const root = lines.find((l) => l.startsWith(rootPrefix))?.slice(rootPrefix.length).trim();
-  return { mesh, root, marked: lines[0] === markerLine };
+  const field = (name: string): string | undefined => {
+    const open = `${syntax.open}${name}: `;
+    const line = lines.find((l) => l.startsWith(open) && l.endsWith(syntax.close));
+    return line?.slice(open.length, line.length - syntax.close.length);
+  };
+  return { mesh: field("cotal-mesh"), root: field("cotal-root"), marked: lines[0] === comment(syntax, MARKER) };
 }
 
 export async function service(args: ParsedArgs): Promise<void> {
@@ -346,9 +360,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     preseedService(stateDir);
     const envFile = writeEnvFile(mesh, server, stateDir, pathEnv);
     const body = [
-      `# ${MARKER}`,
-      `# cotal-mesh: ${mesh}`,
-      `# cotal-root: ${root}`,
+      ...provenanceHeader(SYSTEMD_COMMENT, mesh, root),
       `# Restart=always/20s: measured for manager units in production - a manager exits`
       + ` for reasons that are not failures (broker restarts, host suspend), so on-failure/5s`
       + ` thrashes while always/20s converges.`,
@@ -374,7 +386,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       ``,
     ].join("\n");
     mkdirSync(dir, { recursive: true });
-    if (existsSync(path) && !readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`).marked)
+    if (existsSync(path) && !readUnitFields(path, SYSTEMD_COMMENT).marked)
       throw new Error(`${path} already exists and was not written by \`cotal service install\` - remove it by hand if you want this command to own it`);
     writeFileSync(path, body);
     systemctl(["daemon-reload"]);
@@ -394,9 +406,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
     preseedService(stateDir);
     const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
     const body = [
-      `<!-- ${MARKER} -->`,
-      `<!-- cotal-mesh: ${mesh} -->`,
-      `<!-- cotal-root: ${root} -->`,
+      ...provenanceHeader(LAUNCHD_COMMENT, mesh, root),
       `<?xml version="1.0" encoding="UTF-8"?>`,
       `<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
       `<plist version="1.0">`,
@@ -419,7 +429,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
       ``,
     ].join("\n");
     mkdirSync(dir, { recursive: true });
-    if (existsSync(path) && !readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`).marked)
+    if (existsSync(path) && !readUnitFields(path, LAUNCHD_COMMENT).marked)
       throw new Error(`${path} already exists and was not written by \`cotal service install\` - remove it by hand if you want this command to own it`);
     writeFileSync(path, body);
     const loaded = run("launchctl", ["load", "-w", path]);
@@ -476,7 +486,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const unit = systemdUnitName(mesh);
     const path = join(userUnitDir(), unit);
     if (!existsSync(path)) return out;
-    const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`);
+    const fields = readUnitFields(path, SYSTEMD_COMMENT);
     // The mesh field is REQUIRED, never synthesized: a unit with no recorded mesh is not
     // provably this command's, so status does not present one as its own either.
     if (!fields.mesh)
@@ -495,7 +505,7 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const label = launchdLabel(mesh);
     const path = join(launchAgentsDir(), `${label}.plist`);
     if (!existsSync(path)) return out;
-    const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`);
+    const fields = readUnitFields(path, LAUNCHD_COMMENT);
     // Same required-recorded-mesh rule as the Linux arm.
     if (!fields.mesh)
       throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
@@ -548,7 +558,7 @@ function uninstall(values: { mesh?: string }): void {
     const path = join(dir, unit);
     if (!existsSync(path))
       throw new Error(`no service unit for mesh "${mesh}" at ${path} - nothing installed by \`cotal service install\``);
-    const fields = readUnitFields(path, "# cotal-mesh:", "# cotal-root:", `# ${MARKER}`);
+    const fields = readUnitFields(path, SYSTEMD_COMMENT);
     if (!fields.marked)
       throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
     // Provenance keys on the marker PLUS a recorded mesh equal to the one named, never the unit
@@ -579,7 +589,7 @@ function uninstall(values: { mesh?: string }): void {
     const path = join(dir, `${label}.plist`);
     if (!existsSync(path))
       throw new Error(`no launchd agent for mesh "${mesh}" at ${path} - nothing installed by \`cotal service install\``);
-    const fields = readUnitFields(path, "<!-- cotal-mesh:", "<!-- cotal-root:", `<!-- ${MARKER} -->`);
+    const fields = readUnitFields(path, LAUNCHD_COMMENT);
     if (!fields.marked)
       throw new Error(`${path} was not written by \`cotal service install\` (no provenance header) - this command refuses to remove operator-managed units`);
     // Same mesh-pinned provenance rule as the Linux arm: the recorded mesh must be present and
