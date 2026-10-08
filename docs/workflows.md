@@ -554,7 +554,11 @@ compiled engine is version `2`, two languages rather than two speeds of one (`sp
 executed by the compiled engine**. The program runs in its own locked-down worker thread with
 nothing in its global scope, while the effects and the durable journal stay in the driver's process,
 bridged over a message port. No socket or credential enters the isolate holding the program,
-and **every version-`1` record keeps replaying on the walker**, which is the walker's job. On either
+and **every version-`1` record keeps replaying on the walker**, which is the walker's job. Each run's
+thread loads the engine from the installed package, so a package upgraded in place under a live
+driver starts its next thread on the new code. When that thread and the driver disagree about the
+bridge, that run fails naming the message the driver did not know, and the driver keeps hosting its
+other runs; restart the manager after an upgrade so both sides come from one version. On either
 engine the driver bounds an effect's `ok` result at the broker's `max_payload` less 4096 bytes: a
 larger result is refused ahead of the settling append (**L5006**), the step stays pending, and the
 run is released. The driver serves a declared set of versions, and a record whose version it does

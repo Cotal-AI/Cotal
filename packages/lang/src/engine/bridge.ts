@@ -317,8 +317,17 @@ export interface BridgeHost {
  * the thread (where the journal lives) and its durable append comes back through `store.append`
  * on this side; `signal` is a mirror the thread's cancellations flip. The host never blocks —
  * every branch here either answers from a synchronous clock or awaits work it already owns.
+ *
+ * A message this side cannot place is the two sides disagreeing about the protocol, which is what
+ * a thread started from another install than the host's own looks like (#3216). It goes to
+ * `fault`, which fails the run that owns the thread: thrown from this listener it is an uncaught
+ * exception, and it ends the whole host process with every other run in it.
  */
-export function serviceBridge(port: MessagePort, seam: { readonly handler: EffectHandler; readonly store: JournalStore }): BridgeHost {
+export function serviceBridge(
+  port: MessagePort,
+  seam: { readonly handler: EffectHandler; readonly store: JournalStore },
+  fault: (e: Error) => void,
+): BridgeHost {
   const clock = new SharedArrayBuffer(CLOCK_BYTES);
   const flag = new Int32Array(clock, 0, 1);
   const value = new Float64Array(clock, 8, 1);
@@ -429,13 +438,16 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
     }
     if (m.kind === "bind-answer") {
       const b = binds.get(m.bseq);
-      if (b === undefined) throw new Error(`cotal-lang effect bridge: the thread answered bind ${m.bseq}, which this host never asked`);
+      if (b === undefined) {
+        fault(new Error(`cotal-lang effect bridge: the thread answered bind ${m.bseq}, which this host never asked`));
+        return;
+      }
       binds.delete(m.bseq);
       if (m.error === undefined) b.resolve();
       else b.reject(rehydrate(m.error));
       return;
     }
-    throw new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)})`);
+    fault(new Error(`cotal-lang effect bridge: the thread sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)})`));
   });
 
   return {

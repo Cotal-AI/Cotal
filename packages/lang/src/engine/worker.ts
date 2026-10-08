@@ -221,9 +221,12 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
   const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
   let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
   let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
+  // Assigned by `done` below, synchronously after the thread exists, so no bridge message can
+  // arrive before it: a fault the host's half of the bridge reports fails this run.
+  let fault: (e: Error) => void = () => {};
   if (options.bridge !== undefined) {
     const channel = new MessageChannel();
-    host = serviceBridge(channel.port1, options.bridge);
+    host = serviceBridge(channel.port1, options.bridge, (e) => fault(e));
     bridge = { port: channel.port2, clock: host.clock };
   }
   // Two literal spellings rather than one spread, so the crossing audit in the engine suite reads
@@ -242,6 +245,10 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
 
   const done = new Promise<WorkerRunResult>((resolve, reject) => {
     let answered = false;
+    fault = (e) => {
+      answered = true;
+      reject(e);
+    };
     worker.on("message", (m: { kind: "log"; line: { scope: string; values: readonly unknown[] } } | { kind: "result"; result: WorkerRunResult }) => {
       if (m.kind === "log") {
         options.onLog?.(m.line);
