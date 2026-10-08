@@ -101,6 +101,18 @@ export interface ScanGuard {
   assertHeld(when: "before" | "after"): Promise<void>;
 }
 
+/** Run one sealed scan under the plane guard (SPEC 13.13), inside the caller's serialized critical
+ *  section. The check after the scan discards the result because a claim lost mid-scan means a
+ *  successor may already own the literal consumer name. The module chain serializes within a
+ *  process; the guard is the cross-process authority. Only a smoke-built scanner has no guard. */
+export async function guardedScan<T>(guard: ScanGuard | undefined, scan: () => Promise<T>): Promise<T> {
+  if (guard === undefined) return scan();
+  await guard.assertHeld("before");
+  const out = await scan();
+  await guard.assertHeld("after");
+  return out;
+}
+
 /** The winner's hold on the plane. */
 export interface PlaneClaimHold {
   claimId: string;
