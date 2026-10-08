@@ -995,6 +995,19 @@ interface TeardownTarget {
   launch?: { allowSubscribe: readonly string[] };
 }
 
+/** A name held pending its incarnation's retirement. It keeps the teardown target whole, so a
+ *  same-name spawn or a resume re-drives the same teardown the first drive ran. */
+interface RetirementHold {
+  opId: string;
+  owner: string;
+  actor: string;
+  target: TeardownTarget;
+  startedAt: number;
+  lastError?: string;
+  standingAuthorityLive?: boolean;
+  lastResources?: DeprovisionResourceAccounting;
+}
+
 /** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
 export interface SpawnHooks {
@@ -1218,7 +1231,7 @@ export class Manager {
    *  refuses legibly AND re-fires the request. In-memory: across a manager restart the durable
    *  truth is the auth-side lifecycle head itself (an unretired head refuses issuance — the
    *  named residual this belt narrows, not replaces). */
-  private retiring = new Map<string, { opId: string; lifecycleUid: string; owner: string; actor: string; agentId: string; userOwner?: string; delegated?: true; secretPaths?: ManagedAgent["secretPaths"]; runtime?: RuntimeReference; delegatedHandle?: AgentHandle; startedAt: number; lastError?: string; standingAuthorityLive?: boolean; launch?: { allowSubscribe: readonly string[] }; lastResources?: DeprovisionResourceAccounting }>();
+  private retiring = new Map<string, RetirementHold>();
   /** Exact predecessor incarnations whose full hosted retirement reached a terminal answer. Presence
    *  is advisory and can retain that old lifecycle briefly after its process exits. Resume may ignore
    *  only this exact (alias, principal, lifecycleUid) row when adopting a different lifecycle; every
@@ -4366,6 +4379,10 @@ export class Manager {
     // and no successor may answer for it; the terminal is still the deadline's, not a new reason.
     this.failSeatTurns(a.name, a.lifecycleUid);
     if (floor && Date.now() - a.startedAt < MIN_LIFETIME) this.cooling.push(a.startedAt + MIN_LIFETIME);
+    // The departed agent's own custody reference rides the teardown: the exit that freed this slot
+    // is usually the seat ending, but a stop that could not prove the process gone leaves one the
+    // terminal must still address before it frees the alias.
+    const target: TeardownTarget = { id: a.id, name: a.name, lifecycleUid: a.lifecycleUid, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, runtime: a.handle?.reference, ...(a.handedOff ? { delegatedHandle: a.handle } : {}), launch: { allowSubscribe: a.launch.allowSubscribe } };
     // #29 piece 3: on a USER mesh the name is RESERVED PENDING RETIREMENT — despawn started this
     // lifecycle's FULL teardown (footprint + standing-authority revoke + the auth-side retirement),
     // and the alias frees only when all of it completes (not the retirement alone). The detached
@@ -4376,23 +4393,21 @@ export class Manager {
     // this, but the intent is "user mode only", not "any principal-shaped id").
     if (this.userMode) {
       const p = parsePrincipalKey(a.id);
-      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: p.owner, actor: p.actor, agentId: a.id, userOwner: a.userOwner, delegated: a.delegated, secretPaths: a.secretPaths, launch: { allowSubscribe: a.launch.allowSubscribe }, ...(a.handedOff ? { delegatedHandle: a.handle } : {}), startedAt: Date.now() });
+      if (p) this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), owner: p.owner, actor: p.actor, target, startedAt: Date.now() });
     } else if (this.auth) {
       // Unit B: a STATIC lifecycle now also holds its name pending its own terminal (the F1
       // static retirement the detached deprovision below drives) — the alias frees only when the
       // gate+head terminal completes, exactly the user-mode discipline. The wire principal is the
       // incarnation-unique nkey (F5-bind); owner is the dev owner.
-      this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), lifecycleUid: a.lifecycleUid, owner: DEV_OWNER, actor: a.id, agentId: a.id, secretPaths: a.secretPaths, launch: { allowSubscribe: a.launch.allowSubscribe }, runtime: a.handle?.reference, startedAt: Date.now() });
+      this.retiring.set(a.name, { opId: retireOpId(a.lifecycleUid), owner: DEV_OWNER, actor: a.id, target, startedAt: Date.now() });
     }
     // Auth mode: tear down the departed agent's minted broker footprint + creds file (#159 B2). The
     // process is already gone, so this must never block the slot free or throw into the caller — it runs
     // detached, and a failure is logged loudly (never swallowed), not retried. The `agents` guard above
     // makes this fire exactly once per agent across every free path (despawn / self-stop / reap / exit).
-    // The departed agent's own custody reference rides the teardown: the exit that freed this slot
-    // is usually the seat ending, but a stop that could not prove the process gone leaves one the
-    // terminal must still address before it frees the alias.
+    // The agent's own fields ride along for its accepted renewal, which the static terminal drains first.
     if (!a.suppressCleanup && (this.maintenanceState === "active" || acceptedBeforeFence))
-      this.trackDeprovision({ ...a, runtime: a.handle?.reference, ...(a.handedOff ? { delegatedHandle: a.handle } : {}) });
+      this.trackDeprovision({ ...a, ...target });
   }
 
   /** Tear down a departed agent's minted footprint (#159 B2, auth mode): its local-principal durables
@@ -4429,7 +4444,7 @@ export class Manager {
         // The agent is its user's: only that user's retirement intent retires it, so the name stays
         // held until retireDelegatedAgent confirms the host retired this UID.
         const held = this.retiring.get(a.name);
-        if (held?.lifecycleUid === a.lifecycleUid)
+        if (held?.target.lifecycleUid === a.lifecycleUid)
           held.lastError = `"${a.name}" was launched under a delegated user intent and retires only through its user's retirement intent`;
         return;
       }
@@ -4497,7 +4512,7 @@ export class Manager {
       // legible operator copy. A retry re-drives this whole teardown (the same-name-spawn nudge routes
       // through deprovision, not the rail alone), so the revoke is re-attempted, not stranded.
       const holdRevoke = this.retiring.get(a.name);
-      if (holdRevoke && holdRevoke.lifecycleUid === a.lifecycleUid) holdRevoke.standingAuthorityLive = true;
+      if (holdRevoke && holdRevoke.target.lifecycleUid === a.lifecycleUid) holdRevoke.standingAuthorityLive = true;
       try {
         await resolveAuthProvider().revokeAgent({
           dir: userAuthStateDir(this.workspaceRoot, this.space),
@@ -4505,10 +4520,10 @@ export class Manager {
           actor: a.name,
         });
         const done = this.retiring.get(a.name);
-        if (done && done.lifecycleUid === a.lifecycleUid) done.standingAuthorityLive = false;
+        if (done && done.target.lifecycleUid === a.lifecycleUid) done.standingAuthorityLive = false;
       } catch (e) {
         const h = this.retiring.get(a.name);
-        if (h && h.lifecycleUid === a.lifecycleUid)
+        if (h && h.target.lifecycleUid === a.lifecycleUid)
           h.lastError = `the agent's standing mint authority could not be revoked (${rejectionText(e)}); the name stays held so a copied actor token cannot mint fresh credentials. NEXT: a same-name spawn re-drives the full teardown (including the revoke), or recover the auth state.`;
         console.error(`revoke agent grant ${a.name}: ${rejectionText(e)}`);
       }
@@ -4517,10 +4532,10 @@ export class Manager {
     try {
       const res = await this.deprovisionBroker(a);
       const h = this.retiring.get(a.name);
-      if (h && h.lifecycleUid === a.lifecycleUid) h.lastResources = res;
+      if (h && h.target.lifecycleUid === a.lifecycleUid) h.lastResources = res;
     } catch (e) {
       const h = this.retiring.get(a.name);
-      if (h && h.lifecycleUid === a.lifecycleUid) {
+      if (h && h.target.lifecycleUid === a.lifecycleUid) {
         h.lastError = rejectionText(e);
         if (e instanceof DeprovisionError) h.lastResources = e.accounting;
       }
@@ -4668,7 +4683,7 @@ export class Manager {
     // CAS the hold clear (audit #1 ABA): free the alias ONLY if the current hold is still THIS
     // lifecycle's. A late reply for a retired predecessor must never clear a successor's newer hold.
     const cur = this.retiring.get(a.name);
-    if (cur && cur.lifecycleUid === a.lifecycleUid) {
+    if (cur && cur.target.lifecycleUid === a.lifecycleUid) {
       if (cur.standingAuthorityLive) {
         // INT-2: the auth-plane lifecycle retired, but the manager-side STANDING mint authority is
         // not yet revoked. A copied token could still mint, so neither free the alias nor classify
@@ -5789,7 +5804,7 @@ export class Manager {
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
-      void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, delegated: held.delegated, secretPaths: held.secretPaths, delegatedHandle: held.delegatedHandle, launch: held.launch }).catch(() => {});
+      void this.deprovision(held.target).catch(() => {});
       const err = lifecycleBlocked("failed-precondition",
         `the name "${identityName}" is reserved pending retirement: its previous agent's despawn started that lifecycle's teardown (footprint + standing-authority revoke + auth-side retirement), and the name frees only when all of it completes${held.lastError !== undefined ? ` (last attempt: ${held.lastError})` : ""}. NEXT: wait a moment and retry this spawn (retrying re-drives the whole teardown), or pick another name.`,
         { blockedOp: "retirement", opId: held.opId, remedy: "retry" });
@@ -6343,7 +6358,7 @@ export class Manager {
         // The host enrolled this UID for the intent's user, so only that user's retirement intent
         // retires it, and its name stays held for retireDelegatedAgent.
         const p = orphan.delegated ? parsePrincipalKey(orphan.id) : null;
-        if (p) this.retiring.set(orphan.name, { opId: retireOpId(orphan.lifecycleUid), lifecycleUid: orphan.lifecycleUid, owner: p.owner, actor: p.actor, agentId: orphan.id, userOwner: orphan.userOwner, delegated: true, secretPaths: orphan.secretPaths, startedAt: Date.now() });
+        if (p) this.retiring.set(orphan.name, { opId: retireOpId(orphan.lifecycleUid), owner: p.owner, actor: p.actor, target: orphan, startedAt: Date.now() });
         this.trackDeprovision(orphan, "(orphaned spawn)");
       }
     }
@@ -6386,19 +6401,11 @@ export class Manager {
         // already removed the hold, so fresh-lifecycle resume still reaches the fail-closed roster gate.
         const held = this.retiring.get(entry.name);
         if (held) {
-          void this.deprovision({
-            id: held.agentId,
-            name: entry.name,
-            lifecycleUid: held.lifecycleUid,
-            userOwner: held.userOwner,
-            delegated: held.delegated,
-            secretPaths: held.secretPaths,
-            delegatedHandle: held.delegatedHandle,
-          }).catch(() => {});
+          void this.deprovision(held.target).catch(() => {});
           return {
             ok: false,
             agents: [],
-            error: `retained agent "${entry.name}" is reserved pending retirement: its previous lifecycle ${held.lifecycleUid} still owns the alias${held.lastError ? ` (last attempt: ${held.lastError})` : ""}; retrying re-drives that exact teardown`,
+            error: `retained agent "${entry.name}" is reserved pending retirement: its previous lifecycle ${held.target.lifecycleUid} still owns the alias${held.lastError ? ` (last attempt: ${held.lastError})` : ""}; retrying re-drives that exact teardown`,
           };
         }
         let principal: string;
@@ -7272,8 +7279,8 @@ export class Manager {
     try {
       const live = this.agents.get(name);
       const held = live ? undefined : this.retiring.get(name);
-      const principal = live?.delegated ? parsePrincipalKey(live.id) : held?.delegated ? held : null;
-      const lifecycleUid = live?.lifecycleUid ?? held?.lifecycleUid;
+      const principal = live?.delegated ? parsePrincipalKey(live.id) : held?.target.delegated ? held : null;
+      const lifecycleUid = live?.lifecycleUid ?? held?.target.lifecycleUid;
       if (!principal || !lifecycleUid) return { ok: false, error: `no agent named "${name}" was launched on this manager under a delegated user intent` };
       const target = { owner: principal.owner, actor: principal.actor, lifecycleUid };
       try {
@@ -7286,7 +7293,7 @@ export class Manager {
       } catch (e) {
         const error = `the delegated retirement under intent ${intentId} did not complete (${rejectionText(e)})`;
         const hold = this.retiring.get(name);
-        if (hold?.lifecycleUid === target.lifecycleUid) hold.lastError = error;
+        if (hold?.target.lifecycleUid === target.lifecycleUid) hold.lastError = error;
         return { ok: false, error: `${error}; "${name}" is unchanged` };
       }
       // The host's retirement closed this UID's provider handle before its barrier, so the stop only
@@ -9298,13 +9305,13 @@ export class Manager {
       const principal = principalKey(DEV_OWNER, a.id).key;
       this.retiredPrincipals.add(principal);
       const cur = this.retiring.get(a.name);
-      if (cur && cur.lifecycleUid === a.lifecycleUid) {
+      if (cur && cur.target.lifecycleUid === a.lifecycleUid) {
         this.retiring.delete(a.name); // ABA-guarded hold clear
         this.confirmedRetiredPredecessors.set(a.name, { principal, lifecycleUid: a.lifecycleUid });
       }
     } catch (e) {
       const h = this.retiring.get(a.name);
-      if (h && h.lifecycleUid === a.lifecycleUid)
+      if (h && h.target.lifecycleUid === a.lifecycleUid)
         h.lastError = `the static retirement did not complete (${rejectionText(e)}); the name stays held - a same-name spawn retries the same terminal (op ${opId})`;
       console.error(`static retirement ${a.name} (${a.id}): ${rejectionText(e)}`);
       if (surfaceFailure) throw e;
@@ -9770,9 +9777,9 @@ export class Manager {
           : undefined;
     }
     for (const [name, hold] of this.retiring) {
-      const held = hold.userOwner ? hold.agentId : principalKey(DEV_OWNER, hold.agentId).key;
+      const held = hold.target.userOwner ? hold.target.id : principalKey(DEV_OWNER, hold.target.id).key;
       if (held === caller)
-        return `the caller's lifecycle ${hold.lifecycleUid} (name "${name}") is retiring; a retiring incarnation's credential holds no control authority (F5)`;
+        return `the caller's lifecycle ${hold.target.lifecycleUid} (name "${name}") is retiring; a retiring incarnation's credential holds no control authority (F5)`;
     }
     if (this.retiredPrincipals.has(caller))
       return "the caller's lifecycle is retired; a retired incarnation's credential holds no control authority (F5)";

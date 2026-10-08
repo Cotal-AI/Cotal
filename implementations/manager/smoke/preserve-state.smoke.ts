@@ -632,10 +632,9 @@ let openInventory: ManagerResumeAgent;
   const retire = (target: Manager): void => {
     (target as unknown as { retiring: Map<string, unknown> }).retiring.set(openInventory.name, {
       opId: "retire_worker",
-      lifecycleUid: predecessorUid,
       owner: DEV_OWNER,
       actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
-      agentId: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
+      target: { id: openInventory.identity.mode === "open" ? openInventory.identity.id : "", name: openInventory.name, lifecycleUid: predecessorUid },
       startedAt: Date.now(),
     });
     (target as unknown as { confirmRetirement: (a: { id: string; name: string; lifecycleUid: string }) => void })
@@ -703,10 +702,9 @@ let openInventory: ManagerResumeAgent;
   (manager as unknown as { deprovision: (a: { id: string; name: string; lifecycleUid: string }) => Promise<void> }).deprovision = async (a) => { redriven.push(a); };
   (manager as unknown as { retiring: Map<string, unknown> }).retiring.set("worker", {
     opId: "retire_worker",
-    lifecycleUid: openInventory.identity.lifecycleUid,
     owner: DEV_OWNER,
     actor: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
-    agentId: openInventory.identity.mode === "open" ? openInventory.identity.id : "",
+    target: { id: openInventory.identity.mode === "open" ? openInventory.identity.id : "", name: openInventory.name, lifecycleUid: openInventory.identity.lifecycleUid },
     startedAt: Date.now(),
     lastError: "terminal outcome unknown",
   });

@@ -164,7 +164,7 @@ registry.register(con);
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, { id: string; name: string; lifecycleUid: string; terminalizing?: boolean; secretPaths?: { creds?: string }; seed?: string }>;
-  retiring: Map<string, { lifecycleUid: string }>;
+  retiring: Map<string, { target: { lifecycleUid: string } }>;
   retiredPrincipals: Set<string>;
   freeSlot: (a: unknown, floor: boolean, cause: import("../src/manager.js").FreeSlotCause) => void;
   deprovision: (a: { id: string; name: string; lifecycleUid: string; secretPaths?: { creds?: string } }) => Promise<void>;

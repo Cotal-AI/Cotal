@@ -1174,7 +1174,7 @@ try {
   // While the delivery daemon is absent, the manager's membership inventory challenge cannot
   // reach a responder. Lack of daemon NEVER proves empty storage: retirement stays held,
   // the name remains reserved pending retirement, and a same-name spawn is refused.
-  const mRetiring = (manager as unknown as { retiring: Map<string, { opId: string; lifecycleUid: string; lastError?: string }> }).retiring;
+  const mRetiring = (manager as unknown as { retiring: Map<string, { opId: string; target: { lifecycleUid: string }; lastError?: string }> }).retiring;
   for (let i = 0; i < 50 && (!mRetiring.has("delta") || !mRetiring.get("delta")?.lastError); i++) await wait(100);
   check("absent delivery daemon holds retirement: delta is held in retiring with incomplete inventory",
     mRetiring.has("delta") && /membership inventory incomplete/i.test(mRetiring.get("delta")?.lastError ?? ""),

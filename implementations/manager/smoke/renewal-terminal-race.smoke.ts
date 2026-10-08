@@ -205,7 +205,7 @@ type Agent = {
   staticCredentialRenewal?: Promise<void>;
   secretPaths?: { creds?: string };
 };
-type RetirementHold = { lifecycleUid: string; lastError?: string };
+type RetirementHold = { target: { lifecycleUid: string }; lastError?: string };
 const M = mgr as unknown as {
   agents: Map<string, Agent>;
   retiring: Map<string, RetirementHold>;
@@ -318,7 +318,7 @@ try {
         terminalEntered = handles.get(name)?.exitNaturally() === true && !M.agents.has(name);
       check(`${name}: ${scenario.terminal} enters the terminal path`, terminalEntered);
       check(`${name}: the terminal latch closes synchronously`, agent.terminalizing === true);
-      check(`${name}: terminalization registers the lifecycle hold`, M.retiring.get(name)?.lifecycleUid === agent.lifecycleUid, M.retiring.get(name));
+      check(`${name}: terminalization registers the lifecycle hold`, M.retiring.get(name)?.target.lifecycleUid === agent.lifecycleUid, M.retiring.get(name));
 
       let lateOutcome: string | undefined;
       const late = M.renewManagedStaticCred(agent)

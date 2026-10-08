@@ -420,7 +420,7 @@ try {
     opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>;
     deprovision: (a: { id: string; name: string; lifecycleUid: string; userOwner?: string }) => Promise<void>;
     ep: { ref: () => { id: string } };
-    retiring: Map<string, { agentId: string; lifecycleUid: string; userOwner?: string; standingAuthorityLive?: boolean; lastError?: string }>;
+    retiring: Map<string, { target: { id: string; lifecycleUid: string; userOwner?: string }; standingAuthorityLive?: boolean; lastError?: string }>;
   };
   const listNames = (): string[] => psList(manager!).map((a) => a.name);
 
@@ -484,15 +484,15 @@ try {
   // hold must be UNCHANGED (same lifecycleUid) and NO successor managed record may appear under the
   // alias — a refusal that quietly kept a replacement, or an ABA hold swap, would both read as ok here
   // without these checks.
-  const heldUidBeforeRespawn = mAny.retiring.get(AGENT)?.lifecycleUid;
+  const heldUidBeforeRespawn = mAny.retiring.get(AGENT)?.target.lifecycleUid;
   const respawn = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER, events: false });
   check("GREEN: a same-name spawn is REFUSED while the mint authority stands (alias not reassigned)",
     respawn.ok === false, respawn);
   check("GREEN: no successor managed record took the alias (the manager lists no live agent under the held name)",
     !psList(manager).some((a) => a.name === AGENT), listNames());
   check("GREEN: the SAME hold is still in place after the refused respawn (unchanged lifecycleUid, no ABA swap)",
-    mAny.retiring.get(AGENT)?.lifecycleUid === heldUidBeforeRespawn && heldUidBeforeRespawn !== undefined,
-    { before: heldUidBeforeRespawn, after: mAny.retiring.get(AGENT)?.lifecycleUid });
+    mAny.retiring.get(AGENT)?.target.lifecycleUid === heldUidBeforeRespawn && heldUidBeforeRespawn !== undefined,
+    { before: heldUidBeforeRespawn, after: mAny.retiring.get(AGENT)?.target.lifecycleUid });
   check("GREEN: the refusal reads as the operator face (reserved pending retirement + standing-authority revoke + retry NEXT)",
     /reserved pending retirement/i.test(respawn.error ?? "") && /standing-authority revoke/i.test(respawn.error ?? "") && /retry/i.test(respawn.error ?? ""),
     respawn.error);
