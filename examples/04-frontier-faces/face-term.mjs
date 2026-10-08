@@ -10,8 +10,6 @@
 //   bun face-term.mjs --demo                   # no server: scripted preview turn
 //   bun face-term.mjs --persona david --server http://127.0.0.1:4096 \
 //                     --model opencode-go/glm-5.1
-//
-// Persona pixel data mirrors cotal-face.js (the browser engine); keep the two in sync.
 
 import { PERSONAS } from './personas.mjs';
 
@@ -40,7 +38,8 @@ const PASSWORD = flag('password', process.env.OPENCODE_SERVER_PASSWORD ?? '');
 const MODEL_STR = flag('model', 'opencode-go/glm-5.1');
 const [provModel0, ...rest] = MODEL_STR.split('/');
 const MODEL = { providerID: provModel0, modelID: rest.join('/') };
-const p = PERSONAS[PERSONA] || PERSONAS.ray;
+if (!Object.hasOwn(PERSONAS, PERSONA)) throw new Error(`face-term: unknown persona "${PERSONA}" (have: ${Object.keys(PERSONAS).join(', ')})`);
+const p = PERSONAS[PERSONA];
 
 // The agent steers its own expression by emitting hidden [[face:X]] tags; face-term strips them.
 const EXPRS = ['neutral', 'happy', 'sad', 'angry', 'surprised'];
