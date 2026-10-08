@@ -111,6 +111,8 @@ export function readCotalConfigFile(path: string): CotalConfig {
   if (policy !== undefined) checkModelPolicy(path, policy);
   const connectors = (parsed as { connectors?: unknown }).connectors;
   if (connectors !== undefined) checkConnectors(path, connectors);
+  const spawn = (parsed as { spawn?: unknown }).spawn;
+  if (spawn !== undefined) checkSpawn(path, spawn);
   return parsed as CotalConfig;
 }
 
@@ -175,6 +177,17 @@ export function mcpServerProblem(where: string, spec: unknown): string | undefin
     return spec.command ? undefined : `${where}.command must be a non-empty string when type is stdio or absent`;
   if (!REMOTE_TRANSPORTS.has(spec.type)) return `${where}.type must be stdio, http, sse or ws`;
   return spec.url ? undefined : `${where}.url must be a non-empty string when type is ${spec.type}`;
+}
+
+/** An allow-list that cannot be read as written is refused, never reinterpreted: the launcher would
+ *  spread a string `env` into one-letter names, widening a seat's environment while dropping the
+ *  name the operator meant. */
+function checkSpawn(path: string, spawn: unknown): void {
+  const bad = (what: string) => new Error(`cotal config ${path}: ${what}`);
+  if (!isRecord(spawn)) throw bad("spawn must be an object");
+  const env = spawn.env;
+  if (env !== undefined && !(Array.isArray(env) && env.every((name) => typeof name === "string" && name.trim() !== "")))
+    throw bad("spawn.env must be a list of environment variable names");
 }
 
 /** Layer `over` onto `base`: per connector, a server in `over` replaces the same-named server in
