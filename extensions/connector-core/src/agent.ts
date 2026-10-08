@@ -877,7 +877,13 @@ export class MeshAgent extends EventEmitter {
     }
   }
 
-  async stop(): Promise<void> {
+  private stopFlight?: Promise<void>;
+
+  stop(): Promise<void> {
+    return this.stopFlight ??= this.stopOnce();
+  }
+
+  private async stopOnce(): Promise<void> {
     this._stopping = true;
     if (this.turnPollTimer !== undefined) {
       clearInterval(this.turnPollTimer);
@@ -891,8 +897,8 @@ export class MeshAgent extends EventEmitter {
       this.emit("transport", { connected: false });
     }
     // Unconditional: a background self-heal can flip _connected without us, so a `_connected`
-    // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop() is
-    // idempotent (early-returns once stopped), so calling it when already-down is a noop.
+    // guard could skip the stop and leak the live connection/heartbeat/supervisor. ep.stop()
+    // coalesces its retained shutdown outcome, including an earlier closure refusal.
     // #636: departure is the last write. Running it THROUGH the chain (as its own inOrder entry,
     // not merely awaited alongside it) orders offline behind every write already admitted,
     // whichever method admitted it — setStatus's requireConnected included. The race is bounded so
@@ -1898,7 +1904,7 @@ export class MeshAgent extends EventEmitter {
   /** #384: a peer that sent us a DM or anycast and has no roster row, by its exact id or, while the
    *  presence view is current, by a display name only one such sender carried. A one-shot
    *  `cotal send` never registers presence, so without this a reply to it could not be addressed. */
-  private heldSender(target: string, byName: boolean): { id: string; name: string } | undefined {
+  private heldSender(target: string, byName: boolean, peer?: Presence): { id: string; name: string } | undefined {
     const name = this.senders.get(target);
     if (name !== undefined) return { id: target, name };
     if (!byName) return undefined;
@@ -1906,12 +1912,15 @@ export class MeshAgent extends EventEmitter {
     // A sender rostered again under a new name has a row now, so its old name must not collide here.
     const rostered = new Set(this.ep.getRoster().map((p) => p.card.id));
     const matches = [...this.senders].filter(([id, n]) => !rostered.has(id) && n.toLowerCase() === want);
+    // A roster row cannot hide another authenticated sender that has no presence row.
+    if (peer) matches.unshift([peer.card.id, peer.card.name]);
     if (matches.length > 1)
       throw new Error(
-        `"${target}" is ambiguous - ${matches.length} senders with no roster row share that name; ` +
+        `"${target}" is ambiguous - ${matches.length} known peers share that name; ` +
           `DM by instance id instead: ${matches.map(([id, n]) => `${n} (${id})`).join("; ")}`,
       );
-    return matches[0] && { id: matches[0][0], name: matches[0][1] };
+    const match = matches[0];
+    return match && match[0] !== peer?.card.id ? { id: match[0], name: match[1] } : undefined;
   }
 
   async dm(
@@ -1945,7 +1954,9 @@ export class MeshAgent extends EventEmitter {
     // #384: a target with no roster row may still be a peer that messaged us (its id is
     // authenticated), which a one-shot `cotal send` always is. The DM goes to that identity and the
     // space's DM stream keeps it, instead of refusing a reply nothing could ever deliver.
-    const held = peer ? undefined : this.heldSender(target, this.ep.presenceView().state === "current");
+    const held = peer?.card.id === target
+      ? undefined
+      : this.heldSender(target, this.ep.presenceView().state === "current", peer);
     if (!peer && !held) {
       const after = this.ep.presenceView();
       if (after.state === "current")

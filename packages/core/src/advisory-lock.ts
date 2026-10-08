@@ -152,6 +152,19 @@ export function inspectLock(path: string): LockInspection {
     return { state: "stale" };
   }
   if (!pidAlive(owner.pid)) return { state: "stale" };
+  // Linux keeps an exited, unreaped process addressable by kill(pid, 0). Only a complete
+  // stat record for this pinned process proves that it can no longer consume anything.
+  if (process.platform === "linux" && owner.start !== undefined) {
+    try {
+      const stat = readFileSync(`/proc/${owner.pid}/stat`, "utf8");
+      const after = stat.lastIndexOf(") ");
+      const fields = stat.slice(after + 2).trim().split(/\s+/);
+      if (after >= 0 && stat.slice(0, stat.indexOf(" ")) === String(owner.pid) && fields[19] === owner.start && fields[0] === "Z")
+        return { state: "stale" };
+    } catch {
+      // Unreadable identity is not evidence of death.
+    }
+  }
   // PID alive — but is it still the SAME process? A recorded start token that no longer matches means
   // the PID was recycled: the original owner is gone (stale). A token we simply cannot obtain is NOT
   // grounds to reclaim — the live PID keeps the lock active/unknown.

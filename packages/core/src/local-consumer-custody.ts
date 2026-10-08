@@ -12,7 +12,7 @@ export class LocalConsumerHeldError extends Error {}
 export function localConsumerClaimPath(servers: string, space: string, owner: string, actor: string, lifecycleUid: string): string {
   const user = userInfo();
   const root = process.platform === "linux"
-    ? `/run/user/${user.uid}/cotal-consumers`
+    ? `/tmp/cotal-consumers-${user.uid}`
     : join(user.homedir, ".cotal-consumers");
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const st = lstatSync(root);
@@ -26,7 +26,15 @@ export function localConsumerClaimPath(servers: string, space: string, owner: st
     return u.href;
   }))].sort();
   const key = createHash("sha256").update(JSON.stringify([targets, space, owner, actor, lifecycleUid])).digest("hex");
-  return join(root, `${key}.lock`);
+  const path = join(root, `${key}.lock`);
+  try {
+    const file = lstatSync(path);
+    if (!file.isFile() || file.isSymbolicLink() || (process.platform !== "win32" && (file.uid !== user.uid || (file.mode & 0o077) !== 0)))
+      throw new Error("local consumer custody file is not private to this OS user");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  return path;
 }
 
 /** Held by the actual consuming process, never its launcher. Reconnect retains the handle.

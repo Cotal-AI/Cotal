@@ -1278,7 +1278,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   await retireProvision("agent exited");
   // USER MODE: the runtime-grant invariant applies to the foreground departure too — the agent is
   // gone, so its standing mint authority (ledger row + secret files) goes with it. Best-effort
-  // (a SIGKILLed CLI can't run this; the next same-name spawn's rotation is the backstop), loud
+  // (a SIGKILLed CLI can't run this; its retained grant needs operator recovery), loud
   // on failure, never blocking the exit code already set above.
   if (userCleanup) await userCleanup().catch((e) => console.error(c.red(`✗ cleaning up after ${name}: ${(e as Error).message}`)));
   // The child has exited or never started, so nothing reads the launch's private files any more
