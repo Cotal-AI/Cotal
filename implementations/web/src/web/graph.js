@@ -75,7 +75,7 @@
   // draw instead of rendering it as the empty string, which read as "nothing arrived".
   const partsText = (m) => window.COTAL_PARTS.partsToText(m.parts);
   const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2);
-  const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const esc = window.COTAL_PARTS.esc;
   const shortId = (x) => (/^[A-Z2-7]{32,}$/.test(x) ? x.slice(0, 6) + "…" : x);
   const hash = (s) => { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return h; };
   const hex = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
