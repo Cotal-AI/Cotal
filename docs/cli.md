@@ -2484,6 +2484,7 @@ directory it searched from, before it reads a credential or dials a broker.
 See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
+`--port` takes a decimal port from 1 to 65535 and is checked before the intake dials the broker.
 
 ## Plumbing
 
