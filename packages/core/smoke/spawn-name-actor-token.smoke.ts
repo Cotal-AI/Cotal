@@ -168,7 +168,7 @@ const CLI_SRC = CLI_RAW
 check("instrument control: the CLI's spawn source was located, comments stripped",
   CLI_SRC.includes("async function spawnDetached") && CLI_SRC.includes("export async function spawn"),
   { len: CLI_SRC.length });
-// Parsed, so only a real value import of the name counts, wherever it sits in the list.
+// Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
 const CORE_IMPORTS = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest).statements
   .filter(ts.isImportDeclaration)
   .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
@@ -176,7 +176,7 @@ const CORE_IMPORTS = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.La
     const named = d.importClause?.namedBindings;
     return named && ts.isNamedImports(named) ? named.elements : [];
   })
-  .filter((e) => !e.isTypeOnly && !e.propertyName)
+  .filter((e) => !e.isTypeOnly && (e.propertyName ?? e.name).text === e.name.text)
   .map((e) => e.name.text);
 check("the CLI calls the shared name door (import present)",
   CORE_IMPORTS.includes("spawnNameError"));
