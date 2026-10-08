@@ -1,5 +1,5 @@
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
+import { authDir, extensionConnectors, findCotalRoot, installedExtensionVersion, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -45,6 +45,13 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
   } catch (e) {
     throw new Error(`${WEB_SESSION_FILE} unreadable · ${(e as Error).message}`);
   }
+}
+
+/** True when an installed extension contributes the `web` command and its package is on disk, so
+ * `cotal web` can start it. A manifest or package record that cannot be read throws, like every
+ * other reader. */
+export function webInstalled(): boolean {
+  return loadExtensionsManifest().extensions.some((e) => e.commands.some((cmd) => cmd.name === "web") && installedExtensionVersion(e.pkg) !== undefined);
 }
 
 /** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers

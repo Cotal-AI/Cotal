@@ -6,9 +6,7 @@ import { registry, type Connector, type ConnectorAssist, type ConnectorSetupActi
 import {
   findCotalRoot,
   homeCotalDir,
-  installedExtensionVersion,
   isWorkspaceTargetError,
-  loadExtensionsManifest,
   manifestExtensionNames,
   personaDir,
   provenance,
@@ -26,7 +24,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, type MeshStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, webInstalled, type MeshStatus } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -417,16 +415,6 @@ async function connectorAssists(): Promise<ConnectorAssist[]> {
  * the caller still continues to the cross-vendor Agent Skills reconcile. */
 export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "requires">): boolean {
   return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
-}
-
-/** True when an installed extension contributes the `web` command (the dashboard moved out to
- *  `@cotal-ai/web` in stage 4) — decides whether the ready-card says "start it" or "install it". */
-function webInstalled(): boolean {
-  try {
-    return loadExtensionsManifest().extensions.some((e) => installedExtensionVersion(e.pkg) !== undefined && e.commands.some((cm) => cm.name === "web"));
-  } catch {
-    return false; // corrupt manifest — the card stays honest ("not installed"); `ext` commands surface the error
-  }
 }
 
 // The web dashboard is a first-party seeded extension now (@cotal-ai/web, in SEEDED_EXTENSIONS): the
