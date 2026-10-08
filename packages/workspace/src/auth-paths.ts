@@ -494,6 +494,12 @@ export function createAuthInstanceIdentity(root: string, space: string, candidat
   return claimIdentityRecord(authInstanceFile(root, space), AUTH_INSTANCE, instanceIdentityOf, () => candidate);
 }
 
+/** Remove this root's auth-plane instance record for `space`. A hosted context calls it once its
+ *  injected store holds the record, so the serve seed no longer sits in its state dir. */
+export function removeAuthInstanceIdentity(root: string, space: string): void {
+  rmSync(authInstanceFile(root, space), { force: true });
+}
+
 /** The outcome of {@link retireManagerInstanceIdentity}. `removed` means this call deleted the
  *  record that matched `expected`. `absent` means no record exists for the space: a retry after an
  *  earlier `removed`, or a record that was never created. It never reports that this call deleted
