@@ -467,19 +467,26 @@ export async function readyCard(cwd: string): Promise<void> {
 
 /** The card's web row from the mesh's dashboard records. An unreadable `web.pid`, `web.session` or
  *  extension record is named on the row, like the status Machine section, so the rest of the card
- *  still prints. */
+ *  still prints. The dashboard records and the extension record are both read before either decides
+ *  the row, since status names each on its own row and a listening dashboard does not make its
+ *  package record readable. */
 function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
+  let url: string | undefined;
+  let installed: boolean | undefined;
+  const unreadable: string[] = [];
   try {
-    const url = recordedWebUrl({ root: mesh.root, space: mesh.space });
-    if (url) return { up: true, text: url };
+    url = recordedWebUrl({ root: mesh.root, space: mesh.space });
   } catch (e) {
-    return { up: false, text: (e as Error).message };
+    unreadable.push((e as Error).message);
   }
   try {
-    return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
+    installed = webInstalled();
   } catch (e) {
-    return { up: false, text: (e as Error).message };
+    unreadable.push((e as Error).message);
   }
+  if (unreadable.length > 0) return { up: false, text: (url ? [url, ...unreadable] : unreadable).join(" · ") };
+  if (url) return { up: true, text: url };
+  return { up: false, text: installed ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
 }
 
 /** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming

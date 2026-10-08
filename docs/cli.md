@@ -902,8 +902,9 @@ while the PID in its `web.pid` is alive. A `web.pid` or `web.session` that exist
 is named on the row with the error. Otherwise it reads `down`, or `not installed` without the web
 extension. Status and the `cotal setup` card count the web extension as installed only when a
 package in the extensions manifest provides `web` and that package is on disk. A web package record
-that cannot be read is named on the `Web extension` row and on the card's web row. The `Web process`
-row still prints, and reads `down` unless the dashboard is listening.
+that cannot be read is named on the `Web extension` row and on the card's web row, after the
+dashboard's address when it is listening and beside an unreadable `web.pid` or `web.session`. The
+`Web process` row still prints, and reads `down` unless the dashboard is listening.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
