@@ -1,0 +1,7 @@
+---
+"@cotal-ai/core": patch
+"@cotal-ai/connector-core": patch
+"@cotal-ai/connector-opencode": patch
+---
+
+An OpenCode seat whose turn outlasts the consumer's ack wait no longer loses the role request it is working on to another holder of the role. The connector acks a batch only when its turn ends, and the 60-second ack wait used to run out under a longer turn, so the broker handed the same anycast to a second worker while the first was still on it. The batch a turn carries is now held in flight, and while it is held the agent restarts each delivery's ack wait with JetStream's in-progress ack at half the wait. A failed turn or a stop releases the batch and a crashed seat stops renewing it, so it redelivers after one ack wait as before, and a success or a user Stop acks it. Queued messages are not renewed. Renewal stops for good once the agent can no longer vouch that it still holds a copy: the wait ran out between renewals, the link was down past it, or the copy's connection was torn down. A durable `Delivery` now carries `redelivery` (the broker's delivery count, the consumer's ack wait, and `working()`), an `InboxItem` carries `deliveryCount`, and a frame marks a copy the broker delivered more than once as redelivered. Delivery stays at-least-once: a request can still run twice, so work with side effects that must not repeat needs its own ownership or idempotency key.

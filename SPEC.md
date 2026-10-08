@@ -686,7 +686,10 @@ the publish path is unchanged from v0.2; only the live *read* moves to a core su
 Ack/nak/term semantics apply to JetStream-consumed copies (history, DM, anycast, and the durable
 backstop): receivers MUST ack only after a message has actually been surfaced or handled, MAY nak
 transient failures, and MUST term permanently invalid messages. The at-most-once `live` copy is not
-acked.
+acked. A receiver still handling a copy MAY restart its ack wait with JetStream's in-progress ack
+(`+WPI`). An ack or in-progress ack addresses the stream sequence rather than one delivery of it,
+so a receiver SHOULD stop renewing a copy once its ack wait may have run out since the last
+renewal, because the broker may by then have delivered that sequence to another consumer.
 
 History on join uses the pinned single-filter `chathist_<owner>-<actor>-<uid>` consumer create above, bounded to
 `allowSubscribe`; agents are not granted unfiltered Direct Get. DM and TASK MUST NOT enable Direct Get

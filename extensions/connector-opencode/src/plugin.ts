@@ -844,7 +844,7 @@ export const cotal: Plugin = async () => {
     driving = false;
     primed = false;
     briefed = false;
-    surfaced = [];
+    abandonSurfaced();
     awaitingTurnEnd = false;
     clearInterruptIntent();
     clearErrorRetry(true);
@@ -1010,8 +1010,8 @@ export const cotal: Plugin = async () => {
       // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
       // agent is told to orient first — gated on persona so we never replace OpenCode's default system.
       if (!primed && persona) body.system = `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}`;
+      if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
       busy = true;
-      surfaced = ids;
       // Arm BEFORE the await: a turn-end signal can land before the server request resolves, and
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
@@ -1046,7 +1046,7 @@ export const cotal: Plugin = async () => {
       primed = true;
     } catch (e) {
       busy = false;
-      surfaced = [];
+      abandonSurfaced();
       awaitingTurnEnd = false;
       // NOTHING TO PUT BACK. A failed submission did not land, so the wake it carried, and any wake
       // that arrived while it was in flight, is still in `pendingWake`, and `workPending()` gives the
@@ -1096,11 +1096,25 @@ export const cotal: Plugin = async () => {
   function ackSurfaced(): void {
     if (surfaced.length === 0) return;
     agent.drainInboxDeliveries(surfaced);
+    abandonSurfaced();
+  }
+
+  /** Stop holding the surfaced batch: its deliveries are no longer renewed, so whatever is still
+   *  unacked redelivers once its ack wait runs out. */
+  function abandonSurfaced(): void {
+    agent.releaseInFlight(surfaced);
     surfaced = [];
   }
 
-  function abandonSurfaced(): void {
-    surfaced = [];
+  /** Make `ids` the surfaced batch, HELD IN FLIGHT for as long as its turn runs. A turn outlasting
+   *  the consumer's ack wait is ordinary, and while the batch is held the agent restarts that wait,
+   *  so the broker does not hand a role request this seat is still working on to another reader of
+   *  its role. Refused at the hold ceiling, and then nothing may be surfaced. */
+  function surface(ids: string[]): boolean {
+    if (!agent.holdInFlight(ids)) return false;
+    agent.releaseInFlight(surfaced);
+    surfaced = ids;
+    return true;
   }
 
   /** Native TUI / API prompts enter through OpenCode's chat.message hook before the model loop
@@ -1115,12 +1129,11 @@ export const cotal: Plugin = async () => {
       (p): p is { type: "text"; text: string } =>
         typeof p === "object" && p !== null && (p as { type?: unknown }).type === "text" && typeof (p as { text?: unknown }).text === "string",
     );
-    if (!textPart) return;
+    if (!textPart || !surface(computed.surfacedIds)) return;
     textPart.text = `${computed.prefix}\n\n${textPart.text}`;
     // The mutation IS the delivery here — the human's prompt runs with the prefix in place.
     if (computed.turnIds.length) agent.commitSurfacedTurns(computed.turnIds);
     if (computed.surfacedIds.length) {
-      surfaced = computed.surfacedIds;
       awaitingTurnEnd = true;
       busy = true;
     }

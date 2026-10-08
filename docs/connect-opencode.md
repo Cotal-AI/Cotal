@@ -96,6 +96,16 @@ in-process plugin does everything.
 - **Observed model.** Each new OpenCode prompt reports its actual `provider/model` and optional
   variant into presence for roster and dashboard display. Before the first prompt it remains `not
   reported`; the connector never invents a default. An explicit `model:` or `variant:` pin wins.
+- **A long turn keeps its batch.** The connector acks a peer batch when the turn carrying it ends,
+  so a turn longer than the consumer's 60-second ack wait is ordinary. While the turn runs, the
+  connector restarts the ack wait of each message in that batch with JetStream's in-progress ack,
+  so the broker does not hand a role request the seat is still working on to another holder of
+  the role. A failed turn or a stop releases the batch and a crashed seat stops renewing it, so
+  the broker redelivers it after one ack wait; a finished turn or a user Stop acks it. Messages still queued behind the
+  turn are not renewed. Renewal stops once the seat can no longer vouch that it holds a message,
+  for example after its link was down for longer than the ack wait, and the broker may then
+  redeliver it. Delivery stays at-least-once: see
+  [Durable transport](presence-and-delivery.md#durable-transport).
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or
   a directed-message turn. `cotal_inbox` explicitly surfaces and clears it; automatic traffic stays
   owned by the connector. Quiet-channel `@mention`s still drive a turn.

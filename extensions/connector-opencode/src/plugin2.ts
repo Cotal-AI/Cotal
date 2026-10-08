@@ -182,15 +182,25 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     return sessionID ?? (await sessionReady);
   }
 
+  /** Make `ids` the surfaced batch, held in flight so the agent keeps the deliveries owned until the
+   *  turn ends (mirrors `plugin.ts`'s `surface`). */
+  function surface(ids: string[]): boolean {
+    if (!agent.holdInFlight(ids)) return false;
+    agent.releaseInFlight(surfaced);
+    surfaced = ids;
+    return true;
+  }
+
   /** Ack exactly the surfaced deliveries by their receive keys (mirrors `plugin.ts`'s
    *  `ackSurfaced`). */
   function ackSurfaced(): void {
     if (surfaced.length === 0) return;
     agent.drainInboxDeliveries(surfaced);
-    surfaced = [];
+    abandonSurfaced();
   }
 
   function abandonSurfaced(): void {
+    agent.releaseInFlight(surfaced);
     surfaced = [];
   }
 
@@ -241,8 +251,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (parts.length === 0) return;
     const text = parts.join("\n\n");
     const system = !primed && persona ? `${persona}\n\n${ORIENTATION_BOOTSTRAP}\n\n${MESH_FIRST_STEER}\n\n${WORKFLOW_STEER}` : undefined;
+    if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     busy = true;
-    surfaced = ids;
     briefed = true;
     try {
       await opencodeApi(
@@ -281,10 +291,9 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   await ctx.session.hook("prompt", (e) => {
     if (sessionID && e.sessionID !== sessionID) return;
     const computed = computeInjection(agent);
-    if (!computed) return;
+    if (!computed || !surface(computed.surfacedIds)) return;
     e.prompt.text = `${computed.prefix}\n\n${e.prompt.text}`;
     if (computed.turnIds.length) agent.commitSurfacedTurns(computed.turnIds);
-    if (computed.surfacedIds.length) surfaced = computed.surfacedIds;
   });
 
   // Measured: `model.request` fires `{model:{id,providerID}, kind:"primary"|"title", agent}` with

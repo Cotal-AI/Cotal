@@ -123,6 +123,10 @@ export interface InboxItem {
   text: string;
   replyTo?: string;
   contextId?: string;
+  /** How many times the broker has delivered this copy, 1 on the first; absent on a live copy.
+   *  Broker-derived, never read from the payload: above 1, an earlier delivery of this message went
+   *  unacked past its ack wait and may have run, here or on another reader. */
+  deliveryCount?: number;
 }
 
 /** Reply correlation for outgoing messages (SPEC §5): `contextId` is the asker's conversation id,
@@ -140,6 +144,10 @@ interface Pending {
   item: InboxItem;
   /** Ack the backing stream message — called only once the item is actually surfaced. */
   ack: () => void;
+  /** The current copy's redelivery state, and the time until which this reader can vouch it still
+   *  holds that copy. Both absent on a live copy. */
+  redelivery?: Delivery["redelivery"];
+  ownedUntil?: number;
   /** Receive-time delivery class. Quiet ambient stays pull-only even if the mode later changes. */
   pullOnly: boolean;
   /** Local receive time. Distinct from `item.ts`, which is the sender's stamp. */
@@ -373,6 +381,8 @@ export class MeshAgent extends EventEmitter {
   /** Surfaced to the host but not yet committed or abandoned, counted per holding frame because
    *  frames overlap. See {@link holdInFlight}. */
   private inFlightIds = new Map<string, number>();
+  /** Ack-wait renewal timers of held durable deliveries, by receive key. See {@link keepOwned}. */
+  private renewals = new Map<string, ReturnType<typeof setInterval>>();
   private classificationUnsafe = false;
   /** Terminal receive-time decisions that must survive the live→durable transition: successfully
    *  surfaced pull-only messages and hard drops under muted/focus. Capacity loss degrades the
@@ -869,6 +879,7 @@ export class MeshAgent extends EventEmitter {
 
   async stop(): Promise<void> {
     this._stopping = true;
+    for (const key of [...this.renewals.keys()]) this.stopRenewal(key);
     if (this.turnPollTimer !== undefined) {
       clearInterval(this.turnPollTimer);
       this.turnPollTimer = undefined;
@@ -965,6 +976,9 @@ export class MeshAgent extends EventEmitter {
     if (existing) {
       if (delivery.durable) {
         existing.ack = delivery.ack;
+        // A fresh copy is a fresh ownership: a hold that outlived the copy it renewed keeps this one.
+        this.own(existing, delivery.redelivery);
+        if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);
         this.emit("incoming", existing.item);
       }
       return;
@@ -1029,7 +1043,7 @@ export class MeshAgent extends EventEmitter {
         delivery.ack();
         // #662: recall cannot pick this copy out from an identical one with another disposition, so
         // its body is held here, pull-only, and recall hands back only copies nothing is bound to.
-        if (item.id === "") this.buffer(item, () => {}, true, idless);
+        if (item.id === "") this.buffer(item, { ack: () => {} }, true, idless);
         if (item.mentionsMe) this.emit("mention-wake", item);
         return;
       }
@@ -1046,14 +1060,20 @@ export class MeshAgent extends EventEmitter {
       const pullOnly =
         snapshottedPullOnly || (!item.mentionsMe && (item.historical || automaticReply || this.classificationUnsafe));
       if (pullOnly) this.excludeFromFocus(item);
-      this.buffer(item, delivery.ack, pullOnly, idless);
+      this.buffer(item, delivery, pullOnly, idless);
       return;
     }
-    this.buffer(item, delivery.ack, false);
+    this.buffer(item, delivery, false);
   }
 
-  private buffer(item: InboxItem, ack: () => void, pullOnly: boolean, idless?: { digest: string; copy: IdlessCopy }): void {
-    const pending: Pending = { item, ack, pullOnly, receivedAt: Date.now() };
+  private buffer(
+    item: InboxItem,
+    delivery: Pick<Delivery, "ack" | "redelivery">,
+    pullOnly: boolean,
+    idless?: { digest: string; copy: IdlessCopy },
+  ): void {
+    const pending: Pending = { item, ack: delivery.ack, pullOnly, receivedAt: Date.now() };
+    this.own(pending, delivery.redelivery);
     if (idless) pending.idless = { tally: this.focusIdless, ...idless };
     this.inbox.push(pending);
     if (this.inbox.length > MAX_INBOX) {
@@ -1313,7 +1333,10 @@ export class MeshAgent extends EventEmitter {
     let fresh = 0;
     for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
     if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;
-    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
+    for (const id of ids) {
+      this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
+      this.keepOwned(id);
+    }
     return true;
   }
 
@@ -1331,9 +1354,57 @@ export class MeshAgent extends EventEmitter {
     for (const id of ids) {
       const held = this.inFlightIds.get(id);
       if (held === undefined) continue;
-      if (held <= 1) this.inFlightIds.delete(id);
-      else this.inFlightIds.set(id, held - 1);
+      if (held <= 1) {
+        this.inFlightIds.delete(id);
+        this.stopRenewal(id);
+      } else this.inFlightIds.set(id, held - 1);
     }
+  }
+
+  private own(p: Pending, redelivery: Delivery["redelivery"]): void {
+    p.redelivery = redelivery;
+    p.ownedUntil = redelivery && Date.now() + redelivery.ackWaitMs;
+    p.item.deliveryCount = redelivery?.deliveryCount;
+  }
+
+  /** Keep a held durable delivery with this reader for as long as the hold lasts, by restarting its
+   *  ack wait at half the wait. Only a HELD delivery is renewed: a queued one keeps the broker's
+   *  timer, so a reader busy with other work does not sit on a role request another reader could
+   *  take, and an abandoned one (released) runs out and redelivers. */
+  private keepOwned(key: string): void {
+    if (this.renewals.has(key)) return;
+    const p = this.inbox.find((x) => x.item.recvKey === key);
+    if (!p?.redelivery || !this.renewOwned(p)) return;
+    const timer = setInterval(() => {
+      const held = this.inbox.find((x) => x.item.recvKey === key);
+      if (!held || !this.renewOwned(held)) this.stopRenewal(key);
+    }, p.redelivery.ackWaitMs / 2);
+    timer.unref?.();
+    this.renewals.set(key, timer);
+  }
+
+  private stopRenewal(key: string): void {
+    clearInterval(this.renewals.get(key));
+    this.renewals.delete(key);
+  }
+
+  /** Restart one copy's ack wait, unless this reader can no longer vouch that it still holds that
+   *  copy. JetStream acks by stream sequence rather than by delivery, so a renewal sent after the
+   *  wait may have run out (a stalled loop, a link down for longer than the wait) would extend the
+   *  copy the broker has since handed to another reader. Renewal stops instead and the copy is the
+   *  broker's to redeliver. Nothing is sent while the link is down, because the client buffers a
+   *  publish and would replay it after the wait had run out; a handle whose connection was torn
+   *  down throws, which is the same lost ownership. */
+  private renewOwned(p: Pending): boolean {
+    if (!p.redelivery || p.ownedUntil === undefined || Date.now() >= p.ownedUntil) return false;
+    if (!this._transportConnected) return true;
+    try {
+      p.redelivery.working();
+    } catch {
+      return false;
+    }
+    p.ownedUntil = Date.now() + p.redelivery.ackWaitMs;
+    return true;
   }
 
   /** Return scoped pending messages and ack them — call only when they're actually surfaced. */
@@ -1765,7 +1836,7 @@ export class MeshAgent extends EventEmitter {
         }
         const copy: IdlessCopy = { epoch, frontier: seq, ready: Promise.resolve(), seq };
         fresh.bound.add(seq);
-        this.buffer(this.toInboxItem(m, "channel", true), () => {}, true, { digest, copy });
+        this.buffer(this.toInboxItem(m, "channel", true), { ack: () => {} }, true, { digest, copy });
       }
       if (tallies === this.focusIdless) this.settleIdlessRead(channel, epoch, retained);
       if (incomplete) droppedChannels.push(channel);

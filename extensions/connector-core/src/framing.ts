@@ -75,7 +75,9 @@ export function fmtBody(text: string): string {
  */
 export function fmtItem(i: InboxItem): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join, so it pre-dates you and is not live
-  const body = `${h}${fmtBody(i.text)}`;
+  // The broker's count, so a peer cannot forge or hide it: an earlier copy outlived its ack wait.
+  const r = i.deliveryCount !== undefined && i.deliveryCount > 1 ? `(redelivered, delivery ${i.deliveryCount}: an earlier delivery may already have run) ` : "";
+  const body = `${h}${r}${fmtBody(i.text)}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
   if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
   return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;
