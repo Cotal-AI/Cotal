@@ -9,9 +9,8 @@
  * serve WIRING lives in the plane (`openAuthAuthorityPlane` / `openAuthAdminListener`).
  */
 import {
-  compileContract,
+  serviceContractTable,
   singleDocumentClosure,
-  type CompiledContract,
   type ContractClosureManifest,
   type EpAuthzMode,
   type EpCommandDef,
@@ -72,46 +71,15 @@ const ROWS: CommandRow[] = [
   { name: "retire-lifecycle", capability: "auth.admin", input: RETIRE_LIFECYCLE_INPUT_SCHEMA, output: RETIRE_LIFECYCLE_OUTPUT_SCHEMA, targeted: true, modes: ["exact"], handler: "retireLifecycle" },
 ];
 
-type ContractPair = { input: CompiledContract; output: CompiledContract };
-
-const COMPILED = new Map<string, ContractPair>();
-
-function pairFor(name: string): ContractPair {
-  let pair = COMPILED.get(name);
-  if (!pair) {
-    const r = ROWS.find((row) => row.name === name);
-    if (!r) throw new Error(`unknown auth command contract "${name}"`);
-    pair = { input: compileContract({ root: r.input as Record<string, unknown> }), output: compileContract({ root: r.output as Record<string, unknown> }) };
-    COMPILED.set(name, pair);
-  }
-  return pair;
-}
+const TABLE = serviceContractTable(ROWS);
 
 /** Per-command compiled contract pairs, exported for CALLERS (mirrors `MANAGER_CONTRACTS`). Lazy:
  *  a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
-export const AUTH_CONTRACTS: Readonly<Record<string, { input: CompiledContract; output: CompiledContract }>> =
-  new Proxy({} as Record<string, ContractPair>, {
-    has: (_, name: string) => ROWS.some((r) => r.name === name),
-    ownKeys: () => ROWS.map((r) => r.name) as Array<string | symbol>,
-    getOwnPropertyDescriptor: (_, name: string) => (ROWS.some((r) => r.name === name) ? { configurable: true, enumerable: true, get: () => pairFor(name) } : undefined),
-    get: (_, name: string | symbol) => (typeof name === "string" && ROWS.some((r) => r.name === name) ? pairFor(name) : undefined),
-  });
+export const AUTH_CONTRACTS = TABLE.contracts;
 
 /** Every §13.7 contract artifact the auth plane PUBLISHES to the EPC store at registration: each
  *  DISTINCT schema root plus its single-member closure manifest. */
-export function authContractArtifactValues(): unknown[] {
-  const values: unknown[] = [];
-  const seen = new Set<string>();
-  for (const r of ROWS) {
-    for (const source of [r.input, r.output]) {
-      const { manifest } = singleDocumentClosure(source);
-      if (seen.has(manifest.root)) continue;
-      seen.add(manifest.root);
-      values.push(source, manifest);
-    }
-  }
-  return values;
-}
+export const authContractArtifactValues = TABLE.artifactValues;
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the auth plane's served
  *  command surface. Revision 1: the single `retire-lifecycle` command. */
@@ -171,12 +139,11 @@ export interface AuthServiceHandlers {
 
 /** Build the `EpCommandDef[]` `serveEndpoint` consumes. */
 export function authCommandDefs(handlers: AuthServiceHandlers): EpCommandDef[] {
-  // First use MATERIALIZES the compiled pairs (the Proxy compiles lazily; a compile failure
-  // surfaces here, at registration, exactly where serve would need the validators).
-  for (const r of ROWS) pairFor(r.name);
+  // Reading a pair compiles it (the table is lazy), so a compile failure surfaces here, at
+  // registration, where serve needs the validators.
   return ROWS.map((r) => ({
     command: r.name,
-    contract: pairFor(r.name),
+    contract: AUTH_CONTRACTS[r.name],
     handler: (ctx: EpServeContext) => handlers[r.handler](ctx),
   }));
 }

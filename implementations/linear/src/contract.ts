@@ -14,10 +14,9 @@
  * inventory is refused before anything is sent upstream.
  */
 import {
-  compileContract,
   contractDigest,
   EpEnvelopeError,
-  type CompiledContract,
+  serviceContractTable,
   type EpCommandDef,
   type EpErrorCode,
   type EpServeContext,
@@ -276,36 +275,14 @@ export function resultOrThrow(reply: UpstreamReply): { result: Record<string, un
   throw new EpEnvelopeError(code, reply.detail, [{ kind: ERROR_DETAIL, reason: reply.reason }], reply.outcome);
 }
 
-type ContractPair = { input: CompiledContract; output: CompiledContract };
-const COMPILED = new Map<string, ContractPair>();
-
-function pairFor(r: CommandRow): ContractPair {
-  let pair = COMPILED.get(r.name);
-  if (!pair) {
-    pair = { input: compileContract({ root: r.input as Record<string, unknown> }), output: compileContract({ root: r.output as Record<string, unknown> }) };
-    COMPILED.set(r.name, pair);
-  }
-  return pair;
-}
+const TABLE = serviceContractTable(ROWS);
 
 function closureDigestOfSource(root: unknown): string {
   return contractDigest({ v: 1, root: contractDigest(root), members: [] });
 }
 
 /** Every contract artifact a registration publishes: each distinct schema root and its manifest. */
-export function linearContractArtifactValues(): unknown[] {
-  const values: unknown[] = [];
-  const seen = new Set<string>();
-  for (const r of ROWS) {
-    for (const source of [r.input, r.output]) {
-      const rootDigest = contractDigest(source);
-      if (seen.has(rootDigest)) continue;
-      seen.add(rootDigest);
-      values.push(source, { v: 1, root: rootDigest, members: [] });
-    }
-  }
-  return values;
-}
+export const linearContractArtifactValues = TABLE.artifactValues;
 
 export function linearClusterDocument() {
   return {
@@ -340,7 +317,7 @@ export function linearClusterArtifacts(): {
 export function linearCommandDefs(upstream: LinearUpstream): EpCommandDef[] {
   return ROWS.map((r) => ({
     command: r.name,
-    contract: pairFor(r),
+    contract: TABLE.contracts[r.name],
     handler: (ctx: EpServeContext) => {
       const args = (ctx.request.args ?? {}) as Record<string, unknown>;
       const requested = typeof args.timeoutMs === "number" ? args.timeoutMs : undefined;
