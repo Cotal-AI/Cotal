@@ -368,11 +368,11 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
 }
 
 /** An operator INSTRUMENT's capability set (the 1c grant-migration table's admin row), per the
- *  instrument's v0.3 control tier - the SAME mint sites that grant a `ctl.<tier>` row today
- *  (`control-caller-*` / `deployer`) consume this for the ep rails; no new minting authority.
+ *  instrument's control tier - the `control-caller-*` / `deployer` / `teardown` mint sites consume
+ *  this for their ep rails; no new minting authority.
  *
  *  `privileged` (the ps/start instrument): the manager reads (incl. persona catalog list/show) +
- *  untargeted `spawn` + `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
+ *  untargeted `spawn` + `define-persona` - structurally barred from cross-agent reach: no any-mode row.
  *
  *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
  *  (tOwner `"*"`), BOTH modes of `input` (which no other profile grants at all), and the
@@ -380,10 +380,10 @@ export function runCallerCapabilities(callerOwner: string): EpCapability[] {
  *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
  *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the
  *  `control-caller-admin`/`deployer`/`teardown` instruments AND an agent credential explicitly
- *  granted the `admin` capability (which by design mirrors the full admin instrument set - its
- *  ctl-tier equivalent already held `ctl.<admin>`, so this is parity, not a new escalation). An
- *  ordinary agent, incl. the `spawn` capability, never carries it. So the broker grant is the tier boundary exactly as
- *  `ctl.<admin>` is today, and the responder maps mode `any` to its admin authorization path. */
+ *  granted the `admin` capability (which by design mirrors the full admin instrument set, as its
+ *  v0.3 `ctl.<admin>` grant did, so this is parity, not a new escalation). An ordinary agent, incl.
+ *  the `spawn` capability, never carries it. So the broker grant is the tier boundary, and the
+ *  responder maps mode `any` to its admin authorization path. */
 export function operatorInstrumentCapabilities(tier: "privileged" | "admin", callerOwner?: string): EpCapability[] {
   const caps: EpCapability[] = [
     ...MANAGER_READ_SNAP.map((command) => ({
