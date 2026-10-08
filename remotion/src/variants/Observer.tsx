@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { AGENT, C, fontFamily, GRID_STYLE, spliceWordmark, STATUS } from "../_shared";
+import { AGENT, C, fontFamily, GRID_STYLE, spliceWordmark, STATUS, WM_WIDTH } from "../_shared";
 import { Grid, Ticker, Tagline } from "../components";
 
 // Reproduces the real `cotal console` dashboard (render.ts): roster with live
@@ -9,7 +9,7 @@ import { Grid, Ticker, Tagline } from "../components";
 type Seg = { text: string; color: string; bold?: boolean };
 const PW = 60;
 
-const WORDMARK = spliceWordmark(["", "", "", "", "", ""], 42, 0, 0);
+const WORDMARK = spliceWordmark(["", "", "", "", "", ""], WM_WIDTH, 0, 0);
 
 // Presence flips over the 120-frame loop so the roster reads as live.
 function roster(frame: number) {

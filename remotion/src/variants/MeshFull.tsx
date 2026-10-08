@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, type Cell, type Dot } from "../_shared";
+import { C, currentPhase, fontFamily, gridLine, pick, spliceWordmark, WM_WIDTH, type Cell, type Dot } from "../_shared";
 import { Grid, PhaseLabel, Ticker, Tagline } from "../components";
 
 // Four peers, every pair directly connected — no bus, no hub. The center "+"
@@ -18,7 +18,7 @@ const RAW: string[] = [
   gridLine([47, "\\"], [48, "|"], [49, "/"]),
   gridLine([45, "(carol)"]),
 ];
-const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 11, (W - 42) >> 1);
+const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 11, (W - WM_WIDTH) >> 1);
 
 const EDGE = {
   aliceBob: [{ row: 1, col: 49 }, { row: 2, col: 50 }, { row: 3, col: 51 }, { row: 4, col: 52 }],

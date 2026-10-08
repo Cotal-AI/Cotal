@@ -7,6 +7,7 @@ import {
   gridLine,
   pick,
   spliceWordmark,
+  WM_WIDTH,
   type Cell,
   type Dot,
 } from "../_shared";
@@ -40,7 +41,7 @@ const RAW: string[] = [
   gridLine([6, "one shared pub/sub space  ·  space: demo  ·  no orchestrator on the wire"]),
 ];
 // wordmark centered, one row below the schematic (rows 7..12)
-const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 7, (W - 42) >> 1);
+const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 7, (W - WM_WIDTH) >> 1);
 
 const down = (col: number): Cell[] => [
   { row: 3, col },

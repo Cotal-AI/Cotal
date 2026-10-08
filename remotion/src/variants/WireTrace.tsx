@@ -1,6 +1,6 @@
 import React from "react";
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { C, fontFamily, gridLine, spliceWordmark, type Dot } from "../_shared";
+import { C, fontFamily, gridLine, spliceWordmark, WM_WIDTH, type Dot } from "../_shared";
 import { Grid, Ticker, Tagline } from "../components";
 
 // Protocol-forward: one message routing across the four subject lanes, with
@@ -36,7 +36,7 @@ const RAW: string[] = [
   "",
 ];
 // lane rows are grid indices 2..5; wordmark below at rows 7..12
-const GRID = spliceWordmark(RAW.slice(0, 6).concat(Array(7).fill("")), W, 7, (W - 42) >> 1);
+const GRID = spliceWordmark(RAW.slice(0, 6).concat(Array(7).fill("")), W, 7, (W - WM_WIDTH) >> 1);
 
 export const WireTrace: React.FC = () => {
   const frame = useCurrentFrame();

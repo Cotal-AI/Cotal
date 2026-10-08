@@ -8,6 +8,7 @@ import {
   pick,
   spliceWordmark,
   STATUS,
+  WM_WIDTH,
   type Cell,
   type Dot,
 } from "../_shared";
@@ -66,7 +67,7 @@ const RAW: string[] = [
   border(),
   outerBot,
 ];
-const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 10, (W - 42) >> 1);
+const GRID = spliceWordmark(RAW.concat(Array(7).fill("")), W, 10, (W - WM_WIDTH) >> 1);
 
 const down = (col: number): Cell[] => [
   { row: 5, col },
