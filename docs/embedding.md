@@ -497,6 +497,14 @@ and `authorizeRemoteManagedAgentPrepareRetirement` are exported too, for a host 
 decision without the HTTP hop. Both require ledger scope `supervise`; `spawn` and `admin` do not
 imply it.
 
+Every host door that a registered manager presents runs one current-registration check, after its
+own space, scope and target checks, in one order. A gate that is absent or not open is `failed-precondition`,
+a gate held by another owner's serve principal is `permission-denied`, a request epoch other than the
+gate's process epoch is `conflict`, and a registration proof that does not match
+`remoteManagerCurrentRegistrationProof` for the current gate is `permission-denied`. A `renew`
+request carries no epoch, so its proof, which binds the gate's process epoch, is what refuses a stale
+renewal.
+
 A host that runs managed agents on its own hosted runtime adds two more kinds on the same transport.
 `kind: "manager-managed-agent-runtime-create"` asks the host to create the runtime for one agent it
 already enrolled, and `kind: "manager-managed-agent-runtime-status"` reads that runtime's state. Both

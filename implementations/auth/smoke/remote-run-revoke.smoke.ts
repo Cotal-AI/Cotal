@@ -199,7 +199,7 @@ try {
   cell("closed revoke body refuses owner by and ignored run assertions", forgedOwner.status !== 200 && forgedBy.status !== 200 && ignoredRun.status !== 200 && await readRunRevocation(jsm, SPACE, EP, malformedRun) === undefined);
   const stale = await post({ ...revokeRequest(malformedRun), processEpoch: 2 });
   const badProof = await post({ ...revokeRequest(malformedRun), registrationProof: `sha256:${"0".repeat(64)}` });
-  cell("stale epoch and invalid registration proof write no marker", stale.status !== 200 && badProof.status === 403 && String(badProof.body.error).includes("proof does not match the current registration") && await readRunRevocation(jsm, SPACE, EP, malformedRun) === undefined);
+  cell("stale epoch and invalid registration proof write no marker", stale.status !== 200 && badProof.status === 403 && String(badProof.body.error).includes("proof does not match current host registration") && await readRunRevocation(jsm, SPACE, EP, malformedRun) === undefined);
   const missing = await post(revokeRequest(newRun()));
   cell("unrecorded run cannot be revoked", missing.status === 403 && String(missing.body.error).includes("no admission record"));
   grantActor(authDir, { owner: admin, actor: "cli", scope: ["supervise"], allowSubscribe: [">"], allowPublish: [">"] });

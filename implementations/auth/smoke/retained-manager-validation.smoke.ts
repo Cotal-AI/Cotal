@@ -103,7 +103,7 @@ await rejects("another host space cannot be targeted", () => run({ request: { ..
 await rejects("a stale registration proof is refused", () => run({ request: { ...request, registrationProof: `sha256:${"f".repeat(64)}` } }), /current host registration/);
 await rejects("a superseded registration revision is refused", () => run({ observeManagerGate: async () => ({ ...gate, registrationRevision: 12 }) }), /current host registration/);
 await rejects("a missing current gate is refused", () => run({ observeManagerGate: async () => null }), /no current open manager gate/);
-await rejects("a foreign gate principal is refused", () => run({ observeManagerGate: async () => ({ ...gate, principal: `${owner}.other` }) }), /server-derived serve principal/);
+await rejects("a foreign gate principal is refused", () => run({ observeManagerGate: async () => ({ ...gate, principal: `${owner}.other` }) }), /not serve principal/);
 await rejects("a stale serve epoch is refused", () => run({ request: { ...request, serveEpoch: 6 } }), /serve epoch 6 is stale/);
 await rejects("host completion cannot return a replacement lifecycle", async () => {
   const retained = await run();

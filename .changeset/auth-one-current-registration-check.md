@@ -1,0 +1,5 @@
+---
+"@cotal-ai/auth": patch
+---
+
+Every hosted door that a registered manager presents now runs one current-registration check in one order: the gate must be open, then held by the owner's serve principal, then at the request's epoch, then the registration proof must match. Retained-agent validation, the goal-index scan, admin authorization, renewal, run admission, attempt and revoke, delegated user intent execution and the manager-service `renew` arm each carried their own copy. Delegated execution checked the principal first, so a frozen gate held by another owner was `permission-denied` there and `failed-precondition` at every other door; it now answers `failed-precondition` like the rest, and delegated admission uses the same order. The `renew` arm compared the proof with `!==` and now uses the same constant-time comparison. A `renew` carries no epoch on the wire, so its proof, which binds the gate's process epoch, still refuses a stale renewal. Refusal messages share one wording across these doors.

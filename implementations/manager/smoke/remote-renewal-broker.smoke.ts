@@ -107,9 +107,9 @@ try {
     for (const n of names) assert.equal(await brokerAccepts(family[n]), true, `${n} must connect`);
   });
   const before = issued;
-  await rejects("stale process epoch refuses before any signing", () => issueWith(auth, { gate: { ...gate, processEpoch: 4 } }), /processEpoch is stale/);
+  await rejects("stale process epoch refuses before any signing", () => issueWith(auth, { gate: { ...gate, processEpoch: 4 } }), /serve epoch \d+ is stale/);
   await rejects("foreign owner refuses before any signing", () => issueWith(auth, { owner: `u_${"b".repeat(26)}` }), /another owner|proof/);
-  await rejects("frozen registration gate refuses before any signing", () => issueWith(auth, { gate: { ...gate, state: "frozen" as never } }), /open registration gate/);
+  await rejects("frozen registration gate refuses before any signing", () => issueWith(auth, { gate: { ...gate, state: "frozen" as never } }), /no current open manager gate/);
   await rejects("foreign assigned account refuses before any signing",
     () => issueWith(auth, {}, { ...request, accountPublicKey: foreign.account.pub }), /host-assigned space and account/);
   await cell("no refused request reached the signer", () => assert.equal(issued, before));

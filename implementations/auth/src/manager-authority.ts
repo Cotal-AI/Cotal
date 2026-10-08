@@ -44,8 +44,7 @@ import {
 } from "@cotal-ai/core";
 import { CheckpointNotAmendable, CheckpointNotOpen, openCheckpointToken, settledPauseToken, type JournalEntry } from "@cotal-ai/lang";
 import type { KV } from "@nats-io/kv";
-import { timingSafeEqual } from "node:crypto";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 
@@ -68,16 +67,7 @@ export async function authorizeRemoteManagerRenewal(args: {
     requestError("requires a renewal operation");
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", "manager-service renewal is bound to the host-assigned space and account");
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", "manager-service renewal has no open registration gate");
-  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
-    throw new EpEnvelopeError("permission-denied", "manager-service renewal gate belongs to another owner");
-  if (gate.processEpoch !== r.processEpoch)
-    throw new EpEnvelopeError("conflict", "manager-service renewal processEpoch is stale");
-  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
-    throw new EpEnvelopeError("permission-denied", "manager-service renewal proof does not match the current registration");
+  await assertCurrentManagerRegistration({ ...r, registrationProof: r.registrationProof! }, r.processEpoch!, args, "manager-service renewal");
   if (r.operation === "renewRunDriver") {
     const run = await args.observeRun(r.run!.runId);
     if (!run || run.state !== "running" || run.instanceId !== r.instanceId || run.holder !== r.run!.holder ||
@@ -297,17 +287,7 @@ async function authenticateRegisteredManager(
 ): Promise<ManagerGate> {
   if (r.space !== args.space || r.accountPublicKey !== args.accountPublicKey)
     throw new EpEnvelopeError("permission-denied", `manager-service ${what} is bound to the host-assigned space and account`);
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `manager-service ${what} has no open registration gate`);
-  if (gate.principal !== `${args.owner}.${remoteManagerActors(r.instanceId).serve}`)
-    throw new EpEnvelopeError("permission-denied", `manager-service ${what} gate belongs to another owner`);
-  if (gate.processEpoch !== r.processEpoch)
-    throw new EpEnvelopeError("conflict", `manager-service ${what} processEpoch is stale`);
-  const expected = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof!), Buffer.from(expected)))
-    throw new EpEnvelopeError("permission-denied", `manager-service ${what} proof does not match the current registration`);
-  return gate;
+  return assertCurrentManagerRegistration(r, r.processEpoch, args, `manager-service ${what}`);
 }
 
 /**

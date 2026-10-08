@@ -6,6 +6,7 @@ import {
   assertValidOwnerToken,
   remoteManagerActors,
   parseRemoteManagerEnvelope,
+  type RemoteManagerEnvelope,
   type RemoteRetainedAgentValidationRequest,
   type RemoteRetainedAgentValidationResult,
   type RetainedAgentAuthority,
@@ -36,6 +37,30 @@ export function remoteManagerCurrentRegistrationProof(
     processEpoch: current.processEpoch,
   });
   return `sha256:${createHmac("sha256", secret).update("cotal/manager-current-registration/v1\0").update(payload).digest("hex")}`;
+}
+
+/** Every hosted door a registered manager presents runs this one check after its own space, scope
+ * and target checks, so a change to the gate, principal, epoch or proof rule reaches all of them at
+ * once. `epoch` is null only for `renew`, which carries no epoch on the wire: its proof binds the
+ * gate's process epoch, so a stale renewal is refused there. */
+export async function assertCurrentManagerRegistration(
+  r: Pick<RemoteManagerEnvelope, "space" | "actor" | "instanceId" | "managerLifecycleUid" | "identities" | "registrationProof">,
+  epoch: number | null,
+  args: { owner: string; proofSecret: string | Uint8Array; observeManagerGate: ObserveManagerGate },
+  what: string,
+): Promise<NonNullable<Awaited<ReturnType<ObserveManagerGate>>>> {
+  const gate = await args.observeManagerGate(r.instanceId);
+  if (!gate || gate.state !== "open")
+    throw new EpEnvelopeError("failed-precondition", `${what} found no current open manager gate for instance ${r.instanceId}`);
+  const servePrincipal = `${args.owner}.${remoteManagerActors(r.instanceId).serve}`;
+  if (gate.principal !== servePrincipal)
+    throw new EpEnvelopeError("permission-denied", `${what} gate belongs to another owner: ${gate.principal} is not serve principal ${servePrincipal}`);
+  if (epoch !== null && gate.processEpoch !== epoch)
+    throw new EpEnvelopeError("conflict", `${what} serve epoch ${epoch} is stale; current is ${gate.processEpoch}`);
+  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
+  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
+    throw new EpEnvelopeError("permission-denied", `${what} proof does not match current host registration`);
+  return gate;
 }
 
 function requestError(what: string): never {
@@ -102,19 +127,7 @@ export async function authorizeRemoteRetainedAgentValidation(
   requireManagerAuthorityHolder(args, r.instanceId, 'manager retained-agent validation needs scope "supervise"; spawn/admin do not imply it');
   if (r.target.owner !== args.owner)
     throw new EpEnvelopeError("permission-denied", `manager retained-agent validation may target only its authenticated owner ${args.owner}, not ${r.target.owner}`);
-  const actors = remoteManagerActors(r.instanceId);
-  const gate = await args.observeManagerGate(r.instanceId);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `manager retained-agent validation found no current open manager gate for instance ${r.instanceId}`);
-  const servePrincipal = `${args.owner}.${actors.serve}`;
-  if (gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager retained-agent validation gate belongs to ${gate.principal}, not the server-derived serve principal ${servePrincipal}`);
-  if (gate.processEpoch !== r.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager retained-agent validation serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);
-  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
-    throw new EpEnvelopeError("permission-denied", "manager retained-agent validation proof does not match the current host registration");
-
+  await assertCurrentManagerRegistration(r, r.serveEpoch, args, "manager retained-agent validation");
   return r;
 }
 

@@ -493,7 +493,7 @@ try {
     attempt: { runId: first, takeoverId: "t".repeat(16), epoch: 2, fencingToken: 2, driverId: newIdentity().id, mediatorId: newIdentity().id },
   });
   c("missing manager gate refuses",
-    nogateRes.status === 403 && String(nogateRes.body.error).includes("no open registration gate"), nogateRes);
+    nogateRes.status === 403 && String(nogateRes.body.error).includes("no current open manager gate"), nogateRes);
 
   // 17. Unrecorded run (no admission) refuses (403)
   const unadmittedRun = newRun();

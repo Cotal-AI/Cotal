@@ -4,17 +4,15 @@ import {
   assertPrincipalOwnerToken,
   assertLifecycleToken,
   assertValidOwnerToken,
-  remoteManagerActors,
   parseRemoteManagerEnvelope,
   type RemoteManagerAdminAuthorizationRequest,
   type RemoteManagerAdminAuthorizationResult,
   type PlatformControlAssignment,
 } from "@cotal-ai/core";
-import { timingSafeEqual } from "node:crypto";
 import { findActorUnified } from "./ledger.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import { requireManagerAuthorityHolder } from "./platform-control.js";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 
 const bad = (message: string): never => { throw new EpEnvelopeError("bad-request", `manager admin authorization request ${message}`); };
 
@@ -59,15 +57,7 @@ export async function authorizeRemoteManagerAdmin(args: {
     request.instanceId,
     'manager admin authorization needs manager scope "supervise"',
   );
-  const actors = remoteManagerActors(request.instanceId);
-  const gate = await args.observeManagerGate(request.instanceId);
-  if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `manager admin authorization found no current open manager gate for instance ${request.instanceId}`);
-  const expectedPrincipal = `${args.managerOwner}.${actors.serve}`;
-  if (gate.principal !== expectedPrincipal) throw new EpEnvelopeError("permission-denied", `manager admin authorization gate belongs to ${gate.principal}, not ${expectedPrincipal}`);
-  if (gate.processEpoch !== request.serveEpoch) throw new EpEnvelopeError("conflict", `manager admin authorization serve epoch ${request.serveEpoch} is stale; current is ${gate.processEpoch}`);
-  const proof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.managerOwner, request, gate);
-  if (!timingSafeEqual(Buffer.from(request.registrationProof), Buffer.from(proof)))
-    throw new EpEnvelopeError("permission-denied", "manager admin authorization proof does not match the current host registration");
+  await assertCurrentManagerRegistration(request, request.serveEpoch, { ...args, owner: args.managerOwner }, "manager admin authorization");
 
   // A valid current-manager request gets one non-oracular decision. The authoritative unified row is
   // read fresh for every call. Absence, revocation, a narrowed scope, owner drift, and lifecycle drift

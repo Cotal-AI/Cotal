@@ -27,11 +27,10 @@ import {
   type RemoteDelegatedUserIntentExecutionResult,
   type RemoteManagedAgentPrepareRetirementRequest,
 } from "@cotal-ai/core";
-import { timingSafeEqual } from "node:crypto";
 import { assertWithinSpawnerGrant, ledgerAuthorizeGrant } from "./ledger.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 import type { PlatformControlDeps } from "./platform-control.js";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 
 /** The host's record of one admitted intent. The host is its only writer: create-only at admission,
  * then one revision-pinned CAS from `admitted` to `consumed` that writes `execution` before any
@@ -182,10 +181,10 @@ export async function authorizeDelegatedUserIntentAdmission(
   if (r.intent.operation === "launch") {
     if (!isCurrentAssignment(assignment, args.space, args.accountPublicKey, r.instanceId))
       throw new EpEnvelopeError("permission-denied", `platform control instance ${r.instanceId} is not the current assignment's instance for this account`);
-    if (gate && gate.principal !== servePrincipal)
-      throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
     if (!gate || gate.state !== "open")
       throw new EpEnvelopeError("failed-precondition", `delegated user intent found no current open manager gate for instance ${r.instanceId}`);
+    if (gate.principal !== servePrincipal)
+      throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
     const t = r.intent.target;
     // A dry run of the walk the host's writer repeats at the write, over the read ACL that writer
     // provisions: refuse before any record exists.
@@ -304,19 +303,13 @@ export async function authorizeDelegatedUserIntentExecution(
   if (!isCurrentAssignment(assignment, args.space, args.accountPublicKey, rec.instanceId) ||
       assignment.assignmentRevision !== rec.assignmentRevision || assignment.lifecycleUid !== rec.managerLifecycleUid)
     throw new EpEnvelopeError("permission-denied", "platform control assignment no longer names the intent's instance, lifecycle or revision");
-  const gate = await observe("manager gate", () => args.observeManagerGate(r.instanceId));
-  const servePrincipal = `${args.platformOwner}.${remoteManagerActors(r.instanceId).serve}`;
-  if (gate && gate.principal !== servePrincipal)
-    throw new EpEnvelopeError("permission-denied", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);
-  if (!gate || gate.state !== "open")
-    throw new EpEnvelopeError("failed-precondition", `delegated user intent execution found no current open manager gate for instance ${r.instanceId}`);
-  if (gate.processEpoch !== r.serveEpoch)
-    throw new EpEnvelopeError("conflict", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);
+  await assertCurrentManagerRegistration(r, r.serveEpoch, {
+    owner: args.platformOwner,
+    proofSecret: args.proofSecret,
+    observeManagerGate: (instanceId) => observe("manager gate", () => args.observeManagerGate(instanceId)),
+  }, "delegated user intent execution");
   if (r.serveEpoch !== rec.serveEpoch)
     throw new EpEnvelopeError("permission-denied", `delegated user intent ${r.intentId} is bound to serve epoch ${rec.serveEpoch}, not ${r.serveEpoch}`);
-  const expectedProof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.platformOwner, r, gate);
-  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))
-    throw new EpEnvelopeError("permission-denied", "delegated user intent execution proof does not match current host registration");
   const base = { intentId: rec.intentId, requestId: r.requestId, serveEpoch: r.serveEpoch, owner: rec.owner, parent: rec.parent, instanceId: rec.instanceId, resume };
   if (rec.intent.operation === "launch") {
     if (r.execute.operation !== "launch" || r.execute.target.actor !== rec.intent.target.actor)

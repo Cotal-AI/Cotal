@@ -1,13 +1,11 @@
 import {
   EpEnvelopeError,
-  remoteManagerActors,
   parseRemoteManagerEnvelope,
   type GoalIndexEntry,
   type RemoteManagerGoalIndexScanRequest,
   type RemoteManagerGoalIndexScanResult,
 } from "@cotal-ai/core";
-import { remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
-import { timingSafeEqual } from "node:crypto";
+import { assertCurrentManagerRegistration } from "./retained-manager-validation.js";
 import { requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import type { ObserveManagerGate } from "./managed-agent-enrollment.js";
 
@@ -32,15 +30,7 @@ export async function authorizeRemoteManagerGoalIndexScan(args: ManagerAuthority
   const request = parseRemoteManagerGoalIndexScanRequest(args.request);
   if (request.space !== args.space) throw new EpEnvelopeError("permission-denied", `manager goal-index scan names space ${request.space}, not this host space ${args.space}`);
   requireManagerAuthorityHolder(args, request.instanceId, 'manager goal-index scan needs scope "supervise"');
-  const actors = remoteManagerActors(request.instanceId);
-  const gate = await args.observeManagerGate(request.instanceId);
-  if (!gate || gate.state !== "open") throw new EpEnvelopeError("failed-precondition", `manager goal-index scan found no current open manager gate for instance ${request.instanceId}`);
-  const expectedPrincipal = `${args.owner}.${actors.serve}`;
-  if (gate.principal !== expectedPrincipal) throw new EpEnvelopeError("permission-denied", `manager goal-index scan gate belongs to ${gate.principal}, not ${expectedPrincipal}`);
-  if (gate.processEpoch !== request.serveEpoch) throw new EpEnvelopeError("conflict", `manager goal-index scan serve epoch ${request.serveEpoch} is stale; current is ${gate.processEpoch}`);
-  const proof = remoteManagerCurrentRegistrationProof(args.proofSecret, args.owner, request, gate);
-  if (!timingSafeEqual(Buffer.from(request.registrationProof), Buffer.from(proof)))
-    throw new EpEnvelopeError("permission-denied", "manager goal-index scan proof does not match the current host registration");
+  await assertCurrentManagerRegistration(request, request.serveEpoch, args, "manager goal-index scan");
   return request;
 }
 

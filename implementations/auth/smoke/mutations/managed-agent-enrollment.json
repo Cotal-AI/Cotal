@@ -39,7 +39,7 @@
     },
     {
       "name": "the current-registration check accepts any manager gate state, including frozen",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
+      "file": "implementations/auth/src/retained-manager-validation.ts",
       "find": "  if (!gate || gate.state !== \"open\")\n    throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
       "replace": "  if (!gate) throw new EpEnvelopeError(\"failed-precondition\", `${what} found no current open manager gate for instance ${r.instanceId}`);\n",
       "expectRed": "FAIL: enrollment: a FROZEN gate is refused (a takeover in flight is not a registration)",
@@ -47,24 +47,24 @@
     },
     {
       "name": "the current-registration check accepts a gate held by another owner's serve principal",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `manager gate belongs to ${gate.principal}, not serve principal ${servePrincipal}`);\n",
+      "file": "implementations/auth/src/retained-manager-validation.ts",
+      "find": "  if (gate.principal !== servePrincipal)\n    throw new EpEnvelopeError(\"permission-denied\", `${what} gate belongs to another owner: ${gate.principal} is not serve principal ${servePrincipal}`);\n",
       "replace": "",
       "expectRed": "FAIL: enrollment: a gate held by another owner's serve principal is refused",
       "cell": "enrollment: a gate held by another owner's serve principal is refused"
     },
     {
       "name": "the current-registration check accepts a stale serve epoch",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (gate.processEpoch !== r.serveEpoch)\n    throw new EpEnvelopeError(\"conflict\", `manager serve epoch ${r.serveEpoch} is stale; current is ${gate.processEpoch}`);\n",
+      "file": "implementations/auth/src/retained-manager-validation.ts",
+      "find": "  if (epoch !== null && gate.processEpoch !== epoch)\n    throw new EpEnvelopeError(\"conflict\", `${what} serve epoch ${epoch} is stale; current is ${gate.processEpoch}`);\n",
       "replace": "",
       "expectRed": "FAIL: enrollment: a stale serve epoch is refused as a conflict",
       "cell": "enrollment: a stale serve epoch is refused as a conflict"
     },
     {
       "name": "the current-registration check stops checking the host-issued registration proof",
-      "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `manager ${what} proof does not match current host registration`);\n",
+      "file": "implementations/auth/src/retained-manager-validation.ts",
+      "find": "  if (!timingSafeEqual(Buffer.from(r.registrationProof), Buffer.from(expectedProof)))\n    throw new EpEnvelopeError(\"permission-denied\", `${what} proof does not match current host registration`);\n",
       "replace": "",
       "expectRed": "FAIL: enrollment: a forged registration proof is refused",
       "cell": "enrollment: a forged registration proof is refused"
@@ -106,7 +106,7 @@
     {
       "name": "prepare-retirement skips the current-registration check",
       "file": "implementations/auth/src/managed-agent-enrollment.ts",
-      "find": "  await assertCurrentManagerRegistration(r, args, \"prepare-retirement\");\n",
+      "find": "  await assertCurrentManagerRegistration(r, r.serveEpoch, args, \"manager prepare-retirement\");\n",
       "replace": "",
       "expectRed": "FAIL: release: a forged registration proof is refused",
       "cell": "release: a forged registration proof is refused"

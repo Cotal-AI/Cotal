@@ -144,7 +144,7 @@ try {
   const badProof = await outcome(admit(run, { registrationProof: `sha256:${"0".repeat(64)}` }));
   const ceilingField = await outcome(admit(run, { ceiling: { publish: { allow: { mode: "all" }, deny: [] } } }));
   c("account, stale epoch, missing gate, foreign owner, bad proof and a caller-supplied ceiling all refuse before any write",
-    acct.includes("space and account") && epoch.includes("stale") && noGate.includes("no open registration gate") &&
+    acct.includes("space and account") && epoch.includes("stale") && noGate.includes("no current open manager gate") &&
     foreignOwner.includes("another owner") && badProof.includes("proof does not match") && ceilingField.includes("unknown field ceiling") && await absent(reg),
     { acct, epoch, noGate, foreignOwner, badProof, ceilingField });
 
