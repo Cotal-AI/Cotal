@@ -18,7 +18,7 @@ import { createServer } from "node:http";
 import { spawn } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { once } from "node:events";
-import { CENSUS_BUCKETS, classifyDirectPublishPermission, isAbsentRegistry, isPresentRegistry, isUnknownRegistry, preflightNpmPublish } from "../../scripts/preflight-npm-publish.mjs";
+import { CENSUS_BUCKETS, classifyDirectPublishPermission, isAbsentRegistry, isPresentRegistry, isUnknownRegistry, preflightNpmPublish, workspacePackagesFromPnpm } from "../../scripts/preflight-npm-publish.mjs";
 import { emitDeclaration } from "./gen-npm-publish-preflight-dts.mjs";
 import ts from "typescript";
 import { readFileSync } from "node:fs";
@@ -26,6 +26,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const repositoryPackages = workspacePackagesFromPnpm(ROOT);
 
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_")) delete cleanEnv[key];
@@ -311,7 +312,7 @@ check(
 );
 check(
   "all-present repository entrypoint prints the full fixed-group census",
-  allPresent.output.split("\n").filter((line) => line.includes("\tpresent\tnot-run\tnot-run")).length === 22,
+  allPresent.output.split("\n").filter((line) => line.includes("\tpresent\tnot-run\tnot-run")).length === repositoryPackages.length,
   allPresent.output,
 );
 check(
@@ -326,7 +327,7 @@ const mixedEntrypoint = await repositoryEntrypoint("mixed");
 check(
   "mixed repository entrypoint preserves the partial-publication refusal",
   mixedEntrypoint.code !== 0
-    && mixedEntrypoint.output.includes("publish preflight refused: 1/22 exact versions already exist"),
+    && mixedEntrypoint.output.includes(`publish preflight refused: 1/${repositoryPackages.length} exact versions already exist`),
   mixedEntrypoint.output,
 );
 check(
@@ -346,12 +347,12 @@ check(
 );
 check(
   "zero-present repository entrypoint derives and exchanges every fixed-group package",
-  zeroPresent.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === 22,
+  zeroPresent.seen.filter((call) => call.url.startsWith("/-/npm/v1/oidc/token/exchange/package/")).length === repositoryPackages.length,
   zeroPresent.seen,
 );
 check(
   "zero-present repository entrypoint GETs trust for every fixed-group package",
-  zeroPresent.seen.filter((call) => call.method === "GET" && call.url.includes("/trust")).length === 22,
+  zeroPresent.seen.filter((call) => call.method === "GET" && call.url.includes("/trust")).length === repositoryPackages.length,
   zeroPresent.seen,
 );
 check(
