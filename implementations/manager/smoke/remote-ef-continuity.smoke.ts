@@ -260,7 +260,6 @@ try {
     }, {
       requireCapability: false,
       refuseViews: false,
-      allowManagerAuthority: true,
       peerKey: () => "loopback",
       throttled: () => false,
       recordFailure: () => {},

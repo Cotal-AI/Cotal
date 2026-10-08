@@ -151,9 +151,10 @@ cotal up --user-auth --idp https://idp.example/api/auth \
 ```
 
 The public listener itself still binds `127.0.0.1:7443`; configure the proxy to terminate TLS and
-forward to it. It serves only `/health`, `/jwks`, `/exchange`, and `/.well-known/cotal-mesh` with
-the documented methods. It needs no local file capability: the signed IdP JWT or managed-agent
-actor token is the proof, while the original loopback listener remains capability-gated. Add
+forward to it. It serves only `/health`, `/jwks`, `/exchange`, `/manager-service-authority`, and
+`/.well-known/cotal-mesh` with the documented methods. It needs no local file capability: the
+signed IdP JWT or managed-agent actor token is the proof, while the original loopback listener
+remains capability-gated. Add
 `--exchange-trusted-proxy` only when that listener is reachable exclusively through your trusted
 proxy; it keys failure throttling by the last `X-Forwarded-For` hop instead of the socket address.
 The well-known bundle includes IdP pins and a deny-all sentinel credential, so fetch it only from

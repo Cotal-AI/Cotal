@@ -82,6 +82,24 @@ store that refuses a put of the new key fails the start.
 Let the store accept a put of `authInstanceKey(space)`. A copy of `stateDir` taken before the upgrade
 still holds the serve seed, so delete it or protect it as secret material.
 
+## Manager-service authority policy flag in 0.75.0
+
+`handleManagerServiceAuthority` from `@cotal-ai/auth` no longer reads `allowManagerAuthority` from
+its policy argument, and the field is removed. Both exchange faces set it to `true`, so it never
+refused anything. A running mesh needs nothing: the public listener serves
+`POST /manager-service-authority` as it did before, and the docs now list that route.
+
+### What stops working
+
+A host that serves the route itself and passes a policy object literal with
+`allowManagerAuthority` fails to compile with TS2353. Plain JavaScript that set it to `false` got a
+403 from the handler, and its requests now reach the capability and IdP checks.
+
+### Before the upgrade
+
+Remove `allowManagerAuthority` from the policy you pass. Where you set it to `false`, leave the
+route out of that listener's route table instead.
+
 ## Hermes model from the environment in 0.68.0
 
 A connector now launches on the model and variant its launcher resolved (the `--model` or

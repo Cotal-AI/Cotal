@@ -223,7 +223,6 @@ try {
   const httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx, {
     requireCapability: true,
     refuseViews: false,
-    allowManagerAuthority: true,
     peerKey: () => "127.0.0.1",
     throttled: () => false,
     recordFailure: () => {},

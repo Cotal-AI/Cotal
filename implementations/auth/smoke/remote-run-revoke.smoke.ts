@@ -101,7 +101,7 @@ try {
     issueManagerRunAttempt: plane.issueManagerRunAttempt, revokeManagerRun: plane.revokeManagerRun,
   };
   httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx, {
-    requireCapability: true, refuseViews: false, allowManagerAuthority: true, peerKey: () => "127.0.0.1", throttled: () => false, recordFailure: () => {},
+    requireCapability: true, refuseViews: false, peerKey: () => "127.0.0.1", throttled: () => false, recordFailure: () => {},
   }));
   await new Promise<void>(resolve => httpServer!.listen(0, "127.0.0.1", resolve));
   const url = `http://127.0.0.1:${(httpServer.address() as import("node:net").AddressInfo).port}/manager-service-authority`;
