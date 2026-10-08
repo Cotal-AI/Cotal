@@ -50,7 +50,8 @@ publish. A refusal at that check means nothing was sent, and it is marked `not-e
 endpoint that refuses a request before running the command states `not-executed` in the reply's
 `error.outcome` too, for example on a wrong envelope version, sender, contract digest or target
 mode, or a body that does not parse. A refusal the command itself raises carries only the
-outcome it states. A
+outcome it states. A refusal too large to publish comes back as `resource-exhausted` and keeps
+that outcome. A
 signed-in user invokes the same surface through their bearer, and the broker enforces each
 command's existing capability grant. A manager alias supplied through `--name` resolves through
 its name-keyed `inspect` command, so an authorized targeted call does not need the manager-wide

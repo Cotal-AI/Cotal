@@ -550,10 +550,12 @@ export function serveEndpoint(
       // outcome the non-serializable branch above already exists to prevent, so it gets the same
       // treatment. The replacement fits by construction — its message is one integer and a
       // bounded string — and `resource-exhausted` matches the §13.4 fact preflight, which refuses
-      // an over-`max_payload` acceptance loudly rather than spilling it.
+      // an over-`max_payload` acceptance loudly rather than spilling it. Failing to publish changes
+      // nothing about whether the command ran, so the outcome the refused reply stated carries over.
+      const outcome = reply.error?.outcome;
       const refused: EndpointReply = {
         v: 1, id: reply.id, ok: false,
-        error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped` },
+        error: { code: "resource-exhausted", message: `the serialized reply is ${bytes.length} bytes and the broker refused it (${(err as Error)?.message ?? String(err)}); a reply that cannot be published is refused loudly, never dropped`, ...(outcome !== undefined ? { outcome } : {}) },
       };
       nc.publish(replySubject, enc.encode(JSON.stringify(refused)));
     }
