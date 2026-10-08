@@ -1,5 +1,6 @@
 import {
   EpEnvelopeError,
+  REMOTE_MANAGER_AUTHORITY_OPERATIONS,
   REMOTE_MANAGER_IDENTITY_NAMES,
   assertDerivedOwnerToken,
   assertPrincipalOwnerToken,
@@ -114,8 +115,8 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   const o = raw as Record<string, unknown>;
   const allowed = new Set(["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "session", "retirement", "contractArtifacts", "identities", "accountPublicKey", "processEpoch", "run", "transferReader"]);
   for (const key of Object.keys(o)) if (!allowed.has(key)) requestError(`carries unknown field ${JSON.stringify(key)} (the protocol is closed)`);
-  if (o.operation !== "prepare" && o.operation !== "activate" && o.operation !== "renew" && o.operation !== "session" && o.operation !== "retire" && o.operation !== "renewStandingBundle" && o.operation !== "renewRunDriver" && o.operation !== "transferReader")
-    requestError('operation must be "prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", or "transferReader"');
+  if (!(REMOTE_MANAGER_AUTHORITY_OPERATIONS as readonly unknown[]).includes(o.operation))
+    requestError(`operation must be one of ${REMOTE_MANAGER_AUTHORITY_OPERATIONS.join(", ")}`);
   const envelope = parseRemoteManagerEnvelope(o, "manager-service-authority", "manager-service authority", o.operation !== "prepare");
   if (o.operation === "activate" && (!Array.isArray(o.contractArtifacts) || o.contractArtifacts.length === 0 || o.contractArtifacts.length > 64))
     requestError("activate requires 1-64 canonical manager contractArtifacts");
@@ -185,7 +186,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
   return {
     v: 1,
     kind: "manager-service-authority",
-    operation: o.operation,
+    operation: o.operation as RemoteManagerAuthorityRequest["operation"],
     ...envelope,
     ...(renewal ? { accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number } : {}),
     ...(run ? { run } : {}),

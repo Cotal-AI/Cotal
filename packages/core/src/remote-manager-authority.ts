@@ -3,6 +3,10 @@ import { EpEnvelopeError } from "./endpoint-error.js";
 import { isAccountNkey, isUserNkey } from "./identity.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, assertValidOwnerToken } from "./subjects.js";
 
+/** The manager-service authority operations. The request type and the host parser both read this
+ *  list, so an operation added here is admitted by the parser too. */
+export const REMOTE_MANAGER_AUTHORITY_OPERATIONS = Object.freeze(["prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", "transferReader"] as const);
+
 /**
  * Closed request for one remote manager-service authority lifecycle.
  *
@@ -14,7 +18,7 @@ import { assertDerivedOwnerToken, assertLifecycleToken, assertValidChannel, asse
 export interface RemoteManagerAuthorityRequest {
   v: 1;
   kind: "manager-service-authority";
-  operation: "prepare" | "activate" | "renew" | "session" | "retire" | "renewStandingBundle" | "renewRunDriver" | "transferReader";
+  operation: (typeof REMOTE_MANAGER_AUTHORITY_OPERATIONS)[number];
   space: string;
   /** The interactive ledger actor authenticating the request (normally `cli`). */
   actor: string;
