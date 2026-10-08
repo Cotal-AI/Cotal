@@ -1817,6 +1817,9 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("transport", { connected: false } satisfies TransportState);
       this.emit("connection", { connected: false });
       await this.closeWithoutLibraryReconnect(oldNc);
+      // stop() can arrive while the old epoch closes. Do not start another authentication
+      // handshake after it: a terminal credential may already have expired in that window.
+      if (this.stopped) return;
       await this.connectAndBind();
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
