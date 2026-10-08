@@ -7129,8 +7129,15 @@ export class Manager {
           // The screen's last row can be a dialog footer, so the exit's diagnostic is named beside it:
           // it carries the runtime's own reason when it stopped the seat. A connector that ends on its
           // diagnostic already shows it as the last row, and it is not repeated.
-          const diagnostic = a.handle.exitInfo?.()?.diagnostic;
-          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${diagnostic && diagnostic !== tail ? `; diagnostic: ${diagnostic}` : ""}` });
+          let exitDetail = "";
+          try {
+            const diagnostic = a.handle.exitInfo?.()?.diagnostic;
+            if (diagnostic && diagnostic !== tail) exitDetail = `; diagnostic: ${diagnostic}`;
+          } catch (e) {
+            // The backstop is already cleared, so a reader that throws must still let this settle.
+            exitDetail = `; exit detail unreadable from runtime "${a.handle.kind}": ${rejectionText(e)}`;
+          }
+          finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
       timer = setTimeout(
