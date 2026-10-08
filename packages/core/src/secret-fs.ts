@@ -85,7 +85,13 @@ export function hardenPrivate(path: string, kind: "file" | "dir"): void {
  * isn't left readable.
  */
 export function writeSecretFile(path: string, data: string | Buffer): void {
-  writeFileSync(path, data, { mode: 0o600 });
+  writePrivate(path, data, "w");
+}
+
+/** The fail-closed write {@link writeSecretFile} documents, with the open flag as a parameter so
+ *  {@link writeSecretFileCreateOnlyRaw} can pass `wx`. */
+function writePrivate(path: string, data: string | Buffer, flag: "w" | "wx"): void {
+  writeFileSync(path, data, { flag, mode: 0o600 });
   if (!isWin) return; // POSIX mode set at create, nothing more to do
   try {
     hardenPrivate(path, "file");
@@ -143,16 +149,7 @@ export function writeSecretFileAtomic(path: string, data: string | Buffer): void
  * one syscall and is what picks the winner.
  */
 function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void {
-  // WIN32 ONLY, and deliberately so. Measured on POSIX: `O_EXCL` already refuses a plain file, a
-  // directory AND a dangling symlink with EEXIST, materialising nothing, so a pre-check there
-  // would add a check-then-act step that buys nothing and can only weaken the guarantee. Windows
-  // is the platform where `O_EXCL` RESOLVES a reparse point and creates its target, which would
-  // land bytes at a name the caller never asked for; `lstatSync` reports the link rather than its
-  // target, so the name is refused before anything is written.
-  //
-  // This never decides a concurrent create. Two creators that both see the name free still both
-  // reach `O_EXCL` below, and O_EXCL, one syscall, is what picks the winner. The check only ever
-  // converts a would-be write-through into the EEXIST the caller already handles.
+  // Deliberately win32 only, for the reason the doc comment gives.
   if (isWin) {
     let exists = true;
     try {
@@ -167,18 +164,7 @@ function writeSecretFileCreateOnlyRaw(path: string, data: string | Buffer): void
       throw taken;
     }
   }
-  writeFileSync(path, data, { flag: "wx", mode: 0o600 });
-  if (!isWin) return; // POSIX mode set at create, nothing more to do
-  try {
-    hardenPrivate(path, "file");
-  } catch (e) {
-    try {
-      unlinkSync(path); // best-effort cleanup; the hardening error below is what the caller sees
-    } catch {
-      /* ignore: surface the original hardening failure, not a secondary unlink error */
-    }
-    throw e;
-  }
+  writePrivate(path, data, "wx");
 }
 
 /**

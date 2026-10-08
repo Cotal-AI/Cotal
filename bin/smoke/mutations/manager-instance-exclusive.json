@@ -72,8 +72,8 @@
     {
       "name": "M5 O_EXCL becomes a userspace check-then-write (refuses, but is not atomic)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });\n  if (!isWin) return;",
-      "replace": "  writeFileSync(path, data, { mode: 0o600 });\n  if (!isWin) return;",
+      "find": "  writePrivate(path, data, \"wx\");",
+      "replace": "  writePrivate(path, data, \"w\");",
       "expectRed": "REFUSE: a temp name taken before the write is not overwritten (the temp write is exclusive too)",
       "cell": "REFUSE: a temp name taken before the write is not overwritten (the temp write is exclusive too)",
       "note": "Raised by review: refusing an existing name is not the same property as deciding a concurrent create, since a userspace check-then-write refuses too. Graded deterministically by a name that is free when a pre-check would look and taken by the time the write runs. This replaced an N-process barrier race that was measured to fail toward green under a post-release stall.",
@@ -94,8 +94,8 @@
     {
       "name": "M7 O_EXCL becomes a REFUSING userspace check-then-write (lstat then plain write)",
       "file": "packages/core/src/secret-fs.ts",
-      "find": "  writeFileSync(path, data, { flag: \"wx\", mode: 0o600 });\n  if (!isWin) return;",
-      "replace": "  try { lstatSync(path); const t: NodeJS.ErrnoException = new Error(\"EEXIST\"); t.code = \"EEXIST\"; throw t; } catch (e) { if ((e as NodeJS.ErrnoException).code === \"EEXIST\") throw e; }\n  writeFileSync(path, data, { mode: 0o600 });\n  if (!isWin) return;",
+      "find": "  writePrivate(path, data, \"wx\");",
+      "replace": "  try { lstatSync(path); const t: NodeJS.ErrnoException = new Error(\"EEXIST\"); t.code = \"EEXIST\"; throw t; } catch (e) { if ((e as NodeJS.ErrnoException).code === \"EEXIST\") throw e; }\n  writePrivate(path, data, \"w\");",
       "expectRed": "REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
       "cell": "REFUSE: a name taken while the creator is past its check is still not overwritten (O_EXCL re-decides at the write)",
       "note": "The mutant no in-process cell can catch: it REFUSES an existing name exactly as O_EXCL does. They differ only for a creator already past its check when the name is taken. An N-process race reached that window only by luck and let this escape ~1 run in 6 while staying green when the implementation was correct, so the competitor is now placed in the window by an fs preload.",
