@@ -144,14 +144,16 @@ function humanBytes(n: number): string {
   return Number.isInteger(gib) ? `${gib} GiB` : `${gib.toFixed(1)} GiB`;
 }
 
-interface ServiceStatus {
-  installed: boolean;
-  mesh: string;
-  root?: string;
-  unit?: { name: string; state: string; enabled: boolean | "unknown" };
-  manager?: ManagerRecord;
-  linger?: boolean | { error: string };
-}
+type ServiceStatus =
+  | { installed: false; mesh: string }
+  | {
+      installed: true;
+      mesh: string;
+      root: string;
+      unit: { name: string; state: string; enabled: boolean | "unknown" };
+      manager: ManagerRecord;
+      linger?: boolean | { error: string };
+    };
 
 /** systemd state for one unit: `inactive`/`not-found` handled without throwing. */
 function systemdUnitStatus(unit: string): { state: string; enabled: boolean | "unknown" } {
@@ -185,6 +187,19 @@ function readUnitFields(path: string, syntax: CommentSyntax): { mesh?: string; r
     return line?.slice(open.length, line.length - syntax.close.length);
   };
   return { mesh: field("cotal-mesh"), root: field("cotal-root"), marked: lines[0] === comment(syntax, MARKER) };
+}
+
+/** The mesh and root an installed unit records, for `status`. Both are REQUIRED, never
+ *  synthesized: a unit with no recorded mesh is not provably this command's, so status does not
+ *  present one as its own, and a unit with no absolute recorded root names no pidfile to judge
+ *  its manager by (a blank or relative one resolves against the caller's directory, which may
+ *  belong to another mesh). */
+function recordedService(path: string, fields: { mesh?: string; root?: string }): { mesh: string; root: string } {
+  if (!fields.mesh)
+    throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
+  if (!fields.root || !isAbsolute(fields.root))
+    throw new Error(`${path} records mesh "${fields.mesh}" but no absolute root, so its manager cannot be read - remove it with \`cotal service uninstall --mesh ${fields.mesh}\` and install it again`);
+  return { mesh: fields.mesh, root: fields.root };
 }
 
 export async function service(args: ParsedArgs): Promise<void> {
@@ -486,18 +501,13 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const unit = systemdUnitName(mesh);
     const path = join(userUnitDir(), unit);
     if (!existsSync(path)) return out;
-    const fields = readUnitFields(path, SYSTEMD_COMMENT);
-    // The mesh field is REQUIRED, never synthesized: a unit with no recorded mesh is not
-    // provably this command's, so status does not present one as its own either.
-    if (!fields.mesh)
-      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
+    const recorded = recordedService(path, readUnitFields(path, SYSTEMD_COMMENT));
     const state = systemdUnitStatus(unit);
     return {
       installed: true,
-      mesh: fields.mesh,
-      ...(fields.root ? { root: fields.root } : {}),
+      ...recorded,
       unit: { name: unit, state: state.state, enabled: state.enabled },
-      ...(fields.root ? { manager: managerRecordState(undefined, undefined, fields.mesh, fields.root) } : {}),
+      manager: managerRecordState(undefined, undefined, recorded.mesh, recorded.root),
       linger: readLinger(),
     };
   }
@@ -505,18 +515,14 @@ function readStatus(values: { mesh?: string }): ServiceStatus {
     const label = launchdLabel(mesh);
     const path = join(launchAgentsDir(), `${label}.plist`);
     if (!existsSync(path)) return out;
-    const fields = readUnitFields(path, LAUNCHD_COMMENT);
-    // Same required-recorded-mesh rule as the Linux arm.
-    if (!fields.mesh)
-      throw new Error(`${path} carries no recorded mesh - it was not written by \`cotal service install\`; reinstall it under the mesh it should serve before removing or reading it as a service`);
+    const recorded = recordedService(path, readUnitFields(path, LAUNCHD_COMMENT));
     const listed = run("launchctl", ["list", label]);
     const pid = Number(listed.output.split("\t")[0]);
     return {
       installed: true,
-      mesh: fields.mesh,
-      ...(fields.root ? { root: fields.root } : {}),
+      ...recorded,
       unit: { name: label, state: listed.status === 0 ? (Number.isInteger(pid) && pid > 0 ? "running" : "loaded") : "not-loaded", enabled: listed.status === 0 },
-      ...(fields.root ? { manager: managerRecordState(undefined, undefined, fields.mesh, fields.root) } : {}),
+      manager: managerRecordState(undefined, undefined, recorded.mesh, recorded.root),
     };
   }
   throw new Error(`\`cotal service\` is not supported on ${process.platform}`);
@@ -533,12 +539,12 @@ function status(values: { mesh?: string; json?: boolean }): void {
   if (!s.installed) {
     console.log(c.dim(`  service not installed for mesh "${s.mesh}" - install with: cotal service install --mesh ${s.mesh}`));
   } else {
-    const unit = s.unit!;
+    const unit = s.unit;
     console.log(`  ${"unit".padEnd(16)} ${unit.name}`);
     console.log(`  ${"unit state".padEnd(16)} ${unit.state === "active" ? c.green(unit.state) : c.yellow(unit.state)}`);
     console.log(`  ${"enabled".padEnd(16)} ${unit.enabled === true ? c.green("yes") : unit.enabled === false ? c.red("no") : c.dim("unknown")}`);
-    if (s.root) console.log(`  ${"root".padEnd(16)} ${s.root}`);
-    const mgr = s.manager!;
+    console.log(`  ${"root".padEnd(16)} ${s.root}`);
+    const mgr = s.manager;
     console.log(`  ${"manager".padEnd(16)} ${mgr.state === "alive" ? c.green(`running (pid ${mgr.pid})`) : c.yellow(describeManagerRecord(mgr))}`);
     if (s.linger !== undefined) console.log(`  ${"linger".padEnd(16)} ${s.linger === true ? c.green("enabled") : s.linger === false ? c.yellow(`disabled - not boot-persistent; enable as root: ${lingerRemedy()}`) : c.yellow(`unknown - ${s.linger.error}`)}`);
   }

@@ -1650,7 +1650,10 @@ It works from any directory: the unit's own records name the mesh and root it se
 explicit `--mesh <name>` selects it. It refuses any unit that was not written by `service
 install` (the files carry a provenance comment), whose recorded mesh is missing, or that was
 installed for a different mesh, so operator-written units are never destroyed; `service status`
-applies the same rule and never reports a mesh a unit does not record.
+applies the same rule and never reports a mesh a unit does not record. `service status` also
+refuses a unit that records no absolute root, because the manager's health is read at that root
+and is never guessed from the current directory. Remove such a unit with `service uninstall`
+and install it again.
 
 This command installs only the manager. The per-space auth service and the delivery daemon are
 not installed by it: on a shared broker an operator runs three units per space with `After=`
