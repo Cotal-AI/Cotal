@@ -170,8 +170,9 @@ export function launchEnv(
  *  so the spawned session's runtime read/post set matches the creds the manager minted from the
  *  same policy. Without it a manifest-spawned agent — whose materialized persona carries no access
  *  frontmatter — has no channel set to read, so it joins nothing even though its creds authorize
- *  channels. Empty/absent lists are omitted: the connector then defers to the persona file or the
- *  join link, preserving the persona-spawn path unchanged. */
+ *  channels. An absent read or post list is omitted, so the connector defers to the persona file or
+ *  the join link. An empty one is forwarded as an empty value: the launcher resolved no channels and
+ *  minted the creds from that, so the session must not fall back to the persona's list. */
 export function aclEnv(opts: {
   subscribe?: string[];
   allowSubscribe?: string[];
@@ -179,9 +180,9 @@ export function aclEnv(opts: {
   capabilities?: string[];
 }): Record<string, string> {
   const env: Record<string, string> = {};
-  if (opts.subscribe?.length) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
-  if (opts.allowSubscribe?.length) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
-  if (opts.allowPublish?.length) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
+  if (opts.subscribe) env.COTAL_SUBSCRIBE = opts.subscribe.join(",");
+  if (opts.allowSubscribe) env.COTAL_ALLOW_SUBSCRIBE = opts.allowSubscribe.join(",");
+  if (opts.allowPublish) env.COTAL_ALLOW_PUBLISH = opts.allowPublish.join(",");
   // Control-plane capabilities (e.g. `spawn`) gate cotal_spawn/cotal_persona in the connector's tool
   // list. Forward them on the same rail as the read/post ACL, or a manifest-spawned agent (no persona
   // file) gets `config.capabilities = []` and the tools stay hidden even though its creds authorize them.

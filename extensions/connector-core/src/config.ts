@@ -140,6 +140,12 @@ function splitList(v: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** A launcher-resolved list: `undefined` only when the variable is unset. A set but empty one is a
+ *  launcher that resolved no channels, which must not fall back to the persona file. */
+function envList(v: string | undefined): string[] | undefined {
+  return v === undefined ? undefined : splitList(v);
+}
+
 /** A boolean `COTAL_*` flag with a value outside its spellings. Its own type because the message is
  *  only the variable and the operator's value, so a host that hides unclassified startup errors can
  *  still show it. */
@@ -201,21 +207,18 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   const name = env.COTAL_NAME?.trim() || def?.name || (link ? userInfo().username : undefined);
   if (!name)
     throw new Error("COTAL_NAME, COTAL_AGENT_FILE or COTAL_LINK is required — a Cotal session needs an explicit identity from its launcher");
-  const subscribe = splitList(env.COTAL_SUBSCRIBE);
   // Read set: env > persona file > join link. No implicit channel at the end of that chain — a
   // session whose launcher, persona and link all name none joins none (DM-reachable, not on `general`).
-  const resolvedSubscribe = subscribe.length ? subscribe : (def?.subscribe ?? link?.channels ?? []);
-  const allowSub = splitList(env.COTAL_ALLOW_SUBSCRIBE);
+  const resolvedSubscribe = envList(env.COTAL_SUBSCRIBE) ?? def?.subscribe ?? link?.channels ?? [];
   // Resolved against the FINAL read set, not the file's: an env `COTAL_SUBSCRIBE` can replace the
   // persona's list, and the loader only checked the file against itself.
   let resolvedAllowSub: string[];
   try {
-    resolvedAllowSub = resolveReadAcl(resolvedSubscribe, allowSub.length ? allowSub : def?.allowSubscribe);
+    resolvedAllowSub = resolveReadAcl(resolvedSubscribe, envList(env.COTAL_ALLOW_SUBSCRIBE) ?? def?.allowSubscribe);
   } catch (e) {
     throw new Error(`COTAL config: ${(e as Error).message}`);
   }
-  const allowPub = splitList(env.COTAL_ALLOW_PUBLISH);
-  const resolvedAllowPub = allowPub.length ? allowPub : (def?.allowPublish ?? []);
+  const resolvedAllowPub = envList(env.COTAL_ALLOW_PUBLISH) ?? def?.allowPublish ?? [];
   // Reject channel names the wire layer would rewrite (env overrides bypass the file loader's check).
   for (const ch of [...resolvedSubscribe, ...resolvedAllowSub, ...resolvedAllowPub]) assertValidChannel(ch);
   // Per-channel attention defaults (env > agent-file). Re-validate here too — the loader checked them
