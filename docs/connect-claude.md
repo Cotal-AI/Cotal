@@ -466,6 +466,12 @@ Events are written to a per-session write-ahead log before they are published, s
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
 open when the session stopped is closed rather than left dangling.
 
+A delayed initial connection or a broker reconnect pauses event publication without closing MCP.
+The recorder waits for both the mesh binding and its transport; unpublished records stay in the
+transcript until the connection recovers. Stopping the connector cancels that wait. Recording errors,
+including a conflicting transcript or damaged event state, still stop a session whose policy requires
+recording.
+
 One channel carries **every session of one agent**, because it is named after the principal and not
 after the session. Alongside the per-session logs the connector keeps one small record per principal,
 holding the last sequence the broker assigned on that channel, so a new session continues the stream
