@@ -27,6 +27,16 @@ export interface RunPauseHost {
   rearm(): Promise<readonly string[]>;
 }
 
+/** A pause asked to arm at an instant its clock has passed, with nothing minted under its token.
+ *  The plane mints only a future deadline, so there is no pause to settle. It is raised on the
+ *  clock reading the mint would have used, so a caller whose deadline is its own outcome can take
+ *  it as that outcome with no window in which the mint refuses instead. */
+export class PauseOverdue extends Error {
+  constructor(token: string, deadline: number, now: number) {
+    super(`pause ${token} was due at ${deadline} and nothing was minted for it by ${now}`);
+  }
+}
+
 /** The trusted host owns these planes. Its returned methods derive every subject from the
  *  bound endpoint and attempt, and authorize tokens against its own broker journal. */
 export function createRunPauseHost(
@@ -51,6 +61,7 @@ export function createRunPauseHost(
       const prior = await readCheckpointSpec(kv, pause);
       const now = clock();
       if (prior === undefined) {
+        if (deadline <= now) throw new PauseOverdue(token, deadline, now);
         await mintCheckpoint(kv, js, space, { ref: pause, ...pinned, deadline, now });
         return;
       }

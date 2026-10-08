@@ -418,7 +418,9 @@ conclave cancelled on a losing branch is released by the same cancellation sweep
 checkpoint-plane pause per attempt, answered through `cotal run answer` as a checkpoint is, and
 tells the agent through the same relay `turn` uses: one relay per attempt under the attempt's own
 token, carrying the schema, the attempt count, the deadline and the previous refusal, which the
-seat's connector renders as the record wanted and the hosted command that answers it. When that
+seat's connector renders as the record wanted and the hosted command that answers it. The relay
+names the ask's absolute deadline, so the manager stops serving an attempt at the instant its
+pause expires and refuses a relay already past it. When that
 literal command is run inside the managed seat, the CLI reuses the seat's lifecycle credential and
 issued caller identity rather than minting an operator instrument. The command
 does not take `--by`: the manager records the authenticated caller as the answerer. A spawned seat's
@@ -430,7 +432,8 @@ the seat nothing twice, and a seat gone at the relay is L4002. On the pause itse
 the shorthand of the language reference §6.5 is enforced (an unreadable schema is L4022), a
 non-conforming answer costs one attempt and its refusal reason is recorded on the entry for the
 answerer to read, exhausted attempts (default one) are the catchable L4006, and so is the one
-absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`).
+absolute deadline for the whole ask passing with no conforming record (its kind is `ask-deadline`),
+including one that passes before an attempt's pause is armed.
 `checkpoint` binds what it asks on its own entry, so `cotal run journal` prints the question under
 the step key an answer is addressed by while the pause is open: the address alone left whoever was
 asked reading the source to find out what "approve" meant. The entry also records its deadline and
@@ -443,8 +446,9 @@ is read from the answer record its last attempt's settle named, even when that v
 fields named like a checkpoint's. Amendments print on their own lines after it.
 An `escalate` addressed to an agent this
 run spawned is relayed to that seat through the same turn relay an `ask` uses, carrying the prompt
-and the token to answer under; a `to` naming anyone else is a person, and their pause stays the
-one anybody can answer, with the addressee recorded and rendered beside the question.
+and the token to answer under, held to the pause's own deadline; a `to` naming anyone else is a
+person, and their pause stays the one anybody can answer, with the addressee recorded and rendered
+beside the question.
 `monitor` registers interest in an agent, and the
 registration is the journal entry itself, carrying the handle it registered: monitoring an agent
 that is already dead succeeds, and the death is the wait's to observe. `wait(down(...))` observes
