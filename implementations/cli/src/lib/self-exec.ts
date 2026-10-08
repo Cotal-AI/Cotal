@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { cmdSpawnSpec, resolveOnPath } from "@cotal-ai/workspace";
 import { cliPackageRoot, entryScript } from "../seed/paths.js";
 
@@ -73,19 +73,7 @@ export function isNpx(): boolean {
  *  `cotal` is already installed — skipping the global-install offer and printing `cotal …` hints
  *  the user can't run once npx exits. That shim is exactly what we're offering to make permanent. */
 export function cotalOnPath(): boolean {
-  const exts = process.platform === "win32" ? ["", ".cmd", ".exe", ".bat"] : [""];
-  for (const dir of (process.env.PATH ?? "").split(delimiter)) {
-    if (!dir || isEphemeralNpxBin(dir)) continue;
-    for (const ext of exts) {
-      try {
-        accessSync(join(dir, `cotal${ext}`), constants.X_OK);
-        return true;
-      } catch {
-        /* not here */
-      }
-    }
-  }
-  return false;
+  return durableCotalsOnPath(process.env).length > 0;
 }
 
 export interface CotalExecutable {
@@ -105,13 +93,7 @@ export interface CotalExecutable {
  * `cotal-ai <numeric semver>`.
  */
 export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): CotalExecutable[] {
-  const candidates: string[] = [];
-  const pathDirs = (env.PATH ?? "").split(delimiter).filter(Boolean);
-  for (const dir of pathDirs) {
-    if (isEphemeralNpxBin(dir)) continue;
-    const hit = resolveOnPath(join(dir, "cotal"), env);
-    if (hit) candidates.push(hit);
-  }
+  const candidates = durableCotalsOnPath(env);
   if (process.platform !== "win32") candidates.push(join(env.HOME || homedir(), ".local", "bin", "cotal"));
 
   const seen = new Set<string>();
@@ -144,6 +126,16 @@ export function verifiedCotalExecutables(env: NodeJS.ProcessEnv = process.env): 
     }
   }
   return verified;
+}
+
+/** Every durable `cotal` executable on `env`'s PATH, in PATH order. Each entry is probed as an
+ *  absolute path because `join(".", "cotal")` is the bare name `cotal`, which {@link resolveOnPath}
+ *  would scan the whole PATH for, npx's transient bins included. */
+function durableCotalsOnPath(env: NodeJS.ProcessEnv): string[] {
+  return (env.PATH ?? "")
+    .split(delimiter)
+    .filter((dir) => dir && !isEphemeralNpxBin(dir))
+    .flatMap((dir) => resolveOnPath(resolve(dir, "cotal"), env) ?? []);
 }
 
 /** A PATH entry npx (`npm exec`) injected for the current run only — its `_npx` cache
