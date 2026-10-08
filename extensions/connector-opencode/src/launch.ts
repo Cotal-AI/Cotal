@@ -99,16 +99,22 @@ function processCommand(pid: number): string | undefined {
   }
 }
 
-function isLiveOpencodeServe(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
+}
+
+function isLiveOpencodeServe(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return false;
 
   const cmd = processCommand(pid);
-  if (!cmd) return true; // If the platform cannot inspect it, keep the old fail-closed behavior.
+  // A pid that exits after the probe above also fails ps, so only one still present keeps the
+  // fail-closed answer for a platform that cannot inspect it.
+  if (!cmd) return pidAlive(pid);
   return /\bserve\b/.test(cmd) && (
     /(?:^|[\\/\s])opencode(?:\.exe)?(?:\s|$)/i.test(cmd) ||
     (/--hostname\s+127\.0\.0\.1\b/.test(cmd) && /--port\s+\d+\b/.test(cmd))
