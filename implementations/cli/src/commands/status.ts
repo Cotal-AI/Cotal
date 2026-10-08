@@ -22,12 +22,12 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadExtensionsManifest, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
 import { managerHasDeliveryMarker } from "../lib/manager-proc.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, type HarnessStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl, resolveRuntimeSpace, webBoundAddress, webInstalled, type HarnessStatus } from "../lib/status.js";
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
@@ -134,26 +134,33 @@ function cliProvenanceLabel(): string {
 
 async function printMachine(selected: Selected): Promise<void> {
   const m = await machineStatus();
-  const webExt = webInstalled();
   section("Machine");
   row("cotal-ai", `${c.green(`v${cliVersion()}`)} ${c.dim(cliProvenanceLabel())}`);
   row("NATS", m.nats === "missing" ? c.red("missing") : c.green(m.nats));
   await printHarnesses();
   row("Skills (.agents)", skillsSkewRow());
-  row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
+  let webExt: boolean | undefined;
+  try {
+    webExt = webInstalled();
+    row("Web extension", webExt ? c.green("installed") : c.dim("not installed"));
+  } catch (e) {
+    row("Web extension", c.red((e as Error).message));
+  }
   row("Web process", webProcessRow(selected, webExt));
 }
 
 /** The selected mesh's dashboard where its own records place it. An unreadable `web.pid` or
- *  `web.session` is named on the row, like the folder's process rows, so the rest of status still prints. */
-function webProcessRow(selected: Selected, installed: boolean): string {
+ *  `web.session` is named on the row, like the folder's process rows, so the rest of status still
+ *  prints. An install state that could not be read is `undefined` and reads `down`, since only a known
+ *  absence is `not installed`. */
+function webProcessRow(selected: Selected, installed: boolean | undefined): string {
   let url: string | undefined;
   try {
     url = selected.ok ? recordedWebUrl({ root: selected.target.root, space: selected.target.space }) : undefined;
   } catch (e) {
     return c.red((e as Error).message);
   }
-  return url ? c.green(url) : c.dim(installed ? "down" : "not installed");
+  return url ? c.green(url) : c.dim(installed === false ? "not installed" : "down");
 }
 
 /** The rows each connector's setup provider reports, then one row per installed connector, named by
@@ -587,14 +594,6 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
       );
   } finally {
     await ep.stop();
-  }
-}
-
-function webInstalled(): boolean {
-  try {
-    return loadExtensionsManifest().extensions.some((e) => e.commands.some((cmd) => cmd.name === "web"));
-  } catch {
-    return false;
   }
 }
 

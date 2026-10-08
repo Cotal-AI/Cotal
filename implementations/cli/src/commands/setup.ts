@@ -6,9 +6,7 @@ import { registry, type Connector, type ConnectorAssist, type ConnectorSetupActi
 import {
   findCotalRoot,
   homeCotalDir,
-  installedExtensionVersion,
   isWorkspaceTargetError,
-  loadExtensionsManifest,
   manifestExtensionNames,
   personaDir,
   provenance,
@@ -26,7 +24,7 @@ import { abortIfCancel } from "../lib/cancel.js";
 import { openSetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, type MeshStatus } from "../lib/status.js";
+import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, webInstalled, type MeshStatus } from "../lib/status.js";
 import { managerUp } from "../lib/manager-proc.js";
 import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
 
@@ -419,16 +417,6 @@ export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "r
   return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
 }
 
-/** True when an installed extension contributes the `web` command (the dashboard moved out to
- *  `@cotal-ai/web` in stage 4) — decides whether the ready-card says "start it" or "install it". */
-function webInstalled(): boolean {
-  try {
-    return loadExtensionsManifest().extensions.some((e) => installedExtensionVersion(e.pkg) !== undefined && e.commands.some((cm) => cm.name === "web"));
-  } catch {
-    return false; // corrupt manifest — the card stays honest ("not installed"); `ext` commands surface the error
-  }
-}
-
 // The web dashboard is a first-party seeded extension now (@cotal-ai/web, in SEEDED_EXTENSIONS): the
 // boot reconcile installs and version-refreshes it from the umbrella's bundled payload, exactly like
 // the connectors. So setup no longer fetches it — by the time these steps run, the reconcile has
@@ -477,16 +465,28 @@ export async function readyCard(cwd: string): Promise<void> {
   );
 }
 
-/** The card's web row from the mesh's dashboard records. An unreadable `web.pid` or `web.session` is
- *  named on the row, like the status Machine section, so the rest of the card still prints. */
+/** The card's web row from the mesh's dashboard records. An unreadable `web.pid`, `web.session` or
+ *  extension record is named on the row, like the status Machine section, so the rest of the card
+ *  still prints. The dashboard records and the extension record are both read before either decides
+ *  the row, since status names each on its own row and a listening dashboard does not make its
+ *  package record readable. */
 function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
+  let url: string | undefined;
+  let installed: boolean | undefined;
+  const unreadable: string[] = [];
   try {
-    const url = recordedWebUrl({ root: mesh.root, space: mesh.space });
-    if (url) return { up: true, text: url };
+    url = recordedWebUrl({ root: mesh.root, space: mesh.space });
   } catch (e) {
-    return { up: false, text: (e as Error).message };
+    unreadable.push((e as Error).message);
   }
-  return { up: false, text: webInstalled() ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
+  try {
+    installed = webInstalled();
+  } catch (e) {
+    unreadable.push((e as Error).message);
+  }
+  if (unreadable.length > 0) return { up: false, text: (url ? [url, ...unreadable] : unreadable).join(" · ") };
+  if (url) return { up: true, text: url };
+  return { up: false, text: installed ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
 }
 
 /** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming

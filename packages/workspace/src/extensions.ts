@@ -94,15 +94,15 @@ export function extensionMutationLockState(): ExtensionMutationLockState {
   return found.state === "active" ? { state: "active", owner: found.owner.pid } : { state: found.state };
 }
 
-/** Load the manifest. Missing file → no extensions. A CORRUPT file is a loud error (never treat
- *  installed extensions as absent — commands would silently vanish from help). */
+/** Load the manifest. Missing file → no extensions. A CORRUPT or unreachable file is a loud error
+ *  (never treat installed extensions as absent — commands would silently vanish from help). */
 export function loadExtensionsManifest(): ExtensionsManifest {
   const p = extensionsManifestPath();
-  if (!existsSync(p)) return { extensions: [] };
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(p, "utf8"));
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { extensions: [] };
     throw new Error(`corrupt extensions manifest ${p}: ${(e as Error).message} - fix or delete it, then \`cotal ext add\` again`);
   }
   const m = parsed as ExtensionsManifest;
@@ -289,10 +289,16 @@ export function bindExtensionPeers(
   return bound;
 }
 
-/** The installed package's CURRENT version, read from disk (undefined when not installed). */
+/** The installed package's CURRENT version, read from disk (undefined when not installed). Only a
+ *  missing package.json means not installed; one that cannot be reached or read throws. */
 export function installedExtensionVersion(pkg: string): string | undefined {
-  const p = join(extensionPackageDir(pkg), "package.json");
-  if (!existsSync(p)) return undefined;
-  const v = (JSON.parse(readFileSync(p, "utf8")) as { version?: string }).version;
+  let raw: string;
+  try {
+    raw = readFileSync(join(extensionPackageDir(pkg), "package.json"), "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw e;
+  }
+  const v = (JSON.parse(raw) as { version?: string }).version;
   return typeof v === "string" ? v : undefined;
 }
