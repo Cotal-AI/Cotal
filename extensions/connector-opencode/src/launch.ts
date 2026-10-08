@@ -24,7 +24,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -99,7 +99,8 @@ function processCommand(pid: number): string | undefined {
   }
 }
 
-function pidAlive(pid: number): boolean {
+function isAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -109,16 +110,64 @@ function pidAlive(pid: number): boolean {
 }
 
 function isLiveOpencodeServe(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0 || !pidAlive(pid)) return false;
+  if (!isAlive(pid)) return false;
 
   const cmd = processCommand(pid);
   // A pid that exits after the probe above also fails ps, so only one still present keeps the
   // fail-closed answer for a platform that cannot inspect it.
-  if (!cmd) return pidAlive(pid);
+  if (!cmd) return isAlive(pid);
   return /\bserve\b/.test(cmd) && (
     /(?:^|[\\/\s])opencode(?:\.exe)?(?:\s|$)/i.test(cmd) ||
     (/--hostname\s+127\.0\.0\.1\b/.test(cmd) && /--port\s+\d+\b/.test(cmd))
   );
+}
+
+function readRecord(pidFile: string): string | undefined {
+  try {
+    return readFileSync(pidFile, "utf8");
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    return undefined;
+  }
+}
+
+/** Puts the record in place through a temp file, so a reader never sees it empty: `linkSync` creates
+ *  it only where none exists, `renameSync` replaces it. */
+function putRecord(pidFile: string, content: string, place: typeof linkSync | typeof renameSync): void {
+  const tmp = `${pidFile}.${process.pid}`;
+  writeFileSync(tmp, content);
+  try {
+    place(tmp, pidFile);
+  } finally {
+    rmSync(tmp, { force: true });
+  }
+}
+
+/** Removes the record only while it still holds `held`, so a launcher whose serve exits late leaves
+ *  a newer launch's record in place. */
+function releaseRecord(pidFile: string, held: string): void {
+  if (readRecord(pidFile) === held) rmSync(pidFile, { force: true });
+}
+
+/** Claims the agent's `serve.pid` for this launch, or throws while a live launcher or serve holds it.
+ *  The record names this launcher until its serve is spawned, so an overlapping launch reads a live
+ *  claim rather than no record. A record released under the check is no record. */
+function claimRecord(pidFile: string, name: string): void {
+  for (;;) {
+    try {
+      putRecord(pidFile, `launcher ${process.pid}`, linkSync);
+      return;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+    }
+    const recorded = readRecord(pidFile);
+    if (recorded === undefined) continue;
+    const launcher = /^launcher (\d+)$/.exec(recorded);
+    const pid = Number(launcher?.[1] ?? recorded);
+    if (launcher ? isAlive(pid) : isLiveOpencodeServe(pid))
+      throw new Error(`agent "${name}" is already running (${launcher ? "launcher" : "opencode serve"} pid ${pid}) — kill it first`);
+    releaseRecord(pidFile, recorded);
+  }
 }
 
 /** The foreground TUI's argv, built from the server it attaches to. Its env carries the server's
@@ -144,35 +193,17 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
 
-  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. The
-  // previous launcher removes this record when its serve exits, which can land anywhere in this
-  // check, so a record that vanishes under the read or the removal is no record. A directory is no
-  // record either, but only an empty one is removed: one that holds files is refused, never deleted.
+  // Two serves on one agent DB share the SQLite file and stall each other, so a launch claims the
+  // agent's record before it starts one, and only one of two overlapping launches can.
+  mkdirSync(agentHome, { recursive: true });
   const pidFile = join(agentHome, "serve.pid");
-  let recorded: string | undefined;
-  try {
-    try {
-      recorded = readFileSync(pidFile, "utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
-      rmdirSync(pidFile);
-    }
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-  }
-  if (recorded !== undefined) {
-    const pid = Number(recorded);
-    if (isLiveOpencodeServe(pid))
-      throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
-    rmSync(pidFile, { force: true });
-  }
+  claimRecord(pidFile, name);
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
   // plugin and the viewer below can each act on it without probing anything themselves.
   const versionRaw = execFileSync(BIN, ["--version"], { encoding: "utf8" }).trim();
   const line = opencodeLine(versionRaw, BIN);
 
-  mkdirSync(agentHome, { recursive: true });
   const serve = spawn(BIN, ["serve", "--hostname", "127.0.0.1", "--port", port], {
     env: {
       ...process.env,
@@ -185,8 +216,8 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  writeFileSync(pidFile, String(serve.pid));
-  serve.on("exit", () => rmSync(pidFile, { force: true }));
+  putRecord(pidFile, String(serve.pid), renameSync);
+  serve.on("exit", () => releaseRecord(pidFile, String(serve.pid)));
 
   // Scan the server's output for the plugin's session handshake; forward boot logs to our stderr
   // until the TUI takes over the terminal (after that, drop them so they can't corrupt its display).
