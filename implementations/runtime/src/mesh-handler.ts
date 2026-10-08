@@ -123,6 +123,7 @@ import type { RunWaitHost } from "./run-wait-host.js";
 import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
 import { askAttemptToken, derivedToken, pauseTokens } from "./pause-tokens.js";
+import { delay } from "./delay.js";
 
 export interface RunMeshServices {
   readonly pauses: RunPauseHost;
@@ -555,7 +556,7 @@ export class MeshHandler {
         // A scan that keeps coming back incomplete is a broken presence plane, and a guard that
         // never answers would park the spawn for good: bounded, then the scan's own error.
         if (!(e instanceof IncompleteKvScan) || attempt >= WORKTREE_SCAN_ATTEMPTS) throw e;
-        await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+        await delay(WAIT_POLL_MS);
       }
     }
     if (rows.some((p) => p.card.name === holder.name && p.lifecycleUid === holder.uid))
@@ -728,7 +729,7 @@ export class MeshHandler {
         if (fact !== undefined) break;
         if (this.now() >= deadline)
           throw new Error(`the spawn goal "${goalId}" is accepted but reached no terminal within its ${window}ms readiness window; its agent cannot be released yet, and the discharge stays open to retry`);
-        await new Promise((r) => setTimeout(r, GOAL_POLL_MS).unref());
+        await delay(GOAL_POLL_MS);
       }
     }
     if (fact.state !== "succeeded" && fact.state !== "uncertain") return;
@@ -1140,7 +1141,7 @@ export class MeshHandler {
         // so the next poll is the retry; a link that stays down keeps surfacing here rather than
         // as a false DOWN, and the deadline above still ends the wait.
         if (e instanceof IncompleteKvScan) {
-          await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+          await delay(WAIT_POLL_MS);
           continue;
         }
         throw e;
@@ -1157,7 +1158,7 @@ export class MeshHandler {
         }
       } else lapsedSince = undefined;
       lastReadAt = readAt;
-      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+      await delay(WAIT_POLL_MS);
     }
   }
 
@@ -1227,7 +1228,7 @@ export class MeshHandler {
         if (primary !== undefined) await this.cancelTimer(primary);
         return { agent: ev.agent, ...latest };
       }
-      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+      await delay(WAIT_POLL_MS);
     }
   }
 
@@ -1486,7 +1487,7 @@ export class MeshHandler {
       if (signal.cancelled) throw new Cancelled(signal.reason ?? "cancelled");
       const fact = await readGoalResult(actx, ref);
       if (fact !== undefined) return fact;
-      await new Promise((r) => setTimeout(r, GOAL_POLL_MS).unref());
+      await delay(GOAL_POLL_MS);
     }
   }
 
@@ -1645,7 +1646,7 @@ export class MeshHandler {
         try {
           rows = await this.presenceRows();
         } catch (e) {
-          if (e instanceof IncompleteKvScan) { await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref()); continue; }
+          if (e instanceof IncompleteKvScan) { await delay(WAIT_POLL_MS); continue; }
           throw e;
         }
         if (!rows.some((pr) => pr.card.name === name && pr.lifecycleUid === uid)) {
@@ -1660,7 +1661,7 @@ export class MeshHandler {
           }
         } else lapsedSince = undefined;
         lastReadAt = readAt;
-        await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+        await delay(WAIT_POLL_MS);
       }
     } catch (e) {
       // A turn that ends on the run's side without a yield the run accepted (its deadline, the
@@ -2027,7 +2028,7 @@ export class MeshHandler {
       } catch (e) {
         if (deadlineAt === undefined ? e instanceof EpEnvelopeError : this.now() >= deadlineAt) throw e;
       }
-      await new Promise((r) => setTimeout(r, WAIT_POLL_MS).unref());
+      await delay(WAIT_POLL_MS);
     }
   }
 
@@ -2589,9 +2590,7 @@ export class MeshHandler {
       // fire in flight past the drain `settleOnce` awaits. Checked here, the pump ends right after
       // its current fire without starting another.
       if (wait.over) break;
-      // Unrefed: the loop is ended by the flag, not by this timer, and a wait that is already over
-      // must not hold the process open for one more poll on its way out.
-      await new Promise((r) => setTimeout(r, FIRE_POLL_MS).unref());
+      await delay(FIRE_POLL_MS);
     }
   }
 }
@@ -3115,9 +3114,7 @@ export class EpfSettleWatcher implements SettleWatcher {
     for (;;) {
       const settled = await readCheckpointSettle(this.jsm, this.space, ref);
       if (settled !== undefined) return settled;
-      // Unrefed: a wait that loses its race to a cancellation or a fire must not hold the process
-      // open for one more poll on its way out.
-      await new Promise((r) => setTimeout(r, this.pollMs).unref());
+      await delay(this.pollMs);
     }
   }
 }

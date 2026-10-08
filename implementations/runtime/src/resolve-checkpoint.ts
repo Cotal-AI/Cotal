@@ -49,6 +49,7 @@ import {
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import { CheckpointNotAmendable, openCheckpointToken, settledPauseToken, type JournalEntry } from "@cotal-ai/lang";
+import { delay } from "./delay.js";
 
 export interface ResolveCheckpointRequest {
   readonly runId: string;
@@ -168,7 +169,7 @@ async function readSpecPastTheMintWindow(
   for (let i = 0; i < MINT_WINDOW_ATTEMPTS; i += 1) {
     const spec = await readCheckpointSpec(deps.kv, ref);
     if (spec !== undefined) return spec;
-    if (i + 1 < MINT_WINDOW_ATTEMPTS) await new Promise((r) => setTimeout(r, MINT_WINDOW_STEP_MS));
+    if (i + 1 < MINT_WINDOW_ATTEMPTS) await delay(MINT_WINDOW_STEP_MS);
   }
   return undefined;
 }
