@@ -1,5 +1,36 @@
 # @cotal-ai/delivery
 
+## 0.76.0
+
+### Minor Changes
+
+- d153172: The manager and the delivery daemon now name an injected `SecretStore` through one rule, `injectedSecretStoreIdentity` in `@cotal-ai/core`: the store's declared identity, else the coordinate in `COTAL_SECRET_STORE`, else a refusal. Each package kept its own copy before, so a change to one could have made the store challenge report two names for one shared store, and both now refuse an unnamed store with the same message. `reloadStoreIdentityOf` from `@cotal-ai/delivery` takes `{ injected: true, store }` or `{ injected: false, identity }`. The daemon's injected cred source no longer carries an identity, which nothing read and which was blank when `COTAL_SECRET_STORE` was unset. See the upgrading guide.
+
+### Patch Changes
+
+- e1c317e: The `startDeliveryService` handle's `close()` and `drain()` now reject when the instance did not give its shard lease back: the lease row is still held after the close, by another holder or because the release did not commit, or the broker could not confirm the release. They used to resolve in every case, so a host that started a successor at once could be refused with "a live lease already exists" without any prior signal. The rest of the teardown still runs, and the bucket TTL still expires a row the instance left. A failed start keeps its own error and logs a release that also failed.
+- 9a7aec4: `cotal feedback-intake` now refuses a `--port` that is not a decimal number from 1 to 65535 before it probes the broker, with an error that names `--port`. An out-of-range port such as `70000` used to pass argument parsing, so the intake connected and announced itself on the mesh before `listen()` failed with `options.port should be >= 0 and < 65536`. A hex or exponent spelling such as `0x1f90` or `8080e0` was accepted and bound that port.
+- Updated dependencies [58a725f]
+- Updated dependencies [7829cbb]
+- Updated dependencies [8e0876b]
+- Updated dependencies [d85ca1a]
+- Updated dependencies [20c93a1]
+- Updated dependencies [715928c]
+- Updated dependencies [a4b0467]
+- Updated dependencies [08d92b7]
+- Updated dependencies [35fdda8]
+- Updated dependencies [7b34e9a]
+- Updated dependencies [d153172]
+- Updated dependencies [15d10c9]
+- Updated dependencies [0eb8eff]
+- Updated dependencies [ba76f78]
+- Updated dependencies [f2a4bde]
+- Updated dependencies [8be669e]
+- Updated dependencies [42b28aa]
+- Updated dependencies [720dbc3]
+  - @cotal-ai/core@0.76.0
+  - @cotal-ai/workspace@0.76.0
+
 ## 0.75.0
 
 ### Patch Changes

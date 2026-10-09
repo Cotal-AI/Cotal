@@ -1,5 +1,17 @@
 # @cotal-ai/connector-core
 
+## 0.76.0
+
+### Minor Changes
+
+- 15d10c9: Refuse competing patched same-host consuming sessions without replacing their logical inbox owner. Preserve live control listeners and existing foreground actor material. Make fresh local foreground grants and departure cleanup generation-aware. This containment does not fence other hosts, broker URL aliases or older clients.
+
+### Patch Changes
+
+- d85ca1a: A launch that resolves an empty read or post list now hands the session that empty list. `aclEnv` used to omit `COTAL_SUBSCRIBE`, `COTAL_ALLOW_SUBSCRIBE` and `COTAL_ALLOW_PUBLISH` when the list was empty, so a `cotal spawn <persona> --subscribe ,` or `--allow-publish ,` session fell back to the persona file's channels while its credential and launch record carried none. The launcher now sets the variable to an empty value, and `configFromEnv` falls back to the persona file or join link only when the variable is unset. A hand-driven session that exports one of these variables as an empty string now gets an empty list instead of the persona's.
+- 7be3295: Correct workflow tool guidance for managed user-auth agents using their own issued participant-manager authority. Preserve run capability and unsupported-host refusals.
+- ba76f78: An OpenCode seat whose turn outlasts the consumer's ack wait no longer loses the role request it is working on to another holder of the role. The connector acks a batch only when its turn ends, and the 60-second ack wait used to run out under a longer turn, so the broker handed the same anycast to a second worker while the first was still on it. The batch a turn carries is now held in flight, and while it is held the agent restarts each delivery's ack wait with JetStream's in-progress ack at half the wait. A failed turn or a stop releases the batch and a crashed seat stops renewing it, so it redelivers after one ack wait as before, and a success or a user Stop acks it. Queued messages are not renewed, and the bounded inbox no longer evicts a held message to make room for them, which had stopped its renewal and left the finished turn nothing to ack. Renewal stops for good once the agent can no longer vouch that it still holds a copy: the wait ran out between renewals, the link was down past it, or the copy's connection was torn down. A durable `Delivery` now carries `redelivery` (the broker's delivery count, the consumer's ack wait, and `working()`), an `InboxItem` carries `deliveryCount`, and a frame marks a copy the broker delivered more than once as redelivered. Delivery stays at-least-once: a request can still run twice, so work with side effects that must not repeat needs its own ownership or idempotency key.
+
 ## 0.75.0
 
 ### Patch Changes

@@ -1,5 +1,36 @@
 # @cotal-ai/runtime
 
+## 0.76.0
+
+### Patch Changes
+
+- 0cd1f60: An `ask` attempt and an escalated `checkpoint` now relay the instant their pause denies at, and the manager holds the relay to that instant. The relay used to send a duration the manager counted from its own acceptance, so the manager could still serve an attempt after its pause had expired, by the submit's round trip plus clock skew, or by up to a second from a one-second floor. The manager's `turn` command takes `deadlineAt` as an alternative to `deadlineMs` and refuses a relay whose deadline has already passed with `deadline-exceeded`. The run reads that refusal as nobody left to tell only when its own clock also shows the deadline passed. An `ask` whose deadline passes before its attempt's pause is minted now ends with its own `ask-deadline` L4006 instead of an L4000 from the refused mint.
+- 8e0876b: Comments in core, the manager and the runtime cite SPEC sections and code symbols instead of line numbers. Nine of those line numbers pointed at unrelated text, including the `EpGateState.space` doc in core's published types, which also named §13.9 for the per-space auth bucket that §13.12 defines. The comments now name the alias-reuse gate in the manager's spawn path, `resolveService`'s `instanceId` option and the `pinnedInstanceId` it returns, the spawn affinity gate, the auth session ledger's `reconcileSessionForTakeover`, and each SPEC section without a line. No behavior changes.
+- e65de9e: Fix a hosted `checkpoint` with `onExpiry: "escalate"` failing L4000 every time its first attempt expired. The escalated attempt read the first attempt's binding as its own, so it armed at the first attempt's already-passed deadline and never recorded its own. Each attempt now binds its index with its deadline: the escalation opens with a fresh `timeout`, records its addressee and deadline, and a resumed attempt keeps the deadline it recorded.
+- Updated dependencies [58a725f]
+- Updated dependencies [7829cbb]
+- Updated dependencies [8e0876b]
+- Updated dependencies [d85ca1a]
+- Updated dependencies [20c93a1]
+- Updated dependencies [715928c]
+- Updated dependencies [a4b0467]
+- Updated dependencies [08d92b7]
+- Updated dependencies [35fdda8]
+- Updated dependencies [7b34e9a]
+- Updated dependencies [d153172]
+- Updated dependencies [ea15e8d]
+- Updated dependencies [9adcf1c]
+- Updated dependencies [15d10c9]
+- Updated dependencies [0eb8eff]
+- Updated dependencies [ba76f78]
+- Updated dependencies [f2a4bde]
+- Updated dependencies [8be669e]
+- Updated dependencies [42b28aa]
+- Updated dependencies [720dbc3]
+  - @cotal-ai/core@0.76.0
+  - @cotal-ai/workspace@0.76.0
+  - @cotal-ai/lang@0.76.0
+
 ## 0.75.0
 
 ### Patch Changes

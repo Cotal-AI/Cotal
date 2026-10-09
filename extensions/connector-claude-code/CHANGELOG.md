@@ -1,5 +1,16 @@
 # @cotal-ai/connector-claude-code
 
+## 0.76.0
+
+### Minor Changes
+
+- 15d10c9: Refuse competing patched same-host consuming sessions without replacing their logical inbox owner. Preserve live control listeners and existing foreground actor material. Make fresh local foreground grants and departure cleanup generation-aware. This containment does not fence other hosts, broker URL aliases or older clients.
+
+### Patch Changes
+
+- 665fa71: Keep MCP alive while event recording waits for an initial mesh connection or a reconnect. Resume queued event publication when both the mesh binding and transport recover, and cancel the wait on shutdown without weakening required-recording failures.
+- 9baeb35: The Claude Code event mapper now exposes only what the connector calls: `map` and `forgetOpenRun`. It drops `closeOpenRun`, `openRun` and `diagnose`, which nothing shipped called. The `Stop` and `StopFailure` hooks close a session's last run through the event holder, and the mapper's header now says so instead of saying that run never closes. No behavior changes.
+
 ## 0.75.0
 
 ## 0.74.0

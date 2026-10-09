@@ -1,5 +1,33 @@
 # @cotal-ai/workspace
 
+## 0.76.0
+
+### Minor Changes
+
+- 15d10c9: Refuse competing patched same-host consuming sessions without replacing their logical inbox owner. Preserve live control listeners and existing foreground actor material. Make fresh local foreground grants and departure cleanup generation-aware. This containment does not fence other hosts, broker URL aliases or older clients.
+
+### Patch Changes
+
+- 7829cbb: `cotal status` and the `cotal setup` card now share one test for whether the web extension is installed: a package in the extensions manifest that provides `web` and is on disk. A manifest entry whose package directory is gone no longer reads `installed` in status while the card reads `not installed`. A web package record that cannot be read is no longer reported as not installed: status names the error on its `Web extension` row and still prints the `Web process` row, and the setup card names it on its web row, also while the dashboard is listening. `loadExtensionsManifest` and `installedExtensionVersion` now treat only a missing file as absent, so an extensions or package directory that cannot be searched throws its permission error instead of reading as no extensions or not installed.
+- 42b28aa: `cotal status --components` now names a `web.session` that exists but cannot be read, for example after an ownership or mode change: the web row reads `refused · web.session unreadable: <error>`. The reader used to treat every read error as no record, so a live dashboard read `refused · probe refused (no bound address recorded)`, and the `Web process` row and the `cotal setup` card read `down`. Those two rows now name the unreadable record as well. Only a missing, empty or partial `web.session` still reads as no record. `cotal web --detach` prints the launch link from the record that proved the dashboard ready instead of reading `web.session` again, so a read error after that point cannot report a failed start over a running dashboard.
+- 720dbc3: `loadSeatWriterGeneration` reads each seat writer generation through the same record reader as every other auth record. A generation entry that is a symlink, a directory or a FIFO is now refused as not a regular file instead of being followed, so `cotal down --preserve-state` no longer stamps a checkpoint with a generation read through a link. A generation file that does not parse is reported in the shared record message.
+- Updated dependencies [58a725f]
+- Updated dependencies [8e0876b]
+- Updated dependencies [d85ca1a]
+- Updated dependencies [20c93a1]
+- Updated dependencies [715928c]
+- Updated dependencies [a4b0467]
+- Updated dependencies [08d92b7]
+- Updated dependencies [35fdda8]
+- Updated dependencies [7b34e9a]
+- Updated dependencies [d153172]
+- Updated dependencies [15d10c9]
+- Updated dependencies [0eb8eff]
+- Updated dependencies [ba76f78]
+- Updated dependencies [f2a4bde]
+- Updated dependencies [8be669e]
+  - @cotal-ai/core@0.76.0
+
 ## 0.75.0
 
 ### Patch Changes
