@@ -156,20 +156,19 @@ check("the same hyphenated --name on a STATIC-mode target is accepted",
 
 // The wiring, asserted structurally for the same reason as the delegation cells above: a call site
 // that is absent today is behaviourally indistinguishable from one that delegates faithfully, and
-// the only moment the difference shows is after the next grammar change. Comments stripped so a
-// cell cannot pass off the #867 comment for the call.
+// the only moment the difference shows is after the next grammar change. The source is parsed, so
+// the #867 comments, the door's declaration or a string that spells a call cannot pass for one, and
+// requoting an argument changes nothing.
 const CLI_RAW = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "implementations", "cli", "src", "commands", "spawn.ts"),
   "utf8",
 );
-const CLI_SRC = CLI_RAW
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/\/\/[^\n]*/g, "");
-check("instrument control: the CLI's spawn source was located, comments stripped",
-  CLI_SRC.includes("async function spawnDetached") && CLI_SRC.includes("export async function spawn"),
-  { len: CLI_SRC.length });
+check("instrument control: the CLI's spawn source was located",
+  CLI_RAW.includes("async function spawnDetached") && CLI_RAW.includes("export async function spawn"),
+  { len: CLI_RAW.length });
+const CLI_AST = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest);
 // Parsed, so only a real value import binding the export to its own name counts, wherever it sits in the list.
-const CORE_IMPORTS = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.Latest).statements
+const CORE_IMPORTS = CLI_AST.statements
   .filter(ts.isImportDeclaration)
   .filter((d) => ts.isStringLiteral(d.moduleSpecifier) && d.moduleSpecifier.text === "@cotal-ai/core" && !d.importClause?.isTypeOnly)
   .flatMap((d) => {
@@ -180,12 +179,21 @@ const CORE_IMPORTS = ts.createSourceFile("spawn.ts", CLI_RAW, ts.ScriptTarget.La
   .map((e) => e.name.text);
 check("the CLI calls the shared name door (import present)",
   CORE_IMPORTS.includes("spawnNameError"));
+const DOOR_CALLS: ts.CallExpression[] = [];
+const collectDoorCalls = (node: ts.Node): void => {
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "refuseUnmintableNameOrExit")
+    DOOR_CALLS.push(node);
+  ts.forEachChild(node, collectDoorCalls);
+};
+collectDoorCalls(CLI_AST);
 check("the CLI calls the shared name door (call sites: detached + foreground)",
-  (CLI_SRC.match(/refuseUnmintableNameOrExit\(/g) ?? []).length === 3,
-  { sites: CLI_SRC.match(/refuseUnmintableNameOrExit\(/g)?.length });
+  DOOR_CALLS.length === 2,
+  { sites: DOOR_CALLS.length });
 check("the CLI keys the door on the target mesh's auth mode, not on a restated grammar",
-  CLI_SRC.includes("refuseUnmintableNameOrExit(values.name, t.mode === \"user\")") &&
-    CLI_SRC.includes("refuseUnmintableNameOrExit(requested, target.mode === \"user\")"));
+  DOOR_CALLS.length > 0 && DOOR_CALLS.every(({ arguments: [, mode] }) =>
+    mode !== undefined && ts.isBinaryExpression(mode) && mode.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+    ts.isPropertyAccessExpression(mode.left) && mode.left.name.text === "mode" &&
+    ts.isStringLiteralLike(mode.right) && mode.right.text === "user"));
 
 console.log(
   failed === 0
