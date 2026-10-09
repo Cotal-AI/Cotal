@@ -107,6 +107,7 @@ import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
 import { RunHosting } from "./run-hosting.js";
 import { enrolledAcl } from "./remote-authority.js";
+import { rejectionText } from "./rejection-text.js";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs, readSeatRecord, removeSeatRecord, writeSeatRecord, type SeatRecord } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
@@ -370,19 +371,6 @@ function resumeOwner(entry: ManagerResumeAgent): string {
  *  dash) — what {@link Manager.psOwnerFilter} returns for an unparseable caller so a malformed
  *  principal fail-closes to an empty `ps` instead of an unbounded one. */
 const NO_OWNER_MATCHES = "-no-owner-";
-
-/** A caught value's text for a refusal or a log line. A host-supplied store, runtime or callback may
- *  reject with any value, including `null` or one whose `message` is a Symbol or whose `message`
- *  getter or `toString` throws. A handler that throws while building its text skips the work after
- *  it, and on a detached chain ends the manager with an unhandled rejection, so the coercion to text
- *  runs inside the guard. */
-export function rejectionText(e: unknown): string {
-  try {
-    return String((e as Error)?.message ?? e);
-  } catch {
-    return "an unreadable rejection";
-  }
-}
 
 /** A caught value as a lifecycle envelope, or undefined when it is not one. A thrown Proxy can throw
  *  from `instanceof` itself, so the test runs inside the guard. */
