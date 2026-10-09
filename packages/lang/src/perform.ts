@@ -9,7 +9,7 @@
  * divergence the differential suite could only find program-by-program.
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
-import { atMostOnce, digest, holdRequestId, requestId, scopePathString, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
+import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
@@ -1344,6 +1344,7 @@ export async function performScope(
   branchDigest?: (losers: readonly string[]) => string | undefined,
 ): Promise<unknown> {
   if (scopeKey.kind === "conclave" && atMostOnce(scopeKey.scope)) throw notHoldable("conclave", scopeKey.scope);
+  const dispatches = scopeTraits(scopeKey.kind)?.dispatches === true;
   const inputHash = digest(
     subject === undefined
       ? { kind: scopeKey.kind, name: scopeKey.name }
@@ -1384,7 +1385,7 @@ export async function performScope(
     // So the walk enters the RECORDED WINNING branches and runs the ordinary hash and orphan
     // checks inside them, while the losers (decided, not removed) are accounted for as before.
     if (host.options.migration === true) {
-      if (subject !== undefined) throw new UnwalkableScope(stepKeyString(scopeKey), "conclave");
+      if (dispatches) throw new UnwalkableScope(stepKeyString(scopeKey), scopeKey.kind);
       // A SETTLED SCOPE CARRIES ITS ARM NAMES IN ONE OF TWO PLACES, and reading only the first
       // is what made a failed scope look like a scope with no arms. `result` holds them when the
       // scope succeeded; the `branches` FACT holds them when it failed, because `settle` writes
@@ -1444,10 +1445,7 @@ export async function performScope(
   // `runScope`'s replayed-branch tie-break is for.
   // A scope that CALLS THE HANDLER owes a durable request id exactly as an effect does, and for
   // the same reason: a crash between issuing the work and recording who issued it leaves real
-  // work (for `conclave`, a live channel with members joined) that nothing in the journal
-  // names. `subject` marks that scope, because `conclave` is the only one that dispatches from
-  // this path; the other three launch thunks and touch no handler of their own.
-  const dispatches = subject !== undefined;
+  // work (for `conclave`, a live channel with members joined) that nothing in the journal names.
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);

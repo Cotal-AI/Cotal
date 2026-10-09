@@ -33,15 +33,20 @@ export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave" | "once";
  * `reenters`: a fork whose cut lies inside the scope enters it again rather than refusing (L5020),
  * which is sound only for a scope that decides nothing of its own.
  *
+ * `dispatches`: the scope calls the handler itself, as `conclave` does to open its channel. It owes
+ * what an effect owes (a durable request id, the host's stop, the effect ceiling, a cancel re-check
+ * after its begin), and a migration cannot walk into it, because the handler's answer was never
+ * journalled.
+ *
  * Each row is frozen because `scopeTraits` hands out the shared row, and a write to it would change
  * the journal's crossing rule and the fork refusal for the whole process.
  */
-const SCOPE_TRAITS: Readonly<Record<ScopeKind, { readonly assembles: boolean; readonly reenters: boolean }>> = {
-  parallel: Object.freeze({ assembles: true, reenters: true }),
-  race: Object.freeze({ assembles: true, reenters: false }),
-  fanOut: Object.freeze({ assembles: true, reenters: true }),
-  conclave: Object.freeze({ assembles: false, reenters: false }),
-  once: Object.freeze({ assembles: false, reenters: true }),
+const SCOPE_TRAITS: Readonly<Record<ScopeKind, { readonly assembles: boolean; readonly reenters: boolean; readonly dispatches: boolean }>> = {
+  parallel: Object.freeze({ assembles: true, reenters: true, dispatches: false }),
+  race: Object.freeze({ assembles: true, reenters: false, dispatches: false }),
+  fanOut: Object.freeze({ assembles: true, reenters: true, dispatches: false }),
+  conclave: Object.freeze({ assembles: false, reenters: false, dispatches: true }),
+  once: Object.freeze({ assembles: false, reenters: true, dispatches: false }),
 };
 
 /** A journal kind's scope traits, or undefined when it is not a scope. It takes a string because a
