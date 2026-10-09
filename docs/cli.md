@@ -868,7 +868,8 @@ A **user-auth** mesh registers from supplied pinned trust, never guessed: `--use
 takes the bundle exported where the mesh runs; `--from` asks before it dials the address at all,
 then fetches the `/.well-known/cotal-mesh` discovery document under that address (HTTPS only; a URL
 that already ends in that path is fetched as given), displays the pins, and asks again before
-adopting them. Neither fetch follows redirects: a 302 can move a pinned fetch
+adopting them. The document must parse as JSON under any content type the host serves it with; an
+answer that does not is refused with the URL and the content type that came back. Neither fetch follows redirects: a 302 can move a pinned fetch
 onto plaintext or onto another host, so it is refused rather than followed, and the pinned
 exchange must itself be an `https://` URL, except for an exchange on this machine, where plain
 `http://` is accepted for a loopback *literal* (`127.0.0.1`, `::1`, any spelling of them) but not

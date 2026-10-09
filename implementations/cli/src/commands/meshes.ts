@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
   authDir,
+  checkDiscoveryDocument,
   clearCurrent,
   discoveryDocumentUrl,
   findMesh,
@@ -32,6 +33,7 @@ import {
   verifyTarget,
   writeRecord,
   type Check,
+  type UserBundle,
 } from "./meshes-add.js";
 import { addWizard, canPrompt, clackIO } from "./meshes-wizard.js";
 
@@ -269,14 +271,16 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
   }
 
   // ── the pins ────────────────────────────────────────────────────────────────────────────────
-  let raw: string;
+  let bundle: UserBundle;
   if (v["user-auth-file"]) {
+    let raw: string;
     try {
       raw = readFileSync(v["user-auth-file"], "utf8");
     } catch (e) {
       console.error(c.red(`✗ cannot read --user-auth-file ${v["user-auth-file"]} (${(e as Error).message})`));
       process.exit(1);
     }
+    bundle = take(checkUserBundle(raw));
   } else {
     // HTTPS ONLY. The document IS the trust being adopted; fetching it in plaintext would let the
     // network choose the pins, which is the exact failure pinning exists to prevent.
@@ -318,13 +322,12 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
         console.error(c.red(`✗ ${disco} answered ${res.status} - no discovery document there`));
         process.exit(1);
       }
-      raw = await res.text();
+      bundle = take(await checkDiscoveryDocument(res));
     } catch (e) {
       console.error(c.red(`✗ could not fetch ${disco} (${(e as Error).message})`));
       process.exit(1);
     }
   }
-  const bundle = take(checkUserBundle(raw));
   const space = spaceArg ?? bundle.space;
   if (spaceArg && bundle.space !== spaceArg) {
     console.error(c.red(`✗ the bundle is for space "${bundle.space}" but the command names "${spaceArg}" - a bundle registers the space it was exported for`));
