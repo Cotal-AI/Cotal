@@ -852,7 +852,11 @@ export function pidfileTargets(space: string, root: string): Array<[file: string
   ];
 }
 
-export type PidfileState = { pid?: number; live: boolean; note?: string };
+/** `liveness` keeps `probeLiveness`'s three states so each caller picks its direction: a presence
+ *  reader requires `"alive"`, a destructive guard proceeds only on `"dead"`. No record and an empty
+ *  husk are `"dead"`; unattributable content and a removal reservation are `"unknown"`, because
+ *  `cotal down` refuses them as possibly fronting a live process. */
+export type PidfileState = { pid?: number; liveness: "alive" | "dead" | "unknown"; note?: string };
 
 /** Shared hardened pid probe: positive integers only, and EPERM means the process exists. */
 export function pidfileState(path: string): PidfileState {
@@ -861,11 +865,13 @@ export function pidfileState(path: string): PidfileState {
     raw = readFileSync(path, "utf8").trim();
   } catch (e) {
     // A process removes its own record on exit, so the file can be gone by the time it is read.
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { live: false, note: "no pidfile" };
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { liveness: "dead", note: "no pidfile" };
     throw e;
   }
-  if (raw.startsWith("removing:")) return { live: false, note: "extension removal in progress" };
+  if (raw.startsWith("removing:")) return { liveness: "unknown", note: "extension removal in progress" };
   const pid = parsePid(raw);
-  if (!pid) return { live: false, note: "bad pidfile" };
-  return isAlive(pid) ? { pid, live: true } : { pid, live: false, note: "stale pidfile" };
+  if (!pid) return { liveness: raw ? "unknown" : "dead", note: "bad pidfile" };
+  const liveness = probeLiveness(pid);
+  if (liveness === "alive") return { pid, liveness };
+  return { pid, liveness, note: liveness === "dead" ? "stale pidfile" : "liveness unknown" };
 }

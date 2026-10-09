@@ -26,6 +26,7 @@ import {
   rollbackRestore,
   SYSTEM_CREDS_FILES,
   workspaceSecretStore,
+  type LocalProcess,
   type LocalProcessContext,
 } from "@cotal-ai/workspace";
 import { connectOrExit, userViewAuthOrExit } from "../lib/connect.js";
@@ -153,8 +154,8 @@ export async function purgeHistory(values: { server?: string; space?: string; cr
   console.log(c.green(`✓ cleared ${result.chat} channel message${result.chat === 1 ? "" : "s"}${dm} from "${space}"`));
 }
 
-/** The recorded mesh process still alive under this root, as a "label (pid N)" string - or
- *  undefined when everything is stopped. A stale pidfile (recorded pid no longer alive) does not
+/** The recorded mesh process that may still be running under this root, as a "label, pid N" string -
+ *  or undefined when everything is stopped. A stale pidfile (recorded pid proven dead) does not
  *  block: a crashed broker must not wedge its own cleanup. Liveness rides the shared hardened
  *  probe (`pidfileState`): pid > 0 only, EPERM counts as alive. */
 export function liveMeshProcess(root: string, space?: string): string | undefined {
@@ -162,7 +163,7 @@ export function liveMeshProcess(root: string, space?: string): string | undefine
 }
 
 /**
- * The live process that makes this root the mesh's HOME, or undefined.
+ * The possibly running process that makes this root the mesh's HOME, or undefined.
  *
  * Not "any Cotal process here": a manager, a delivery daemon or a web dashboard under this root can
  * perfectly well be pointed at a mesh running on another machine, and their liveness says nothing
@@ -176,8 +177,8 @@ export function liveMeshOwner(root: string, space?: string): string | undefined 
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   for (const component of localProcessSurface()) {
     if (!component.clearsMesh) continue;
-    const state = pidfileState(localProcessPath(component.pidFile, context));
-    if (state.live) return `${component.label}, pid ${state.pid}`;
+    const running = possiblyRunning(component, context);
+    if (running) return running;
   }
   return undefined;
 }
@@ -190,10 +191,20 @@ export function liveMeshProcesses(root: string, space?: string): string[] {
   const context: LocalProcessContext = { root, space: space ?? resolveRuntimeSpace(root) };
   const running: string[] = [];
   for (const component of localProcessSurface()) {
-    const state = pidfileState(localProcessPath(component.pidFile, context));
-    if (state.live) running.push(`${component.label}, pid ${state.pid}`);
+    const record = possiblyRunning(component, context);
+    if (record) running.push(record);
   }
   return running;
+}
+
+/** "label, pid N" for a record that may still front a process, with the probe's note when it is not
+ *  proven alive; undefined only for no record, an empty husk or a pid proven dead. Every caller
+ *  guards a delete or a snapshot, so a record `cotal down` refuses as unattributable or of unknown
+ *  liveness must not read as stopped here. */
+function possiblyRunning(component: LocalProcess, context: LocalProcessContext): string | undefined {
+  const state = pidfileState(localProcessPath(component.pidFile, context));
+  if (state.liveness === "dead") return undefined;
+  return `${component.label}, ${[state.pid && `pid ${state.pid}`, state.note].filter(Boolean).join(", ")}`;
 }
 
 /** Delete the stopped mesh's local state and return what was removed (paths relative to the root).
