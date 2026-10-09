@@ -82,7 +82,7 @@ Smokes that mint into a fixture are not.
 | Profile | Function |
 |---|---|
 | `supervisor` | `runStart` (standing cred, self-renewed from the same seed) |
-| `provisioner` | `withProvisioner`; also spawn rollback / session-plane helpers |
+| `provisioner` | `withProvisioner`, through `withScopedEndpoint` with the profile's five-minute window; also spawn rollback / session-plane helpers |
 | `issuer` | `withIssuer` |
 | `lifecycle-executor` | `withLifecycleExecutor` |
 | `endpoint-serve-executor` | `withEndpointServeExecutor` |
@@ -106,8 +106,8 @@ object.** `Manager.runStart` constructs it with `auth: this.auth` (`manager.ts`)
 | `run-operator` | `withOperator` (one-shot read / answer) |
 
 **Barrier helpers take `opts.auth: SpaceAuth` from the manager (or from the CLI below) and mint
-in-process today, each through `withScopedEndpoint` (`endpoint-evict.ts`), which fixes the 60s
-lifetime:**
+in-process today, each through `withScopedEndpoint` (`endpoint-evict.ts`), which mints a 60s
+credential unless the caller names a longer window:**
 
 | Profile | Function |
 |---|---|
