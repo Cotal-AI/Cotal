@@ -3172,13 +3172,7 @@ export class Manager {
         endpoint: MANAGER_ENDPOINT,
         instanceId: iid,
         registrationRevision,
-        observeGeneration: async () => {
-          const key = epgateKey(MANAGER_ENDPOINT, iid);
-          const entry = await authKv.get(key);
-          if (!entry || entry.operation !== "PUT")
-            throw new Error(`no issuance gate at ${key}`);
-          return parseEndpointGate(entry.value, key).generation;
-        },
+        observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid }),
       });
     try {
       const outcome = await ((this.auth || this.remoteAuthority)

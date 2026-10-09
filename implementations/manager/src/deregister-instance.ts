@@ -42,7 +42,7 @@
  */
 import {
   deregisterServiceInstance, describeEndpoint, epProbeInstanceInterest, unansweredRequest,
-  epgateKey, parseEndpointGate,
+  readEndpointGateGeneration,
   type EpCaller, type EpInstanceLiveness, type ServiceDeregistration,
 } from "@cotal-ai/core";
 import type { KV } from "@nats-io/kv";
@@ -202,13 +202,7 @@ export async function deregisterEndpointInstance(opts: {
   const outcome: ServiceDeregistration = await deregisterServiceInstance(kv, {
     endpoint,
     instanceId,
-    observeGeneration: async () => {
-      const key = epgateKey(endpoint, instanceId);
-      const entry = await authKv.get(key);
-      if (!entry || entry.operation !== "PUT")
-        throw new Error(`no issuance gate at ${key}`);
-      return parseEndpointGate(entry.value, key).generation;
-    },
+    observeGeneration: () => readEndpointGateGeneration(authKv, { endpoint, instanceId }),
   });
   if (!outcome.removed && outcome.reason === "absent")
     throw new InstanceDeregisterRefused(
