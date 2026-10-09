@@ -158,6 +158,11 @@ The `uid` is the lifecycle the agent runs at. On a participant manager whose hos
 agents, the host picks that uid, so the manager accepts the goal only after the host has answered.
 A host refusal there refuses the spawn, and no goal is bound.
 
+Resubmitting the same `goalId` returns the same acceptance. A sibling instance or a restarted one
+answers it from the identity the accepting instance recorded before it replied, owner included.
+When that record names no owner because an older manager wrote it, the resubmission is refused
+`unavailable`.
+
 The name is the one actually allocated: a persona-derived collision is auto-numbered
 (`reviewer`, then `reviewer_2`), while a hard-pinned `--name` that collides with a live
 agent is refused at accept, before anything is minted. Auto-numbering never hands out a numbered

@@ -1261,8 +1261,9 @@ export interface GoalIndexEntry {
    *  the winner is still in flight, and the honest answers are only "here is what the winner
    *  allocated" or a refusal. OPTIONAL for read compatibility with entries written before this
    *  field existed; absent means the floor was never persisted and a reader must refuse rather
-   *  than invent one. */
-  allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number };
+   *  than invent one. `owner` is optional for the same reason, and because a turn's floor leaves
+   *  it to the note: a reader that has to name the owner refuses when the floor did not record it. */
+  allocated?: { name: string; owner?: string; actor: string; uid: string; readinessDeadlineMs?: number };
   /** An OPAQUE relay payload the accepting endpoint must be able to serve back after a restart —
    *  the durable half of a goal whose work is handed to another process (a seat's `turn` rides
    *  this: the run coordinates and rendered context the seat pulls). The substrate gives it no
@@ -1280,11 +1281,11 @@ function goalIndexKey(ref: GoalRef): string {
   return recordAtomicKey(RECORD_KINDS.goalidx, [ref.endpoint, ref.caller.owner, ref.caller.actor, ref.caller.uid, ref.goalId]);
 }
 
-function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number }, note?: string): GoalIndexEntry {
+function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: GoalIndexEntry["allocated"], note?: string): GoalIndexEntry {
   // Refuse a hollow floor AT THE WRITE, not only when someone reads it back: an entry naming an
   // empty identity is the exact defect this field exists to end, and letting it land would just
   // move the failure to whichever unlucky retry reads it.
-  if (allocated !== undefined && !(["name", "actor", "uid"] as const).every((k) => typeof allocated[k] === "string" && allocated[k].length > 0))
+  if (allocated !== undefined && (!(["name", "actor", "uid"] as const).every((k) => typeof allocated[k] === "string" && allocated[k].length > 0) || allocated.owner === ""))
     throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an empty component; a hollow identity is never recorded (SPEC 13.6)`);
   if (allocated?.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(allocated.readinessDeadlineMs) || allocated.readinessDeadlineMs <= 0))
     throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an invalid readiness deadline; an unbounded follower is never recorded (SPEC 13.6)`);
@@ -1294,7 +1295,7 @@ function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: { name: string;
     throw new EpEnvelopeError("internal", `the relay note for goal "${ref.goalId}" is ${note.length === 0 ? "empty" : `${note.length} bytes (max ${GOAL_INDEX_NOTE_MAX})`}; a hollow or oversized note is never recorded (SPEC 13.6)`);
   return {
     v: 1, endpoint: ref.endpoint, owner: ref.caller.owner, actor: ref.caller.actor, uid: ref.caller.uid, goalId: ref.goalId, iid,
-    ...(allocated !== undefined ? { allocated: { name: allocated.name, actor: allocated.actor, uid: allocated.uid, ...(allocated.readinessDeadlineMs !== undefined ? { readinessDeadlineMs: allocated.readinessDeadlineMs } : {}) } } : {}),
+    ...(allocated !== undefined ? { allocated: { name: allocated.name, ...(allocated.owner !== undefined ? { owner: allocated.owner } : {}), actor: allocated.actor, uid: allocated.uid, ...(allocated.readinessDeadlineMs !== undefined ? { readinessDeadlineMs: allocated.readinessDeadlineMs } : {}) } } : {}),
     ...(note !== undefined ? { note } : {}),
   };
 }
@@ -1311,10 +1312,11 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
     const a = o.allocated as Record<string, unknown>;
     if (a === null || typeof a !== "object" || Array.isArray(a))
       throw new EpEnvelopeError("internal", `goal-index entry ${key} carries a malformed acceptance floor; garbled reconcile state never authorizes (SPEC 13.6)`);
-    assertClosedKeys(a, ["name", "actor", "uid", "readinessDeadlineMs"], `goal-index entry ${key} allocated`);
+    assertClosedKeys(a, ["name", "owner", "actor", "uid", "readinessDeadlineMs"], `goal-index entry ${key} allocated`);
     // A floor with an EMPTY component is the hollow acceptance this field exists to end: it would
     // read as a real identity and name nothing. Refuse it as garbled rather than serve it.
-    if (!["name", "actor", "uid"].every((k) => typeof a[k] === "string" && (a[k] as string).length > 0))
+    if (!["name", "actor", "uid"].every((k) => typeof a[k] === "string" && (a[k] as string).length > 0)
+      || (a.owner !== undefined && (typeof a.owner !== "string" || a.owner.length === 0)))
       throw new EpEnvelopeError("internal", `goal-index entry ${key} carries an acceptance floor with an empty component; a hollow identity never authorizes (SPEC 13.6)`);
     if (a.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(a.readinessDeadlineMs) || (a.readinessDeadlineMs as number) <= 0))
       throw new EpEnvelopeError("internal", `goal-index entry ${key} carries an invalid readiness deadline; garbled acceptance state never authorizes (SPEC 13.6)`);
@@ -1331,7 +1333,7 @@ export function parseGoalIndexEntry(raw: unknown, key: string): GoalIndexEntry {
  *  entry, so the acceptance was never durable. `iid` is the accepting incarnation's instanceId.
  *  Idempotent for an adopted or concurrent same-goalId retry (a byte-identical pointer). */
 export async function recordGoalIndex(
-  ctx: ActionContext, ref: GoalRef, iid: string, allocated?: { name: string; actor: string; uid: string; readinessDeadlineMs?: number }, note?: string,
+  ctx: ActionContext, ref: GoalRef, iid: string, allocated?: GoalIndexEntry["allocated"], note?: string,
 ): Promise<{ recorded: true } | { recorded: false; existing: GoalIndexEntry }> {
   assertCtx(ctx);
   const snap = snapshotRef(ref);

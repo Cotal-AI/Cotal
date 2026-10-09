@@ -465,8 +465,9 @@ export function remoteManagerGoalIndexEntries(
         (entry.note !== undefined && (typeof entry.note !== "string" || entry.note.length === 0 || entry.note.length > 65_536)))
       throw new Error(`manager goal-index scan returned invalid entry ${index}`);
     if (entry.allocated !== undefined && (!entry.allocated || typeof entry.allocated !== "object" || Array.isArray(entry.allocated) ||
-        Object.keys(entry.allocated).some((key) => !["name", "actor", "uid", "readinessDeadlineMs"].includes(key)) ||
+        Object.keys(entry.allocated).some((key) => !["name", "owner", "actor", "uid", "readinessDeadlineMs"].includes(key)) ||
         ![entry.allocated.name, entry.allocated.actor, entry.allocated.uid].every((value) => typeof value === "string" && value.length > 0) ||
+        (entry.allocated.owner !== undefined && (typeof entry.allocated.owner !== "string" || entry.allocated.owner.length === 0)) ||
         (entry.allocated.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(entry.allocated.readinessDeadlineMs) || entry.allocated.readinessDeadlineMs <= 0))))
       throw new Error(`manager goal-index scan returned invalid allocation in entry ${index}`);
     return entry;
