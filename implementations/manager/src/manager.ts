@@ -5432,6 +5432,34 @@ export class Manager {
     return reason ? { refusal: reason } : {};
   }
 
+  /** The launch fields the host supplies rather than the seat. Spawn and resume both take them from
+   *  here, so a resumed seat launches under the same host policy, `eventsRequired` included, as the
+   *  same seat spawned fresh. */
+  private hostLaunchFields(
+    agent: string,
+    shareTools: readonly string[] | undefined,
+    harness: { binaries?: Readonly<Record<string, string>> },
+  ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "workspaceRoot"> {
+    const cotalConfig = loadCotalConfig(this.workspaceRoot);
+    return {
+      space: this.space,
+      servers: this.servers,
+      // Personal MCP servers the operator opted to share with manager-spawned agents of this type
+      // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
+      // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
+      mcpServers: connectorServers(cotalConfig, agent, shareTools),
+      // The operator's spawn-env policy travels the same route: absent means no extras (the OS
+      // allow-list + operator knobs + connector-declared inputs), present means those names too.
+      // A connector never reads the config itself.
+      envAllow: spawnEnvAllow(cotalConfig),
+      resolvedBinaries: harness.binaries,
+      eventsRequired: this.eventsRequired,
+      // So a connector that keeps per-agent local state can root it at the workspace, not the
+      // (possibly per-agent) launch cwd.
+      workspaceRoot: this.workspaceRoot,
+    };
+  }
+
   /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
    *  any reserve or mint, so a rule changed here holds on both paths. */
   private capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; exact: boolean }): string | undefined {
@@ -6172,15 +6200,6 @@ export class Manager {
         await materializeSecretToFile(secrets, agentSecretKeyForFile(credsPath, this.space), credsPath);
         provisioned = { id: identity.id, name, lifecycleUid, secretPaths: { creds: credsPath }, ...(custody ? { runtime: custody } : {}) }; // footprint now exists — the finally rolls it back if the spawn throws
       }
-      // Personal MCP servers the operator opted to share with manager-spawned agents of this type
-      // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
-      // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
-      const cotalConfig = loadCotalConfig(this.workspaceRoot);
-      const mcpServers = connectorServers(cotalConfig, agent, opts.shareTools);
-      // The operator's spawn-env policy travels the same route: absent means no extras (the OS
-      // allow-list + operator knobs + connector-declared inputs), present means those names too.
-      // A connector never reads the config itself.
-      const envAllow = spawnEnvAllow(cotalConfig);
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
       // agent shares the workspace root (the prior, unchanged behavior).
@@ -6193,7 +6212,7 @@ export class Manager {
         : undefined;
       const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
       const launchOpts: LaunchOpts = {
-        space: this.space,
+        ...this.hostLaunchFields(agent, opts.shareTools, harness),
         name,
         role,
         // User mode: the principal IS the identity (the endpoint derives card.id from owner+actor);
@@ -6206,7 +6225,6 @@ export class Manager {
         // at the broker, never silently).
         lifecycleUid,
         acceptedToken: issued?.acceptedToken,
-        servers: this.servers,
         configPath,
         model,
         variant,
@@ -6228,13 +6246,6 @@ export class Manager {
         allowPublish,
         capabilities,
         events,
-        eventsRequired: this.eventsRequired,
-        mcpServers,
-        envAllow,
-        resolvedBinaries: harness.binaries,
-        // So a connector that keeps per-agent local state can root it at the workspace, not the
-        // (possibly per-agent) launch cwd.
-        workspaceRoot: this.workspaceRoot,
         cwd,
       };
       // A delegated seat gets no local launch at all: no launch-material file, control token or
@@ -6895,11 +6906,8 @@ export class Manager {
       }
 
       try {
-        const resumeConfig = loadCotalConfig(this.workspaceRoot);
-        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, entry.launch.shareTools);
-        const envAllow = spawnEnvAllow(resumeConfig);
         const launchOpts: LaunchOpts = {
-          space: this.space,
+          ...this.hostLaunchFields(entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
           role: entry.role,
           id: authority.id,
@@ -6913,7 +6921,6 @@ export class Manager {
           lifecycleUid: entry.identity.lifecycleUid,
           backfillFloor: entry.backfillFloor,
           acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
-          servers: this.servers,
           configPath: entry.launch.source.configPath,
           model: entry.launch.model,
           variant: entry.launch.variant,
@@ -6926,10 +6933,6 @@ export class Manager {
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
           events: entry.launch.events,
-          mcpServers,
-          envAllow,
-          resolvedBinaries: harness.binaries,
-          workspaceRoot: this.workspaceRoot,
           cwd: entry.launch.cwd,
         };
         const spec = connector.buildLaunch(launchOpts);

@@ -883,7 +883,8 @@ and interactive `join` cannot opt out or join without an event plane. `--no-even
 the space named. A connector without an event plane is refused with both the space and connector
 named. A session whose own grant omits `events.<owner>.<actor>` is refused before joining and the
 message names a full-row `actor grant` repair. A running seat whose event plane stops for good on
-that space stops too.
+that space stops too. A seat the manager resumes from a preserved cut carries that requirement in its
+launch material, as a fresh spawn does.
 
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites
