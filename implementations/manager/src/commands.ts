@@ -23,7 +23,7 @@ import {
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
-  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, workspaceSecretStore, writePidPair,
+  authDir, canonicalLocalProcessPath, consumeManagerShutdownIntent, findCotalRoot, getSpaceAuth, hasUserAuthState, isWorkspaceTargetError, loadManagerInstanceIdentity, parsePositiveIntegerFlag, publishManagerSpareCapability, reclaimDeadPreUpgradeRecord, removePidPair, resolveMeshTarget, soleSpaceOf, userAuthStateDir, workspaceSecretStore, writePidPair,
   c, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
   refreshRegistrationPolicy,
   type MeshEntry,
@@ -215,8 +215,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   let remoteAuthority: NonNullable<ConstructorParameters<typeof Manager>[0]["remoteAuthority"]> | undefined;
   if (target.remoteUser) {
     try {
-      const state = loadOrCreateRemoteManagerIdentity(findCotalRoot(), space);
+      const root = findCotalRoot();
+      const state = loadOrCreateRemoteManagerIdentity(root, space);
       const provider = resolveAuthProvider();
+      // Every provider call shares this one context: a call that resolved the root again could land on
+      // a different `.cotal/` than the one the identity above was loaded from.
+      const providerCall = { store: workspaceSecretStore(root), dir: userAuthStateDir(root, space) };
       if (!provider.managerServiceAuthority)
         throw new Error(`the registered auth provider "${provider.name}" does not implement the typed manager-service authority protocol`);
       if (!provider.maintainRemoteManager)
@@ -233,22 +237,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       const agentBearerExchangeUrl = target.agentBearerExchangeUrl;
       if (typeof agentBearerExchangeUrl !== "string" || !agentBearerExchangeUrl)
         throw new Error(`registered space "${space}" has no pinned public exchange URL for retained managed agents`);
-      const material = await provider.managerServiceAuthority({
-        store: workspaceSecretStore(findCotalRoot()),
-        dir: join(findCotalRoot(), ".cotal", "auth", space),
-        request,
-      });
+      const material = await provider.managerServiceAuthority({ ...providerCall, request });
       const actors = remoteManagerActors(state.instanceId);
       if (material.owner.length === 0 || material.instanceId !== state.instanceId || material.lifecycleUid !== state.lifecycleUid ||
           JSON.stringify(material.actors) !== JSON.stringify(actors))
         throw new Error("the host returned manager-service material for different lifecycle coordinates");
       const maintain = async (operation: "evict-family-principal" | "reconcile-registration", targetInstanceId: string, principals?: string[]) => {
         const maintenanceRequest = remoteManagerMaintenanceRequest(state, "cli", operation, targetInstanceId, principals);
-        const response = await provider.maintainRemoteManager!({
-          store: workspaceSecretStore(findCotalRoot()),
-          dir: join(findCotalRoot(), ".cotal", "auth", space),
-          request: maintenanceRequest,
-        });
+        const response = await provider.maintainRemoteManager!({ ...providerCall, request: maintenanceRequest });
         return remoteManagerMaintenanceResult(response, maintenanceRequest, material.owner);
       };
       const registered = await registerRemoteManagerAuthority({
@@ -270,8 +266,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       const contractArtifacts = [artifacts.document, artifacts.manifest];
       const registrationProof = remoteManagerRegistrationProof(material.owner, state, contractArtifacts);
       const activate = await provider.managerServiceAuthority({
-        store: workspaceSecretStore(findCotalRoot()),
-        dir: join(findCotalRoot(), ".cotal", "auth", space),
+        ...providerCall,
         request: remoteManagerAuthorityRequest(state, "cli", "activate", { registrationProof, contractArtifacts }),
       });
       const retainedRegistrationProof = currentRegistrationProof(activate);
@@ -281,13 +276,8 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       // connections die at their expiry.
       const standing = remoteStandingBundleRenewal({
         state, owner: material.owner, registrationProof: retainedRegistrationProof, supervisorCreds,
-        call: (renewalRequest) => provider.managerServiceAuthority!({
-          store: workspaceSecretStore(findCotalRoot()),
-          dir: join(findCotalRoot(), ".cotal", "auth", space),
-          request: renewalRequest,
-        }),
+        call: (renewalRequest) => provider.managerServiceAuthority!({ ...providerCall, request: renewalRequest }),
       });
-      const runCall = { store: workspaceSecretStore(findCotalRoot()), dir: join(findCotalRoot(), ".cotal", "auth", space) };
       remoteAuthority = {
         ...standing,
         owner: material.owner,
@@ -299,8 +289,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         executorCreds: materialCredential(material, "executor", state.identities.executor),
         renewExecutor: async () => {
           const renewed = await provider.managerServiceAuthority!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            ...providerCall,
             request: remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: retainedRegistrationProof }),
           });
           return materialCredential(renewed, "executor", state.identities.executor);
@@ -311,20 +300,19 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         runHosting: remoteRunHosting({
           state, owner: material.owner, registrationProof: retainedRegistrationProof,
           accountPublicKey: standing.accountPublicKey, processEpoch: registered.processEpoch,
-          requestRunAdmission: (request) => provider.requestRemoteRunAdmission!({ ...runCall, request }),
-          requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...runCall, request }),
+          requestRunAdmission: (request) => provider.requestRemoteRunAdmission!({ ...providerCall, request }),
+          requestRunAttempt: (request) => provider.requestRemoteRunAttempt!({ ...providerCall, request }),
           requestRunRevoke: async (request) => {
             if (provider.requestRemoteRunRevoke === undefined) throw new Error(`the registered auth provider "${provider.name}" does not implement closed hosted-run revoke`);
-            return provider.requestRemoteRunRevoke({ ...runCall, request });
+            return provider.requestRemoteRunRevoke({ ...providerCall, request });
           },
-          call: (request) => provider.managerServiceAuthority!({ ...runCall, request }),
+          call: (request) => provider.managerServiceAuthority!({ ...providerCall, request }),
         }),
         serveGrant: registered.serveGrant,
         agentBearerExchangeUrl,
         mintSessionServing: async (session) => {
           const sessionMaterial = await provider.managerServiceAuthority!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            ...providerCall,
             request: remoteManagerAuthorityRequest(state, "cli", "session", {
               registrationProof: remoteManagerRegistrationProof(material.owner, state),
               session: {
@@ -340,8 +328,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         },
         mintRetirementRequester: async ({ identity, target: retirementTarget, opId, serveEpoch }) => {
           const retirementMaterial = await provider.managerServiceAuthority!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            ...providerCall,
             request: remoteManagerAuthorityRequest(state, "cli", "retire", {
               registrationProof: remoteManagerRegistrationProof(material.owner, state),
               retirement: {
@@ -360,8 +347,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
         },
         mintTransferReader: async (identity) => {
           const readerMaterial = await provider.managerServiceAuthority!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
+            ...providerCall,
             request: remoteManagerAuthorityRequest(state, "cli", "transferReader", {
               registrationProof: remoteManagerRegistrationProof(material.owner, state),
               transferReader: { id: identity.id },
@@ -384,11 +370,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
                   registered.processEpoch,
                   target,
                 );
-                const result = await provider.enrollRemoteManagedAgent!({
-                  store: workspaceSecretStore(findCotalRoot()),
-                  dir: join(findCotalRoot(), ".cotal", "auth", space),
-                  request,
-                });
+                const result = await provider.enrollRemoteManagedAgent!({ ...providerCall, request });
                 return remoteManagedAgentEnrollmentMaterial(result, request);
               },
             }
@@ -404,11 +386,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             retirementTarget,
             opId,
           );
-          const result = await provider.prepareRemoteManagedAgentRetirement({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request,
-          });
+          const result = await provider.prepareRemoteManagedAgentRetirement({ ...providerCall, request });
           remoteManagedAgentRetirementPrepared(result, request);
         },
         validateRetainedAgent: async ({ owner: targetOwner, actor, lifecycleUid, actorToken, sentinelCreds }) => {
@@ -421,11 +399,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             actorToken,
             sentinelCreds,
           );
-          const result = await provider.validateRemoteRetainedAgent!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request,
-          });
+          const result = await provider.validateRemoteRetainedAgent!({ ...providerCall, request });
           return retainedAgentAuthority(result, request);
         },
         scanGoalIndex: async () => {
@@ -441,11 +415,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             serveEpoch: registered.processEpoch,
             identities: publicIdentities(state),
           };
-          const result = await provider.scanRemoteManagerGoalIndex!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request,
-          });
+          const result = await provider.scanRemoteManagerGoalIndex!({ ...providerCall, request });
           return remoteManagerGoalIndexEntries(result, request, material.owner);
         },
         authorizeAdmin: async (caller) => {
@@ -456,11 +426,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
             registered.processEpoch,
             caller,
           );
-          const result = await provider.authorizeRemoteManagerAdmin!({
-            store: workspaceSecretStore(findCotalRoot()),
-            dir: join(findCotalRoot(), ".cotal", "auth", space),
-            request,
-          });
+          const result = await provider.authorizeRemoteManagerAdmin!({ ...providerCall, request });
           return remoteManagerAdminAuthorized(result, request, material.owner);
         },
       };
