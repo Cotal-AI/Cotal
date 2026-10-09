@@ -486,7 +486,8 @@ link, a handoff to a name the run never spawned is the catchable L4005, and one 
 to a different worktree is L4004. The deadline elapsing before any yield is the catchable L4003:
 the acceptance names the instant, the manager's goal-bound hold denies at it, and the run arms its
 own pause on that same instant, so either side outliving the other still converges on the same
-answer. A seat that dies mid-turn is read off its own presence row by the run itself, with the
+answer. A seat that pulled the turn earlier stops showing it to its session at that same
+instant. A seat that dies mid-turn is read off its own presence row by the run itself, with the
 same 30-second confirmation for a lapsed row, and is the catchable L4002, and a death the manager
 marked on the deadline terminal reads the same way. Two
 turns on one seat, from two branches or from two runs, reach it one at a time: the language
