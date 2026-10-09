@@ -59,6 +59,7 @@ class MemStore implements SecretStore {
   readonly map = new Map<string, string>();
   async get(k: string) { return this.map.get(k); }
   async put(k: string, v: string) { this.map.set(k, v); }
+  async create(k: string, v: string) { if (this.map.has(k)) return false; this.map.set(k, v); return true; }
   async delete(k: string) { this.map.delete(k); }
 }
 

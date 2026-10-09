@@ -13,6 +13,7 @@ const store: SecretStore = {
   identity: { kind: "injected", coordinate: "test-assigned-space" },
   get: async () => undefined,
   put: async () => {},
+  create: async () => true,
   delete: async () => {},
 };
 const context: HostedContextInputs = {

@@ -93,6 +93,24 @@ async function readStoreValue<T extends { ver: number }>(store: SecretStore, key
   return raw === undefined ? undefined : parseStoreDoc<T>(raw, key, what);
 }
 
+/** The stored value of a generate-on-first-use kind, or on a fresh space `mint()`'s, published by
+ *  create-only write. Of concurrent first calls exactly one creates the key and the others adopt
+ *  it, so no caller keeps a value the store does not hold. */
+async function loadOrCreate<T>(
+  store: SecretStore,
+  key: string,
+  load: () => Promise<T | undefined>,
+  mint: () => Promise<{ value: T; doc: string }>,
+): Promise<T> {
+  const stored = await load();
+  if (stored !== undefined) return stored;
+  const { value, doc } = await mint();
+  if (await store.create(key, doc)) return value;
+  const winner = await load();
+  if (winner === undefined) throw new Error(`${key}: another caller created this entry first and it could not be read back - retry`);
+  return winner;
+}
+
 /** The file-side read, for the NON-SEAM kinds only (the IdP pin, service runtime discovery). */
 function readStoreFile<T extends { ver: number }>(path: string, what: string): T | undefined {
   if (!existsSync(path)) return undefined;
@@ -121,11 +139,10 @@ export async function loadCalloutAuth(store: SecretStore, space: string): Promis
  *  and persists; every later call returns the SAME account, so the broker config preload and
  *  previously-issued sentinel creds stay valid. Idempotent. */
 export async function ensureCalloutAuth(store: SecretStore, input: CalloutProvisionInput): Promise<CalloutAuth> {
-  const existing = await loadCalloutAuth(store, input.space);
-  if (existing) return existing;
-  const callout = await createCalloutAuth(input);
-  await store.put(authCalloutKey(input.space), JSON.stringify({ ver: STORE_VER, callout } satisfies CalloutFile, null, 2));
-  return callout;
+  return loadOrCreate(store, authCalloutKey(input.space), () => loadCalloutAuth(store, input.space), async () => {
+    const callout = await createCalloutAuth(input);
+    return { value: callout, doc: JSON.stringify({ ver: STORE_VER, callout } satisfies CalloutFile, null, 2) };
+  });
 }
 
 // ---- the user-bearer issuer signing keys ----
@@ -162,18 +179,16 @@ export async function loadIssuer(store: SecretStore, space: string): Promise<Use
  *  loud (the material belongs to another space/layout — never sign under a mismatched issuer). */
 export async function ensureIssuer(store: SecretStore, space: string): Promise<UserTokenIssuer> {
   const iss = spaceIssuer(space);
-  const existing = await loadIssuer(store, space);
-  if (existing) {
-    if (existing.issuer !== iss)
-      throw new Error(`${authIssuerKey(space)}: persisted issuer "${existing.issuer}" != this space's pin "${iss}" - the material belongs to a different space; refusing to mint under it`);
-    return existing;
-  }
-  const key = await generateSigningKey();
-  await store.put(
-    authIssuerKey(space),
-    JSON.stringify({ ver: STORE_VER, issuer: iss, activeKid: key.kid, keys: [await exportSigningKey(key)] } satisfies IssuerFile, null, 2),
-  );
-  return createUserTokenIssuer({ issuer: iss, key });
+  const issuer = await loadOrCreate(store, authIssuerKey(space), () => loadIssuer(store, space), async () => {
+    const key = await generateSigningKey();
+    return {
+      value: createUserTokenIssuer({ issuer: iss, key }),
+      doc: JSON.stringify({ ver: STORE_VER, issuer: iss, activeKid: key.kid, keys: [await exportSigningKey(key)] } satisfies IssuerFile, null, 2),
+    };
+  });
+  if (issuer.issuer !== iss)
+    throw new Error(`${authIssuerKey(space)}: persisted issuer "${issuer.issuer}" != this space's pin "${iss}" - the material belongs to a different space; refusing to mint under it`);
+  return issuer;
 }
 
 // ---- the owner-derivation secret ----
@@ -198,14 +213,13 @@ export async function loadOwnerSecret(store: SecretStore, space: string): Promis
 /** Load-or-create the per-space owner-derivation secret. There is deliberately NO regenerate path:
  *  a new secret re-keys every owner in the space (a migration, never an accident). */
 export async function ensureOwnerSecret(store: SecretStore, space: string): Promise<Uint8Array> {
-  const existing = await loadOwnerSecret(store, space);
-  if (existing) return existing;
-  const secret = randomBytes(32);
-  await store.put(
-    authOwnerSecretKey(space),
-    JSON.stringify({ ver: STORE_VER, secretB64: Buffer.from(secret).toString("base64") } satisfies OwnerSecretFile, null, 2),
-  );
-  return new Uint8Array(secret);
+  return loadOrCreate(store, authOwnerSecretKey(space), () => loadOwnerSecret(store, space), async () => {
+    const secret = randomBytes(32);
+    return {
+      value: new Uint8Array(secret),
+      doc: JSON.stringify({ ver: STORE_VER, secretB64: Buffer.from(secret).toString("base64") } satisfies OwnerSecretFile, null, 2),
+    };
+  });
 }
 
 // ---- the hosted auth plane's instance identity ----
@@ -226,16 +240,17 @@ async function loadAuthInstance(store: SecretStore, space: string): Promise<Auth
 
 /** A hosted plane's instance identity (SPEC 13.6). Its serve seed is a private key, so it lives in
  *  the injected store, never in the state dir the hosted contract calls non-secret. A record an
- *  earlier release kept under `stateDir` moves into the store, removed only after the put, so an
- *  upgraded context restarts as the same instance. A store and state dir that hold different
- *  identities refuse: keeping either orphans the other's registration. */
+ *  earlier release kept under `stateDir` moves into the store and is removed only once the store
+ *  holds it, so an upgraded context restarts as the same instance. A store and state dir that hold
+ *  different identities refuse: keeping either orphans the other's registration. */
 export async function claimAuthInstanceIdentity(store: SecretStore, space: string, stateDir: string, mint: () => AuthInstanceIdentity): Promise<AuthInstanceIdentity> {
-  const stored = await loadAuthInstance(store, space);
   const earlier = loadAuthInstanceIdentity(stateDir, space);
-  if (stored && earlier && (stored.instanceId !== earlier.instanceId || stored.serveIdentity.seed !== earlier.serveIdentity.seed))
+  const identity = await loadOrCreate(store, authInstanceKey(space), () => loadAuthInstance(store, space), async () => {
+    const value = earlier ?? mint();
+    return { value, doc: JSON.stringify({ ver: STORE_VER, ...value } satisfies AuthInstanceFile, null, 2) };
+  });
+  if (earlier && (identity.instanceId !== earlier.instanceId || identity.serveIdentity.seed !== earlier.serveIdentity.seed))
     throw new Error(`${authInstanceKey(space)} and the record under ${stateDir} hold different auth instance identities for space "${space}" - refusing to guess which is this context's. Remove the one that did not come from this context, then retry.`);
-  const identity = stored ?? earlier ?? mint();
-  if (!stored) await store.put(authInstanceKey(space), JSON.stringify({ ver: STORE_VER, ...identity } satisfies AuthInstanceFile, null, 2));
   if (earlier) removeAuthInstanceIdentity(stateDir, space);
   return identity;
 }

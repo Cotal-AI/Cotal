@@ -120,7 +120,7 @@ try {
 
   const prev = process.env.COTAL_SECRET_STORE;
   delete process.env.COTAL_SECRET_STORE;
-  const undeclared: SecretStore = { get: async () => undefined, put: async () => {}, delete: async () => {} };
+  const undeclared: SecretStore = { get: async () => undefined, put: async () => {}, create: async () => true, delete: async () => {} };
   throws(
     "injected identity refuses a silent local-root fallback",
     () => reloadStoreIdentityOf({ injected: true, store: undeclared }),

@@ -151,6 +151,20 @@ export class FsSecretStore implements SecretStore {
     writeSecretFileAtomic(p, value); // temp + rename: a concurrent get sees old or new, never torn
   }
 
+  async create(key: string, value: string): Promise<boolean> {
+    const p = this.resolve(key);
+    this.idFile();
+    this.refuseIdFile(key, p);
+    mkSecretDir(dirname(p));
+    try {
+      writeSecretFileCreateOnly(p, value); // temp + link: EEXIST when another creator holds the name
+      return true;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw e;
+    }
+  }
+
   async delete(key: string): Promise<void> {
     const p = this.resolve(key);
     this.refuseIdFile(key, p);

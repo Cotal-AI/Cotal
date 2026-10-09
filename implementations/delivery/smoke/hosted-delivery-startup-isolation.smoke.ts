@@ -52,6 +52,7 @@ class HeldStore implements SecretStore {
     return this.values.get(key);
   }
   async put(key: string, value: string): Promise<void> { this.values.set(key, value); }
+  async create(key: string, value: string): Promise<boolean> { if (this.values.has(key)) return false; this.values.set(key, value); return true; }
   async delete(key: string): Promise<void> { this.values.delete(key); }
 }
 

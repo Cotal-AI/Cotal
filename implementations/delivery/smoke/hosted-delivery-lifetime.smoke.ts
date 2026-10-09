@@ -25,6 +25,7 @@ class MemoryStore implements SecretStore {
   constructor(readonly identity: { kind: "injected"; coordinate: string }) {}
   async get(k: string) { return this.values.get(k); }
   async put(k: string, v: string) { this.values.set(k, v); }
+  async create(k: string, v: string) { if (this.values.has(k)) return false; this.values.set(k, v); return true; }
   async delete(k: string) { this.values.delete(k); }
 }
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -109,7 +110,7 @@ try {
   }));
   const signals = process.listenerCount("SIGTERM");
   const exits = process.exit;
-  await assert.rejects(startDeliveryService({ ...inputs[0], store: { get: (key: string) => stores[0].get(key), put: (key: string, value: string) => stores[0].put(key, value), delete: (key: string) => stores[0].delete(key) } }), /must declare a stable identity/, "identity-less store refuses");
+  await assert.rejects(startDeliveryService({ ...inputs[0], store: { get: (key: string) => stores[0].get(key), put: (key: string, value: string) => stores[0].put(key, value), create: (key: string, value: string) => stores[0].create(key, value), delete: (key: string) => stores[0].delete(key) } }), /must declare a stable identity/, "identity-less store refuses");
   await assert.rejects(startDeliveryService({ ...inputs[0], storeIdentity: stores[1].identity }), /identity does not match/, "wrong store identity refuses");
   await assert.rejects(startDeliveryService({ ...inputs[0], context: { ...inputs[0].context, accountPublicKey: inputs[1].context.accountPublicKey } }), /credential account does not match/, "credential account does not match");
   const [first, second] = await Promise.all(inputs.map((input) => startDeliveryService(input)));

@@ -288,6 +288,11 @@ try {
       store: {
         get: async (k: string) => m.get(k),
         put: async (k: string, v: string) => void m.set(k, v),
+        create: async (k: string, v: string) => {
+          if (m.has(k)) return false;
+          m.set(k, v);
+          return true;
+        },
         delete: async (k: string) => {
           if (k === failOn) throw new Error("seam is down");
           m.delete(k);
