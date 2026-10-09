@@ -19,7 +19,7 @@ export type SessionVerifier = (
  *  binds the minted JWT to, instead of the bearer's. Stripped before the JWT is encoded. */
 export const SESSION_EXP = "__cotalSessionExp";
 
-/** The callout's issuing seam for an interactive user's `manager-caller` view (SPEC 13.15). `mint`
+/** The callout's issuing seam for an eligible user's `manager-caller` view (SPEC 13.15). `mint`
  *  builds the view's permission set for the given `issued` pair, so the evidence is the set that is signed.
  *  Issues a fresh generation, or renews the generation the connection's accepted row already names. */
 export type UserCallerIssuer = (args: {
@@ -38,9 +38,11 @@ export type AclResolver = (
   /** The actor's CURRENT capability grant (the row's scope), so the mint can re-contain the
    *  bearer's capabilities against the row AS OF THE MINT, not only as of the connect gate. */
   scope: string[];
-  /** The row space the actor was found in. Only an `interactive` row's `manager-caller` view is
-   *  issued (SPEC 13.15). */
+  /** The row space the actor was found in. */
   kind?: "interactive" | "managed-agent";
+  /** Fresh direct-parent grant, independently of the child's persona-derived scope. An admin
+   *  parent's containment bypass does not imply this grant (SPEC 13.15). */
+  parentHasRun?: boolean;
 };
 
 /**
@@ -150,10 +152,11 @@ export function calloutPermissions(
           { ...principal, lifecycleUid: t.act.lifecycleUid },
           { capabilities: caps, lifecycleUid: t.act.lifecycleUid, managerInstanceId: instanceId, ...(issued ? { issued } : {}) },
         );
-        // An interactive user's view is issued (SPEC 13.15): its run commands ride `ep.v1` under a
-        // generation bound to this row. A managed row's view keeps the legacy rail.
+        // Interactive issuance is unchanged. A managed seat needs both its current persona scope
+        // and the fresh direct-parent grant. The mint still uses only signed act.scope.
         return authorizeManagerCaller(t.owner, instanceId).then(() =>
-          acl.kind === "interactive" && issueUserCaller ? issueUserCaller({ t, connId, mint }) : mint());
+          (acl.kind === "interactive" || (acl.kind === "managed-agent" && current.has("run") && acl.parentHasRun === true))
+            && issueUserCaller ? issueUserCaller({ t, connId, mint }) : mint());
       }
       return permissionsFor(
         t.act.view,
@@ -169,7 +172,7 @@ export function calloutPermissions(
     }
     // The ledger row's lifecycleUid rides the PRINCIPAL: core's agent arm mints the lifecycle-keyed
     // dm/dlv/chathist grant names from it (SPEC 13.1) and refuses to mint without one.
-    const { scope: _rowScope, ...aclOpts } = acl;
+    const { scope: _rowScope, kind: _kind, parentHasRun: _parentHasRun, ...aclOpts } = acl;
     return permissionsFor(
       "agent",
       t.space,

@@ -4138,10 +4138,16 @@ one source shape this revision issues against is a static incarnation's credenti
 `retired`; a lifecycle terminal retires every issuance indexed to that family
 (`bysource.v1.…`), so a retired incarnation's generations refuse to resolve afterwards.
 
-**User-auth issuance.** On a user-auth space the issuer of an interactive actor's `manager-caller`
+**User-auth issuance.** On a user-auth space the issuer of an eligible actor's `manager-caller`
 view connection is the auth service, at its callout, and the material is the user JWT the callout
-returns. The callout issues that view when the bearer's actor-ledger row is an interactive row, and
-the issued view carries the per-key accepted-row read beside its instance-pinned rows. It chooses
+returns. Interactive rows retain their issuance path. A managed-agent row is eligible only when its
+current persona-derived scope contains `run` AND a fresh read of its direct parent principal's row
+finds `run` in that same owner's current grant. An admin parent's containment bypass is not a `run`
+grant. A missing, malformed, foreign-owner or no-run parent grants no issuance. The existing
+`authorizeManagerCaller` instance gate and `VIEW_REQUIRED_SCOPE` remain unchanged. No request kind,
+view, signer or authority door is added, and ordinary command grants still derive from signed
+`act.scope`, contained against the current child row. The issued view carries the per-key
+accepted-row read beside its instance-pinned rows. It chooses
 the generation, persists evidence whose permissions are the set it signs and whose one source is
 that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
 releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
@@ -4153,8 +4159,13 @@ a dead source at the next resolution. Only the auth service attests this shape; 
 refuses it as a coordinate it cannot attest. A reconnect under the same nonce finds the existing
 accepted row. When the row names the same triple and the ceiling being minted is byte-identical to
 the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
-client adopts a fresh generation only through a new connection under a new nonce. A managed row's
-view, the `agent` profile and every other view keep the legacy rail.
+client adopts a fresh generation only through a new connection under a new nonce. A managed
+issuance's single source is the child's own actor row and lifecycle, not its parent. A managed seat
+missing either eligibility predicate keeps the legacy manager-caller mint for ordinary commands,
+and `run-start` refuses with `permission-denied`. Without a signed `run` capability the broker
+refuses the publish. With signed `run` but no eligible parent, the manager returns
+`ai.cotal.ep.unbound-caller-authority`. Failed
+issuance never retries on the legacy rail. The `agent` profile and every other view keep that rail.
 
 **Platform-owned user supervisor.** A trusted host composition MAY issue the closed manager-service
 registration material for one ordinary derived owner without that owner's IdP proof. This is an

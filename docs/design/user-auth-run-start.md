@@ -1,11 +1,12 @@
 # User-auth run start
 
-Status: implemented for issue #1956. Section 4 names the shipped symbols, with these differences:
+Status: implemented for issue #1956, extended to eligible managed seats. Section 4 names the
+shipped symbols, with these differences:
 
 - `issuedUserCaller` is exported by `@cotal-ai/core` (`issued-authority.ts`), because the connector's
   manager calls open the same view and cannot import `@cotal-ai/workspace`. The connector reads the
-  row on every view; a managed row's view holds no read grant, so the broker refuses the read and the
-  call keeps the legacy rail.
+  row on every view. Eligible managed rows now hold the same read grant and call on `ep.v1`. A seat
+  missing either `run` input holds no read grant and keeps the legacy rail for ordinary commands.
 - The `issuer` profile gains the per-key `DIRECT.GET` read of the accepted store, so the callout can
   find the row a reconnect's nonce names.
 - The issuing host checks an answering operator's pause before its caller, then refuses one with no
@@ -30,8 +31,9 @@ Status: implemented for issue #1956. Section 4 names the shipped symbols, with t
   digests differ from the command's declaration in the manager's registered cluster, which
   `registeredCommand` reads at the gate's registration revision.
 
-The source inventory was checked at `6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Line numbers are that
-head's.
+Section 1 preserves the pre-issuance source inventory at
+`6ca4d8e0f48d711769ea2e3710338e1e23dab82f`. Its line numbers and missing-authority statements describe
+that historical head, not the implemented path above or the managed-seat extension in section 4.
 
 The question is the smallest path by which a user who signed in with `cotal login --idp` can run
 `cotal run start` on a user-auth space, have the run admitted on the versioned rail under authority
@@ -91,7 +93,7 @@ signed permission equality and native ceiling confirmation, platform-admin autho
 registration material. These are authority-plane JWTs. They are not callout-signed user connections,
 so their proof must not be described as execution of the callout path in section 4.
 
-## 1. What happens today
+## 1. Original failure
 
 The refusal was reproduced at `3b616a239` through shipped entrypoints: a user-auth host with no
 manager of its own, a participant registered with `cotal meshes add --mode user`, stock
@@ -105,8 +107,8 @@ run-start binds a run to the caller's issued authority, and this request rode th
 The same binary and program on a static-auth mesh start, answer a checkpoint and complete. Main moved
 four commits since `3b616a239`, adding the platform control door. They change
 `manager-authority.ts` and `service.ts` around the holder type and leave `run-hosting.ts`,
-`manager.ts`, `connect.ts` and `permissions.ts` untouched, so the refusal path is the same. Every
-site below is read at the current head.
+`manager.ts`, `connect.ts` and `permissions.ts` untouched, so the refusal path at that historical head
+was the same. The table records the source before user-auth issuance was implemented.
 
 | Site | What it does |
 |---|---|
@@ -126,19 +128,17 @@ site below is read at the current head.
 | `implementations/manager/src/run-hosting.ts:317-360` | `resume` checks the admission and its revocation, never the caller. |
 | `packages/core/src/remote-manager-authority.ts:775-790` | `RemoteRunAttemptRequest` carries no served subject, so the issuing host cannot see who asked for a resume or an answer. |
 
-So the remote run arm is complete on the host side except for owner binding, and no user-auth caller
-can reach it, because no user credential is an issuance.
+At that historical head, the remote run arm lacked owner binding, and no user-auth caller could
+reach it because no user credential was an issuance.
 
 ## 2. Scope
 
-In scope: issuing an interactive user's `manager-caller` view at the callout, the user actor-ledger source
-shape, the CLI reading its generation, owner binding at admission and on resume and answer for a
+In scope: issuing an interactive user's or eligible managed seat's `manager-caller` view at the
+callout, the user actor-ledger source shape, the CLI reading its generation, owner binding at admission and on resume and answer for a
 participant manager, the refusals, and the SPEC clauses.
 
 Out of scope:
 
-- Issuing user-mode managed seats. A seat answers through its pending relay on the legacy rail, and
-  the host checks that path separately (section 5, P4).
 - `cotal run start --local` on a user-auth space. A user bearer holds no run rows, and this record
   adds none.
 - Hosting user runs on the signer-holding host's own manager. The issue requires a remote manager,
@@ -158,7 +158,9 @@ Out of scope:
    to the participant manager's instance, and dials with the sentinel credentials and that bearer
    under a client-chosen inbox nonce `connId`, as today.
 3. The callout validates the bearer, runs the connect gate, resolves the actor's ACL and runs
-   `authorizeManagerCaller`, as today. When the row is an interactive row, the callout mints the
+   `authorizeManagerCaller`, as today. An interactive row remains eligible. A managed row needs
+   `run` in its current persona-derived scope and in a fresh direct-parent row of the same owner.
+   An admin parent's bypass does not satisfy that second predicate. For an eligible row it mints the
    `manager-caller` permission set with `issued` and issues it before it signs the JWT. It chooses the generation,
    stages the evidence with one source, the actor's ledger row, releases it and writes the accepted
    row under `connectionAcceptedToken(connId)`. On a reconnect under the same `connId` it renews the
@@ -240,13 +242,16 @@ export interface RemoteRunAttemptRequest {
 export function ledgerActorSourceIsLive(dir: string): (source: IssuedSourceRef) => boolean;
 ```
 
-`AclResolver` (`permissions.ts:26`) gains one field in its result, `kind: ActorKind`, which
-`ledgerAclResolver` (`ledger.ts:503`) fills from `findActorUnified`.
+`AclResolver` carries optional `kind: ActorKind` and `parentHasRun`. `ledgerAclResolver` fills kind
+from `findActorUnified` and reads the managed child's separate `parent` principal afresh. It sets
+`parentHasRun` only for a valid direct parent of the same owner whose current scope contains `run`.
+Missing, malformed, self-linked, foreign-owner or no-run parents do not authorize issuance. This
+uses existing scope and parent fields, without a persona field or a parallel store.
 
 ### 4.4 `@cotal-ai/auth`, `implementations/auth/src/permissions.ts`
 
 ```ts
-/** The callout's issuing seam for an interactive user's `manager-caller` view (SPEC 13.15). `mint`
+/** The callout's issuing seam for an eligible user's `manager-caller` view (SPEC 13.15). `mint`
  *  builds the view's permission set for the given `issued` pair, so the evidence is the set that is signed.
  *  Issues a fresh generation, or renews the generation the connection's accepted row already names. */
 export type UserCallerIssuer = (args: {
@@ -264,8 +269,11 @@ export function calloutPermissions(
 ```
 
 The `manager-caller` arm calls `issueUserCaller` after `authorizeManagerCaller` when
-`acl.kind === "interactive"`. A managed row's `manager-caller` view, the `agent` arm and every other
-view keep today's mint.
+`acl.kind === "interactive"`, or when `acl.kind === "managed-agent"`, its current scope contains
+`run` and `acl.parentHasRun === true`. Signed `act.scope` remains the permission authority, so
+issuance adds neither a capability nor an admin bypass. An ineligible managed row's ordinary
+manager-caller view, the `agent` arm and every other view keep today's mint. Failed issuance never
+falls back to the legacy rail, and no request kind or `VIEW_REQUIRED_SCOPE` entry changes.
 
 ### 4.5 `@cotal-ai/auth`, `implementations/auth/src/service.ts`
 
@@ -404,7 +412,7 @@ on the legacy rail.
 
 | | Property | Mechanism | Refusal |
 |---|---|---|---|
-| P1 | The authority comes from the caller's real login. | Only the callout issues, and only for a `manager-caller` view bearer the auth service exchanged from a live IdP session for an interactive row the connect gate accepted (`ledgerAuthorizeConnect`), on an instance `authorizeManagerCaller` found to be that owner's. The generation is the issuer's. The evidence's single source is that row, by owner, actor and uid. | No session: `cotal login` refuses before any exchange. A managed row, the plain `agent` connection and every other view get no issuance and stay on the legacy rail, so `run-start` refuses as today. |
+| P1 | The authority comes from a live interactive grant or an eligible managed seat. | Only the callout issues the existing `manager-caller` view after the unchanged instance gate. Interactive exchange retains its live IdP path. Managed exchange proves the actor secret, and the callout requires `run` in both the child's current persona scope and a fresh direct-parent grant of the same owner. Evidence is the signed ceiling with the child's own owner, actor and uid as its single source. | No session: `cotal login` refuses. A managed seat missing either input keeps the ordinary legacy mint and `run-start` refuses with `permission-denied`: the broker refuses a publish without signed `run`, and the manager returns `ai.cotal.ep.unbound-caller-authority` when signed `run` lacks an eligible parent. The plain `agent` connection and other views are not issued. |
 | P2 | No minted static credential and no legacy bypass. | The admission still resolves an issuance through `admitRemoteRun`; nothing adds a static `DEV_OWNER` credential or a signer on the participant. `RunHosting.admit` keeps its rail check. | A legacy `run-start` anywhere, and a legacy `run-resume` or principal `run-answer` on a participant manager, is `permission-denied` with `ai.cotal.ep.unbound-caller-authority`. A generation with no evidence, or a non-`active` one, refuses at resolution. |
 | P3 | The run stays attributable to the user across answers and restart resume. | The admission's `caller` is the issued triple with its generation. The driver and mediator are pinned to `admission.caller.owner` (`manager-authority.ts:470`). An answer's `by` is the served caller's principal (`manager.ts:3247`), and the host checks that caller's owner. A reconcile resumes under the original admission. | A resume never re-admits (`run-hosting.ts:327-331`), so a resuming caller cannot change the owner or widen the ceiling. |
 | P4 | A second user cannot start on, answer, resume or take over the run. | The issued connection cannot reach another owner's manager at all: `authorizeManagerCaller` refuses a `manager-caller` view for an instance whose serve gate is not the caller's owner's (`service.ts:594`). Behind that, start: `admitRemoteRun` requires the caller's owner to be the manager's registered owner. Resume: `authorizeServedRunCaller` requires the admission's owner. Answer and amend: it requires the registered owner, the only user owner a run on that manager can have. Takeover by another manager: `authorizeRemoteRunAttempt` already refuses an admission from another instance (`manager-authority.ts:458-459`). | `a participant manager admits runs only for its registered owner`; `run-resume and run-answer on this manager are open only to the owner its runs were admitted for`; the existing `run <runId> was admitted on another manager instance or endpoint`. |
@@ -428,10 +436,16 @@ Neither section says who may issue a user-auth connection, what source a user is
 whose runs a participant manager hosts, or who may resume or answer a user's run. SPEC.md gains two
 paragraphs. The first sits in §13.15 after **Resolution**:
 
-> **User-auth issuance.** On a user-auth space the issuer of an interactive actor's `manager-caller`
+> **User-auth issuance.** On a user-auth space the issuer of an eligible actor's `manager-caller`
 > view connection is the auth service, at its callout, and the material is the user JWT the callout
-> returns. The callout issues that view when the bearer's actor-ledger row is an interactive row, and
-> the issued view carries the per-key accepted-row read beside its instance-pinned rows. It chooses
+> returns. Interactive rows retain their issuance path. A managed-agent row is eligible only when its
+> current persona-derived scope contains `run` AND a fresh read of its direct parent principal's row
+> finds `run` in that same owner's current grant. An admin parent's containment bypass is not a `run`
+> grant. A missing, malformed, foreign-owner or no-run parent grants no issuance. The existing
+> `authorizeManagerCaller` instance gate and `VIEW_REQUIRED_SCOPE` remain unchanged. No request kind,
+> view, signer or authority door is added, and ordinary command grants still derive from signed
+> `act.scope`, contained against the current child row. The issued view carries the per-key
+> accepted-row read beside its instance-pinned rows. It chooses
 > the generation, persists evidence whose permissions are the set it signs and whose one source is
 > that row, `{ space, bucket: "cotal_actors_<space>", key: "actor.<owner>.<actor>.<lifecycleUid>" }`,
 > releases it, and writes the accepted row, all before it returns the JWT. The accepted token is the
@@ -443,8 +457,13 @@ paragraphs. The first sits in §13.15 after **Resolution**:
 > refuses it as a coordinate it cannot attest. A reconnect under the same nonce finds the existing
 > accepted row. When the row names the same triple and the ceiling being minted is byte-identical to
 > the recorded evidence, the callout renews that generation; otherwise it refuses the connect, and the
-> client adopts a fresh generation only through a new connection under a new nonce. A managed row's
-> view, the `agent` profile and every other view keep the legacy rail.
+> client adopts a fresh generation only through a new connection under a new nonce. A managed
+> issuance's single source is the child's own actor row and lifecycle, not its parent. A managed seat
+> missing either eligibility predicate keeps the legacy manager-caller mint for ordinary commands,
+> and `run-start` refuses with `permission-denied`. Without a signed `run` capability the broker
+> refuses the publish. With signed `run` but no eligible parent, the manager returns
+> `ai.cotal.ep.unbound-caller-authority`. Failed
+> issuance never retries on the legacy rail. The `agent` profile and every other view keep that rail.
 
 The second sits in §14.8 after **Resume, fork, local, restore**:
 
@@ -470,13 +489,15 @@ The second sits in §14.8 after **Resume, fork, local, restore**:
 > no subject and continues under the original admission. This revision hosts no user-auth run on the
 > signer-holding host's own manager.
 
-No existing sentence is reworded.
+The managed-seat extension updates the eligibility and legacy-rail clauses while preserving the
+interactive path.
 
 ## 7. Refusals
 
 | Input | Where | Result |
 |---|---|---|
-| `run-start` from a user connection that read no accepted row | CLI | refused locally, naming the missing row; no legacy-rail retry |
+| Managed seat without persona `run` or direct-parent `run` | callout, manager | ordinary legacy mint, then named broker `permission-denied` without signed `run`, or manager `ai.cotal.ep.unbound-caller-authority` without parent `run`; no added grant |
+| `run-start` from an eligible connection that read no accepted row | CLI | refused locally, naming the missing row; no legacy-rail retry |
 | A reconnect whose ceiling changed (row narrowed, scope removed) | callout | `confirm` refuses with `failed-precondition`; the connection fails and a new connection gets a new generation |
 | An accepted row under the connection's token naming another owner, actor or uid | callout, CLI | refused |
 | User B's `run-start` reaching user A's participant manager | issuing host | `permission-denied`, registered owner |
@@ -497,15 +518,15 @@ No existing sentence is reworded.
   or resume they send can be issued, because the manager's host call needs a fresh IdP token. The
   attempt already driving keeps its last-good driver credentials until a renewal fails, as it does
   today when the authority service is unavailable.
-- Each issued `manager-caller` connection, one per `cotal run` invocation, adds one evidence row, one
+- Each issued `manager-caller` connection adds one evidence row, one
   attempt row and one accepted row to stores that keep every message. Static control instruments
   already issue once per invocation (`connect.ts:441`), and this matches that rate.
 - The callout opens one issuer connection per issued connect, which adds latency to the callout's
   reply.
 - CLI and MCP revoke verbs remain follow-up. The authenticated issuing-host request and
   `RunHosting.revoke` callback are available as section 11 describes.
-- User-mode seats spawned by the run answer through the relay path on the legacy rail. Their
-  attribution rests on the managed row and the manager-held relay, as it does on a static mesh.
+- A user-mode seat with both eligibility predicates answers on its issued rail. Other seats retain
+  the pending-relay path on the legacy rail, attributed to their managed row and lifecycle.
 - A participant manager forwards the `run-start` subject it served, and the issuing host checks that
   the subject names a live issuance whose ceiling permits it and that a user caller is the manager's
   own owner, but it does not observe that this caller published it. A dishonest participant manager
@@ -532,6 +553,13 @@ A private probe, not a committed test, through shipped entrypoints under a fresh
 6. `cotal actor revoke` for A's `cli` row, then A's answer and resume: refused, source no longer live.
 7. A `run-start` that the probe publishes on the legacy rail under A's connection: refused as today.
 8. The signer-holding host's own manager still refuses user mode by name.
+
+The managed-seat extension is covered by `pnpm smoke:managed-run-issuance`, a committed 12-cell
+suite using the real auth service, broker, signerless Manager and persona-loaded enrollment.
+It covers interactive and managed start, answer and released-run resume, both eligibility inputs,
+fresh and invalid parent rows, signed-ceiling equality, nonce renewal, lifecycle invalidation and
+owner-confined run spawning. Each load-bearing mutation names its required red assertion in
+`implementations/auth/smoke/mutations/managed-run-issuance.json` and reruns the full suite after restore.
 
 ## 10. Owned agents
 
