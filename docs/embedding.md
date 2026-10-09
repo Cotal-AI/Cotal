@@ -248,8 +248,8 @@ registration. Pass its `[document, manifest]` pair as `contractArtifacts` to bot
 `remoteManagerClient.remoteManagerAuthorityRequest(state, actor, "activate", { registrationProof, contractArtifacts })`.
 The request builder takes each operation's coordinates as named fields of its last argument.
 The host still validates the artifact closure and current registration before activation.
-The namespace includes closed standing/run renewal, admission, maintenance, enrollment and
-retirement helpers. `publicIdentities(state)` returns the `identities` record every request
+The namespace includes closed standing/run renewal, admission, maintenance, enrollment,
+retirement and goal-index scan helpers. `publicIdentities(state)` returns the `identities` record every request
 carries: the five public ids, in the order the host echoes them. `remoteRunHosting` builds the four `runHosting` callbacks from the registration
 and the transport you supply for the host's run admission, run attempt and authority requests, so
 your manager sends the run requests the stock manager sends. The namespace provides no signer or

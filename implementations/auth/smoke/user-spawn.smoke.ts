@@ -1793,7 +1793,7 @@ try {
         return remote.remoteManagerAdminAuthorized(await authorityCall(r), r, OWNER); },
       enrollManagedAgent: async ({ target }) => { const r = remote.remoteManagedAgentEnrollmentRequest(state, "cli", proof, registered.processEpoch, target);
         return remote.remoteManagedAgentEnrollmentMaterial(await authorityCall(r), r); },
-      scanGoalIndex: async () => { const r: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest = { v: 1, kind: "manager-goal-index-scan", space: SPACE, actor: "cli", instanceId: state.instanceId, managerLifecycleUid: state.lifecycleUid, requestId: `scan${mintLifecycleUid()}`, registrationProof: proof, serveEpoch: registered.processEpoch, identities: Object.fromEntries(Object.entries(state.identities).map(([k, identity]) => [k, { id: identity.id }])) as import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest["identities"] };
+      scanGoalIndex: async () => { const r = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
         return remote.remoteManagerGoalIndexEntries(await authorityCall(r), r, OWNER); },
       mintSessionServing: async () => { throw new Error("unused fixture session serving"); },
       mintRetirementRequester: async () => { throw new Error("unused fixture retirement requester"); },

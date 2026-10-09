@@ -1,4 +1,4 @@
-import { mintLifecycleUid, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
+import type { RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
 import { Manager, managerClusterArtifacts, registerRemoteManagerAuthority, remoteManagerClient as r, type ManagerOptions } from "../dist/index.js";
 import { remoteManagerRegistrationProof } from "../../auth/src/authority-client.js";
 
@@ -33,7 +33,7 @@ export async function nativeRemoteManager(args: {
     validateRetainedAgent: async (a) => { const q = r.remoteRetainedAgentValidationRequest(state, "cli", proof, epoch, a, a.actorToken, a.sentinelCreds); return r.retainedAgentAuthority(await args.call(q), q); },
     enrollManagedAgent: async ({ target }) => { const q = r.remoteManagedAgentEnrollmentRequest(state, "cli", proof, epoch, target); return r.remoteManagedAgentEnrollmentMaterial(await args.call(q), q); },
     authorizeAdmin: async (caller) => { const q = r.remoteManagerAdminAuthorizationRequest(state, "cli", proof, epoch, caller); return r.remoteManagerAdminAuthorized(await args.call(q), q, owner); },
-    scanGoalIndex: async () => { const q = { v: 1 as const, kind: "manager-goal-index-scan" as const, space: args.space, actor: "cli", instanceId: state.instanceId, managerLifecycleUid: state.lifecycleUid, requestId: `scan${mintLifecycleUid()}`, registrationProof: proof, serveEpoch: epoch, identities: r.publicIdentities(state) }; return r.remoteManagerGoalIndexEntries(await args.call(q), q, owner); },
+    scanGoalIndex: async () => { const q = r.remoteManagerGoalIndexScanRequest(state, "cli", proof, epoch); return r.remoteManagerGoalIndexEntries(await args.call(q), q, owner); },
     ...(args.execution === "runtime" ? { runHosting: r.remoteRunHosting({ state, owner, registrationProof: proof, accountPublicKey: standing.accountPublicKey, processEpoch: epoch, requestRunAdmission: args.call, requestRunAttempt: args.call, requestRunRevoke: args.call, call: args.call }) } : {}),
   };
   const manager = new Manager({ space: args.space, servers: args.servers, workspaceRoot: args.root, execution: args.execution,

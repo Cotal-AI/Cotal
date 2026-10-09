@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   credsClaims,
-  mintLifecycleUid,
   remoteManagerActors,
   remoteManagerRegistrationProof,
   type RemoteManagerAuthorityMaterial,
@@ -42,6 +41,7 @@ const {
   remoteManagedAgentEnrollmentRequest,
   remoteManagerAuthorityRequest,
   remoteManagerGoalIndexEntries,
+  remoteManagerGoalIndexScanRequest,
   remoteRunHosting,
   remoteStandingBundleRenewal,
 } = publicAuthority ? publicApi!.remoteManagerClient : sourceAuthority;
@@ -151,20 +151,7 @@ const managerOpts = (runtime: string, pooled: boolean): ManagerOptions => ({
     validateRetainedAgent: async () => { throw new Error("validateRetainedAgent unsupported in signerless continuity smoke"); },
     scanGoalIndex: async () => {
       const { proof, epoch } = runBase();
-      const request = {
-        v: 1 as const,
-        kind: "manager-goal-index-scan" as const,
-        space,
-        actor: "cli",
-        instanceId: mgrIdentity.instanceId,
-        managerLifecycleUid: mgrIdentity.lifecycleUid,
-        requestId: `scan${mintLifecycleUid()}`,
-        registrationProof: proof,
-        serveEpoch: epoch,
-        identities: Object.fromEntries(
-          Object.entries(mgrIdentity.identities).map(([k, id]) => [k, { id: id.id }]),
-        ) as never,
-      };
+      const request = remoteManagerGoalIndexScanRequest(mgrIdentity, "cli", proof, epoch);
       const res = (await postHttp(request)) as never;
       return remoteManagerGoalIndexEntries(res, request, owner);
     },

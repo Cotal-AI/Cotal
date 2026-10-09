@@ -190,8 +190,7 @@ try {
     prepareAgentRetirement: async () => { throw new Error("this suite retires no managed process"); },
     validateRetainedAgent: async () => { throw new Error("this fresh manager retains no seat"); },
     scanGoalIndex: async () => {
-      const request = { v: 1 as const, kind: "manager-goal-index-scan" as const, space: a.space, actor: "cli", instanceId: state.instanceId,
-        managerLifecycleUid: state.lifecycleUid, requestId: `scan${mintLifecycleUid()}`, registrationProof: proof, serveEpoch: registered.processEpoch, identities: remote.publicIdentities(state) };
+      const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
       return remote.remoteManagerGoalIndexEntries(await post("/manager-service-authority", { idpToken, request }), request, owner);
     },
     authorizeAdmin: async (caller) => {
