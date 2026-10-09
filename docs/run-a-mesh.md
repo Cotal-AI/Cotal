@@ -477,7 +477,10 @@ Each root keeps its own in `.cotal/space.<hex>/`, so `cotal supervise` or `cotal
 the root you copied the folder to starts an instance of its own. A root last run by an older Cotal
 still holds them in `.cotal/auth`, as `manager-instance.<hex>.json`, `manager-siblings.<hex>.json`
 and `space.<hex>/.cotal/auth/auth-instance.<hex>.json`. Delete those files from a copy of such a
-folder before the first `cotal supervise` or `cotal up` there.
+folder before the first `cotal supervise` or `cotal up` there. On the root itself, the first start
+moves each record to `.cotal/space.<hex>/`. It refuses and keeps both entries when either place
+holds a symlink or anything else that is not a regular file, or when the two places hold different
+records.
 
 **Know what you are copying.** For an authenticated mesh that folder carries the space's account
 **signing seed**, which is the authority to mint any identity in the space. A machine holding it

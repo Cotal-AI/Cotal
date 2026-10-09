@@ -1,4 +1,4 @@
-import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, statSync, unlinkSync, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
 import {
@@ -402,7 +402,7 @@ function instanceIdentityOf(raw: unknown): ManagerInstanceIdentity | undefined {
 function rootIdentityFile(root: string, space: string, name: string, ...legacy: string[]): string {
   const path = join(root, ".cotal", spaceSegment(space), name);
   for (const from of legacy) {
-    if (!hasAuthRecord(from, "an identity record")) continue;
+    if (!authRecordStat(from, "an identity record")) continue;
     mkSecretDir(dirname(path));
     // A link, not a rename: it never replaces a record already at `path`, and a concurrent first
     // touch that linked first is the same inode, which tells it apart from a second record.
@@ -410,9 +410,11 @@ function rootIdentityFile(root: string, space: string, name: string, ...legacy: 
       const code = (e as NodeJS.ErrnoException).code;
       if (code === "ENOENT") continue;
       if (code !== "EEXIST") throw e;
-      const old = statSync(from, { throwIfNoEntry: false });
-      const current = statSync(path);
-      if (old && (old.ino !== current.ino || old.dev !== current.dev))
+      // lstat, as the readers do: stat would follow a link on either side to the other's inode,
+      // pass the two entries as one record and remove the only regular copy.
+      const old = authRecordStat(from, "an identity record");
+      const current = authRecordStat(path, "an identity record");
+      if (old && (!current || old.ino !== current.ino || old.dev !== current.dev))
         throw new Error(`both ${path} and the older ${from} hold an identity record for space "${space}" - refusing to guess which belongs to this root. Remove the one that did not come from this root, then retry.`);
     }
     rmSync(from, { force: true });
@@ -710,30 +712,30 @@ export function advanceSeatWriterGeneration(
   }
 }
 
-/** Whether a trust path holds an auth-material record, lstat-disciplined:
+/** The lstat of a trust path that holds an auth-material record, or undefined when it is absent:
  *   - a non-regular entry (symlink, directory, fifo) is REFUSED, never followed — nothing in this
  *     module writes one, so following it would trust material this module cannot vouch for (and
  *     enumeration counts the same entry as corrupt: one answer everywhere);
  *   - only ENOENT means absent; any other errno is uncertainty about trust material and throws. */
-function hasAuthRecord(f: string, what: string): boolean {
+function authRecordStat(f: string, what: string): Stats | undefined {
   let st;
   try {
     st = lstatSync(f);
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw e;
   }
   if (!st.isFile())
     throw new Error(`${f} is not a regular file - refusing to read ${what} through it; remove or restore the real record`);
-  return true;
+  return st;
 }
 
 /** Read one auth-material record: the file's raw text, or undefined when absent. Shared by every
- *  load/save below so the readers cannot disagree: the entry is checked by {@link hasAuthRecord},
+ *  load/save below so the readers cannot disagree: the entry is checked by {@link authRecordStat},
  *  and the JSON parse is wrapped so a truncated/hand-edited record surfaces as one legible sentence
  *  naming the file, never a raw SyntaxError deep in a caller. */
 function readAuthRecord<T>(f: string, what: string): T | undefined {
-  if (!hasAuthRecord(f, what)) return undefined;
+  if (!authRecordStat(f, what)) return undefined;
   try {
     return JSON.parse(readFileSync(f, "utf8")) as T;
   } catch (e) {
