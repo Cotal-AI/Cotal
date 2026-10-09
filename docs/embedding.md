@@ -447,6 +447,9 @@ keeps its existing operation identity and remains compatible. The `retireLifecyc
 recomputes the managed id from its broker-pinned target before any gate, head, intent, or barrier
 access, so mint-time validation is not the terminal boundary. A failure keeps
 the alias held. This does not expose the auth barrier or give the participant signer authority.
+Before prepare, the manager removes the agent's actor token, sentinel credentials and health file
+from its own `secretStore` and disk, because no host step can. It attempts every removal, and a
+failed one keeps the alias held and skips the terminal rail.
 
 If the participant disappears after prepare, the host finishes the retirement itself on the auth
 service's loopback face: `POST /managed-lifecycle/retire` (exported as `MANAGED_RETIRE_PATH` from

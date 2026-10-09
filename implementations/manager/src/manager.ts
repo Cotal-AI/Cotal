@@ -4515,17 +4515,31 @@ export class Manager {
       // state until the host decides terminal retirement, never map deprovisioning to suspension.
       const target = parsePrincipalKey(a.id);
       if (!target) throw new Error(`hosted retirement cannot derive the managed principal ${a.id}`);
-      await this.remoteAuthority.prepareAgentRetirement({
-        target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
-        opId: retireOpId(a.lifecycleUid),
-      });
-      // A delegated seat's fenced close runs only now, after the grant is revoked so its child can
-      // obtain no fresh bearer, and before the barrier, which must never run ahead of a create that
-      // could still land. A close that cannot prove that yet throws here and keeps the alias held.
-      if (a.delegatedHandle) {
-        a.delegatedHandle.stop({ graceful: true });
-        await this.awaitHandleExit(a.delegatedHandle);
+      // The host releases the grant and the broker footprint, but no host step can reach the secret
+      // family on this participant. It goes first for the local arm's reason: an actor token on disk
+      // is a usable identity the departed agent no longer needs.
+      const unshredded: string[] = [];
+      await this.shredUserSecrets(unshredded, a.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, a.name, a.lifecycleUid));
+      const shredFailure = unshredded.length ? `could not shred "${a.name}": ${unshredded.join("; ")}` : undefined;
+      try {
+        await this.remoteAuthority.prepareAgentRetirement({
+          target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
+          opId: retireOpId(a.lifecycleUid),
+        });
+        // A delegated seat's fenced close runs only now, after the grant is revoked so its child can
+        // obtain no fresh bearer, and before the barrier, which must never run ahead of a create that
+        // could still land. A close that cannot prove that yet throws here and keeps the alias held.
+        if (a.delegatedHandle) {
+          a.delegatedHandle.stop({ graceful: true });
+          await this.awaitHandleExit(a.delegatedHandle);
+        }
+      } catch (e) {
+        if (shredFailure) throw new Error(`${rejectionText(e)}; ${shredFailure}`, { cause: e });
+        throw e;
       }
+      // As on the local arm, a family that could not be removed keeps the name held: the terminal
+      // retirement would free it while the credentials stay on disk.
+      if (shredFailure) throw new Error(shredFailure);
       await this.requestRetirement(a);
       return;
     }
@@ -6112,11 +6126,14 @@ export class Manager {
           try {
             await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple: { owner: prep.owner, actor: name, uid: lifecycleUid } });
           } catch (e) {
-            // A refused accept rolls the enrollment back: the host's grant through `provisioned`, and
-            // this participant's secret family here, because the hosted retirement leaves it on disk.
-            const unshredded: string[] = [];
-            await this.shredUserSecrets(unshredded, prep.files);
-            if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${unshredded.join("; ")}`, { cause: e });
+            // A refused accept rolls the enrollment back through `provisioned`. A delegated seat's
+            // teardown waits for its user's retirement intent and removes nothing, so its secret
+            // family is shredded here.
+            if (opts.delegatedIntent) {
+              const unshredded: string[] = [];
+              await this.shredUserSecrets(unshredded, prep.files);
+              if (unshredded.length) throw new Error(`${rejectionText(e)}; cleanup failed: ${unshredded.join("; ")}`, { cause: e });
+            }
             throw e;
           }
         }
