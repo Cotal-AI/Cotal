@@ -90,6 +90,33 @@
       "expectRed": "run-start refuses natively before any allocation",
       "cell": "run-start refuses natively before any allocation",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "stop closes before accepted standing renewal drains",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.remoteBundleRenewal?.catch(() => {});\n",
+      "replace": "",
+      "expectRed": "stop waits for already accepted host-issued renewal",
+      "cell": "stop waits for already accepted host-issued renewal",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "last duty bypasses native broker preflight",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {\n",
+      "replace": "      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {\n        if (name === \"sessionLedger\") continue;\n",
+      "expectRed": "native broker refuses invalid last-duty signature before family adoption",
+      "cell": "native broker refuses invalid last-duty signature before family adoption",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "own inherited goal terminal settle is skipped",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (remaining <= 0) { await settle(); return; }",
+      "replace": "    if (remaining <= 0) { return; }",
+      "expectRed": "noexec recovery reports actual inherited acceptance uncertain, never fabricated success",
+      "cell": "noexec recovery reports actual inherited acceptance uncertain, never fabricated success",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }

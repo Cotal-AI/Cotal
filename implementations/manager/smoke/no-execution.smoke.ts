@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, resolveService, invokeCommand, withIssuerSession, mintGeneration, mintAcceptedToken, registry, credsClaims, actionContext, recordGoalIndex, readGoalIndex, recordAtomicKey, RECORD_KINDS, recordsKvStreamName, admissionBucket, type Connector, type RemoteManagerAuthorityRequest, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
+import { mintCreds, mintLifecycleUid, newIdentity, setupSpaceStreams, standaloneConnectOpts, resolveService, invokeCommand, withIssuerSession, mintGeneration, mintAcceptedToken, registry, credsClaims, actionContext, recordGoalIndex, readGoalIndex, bindGoal, createGoal, recordAtomicKey, RECORD_KINDS, recordsKvStreamName, admissionBucket, type Connector, type RemoteManagerAuthorityRequest, type RemoteManagerAuthorityMaterial } from "@cotal-ai/core";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { spaceKey } from "@cotal-ai/workspace";
 import { Manager, remoteManagerClient as client, registerRemoteManagerAuthority, managerClusterArtifacts, type ManagerOptions } from "../dist/index.js";
@@ -33,6 +33,10 @@ let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let witness: Awaited<ReturnType<typeof connect>> | undefined;
 let retainedWriter: Awaited<ReturnType<typeof connect>> | undefined;
 let latestFamily: { goalWriter: string } | undefined;
+let holdRenewal: { entered: () => void; release: Promise<void> } | undefined;
+let corruptCandidate = true, rejectedCandidate = false;
+const originalError = console.error;
+console.error = (...args: unknown[]) => { if (args.some((arg) => typeof arg === "string" && arg.includes("remote manager all-duty renewal:") && /Authorization|signature|authentication/i.test(arg))) rejectedCandidate = true; originalError(...args); };
 let calls = 0, renewals = 0, scans = 0;
 let connectorBuilds = 0;
 const connector: Connector = { kind: "connector", name: "noexec-witness", requires: ["node"], buildLaunch: () => { connectorBuilds++; return { command: process.execPath, args: ["-e", "process.exit(0)"], env: {} }; } };
@@ -64,7 +68,17 @@ try {
     const proof = client.currentRegistrationProof(active), supervisorCreds = client.materialCredential(prepared, "supervisor", state.identities.supervisor);
     const standing = client.remoteStandingBundleRenewal({ state, owner: prepared.owner, registrationProof: proof, supervisorCreds, call: (r: RemoteManagerAuthorityRequest) => door(r) as Promise<RemoteManagerAuthorityMaterial> });
     const remote: NonNullable<ManagerOptions["remoteAuthority"]> = {
-      ...standing, renewStandingBundle: async (epoch) => { const family = await standing.renewStandingBundle(epoch); latestFamily = family; return family; }, owner: prepared.owner, actors: active.actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
+      ...standing, renewStandingBundle: async (epoch) => {
+        const family = await standing.renewStandingBundle(epoch); latestFamily = family;
+        if (corruptCandidate) {
+          corruptCandidate = false;
+          // Alter only the signature of the genuine last duty after the stock authority parser.
+          // Account, nkey and expiry claims remain exact. The native broker must reject its dial.
+          family.sessionLedger = family.sessionLedger.replace(/(eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.)([A-Za-z0-9_-])/, (_whole, prefix: string, char: string) => `${prefix}${char === "A" ? "B" : "A"}`);
+        }
+        const hold = holdRenewal; if (hold) { hold.entered(); await hold.release; }
+        return family;
+      }, owner: prepared.owner, actors: active.actors, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, identities: state.identities,
       supervisorCreds, executorCreds: client.materialCredential(prepared, "executor", state.identities.executor), serveCreds: client.materialCredential(active, "serve", state.identities.serve), goalWriterCreds: client.materialCredential(active, "goalWriter", state.identities.goalWriter), sessionLedgerCreds: client.materialCredential(active, "sessionLedger", state.identities.sessionLedger), serveGrant: registered.serveGrant,
       renewExecutor: async () => client.materialCredential(await door(client.remoteManagerAuthorityRequest(state, "cli", "renew", { registrationProof: proof })), "executor", state.identities.executor),
       mintSessionServing: async (args) => client.materialCredential(await door(client.remoteManagerAuthorityRequest(state, "cli", "session", { registrationProof: remoteManagerRegistrationProof(prepared.owner, state), session: { id: args.identity.id, endpoint: args.endpoint, sessionId: args.sessionId, epoch: args.epoch, exp: args.exp } })), "sessionServing", args.identity),
@@ -120,9 +134,20 @@ try {
   check("served refusals bind no goals/admissions/keys or broker resources", await resources() === beforeResources && connectorBuilds === 0);
   for (const { command, reply } of refusals) check(`${command} refuses natively before any allocation`, !reply.ok && reply.error?.code === "unimplemented" && /execution: none/.test(reply.error.message));
   check("auth-service real attributed readiness sees actual noexec status", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
+  const originalConnections = await nativeAccountConnections(a.auth, fx.servers);
+  const originalStanding = originalConnections.filter((row) => Object.entries(state.identities).some(([duty, identity]) => duty !== "executor" && identity.id === row.user));
+  check("native rejection witness begins with four actual persistent duties", originalStanding.length === 4);
   const renewalBefore = renewals;
   for (let i = 0; i < 170 && renewals === renewalBefore; i++) await new Promise((r) => setTimeout(r, 100));
   check("real noexec timer asks host to renew the all-five family", renewals > renewalBefore);
+  for (let i = 0; i < 30 && !rejectedCandidate; i++) await new Promise((r) => setTimeout(r, 10));
+  check("native broker refuses invalid last-duty signature before family adoption", rejectedCandidate);
+  const refusedConnections = await nativeAccountConnections(a.auth, fx.servers);
+  check("invalid family leaves all four last-good native connection IDs untouched", originalStanding.every((held) => refusedConnections.some((row) => row.user === held.user && row.cid === held.cid)));
+  check("actual status stays readable after rejected renewal candidate", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
+  const rejectedRenewals = renewals;
+  for (let i = 0; i < 170 && renewals === rejectedRenewals; i++) await new Promise((r) => setTimeout(r, 100));
+  check("next natural pass obtains another genuine complete family", renewals > rejectedRenewals);
   // The request counter precedes adoption. Wait for the authentic status rail after renewed dials.
   await new Promise((r) => setTimeout(r, 500));
   check("native readiness remains real after all-duty candidate preflight/adoption", (await service!.platformControlReadiness!(state.instanceId)).reply.ok);
@@ -152,6 +177,15 @@ try {
     const entry = await ctx.kv.get(key); assert.ok(entry);
     await ctx.kv.update(key, new TextEncoder().encode(JSON.stringify({ ...before, iid: mintLifecycleUid() })), entry.revision);
   }
+  const acceptedRef = { endpoint: "manager", caller, goalId: mintLifecycleUid() };
+  const siblingRef = { endpoint: "manager", caller, goalId: mintLifecycleUid() };
+  const unboundRef = { endpoint: "manager", caller, goalId: mintLifecycleUid() };
+  for (const [ref, iid] of [[acceptedRef, state.instanceId], [siblingRef, mintLifecycleUid()]] as const) {
+    await recordGoalIndex(ctx, ref, iid);
+    await bindGoal(ctx, ref, `native-${ref.goalId}`);
+    await createGoal(ctx, ref, { fingerprint: `native-${ref.goalId}`, command: "spawn", caller: { id: `${caller.owner}.${caller.actor}`, lifecycleUid: caller.uid }, acceptedEpoch: initial.epoch, requestId: ref.goalId, sourceSeq: 0, acceptedAt: Date.now() - 2000, readinessDeadlineMs: 1000 });
+  }
+  await recordGoalIndex(ctx, unboundRef, state.instanceId);
   await retainedWriter.close(); retainedWriter = undefined;
   writeFileSync(capabilityPath, "{broken", { mode: 0o600 });
   await refusesBoot(initial.opts, /does not parse/, "malformed execution capability refuses boot");
@@ -161,9 +195,33 @@ try {
   const afterClose = renewals;
   const successor = await start();
   check("native cold restart retains immutable instance and advances epoch", successor.epoch > initial.epoch);
+  callerNc = await connect({ servers: fx.servers, ...standaloneConnectOpts({ creds, tls: false }) });
+  const successorService = await resolveService(callerNc, a.space, "manager", caller, { instanceId: state.instanceId });
+  const result = async (goalId: string) => (await invokeCommand(callerNc!, a.space, successorService, "goal-result", { goalId }, {})).reply;
+  const recovered = await result(acceptedRef.goalId);
+  const fact = recovered.ok ? (recovered.data as any).result : undefined;
+  check("noexec recovery reports actual inherited acceptance uncertain, never fabricated success", fact?.state === "uncertain" && fact.fingerprint === `native-${acceptedRef.goalId}` && fact.committer.instanceId === state.instanceId && fact.committer.epoch === successor.epoch);
+  const sibling = await result(siblingRef.goalId), unbound = await result(unboundRef.goalId);
+  check("noexec recovery leaves foreign sibling acceptance and unbound pointer without terminal", sibling.ok && !(sibling.data as any).result && unbound.ok && !(unbound.data as any).result);
+  await callerNc.close(); callerNc = undefined;
+  let entered!: () => void, release!: () => void;
+  const acceptedRenewal = new Promise<void>((resolve) => { entered = resolve; });
+  const releaseRenewal = new Promise<void>((resolve) => { release = resolve; });
+  holdRenewal = { entered, release: releaseRenewal };
   for (let i = 0; i < 170 && renewals === afterClose; i++) await new Promise((r) => setTimeout(r, 100));
   check("successor again renews all duties through host issuer", renewals > afterClose);
-  await manager!.stop(); manager = undefined;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([acceptedRenewal, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new Error("host-issued renewal acceptance timed out")), 5000); })]).finally(() => clearTimeout(deadline));
+  let stopped = false;
+  const stopping = manager!.stop().then(() => { stopped = true; });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    check("stop waits for already accepted host-issued renewal", !stopped);
+    const held = await nativeAccountConnections(a.auth, fx.servers);
+    check("stop does not close standing broker duties ahead of accepted renewal", Object.entries(state.identities).filter(([duty]) => duty !== "executor").every(([, identity]) => held.some((row) => row.user === identity.id)));
+  } finally { holdRenewal = undefined; release(); await stopping; manager = undefined; }
+  const finalConnections = await nativeAccountConnections(a.auth, fx.servers);
+  check("accepted renewal stop leaves no real standing connection", finalConnections.every((row) => !Object.values(state.identities).some((identity) => identity.id === row.user)));
   rmSync(capabilityPath);
   await refusesBoot(successor.opts, /existing unclassified manager instance/, "unclassified later epoch refuses none boot");
   check("unclassified later epoch writes no capability or execution state", !existsSync(capabilityPath) && connectorBuilds === 0);
@@ -171,4 +229,4 @@ try {
   await service!.close();
   check("authority close ends every real owned connection", (await service!.closed).connections.every((c) => c.ended));
   console.log(`no-execution native: ${passed} assertions passed`); emitSentinel({ passed, failed: 0 });
-} finally { await callerNc?.close(); if (managerStarted) await manager?.stop(); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }
+} finally { console.error = originalError; await callerNc?.close(); if (managerStarted) await manager?.stop(); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }
