@@ -401,7 +401,8 @@ export async function startDeliveryService(inputs: HostedContextInputs): Promise
       close: started.close,
     };
   } catch (error) {
-    await releaseOnStartupFailure?.();
+    // The start-up fault is the report; a row the release left behind is the bucket TTL's to expire.
+    await releaseOnStartupFailure?.().catch((e: Error) => console.error(`! ${e.message}`));
     throw error;
   }
 }
@@ -758,27 +759,34 @@ async function runStartedDelivery(
     unrecordPid?.();
     closePromise = (async () => {
       try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
+      // `releaseDeliveryLease` swallows a delete that did not commit, so the row the broker holds
+      // afterwards is the verdict: while one is there, a successor is refused.
+      let left: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
       try {
         const own = await ep.readDeliveryLeaseEntry(shard);
         if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-      } catch { /* broker may be gone - the bucket TTL is the crash-safe release authority */ }
-      try { await membership?.stop(); } catch { /* broker may be gone */ }
-      try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
-      try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
-      try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
-      try { await ep.stop(); } catch { /* broker may be gone */ }
+        left = await ep.readDeliveryLeaseEntry(shard);
+      } catch (e) {
+        throw new Error(`delivery: the lease release for shard ${shard} could not be confirmed (${(e as Error).message}); the bucket TTL expires a row left behind`, { cause: e });
+      } finally {
+        try { await membership?.stop(); } catch { /* broker may be gone */ }
+        try { await timerWriter?.handle.stop(); } catch { /* broker may be gone */ }
+        try { await Promise.race([timerWriter?.nc.drain(), new Promise((r) => setTimeout(r, 1000))]); } catch { /* broker may be gone */ }
+        try { await timerWriterAttempt; } catch { /* startup or broker fault */ }
+        try { await ep.stop(); } catch { /* broker may be gone */ }
+      }
+      if (left !== undefined)
+        throw new Error(`delivery: the lease for shard ${shard} is still held by ${ep.ownsDeliveryLease(left.info) ? "this instance" : left.info.holder} after close`);
     })();
     return closePromise;
   };
   publishReleaser(close);
   stopHosted = (cause) => {
     unavailable = `delivery context stopped (code 1): ${cause}`;
-    void close();
+    // A later close() returns this same promise, so its failure still reaches the host.
+    close().catch(() => {});
   };
-  if (hostedStartupFailure !== undefined) {
-    await close();
-    throw hostedStartupFailure;
-  }
+  if (hostedStartupFailure !== undefined) throw hostedStartupFailure;
   // A START-UP FAILURE AFTER THE ACQUIRE MUST ALSO GIVE THE SHARD BACK. Between this point and the
   // handler swap far below, a throw would otherwise propagate out of `runDelivery` with the row
   // still claiming the shard, stranding it for the bucket TTL exactly as an unhandled signal did -
@@ -870,10 +878,7 @@ async function runStartedDelivery(
     if (hosted !== undefined) throw error;
     /* CLI: the renew loop's CAS failure will exit us if the lease was lost. */
   }
-  if (hostedStartupFailure !== undefined) {
-    await close();
-    throw hostedStartupFailure;
-  }
+  if (hostedStartupFailure !== undefined) throw hostedStartupFailure;
   console.log(`✓ delivery daemon up (space ${space}${shards > 1 ? `, shard ${shard}/${shards}` : ""}) — stop with: cotal down`);
 
   // Broker-sourced graph membership: a SEPARATE module on its OWN connections (system-account CONNZ
@@ -899,7 +904,7 @@ async function runStartedDelivery(
   // A store read can finish after a startup health fault closed the endpoint. Dispose the feed
   // it just returned before rejecting; it did not exist when the original close ran.
   if (hostedStartupFailure !== undefined) {
-    try { await membership?.stop(); } finally { await close(); }
+    await membership?.stop();
     throw hostedStartupFailure;
   }
 
@@ -946,7 +951,7 @@ async function runStartedDelivery(
   const shutdown = (code: number, cause?: string): void => {
     if (hosted !== undefined) {
       unavailable = cause ? `delivery context stopped (code ${code}): ${cause}` : `delivery context stopped (code ${code})`;
-      void close();
+      close().catch(() => {}); // as in stopHosted, the host's own close() reports it
       return;
     }
     if (stopping) return;
@@ -1213,7 +1218,6 @@ async function runStartedDelivery(
  });
   if (hosted !== undefined && stopping) {
     stopLeaseWatch?.();
-    await close();
     throw hostedStartupFailure ?? new Error(unavailable ?? "delivery context stopped during startup");
   }
   startedUp = true;
