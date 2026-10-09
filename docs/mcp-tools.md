@@ -323,7 +323,7 @@ When you hold several assigned turns, pass `turn` with the exact goal id from th
 
 Use Cotal Lang to program multi-step coordination between agents: sequence work, run tasks in parallel, branch on results, wait for events, and request human decisions. Agents own their reasoning and conversations; the workflow specifies when they act and which outcomes determine the next step.
 
-Before writing a program, read cotal_docs pages `workflows` and `lang-card`. Hosted execution requires a running manager, the `run` capability, and static authentication with issued caller authority; open and user-auth meshes refuse hosted runs. `@cotal-ai/lang` provides validation and simulation separately; those are not verbs of this tool.
+Before writing a program, read cotal_docs pages `workflows` and `lang-card`. Hosted execution requires a running execution-capable manager, the `run` capability, and issued caller authority. A managed agent on a user-auth mesh uses its own bearer command and selected participant manager; both its current grant and its direct parent's current grant must allow `run`. Open meshes, unsupported local user-mode hosts and execution-free control managers refuse hosted runs. `@cotal-ai/lang` provides validation and simulation separately; those are not verbs of this tool.
 
 START: pass `verb: "start"` and the program text in `source`. Example: `{"verb":"start","source":"await sleep(\"1s\", { name: \"first-run\" });"}`. Optional `file` labels diagnostics only; it reads nothing from disk. The manager validates before recording the run and returns a runId. Acceptance is not completion.
 
@@ -336,7 +336,7 @@ RESUME: pass `verb: "resume"` and `runId` to continue a run from its recorded so
 Runs continue independently of your session and can recover after a manager restart. Their channel effects are bounded by the starting credential's issued channel scope. To report that your assigned agent turn is blocked or handed off, use `cotal_yield` instead.
 
 - **Side-effect:** starts, resumes, or answers a durable workflow run hosted by the manager; `status`/`ps` are read-only.
-- **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Open mode exposes the tool, but hosted runs require static authentication with issued caller authority; open and user-auth meshes refuse execution ([workflow setup](workflows.md#from-an-agent-session)).
+- **Available:** capability-gated: injected only for personas declaring `capabilities: [run]` (auth mode). Hosted runs require issued caller authority and an execution-capable manager. Managed user-auth agents use their own bearer command and selected participant manager, with current child and direct-parent `run` grants. Open meshes and execution-free control managers refuse execution ([workflow setup](workflows.md#from-an-agent-session)).
 - `start` sends the program source inline and returns the run id at once; the manager validates first and a refusal lists every problem with its line, cause, and fix. The run continues on the manager after your session ends and is taken back after a manager restart. `answer` records you as the answerer: the manager takes your name from your credential, and the tool sends none.
 
 | Argument | Type | Required | Meaning |

@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "implementations/manager/smoke/run-owned-agents.smoke.ts"
+  ],
+  "guard": "a real managed PTY child invokes cotal_run through its native bearer command and issued manager-caller path",
+  "command": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:manager-run-owned-agents",
+  "completionMarker": "RUN OWNED AGENTS SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/managed-connector-run.mutations.json",
+  "why": [
+    "The authentic Better Auth/broker/registered participant fixture enrolls and spawns a real PTY child. Its shipped cotal_run handler uses only the child's own native bearerCmd and manager pin.",
+    "The child imports the built public connector package, so mutant build and exact restored build/native execution are mandatory. No Manager/auth policy is mutated.",
+    "The same native fixture preserves all U4 persona cells, exercises released-run resume, and refuses missing child/current parent run, stale UID and wrong instance."
+  ],
+  "mutations": [
+    {
+      "name": "managed connector drops native manager-call bearer selection",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "            \"--manager-call\",\n            ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),",
+      "replace": "            ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),",
+      "expectRed": "MC-1 genuine managed PTY cotal_run start uses its own issued manager-call path",
+      "cell": "MC-1 genuine managed PTY cotal_run start uses its own issued manager-call path",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build && pnpm smoke:manager-run-owned-agents"
+    }
+  ]
+}
