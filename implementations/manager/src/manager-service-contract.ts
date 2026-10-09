@@ -112,6 +112,8 @@ const STATUS_OUTPUT_SCHEMA = {
             attempted: { type: "integer", minimum: 0 },
             succeeded: { type: "integer", minimum: 0 },
             failed: { type: "integer", minimum: 0 },
+            /** Why the sweep stopped before it planned any alias; `state` is then `failed`. */
+            error: { type: "string" },
           },
         },
         failures: {
@@ -162,6 +164,7 @@ export interface ManagerStaticReconciliationSweep {
   attempted: number;
   succeeded: number;
   failed: number;
+  error?: string;
 }
 
 export interface ManagerStaticReconciliationFailure {
@@ -1052,7 +1055,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  26 = `resolve-agent` answers which harness `spawn` resolves for a persona, so a detached resume
  *  carries its session for the connector the launch runs (#2899). A new served command cannot fold
- *  into 25. */
+ *  into 25.
+ *
+ *  27 = manager `status` adds `lastSweep.error`: why a static reconciliation sweep stopped before
+ *  it planned any alias. A changed output contract is a changed described surface even though the
+ *  command name is unchanged. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1070,7 +1077,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 26,
+    revision: 27,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

@@ -107,7 +107,7 @@ try {
 
   console.log("1. resolveService: describe + fetch + recompile the full surface (no hand-imported schemas)");
   const service = await resolveService(nc, space, MANAGER_ENDPOINT, caller, { deadlineMs: 10_000 });
-  check("execution status advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd", shipped.revision === 26 && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
+  check("execution status advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd", shipped.revision === 27 && service.commands.has("cancel") && service.commands.has("transcript-receive") && service.commands.has("goal-result") && service.commands.has("resolve-cwd"), shipped);
   check("the resolved surface matches the shipped cluster document", service.commands.size === shipped.commandCount && shipped.names.every((n) => service.commands.has(n)) && service.commands.has("status") && service.commands.has("spawn") && service.commands.has("despawn"), [...service.commands.keys()].sort());
   const statusCmd = service.commands.get("status")!;
   check("status resolved: untargeted, read capability, recompiled contracts carry closure digests",

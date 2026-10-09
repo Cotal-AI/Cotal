@@ -7575,6 +7575,7 @@ export class Manager {
       .map(({ owner: _owner, timer: _timer, flight: _flight, retryFlight: _retryFlight, ...item }) => ({ ...item }))
       .sort((a, b) => a.alias.localeCompare(b.alias));
     const state: ManagerStaticReconciliationStatus["state"] =
+      this.staticReconcileLastSweep?.error !== undefined ? "failed" :
       failures.some((item) => item.disposition === "retrying") ? "retrying" :
       failures.some((item) => item.disposition === "retry-scheduled") ? "retry-wait" :
       failures.some((item) => item.disposition === "refused" || item.disposition === "refused-foreign" || item.disposition === "retry-exhausted") ? "failed" :
@@ -9751,21 +9752,26 @@ export class Manager {
         failed: 0,
       };
       this.staticReconcileLastSweep = sweep;
-      const identity = newIdentity();
-      const creds = await mintCreds(this.auth, identity, "provisioner");
-      const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       const slotRows: StaticManagedSlotRow[] = [];
+      // A sweep that stops before it plans any alias records why on the sweep itself: otherwise
+      // `status` cannot tell it from a sweep that collected and found nothing.
       try {
-        const jsm = await jetstreamManager(nc);
-        const kvm = new Kvm(nc);
-        await ensureAuthorityStores(jsm, kvm, this.space);
-        const recordsKv = await kvm.open(recordsBucket(this.space));
-        for (const slot of await walkStaticSlots(recordsKv, DEV_OWNER)) slotRows.push(slot.row);
+        const identity = newIdentity();
+        const creds = await mintCreds(this.auth, identity, "provisioner");
+        const nc = await this.dial({ ...standaloneConnectOpts({ creds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
+        try {
+          const jsm = await jetstreamManager(nc);
+          const kvm = new Kvm(nc);
+          await ensureAuthorityStores(jsm, kvm, this.space);
+          const recordsKv = await kvm.open(recordsBucket(this.space));
+          for (const slot of await walkStaticSlots(recordsKv, DEV_OWNER)) slotRows.push(slot.row);
+        } finally {
+          await nc.drain().catch(() => nc.close());
+        }
       } catch (error) {
         sweep.completedAt = new Date().toISOString();
+        sweep.error = rejectionText(error);
         throw error;
-      } finally {
-        await nc.drain().catch(() => nc.close());
       }
       let retiredSlots = 0;
       let preservedForeign = 0;

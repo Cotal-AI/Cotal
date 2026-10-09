@@ -22,7 +22,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -771,9 +771,10 @@ const COMPONENT_EXIT: Record<ComponentVerdict, number> = {
 };
 
 /** Machine-readable, uncoloured component records — one line per component.  Human text follows
- * after the state token, but the token/exit contract deliberately stays simple for cron. */
+ * after the state token, but the token/exit contract deliberately stays simple for cron.  A fact can
+ * quote a reason another process or a stored row wrote; a newline in it would split the record. */
 function printComponent(component: ComponentHealth): void {
-  console.log(`  ${component.name.padEnd(16)} ${component.verdict}${component.facts.length ? ` · ${component.facts.join(" · ")}` : ""}`);
+  console.log(`  ${component.name.padEnd(16)} ${component.verdict}${component.facts.length ? ` · ${component.facts.map(oneLine).join(" · ")}` : ""}`);
 }
 
 function componentExit(components: readonly ComponentHealth[]): number {
@@ -918,20 +919,24 @@ async function staticServiceAuth(auth: SpaceAuth | undefined): Promise<{ creds?:
   };
 }
 
+/** The fields of a manager `status` answer that its component row reads. */
+type ManagerServiceStatus = {
+  instanceId?: unknown;
+  runtime?: unknown;
+  staticReconciliation?: {
+    state?: unknown;
+    lastSweep?: { error?: unknown };
+    failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
+  };
+};
+
 /** A service registration is the health target itself.  Calling its `status` command through a
  * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
  * rail; a one-shot standalone caller does. */
 async function managerServiceHealth(
   target: MeshTarget,
   auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } },
-): Promise<{
-  instanceId?: unknown;
-  runtime?: unknown;
-  staticReconciliation?: {
-    state?: unknown;
-    failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
-  };
-}> {
+): Promise<ManagerServiceStatus> {
   const nc = await dialerFor(target.server)({
     servers: target.server,
     ...standaloneConnectOpts(
@@ -948,14 +953,7 @@ async function managerServiceHealth(
     const response = await invokeRepairingSplit(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
       throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
-    return response.reply.data as {
-      instanceId?: unknown;
-      runtime?: unknown;
-      staticReconciliation?: {
-        state?: unknown;
-        failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
-      };
-    };
+    return response.reply.data as ManagerServiceStatus;
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -1018,6 +1016,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
       facts.push("static reconciliation not reported by this manager build");
     } else {
       facts.push(`static reconciliation ${String(reconcile.state ?? "unreported")}`);
+      if (typeof reconcile.lastSweep?.error === "string") facts.push(`static sweep error=${reconcile.lastSweep.error}`);
       for (const failure of reconcile.failures ?? []) {
         const next = typeof failure.nextRetryAt === "string" ? ` nextRetryAt=${failure.nextRetryAt}` : "";
         const remedy = typeof failure.remedy === "string" ? ` remedy=${failure.remedy}` : "";
