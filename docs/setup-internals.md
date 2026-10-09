@@ -129,9 +129,10 @@ fail-loud on collision.
 - **Mesh:** `startMeshDetached`
   ([`commands/up.ts`](../implementations/cli/src/commands/up.ts)) boots the background
   nats-server for `up --detach` and `up -f`, and writes `.cotal/nats.pid` and `.cotal/nats.log`.
-  Foreground `up` runs the broker as its own child. Both modes then run one spawn-to-ready
-  sequence: readiness, the broker version read, the server name check of a resumed or restored
-  listener, and `.cotal/nats.pid`. Then they run one listener-ready sequence: space setup,
+  Foreground `up` runs the broker as its own child. Both modes write `.cotal/nats.pid` as soon as
+  the broker spawns, so `cotal down` can stop it when `up` dies before the broker is ready. Both
+  then run one spawn-to-ready sequence: readiness, the broker version read and the server name
+  check of a resumed or restored listener. Then they run one listener-ready sequence: space setup,
   user-auth service, mesh record, transport policy, control plane. When the listener never
   answers, its broker is below the version floor, or the space setup of a fresh boot fails, `up`
   stops the listener before it exits. It sends SIGKILL when SIGTERM does not stop it and removes

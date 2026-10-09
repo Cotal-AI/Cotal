@@ -1188,8 +1188,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, natsArgs, { stdio: "inherit" });
   let activationFinished = !resumeAttempt;
-  if (!child.pid) throw new Error("nats-server spawned with no pid");
-  if (boundListener) await bindSpawnedListener(child, listenerStartedAt, boundListener);
+  await recordSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
@@ -2318,13 +2317,15 @@ async function startDeliveryWithBroker(
 }
 
 /**
- * Publish a maintenance-bound listener's pid and bind it to its attempt before anything waits on it,
- * so a launch that dies later leaves a journal naming the exact process for recovery to adopt or
- * retire. A bind that throws stops the listener. Both launch modes call it right after the spawn.
+ * Publish a spawned listener's pid, and bind a maintenance-bound one to its attempt, before anything
+ * waits on it. A launch that dies before its listener serves then leaves `nats.pid` for `cotal down`
+ * and a journal naming the exact process for recovery to adopt or retire. A bind that throws stops
+ * the listener. Both launch modes call it right after the spawn.
  */
-async function bindSpawnedListener(child: ChildProcess, startedAt: string, bound: NonNullable<DetachOpts["boundListener"]>): Promise<void> {
+async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
   if (!child.pid) throw new Error("nats-server spawned with no pid");
   writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+  if (!bound) return;
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   try {
     bound.onSpawn(child.pid, startedAt);
@@ -2335,14 +2336,14 @@ async function bindSpawnedListener(child: ChildProcess, startedAt: string, bound
 }
 
 /**
- * Everything between spawning a listener and serving it: readiness, the broker version read, a
- * bound listener's identity check, and an unbound listener's `nats.pid`. Foreground `up` and
- * {@link startMeshDetached} both call it, so a guard added here reaches both launch modes (#2924).
+ * Everything between spawning a listener and serving it: readiness, the broker version read and a
+ * bound listener's identity check. Foreground `up` and {@link startMeshDetached} both call it, so a
+ * guard added here reaches both launch modes (#2924).
  *
  * A listener that never answers or whose version read throws is stopped and its `nats.pid` removed
  * before `up` fails. Nothing has recorded the mesh yet, so a listener left running would hold the
- * port with no registry entry for `cotal down` to reach. A bound listener that fails its identity
- * check is kept: its maintenance journal is already bound to it.
+ * port with no registry entry. A bound listener that fails its identity check is kept: its
+ * maintenance journal is already bound to it.
  */
 async function awaitSpawnedListener(l: {
   child: ChildProcess;
@@ -2369,10 +2370,6 @@ async function awaitSpawnedListener(l: {
       ),
     );
   if (l.boundListener) await l.boundListener.verify();
-  else {
-    if (!child.pid) throw new Error("nats-server spawned with no pid");
-    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
-  }
 }
 
 /**
@@ -2575,7 +2572,7 @@ export async function startMeshDetached(
   const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
-  if (opts.boundListener) await bindSpawnedListener(child, listenerStartedAt, opts.boundListener);
+  await recordSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 
   let tailing = Boolean(opts.onLine);
@@ -2831,8 +2828,8 @@ async function waitReady(server: string, creds?: string): Promise<boolean> {
 }
 
 // SPEC §13.12: reads the connected broker's version, and refuses loud below the 2.12 floor
-// before any pidfile or provisioning touches it (the same gate `requireBrokerFloor` enforces
-// on every other control-surface connection).
+// before any provisioning touches it (the same gate `requireBrokerFloor` enforces on every other
+// control-surface connection).
 type BrokerFacts = { version: string; presenceFileBacked: boolean };
 
 /** The broker's version, and whether `space`'s presence stream exists file-backed. Cotal creates
