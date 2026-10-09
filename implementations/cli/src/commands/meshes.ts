@@ -8,6 +8,7 @@ import {
   findMesh,
   getCurrent,
   loadMeshes,
+  pinnedFetch,
   removeMesh,
   type MeshEntry,
 } from "@cotal-ai/workspace";
@@ -311,20 +312,17 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
       process.exit(1);
     }
     try {
-      // `redirect: "manual"`: a 302 can walk an https fetch down to http or onto another host,
-      // and the document IS the trust. A redirect is refused, never followed.
-      const res = await fetch(disco, { redirect: "manual", signal: AbortSignal.timeout(10_000) });
-      if (res.status >= 300 && res.status < 400) {
-        console.error(c.red(`✗ ${disco} answered ${res.status} (a redirect to ${JSON.stringify(res.headers.get("location") ?? "")}) - a redirect can move the fetch onto plaintext or onto another host, so it is refused rather than followed; publish the discovery document at the URL you pass`));
-        process.exit(1);
-      }
+      // The policy refresh re-fetches this document through `pinnedFetch`, so registration must
+      // judge it by the same redirect and timeout rule.
+      const res = await pinnedFetch(disco.toString(), `--from ${disco}`);
       if (!res.ok) {
         console.error(c.red(`✗ ${disco} answered ${res.status} - no discovery document there`));
         process.exit(1);
       }
       bundle = take(await checkDiscoveryDocument(res));
     } catch (e) {
-      console.error(c.red(`✗ could not fetch ${disco} (${(e as Error).message})`));
+      const m = (e as Error).message;
+      console.error(c.red(m.startsWith("✗") ? m : `✗ could not fetch ${disco} (${m})`));
       process.exit(1);
     }
   }
