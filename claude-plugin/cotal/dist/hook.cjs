@@ -389,7 +389,7 @@ var require_util = __commonJS({
     exports2.jitter = jitter;
     exports2.backoff = backoff;
     exports2.nanos = nanos6;
-    exports2.millis = millis;
+    exports2.millis = millis2;
     exports2.randomToken = randomToken;
     var encoders_1 = require_encoders();
     var errors_1 = require_errors();
@@ -444,11 +444,11 @@ var require_util = __commonJS({
       });
       return Object.assign(p, methods);
     }
-    async function deadline(p, millis2 = 1e3) {
+    async function deadline(p, millis3 = 1e3) {
       const d = deferred();
       const timer = setTimeout(() => {
         d.reject(new errors_1.TimeoutError());
-      }, millis2);
+      }, millis3);
       try {
         return await Promise.race([p, d]);
       } finally {
@@ -573,10 +573,10 @@ var require_util = __commonJS({
         }
       };
     }
-    function nanos6(millis2) {
-      return millis2 * 1e6;
+    function nanos6(millis3) {
+      return millis3 * 1e6;
     }
-    function millis(ns) {
+    function millis2(ns) {
       return Math.floor(ns / 1e6);
     }
     var tokenDigits = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -10398,10 +10398,10 @@ var require_jsmsg = __commonJS({
       ack() {
         this.doAck(exports2.ACK);
       }
-      nak(millis) {
+      nak(millis2) {
         let payload = NAK;
-        if (millis) {
-          payload = new TextEncoder().encode(`-NAK ${JSON.stringify({ delay: (0, internal_1.nanos)(millis) })}`);
+        if (millis2) {
+          payload = new TextEncoder().encode(`-NAK ${JSON.stringify({ delay: (0, internal_1.nanos)(millis2) })}`);
         }
         this.doAck(payload);
       }
@@ -24583,7 +24583,7 @@ var BASELINE_DELIVERY_ENDPOINT = "delivery";
 var BASELINE_DELIVERY_COMMANDS = Object.freeze(["join", "leave", "list"]);
 var BASELINE_LIFECYCLE_ENDPOINT = "manager";
 var BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pending", "turn-yield", "run-answer"]);
-var SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"]);
+var SPAWN_CREATE_COMMANDS = Object.freeze(["spawn", "resolve-agent"]);
 var SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"]);
 var OPERATOR_SEAT_COMMANDS = Object.freeze(["input", "turn"]);
 var SPAWN_SERVICE_COMMANDS = Object.freeze(["define-persona", "inspect", "list-personas", "show-persona", "goal-result"]);
@@ -26617,6 +26617,7 @@ var Registry = class {
 var registry2 = new Registry();
 
 // ../../packages/core/dist/remote-manager-authority.js
+var REMOTE_MANAGER_AUTHORITY_OPERATIONS = Object.freeze(["prepare", "activate", "renew", "session", "retire", "renewStandingBundle", "renewRunDriver", "transferReader"]);
 var MANAGED_AGENT_RUNTIME_STATES = Object.freeze(["reserved", "creating", "bound", "create-unknown", "closing", "closed"]);
 var MANAGED_AGENT_RUNTIME_READINESS = Object.freeze(["ready", "bound-not-ready", "none"]);
 var MANAGED_AGENT_RETIREMENT_PHASES = Object.freeze(["intent", "released", "retired", "deprovisioned", "terminal"]);

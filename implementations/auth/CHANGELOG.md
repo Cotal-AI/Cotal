@@ -1,5 +1,45 @@
 # @cotal-ai/auth
 
+## 0.76.0
+
+### Minor Changes
+
+- 19fac82: Remove `allowManagerAuthority` from the exchange policy that `handleManagerServiceAuthority` takes. Both exchange faces set it to `true`, so its refusal could never fire, and the route table alone decides which face serves `POST /manager-service-authority`. The docs and source comments now list that route on the public listener, which has always served it. A policy object literal that sets `allowManagerAuthority` no longer compiles, and a JavaScript caller that set it to `false` is no longer refused by the handler; see the upgrading guide.
+- 15d10c9: Refuse competing patched same-host consuming sessions without replacing their logical inbox owner. Preserve live control listeners and existing foreground actor material. Make fresh local foreground grants and departure cleanup generation-aware. This containment does not fence other hosts, broker URL aliases or older clients.
+- 31b22ae: Issue managed seats' manager-caller run authority when their current persona scope and fresh same-owner parent grant both carry run. Preserve the signed permission ceiling, actor-row lifecycle source, interactive issuance and ordinary legacy commands.
+- 3d0a5f9: Add an owner-bound platform supervisor authority door to the hosted auth service. It reuses native manager registration and renewal, checks a current administrative assignment, confines issuance to one owner and lifecycle, and records the registration credentials' signed permission ceilings before returning material. Recorded permissions match the authority-plane signed native set at issuance and every renewal without widening. `endPlatformSupervisorAssignment(owner)` ends an assignment the host recorded `ended`: it retires the manager gate and the issued generations, so registration, activation and renewal refuse previously returned material by name before it expires.
+
+### Patch Changes
+
+- 97f953f: `cotal actor revoke` now mints its live-connection eviction credential with a 60 second lifetime instead of the supervisor profile's 24 hour default. The revoke-time eviction, the barrier evictors and the liveness oracles that call the delivery daemon's `ctl.delivery-admin` rail now share one connection helper, so the lifetime and the non-participating endpoint options are decided in one place.
+- b8a41c5: The auth-ledger and records scanners now run every sealed scan through one shared plane-guard helper, `guardedScan`, beside `ScanGuard`. It used to be written out three times: once in the ledger scanner and once in each of the records scanner's obligation and manager goal-index scans. A change to the before-and-after claim check is now made in one place. No behavior changes.
+- a5c18a0: A `renewRunDriver` renewal now checks the run it renews through one `holdsRunFence` predicate in `@cotal-ai/auth`, read through one run observer in the auth service. The renewal decision and the re-check right before issuance each kept a hand-written copy of the read and of the run fence comparison, so a change to what makes a run renewable could reach one copy and leave the other weaker or stricter without any suite noticing. Both still refuse with their own `conflict` message.
+- 5f17642: The hosted auth fence smoke takes its injected-store baseline after each plane's first start, which now puts the plane's instance identity into the store, so its store cells check that the fence and close write nothing on top of that record.
+- 0eb8eff: `@cotal-ai/core` exports `REMOTE_MANAGER_AUTHORITY_OPERATIONS`, the frozen list of manager-service authority operations, and `RemoteManagerAuthorityRequest["operation"]` is derived from it. The auth request parser checks the operation against the same list and builds its refusal from it, so an operation added to core is admitted by the host instead of compiling cleanly and being refused at runtime with the old list. The refusal now reads `operation must be one of prepare, activate, renew, session, retire, renewStandingBundle, renewRunDriver, transferReader`.
+- Updated dependencies [58a725f]
+- Updated dependencies [7829cbb]
+- Updated dependencies [8e0876b]
+- Updated dependencies [d85ca1a]
+- Updated dependencies [20c93a1]
+- Updated dependencies [715928c]
+- Updated dependencies [a4b0467]
+- Updated dependencies [08d92b7]
+- Updated dependencies [35fdda8]
+- Updated dependencies [7b34e9a]
+- Updated dependencies [d153172]
+- Updated dependencies [ea15e8d]
+- Updated dependencies [9adcf1c]
+- Updated dependencies [15d10c9]
+- Updated dependencies [0eb8eff]
+- Updated dependencies [ba76f78]
+- Updated dependencies [f2a4bde]
+- Updated dependencies [8be669e]
+- Updated dependencies [42b28aa]
+- Updated dependencies [720dbc3]
+  - @cotal-ai/core@0.76.0
+  - @cotal-ai/workspace@0.76.0
+  - @cotal-ai/lang@0.76.0
+
 ## 0.75.0
 
 ### Minor Changes

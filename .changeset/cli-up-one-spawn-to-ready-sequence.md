@@ -1,5 +1,0 @@
----
-"@cotal-ai/cli": patch
----
-
-Foreground `cotal up` and `cotal up --detach` now run the steps between spawning nats-server and serving it through one sequence: `.cotal/nats.pid`, readiness, the broker version read and the server name check of a resumed or restored listener. A foreground `up` whose broker is below the 2.12 floor used to exit with the broker still running and `.cotal/nats.pid` recorded but no mesh entry. It now stops the broker and removes the pidfile, as `--detach` did. A foreground resume after `cotal down --preserve-state` now refuses a spawned listener that reports a foreign NATS server name, which only `--detach` checked before. A foreground `up` whose broker never answers now removes `.cotal/nats.pid` itself. `up --detach` now writes `.cotal/nats.pid` as soon as the broker spawns, as foreground `up` does, so `cotal down` can stop a broker whose `up` died before it was ready. When any of these failures stops a broker that ignores SIGTERM, `up` now sends SIGKILL and removes the pidfile only once the broker has exited, where both modes used to exit with it still holding the port.

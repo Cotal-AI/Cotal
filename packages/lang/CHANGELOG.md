@@ -1,5 +1,12 @@
 # @cotal-ai/lang
 
+## 0.76.0
+
+### Patch Changes
+
+- ea15e8d: A `conclave` now asks the host's stop before it opens, as every other effect does. A run whose driver has asked it to stop (an operator pause or a passed work horizon) is released (L5012) at the next conclave instead of opening it, and a program made only of conclaves no longer runs to completion after the stop. A settled conclave still replays under a stop.
+- 9adcf1c: `PRIMITIVES`, `EVENT_CONSTRUCTORS`, `PURE_PRIMITIVES` and `FORBIDDEN_NODES` are now frozen through every row and nested array. A write to a row, or to the `callee` a validation `LangError` carries, throws instead of changing what `validate` accepts or reports for the rest of the process.
+
 ## 0.75.0
 
 ## 0.74.0

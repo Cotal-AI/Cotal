@@ -1,5 +1,48 @@
 # @cotal-ai/manager
 
+## 0.76.0
+
+### Minor Changes
+
+- d153172: The manager and the delivery daemon now name an injected `SecretStore` through one rule, `injectedSecretStoreIdentity` in `@cotal-ai/core`: the store's declared identity, else the coordinate in `COTAL_SECRET_STORE`, else a refusal. Each package kept its own copy before, so a change to one could have made the store challenge report two names for one shared store, and both now refuse an unnamed store with the same message. `reloadStoreIdentityOf` from `@cotal-ai/delivery` takes `{ injected: true, store }` or `{ injected: false, identity }`. The daemon's injected cred source no longer carries an identity, which nothing read and which was blank when `COTAL_SECRET_STORE` was unset. See the upgrading guide.
+- cca3fec: Add explicit pooled `ManagerOptions.execution: "none"` with no Runtime object, early seat and workflow refusals, and immutable per-instance execution admission. Native control registration, renewal, goal recovery and maintenance remain available. Genuine selected participant Managers keep their own execution and terminal custody. Default runtime behavior is unchanged.
+
+  Manager cluster revision 25 requires `execution`, `runHosting` and `terminalSessions` in status and adds custody `none`. Callers must fetch the new closed output contract.
+
+### Patch Changes
+
+- 0cd1f60: An `ask` attempt and an escalated `checkpoint` now relay the instant their pause denies at, and the manager holds the relay to that instant. The relay used to send a duration the manager counted from its own acceptance, so the manager could still serve an attempt after its pause had expired, by the submit's round trip plus clock skew, or by up to a second from a one-second floor. The manager's `turn` command takes `deadlineAt` as an alternative to `deadlineMs` and refuses a relay whose deadline has already passed with `deadline-exceeded`. The run reads that refusal as nobody left to tell only when its own clock also shows the deadline passed. An `ask` whose deadline passes before its attempt's pause is minted now ends with its own `ask-deadline` L4006 instead of an L4000 from the refused mint.
+- 58a725f: A detached `cotal spawn <persona> --resume <id> --on <instance>` without `--agent` now carries the session for the harness the target manager launches. The CLI used to pick the connector from `--agent` or its own `COTAL_DEFAULT_AGENT` alone, so a persona with `agent: claude` spawned by a caller whose default named another connector carried nothing, and a persona without a pin carried a Claude transcript to a manager whose own default then refused it. The CLI now asks the manager's new `resolve-agent` command, which loads the persona with the same visibility check as `spawn` and answers with the same flag, pin, caller default and manager default order. `resolve-agent` is minted beside `spawn` in the spawn capability and the operator instruments, and the manager cluster document moves to revision 26. With `--agent` the CLI does not ask, so a manager that does not serve the command still takes that form.
+- 8e0876b: Comments in core, the manager and the runtime cite SPEC sections and code symbols instead of line numbers. Nine of those line numbers pointed at unrelated text, including the `EpGateState.space` doc in core's published types, which also named §13.9 for the per-space auth bucket that §13.12 defines. The comments now name the alias-reuse gate in the manager's spawn path, `resolveService`'s `instanceId` option and the `pinnedInstanceId` it returns, the spawn affinity gate, the auth session ledger's `reconcileSessionForTakeover`, and each SPEC section without a line. No behavior changes.
+- 4a7271e: `cotal deregister-instance` and the manager's clean stop read the issuance-gate generation through core's `readEndpointGateGeneration`. When the instance holds its governance slot and its gate is absent or carries a delete marker, the refusal's diagnostic text now comes from core's reader rather than a hand-rolled "no issuance gate" message. The error class is unchanged: core still wraps the reader failure as `unavailable`.
+- 35fdda8: `deregisterServiceInstance` no longer deletes a successor's status. When a restart of the same instance re-registered and wrote its `ready` status between the deregistration's spec read and its status read, the deregistration deleted that status and reported `superseded`, so the successor kept serving while every class scatter, `cotal ps` included, skipped it as never converged. A status that observed a later registration than the spec read is now left alone. The `superseded` contract, the `cotal deregister-instance` refusal and the CLI docs no longer say nothing was removed: the spec stays, and a status that was removed observed the inspected registration or an earlier one.
+- 620d72e: The events-grant smoke's two own-channel spawns now keep the persona's `work` read set next to the foreign event channel, so the read-list check admits them and the own-channel rule is what refuses them. The suite is green again and its section 9 and open-mesh cells run.
+- ae57f73: Refuse spawning another principal's owned persona on user-auth meshes unless the authenticated caller has current admin reach. Hosted runs use their admitted caller and the existing catalog visibility policy before connector loading or enrollment. Unowned operator personas and independently authorized manifest launches keep their behavior.
+- 82fff16: The manager's spawn provisioner connection now opens through the same `withScopedEndpoint` helper as the delivery-admin evictors and the liveness probe. Before, it built its endpoint by hand with no `error` listener, so a connection error on it, such as a broker permission violation during onboarding, ended the manager process with an unhandled `error` event, and a failed stop replaced the onboarding result or error with the stop error. The provisioner credential keeps its five-minute lifetime.
+- dad26ef: The manager's remote requests now take their `identities` record from one function, `publicIdentities`, instead of nine hand copies. Seven of the copies built the record from the identity state's own keys behind a type cast, so a change to the identity set still compiled there and sent a record the host refuses, and a state with its keys in another order sent identities that the manager's own result checks would not match against the host's echo. The function names the five identities in the order the host echoes them, so a change to the set now fails to compile at that one place.
+- 35a8b8f: A name held pending retirement keeps the departed seat's whole teardown target, and a same-name spawn or a resume re-drives that target unchanged. Before, both re-drives rebuilt it field by field and dropped the seat's recorded runtime reference, so under tmux a same-name spawn re-drove a static retirement that skipped the reap and freed the name while the predecessor seat still ran. The resume re-drive also dropped the launch's subscribe channels, which name the membership rows its teardown deletes.
+- Updated dependencies [58a725f]
+- Updated dependencies [7829cbb]
+- Updated dependencies [8e0876b]
+- Updated dependencies [d85ca1a]
+- Updated dependencies [20c93a1]
+- Updated dependencies [715928c]
+- Updated dependencies [a4b0467]
+- Updated dependencies [08d92b7]
+- Updated dependencies [35fdda8]
+- Updated dependencies [7b34e9a]
+- Updated dependencies [d153172]
+- Updated dependencies [15d10c9]
+- Updated dependencies [0eb8eff]
+- Updated dependencies [ba76f78]
+- Updated dependencies [f2a4bde]
+- Updated dependencies [8be669e]
+- Updated dependencies [42b28aa]
+- Updated dependencies [720dbc3]
+  - @cotal-ai/core@0.76.0
+  - @cotal-ai/workspace@0.76.0
+  - @cotal-ai/seat@0.76.0
+
 ## 0.75.0
 
 ### Minor Changes

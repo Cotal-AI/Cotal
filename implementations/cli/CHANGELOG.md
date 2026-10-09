@@ -1,5 +1,44 @@
 # @cotal-ai/cli
 
+## 0.76.0
+
+### Minor Changes
+
+- 15d10c9: Refuse competing patched same-host consuming sessions without replacing their logical inbox owner. Preserve live control listeners and existing foreground actor material. Make fresh local foreground grants and departure cleanup generation-aware. This containment does not fence other hosts, broker URL aliases or older clients.
+
+### Patch Changes
+
+- a96b21e: The CLI now decides whether a durable `cotal` is on PATH with the shared `resolveOnPath`, in one place. Before, `cotalOnPath()` kept its own scan that counted a directory named `cotal` as installed, so with such a directory on PATH, or with `.` on PATH in a folder holding a `cotal/` checkout, every hint printed a bare `cotal ...` the shell could not run and `npx cotal-ai setup` skipped the global-install offer. On Windows it now follows `PATHEXT` like every other PATH lookup. The recovery hint for an older binary no longer names npx's transient `cotal` shim when `.` is on PATH.
+- 58a725f: A detached `cotal spawn <persona> --resume <id> --on <instance>` without `--agent` now carries the session for the harness the target manager launches. The CLI used to pick the connector from `--agent` or its own `COTAL_DEFAULT_AGENT` alone, so a persona with `agent: claude` spawned by a caller whose default named another connector carried nothing, and a persona without a pin carried a Claude transcript to a manager whose own default then refused it. The CLI now asks the manager's new `resolve-agent` command, which loads the persona with the same visibility check as `spawn` and answers with the same flag, pin, caller default and manager default order. `resolve-agent` is minted beside `spawn` in the spawn capability and the operator instruments, and the manager cluster document moves to revision 26. With `--agent` the CLI does not ask, so a manager that does not serve the command still takes that form.
+- 8845edd: A static-auth foreground `cotal spawn` now deletes the agent's broker durables and read-ACL row when it exits even if its creds file cannot be removed. The retirement used to stop at a failed file removal (a read-only creds directory, a directory in the file's place), so the agent's `dm_` and `dlv_` durables and ACL row stayed on the broker and the removal error escaped the spawn. The secret delete, the file removal and the broker teardown now each run, and every failed step is reported in one line.
+- df7bec5: A foreground `cotal spawn` now resolves its `--share-tools` selection before it provisions the agent. A selection naming a server the config does not declare used to refuse after provisioning and outside the launch rollback, so the refusal left what provisioning had created behind, such as a remote user-mode spawn's actor-token and sentinel-creds files. The refusal text is unchanged. The spawn also reads the cotal config once, so the model policy and the launch use the same file contents.
+- bb3cfa1: A manifest `broker.idp` that embeds credentials (`https://user:pass@host/...` or the token form `https://token@host/...`) is now refused with `broker.idp must not embed credentials`, the same rule `broker.servers` already followed. It used to pass validation, and `cotal up -f --dry-run` printed the credential in its plan line. The refusal names the field and never repeats the value.
+- aa60e40: `cotal service status` now refuses a service unit or launchd agent that records its mesh but no absolute root, with the uninstall-and-reinstall remedy. Before, `--json` reported a unit with no root as installed with no root and no manager record, the human output crashed with `Cannot read properties of undefined (reading 'state')`, and a recorded root that was not an absolute path read the manager pidfile relative to the current directory. An installed status now always carries its unit, root and manager record.
+- dec97c3: Foreground `cotal up` and `cotal up --detach` now run the steps between spawning nats-server and serving it through one sequence: `.cotal/nats.pid`, readiness, the broker version read and the server name check of a resumed or restored listener. A foreground `up` whose broker is below the 2.12 floor used to exit with the broker still running and `.cotal/nats.pid` recorded but no mesh entry. It now stops the broker and removes the pidfile, as `--detach` did. A foreground resume after `cotal down --preserve-state` now refuses a spawned listener that reports a foreign NATS server name, which only `--detach` checked before. A foreground `up` whose broker never answers now removes `.cotal/nats.pid` itself. `up --detach` now writes `.cotal/nats.pid` as soon as the broker spawns, as foreground `up` does, so `cotal down` can stop a broker whose `up` died before it was ready. When any of these failures stops a broker that ignores SIGTERM, `up` now sends SIGKILL and removes the pidfile only once the broker has exited, where both modes used to exit with it still holding the port.
+- 3a9cb31: The `useMesh()` header comment, which ships in the CLI's `dist/console/mesh.js`, no longer says the `MeshView` model lives in `@cotal-ai/core`. It now points at `../view/mesh-view.ts` in the CLI package, where the class is defined. No runtime change.
+- 7829cbb: `cotal status` and the `cotal setup` card now share one test for whether the web extension is installed: a package in the extensions manifest that provides `web` and is on disk. A manifest entry whose package directory is gone no longer reads `installed` in status while the card reads `not installed`. A web package record that cannot be read is no longer reported as not installed: status names the error on its `Web extension` row and still prints the `Web process` row, and the setup card names it on its web row, also while the dashboard is listening. `loadExtensionsManifest` and `installedExtensionVersion` now treat only a missing file as absent, so an extensions or package directory that cannot be searched throws its permission error instead of reading as no extensions or not installed.
+- 42b28aa: `cotal status --components` now names a `web.session` that exists but cannot be read, for example after an ownership or mode change: the web row reads `refused · web.session unreadable: <error>`. The reader used to treat every read error as no record, so a live dashboard read `refused · probe refused (no bound address recorded)`, and the `Web process` row and the `cotal setup` card read `down`. Those two rows now name the unreadable record as well. Only a missing, empty or partial `web.session` still reads as no record. `cotal web --detach` prints the launch link from the record that proved the dashboard ready instead of reading `web.session` again, so a read error after that point cannot report a failed start over a running dashboard.
+- Updated dependencies [58a725f]
+- Updated dependencies [7829cbb]
+- Updated dependencies [8e0876b]
+- Updated dependencies [d85ca1a]
+- Updated dependencies [20c93a1]
+- Updated dependencies [715928c]
+- Updated dependencies [a4b0467]
+- Updated dependencies [08d92b7]
+- Updated dependencies [35fdda8]
+- Updated dependencies [7b34e9a]
+- Updated dependencies [d153172]
+- Updated dependencies [15d10c9]
+- Updated dependencies [0eb8eff]
+- Updated dependencies [ba76f78]
+- Updated dependencies [f2a4bde]
+- Updated dependencies [8be669e]
+- Updated dependencies [42b28aa]
+- Updated dependencies [720dbc3]
+  - @cotal-ai/core@0.76.0
+  - @cotal-ai/workspace@0.76.0
+
 ## 0.75.0
 
 ### Patch Changes
