@@ -243,6 +243,8 @@ try {
       dir: authDir,
       secrets: {} as never,
       cap: "cap",
+      failures: [],
+      badCaps: [],
       ownerSecret: "dummy-secret-value-32-chars-long!",
       bridgeIdp: { issuer: IDP_ISS, audience: "cotal-services", key: idpPair.publicKey as never },
       managerServiceAuthority: wrappedMgrAuthority,

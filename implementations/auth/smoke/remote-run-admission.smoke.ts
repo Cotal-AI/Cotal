@@ -219,6 +219,8 @@ try {
     issueManagerRunAttempt: plane.issueManagerRunAttempt,
     secrets: new Map() as never,
     cap,
+    failures: [],
+    badCaps: [],
   };
   const httpServer = createServer((req, res) => void handleManagerServiceAuthority(req, res, httpCtx, {
     requireCapability: true,
