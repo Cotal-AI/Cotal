@@ -1068,7 +1068,9 @@ spawn is refused with that explanation before any request is sent. Foreground ru
 attached to your terminal; `--detach` hands the launch to the running manager. Both modes get the
 durable backstop on a mesh that runs the delivery daemon; `--live-only` skips it for a foreground
 spawn (messages posted while it is disconnected are then not replayed). A foreground exit retires
-the agent's creds and broker footprint, like a manager despawn. On a user-auth mesh the two arms
+the agent's creds and broker footprint, like a manager despawn. The creds and the footprint are
+removed as separate steps, so a creds file that cannot be deleted does not leave the broker durables
+behind, and the failed steps are reported together. On a user-auth mesh the two arms
 differ: a spawn against a mesh this machine provisioned revokes the actor row on exit, while a
 remote spawn (an enrollment or the advertised provisioning endpoint) removes only this machine's
 credential files; its grant stays until the mesh operator revokes it, and the launch line says

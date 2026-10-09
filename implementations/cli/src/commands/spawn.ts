@@ -1173,17 +1173,16 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (retired || !auth || !id || !credsPath) return;
     retired = true;
     // The store delete is the authoritative removal; the rmSync clears the FS materialization
-    // (byte-identical locally). Best-effort-loud, like the broker teardown below.
-    await workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)).catch((e) =>
-      console.error(`! retire: dropping ${name}'s cred from the secret store failed: ${(e as Error).message}`));
-    rmSync(credsPath, { force: true });
-    console.error(`  ↩ retired creds for ${name} (${why})`);
-    try {
-      const dc = await mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: id, lifecycleUid } });
-      await deprovisionAgent({ servers: server, space, targetId: id, lifecycleUid, creds: dc });
-    } catch (e) {
-      console.error(`! retire: broker teardown for ${name} failed: ${(e as Error).message}`);
-    }
+    // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
+    // cannot be removed must not leave the durables and ACL row behind.
+    const failed: CleanupFailure[] = [];
+    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)));
+    await attemptCleanup(failed, "creds file", () => rmSync(credsPath, { force: true }));
+    await attemptCleanup(failed, "broker teardown", () =>
+      mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: id, lifecycleUid } })
+        .then((dc) => deprovisionAgent({ servers: server, space, targetId: id, lifecycleUid, creds: dc })));
+    if (failed.length) console.error(c.red(`✗ cleaning up after ${name}: ${describeCleanupFailures(failed)}`));
+    else console.error(`  ↩ retired creds for ${name} (${why})`);
   };
 
   // From here through a successful child launch, a THROW must undo whatever this spawn provisioned —
