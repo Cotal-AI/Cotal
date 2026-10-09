@@ -14,7 +14,8 @@ import.
   (`cotal-<space>`). Spawned unfocused; switch to `session:name` to watch it. Env is isolated
   (`env -i`) so the tmux server's environment doesn't reach agents. That env is written to an
   owner-only launch script, which keeps it off tmux's command line, and the script removes its
-  directory before it starts the agent. Graceful stop types `/exit`
+  directory before it starts the agent. When it cannot remove the directory, the agent does not start.
+  Graceful stop types `/exit`
   then kills the window; hard stop kills immediately. Exit waits poll the stable pane id and honor
   tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
   Each handle carries a reference to its tmux server, window and pane, so a later manager can reap

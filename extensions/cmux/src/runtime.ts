@@ -41,10 +41,11 @@ export function paneCommand(pane: Pane, login: boolean, isolate = false): { comm
   // The script holds the pane's env inline (the agent's creds + control token, and any provider key).
   // Write it into a fresh 0o700 temp dir as a 0o600 file: never a world-readable script, and never a
   // predictable, symlink-attackable /tmp path. cmux runs it as the same user via `bash <path>`. It
-  // removes its directory before it execs, so the env stays on disk only until bash opens it; a
-  // caller whose cmux command fails removes `dir` itself, since nothing will run the script.
+  // removes its directory before it execs, so the env stays on disk only until bash opens it, and
+  // exits instead of running the agent when the removal fails; a caller whose cmux command fails
+  // removes `dir` itself, since nothing will run the script.
   const dir = mkdtempSync(join(tmpdir(), "cotal-pane-"));
-  const script = `#!/usr/bin/env bash\nrm -rf -- ${shellQuote(dir)}\n${cd}exec env ${isolate ? "-i " : ""}${cmd}\n`;
+  const script = `#!/usr/bin/env bash\nrm -rf -- ${shellQuote(dir)} || exit\n${cd}exec env ${isolate ? "-i " : ""}${cmd}\n`;
   const scriptPath = join(dir, "launch.sh");
   writeFileSync(scriptPath, script, { mode: 0o600 });
   return { command: `bash ${login ? "-l " : ""}${shellQuote(scriptPath)}`, dir };
