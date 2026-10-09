@@ -12,21 +12,9 @@ import { AGENT_PROMPT } from '../prompt';
 </button>
 
 <script>
-  for (const btn of document.querySelectorAll<HTMLButtonElement>('button.copy-prompt')) {
-    const label = btn.querySelector('.label');
-    btn.addEventListener('click', async () => {
-      if (!label) return;
-      try {
-        await navigator.clipboard.writeText(btn.dataset.prompt ?? '');
-        label.textContent = 'Copied';
-      } catch {
-        label.textContent = 'Copy failed';
-      }
-      setTimeout(() => {
-        label.textContent = 'Copy prompt';
-      }, 2000);
-    });
-  }
+  import { copyPromptOnClick } from '../copy-prompt';
+
+  copyPromptOnClick('button.copy-prompt');
 </script>
 
 <style>
