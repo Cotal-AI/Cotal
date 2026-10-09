@@ -427,7 +427,8 @@ asks the runtime every five seconds whether a seat's process has ended, and free
 on its own once the runtime proves the exit. Its `seat reaped:` line says the exit detail is
 unavailable from that runtime. While a launch waits for readiness the manager asks every second and
 once more when the readiness window closes, so a seat whose process ends before it joins the mesh is
-reported as exited on launch, with no last output, rather than as uncertain. Runtime names are
+reported as exited on launch, with no last output, rather than as uncertain. A runtime that has not
+proved that last exit a second after the window closes leaves the launch uncertain. Runtime names are
 open-ended and resolved from the registry; a missing provider or app throws, never silently falls back
 ([architecture](architecture.md)).
 

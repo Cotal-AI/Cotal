@@ -232,8 +232,9 @@ const TURN_ANSWER_RETENTION_MS = 5 * 60_000;
  *  launch-parity smoke can assert every launch client's request timeout OUTLIVES this window — the tier
  *  rule forbids the clients importing it directly. */
 export const READINESS_TIMEOUT_MS = 30_000;
-/** How often the readiness race asks a runtime that streams no exit whether its child has exited. An
- *  operator waits on this reply, so it asks more often than the exit watch that outlives readiness. */
+/** How often the readiness race asks a runtime that streams no exit whether its child has exited, and
+ *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
+ *  so it asks more often than the exit watch that outlives readiness. */
 const READINESS_EXIT_POLL_MS = 1_000;
 /** Managed same-session crash recovery follows the Codex host precedent: three restarts are allowed
  * inside a rolling two-minute window; the fourth crash is a loop and retires the seat loud. */
@@ -7263,11 +7264,16 @@ export class Manager {
           detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
         });
       // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
-      // the window closes on a fresh read: a child that exited by then is reported as exited.
+      // the window closes on a fresh read: a child that exited by then is reported as exited. Nothing
+      // bounds how long a runtime's proof takes, so it gets one more poll before the launch is uncertain.
       timer = setTimeout(() => {
         const proof = s ? undefined : exitProof(a.handle);
-        if (proof) proof.then(onExit, uncertain);
-        else uncertain();
+        if (!proof) {
+          uncertain();
+          return;
+        }
+        timer = setTimeout(uncertain, READINESS_EXIT_POLL_MS);
+        proof.then(onExit, uncertain);
       }, readinessTimeoutMs);
       // The poll stops once the race is done, so it needs no unsubscribe.
       if (s) unsubExit = s.onExit(onExit);
