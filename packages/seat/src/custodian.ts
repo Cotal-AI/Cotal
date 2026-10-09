@@ -8,7 +8,6 @@ import { discardSeatArtifacts } from "./artifacts.js";
 import { peerCredentials } from "./peercred.js";
 import { preferSeatForOomKill } from "./oom.js";
 import {
-  CONFIRM_TIMEOUT_MS,
   DEFAULT_COLS,
   DEFAULT_ROWS,
   FrameReader,
@@ -24,7 +23,7 @@ import {
 } from "./protocol.js";
 import { ConnectorDiagnosticReader } from "./diagnostic.js";
 import { RECORD_VERSION, bootToken, exitPath, processStartToken, writeRecord, type SeatRecord } from "./record.js";
-import { StartupConfirmMatcher, unmatchedConfirmMessage } from "./startup-confirm.js";
+import { StartupConfirmGate } from "./startup-confirm.js";
 
 export interface CustodianLaunch {
   id: string;
@@ -87,11 +86,11 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     }
   };
 
-  let confirmMatcher: StartupConfirmMatcher | undefined;
+  let confirmGate: StartupConfirmGate | undefined;
   let proc: pty.IPty;
   try {
     // Built before the child exists, so a prompt that cannot match starts nothing.
-    confirmMatcher = launch.confirm === undefined ? undefined : new StartupConfirmMatcher(launch.confirm);
+    confirmGate = launch.confirm === undefined ? undefined : new StartupConfirmGate(launch.confirm);
     proc = pty.spawn(launch.command, launch.args, {
       name: "xterm-256color",
       cols: DEFAULT_COLS,
@@ -143,7 +142,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   const clients = new Set<Socket>();
   let nextSub = 1;
   let early = "";
-  let confirmTimer: ReturnType<typeof setTimeout> | undefined;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
   let handoffTimer: ReturnType<typeof setTimeout> | undefined;
   let unattendedTimer: ReturnType<typeof setTimeout> | undefined;
@@ -154,22 +152,6 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
   /** How long a child already gone from /proc may wait for node-pty to report how it ended. */
   const EXIT_STATUS_GRACE_MS = 1_000;
   const UNATTENDED_MS = launch.unattendedMs ?? UNATTENDED_DEFAULT_MS;
-
-  if (confirmMatcher) {
-    confirmTimer = setTimeout(() => {
-      if (!alive) return;
-      const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
-      diagnostic.recordStop(message);
-      term.write(`\r\n${message}\r\n`);
-      const encoded = Buffer.from(`\r\n${message}\r\n`, "utf8").toString("base64");
-      for (const [sub, socks] of dataSubs) {
-        for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
-      }
-      if (launch.logPath) appendFileSync(launch.logPath, `${message}\n`, { mode: 0o600 });
-      proc.kill("SIGTERM");
-      killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
-    }, CONFIRM_TIMEOUT_MS);
-  }
 
   const snapshot = (): Promise<string> =>
     new Promise((resolve) => term.write("", () => resolve(serializer.serialize())));
@@ -214,10 +196,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     if (controllers.size > 0) return;
     if (!seenClient) return;
     settling = true;
-    if (confirmTimer) {
-      clearTimeout(confirmTimer);
-      confirmTimer = undefined;
-    }
+    confirmGate?.disarm();
     if (killTimer) {
       clearTimeout(killTimer);
       killTimer = undefined;
@@ -381,10 +360,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
         }
       }
     }
-    if (confirmTimer) {
-      clearTimeout(confirmTimer);
-      confirmTimer = undefined;
-    }
+    confirmGate?.disarm();
     for (const sock of controllers) send(sock, { event: "exit", exit });
     resolveWaiters();
     settleTerminal();
@@ -401,11 +377,7 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     for (const [sub, socks] of dataSubs) {
       for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
     }
-    if (confirmMatcher?.push(d)) {
-      proc.write("\r");
-      if (confirmTimer) clearTimeout(confirmTimer);
-      confirmTimer = undefined;
-    }
+    if (confirmGate?.push(d)) proc.write("\r");
   });
   proc.onExit(({ exitCode, signal }) => {
     markExited({ code: exitCode, ...(signal === undefined ? {} : { signal }) });
@@ -430,6 +402,19 @@ export async function runCustodian(launch: CustodianLaunch): Promise<void> {
     if (killTimer) clearTimeout(killTimer);
     killTimer = setTimeout(() => alive && proc.kill("SIGKILL"), GRACE_MS);
   };
+
+  confirmGate?.arm(diagnostic, {
+    report: (message) => {
+      const line = `\r\n${message}\r\n`;
+      term.write(line);
+      const encoded = Buffer.from(line, "utf8").toString("base64");
+      for (const [sub, socks] of dataSubs) {
+        for (const sock of socks) send(sock, { event: "output", sub, data: encoded });
+      }
+      note(`${message}\n`);
+    },
+    stop: () => stopChild("graceful"),
+  });
 
   const record: SeatRecord = {
     version: RECORD_VERSION,

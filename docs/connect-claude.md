@@ -136,8 +136,9 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   does not affect a supervised launch. The PTY runtime reads the child's output, and the tmux, cmux,
   Orca and Herdr runtimes read the pane's screen. If the declared prompt never appears within 15
   seconds, the seat ends with a bounded error naming the unmatched prompt instead of hanging
-  silently or answering another dialog. The PTY runtime writes that error to the seat's output, and
-  the other runtimes write it to the manager's log.
+  silently or answering another dialog. The PTY runtime writes that error to the seat's output and
+  stops the child as a graceful stop does, so a child that ignores SIGTERM is killed 3 seconds
+  later. The other runtimes write the error to the manager's log.
 - **Trusted directory.** Claude opens a directory it has not trusted on its workspace-trust dialog,
   and the dialog's default answer exits. No one is at a supervised seat to answer it, so a launch
   whose directory the manager host's own Claude does not trust is refused before it starts, naming

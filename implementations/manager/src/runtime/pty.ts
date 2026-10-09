@@ -2,7 +2,7 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SpawnRefused, type AgentHandle, type AttachSession, type LaunchSpec, type Runtime, type RuntimeReference } from "@cotal-ai/core";
-import { ConnectorDiagnosticReader, StartupConfirmMatcher, unmatchedConfirmMessage, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
+import { ConnectorDiagnosticReader, StartupConfirmGate, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
 
 const DEFAULT_COLS = 120;
@@ -10,8 +10,6 @@ const DEFAULT_ROWS = 32;
 /** How many rows of history the attach-time screen mirror retains (see spawn) so a late attach
  *  still sees output that scrolled past. */
 const SCROLLBACK_ROWS = 1000;
-/** Bounded early-output window for the connector-declared startup confirmation prompt. */
-const CONFIRM_TIMEOUT_MS = 15_000;
 /** Grace window for a clean exit before a graceful stop escalates to SIGKILL. */
 const GRACE_MS = 3_000;
 
@@ -33,9 +31,9 @@ export class LegacyPtyRuntime implements Runtime {
     // Honor LaunchSpec.confirm literally: match the connector-owned text in normalized early output,
     // press Enter exactly once when it appears, and fail loud if the declared gate never materializes.
     // Built before the child exists, so a prompt that cannot match is a refusal.
-    let confirmMatcher: StartupConfirmMatcher | undefined;
+    let confirmGate: StartupConfirmGate | undefined;
     try {
-      confirmMatcher = spec.confirm === undefined ? undefined : new StartupConfirmMatcher(spec.confirm);
+      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm);
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
@@ -81,29 +79,12 @@ export class LegacyPtyRuntime implements Runtime {
     // reap line and a launch failure can name it.
     const diagnostic = new ConnectorDiagnosticReader();
 
-    let confirmTimer: ReturnType<typeof setTimeout> | undefined;
-    if (confirmMatcher) {
-      confirmTimer = setTimeout(() => {
-        if (!alive) return;
-        const message = unmatchedConfirmMessage(confirmMatcher.prompt, CONFIRM_TIMEOUT_MS);
-        diagnostic.recordStop(message);
-        term.write(`\r\n${message}\r\n`);
-        const b = Buffer.from(`\r\n${message}\r\n`, "utf8");
-        for (const fn of dataSubs) fn(b);
-        proc.kill(process.platform === "win32" ? undefined : "SIGTERM");
-      }, CONFIRM_TIMEOUT_MS);
-    }
-
     proc.onData((d) => {
       term.write(d); // mirror into the screen model for attach-time reconstruction
       diagnostic.push(d);
       const b = Buffer.from(d, "utf8");
       for (const fn of dataSubs) fn(b);
-      if (confirmMatcher?.push(d)) {
-        proc.write("\r");
-        if (confirmTimer) clearTimeout(confirmTimer);
-        confirmTimer = undefined;
-      }
+      if (confirmGate?.push(d)) proc.write("\r");
     });
     proc.onExit(({ exitCode, signal }) => {
       alive = false;
@@ -111,11 +92,11 @@ export class LegacyPtyRuntime implements Runtime {
       // present-or-absent rather than coalesced into one number.
       const last = diagnostic.read();
       exit = { code: exitCode, ...(signal === undefined ? {} : { signal }), ...(last ? { diagnostic: last } : {}) };
-      if (confirmTimer) clearTimeout(confirmTimer);
+      confirmGate?.disarm();
       for (const fn of exitSubs) fn();
     });
 
-    return {
+    const handle: AgentHandle = {
       name,
       kind: "pty",
       pid: proc.pid,
@@ -221,6 +202,16 @@ export class LegacyPtyRuntime implements Runtime {
         },
       }),
     };
+    confirmGate?.arm(diagnostic, {
+      report: (message) => {
+        const line = `\r\n${message}\r\n`;
+        term.write(line);
+        const b = Buffer.from(line, "utf8");
+        for (const fn of dataSubs) fn(b);
+      },
+      stop: () => handle.stop(),
+    });
+    return handle;
   }
 
   adopt(_reference: RuntimeReference): AgentHandle {
