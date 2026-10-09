@@ -289,11 +289,15 @@ try {
   {
     const foreign = eventChannel({ owner: DEV_OWNER, actor: "UVICTIMPRINCIPALNOTOURS" });
     remedyChannel = foreign;
+    // `work` rides along in every `allowSubscribe` this block supplies, because the persona's own
+    // read set has to stay inside it: without it the spawn is refused by an earlier and correct
+    // check ("subscribe \"work\" is not within allowSubscribe") before this rule runs, and the cell
+    // grades a refusal this rule did not make.
 
     // (a) over the READ set, which is the form that matters: this is a read amplification.
     const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
     const rowsBefore = (mgr as unknown as { agents: Map<string, unknown> }).agents.size;
-    const r1 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: [foreign] });
+    const r1 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: ["work", foreign] });
     remedyRefusal = r1.error ?? "";
     check(
       "a spawn asking for ANOTHER agent's event channel to READ is refused",
@@ -337,10 +341,6 @@ try {
     // wildcard form. Writing the gap down as a cell is what stops a later reader assuming it is
     // closed, and what makes a future closure show up as a red here rather than as a silent
     // behaviour change.
-    // `work` rides along because the persona's own read set has to stay inside the supplied
-    // `allowSubscribe`: without it the spawn dies at provisioning on an unrelated and correct check
-    // ("subscribe \"work\" is not within allowSubscribe"), and the cell would report a refusal it
-    // did not cause. That is what it did on its first run.
     const r4 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: ["work", `events.${DEV_OWNER}.>`] });
     check("a WILDCARD event pattern is NOT refused by this rule — the stated limit", r4.ok === true, r4);
 
@@ -645,7 +645,8 @@ try {
     const openMgr = newOpenManager();
     const foreign = eventChannel({ owner: DEV_OWNER, actor: "UVICTIMPRINCIPALNOTOURS" });
 
-    const r1 = await openMgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: [foreign] });
+    // `work` rides along for the reason section 4 gives.
+    const r1 = await openMgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: ["work", foreign] });
     check(
       "an OPEN manager refuses a spawn asking for ANOTHER agent's event channel too (#567)",
       r1.ok === false && /another agent's event channel/.test(r1.error ?? ""),
