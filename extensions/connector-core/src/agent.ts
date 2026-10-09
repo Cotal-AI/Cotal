@@ -2334,14 +2334,18 @@ export class MeshAgent extends EventEmitter {
     this.log(`the run-turn pull is not answering (${reason}); retrying every ${TURN_POLL_MS}ms`);
   }
 
-  /** Format every not-yet-surfaced turn as an injectable context block, WITHOUT marking anything
-   *  (undefined when none wait). Two-phase on purpose, like the inbox's format-then-verdict rail:
-   *  marking at format time would let a lost frame auto-yield `done` for work the model never
-   *  saw. A caller commits with {@link commitSurfacedTurns} only once the injection verifiably
-   *  reached the host. The payload is opaque relay bytes; when it parses as JSON with a string
-   *  `context`, that rendered context is what the model reads, else the raw payload is shown. */
+  /** Format every not-yet-surfaced turn still inside its deadline as an injectable context block,
+   *  WITHOUT marking anything (undefined when none wait). Two-phase on purpose, like the inbox's
+   *  format-then-verdict rail: marking at format time would let a lost frame auto-yield `done` for
+   *  work the model never saw. A caller commits with {@link commitSurfacedTurns} only once the
+   *  injection verifiably reached the host. The payload is opaque relay bytes; when it parses as
+   *  JSON with a string `context`, that rendered context is what the model reads, else the raw
+   *  payload is shown. */
   peekPendingTurns(): { text: string; goalIds: string[] } | undefined {
-    const waiting = [...this.activeTurns.values()].filter((t) => !t.surfaced).sort((a, b) => a.acceptedAt - b.acceptedAt);
+    // A turn past its deadline is already settled at the manager, which refuses its yield, though
+    // this cache holds it until the next pull settles it here.
+    const now = Date.now();
+    const waiting = [...this.activeTurns.values()].filter((t) => !t.surfaced && t.deadlineAt > now).sort((a, b) => a.acceptedAt - b.acceptedAt);
     if (!waiting.length) return undefined;
     const blocks = waiting.map((t) => {
       let context = t.payload;
