@@ -213,7 +213,7 @@ try {
     rmSync(managerAware, { force: true });
     const { ensureManager } = await import("../src/lib/manager-proc.js");
     let spawnRefusal: string | undefined;
-    try { ensureManager({ space: SPACE, server }); } catch (e) { spawnRefusal = (e as Error).message; }
+    try { await ensureManager({ space: SPACE, server }); } catch (e) { spawnRefusal = (e as Error).message; }
     check("CELL: with no manager recorded, the spawn REFUSES rather than re-execing this suite",
       spawnRefusal !== undefined, spawnRefusal);
     check("CELL: and the refusal names this suite as the entry it will not re-exec",

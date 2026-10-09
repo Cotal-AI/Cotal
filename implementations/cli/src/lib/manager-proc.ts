@@ -16,6 +16,9 @@ import {
 import { c } from "../ui.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { listManagerSeatsForSpare, printLegacyManagerSpareUncertainty, printSparedAgents, type SpareSeatRow } from "./teardown-spare.js";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** The `--max-sessions` value a live `cotal supervise` argv is actually serving.
  *
  *  The manager reads that flag only at start. A refresh that records a different number while this
@@ -308,20 +311,40 @@ export function assertManagerRecordReplaceable(
     );
 }
 
+/** Wait for the manager this process just started to come up. The manager publishes its spare
+ *  capability only after `start()` returns, bound to its own process identity, so a capability that
+ *  names the recorded manager proves it came up. No deadline: the manager bounds its own boot waits
+ *  (the delivery-admin one alone runs to a minute), so a deadline here could only misreport a slow
+ *  boot. */
+async function awaitManagerUp(space: string, pid: number, probe: LivenessProbe): Promise<void> {
+  for (;;) {
+    try {
+      assertManagerCanSpare(ctx(space));
+      return;
+    } catch {
+      // Not published for this process yet: absent, or a crashed predecessor's.
+    }
+    if (probe(pid) === "dead")
+      throw new Error(`the manager started for space "${space}" (pid ${pid}) exited before it came up. It logged its reason to ${managerLogPath(space)}`);
+    await sleep(200);
+  }
+}
+
 /** Make the control plane available: reuse a manager already running for this folder, else start
- *  one detached. Best-effort — callers treat it as non-fatal. A caller that needs THE manager to
- *  carry a runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is
- *  taken as-is. */
-export function ensureManager(
+ *  one detached and wait for it to come up, throwing when it exits at boot instead. Best-effort —
+ *  callers treat it as non-fatal. A caller that needs THE manager to carry a runtime/launch spec
+ *  (`up -f`) must stop any leftover manager first — a reused one is taken as-is. */
+export async function ensureManager(
   o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
-): { running: boolean; started: boolean; pid?: number } {
+): Promise<{ running: boolean; started: boolean; pid?: number }> {
   const space = o.space ?? folderSpace();
   const state = managerLiveness(probe, readCommand, space);
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
   const pid = startManagerDetached(o);
+  await awaitManagerUp(space, pid, probe);
   return { running: true, started: true, pid };
 }
 
