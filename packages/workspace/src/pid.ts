@@ -485,6 +485,7 @@ export type PinVerdict =
   | { kind: "mismatch"; record: ProcessIdentityRecord; liveToken: string } // PID REUSE: refuse
   | { kind: "torn-pin"; raw: string }        // sibling exists but is not a record
   | { kind: "torn-pairing"; pinPid: number } // sibling names a DIFFERENT pid than the pidfile holds
+  | { kind: "unreadable-pin"; why: string } // sibling exists but could not be read
   | { kind: "unpinned" };     // live pid, but no start token could be established for it
 
 /**
@@ -494,7 +495,7 @@ export type PinVerdict =
  *   - match               -> safe to signal; the process behind the pid is the recorded one
  *   - gone                -> ESRCH-proven dead; the caller may clear the record
  *   - mismatch            -> PID REUSE: the pid now fronts a DIFFERENT start; NEVER signal
- *   - torn-pin/torn-pairing/unpinned -> cannot establish identity on a live pid; refuse, preserve
+ *   - torn-pin/torn-pairing/unreadable-pin/unpinned -> cannot establish identity on a live pid; refuse, preserve
  *
  * The pidfile argument is the SIBLING'S base path (the pidfile itself), and the bare pid is read
  * from it here so the pairing check cannot drift from however the caller read the pid.
@@ -511,11 +512,15 @@ export function verifyIdentityPin(pidfilePath: string, tokenAt: ProcessStartToke
   let rawPin: string;
   try {
     rawPin = readFileSync(identityPinPath(pidfilePath), "utf8");
-  } catch {
-    // No pin: a LEGACY record. A live one warns and is signalable for upgrade compatibility; a pid
-    // that is ESRCH-dead needs no identity proof, so it reports `gone` and the caller clears the
-    // stale record. kill(pid, 0) only: this probe signals nothing.
-    return probeLiveness(pidRead) === "dead" ? { kind: "gone" } : { kind: "legacy" };
+  } catch (e) {
+    // Only a missing pin is a LEGACY record, which warns and is signalable for upgrade compatibility.
+    // A pin that exists but cannot be read proves nothing about the live process, so it refuses. A
+    // pid that is ESRCH-dead needs no identity proof, so either way it reports `gone` and the caller
+    // clears the stale record. kill(pid, 0) only: this probe signals nothing.
+    if (probeLiveness(pidRead) === "dead") return { kind: "gone" };
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT") return { kind: "legacy" };
+    return { kind: "unreadable-pin", why: code ?? (e as Error).message };
   }
   // The TORN shapes below refuse when the pid is live or unknown - identity cannot be proven.
   // When the pid is ESRCH-dead there is nothing to signal, so the record is clearable whatever
@@ -565,7 +570,7 @@ export function removeIdentityPin(pidfilePath: string): void {
   rmSync(identityPinPath(pidfilePath), { force: true });
 }
 
-/** The loud torn/unpinned refusal, in the same shape as {@link identityRefusal}: name the component,
+/** The loud torn/unreadable/unpinned refusal, in the same shape as {@link identityRefusal}: name the component,
  *  the file, what was found, and the operator's next step. Legacy records do not reach this helper:
  *  callers emit {@link identityLegacyWarning} and proceed. */
 export function identityUncertaintyRefusal(label: string, pidfilePath: string, verdict: PinVerdict): Error {
@@ -579,6 +584,11 @@ export function identityUncertaintyRefusal(label: string, pidfilePath: string, v
     return new Error(
       `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} names pid ${verdict.pinPid}, not the pidfile's pid. The record is preserved.\n` +
       `NEXT: inspect both the pidfile pid and the pin pid with \`ps\`. Automatic cleanup follows proven death of the pidfile target. If that process should be stopped, stop it, then rerun this command; do not delete the identity pin.`,
+    );
+  if (verdict.kind === "unreadable-pin")
+    return new Error(
+      `refusing to stop ${label} at ${pidfilePath}: its identity pin ${pin} exists but could not be read (${verdict.why}), so target identity cannot be proven. The record is preserved.\n` +
+      `NEXT: make the identity pin readable, then rerun this command; do not delete it. Once the pid is dead the stale record clears automatically.`,
     );
   if (verdict.kind === "unpinned")
     return new Error(
