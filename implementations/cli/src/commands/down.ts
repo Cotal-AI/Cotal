@@ -781,9 +781,9 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
     const info = await (await jetstreamManager(nc)).streams.info(stream, { subjects_filter: `$KV.${bucket}.>` });
     const roster: Presence[] = [];
     for (const subject of Object.keys(info.state.subjects ?? {})) {
-      const presence = await directValue<Presence>(stream, subject, true);
-      if (!presence) continue; // A positively identified KV tombstone has no value bytes.
-      if (!presence.card?.id) throw new Error(`presence record ${subject} is malformed`);
+      const presence = await directValue<unknown>(stream, subject, true);
+      if (presence === undefined) continue; // A positively identified KV tombstone has no value bytes.
+      if (!isPresenceRow(presence)) throw new Error(`presence record ${subject} is malformed`);
       roster.push(presence);
     }
     // ENUMERATE THE PER-INSTANCE LEASE KEYS. P2 item 3 demoted this bucket from a single `lease` key to
@@ -815,6 +815,18 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
   } finally {
     await nc.drain().catch(() => {});
   }
+}
+
+/** Whether a decoded presence value carries the non-empty string `card.id` the cut matches against
+ *  the retained principals and the string `card.name` its refusal names. Every participant may write
+ *  its own key, so a value that fails refuses the inventory: reading it as absent would drop a live
+ *  participant from the unmanaged-endpoints refusal. */
+function isPresenceRow(value: unknown): value is Presence {
+  if (typeof value !== "object" || value === null) return false;
+  const card = (value as { card?: unknown }).card;
+  if (typeof card !== "object" || card === null) return false;
+  const { id, name } = card as { id?: unknown; name?: unknown };
+  return typeof id === "string" && id !== "" && typeof name === "string";
 }
 
 /**
