@@ -202,24 +202,19 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
   }
 }
 
-/**
- * What entering a step decided: a recorded result to hand back, or a live step whose entry is
- * begun (or recovered) and whose handler context is ready.
- */
-type StepEntry =
-  | { readonly verdict: "replay"; readonly result: unknown }
-  | {
-      readonly verdict: "live";
-      readonly key: StepKey;
-      readonly inputHash: string;
-      /** The entry a previous activation began and never settled, when this one is recovering it. */
-      readonly pending: JournalEntry | undefined;
-      readonly ctx: EffectContext;
-    };
+/** A live step: its entry is begun (or recovered) and its handler context is ready. */
+type LiveStep = {
+  readonly key: StepKey;
+  readonly inputHash: string;
+  /** The entry a previous activation began and never settled, when this one is recovering it. */
+  readonly pending: JournalEntry | undefined;
+  readonly ctx: EffectContext;
+};
 
 /**
  * Enter one step: allocate its key, serve or throw what the journal recorded for it, and otherwise
- * run the checks that guard a new dispatch and begin its entry.
+ * run the checks that guard a new dispatch, begin its entry and hand the live step to `live`, which
+ * must reach its dispatch before its first await.
  *
  * ONE ENTRY FOR EVERY EFFECT, `waitUntil` included. A wait cannot go through {@link performEffect}
  * as a whole, because a non-terminal observation leaves its entry pending, but nothing before its
@@ -232,7 +227,8 @@ async function enterStep(
   name: string,
   hashedInput: unknown,
   frame: EffectFrame,
-): Promise<StepEntry> {
+  live: (step: LiveStep) => Promise<unknown>,
+): Promise<unknown> {
   const key = frame.keys.nextEffect(kind, name);
   const inputHash = digest(hashedInput ?? null);
   const verdict = host.journal.lookup(key, inputHash);
@@ -240,7 +236,7 @@ async function enterStep(
   switch (verdict.verdict) {
     case "replay":
       if (verdict.entry.endedAt !== undefined) frame.clock.advance(verdict.entry.endedAt);
-      return { verdict: "replay", result: verdict.entry.result };
+      return verdict.entry.result;
     case "replay-failed": {
       if (verdict.entry.endedAt !== undefined) frame.clock.advance(verdict.entry.endedAt);
       const e = verdict.entry.error as EntryError;
@@ -338,7 +334,11 @@ async function enterStep(
       await host.journal.bind(key, external);
     },
   };
-  return { verdict: "live", key, inputHash, pending, ctx };
+  // CALLED, NOT RETURNED. The cancellation check above has to share a synchronous turn with the
+  // dispatch it guards. Handing the step back to an awaiting caller reopens the gap that check
+  // closes: measured that way, a race's loser was dispatched with its signal already cancelled and
+  // settled `ok`.
+  return await live({ key, inputHash, pending, ctx });
 }
 
 /**
@@ -355,9 +355,19 @@ export async function performEffect(
   perform: (ctx: EffectContext, inputHash: string) => Promise<unknown>,
   frame: EffectFrame,
 ): Promise<unknown> {
-  const step = await enterStep(host, kind, name, hashedInput, frame);
-  if (step.verdict === "replay") return step.result;
-  const { key, inputHash, pending, ctx } = step;
+  return await enterStep(host, kind, name, hashedInput, frame, (step) => dispatchStep(host, step, perform, frame));
+}
+
+/**
+ * Dispatch a live step's handler and settle its entry with the outcome, or open the hold of a
+ * pending step that `once` forbids dispatching again.
+ */
+async function dispatchStep(
+  host: EffectHost,
+  { key, inputHash, pending, ctx }: LiveStep,
+  perform: (ctx: EffectContext, inputHash: string) => Promise<unknown>,
+  frame: EffectFrame,
+): Promise<unknown> {
   // AT MOST ONCE (spec/cotal-lang.md §7.8): a pending step under `once` may already have written,
   // so it is never dispatched again. Its outcome is unknown, and a hold asks for it.
   if (pending !== undefined && atMostOnce(key.scope)) return await performHold(host, key, ctx.requestId, pending.hold, frame);
@@ -538,10 +548,23 @@ async function performWaitUntil(
   // A SETTLED `waitUntil` replays like any other step, and it must: what settled it was the
   // TERMINAL observation, which IS an answer, and re-observing a wait that already finished
   // would re-ask a question the run has answered. Only the unfinished ones re-observe.
-  const step = await enterStep(host, "waitUntil", name, hashedInput, frame);
-  if (step.verdict === "replay") return step.result;
-  const { key, pending, ctx } = step;
+  return await enterStep(host, "waitUntil", name, hashedInput, frame, (step) =>
+    observeUntil(host, step, name, probe, terminal, every, deadline, frame));
+}
 
+/**
+ * Observe a live `waitUntil` until a terminal observation or the deadline settles its entry.
+ */
+async function observeUntil(
+  host: EffectHost,
+  { key, pending, ctx }: LiveStep,
+  name: string,
+  probe: (frame: EffectFrame) => Promise<unknown>,
+  terminal: ((frame: EffectFrame, observation: unknown) => Promise<unknown>) | undefined,
+  every: string,
+  deadline: string,
+  frame: Frame,
+): Promise<unknown> {
   // THE DEADLINE IS ABSOLUTE AND IT IS READ BACK, never recomputed from a clock that has moved.
   // Recomputing `now + deadline` on every activation is how an hour-long wait becomes immortal:
   // each crash would hand it a fresh hour, and a run that should have given up at 11:00 goes on
