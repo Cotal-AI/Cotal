@@ -74,7 +74,7 @@ import {
   resolveService,
   invokeCommand,
 } from "@cotal-ai/core";
-import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
+import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
@@ -392,9 +392,12 @@ function ownLists<T extends { subscribe?: readonly string[]; allowSubscribe?: re
 
 export interface ManagerOptions {
   space: string;
-  /** Hosted pooled control must not start a local PTY or custody its agents. A composition
-   * must supply a non-custodial hosted/participant runtime explicitly. Stock CLI is unchanged. */
+  /** Hosted pooled control requires signerless authority and either an explicit non-custodial
+   * runtime or explicit execution: none. Stock CLI is unchanged. */
   pooled?: boolean;
+  /** Explicit seat/workflow execution capability. Omitted preserves runtime execution.
+   * `none` requires pooled remote authority and refuses any supplied runtime. */
+  execution?: "runtime" | "none";
   servers?: string;
   name?: string;
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
@@ -1199,7 +1202,9 @@ export class Manager {
   private secretStoreIdentity?: SecretStoreIdentity;
   /** See {@link ManagerOptions.installedExtensions}. */
   private readonly installedExtensions: boolean;
-  private readonly runtime: Runtime;
+  private readonly executionState: { kind: "none" } | { kind: "runtime" };
+  // Declared only: no own Runtime slot exists in the none arm.
+  declare private readonly runtime: Runtime;
   /** Internal test seam. Production leaves this undefined and uses the scoped delivery-admin evictor. */
   private staticLifecycleEvict?: (principal: string) => Promise<import("@cotal-ai/core").EvictionResult>;
   private readonly preserveStopTimeoutMs: number;
@@ -1500,7 +1505,14 @@ export class Manager {
   }
 
   constructor(opts: ManagerOptions) {
-    if (opts.pooled && (!opts.remoteAuthority || opts.runtime === undefined || opts.runtime === "auto" || opts.runtime === "pty"))
+    if (opts.execution !== undefined && opts.execution !== "runtime" && opts.execution !== "none")
+      throw new Error(`unknown manager execution capability ${JSON.stringify(opts.execution)}`);
+    if (opts.execution === "none" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))
+      throw new Error("execution: none requires pooled signerless remote authority and no runtime option");
+    if (opts.execution === "none" && ["renewExecutor", "renewStandingBundle", "mintSessionServing", "mintRetirementRequester", "prepareAgentRetirement", "validateRetainedAgent", "scanGoalIndex", "authorizeAdmin"].some((key) =>
+      typeof opts.remoteAuthority?.[key as keyof NonNullable<ManagerOptions["remoteAuthority"]>] !== "function"))
+      throw new Error("execution: none requires complete closed remote authority callbacks before construction");
+    if (opts.pooled && (!opts.remoteAuthority || (opts.execution !== "none" && (opts.runtime === undefined || opts.runtime === "auto" || opts.runtime === "pty"))))
       throw new Error("pooled control requires signerless remote authority and an explicit non-PTY runtime; local custodial execution is forbidden");
     if (opts.pooled && !opts.remoteAuthority?.renewStandingBundle)
       throw new Error("pooled control requires a closed host-issued all-duty renewal callback before construction");
@@ -1520,9 +1532,10 @@ export class Manager {
     this.secrets = opts.secretStore ?? workspaceSecretStore(this.workspaceRoot);
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
-    this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
-    if (opts.pooled && isCustodialRuntime(this.runtime))
-      throw new Error(`pooled control refuses custodial runtime "${this.runtime.kind}" before starting agents`);
+    this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
+    if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
+    if (opts.pooled && this.executionState.kind === "runtime" && isCustodialRuntime(this.requiredRuntime))
+      throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
     this.endpointServeExecutorExpiresInSeconds = opts.endpointServeExecutorExpiresInSeconds;
     if (opts.resumeAttemptId && !/^[A-Za-z0-9_-]{1,128}$/.test(opts.resumeAttemptId))
@@ -1554,7 +1567,21 @@ export class Manager {
   }
 
   get runtimeKind(): string {
-    return this.runtime.kind;
+    return this.executionState.kind === "none" ? "none" : this.requiredRuntime.kind;
+  }
+
+  get execution(): "runtime" | "none" {
+    return this.executionState.kind;
+  }
+
+  private executionRefusal(): string {
+    return "execution: none forbids seat launch and workflow hosting on this control instance; select the participant Manager with an instance-pinned manager-caller view";
+  }
+
+  /** A defensive last barrier, not a substitute Runtime. Entry admission runs before effects. */
+  private get requiredRuntime(): Runtime {
+    if (this.executionState.kind === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    return this.runtime;
   }
 
   /** What a default process stop does with this manager's seats. `release` drops manager-local
@@ -1562,12 +1589,14 @@ export class Manager {
    *  manager process, so those seats close with it: the stop stops and deprovisions them, and still
    *  releases every seat that can outlive it. */
   get spareSeats(): "release" | "stop" {
-    return this.runtime.kind !== "pty" || this.runtime.supportsRelease === true ? "release" : "stop";
+    if (this.execution === "none") return "release";
+    return this.requiredRuntime.kind !== "pty" || this.requiredRuntime.supportsRelease === true ? "release" : "stop";
   }
 
   /** Reattach this manager's runtime to a durable handle. Refuses by name when adopt is absent. */
   adoptRuntimeHandle(reference: RuntimeReference): AgentHandle {
-    return requireRuntimeAdopt(this.runtime, reference);
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
+    return requireRuntimeAdopt(this.requiredRuntime, reference);
   }
 
   /** The console page URL (manager-hosted, loopback). */
@@ -1680,7 +1709,34 @@ export class Manager {
     return wrapped;
   }
 
+  private async admitExecutionState(): Promise<void> {
+    if (this.remoteAuthority) {
+      // Execution is fixed for a registered instance. An older instance with no capability
+      // record might own retained seats/runs, so it cannot be converted to none by omission.
+      const remote = this.remoteAuthority;
+      const path = join(this.workspaceRoot, ".cotal", `manager-execution.${spaceKey(this.space)}.${remote.instanceId}.json`);
+      if (this.execution === "none" && !existsSync(path) && remote.serveGrant.epoch !== 0)
+        throw new Error("execution: none refuses an existing unclassified manager instance; keep its runtime and retained state, or register a fresh control instance");
+      if (this.execution === "none") {
+        const entries = await remote.scanGoalIndex();
+        if (entries.some((entry) => entry.iid === remote.instanceId && (entry.allocated !== undefined || entry.note !== undefined)))
+          throw new Error("execution: none refuses retained seat or turn inventory before recovery; keep the execution-owning Manager");
+      }
+      if (this.execution === "none" || existsSync(path)) {
+        const record = claimIdentityRecord(path, "manager execution capability", (raw) => {
+          if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+          const r = raw as Record<string, unknown>;
+          return Object.keys(r).sort().join(",") === "execution,instanceId,space,v" && r.v === 1 && r.space === this.space &&
+            r.instanceId === remote.instanceId && (r.execution === "none" || r.execution === "runtime") ? r : undefined;
+        }, () => ({ v: 1, space: this.space, instanceId: remote.instanceId, execution: this.execution }));
+        if (record.execution !== this.execution)
+          throw new Error("manager execution capability differs from its retained instance record; execution cannot change across restart");
+      }
+    }
+  }
+
   private async runStart(): Promise<void> {
+    await this.admitExecutionState();
     this.staticReconcileStopping = false;
     await this.inspectConnectorsAtBoot();
     await this.attach.start();
@@ -1809,7 +1865,7 @@ export class Manager {
     this.ep.on("roster", () => this.logSeatMeshTransitions());
     this.ep.on("presence-view", () => this.logSeatMeshTransitions());
     await this.ep.start();
-    await this.ep.setActivity(`supervisor (${this.runtime.kind})`);
+    await this.ep.setActivity(`supervisor (${this.runtimeKind})`);
     // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
     // THIS logical instance's own key (atomic CAS create). A DIFFERENT instance (a second manager in a
     // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
@@ -1817,7 +1873,7 @@ export class Manager {
     // crashed predecessor's not-yet-expired key), and we REFUSE loud. A crashed holder's key auto-expires
     // (bucket TTL). Losing the key LATER ends this process only when another process holds it; otherwise
     // the renew loop puts it back or keeps retrying ({@link renewLease}).
-    this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
+    this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtimeKind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
       this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
     } catch (e) {
@@ -1952,7 +2008,7 @@ export class Manager {
     // refuses them until its reconcile has returned. A remote user-auth manager uses its four
     // registered issuer callbacks instead of holding a signer; a local user mesh stands none up.
     const remoteRuns = this.remoteAuthority?.runHosting;
-    if (this.remoteAuthority && remoteRuns) {
+    if (this.execution !== "none" && this.remoteAuthority && remoteRuns) {
       this.runHosting = new RunHosting({
         space: this.space,
         servers: this.servers,
@@ -2402,6 +2458,7 @@ export class Manager {
    * before any mutable holder changes. A failed candidate leaves all current creds intact. */
   private async renewRemoteStandingBundle(force = false): Promise<void> {
     if (this.remoteBundleRenewal) return this.remoteBundleRenewal;
+    if (this.leaseStopping) return;
     const renewal = this.renewRemoteStandingBundleOnce(force);
     this.remoteBundleRenewal = renewal;
     try { await renewal; } finally { if (this.remoteBundleRenewal === renewal) this.remoteBundleRenewal = undefined; }
@@ -3001,6 +3058,9 @@ export class Manager {
     // still move the key's revision after we clear the timer, and releasing against a cached
     // revision it has since moved is a CAS the broker correctly refuses, silently, forever.
     await this.leaseRenewTask?.catch(() => {});
+    // An already accepted host issuance must finish before standing transports close. The
+    // epoch/stop fence refuses adoption, but does not cancel the issuer's in-flight request.
+    await this.remoteBundleRenewal?.catch(() => {});
     // A spawn admitted before the fence closed may still be launching. Its seat must be in the
     // snapshot below, or it would outlive a stop that reported success.
     await this.awaitLifecycleDrain();
@@ -3352,6 +3412,8 @@ export class Manager {
     {
       try {
         const args = parseResumeControlArgs(rawArgs);
+        if (this.execution === "none" && args.inventory.agents.length !== 0)
+          return { ok: false, error: this.executionRefusal() };
         const inventoryDigest = createHash("sha256").update(JSON.stringify(args.inventory)).digest("hex");
         if (!this.resumeAttemptId)
           return { ok: false, error: "resumePreserved requires a manager started with --resume-attempt" };
@@ -3500,6 +3562,7 @@ export class Manager {
    *  surface comes up before the host): `unavailable`, retry. The three are told apart, since
    *  the first sentence steers a caller to `--local` and the others must not. */
   private runHost(): RunHosting {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     if (this.runHosting) return this.runHosting;
     if (this.remoteAuthority && !this.remoteAuthority.runHosting)
       throw new EpEnvelopeError("unimplemented", "this manager does not host workflow runs: its issuing host supplied no closed run callbacks, and a remote-authority manager mints no run-driver credentials (SPEC 14.6); drive the run from a terminal with `cotal run start --local --file <program>`");
@@ -4955,6 +5018,7 @@ export class Manager {
    *  comes from `restart.policy` when spawn carried `supervise`; otherwise the Pi session-recovery
    *  constants. Spending the budget falls through to normal retirement. */
   private recoverManagedSession(a: ManagedAgent): void {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const restart = a.restart;
     if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
     const release = this.beginLifecycle();
@@ -5304,6 +5368,7 @@ export class Manager {
    * reports ready. A missing harness degrades only that connector, never unrelated lifecycle work:
    * boot continues, but prints a named refusal and records it on both manager status surfaces. */
   private async inspectConnectorsAtBoot(): Promise<void> {
+    if (this.execution === "none") { this.connectorStatuses = []; return; }
     const rows: ManagerConnectorStatus[] = [];
     let declared: Array<{ name: string; requires: readonly string[] }>;
     if (this.installedExtensions) {
@@ -5337,6 +5402,7 @@ export class Manager {
    *  inventory load) skips the class `one` subscribe for spawn/launch so this member cannot
    *  consume an unpinned request a sibling could serve. */
   private classSpawnEnabled(): boolean {
+    if (this.execution === "none") return false;
     return this.connectorStatuses.some((row) => row.state === "available");
   }
 
@@ -5459,6 +5525,7 @@ export class Manager {
    *  `runId`, and resolved `hash`. USER mesh: a privileged-tier launch is owner-equality-authorized
    *  (spec owner === caller owner) before any side effect; the admin tier keeps operator behavior. */
   private async opLaunch(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
+    if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
     const runId = String(args.runId ?? "").trim();
     const name = String(args.name ?? "").trim();
     if (!runId || !name) return { ok: false, error: "launch requires runId + name" };
@@ -5518,6 +5585,7 @@ export class Manager {
    *  defaulting to the manager's own id for roster/pre-spawn — recorded for the spawner
    *  ledger (own-children despawn + reap-on-parent-exit). */
   async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
+    if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
     const release = this.beginLifecycle();
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
@@ -5640,15 +5708,15 @@ export class Manager {
     // exit, so a name cannot be respawned in place. User-mode seats have no static slot that
     // keeps the incarnation owned across a process death, so the same refusal applies there.
     if (opts.supervise !== undefined) {
-      if (this.runtime.kind !== "pty")
-        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.runtime.kind}" cannot respawn a name in place` };
+      if (this.requiredRuntime.kind !== "pty")
+        return { ok: false, error: `supervise is a restart policy this host cannot enforce: runtime "${this.requiredRuntime.kind}" cannot respawn a name in place` };
       if (this.userMode)
         return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
     }
     // A delegated seat starts outside this host from values alone, so a choice only this host can
     // honour is refused here, before enrollment, and named rather than dropped.
-    if (this.runtime.spawnDelegated) {
-      const delegatedBy = `runtime "${this.runtime.kind}" starts seats outside this host`;
+    if (this.requiredRuntime.spawnDelegated) {
+      const delegatedBy = `runtime "${this.requiredRuntime.kind}" starts seats outside this host`;
       if (!this.remoteAuthority?.enrollManagedAgent)
         return { ok: false, error: `${delegatedBy}, which needs a host that enrolls managed agents (remoteAuthority.enrollManagedAgent); a delegated seat has no local grant path` };
       try {
@@ -5825,9 +5893,9 @@ export class Manager {
       }
     }
     // The child takes launch options as `--opt k=v`, so only string values can cross to it.
-    const unportable = this.runtime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
+    const unportable = this.requiredRuntime.spawnDelegated ? Object.keys(launchOptions ?? {}).filter((k) => typeof launchOptions![k] !== "string") : [];
     if (unportable.length)
-      return { ok: false, error: `runtime "${this.runtime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
+      return { ok: false, error: `runtime "${this.requiredRuntime.kind}" starts seats outside this host, so it cannot pass non-string launch options (${unportable.join(", ")})` };
     // The AG-UI event plane is on unless the launch explicitly opted out. Refused HERE, before
     // anything is minted: a connector that cannot
     // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
@@ -6150,12 +6218,12 @@ export class Manager {
       // manager path is produced for it, only the handoff its runtime writes into the child.
       let spec: LaunchSpec | undefined;
       let handle: AgentHandle;
-      if (this.runtime.spawnDelegated) {
+      if (this.requiredRuntime.spawnDelegated) {
         const handoff = this.composeManagedHandoff(enrolled!.material, enrolled!.actorToken);
         if (this.delegatedLaunched.has(lifecycleUid))
-          throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${this.runtime.kind}"; a lifecycle is handed off at most once`);
+          throw new Error(`lifecycle ${lifecycleUid} was already handed to runtime "${this.requiredRuntime.kind}"; a lifecycle is handed off at most once`);
         this.delegatedLaunched.add(lifecycleUid);
-        handle = this.runtime.spawnDelegated(
+        handle = this.requiredRuntime.spawnDelegated(
           { agent, persona: readFileSync(configPath, "utf8"), role, model, variant, prompt, launchOptions: launchOptions as Record<string, string> | undefined, events },
           handoff,
         );
@@ -6370,6 +6438,8 @@ export class Manager {
   async resumePreserved(
     inventory: ManagerResumeInventory,
   ): Promise<ManagerResumeResult> {
+    if (this.execution === "none" && (!Array.isArray(inventory.agents) || inventory.agents.length !== 0))
+      return { ok: false, agents: [], error: this.executionRefusal() };
     const release = this.beginLifecycle(true);
     if (!release) return { ok: false, agents: [], error: this.maintenanceError() };
     const batchReservations: string[] = [];
@@ -6669,12 +6739,12 @@ export class Manager {
    *  reference, and user or open meshes, which keep no slot. */
   private async orphanedResumeSeat(entry: ManagerResumeAgent, principal: string, liveRoster: Presence[]): Promise<RuntimeReference | undefined> {
     if (!this.auth || this.userMode || entry.identity.mode !== "static") return undefined;
-    if (typeof (this.runtime as Partial<CustodialRuntime>).reap !== "function") return undefined;
+    if (typeof (this.requiredRuntime as Partial<CustodialRuntime>).reap !== "function") return undefined;
     if (liveRoster.some((p) => p.card.id === principal && p.lifecycleUid !== entry.identity.lifecycleUid)) return undefined;
     const slot = await this.readStaticReconcileSlot(entry.name);
     if (slot?.phase !== "active" || slot.actor !== entry.identity.id || slot.lifecycleUid !== entry.identity.lifecycleUid) return undefined;
     if (ownedBySibling(slot, this.managerInstanceId)) return undefined;
-    return slot.runtime?.kind === this.runtime.kind ? slot.runtime : undefined;
+    return slot.runtime?.kind === this.requiredRuntime.kind ? slot.runtime : undefined;
   }
 
   /** Reap a seat {@link orphanedResumeSeat} found, then wait for its principal to leave presence so
@@ -6682,7 +6752,7 @@ export class Manager {
    *  proves nothing or the principal stays live, which means another process holds it. */
   private async reapOrphanedResumeSeat(principal: string, reference: RuntimeReference): Promise<string | undefined> {
     try {
-      const evidence = await requireRuntimeReap(this.runtime, reference);
+      const evidence = await requireRuntimeReap(this.requiredRuntime, reference);
       console.error(`resume: reaped orphaned seat ${reference.kind}:${reference.id} of retained principal "${principal}" (${evidence.detail})`);
     } catch (e) {
       return `retained principal "${principal}" is already live and its recorded seat ${reference.kind}:${reference.id} could not be reaped: ${rejectionText(e)}`;
@@ -6704,13 +6774,14 @@ export class Manager {
     batchReserved = false,
     prepared?: Map<string, PreparedResume>,
   ): Promise<ControlReply> {
+    if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
     const release = this.beginLifecycle(batchReserved);
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
       if (entry.space !== this.space)
         return { ok: false, error: `retained agent ${entry.name} belongs to space "${entry.space}", not "${this.space}"` };
-      if (entry.launch.runtime !== this.runtime.kind)
-        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", current manager uses "${this.runtime.kind}"` };
+      if (entry.launch.runtime !== this.requiredRuntime.kind)
+        return { ok: false, error: `retained agent ${entry.name} requires runtime "${entry.launch.runtime}", current manager uses "${this.requiredRuntime.kind}"` };
       const nameErr = this.nameError(entry.name);
       if (nameErr) return { ok: false, error: nameErr };
       if (this.agents.has(entry.name) || (!batchReserved && this.reserved.has(entry.name)))
@@ -7436,8 +7507,11 @@ export class Manager {
   private managerStatusData(): ManagerStatus {
     return {
       instanceId: this.managerInstanceId,
-      runtime: this.runtime.kind,
-      custody: this.runtime.kind === "pty" && this.runtime.supportsRelease === true ? "custodied" : "legacy",
+      execution: this.execution,
+      runtime: this.runtimeKind,
+      custody: this.execution === "none" ? "none" : this.requiredRuntime.kind === "pty" && this.requiredRuntime.supportsRelease === true ? "custodied" : "legacy",
+      runHosting: this.execution !== "none" && (this.remoteAuthority ? this.remoteAuthority.runHosting !== undefined : !this.userMode && this.auth !== undefined),
+      terminalSessions: this.execution !== "none",
       agentCount: this.agents.size,
       uptimeMs: Date.now() - this.startedAtMs,
       connectors: this.connectorStatuses.map((row) => ({ ...row, binaries: { ...row.binaries } })),
@@ -8412,6 +8486,7 @@ export class Manager {
    *  Returns the acceptance floor payload {name, owner, actor, uid, goalId, fingerprint, executor}
    *  (the ALLOCATED identity). goalId = the request id (env.id, Q3). */
   private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
+    if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const gw = this.goalWriter;
     if (!gw) throw new EpEnvelopeError("unavailable", "the manager goal-writer connection is not standing; spawn-as-action cannot accept (SPEC 13.6)");
     // Refuse to accept until the boot reconcile of inherited goals completes, so a fresh
@@ -9174,14 +9249,14 @@ export class Manager {
    *  exist. Absent for a runtime with no durable custody (there is nothing a successor could reap
    *  by reference), which is the only case that still spawns unreserved. */
   private reserveCustody(): RuntimeReference | undefined {
-    return isCustodialRuntime(this.runtime) ? this.runtime.reserve() : undefined;
+    return isCustodialRuntime(this.requiredRuntime) ? this.requiredRuntime.reserve() : undefined;
   }
 
   /** Spawn under a reserved reference and prove the runtime honoured it. A runtime that minted its
    *  own id instead would leave every durable record addressing a seat that does not exist, so the
    *  mismatch tears the new seat down and throws rather than returning an unaddressable handle. */
   private async spawnCustodied(name: string, spec: LaunchSpec, cwd: string, reserved: RuntimeReference | undefined): Promise<AgentHandle> {
-    const handle = this.runtime.spawn(name, spec, cwd, reserved);
+    const handle = this.requiredRuntime.spawn(name, spec, cwd, reserved);
     if (reserved === undefined) return handle;
     const got = handle.reference;
     if (got?.kind === reserved.kind && got.id === reserved.id) return handle;
@@ -9197,7 +9272,7 @@ export class Manager {
       disposal = "the handle carries no reference, so nothing could reap it by identity and only a best-effort stop was issued";
     } else {
       try {
-        const evidence = await requireRuntimeReap(this.runtime, got);
+        const evidence = await requireRuntimeReap(this.requiredRuntime, got);
         disposal = `the spawned seat was reaped (${evidence.detail})`;
       } catch (e) {
         // Two unrelated failures used to share one sentence here, and the difference is the part the
@@ -9211,7 +9286,7 @@ export class Manager {
       }
     }
     throw new Error(
-      `runtime "${this.runtime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
+      `runtime "${this.requiredRuntime.kind}" reserved custody ${reserved.kind}:${reserved.id} for "${name}" but spawned ` +
         `${got ? `${got.kind}:${got.id}` : "a handle with no reference"}; the recorded reference would address no seat, so ${disposal}`,
     );
   }
@@ -9228,14 +9303,14 @@ export class Manager {
       // before the reservation existed, or a caller that dropped the reference on the way here.
       // Do not name the slot row: the row may well hold a reference this caller never read, and
       // a diagnostic that guesses which is which sends the reader the wrong way.
-      if (isCustodialRuntime(this.runtime))
-        console.error(`static retirement ${a.name}: no custody reference reached this terminal, though runtime "${this.runtime.kind}" custodies its seats; any seat it launched is not addressable from here`);
+      if (isCustodialRuntime(this.requiredRuntime))
+        console.error(`static retirement ${a.name}: no custody reference reached this terminal, though runtime "${this.requiredRuntime.kind}" custodies its seats; any seat it launched is not addressable from here`);
       return;
     }
     // An unproven reap throws from here rather than printing, so it propagates into
     // driveStaticRetirement's catch, which records the failure and HOLDS the name. That is the whole
     // point of refusing: the alias must not be freed while a seat nobody proved gone may still run.
-    const evidence = await requireRuntimeReap(this.runtime, a.runtime);
+    const evidence = await requireRuntimeReap(this.requiredRuntime, a.runtime);
     console.error(`static retirement ${a.name}: orphan seat process ${evidence.detail}`);
   }
 

@@ -89,7 +89,8 @@ are marked; import them with `import type`.
 | `retireManagerInstanceIdentity(root, space, expected)` | `@cotal-ai/workspace` | remove a persisted manager identity only if its complete instance id and serve identity still match `expected`. Returns `removed` or `absent`; refuses malformed, nonregular, and changed records. `absent` is not proof of ownership or successful teardown. The caller must separately prove stop and retirement ownership before using it. |
 | `DELIVERY_CREDS_KIND`, `MEMBERSHIP_RW_CREDS_KIND` | `@cotal-ai/workspace` | the operator-facing KIND names (`delivery.creds`, `membership-rw.creds`) those keys are built from, and what renewal results report. A kind is **not** a key: putting a cred under the bare kind writes the pre-0.4 flat location, which nothing reads. |
 | `Manager`, `ManagerOptions` *(type)* | `@cotal-ai/manager` | construct and run a supervisor in-process; `ManagerOptions.secretStore` injects the one store it reads/writes every secret through. `ManagerOptions.remoteAuthority` is the hosted manager-service authority bundle, including host-owned release, retained-validation, goal-index, and serve-time admin-authorization callbacks. |
-| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and an explicit non-custodial runtime before local execution starts. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](design/platform-pooled-control-authority.md) design describes. |
+| `ManagerOptions.pooled` | `@cotal-ai/manager` | require signerless remote authority and either an explicit non-custodial runtime or `execution: "none"`. A pooled composition must supply the assigned account key and all-duty renewal callback; the CLI's default remains unchanged. A signed-in human's manager gets that material from `managerServiceAuthority`. A platform-run control manager gets it from `AuthServiceHandle.platformControlAuthority` with the shipped `remoteManagerClient` builders, as the [platform control authority](design/platform-pooled-control-authority.md) design describes. |
+| `ManagerOptions.execution` | `@cotal-ai/manager` | omitted or `"runtime"` keeps runtime execution. Explicit `"none"` requires pooled, complete signerless authority and no `runtime` option. It constructs no Runtime and performs no connector inspection, seat launch or workflow hosting. |
 | `createRuntime`, `Runtime` *(type)* | `@cotal-ai/manager` | resolve the spawn backend (pty built in). |
 | `liveKvEntries(kv, filterOrOptions?, options?)`, `LiveKvEntriesOptions` *(type)* | `@cotal-ai/core` | read live KV entries in one finite scan. Pass `{ signal }` as the second argument or after a key filter to cancel. An interrupted scan throws `IncompleteKvScan`; cancellation throws the signal reason, including during an empty-bucket bind. The scan deletes only its owned consumers, including each one nats.js rebuilt from it, after the broker has answered every create those rebuilds sent. A not-found delete counts as gone, a refused one leaves the consumers to broker inactivity expiry (which also covers a crash), and any other delete failure is thrown, as is a not-found delete of a consumer whose create got no reply from the broker before a timeout or a closed connection. A cleanup failure is thrown only when the scan would otherwise return; the scan's own error, its cancellation reason and `IncompleteKvScan` take precedence. |
 
@@ -100,6 +101,19 @@ existing nkeys. The host must fresh-check those coordinates against its registra
 journal before issuing server-selected profiles. A host without that renewal authorization refuses
 the request. Until the host issuer wires the operations and validates them on real connections,
 the presence of these types is not an operational pooled renewal guarantee.
+
+An execution-free control Manager retains native registration, goal recovery, session-ledger,
+renewal and maintenance duties. Its status reports `execution: "none"`, `runtime: "none"`,
+`custody: "none"`, no children or connectors, and false `classSpawn`, `runHosting` and
+`terminalSessions`. The required status fields change the output digest and manager cluster
+revision to 25. Execution is recorded per instance. An incompatible record, retained seat/turn
+inventory or an older unclassified instance refuses boot before recovery.
+
+Select the genuine participant Manager with a host-issued, instance-pinned `manager-caller`
+view for workflow and terminal operations. That Manager retains the children, workflow journal
+and terminal sessions. The control instance neither adopts roster peers nor proxies user runs.
+Missing participant selection or authority refuses. This embedding capability adds no CLI flag
+or application routing.
 
 With `renewStandingBundle` configured, the manager renews all five standing credentials together.
 It checks every returned credential for the held nkey and assigned account, test-connects each one,
