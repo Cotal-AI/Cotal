@@ -1,0 +1,39 @@
+{
+  "suite": [
+    "implementations/manager/smoke/run-owned-agents.smoke.ts"
+  ],
+  "guard": "owned persona spawning uses catalog visibility and the live admitted caller before connector or enrollment effects",
+  "command": "pnpm smoke:manager-run-owned-agents",
+  "completionMarker": "RUN OWNED AGENTS SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/run-owned-agents.mutations.json",
+  "why": [
+    "Two disposable Better Auth users use the stock auth service, registered participant manager, real NATS and real PTY children. No policy is copied into the test.",
+    "Manager source is imported directly, so neither mutation needs a build. The named refusal runs before the deliberate live-child abort."
+  ],
+  "mutations": [
+    {
+      "name": "owned persona spawn bypasses catalog visibility",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (!this.canReadPersona(def.owner, personaCaller, admin))",
+      "replace": "if (false)",
+      "expectRed": "U4-3 admitted non-admin run cannot spawn another owner's known persona",
+      "cell": "U4-3 admitted non-admin run cannot spawn another owner's known persona"
+    },
+    {
+      "name": "persona visibility uses synthetic run driver instead of admitted principal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "this.runHosting?.admittedCaller(authenticatedCaller) ?? authenticatedCaller",
+      "replace": "authenticatedCaller",
+      "expectRed": "U4 persona admitted caller mapping permits its own private content",
+      "cell": "U4 persona admitted caller mapping permits its own private content"
+    },
+    {
+      "name": "run hosting drops admitted caller resolution",
+      "file": "implementations/manager/src/run-hosting.ts",
+      "find": "if (derived.owner === caller.owner && derived.actor === caller.actor && derived.uid === caller.uid) return run.caller;",
+      "replace": "if (derived.owner === caller.owner && derived.actor === caller.actor && derived.uid === caller.uid) return undefined;",
+      "expectRed": "U4 persona current native admin may launch a foreign card without changing its owner",
+      "cell": "U4 persona current native admin may launch a foreign card without changing its owner"
+    }
+  ]
+}

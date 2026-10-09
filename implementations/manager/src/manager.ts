@@ -3760,7 +3760,7 @@ export class Manager {
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
       // mutation. Static meshes resolve true and nothing changes.
-      spawn: (ctx) => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route))),
+      spawn: (ctx) => this.serveGated(ctx, async () => this.serveSpawnGoal(ctx, async (h) => this.opStart(args(ctx), callerOf(ctx), await this.epAdminReach(ctx.subject.caller), h, ctx.subject.route, ctx.subject.caller))),
       despawn: (ctx) => this.serveGated(ctx, async () => {
         const a = targetAgent(ctx);
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx), ctx.subject.caller);
@@ -5215,7 +5215,7 @@ export class Manager {
   }
 
   /** Parse an untyped control-plane `start` request into {@link StartAgentOpts}. */
-  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst"): Promise<ControlReply> {
+  private opStart(args: Record<string, unknown>, caller: string, admin: boolean, hooks?: SpawnHooks, route: "one" | "all" | "inst" = "inst", authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Opaque launch options, when present, must be a mapping — a raw control message could send a
     // scalar/array (the CLI never does). Core doesn't interpret the keys; the connector validates them.
     if (args.launchOptions !== undefined && (typeof args.launchOptions !== "object" || args.launchOptions === null || Array.isArray(args.launchOptions)))
@@ -5311,6 +5311,7 @@ export class Manager {
       },
       caller,
       hooks,
+      authenticatedCaller,
     );
   }
 
@@ -5584,18 +5585,18 @@ export class Manager {
    *  `spawner` is the authenticated id of the peer that requested the spawn (`req.from.id`),
    *  defaulting to the manager's own id for roster/pre-spawn — recorded for the spawner
    *  ledger (own-children despawn + reap-on-parent-exit). */
-  async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
+  async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     if (this.execution === "none") return { ok: false, error: this.executionRefusal() };
     const release = this.beginLifecycle();
     if (!release) return { ok: false, error: this.maintenanceError() };
     try {
-      return await this.startAgentActive(opts, spawner, hooks);
+      return await this.startAgentActive(opts, spawner, hooks, authenticatedCaller);
     } finally {
       release();
     }
   }
 
-  private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {
+  private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
     opts = ownLists(opts);
@@ -5651,6 +5652,17 @@ export class Manager {
         def = loadAgentFile(configPath);
       } catch (e) {
         return { ok: false, error: rejectionText(e) };
+      }
+      // Shared operator files remain launchable. Owned content follows the catalog's visibility
+      // decision before connector loading or any allocation. A hosted run acts for its admission;
+      // only a complete authenticated caller can request the current ledger's admin decision.
+      if (this.userMode && def.owner !== undefined) {
+        const acting = authenticatedCaller === undefined ? undefined
+          : this.runHosting?.admittedCaller(authenticatedCaller) ?? authenticatedCaller;
+        const personaCaller = acting === undefined ? spawner ?? "" : principalKey(acting.owner, acting.actor).key;
+        const admin = authenticatedCaller !== undefined && await this.epAdminReach(authenticatedCaller);
+        if (!this.canReadPersona(def.owner, personaCaller, admin))
+          return { ok: false, error: `no persona "${ref}"` };
       }
     }
     const agent = resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent });
