@@ -129,10 +129,12 @@ fail-loud on collision.
 - **Mesh:** `startMeshDetached`
   ([`commands/up.ts`](../implementations/cli/src/commands/up.ts)) boots the background
   nats-server for `up --detach` and `up -f`, and writes `.cotal/nats.pid` and `.cotal/nats.log`.
-  Foreground `up` runs the broker as its own child. Both modes then run one listener-ready
-  sequence: space setup, user-auth service, mesh record, transport policy, control plane. When the
-  space setup of a fresh boot fails, `up` stops the listener and removes `.cotal/nats.pid` before
-  it exits.
+  Foreground `up` runs the broker as its own child. Both modes then run one spawn-to-ready
+  sequence: readiness, the broker version read, the server name check of a resumed or restored
+  listener, and `.cotal/nats.pid`. Then they run one listener-ready sequence: space setup,
+  user-auth service, mesh record, transport policy, control plane. When the listener never
+  answers, its broker is below the version floor, or the space setup of a fresh boot fails, `up`
+  stops the listener and removes `.cotal/nats.pid` before it exits.
 - **Delivery daemon:** `startDeliveryDetached` / `ensureDelivery`
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
   deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable

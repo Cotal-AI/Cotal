@@ -1091,8 +1091,19 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   }
 
+  const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
+  const boundListener: DetachOpts["boundListener"] = restored ? {
+    serverName: restored.serverName,
+    serverNonce: restored.serverNonce,
+    onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt, startupLock),
+    verify: async () => { await provePreparedRestoreListener(restored); },
+  } : ordinaryAttempt ? {
+    serverName: ordinaryAttempt.serverName,
+    serverNonce: ordinaryAttempt.serverNonce,
+    onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
+    verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
+  } : undefined;
   if (values.detach) {
-    const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
     const { pid, source, authService, controlPlane, delivery, manager } = await startMeshDetached({
       transport,
       server,
@@ -1113,21 +1124,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
       noManager,
       resumeAttempt,
       resumeCommitToken: restored?.managerCommit?.durableCommitToken ?? ordinaryAttempt?.managerCommit?.durableCommitToken,
-      ...(restored ? {
-        boundListener: {
-          serverName: restored.serverName,
-          serverNonce: restored.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedRestoreListener(restored, pid, startedAt, startupLock),
-          verify: async () => { await provePreparedRestoreListener(restored); },
-        },
-      } : ordinaryAttempt ? {
-        boundListener: {
-          serverName: ordinaryAttempt.serverName,
-          serverNonce: ordinaryAttempt.serverNonce,
-          onSpawn: (pid: number, startedAt: string) => bindSpawnedOrdinaryResumeListener(ordinaryAttempt, pid, startedAt, startupLock),
-          verify: async () => { await verifySpawnedOrdinaryListener(ordinaryAttempt); },
-        },
-      } : {}),
+      boundListener,
     });
     // Transport policy is committed inside startMeshDetached before delivery launch (S5+S9).
     console.log(c.dim(`Started nats-server (${source}).`));
@@ -1172,7 +1169,6 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   assertServesDialHost(transport, new URL(server).hostname);
   const setup = useAuth ? await authSetup(storeDir, server, space, host, wantUser ? { idpUrl: values.idp } : undefined, transport, values["rotate-sys"], maxFileStore) : undefined;
   const port = Number(new URL(server).port) || 4222;
-  const restored = resumeAttempt ? pendingRestores.get(resumeAttempt) : undefined;
   // Both modes go through a RENDERER, never bare CLI flags. Open mode used to start from
   // `-js -sd … -p … -a …`, which never called a renderer at all — so the required transport union
   // protected the auth path and was silent on the open one, and a cert/key pair passed to an
@@ -1180,9 +1176,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const confPath = setup ? setup.confPath : writeOpenBrokerConf(storeDir, { port, host, transport, maxFileStore });
   const natsArgs = [
     "-c", confPath,
-    ...(restored ? ["--name", restored.serverName]
-      : ordinaryAttempt ? ["--name", ordinaryAttempt.serverName]
-      : []),
+    ...(boundListener ? ["--name", boundListener.serverName] : []),
   ];
   const { bin, source } = await resolveNatsServer();
 
@@ -1196,22 +1190,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   const child = spawn(bin, natsArgs, { stdio: "inherit" });
   let activationFinished = !resumeAttempt;
   if (!child.pid) throw new Error("nats-server spawned with no pid");
-  writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
-  if (restored && process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
-  if (restored) try {
-    bindSpawnedRestoreListener(restored, child.pid ?? 0, listenerStartedAt, startupLock);
-  } catch (error) {
-    await stopUnboundRestoreListener(child);
-    removeMatchingNatsPid(child.pid ?? 0);
-    throw error;
-  }
-  if (ordinaryAttempt) try {
-    bindSpawnedOrdinaryResumeListener(ordinaryAttempt, child.pid ?? 0, listenerStartedAt, startupLock);
-  } catch (error) {
-    await stopUnboundRestoreListener(child);
-    removeMatchingNatsPid(child.pid ?? 0);
-    throw error;
-  }
+  if (boundListener) await bindSpawnedListener(child, listenerStartedAt, boundListener);
   releaseStartupLock();
   child.on("error", (err) => {
     console.error(c.red(`Failed to start nats-server: ${err.message}`));
@@ -1303,23 +1282,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     }
   });
 
-  const ready = await waitReady(server, setup?.creds);
-  if (!ready) {
-    child.kill("SIGTERM");
-    const reason = `nats-server did not become ready at ${server}`;
-    // `startupLock` is already released by here on this path (and the helper then takes its own);
-    // passed anyway so the call stays correct if the release above ever moves.
-    markPendingResumeDegraded(resumeAttempt ?? "", reason, startupLock);
-    throw new Error(reason);
-  }
-  const v = await brokerVersion(server, space, setup?.creds);
-  if (belowPresenceSafeBroker(v.version) && v.presenceFileBacked)
-    console.error(
-      c.yellow(
-        `! nats-server ${v.version} is below 2.14.5 and the presence bucket of "${space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
-      ),
-    );
-  if (restored) await provePreparedRestoreListener(restored);
+  await awaitSpawnedListener({ child, server, space, creds: setup?.creds, log: "the terminal output above", boundListener });
   {
     // A DAEMON THAT DIES UNDER THIS RUNNING BROKER IS RESTARTED HERE (#2469). It exits on its own once
     // it cannot reach the broker, and a starved host makes a running broker look unreachable, so it can
@@ -2353,6 +2316,66 @@ async function startDeliveryWithBroker(
 }
 
 /**
+ * Publish a maintenance-bound listener's pid and bind it to its attempt before anything waits on it,
+ * so a launch that dies later leaves a journal naming the exact process for recovery to adopt or
+ * retire. A bind that throws stops the listener. Both launch modes call it right after the spawn.
+ */
+async function bindSpawnedListener(child: ChildProcess, startedAt: string, bound: NonNullable<DetachOpts["boundListener"]>): Promise<void> {
+  if (!child.pid) throw new Error("nats-server spawned with no pid");
+  writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+  if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
+  try {
+    bound.onSpawn(child.pid, startedAt);
+  } catch (error) {
+    await stopUnboundRestoreListener(child);
+    removeMatchingNatsPid(child.pid);
+    throw error;
+  }
+}
+
+/**
+ * Everything between spawning a listener and serving it: readiness, the broker version read, a
+ * bound listener's identity check, and an unbound listener's `nats.pid`. Foreground `up` and
+ * {@link startMeshDetached} both call it, so a guard added here reaches both launch modes (#2924).
+ *
+ * A listener that never answers or whose version read throws is stopped and its `nats.pid` removed
+ * before `up` fails. Nothing has recorded the mesh yet, so a listener left running would hold the
+ * port with no registry entry for `cotal down` to reach. A bound listener that fails its identity
+ * check is kept: its maintenance journal is already bound to it.
+ */
+async function awaitSpawnedListener(l: {
+  child: ChildProcess;
+  server: string;
+  space: string;
+  creds?: string;
+  /** Where the listener's output goes, named when it never answers. */
+  log: string;
+  boundListener?: DetachOpts["boundListener"];
+}): Promise<void> {
+  const { child, server, space } = l;
+  let facts: BrokerFacts;
+  try {
+    if (!(await waitReady(server, l.creds))) throw new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
+    facts = await brokerVersion(server, space, l.creds);
+  } catch (e) {
+    child.kill("SIGTERM");
+    removePidPair(cotalPath("nats.pid"), String(child.pid));
+    throw e;
+  }
+  if (belowPresenceSafeBroker(facts.version) && facts.presenceFileBacked)
+    console.error(
+      c.yellow(
+        `! nats-server ${facts.version} is below 2.14.5 and the presence bucket of "${space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
+      ),
+    );
+  if (l.boundListener) await l.boundListener.verify();
+  else {
+    if (!child.pid) throw new Error("nats-server spawned with no pid");
+    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+  }
+}
+
+/**
  * Everything a launch runs once its listener answers: the space setup, the user-auth service, the
  * mesh record, the transport commit and the control plane. Foreground `up` and
  * {@link startMeshDetached} both call it, so the two launch modes cannot drift apart (#2496).
@@ -2553,49 +2576,16 @@ export async function startMeshDetached(
   const listenerStartedAt = new Date().toISOString();
   const child = spawn(bin, args, { detached: true, stdio: ["ignore", fd, fd] });
   closeSync(fd);
-  if (opts.boundListener) {
-    if (!child.pid) throw new Error("nats-server spawned with no pid");
-    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
-    if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
-    try {
-      opts.boundListener.onSpawn(child.pid ?? 0, listenerStartedAt);
-    } catch (error) {
-      await stopUnboundRestoreListener(child);
-      removeMatchingNatsPid(child.pid ?? 0);
-      throw error;
-    }
-  }
+  if (opts.boundListener) await bindSpawnedListener(child, listenerStartedAt, opts.boundListener);
   child.unref();
 
   let tailing = Boolean(opts.onLine);
   if (opts.onLine) tailLines(logPath, startOffset, opts.onLine, () => !tailing);
-
-  const ready = await waitReady(server, setup?.creds);
-  tailing = false;
-  if (!ready) {
-    child.kill("SIGTERM");
-    removePidPair(cotalPath("nats.pid"), String(child.pid));
-    throw new Error(`nats-server did not become reachable at ${server} - see ${logPath}`);
-  }
-  let brokerVer: BrokerFacts;
   try {
-    brokerVer = await brokerVersion(server, space, setup?.creds);
-  } catch (e) {
-    child.kill("SIGTERM");
-    removePidPair(cotalPath("nats.pid"), String(child.pid));
-    throw e;
+    await awaitSpawnedListener({ child, server, space, creds: setup?.creds, log: logPath, boundListener: opts.boundListener });
+  } finally {
+    tailing = false;
   }
-  if (belowPresenceSafeBroker(brokerVer.version) && brokerVer.presenceFileBacked)
-    console.error(
-      c.yellow(
-        `! nats-server ${brokerVer.version} is below 2.14.5 and the presence bucket of "${space}" is file-backed: it can latch after a stall and close the mesh to new joins (#1356); put a nats-server 2.14.5 or newer on PATH (it wins over the bundled one)`,
-      ),
-    );
-  if (!opts.boundListener) {
-    if (!child.pid) throw new Error("nats-server spawned with no pid");
-    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
-  }
-  if (opts.boundListener) await opts.boundListener.verify();
   const { authService, controlPlane } = await serveReadyListener({
     child, server, space, storeDir, setup, seedFile, transport,
     host: opts.host,
