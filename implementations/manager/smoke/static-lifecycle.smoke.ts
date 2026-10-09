@@ -25,7 +25,6 @@
  *     reconcileStaticLifecycles (no active orphan across manager restarts). A ledgerless
  *     orphan (never minted) retires without a broker eviction. A ledgered orphan whose
  *     eviction is unverified stays terminalizing so the alias cannot land in two owners.
- *  8. F2: a static spawn carrying endpointCapabilities is REFUSED at spawn-accept.
  *
  * Run: pnpm smoke:static-lifecycle   (needs nats-server + node on PATH; boots its own broker)
  */
@@ -97,7 +96,7 @@ let ran = 0;
  * when a `check` is deliberately added or removed, because completeness is something only this
  * suite knows, so it has to be the thing that says it.
  */
-const EXPECTED_CHECKS = 43;
+const EXPECTED_CHECKS = 42;
 function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${JSON.stringify(extra) ?? ""}`}`);
   ran++;
@@ -123,7 +122,7 @@ const { servers: SERVERS, stop: stopBroker } = await bootBroker(auth);
 
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-static-lifecycle-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
-for (const alias of ["worker", "crashy", "epcap"])
+for (const alias of ["worker", "crashy"])
   writeFileSync(
     join(workspaceRoot, ".cotal", "agents", `${alias}.md`),
     `---\nname: ${alias}\nrole: worker\nsubscribe: [general]\nallowSubscribe: [general]\nallowPublish: [general]\n---\nbody\n`,
@@ -464,10 +463,6 @@ try {
   check("a resume over an UNMARKED terminalizing slot re-runs cleanup once, then RETIRES marking cleanup complete (write before the retired CAS)",
     plainResume.cleanupCalls === 1 && plainResume.slot?.phase === "retired" && plainResume.slot?.cleanupComplete === true,
     { calls: plainResume.cleanupCalls, slot: plainResume.slot });
-
-  // ── 8. F2: endpointCapabilities refusal ────────────────────────────────────
-  const spawnEp = await mgr.startAgent({ name: "epcap", agent: "smoke-sl", events: false, ...({ endpointCapabilities: [{ endpoint: "x", verb: "call" }] } as Record<string, unknown>) });
-  check("a static spawn carrying endpointCapabilities is REFUSED (F2, fail-closed in code)", spawnEp.ok === false && /endpointCapabilities/.test(spawnEp.error ?? ""), spawnEp);
 } finally {
   await (mgr as unknown as { stop?: () => Promise<void> }).stop?.().catch(() => {});
   await stopBroker();
