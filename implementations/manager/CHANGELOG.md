@@ -1,5 +1,15 @@
 # @cotal-ai/manager
 
+## 0.77.1
+
+### Patch Changes
+
+- b411064: A seat the manager resumes from a preserved cut now meets the manager's `eventsRequired` policy as a fresh spawn does. On a space whose registration requires the event plane, a resumed seat used to launch without that requirement and keep running after its event plane stopped for good, and a seat retained with `--no-events` or on a connector without an event plane resumed with no plane at all. A resumed seat now carries the requirement into its launch material, and one retained without an event plane is refused with the spawn's message before any seat of the cut starts. Spawn and resume take every host-supplied launch field (space, servers, shared MCP servers, env allowlist, resolved harness binaries, `eventsRequired`, workspace root) from one place and ask the same event-plane gate.
+- 2d6a78f: The manager's turn relay now keys each turn by its caller and goal id, the identity the goal plane stores it under. A second caller that submitted a `turn` under a goal id another caller had already used was refused as "accepted under a different submission" although its own goal did not exist. Each caller's turn now gets its own acceptance and its own deadline hold. A seat still yields by goal id alone, so the manager refuses to hand one seat a second caller's turn under an id that seat already holds. Each turn's note now records its deadline hold token, so a turn left pending across the upgrade restart is still adopted under the hold it was minted with.
+  - @cotal-ai/core@0.77.1
+  - @cotal-ai/workspace@0.77.1
+  - @cotal-ai/seat@0.77.1
+
 ## 0.77.0
 
 ### Patch Changes
