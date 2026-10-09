@@ -81,14 +81,16 @@ export async function untilDeliveryAdminAnswers<T>(
 }
 
 /** Run `work` on a short-lived, non-participating endpoint holding one `profile` credential: the one
- *  place the evictors and the liveness probe decide how they connect. The lifetime is always 60s,
- *  which bounds a copied credential to a minute; the profile default is never used because `observer`
- *  has none. A failed stop never replaces the outcome. */
+ *  place the evictors, the liveness probe and spawn onboarding decide how they connect. The lifetime
+ *  is 60s, which bounds a copied credential to a minute, unless the caller names a longer window; the
+ *  profile default is never used because `observer` has none. A failed stop never replaces the
+ *  outcome. */
 export async function withScopedEndpoint<T>(
   opts: { space: string; servers: string; auth: SpaceAuth },
-  profile: "endpoint-evictor" | "observer",
+  profile: "endpoint-evictor" | "observer" | "provisioner",
   name: string,
   work: (ep: CotalEndpoint) => Promise<T>,
+  expiresInSeconds = 60,
 ): Promise<T> {
   const id = newIdentity();
   let ep: CotalEndpoint | undefined;
@@ -96,7 +98,7 @@ export async function withScopedEndpoint<T>(
     ep = new CotalEndpoint({
       space: opts.space,
       servers: opts.servers,
-      creds: await mintCreds(opts.auth, id, profile, { expiresInSeconds: 60 }),
+      creds: await mintCreds(opts.auth, id, profile, { expiresInSeconds }),
       card: { id: id.id, name, kind: "endpoint" },
       channels: [],
       consume: false,

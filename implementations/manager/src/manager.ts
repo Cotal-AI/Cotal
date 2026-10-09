@@ -89,7 +89,7 @@ import {
   type RuntimeMode,
 } from "./runtime/index.js";
 import { AttachEndpoint, type SessionEstablishment } from "./attach-endpoint.js";
-import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers } from "./endpoint-evict.js";
+import { DELIVERY_ADMIN_BOOT_WAIT_MS, isUnansweredDeliveryAdmin, makeManagerEndpointEvictionEvidence, makeManagerEndpointHolderEvictor, untilDeliveryAdminAnswers, withScopedEndpoint } from "./endpoint-evict.js";
 import { makeManagerHolderLivenessProbe } from "./holder-liveness.js";
 import { GateReconcileRefused, reconcileEndpointGate } from "./reconcile-gate.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec, readContinuityAssignment, writeContinuityAssignment, type ContinuityAssignment } from "./launch.js";
@@ -9880,25 +9880,8 @@ export class Manager {
    *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
   private async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
-    const identity = newIdentity();
-    const creds = await mintCreds(this.auth, identity, "provisioner");
-    const prov = new CotalEndpoint({
-      space: this.space,
-      servers: this.servers,
-      channels: [],
-      creds,
-      card: { id: identity.id, name: "provisioner", role: "provisioner", kind: "endpoint" },
-      registerPresence: false,
-      watchPresence: false,
-      watchChannels: false,
-      consume: false,
-    });
-    await prov.start();
-    try {
-      return await fn(prov);
-    } finally {
-      await prov.stop();
-    }
+    // Onboarding runs several provisioning ops, so it keeps the provisioner profile's five-minute window.
+    return withScopedEndpoint({ space: this.space, servers: this.servers ?? DEFAULT_SERVER, auth: this.auth }, "provisioner", "provisioner", fn, 5 * 60);
   }
 
   /** A connection holding this instance's transfer reader grants (docs/design/resume-transfer.md
