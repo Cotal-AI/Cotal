@@ -1451,8 +1451,13 @@ export async function performScope(
   const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
-  // A conclave's open is real work against the world, so it spends the ceiling as an effect does.
-  if (dispatches) countEffect(host, verdict);
+  // A conclave's open is real work against the world, so the host's stop and the ceiling apply to
+  // it as they do to an effect (see {@link performEffect}).
+  if (dispatches) {
+    const stop = host.options.shouldStop?.();
+    if (stop !== undefined) throw new RunReleased(stop);
+    countEffect(host, verdict);
+  }
   if (verdict.verdict === "miss" || verdict.verdict === "refused") {
     await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
     // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
