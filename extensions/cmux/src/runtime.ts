@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -34,18 +34,21 @@ function shellQuote(s: string): string {
  *  assignments, so `env` applies them and then execs the command. `isolate` (agent-spawn panes)
  *  adds `-i` so the pane inherits ONLY the connector-declared env, not the cmux server's (P3 — the
  *  operator's unrelated secrets don't reach a spawned agent); setup panes keep the inherited env. */
-export function paneCommand(pane: Pane, login: boolean, isolate = false): string {
+export function paneCommand(pane: Pane, login: boolean, isolate = false): { command: string; dir: string } {
   const env = Object.entries(pane.env ?? {}).map(([k, v]) => `${k}=${shellQuote(v)}`);
   const cmd = [...env, shellQuote(pane.command), ...(pane.args ?? []).map(shellQuote)].join(" ");
   const cd = pane.cwd ? `cd ${shellQuote(pane.cwd)}\n` : "";
-  const script = `#!/usr/bin/env bash\n${cd}exec env ${isolate ? "-i " : ""}${cmd}\n`;
   // The script holds the pane's env inline (the agent's creds + control token, and any provider key).
   // Write it into a fresh 0o700 temp dir as a 0o600 file: never a world-readable script, and never a
-  // predictable, symlink-attackable /tmp path. cmux runs it as the same user via `bash <path>`.
+  // predictable, symlink-attackable /tmp path. cmux runs it as the same user via `bash <path>`. It
+  // removes its directory before it execs, so the env stays on disk only until bash opens it, and
+  // exits instead of running the agent when the removal fails; a caller whose cmux command fails
+  // removes `dir` itself, since nothing will run the script.
   const dir = mkdtempSync(join(tmpdir(), "cotal-pane-"));
+  const script = `#!/usr/bin/env bash\nrm -rf -- ${shellQuote(dir)} || exit\n${cd}exec env ${isolate ? "-i " : ""}${cmd}\n`;
   const scriptPath = join(dir, "launch.sh");
   writeFileSync(scriptPath, script, { mode: 0o600 });
-  return `bash ${login ? "-l " : ""}${shellQuote(scriptPath)}`;
+  return { command: `bash ${login ? "-l " : ""}${shellQuote(scriptPath)}`, dir };
 }
 
 /** A single-terminal pane node in cmux's layout JSON. */
@@ -57,7 +60,7 @@ function surface(command: string): unknown {
  *  knows cmux's layout shape. One pane → a bare terminal; several → a split (`direction` + `split`
  *  ratio). These panes run under a login shell. */
 function cmuxLayout(label: string, tab: Tab): string {
-  const nodes = tab.panes.map((p) => surface(paneCommand(p, true)));
+  const nodes = tab.panes.map((p) => surface(paneCommand(p, true).command));
   if (nodes.length === 1 && !tab.split) return JSON.stringify(nodes[0]);
   if (!tab.split)
     throw new Error(`cmux layout "${label}": ${nodes.length} panes need a split (direction + ratio)`);
@@ -87,11 +90,11 @@ export class CmuxRuntime implements Runtime {
       );
     // Nothing has the spec's command until openWorkspace, so a confirm prompt that cannot match or a
     // launch script that cannot be written is a refusal.
-    let command: string;
+    let launch: { command: string; dir: string };
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
       watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
-      command = paneCommand(
+      launch = paneCommand(
         { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,
         true, // isolate: spawned agent gets ONLY the connector-declared env (P3)
@@ -101,7 +104,13 @@ export class CmuxRuntime implements Runtime {
     }
     // Keep the new tab's workspace ref so we can drive (send keys to its terminal)
     // and close it later. cmux targets the tab's single terminal surface by workspace.
-    const workspace = cmux.openWorkspace(`cotal-${name}`, JSON.stringify(surface(command)), { focus: false });
+    let workspace: string;
+    try {
+      workspace = cmux.openWorkspace(`cotal-${name}`, JSON.stringify(surface(launch.command)), { focus: false });
+    } catch (err) {
+      rmSync(launch.dir, { recursive: true, force: true });
+      throw err;
+    }
 
     watch?.({
       read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),

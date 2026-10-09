@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import {
   registry,
   SpawnRefused,
@@ -42,7 +43,7 @@ export class TmuxRuntime implements Runtime {
     // Nothing has the spec's command until openWindow, so a failure before it (a confirm prompt that
     // cannot match, a session that will not start, a launcher script that cannot be written) is a
     // refusal.
-    let command: string;
+    let launch: { command: string; dir: string };
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
       watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
@@ -50,13 +51,20 @@ export class TmuxRuntime implements Runtime {
       // P3: env -i strips the tmux server's inherited environment; only the connector-declared
       // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
       // values out of tmux's command line (ps-visible) — they ride a 0o600 launcher script instead.
-      command = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
+      launch = tmux.privateLaunch(tmux.isolatedCommand(spec.env ?? {}, spec.command, spec.args));
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
     // Key the whole lifecycle off the STABLE window ID (@N), not `session:name`. tmux can rename
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
-    const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
+    let window: tmux.WindowRefs;
+    try {
+      window = tmux.openWindow(this.session, name, launch.command, cwd, { focus: false });
+    } catch (err) {
+      rmSync(launch.dir, { recursive: true, force: true });
+      throw err;
+    }
+    const { windowId, paneId, serverPid } = window;
 
     // A restarted tmux server reuses window and pane ids, so the watch acts only on the one that opened
     // this window. It ends the seat's pane, wherever it is now: the window may hold another pane by then.
@@ -174,7 +182,7 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
   const [first, ...rest] = tab.panes;
   if (!first) throw new Error(`tmux layout "${label}": tab has no panes`);
 
-  const firstCmd = tmux.privateLaunch(tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? []));
+  const firstCmd = tmux.privateLaunch(tmux.mergedCommand(first.env ?? {}, first.command, first.args ?? [])).command;
   // Drive splits/focus off the STABLE window ID returned here — never `session:label` (labels can
   // collide or be renamed) or pane indexes `.0`/`.1` (shift under `pane-base-index`).
   const { windowId } = tmux.openWindow(session, label, firstCmd, first.cwd ?? ".", {
@@ -187,7 +195,7 @@ function tmuxLayout(session: string, label: string, tab: Tab): string {
     );
 
   rest.forEach((pane) => {
-    const cmd = tmux.privateLaunch(tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? []));
+    const cmd = tmux.privateLaunch(tmux.mergedCommand(pane.env ?? {}, pane.command, pane.args ?? [])).command;
     tmux.splitWindow(windowId, cmd, pane.cwd ?? ".", tab.split!.direction, tab.split!.ratio);
   });
 

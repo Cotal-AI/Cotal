@@ -47,7 +47,7 @@ const cmd = paneCommand(
   { command: "/bin/echo", args: ["hi"], env: { COTAL_CONTROL_TOKEN: SECRET }, cwd: "/tmp" },
   false,
   true, // isolate (P3): the agent gets ONLY the connector-declared env
-);
+).command;
 
 ok("paneCommand returns a `bash <path>` invocation", /^bash '\/.*\/launch\.sh'$/.test(cmd));
 const scriptPath = cmd.replace(/^bash\s+(?:-l\s+)?'|'$/g, "");
