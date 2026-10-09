@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts, dlvDurable } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts, dlvDurable, isPublishPermissionDenied } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -176,22 +176,29 @@ try {
   let releaseDelete!: () => void;
   const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
   raceConsumer.delete = async () => { await deleteGate; return raceDelete(); };
-  // The admin cred's delete is refused, so the census reads the same whether the stop waited for its
-  // fresh-epoch delete or retained nothing to delete. The connection it settles on differs: the gate
-  // opens on the closed epoch before any redial can finish, so only a retained identity waits for a fresh one.
-  let raceStopOnFreshEpoch = false;
-  const raceStop = raceHandle.stop().then(() => {
-    const nc = (observer as unknown as { nc?: import("@nats-io/transport-node").NatsConnection }).nc;
-    raceStopOnFreshEpoch = nc !== undefined && nc !== raceNc && !nc.isClosed();
-  });
+  // The admin cred's delete is refused, so the census reads the same whether the stop sent its fresh-epoch
+  // delete or skipped it. The refused request tells them apart. The endpoint binds each connection's
+  // request when it dials, so only the fresh connection sends through this prototype.
+  const raceDeleteSubject = `$JS.API.CONSUMER.DELETE.${membershipStream}.${(await raceConsumer.info(true)).name}`;
+  const ncPrototype = Object.getPrototypeOf(raceNc) as typeof raceNc;
+  const ncRequest = ncPrototype.request;
+  let raceFreshDeleteRefused = false;
+  ncPrototype.request = function (this: typeof raceNc, ...args: Parameters<typeof ncRequest>) {
+    const reply = ncRequest.apply(this, args);
+    if (args[0] === raceDeleteSubject) reply.catch((e) => { raceFreshDeleteRefused = isPublishPermissionDenied(e); });
+    return reply;
+  };
+  let raceStopAfterFreshDelete = false;
+  const raceStop = raceHandle.stop().then(() => { raceStopAfterFreshDelete = raceFreshDeleteRefused; });
   void raceStop.catch(() => {});
   const raceHealed = reconnected(observer);
   void raceNc.close();
   await raceNc.closed();
   releaseDelete();
   const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
+  ncPrototype.request = ncRequest;
   for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && raceStopOnFreshEpoch && (await membershipConsumers()).length === 0, { raceStopSettled, raceStopOnFreshEpoch, consumers: await membershipConsumers() });
+  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && raceStopAfterFreshDelete && (await membershipConsumers()).length === 0, { raceStopSettled, raceStopAfterFreshDelete, consumers: await membershipConsumers() });
   // A stop that settles before the self-heal must not leave the next cell watching mid-rebuild.
   await Promise.race([raceHealed, wait(5000)]);
 
