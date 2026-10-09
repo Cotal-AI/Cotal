@@ -590,14 +590,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (values.file) {
       try {
         const prepared = loadManifest(resolve(values.file));
-        const space = values.space ?? prepared.manifest.space;
-        const open = Boolean(values.open) || prepared.manifest.broker?.auth === false;
-        ensureRootForSpace(!open, space);
+        ensureRootForSpace(values.space ?? prepared.manifest.space);
       } catch {
         // Manifest errors are reported by the -f path with the same load; do not double-print.
       }
     } else {
-      ensureRootForSpace(!values.open, spaceForRoot);
+      ensureRootForSpace(spaceForRoot);
     }
   }
 
@@ -1148,7 +1146,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
 
   const useAuth = !values.open;
   const space = values.space ?? resolveSpace(process.cwd());
-  ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
+  ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseOpenOverUserState(Boolean(values.open), space);
   const storeDir = values["store-dir"] ? resolve(values["store-dir"]) : cotalPath("nats");
   if (values.__ordinaryResumeAttempt) {
@@ -2544,7 +2542,7 @@ export async function startMeshDetached(
   if (opts.rotateSys && !useAuth)
     throw new Error("startMeshDetached: --rotate-sys is for auth meshes; an open mesh has no system account or $SYS credentials to rotate");
   const space = opts.space ?? resolveSpace(process.cwd());
-  ensureRootForSpace(useAuth, space); // may pin the cwd as this space's root — before any cotalPath use
+  ensureRootForSpace(space); // may pin the cwd as this space's root — before any cotalPath use
   refuseOpenOverUserState(Boolean(opts.open), space);
   const storeDir = opts.storeDir ? resolve(opts.storeDir) : cotalPath("nats");
   mkdirSync(storeDir, { recursive: true });
@@ -2634,7 +2632,7 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
  *  before the boot could reach the config render - so a `cotal up --space alpha` against a root that
  *  legitimately holds alpha and beta refused on ambiguity that its own `--space` had already
  *  resolved. The tenant list answers the real question without picking. */
-function ensureRootForSpace(_useAuth: boolean, space: string): void {
+function ensureRootForSpace(space: string): void {
   const root = cotalRoot();
   const cwd = process.cwd();
   // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
