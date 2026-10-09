@@ -804,8 +804,8 @@ that does not parse, or is missing a field every consumer reads (`server`, `mode
 `space`), makes every registry command exit 1 with the file's path and what is wrong with it.
 Remove the file or restore the record; nothing repairs or invents a field for you. A registry
 directory that exists but cannot be read, such as one without read permission or a regular file in
-its place, also makes every registry command exit 1 with its path and the read error. Only an
-absent directory is an empty registry.
+its place, also makes every command that reads the registry exit 1 with its path and the read
+error. Only an absent directory is an empty registry.
 
 An IdP may advertise a same-origin space catalog during login. Cotal reads the complete snapshot and
 adds every valid registration without a separate `meshes add`. A snapshot younger than five seconds
