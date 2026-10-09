@@ -39,7 +39,7 @@
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
-  envFlag,
+  eventPlaneArmed,
   hasIdentity,
   MeshAgent,
   startControlServer,
@@ -205,7 +205,7 @@ export const cotal: Plugin = async () => {
   const config = configFromEnv();
   const control = controlFromEnv();
   // Read before the agent start below is queued, so a bad value refuses with nothing started.
-  const eventsArmed = envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired;
+  const eventsArmed = eventPlaneArmed(config);
   // Both readers of the launch material have now read it, so the pointer is dropped: the shells and
   // tools this seat runs from here on inherit no reference to its credential or control token.
   scrubLaunchMaterial();

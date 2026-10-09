@@ -159,8 +159,10 @@ tool results are not republished onto this channel. That covers the tools you wa
 `shell` and `apply_patch` among them. The channel is
 `events.<owner>.<actor>`, named after the seat's principal, and the rules for it are the same on
 every connector: see [connect-claude.md](connect-claude.md#event-plane) for the channel, the grant,
-and how to read it. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out. Your
-own `codex` publishes nothing unless its environment arms the plane.
+and how to read it. The launcher sets `COTAL_EVENTS` by default; pass `--no-events` to opt out on an
+unrestricted space. A registration that requires events arms the plane without that flag, from
+`eventsRequired` in launch material or `COTAL_EVENTS_REQUIRED=1` on a hand-driven user-mode launch.
+Your own `codex` publishes nothing unless its environment arms the plane.
 
 ```bash
 cotal spawn watcher --agent codex -d   # event plane armed; read it with `cotal console`

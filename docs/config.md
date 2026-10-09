@@ -288,10 +288,10 @@ identity plane. `COTAL_LINK` counts as one of them, because a join link carries 
 and the space in a single string.
 
 `eventsRequired` is an additive boolean in launch material. The launcher derives it from the selected
-user-auth registration. Connector config exposes it and the Claude and OpenCode startup gates arm on
-it even when `COTAL_EVENTS` is absent. A direct env launch may use `COTAL_EVENTS_REQUIRED=1` only with
-the complete user-auth quartet. The session refuses if its post ACL does not cover its own
-`events.<owner>.<actor>` channel.
+user-auth registration. Connector config exposes it and the Claude, OpenCode, Codex, Jcode and Pi
+startup gates arm on it even when `COTAL_EVENTS` is absent. A direct env launch may use
+`COTAL_EVENTS_REQUIRED=1` only with the complete user-auth quartet. The session refuses if its post
+ACL does not cover its own `events.<owner>.<actor>` channel.
 
 The control endpoint is a pair, and **half a pair is refused**. A launch with a control socket path
 and no resolvable token, or a token and no socket path, does not fall back to running without a
