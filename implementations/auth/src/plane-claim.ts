@@ -48,12 +48,10 @@
 import { Kvm, type KV } from "@nats-io/kv";
 import type { NatsConnection } from "@nats-io/transport-node";
 import {
-  CotalEndpoint,
   EpEnvelopeError,
   epAuthBucket,
   isCasLoss,
   isPlaneConnTuple,
-  mintCreds,
   newIdentity,
   parsePlaneLivenessResult,
   parsePrincipalLivenessResult,
@@ -62,8 +60,8 @@ import {
   type PlaneConnTuple,
   type PlaneLivenessQuery,
   type PlaneLivenessResult,
-  type SpaceAuth,
 } from "@cotal-ai/core";
+import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 
 /** The ONE exact claim key (`$KV.cotal_auth_<space>.plane`) — the bucket is already space-scoped;
  *  the barrier grant carries exactly this key, never `plane.>`. */
@@ -355,10 +353,6 @@ export async function acquirePlaneClaim(opts: {
   };
 }
 
-/** The per-liveness-call credential's TTL (the barrier-evict precedent): one delivery-admin call
- *  runs in a 15s request budget; 60s bounds a copied credential to a minute. */
-const ORACLE_CRED_TTL_SECONDS = 60;
-
 /**
  * The PRODUCTION liveness oracle over the delivery daemon's `ctl.delivery-admin` rail (the
  * barrier-evict seam's twin: per-call connection, supervisor-profile credential minted with a
@@ -373,53 +367,30 @@ export function makeDeliveryAdminPlaneOracle(opts: {
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): PlaneLivenessOracle {
-  const auth: SpaceAuth = {
-    space: opts.space,
-    operator: { seed: "", jwt: "" },
-    account: { pub: opts.dataAccount.pub, seed: "", jwt: "", signingSeed: opts.dataAccount.signingSeed, signingPub: "" },
-    sys: { pub: "", jwt: "" },
-  };
   const unknown = (query: PlaneLivenessQuery, note: string): PlaneLivenessResult => {
     opts.log(`plane-oracle: ${note}`);
     return { ledger: { tuple: query.ledger, state: "unknown" }, records: { tuple: query.records, state: "unknown" }, sweepComplete: false, note };
   };
   return async (query: PlaneLivenessQuery): Promise<PlaneLivenessResult> => {
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
     try {
-      const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
-      ep = new CotalEndpoint({
-        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-plane-oracle:${opts.space}`),
-        space: opts.space,
-        servers: opts.server,
-        creds,
-        card: { id: id.id, name: "auth-plane-oracle", kind: "endpoint" },
-        channels: [],
-        consume: false,
-        watchChannels: false,
-        watchPresence: false,
-        registerPresence: false,
+      return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-plane-oracle", async (ep) => {
+        const r = await ep.requestDeliveryAdmin("planeConnLiveness", { query }, 15_000);
+        if (!r.ok) return unknown(query, `the delivery daemon refused the liveness query: ${r.error ?? "(no error copy)"}`);
+        // CLOSED parse of the wire-crossing result: exact keys at every level, enum states, closed
+        // tuples. Anything else is a garbled oracle and blocks takeover.
+        const d = parsePlaneLivenessResult(r.data);
+        if (d === undefined)
+          return unknown(query, `the delivery daemon returned a garbled liveness result (${JSON.stringify(r.data ?? null)})`);
+        if (!sameTuple(d.ledger.tuple, query.ledger) || !sameTuple(d.records.tuple, query.records))
+          return unknown(query, "the delivery daemon echoed a FOREIGN liveness query; a result that does not verifiably describe this claim never authorizes");
+        // An internally CONTRADICTORY answer never authorizes: `gone` is conclusive only under a
+        // complete sweep (the eviction seam's truthium rule, applied to the read-only twin).
+        if (!d.sweepComplete && (d.ledger.state === "gone" || d.records.state === "gone"))
+          return unknown(query, `the delivery daemon claimed gone under an INCOMPLETE sweep (ledger=${d.ledger.state}, records=${d.records.state}); contradictory - treated as unknown`);
+        return d;
       });
-      ep.on("error", () => {});
-      await ep.start();
-      const r = await ep.requestDeliveryAdmin("planeConnLiveness", { query }, 15_000);
-      if (!r.ok) return unknown(query, `the delivery daemon refused the liveness query: ${r.error ?? "(no error copy)"}`);
-      // CLOSED parse of the wire-crossing result: exact keys at every level, enum states, closed
-      // tuples. Anything else is a garbled oracle and blocks takeover.
-      const d = parsePlaneLivenessResult(r.data);
-      if (d === undefined)
-        return unknown(query, `the delivery daemon returned a garbled liveness result (${JSON.stringify(r.data ?? null)})`);
-      if (!sameTuple(d.ledger.tuple, query.ledger) || !sameTuple(d.records.tuple, query.records))
-        return unknown(query, "the delivery daemon echoed a FOREIGN liveness query; a result that does not verifiably describe this claim never authorizes");
-      // An internally CONTRADICTORY answer never authorizes: `gone` is conclusive only under a
-      // complete sweep (the eviction seam's truthium rule, applied to the read-only twin).
-      if (!d.sweepComplete && (d.ledger.state === "gone" || d.records.state === "gone"))
-        return unknown(query, `the delivery daemon claimed gone under an INCOMPLETE sweep (ledger=${d.ledger.state}, records=${d.records.state}); contradictory - treated as unknown`);
-      return d;
     } catch (e) {
       return unknown(query, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); liveness is UNKNOWN and the claim is not reclaimed`);
-    } finally {
-      await ep?.stop().catch(() => {});
     }
   };
 }
@@ -433,40 +404,23 @@ export function makeDeliveryAdminPrincipalOracle(opts: {
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): (principal: string) => Promise<import("@cotal-ai/core").PrincipalLivenessResult> {
-  const auth: SpaceAuth = {
-    space: opts.space,
-    operator: { seed: "", jwt: "" },
-    account: { pub: opts.dataAccount.pub, seed: "", jwt: "", signingSeed: opts.dataAccount.signingSeed, signingPub: "" },
-    sys: { pub: "", jwt: "" },
-  };
   const unknown = (principal: string, note: string): import("@cotal-ai/core").PrincipalLivenessResult => {
     opts.log(`principal-oracle: ${principal}: ${note}`);
     return { principal, state: "unknown", sweepComplete: false, note };
   };
   return async (principal) => {
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
     try {
-      const creds = await mintCreds(auth, id, "endpoint-evictor", { expiresInSeconds: ORACLE_CRED_TTL_SECONDS });
-      ep = new CotalEndpoint({
-        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-principal-oracle:${opts.space}`),
-        space: opts.space, servers: opts.server, creds,
-        card: { id: id.id, name: "auth-principal-oracle", kind: "endpoint" },
-        channels: [], consume: false, watchChannels: false, watchPresence: false, registerPresence: false,
+      return await withDeliveryAdminEndpoint(opts, "endpoint-evictor", "auth-principal-oracle", async (ep) => {
+        const reply = await ep.requestDeliveryAdmin("principalLiveness", { principal }, 15_000);
+        if (!reply.ok) return unknown(principal, `the delivery daemon refused the liveness query: ${reply.error ?? "(no error copy)"}`);
+        const parsed = parsePrincipalLivenessResult(reply.data, principal);
+        if (!parsed) return unknown(principal, `the delivery daemon returned a garbled or foreign liveness result (${JSON.stringify(reply.data ?? null)})`);
+        if (parsed.state === "gone" && parsed.sweepComplete !== true)
+          return unknown(principal, "the delivery daemon claimed gone under an incomplete sweep");
+        return parsed;
       });
-      ep.on("error", () => {});
-      await ep.start();
-      const reply = await ep.requestDeliveryAdmin("principalLiveness", { principal }, 15_000);
-      if (!reply.ok) return unknown(principal, `the delivery daemon refused the liveness query: ${reply.error ?? "(no error copy)"}`);
-      const parsed = parsePrincipalLivenessResult(reply.data, principal);
-      if (!parsed) return unknown(principal, `the delivery daemon returned a garbled or foreign liveness result (${JSON.stringify(reply.data ?? null)})`);
-      if (parsed.state === "gone" && parsed.sweepComplete !== true)
-        return unknown(principal, "the delivery daemon claimed gone under an incomplete sweep");
-      return parsed;
     } catch (e) {
       return unknown(principal, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)})`);
-    } finally {
-      await ep?.stop().catch(() => {});
     }
   };
 }

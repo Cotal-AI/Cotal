@@ -161,8 +161,7 @@ are not only JWT minting:
 |---|---|---|
 | JWT `encodeUser` | `startAuthCallout` (`callout.ts`) `fromSeed(opts.dataAccount.signingSeed)` as `userSigner` | connect-time user JWTs |
 | JWT `encodeUser` | `openAuthorityClient` (`authority-client.ts`) `fromSeed(opts.dataAccount.signingSeed)` | self-minted infra connections |
-| JWT `mintCreds` | `makeDeliveryAdminEvictor` (`barrier-evict.ts`) builds a stripped `SpaceAuth` and mints `supervisor` | per-call delivery-admin evictor |
-| JWT `mintCreds` | `makeDeliveryAdminPlaneOracle` (`plane-claim.ts`) same stripped `SpaceAuth` | per-call plane liveness oracle |
+| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) builds a stripped `SpaceAuth` and mints `supervisor` or `endpoint-evictor` | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`) |
 | JWT `openAuthorityClient` | `makeDrainRepairers` (`drain-repair.ts`) | per-repair applier credential |
 | JWT `mintPublicUserJwt` | `openAuthAuthorityPlane` (`service.ts`) `issueManagerServiceAuthority` | remote-manager user JWTs |
 | HMAC-SHA256 | `remoteManagerCurrentRegistrationProof` (`retained-manager-validation.ts`) `createHmac("sha256", secret)` | registration proof over a domain-separated payload |
@@ -280,7 +279,7 @@ manager start with a named error rather than signing in-process.
 ### 3.1 Smallest interface
 
 `mintCreds`, `mintPublicUserJwt`, `encodeUser` in `openAuthorityClient` / `startAuthCallout`,
-and the stripped `SpaceAuth` mints in `barrier-evict.ts` / `plane-claim.ts` need the seed for
+and the stripped `SpaceAuth` mint in `delivery-admin.ts` need the seed for
 one call: `encodeUser`. `remoteManagerCurrentRegistrationProof` needs it for a different call:
 `createHmac("sha256", secret)` over a domain-separated prefix plus a JSON payload
 (`retained-manager-validation.ts`). Permission rows, lifetimes, issuance fences, and creds
