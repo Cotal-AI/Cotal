@@ -1,0 +1,42 @@
+{
+  "suite": [
+    "implementations/manager/smoke/no-execution-participant.smoke.ts",
+    "implementations/manager/smoke/_native-remote-manager.ts"
+  ],
+  "guard": "Real signerless participant workflow and redeemed session retain native class queue, lifecycle and holder boundaries.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build && pnpm smoke:no-execution-participant",
+  "progressPattern": "^PASS ",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-no-execution-participant.json",
+  "why": [
+    "Native hosted-auth/JWKS/exchange fixture, issued instance caller, real PTY workflow child and redeemed terminal. UID and holder cells assert the named native refusal reason because independent downstream guards also refuse, so red proves the intended guard is exercised without claiming permission widening. Every mutated package is rebuilt after exact restore."
+  ],
+  "mutations": [
+    {
+      "name": "none takes unpinned class spawn",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "private classSpawnEnabled(): boolean {\n    if (this.execution === \"none\") return false;",
+      "replace": "private classSpawnEnabled(): boolean {\n    if (this.execution === \"none\") return true;",
+      "expectRed": "noexec cannot steal class spawn while participant is available",
+      "cell": "noexec cannot steal class spawn while participant is available",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "target UID currency check removed",
+      "file": "packages/core/src/endpoint-serve.ts",
+      "find": "  if (mapping.lifecycleUid !== t.lifecycleUid)\n    throw new EpEnvelopeError(\"expired\", `target ${t.owner}.${t.actor} expected lifecycle ${t.lifecycleUid} but the current mapping is ${mapping.lifecycleUid} (SPEC 13.3: expired on mapping mismatch)`);\n",
+      "replace": "",
+      "expectRed": "wrong lifecycle UID cannot establish participant session",
+      "cell": "wrong lifecycle UID cannot establish participant session",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "session holder equality removed",
+      "file": "implementations/auth/src/session-redemption.ts",
+      "find": "  if (row.holder.principal !== holder) deny(`session ${claim.sessionId} was issued to ${row.holder.principal}, not ${holder}`);\n",
+      "replace": "",
+      "expectRed": "other owner cannot redeem held participant terminal authority",
+      "cell": "other owner cannot redeem held participant terminal authority",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

@@ -10,8 +10,8 @@
     "Reached suites used to pin 18 while the shipped document served 20. Restating the count is the",
     "defect class: correct the day it is written, wrong after the next served command.",
     "",
-    "M1 puts the restated 18 back into managerShippedSurface. The invoke cell compares live resolve",
-    "size to that count, so it goes red on the named mismatch. Unique code-only return, not a comment.",
+    "M2 restores revision 24 after execution status changes the closed output contract.",
+    "The changed output contract ships with it, so 24 would name the preceding surface. The",
     "",
     "M2 restores revision 23 after spawn refuses blank fields, the next shipped contract change.",
     "The changed input contract ships with it, so 23 would name the preceding surface. The",
@@ -34,12 +34,12 @@
       "cell": "the resolved surface matches the shipped cluster document"
     },
     {
-      "name": "M2 keep revision 23 after spawn refuses blank fields",
+      "name": "M2 keep revision 24 after execution status changes",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "    revision: 24,",
-      "replace": "    revision: 23,",
-      "expectRed": "the non-blank spawn fields advance the manager cluster revision and retain cancel, transcript-receive, goal-result and resolve-cwd",
-      "cell": "the non-blank spawn fields advance the manager cluster revision and retain cancel, transcript-receive, goal-result and resolve-cwd"
+      "find": "    revision: 25,",
+      "replace": "    revision: 24,",
+      "expectRed": "execution status advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd",
+      "cell": "execution status advances the manager cluster revision and retains cancel, transcript-receive, goal-result and resolve-cwd"
     },
     {
       "name": "M3 compile every contract pair at module scope again",

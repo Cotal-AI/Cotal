@@ -330,6 +330,8 @@
     "smoke:hosted-delivery-lifetime": "tsx implementations/delivery/smoke/hosted-delivery-lifetime.smoke.ts",
     "smoke:hosted-delivery-startup-isolation": "tsx implementations/delivery/smoke/hosted-delivery-startup-isolation.smoke.ts",
     "smoke:remote-ef-accepted-goal": "tsx implementations/manager/smoke/remote-ef-accepted-goal.smoke.ts",
+    "smoke:no-execution": "tsx implementations/manager/smoke/no-execution.smoke.ts",
+    "smoke:no-execution-participant": "tsx implementations/manager/smoke/no-execution-participant.smoke.ts",
     "smoke:remote-ef-pooled": "tsx implementations/manager/smoke/remote-ef-pooled.smoke.ts",
     "smoke:remote-run-attempt": "tsx implementations/manager/smoke/remote-run-attempt.smoke.ts",
     "smoke:remote-run-client": "tsx implementations/manager/smoke/remote-run-client.smoke.ts",

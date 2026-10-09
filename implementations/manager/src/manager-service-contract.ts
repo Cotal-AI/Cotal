@@ -58,14 +58,19 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["instanceId", "runtime", "custody", "agentCount", "uptimeMs", "connectors", "classSpawn", "staticReconciliation"],
+  required: ["instanceId", "execution", "runtime", "custody", "runHosting", "terminalSessions", "agentCount", "uptimeMs", "connectors", "classSpawn", "staticReconciliation"],
   properties: {
     /** The manager's stable service instance id (its per-process incarnation uid). */
     instanceId: { type: "string" },
+    execution: { enum: ["runtime", "none"] },
     /** The runtime kind serving agents (pty/tmux/cmux/orca/herdr). */
     runtime: { type: "string" },
     /** Whether this manager can hand running runtime handles to a successor. */
-    custody: { enum: ["legacy", "custodied"] },
+    custody: { enum: ["legacy", "custodied", "none"] },
+    /** Whether this instance is configured to host workflow drives. */
+    runHosting: { type: "boolean" },
+    /** Whether this instance can own runtime-backed terminal sessions. */
+    terminalSessions: { type: "boolean" },
     /** How many agents this manager currently supervises. */
     agentCount: { type: "integer", minimum: 0 },
     /** Milliseconds since this manager process started serving. */
@@ -138,8 +143,11 @@ const STATUS_OUTPUT_SCHEMA = {
 /** The typed shape a `status` invocation returns (the compiled output contract validates it). */
 export interface ManagerStatus {
   instanceId: string;
+  execution: "runtime" | "none";
   runtime: string;
-  custody: "legacy" | "custodied";
+  custody: "legacy" | "custodied" | "none";
+  runHosting: boolean;
+  terminalSessions: boolean;
   agentCount: number;
   uptimeMs: number;
   connectors: ManagerConnectorStatus[];
@@ -1025,7 +1033,10 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *
  *  24 = `spawn` input refuses an empty or whitespace-only value in its optional string fields. A
  *  changed input contract is a changed described surface even though the command name is
- *  unchanged. */
+ *  unchanged.
+ *
+ *  25 = `status` requires execution, runHosting and terminalSessions, and custody admits none.
+ *  Explicit pooled execution:none has no Runtime and refuses seat/workflow admission. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1043,7 +1054,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 24,
+    revision: 25,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({

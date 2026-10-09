@@ -1,0 +1,2 @@
+# Native explicit control and selected participant acceptance.
+smoke:no-execution

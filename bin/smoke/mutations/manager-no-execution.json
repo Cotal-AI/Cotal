@@ -1,0 +1,122 @@
+{
+  "suite": [
+    "implementations/manager/smoke/no-execution.smoke.ts"
+  ],
+  "guard": "Explicit pooled execution capability, native public refusal effects, immutable instance and staged retained-inventory admission.",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:no-execution",
+  "progressPattern": "^PASS ",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-no-execution.json",
+  "why": [
+    "All Manager behavior runs through its actual built package on a native hosted-auth broker. Source changes are built before each run and rebuilt after exact restore. Native staged retained records are fixtures, not real retained children. The manifest mutant performs the shipped inline persistence before the existing action refusal so the native file-effect witness must fail."
+  ],
+  "mutations": [
+    {
+      "name": "none accepts a supplied runtime option",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (opts.execution === \"none\" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))",
+      "replace": "if (opts.execution === \"none\" && (!opts.pooled || !opts.remoteAuthority))",
+      "expectRed": "none constructor refuses supplied runtime auto",
+      "cell": "none constructor refuses supplied runtime auto",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "none defaults without pooled opt-in",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (opts.execution === \"none\" && (!opts.pooled || !opts.remoteAuthority || opts.runtime !== undefined))",
+      "replace": "if (opts.execution === \"none\" && (!opts.remoteAuthority || opts.runtime !== undefined))",
+      "expectRed": "none requires explicit pooled composition",
+      "cell": "none requires explicit pooled composition",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "unknown capability silently chooses runtime",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (opts.execution !== undefined && opts.execution !== \"runtime\" && opts.execution !== \"none\")",
+      "replace": "if (false)",
+      "expectRed": "unknown capability refuses at construction",
+      "cell": "unknown capability refuses at construction",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "public start gate removed",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {\n    if (this.execution === \"none\") return { ok: false, error: this.executionRefusal() };",
+      "replace": "async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {",
+      "expectRed": "public startAgent refuses before authority/files/persona effects",
+      "cell": "public startAgent refuses before authority/files/persona effects",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "manifest refusal delayed until after real inline persistence",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),",
+      "replace": "      launch: (ctx) => this.serveGated(ctx, () => { if (args(ctx).spec !== undefined) persistLaunchSpec(this.workspaceRoot, parseLaunchSpec(args(ctx).spec, \"inline launch spec\")); return this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route)); }),",
+      "expectRed": "served launch/run refusals produce no host requests or launch files",
+      "cell": "served launch/run refusals produce no host requests or launch files",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "retained allocated inventory ignored",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (entries.some((entry) => entry.iid === remote.instanceId && (entry.allocated !== undefined || entry.note !== undefined)))",
+      "replace": "if (entries.some((entry) => entry.iid === remote.instanceId && entry.note !== undefined))",
+      "expectRed": "seat native retained inventory refuses boot",
+      "cell": "seat native retained inventory refuses boot",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "immutable execution mismatch ignored",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (record.execution !== this.execution)",
+      "replace": "if (false)",
+      "expectRed": "none instance cannot restart as runtime",
+      "cell": "none instance cannot restart as runtime",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "older unclassified instance is accepted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (this.execution === \"none\" && !existsSync(path) && remote.serveGrant.epoch !== 0)",
+      "replace": "if (false)",
+      "expectRed": "unclassified later epoch refuses none boot",
+      "cell": "unclassified later epoch refuses none boot",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "workflow admission loses none capability refusal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "private runHost(): RunHosting {\n    if (this.execution === \"none\") throw new EpEnvelopeError(\"unimplemented\", this.executionRefusal());",
+      "replace": "private runHost(): RunHosting {",
+      "expectRed": "run-start refuses natively before any allocation",
+      "cell": "run-start refuses natively before any allocation",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "stop closes before accepted standing renewal drains",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    await this.remoteBundleRenewal?.catch(() => {});\n",
+      "replace": "",
+      "expectRed": "stop waits for already accepted host-issued renewal",
+      "cell": "stop waits for already accepted host-issued renewal",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "last duty bypasses native broker preflight",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {\n",
+      "replace": "      for (const name of REMOTE_MANAGER_IDENTITY_NAMES) {\n        if (name === \"sessionLedger\") continue;\n",
+      "expectRed": "native broker refuses invalid last-duty signature before family adoption",
+      "cell": "native broker refuses invalid last-duty signature before family adoption",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "own inherited goal terminal settle is skipped",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (remaining <= 0) { await settle(); return; }",
+      "replace": "    if (remaining <= 0) { return; }",
+      "expectRed": "noexec recovery reports actual inherited acceptance uncertain, never fabricated success",
+      "cell": "noexec recovery reports actual inherited acceptance uncertain, never fabricated success",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

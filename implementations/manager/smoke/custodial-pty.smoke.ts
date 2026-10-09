@@ -49,6 +49,9 @@ const file = (path: string): string => {
 {
   const sample = {
     instanceId: "i",
+    execution: "runtime",
+    runHosting: true,
+    terminalSessions: true,
     runtime: "pty",
     custody: "custodied",
     agentCount: 0,
@@ -68,6 +71,9 @@ const file = (path: string): string => {
     "status output refuses a payload missing staticReconciliation",
     MANAGER_STATUS_CONTRACT.output.validate({
       instanceId: "i",
+      execution: "runtime",
+      runHosting: true,
+      terminalSessions: true,
       runtime: "pty",
       custody: "custodied",
       agentCount: 0,
