@@ -213,7 +213,7 @@ try {
   const before = readFileSync(mgrPid, "utf8");
   let refused: string | undefined;
   try {
-    ensureManager({}, stuck);
+    await ensureManager({}, stuck);
   } catch (e) {
     refused = (e as Error).message;
   }
@@ -286,7 +286,7 @@ try {
   const corruptBefore = readFileSync(mgrPid, "utf8");
   let ensureRefused: string | undefined;
   try {
-    ensureManager({});
+    await ensureManager({});
   } catch (e) {
     ensureRefused = (e as Error).message;
   }

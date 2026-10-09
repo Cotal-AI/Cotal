@@ -230,9 +230,13 @@ On an existing mesh, `cotal up` reconciles the presence and lease bucket TTLs. I
 canary and waits for the bucket to expire it before reporting success. If the broker accepts the
 stream update but the backing store does not persist or enforce it, `up` exits nonzero with a TTL
 persistence error instead of trusting the value returned by stream info. A refresh that restores a
-missing manager says so with its pid (`✓ restored in the background: manager (pid N)`); a refresh
-that finds everything already running prints only the `✓ mesh "<space>" already running` line. A
-first boot starts its manager without the restore line.
+missing manager waits for that process to come up, then says so with its pid (`✓ restored in the
+background: manager (pid N)`). A manager that `up` starts and that exits at boot instead, for example
+while a crashed predecessor's lease has not expired, is reported as `! control plane degraded:` with
+the path of its log, and a refresh then exits nonzero. The same happens when another
+`cotal supervise` takes over the manager pidfile before the started process comes up. A refresh that
+finds everything already running prints only the `✓ mesh "<space>" already running` line. A first
+boot starts its manager without the restore line.
 
 
 `--user-auth --idp <url>` starts the space's auth service alongside the broker: the NATS
