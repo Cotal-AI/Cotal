@@ -126,3 +126,9 @@ catalog within a workspace, and `cotal_spawn` on a name that does not exist fail
 
 The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it reads and
 writes the selected mesh root's files directly, offline, with no broker connection ([CLI](cli.md)).
+
+On a user-auth mesh, spawning owned persona content requires its creator principal or a
+current admin grant. A hosted run uses its admitted caller for that decision. A foreign
+card refuses as not-found before connector loading or enrollment, including an explicit
+config path. Unowned operator files remain launchable. Manifest launches retain their
+separate owner authorization.

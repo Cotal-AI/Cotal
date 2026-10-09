@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/mesh-spawn.smoke.ts"
+  ],
+  "guard": "successful spawn terminal lifecycle overrides a provisional acceptance floor during completion discharge",
+  "command": "pnpm smoke:runtime-mesh-spawn",
+  "completionMarker": "mesh-spawn.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/terminal-lifecycle.json",
+  "why": [
+    "A manager-shaped endpoint on real NATS serves distinct floor and terminal UIDs. The stock interpreter records both in its own journal and its completion sweep invokes despawn.",
+    "This models the historical enrollment mismatch. The native manager suite separately proves current real PTY cleanup. Runtime source is imported directly, with no build."
+  ],
+  "mutations": [
+    {
+      "name": "successful terminal loses to provisional acceptance floor",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "if (fact.state === \"succeeded\" && recorded !== undefined) return recorded;",
+      "replace": "if (false) return recorded;",
+      "expectRed": "U4-5 completion releases the succeeded terminal lifecycle, never the provisional floor",
+      "cell": "U4-5 completion releases the succeeded terminal lifecycle, never the provisional floor"
+    }
+  ]
+}

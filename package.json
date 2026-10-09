@@ -777,7 +777,8 @@
     "smoke:jcode-queue-fallback-loss": "tsx extensions/connector-jcode/smoke/jcode-queue-fallback-loss.smoke.ts",
     "smoke:temp-containment": "pnpm --filter \"@cotal-ai/workspace...\" build && tsx bin/smoke/temp-containment.smoke.ts",
     "smoke:seat-orphan": "pnpm --filter @cotal-ai/seat build && tsx packages/seat/smoke/orphan.smoke.ts",
-    "smoke:platform-supervisor": "tsx implementations/auth/smoke/platform-supervisor.smoke.ts"
+    "smoke:platform-supervisor": "tsx implementations/auth/smoke/platform-supervisor.smoke.ts",
+    "smoke:manager-run-owned-agents": "tsx implementations/manager/smoke/run-owned-agents.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

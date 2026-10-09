@@ -40,8 +40,8 @@
     {
       "name": "public start gate removed",
       "file": "implementations/manager/src/manager.ts",
-      "find": "async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {\n    if (this.execution === \"none\") return { ok: false, error: this.executionRefusal() };",
-      "replace": "async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks): Promise<ControlReply> {",
+      "find": "async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {\n    if (this.execution === \"none\") return { ok: false, error: this.executionRefusal() };",
+      "replace": "async startAgent(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {",
       "expectRed": "public startAgent refuses before authority/files/persona effects",
       "cell": "public startAgent refuses before authority/files/persona effects",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
