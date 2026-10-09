@@ -614,14 +614,17 @@ async function runStartedDelivery(
     BROKER_GONE_MS,
     BROKER_GONE_BACKSTOP_MS,
   );
-  // close() reads these to tell a lease read lost with a dropped socket from one the broker did not answer.
+  // close() reads these to tell a lease read lost with a dropped socket from one the broker did not
+  // answer, and a reconnect inside the broker-gone window from one a serving daemon would have stopped for.
   let transportDownSince: number | undefined;
   let transportGeneration = 0;
+  let transportLateGeneration = 0;
   ep.on("transport", ({ connected }: { connected: boolean }) => {
     health.transport(connected);
     if (connected) {
-      transportDownSince = undefined;
       transportGeneration++;
+      if (transportDownSince !== undefined && Date.now() - transportDownSince > BROKER_GONE_MS) transportLateGeneration = transportGeneration;
+      transportDownSince = undefined;
     } else transportDownSince ??= Date.now();
   });
   ep.on("error", (e: Error) => {
@@ -780,7 +783,8 @@ async function runStartedDelivery(
         // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
         // A lost read rejects the attempt, and a lost delete leaves this instance's row.
         // A transport still down is waited for as long as a serving daemon waits for its broker, so
-        // the window counts from the drop.
+        // the window counts from the drop, and a reconnect past it earns no repeat even when it lands
+        // before the lost request times out.
         const generation = transportGeneration;
         const reconnected = async () => {
           const downSince = transportDownSince;
@@ -790,7 +794,7 @@ async function runStartedDelivery(
             const timer = setTimeout(done, downSince + BROKER_GONE_MS - Date.now());
             ep.on("transport", onTransport);
           });
-          return transportDownSince === undefined && transportGeneration !== generation;
+          return transportDownSince === undefined && transportGeneration !== generation && transportLateGeneration <= generation;
         };
         left = await release().then(
           async (row) => row !== undefined && ep.ownsDeliveryLease(row.info) && await reconnected() ? release() : row,
