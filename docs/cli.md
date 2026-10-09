@@ -955,6 +955,9 @@ absent component or a clean zero. A PID record that exists but cannot be read, o
 its current and a pre-upgrade name, refuses only its own row. A record that its component removes
 while the pass runs reads as `absent`.
 
+Each component prints on one line. A control character inside a reported reason, such as a newline
+in a stored row's field name, prints as its `\uXXXX` escape.
+
 ## spawn
 
 ```bash
