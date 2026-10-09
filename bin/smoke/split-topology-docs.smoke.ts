@@ -108,7 +108,7 @@ check(
   "claim 2: detach summary is pidfile-live, ensureManager returns a started manager once it is up; supervise prints manager up after start",
   upReport.includes("return `✓ running in the background: ${components.join(\", \")} - stop with: cotal down`;") &&
     /if \(state === "alive"\) return \{\s*running: true,\s*started: false\b[^}]*\}/.test(managerProc) &&
-    /const pid = startManagerDetached\(o\);\s*await awaitManagerUp\(space, pid, probe\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
+    /const pid = startManagerDetached\(o\);\s*await awaitManagerUp\(space, identityRecord\(pid\)\);\s*return \{\s*running: true,\s*started: true,\s*pid\b[^}]*\}/.test(managerProc) &&
     supervise.includes('await mgr.start();') &&
     supervise.includes('c.green("✓ manager up")'),
 );

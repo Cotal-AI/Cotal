@@ -6,11 +6,11 @@ import { selfArgv } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
 import {
-  assertManagerCanSpare, armManagerShutdownIntent, disarmManagerShutdownIntent,
-  canonicalLocalProcessPath, commandIsCotalSupervisor, localProcessPath, parsePid, probeLiveness,
+  assertManagerCanSpare, armManagerShutdownIntent, assertRecordIdentity, disarmManagerShutdownIntent,
+  canonicalLocalProcessPath, commandIsCotalSupervisor, identityRecord, localProcessPath, parsePid, probeLiveness,
   readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
-  type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats,
+  type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
   parsePositiveIntegerFlag, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -312,28 +312,35 @@ export function assertManagerRecordReplaceable(
 }
 
 /** Wait for the manager this process just started to come up. The manager publishes its spare
- *  capability only after `start()` returns, bound to its own process identity, so a capability that
- *  names the recorded manager proves it came up. No deadline: the manager bounds its own boot waits
- *  (the delivery-admin one alone runs to a minute), so a deadline here could only misreport a slow
- *  boot. */
-async function awaitManagerUp(space: string, pid: number, probe: LivenessProbe): Promise<void> {
+ *  capability only after `start()` returns, bound to its own process identity, so only a capability
+ *  for the started identity proves that process came up. A concurrent `supervise` that takes over the
+ *  record publishes its own capability, which says nothing about the started process, so losing the
+ *  record refuses. No deadline: the manager bounds its own boot waits (the delivery-admin one alone
+ *  runs to a minute), so a deadline here could only misreport a slow boot. */
+async function awaitManagerUp(space: string, started: ProcessIdentityRecord | { pid: number }): Promise<void> {
+  const manager = `the manager started for space "${space}" (pid ${started.pid})`;
+  if (!("token" in started))
+    throw new Error(`cannot read the start identity of ${manager}, so its readiness cannot be told apart from another manager's. Its log is ${managerLogPath(space)}`);
   for (;;) {
     try {
-      assertManagerCanSpare(ctx(space));
+      assertManagerCanSpare(ctx(space), undefined, started);
       return;
     } catch {
-      // Not published for this process yet: absent, or a crashed predecessor's.
+      // Not published for the started process yet, or the record names another one: decided below.
     }
-    if (probe(pid) === "dead")
-      throw new Error(`the manager started for space "${space}" (pid ${pid}) exited before it came up. It logged its reason to ${managerLogPath(space)}`);
+    const identity = assertRecordIdentity(started).kind;
+    if (identity === "gone" || identity === "mismatch")
+      throw new Error(`${manager} exited before it came up. It logged its reason to ${managerLogPath(space)}`);
+    if (parsePid(readPidfile(PID_PATH(space)) ?? "") !== started.pid)
+      throw new Error(`${manager} lost ${PID_PATH(space)} to another process before it came up, so it is not the manager serving the space. Its log is ${managerLogPath(space)}`);
     await sleep(200);
   }
 }
 
 /** Make the control plane available: reuse a manager already running for this folder, else start
- *  one detached and wait for it to come up, throwing when it exits at boot instead. Best-effort —
- *  callers treat it as non-fatal. A caller that needs THE manager to carry a runtime/launch spec
- *  (`up -f`) must stop any leftover manager first — a reused one is taken as-is. */
+ *  one detached and wait for it to come up, throwing when it exits or loses its record first.
+ *  Best-effort — callers treat it as non-fatal. A caller that needs THE manager to carry a
+ *  runtime/launch spec (`up -f`) must stop any leftover manager first — a reused one is taken as-is. */
 export async function ensureManager(
   o: ManagerStartOpts = {},
   probe: LivenessProbe = probeLiveness,
@@ -344,7 +351,7 @@ export async function ensureManager(
   if (state === "alive") return { running: true, started: false };
   assertManagerRecordReplaceable(probe, readCommand, space); // refuses on unknown / unattributable, reports foreign
   const pid = startManagerDetached(o);
-  await awaitManagerUp(space, pid, probe);
+  await awaitManagerUp(space, identityRecord(pid));
   return { running: true, started: true, pid };
 }
 
