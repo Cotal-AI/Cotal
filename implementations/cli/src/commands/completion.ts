@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
@@ -158,14 +158,16 @@ const SCRIPTS: Record<string, string> = {
 export async function completion(args: ParsedArgs): Promise<void> {
   const argv = args.positionals;
   if (argv[0] === "install") return install(argv[1]);
+  if (argv[0] === "uninstall") return uninstall(argv[1]);
   const script = argv[0] ? SCRIPTS[argv[0]] : undefined;
   if (!script) {
-    console.error(c.red("usage: cotal completion <bash|zsh|fish|powershell | install [shell]>"));
+    console.error(c.red("usage: cotal completion <bash|zsh|fish|powershell | install [shell] | uninstall [shell]>"));
     console.error(c.dim("  enable it now (this shell):"));
     console.error(c.dim("    bash/zsh:  source <(cotal completion bash)"));
     console.error(c.dim("    fish:      cotal completion fish | source"));
     console.error(c.dim("    pwsh:      cotal completion powershell | Out-String | Invoke-Expression"));
     console.error(c.dim("  or install it persistently:  cotal completion install"));
+    console.error(c.dim("  or uninstall it:             cotal completion uninstall"));
     process.exit(1);
   }
   process.stdout.write(script);
@@ -222,15 +224,84 @@ function install(shell?: string): void {
   process.exit(1);
 }
 
-/** Argument completion for `cotal completion` itself: the supported shells, plus `install`. */
+/** `cotal completion uninstall [shell]` — remove the cached stub and un-wire from your shell rc.
+ *  Auto-detects the shell from $SHELL when omitted; fails loud on an unknown or unsupported one.
+ *  Idempotent — re-running once uninstalled is a clean no-op. */
+function uninstall(shell?: string): void {
+  const sh = shell ?? basename(process.env.SHELL ?? "");
+  if (!SCRIPTS[sh]) {
+    console.error(c.red(`can't uninstall for "${sh || "unknown shell"}" - pass one of: bash, zsh, fish`));
+    process.exit(1);
+  }
+  if (sh === "fish") {
+    const dir = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "fish", "completions");
+    const file = join(dir, "cotal.fish");
+    let removed = false;
+    try {
+      unlinkSync(file);
+      removed = true;
+    } catch {
+      /* file absent */
+    }
+    if (removed) {
+      console.log(c.green("✓ uninstalled fish completion"));
+      console.log(c.dim(`  removed ${file}`));
+    } else {
+      console.log(c.dim(`fish completion is not installed (${file} absent)`));
+    }
+    return;
+  }
+  if (sh === "bash" || sh === "zsh") {
+    const dir = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cotal");
+    const stub = join(dir, `completion.${sh}`);
+    let stubRemoved = false;
+    try {
+      unlinkSync(stub);
+      stubRemoved = true;
+    } catch {
+      /* stub absent */
+    }
+    const rc = sh === "zsh" ? join(process.env.ZDOTDIR || homedir(), ".zshrc") : join(homedir(), ".bashrc");
+    let rcModified = false;
+    try {
+      const current = readFileSync(rc, "utf8");
+      const escapedStub = stub.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const blockRegex = new RegExp(`(?:# cotal shell completion\\r?\\n)?source ["']${escapedStub}["']\\r?\\n?`);
+      if (blockRegex.test(current)) {
+        const cleaned = current.replace(blockRegex, "");
+        writeFileSync(rc, cleaned);
+        rcModified = true;
+      }
+    } catch {
+      /* rc absent */
+    }
+    if (stubRemoved || rcModified) {
+      console.log(c.green(`✓ uninstalled ${sh} completion`));
+      if (stubRemoved) console.log(c.dim(`  removed ${stub}`));
+      if (rcModified) console.log(c.dim(`  unwired from ${rc}`));
+    } else {
+      console.log(c.dim(`${sh} completion is not installed`));
+    }
+    return;
+  }
+  console.error(c.red("auto-uninstall isn't supported for powershell."));
+  console.error(c.dim("  remove from your $PROFILE:  cotal completion powershell"));
+  process.exit(1);
+}
+
+/** Argument completion for `cotal completion` itself: the supported shells, plus `install` and `uninstall`. */
 export function completionComplete(argv: string[]): CompletionResult {
   const shells = Object.keys(SCRIPTS).map((value) => ({ value }));
   if (argv.length <= 1)
     return {
-      items: [...shells, { value: "install", description: "install for your shell" }],
+      items: [
+        ...shells,
+        { value: "install", description: "install for your shell" },
+        { value: "uninstall", description: "uninstall for your shell" },
+      ],
       directive: "nofiles",
     };
-  if (argv[0] === "install") return { items: shells, directive: "nofiles" };
+  if (argv[0] === "install" || argv[0] === "uninstall") return { items: shells, directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }
 

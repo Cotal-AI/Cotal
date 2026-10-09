@@ -2420,10 +2420,12 @@ generation (see [Plumbing](#plumbing)).
 ```bash
 cotal completion <bash|zsh|fish|powershell>   # print a stub to eval / source
 cotal completion install [shell]              # install it persistently
+cotal completion uninstall [shell]            # remove stub and unwire from shell rc
 ```
 
-Prints or installs shell completion. Completion candidates come from each command's declared flags
-and, where useful, live mesh state (spaces, personas, managed agents) resolved offline.
+Prints, installs, or uninstalls shell completion. Completion candidates come from each command's declared flags
+and, where useful, live mesh state (spaces, personas, managed agents) resolved offline. `uninstall` removes the
+cached stub file and deletes the sourcing line from the shell configuration file.
 
 ## feedback
 
