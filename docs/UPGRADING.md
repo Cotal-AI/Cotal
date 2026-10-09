@@ -75,6 +75,23 @@ on one face, a further refusal on either route answers 429 without its reason.
 Pass the `failures` and `badCaps` arrays your `/exchange` route counts in, so both routes share one
 budget per face. A host that serves only this route can pass new empty arrays.
 
+## Primitive scope kind in 0.78.0
+
+`PrimitiveSpec` from `@cotal-ai/lang` replaces `opensScope: boolean` with `scope: ScopeKind | null`,
+the scope kind a primitive opens, in the way `kind` names the effect it journals. Both engines now
+read that kind from the table. Before, they cast the primitive's name to `ScopeKind`, so a scope row
+missing from the union compiled and reached the journal as a kind its readers did not know. A
+running mesh and its journals need nothing.
+
+### What stops working
+
+Code that reads `opensScope` from `PRIMITIVES` or a `PrimitiveSpec` fails to compile, and plain
+JavaScript reads `undefined` there, so a check on it never holds.
+
+### Before the upgrade
+
+Read `spec.scope !== null` where you read `spec.opensScope`, or `spec.scope` when you need the kind.
+
 ## Token verifier clock tolerance in 0.77.0
 
 `validateUserToken`, and the `IdpConfig` that `verifyIdpToken` and `createIdpBridge` take, from

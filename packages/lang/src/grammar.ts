@@ -1175,7 +1175,7 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   // `once` and `conclave` have one body and nothing to race, and are here for another reason: a
   // settled one is replayed without entering its body, so a write from it happens on the live run
   // only.
-  if (spec.opensScope) {
+  if (spec.scope !== null) {
     // One `seen` set per combinator call: two branches calling the same helper is one defect in
     // that helper, not two, and reporting it twice tells an author to fix one line twice.
     const seen = new Set<AnyNode>();

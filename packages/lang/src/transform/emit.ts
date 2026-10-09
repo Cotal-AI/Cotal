@@ -957,7 +957,7 @@ class Emitter {
    */
   private effectArgs(name: string, node: AnyNode): string {
     const spec = PRIMITIVES[name];
-    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;
+    const defers = spec !== undefined && spec.scope !== null && spec.optionsAt === 2;
     return ((node.arguments as AnyNode[]) ?? [])
       .map((a, i) => {
         const code = a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a);

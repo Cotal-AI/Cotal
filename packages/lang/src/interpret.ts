@@ -970,7 +970,7 @@ class Interpreter {
 
     // Concurrency combinators take their branches unevaluated: the thunks must run inside their
     // own frames, so evaluating them here would defeat the whole point.
-    if (spec.opensScope) return await this.callScope(name, argNodes, env, frame);
+    if (spec.scope !== null) return await this.callScope(name, spec.scope, argNodes, env, frame);
 
     const args: unknown[] = [];
     for (const a of argNodes) args.push(await this.evaluate(a, env, frame));
@@ -1021,10 +1021,9 @@ class Interpreter {
    * the same named effect cannot race for a counter, and replay reproduces both regardless of
    * which one finished first.
    */
-  async callScope(name: string, argNodes: AnyNode[], env: Env, frame: Frame): Promise<unknown> {
+  async callScope(name: string, scopeKind: ScopeKind, argNodes: AnyNode[], env: Env, frame: Frame): Promise<unknown> {
     const spec = PRIMITIVES[name];
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
-    const scopeKind = name as ScopeKind;
 
     const first = await this.evaluate(argNodes[0] as AnyNode, env, frame);
     if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();

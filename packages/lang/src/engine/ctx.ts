@@ -477,12 +477,12 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
   const openScope = async (
     name: string,
+    scopeKind: ScopeKind,
     spec: NonNullable<(typeof PRIMITIVES)[string]>,
     args: unknown[],
     site: Site | undefined,
   ): Promise<unknown> => {
     const frame = currentFrame();
-    const scopeKind = name as ScopeKind;
     const first = args[0];
     if (name === "once" && typeof first !== "function") throw onceBodyNotCallable();
     const bag = args[spec.optionsAt];
@@ -808,7 +808,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     async effect(name, args, site) {
       const spec = PRIMITIVES[name];
       if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
-      if (spec.opensScope) return await openScope(name, spec, args, site);
+      if (spec.scope !== null) return await openScope(name, spec.scope, spec, args, site);
       // A PROBE ARRIVES AS THE PROGRAM'S OWN CLOSURE and the shared seam calls it `(frame, args)`,
       // exactly as it calls a scope's arms, so it is adapted here for the same reason `asArm`
       // exists: the engine's closures speak the program's convention and the scope machinery speaks
