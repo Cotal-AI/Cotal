@@ -361,7 +361,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     token: material?.token || env.COTAL_TOKEN?.trim() || link?.token,
     user: link?.user,
     pass: link?.pass,
-    tls: env.COTAL_TLS?.trim() === "1" || link?.tls || false,
+    tls: envFlag(env, "COTAL_TLS") || link?.tls || false,
     feedbackKey: env.COTAL_FEEDBACK_KEY?.trim() || undefined,
     feedbackUrl: env.COTAL_FEEDBACK_URL?.trim() || undefined,
   };

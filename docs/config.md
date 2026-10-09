@@ -125,9 +125,9 @@ These are the operator-facing variables. Most of the connector-session ones (spa
 are set **for you** by `cotal spawn` / the manager when they launch an agent; you set them by hand
 only when you drive a connector session yourself (e.g. your own `claude` with the plugin) or a custom
 launcher. Comma-separated lists are trimmed. The connector on/off flags (`COTAL_CHANNEL`,
-`COTAL_EVENTS`, `COTAL_EVENTS_REQUIRED`, `COTAL_CODEX_TUI`, `COTAL_JCODE_TUI`) take `1`, `true`,
-`yes` or `on` and `0`, `false`, `no` or `off` in any case. The connector refuses any other value
-when it starts, naming the variable.
+`COTAL_EVENTS`, `COTAL_EVENTS_REQUIRED`, `COTAL_TLS`, `COTAL_CODEX_TUI`, `COTAL_JCODE_TUI`) take
+`1`, `true`, `yes` or `on` and `0`, `false`, `no` or `off` in any case. The connector refuses any
+other value when it starts, naming the variable.
 
 | Variable | Consumed by | Meaning | Default |
 |---|---|---|---|
@@ -143,7 +143,7 @@ when it starts, naming the variable.
 | `COTAL_ALLOW_PUBLISH` | connector session | Post ACL (channels the agent *may* post to). Set but empty means deny | agent file's, else deny (empty) |
 | `COTAL_MODEL` | connector session | Model label (display metadata), set by the launcher | none |
 | `COTAL_KIND` | connector session | Endpoint kind | `agent` |
-| `COTAL_TLS` | connector session | Connect over TLS (`1`) | off |
+| `COTAL_TLS` | connector session | Connect over TLS (`1`); off keeps the join link's choice | off (or the link's) |
 | `COTAL_TOKEN` | connector session | Auth token (token / open modes) | none |
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
