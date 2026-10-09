@@ -19,13 +19,9 @@
  * already have; a dedicated narrow delivery-admin infra profile is the cleaner target once the
  * ledgered infra-mint family (#30) lands — migrate there, do not invent it here.
  */
-import { CotalEndpoint, EVICT_PRINCIPALS_MAX, mintCreds, newIdentity, type EvictionResult, type SpaceAuth } from "@cotal-ai/core";
+import { EVICT_PRINCIPALS_MAX, type EvictionResult } from "@cotal-ai/core";
 import type { EvictPrincipal } from "./credential-ledger.js";
-
-/** The per-eviction credential's TTL (Security H3): one delivery-admin call runs in a 15s request
- *  budget; 60s covers connect + the call + teardown with margin, and bounds the blast radius of a
- *  copied supervisor credential to a minute rather than the profile's default 24h. */
-const EVICTOR_CRED_TTL_SECONDS = 60;
+import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 
 /** Accept one daemon eviction result only when it verifiably describes `principal`; anything else
  *  maps to `failClosed`, so it never authorizes. */
@@ -66,49 +62,19 @@ export function makeDeliveryAdminEvictor(opts: {
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): EvictPrincipal {
-  // The stripped mint view (core's stripSpaceAuth shape): mintCreds reads ONLY space +
-  // account.pub + account.signingSeed; the operator/system material is genuinely absent here.
-  const auth: SpaceAuth = {
-    space: opts.space,
-    operator: { seed: "", jwt: "" },
-    account: { pub: opts.dataAccount.pub, seed: "", jwt: "", signingSeed: opts.dataAccount.signingSeed, signingPub: "" },
-    sys: { pub: "", jwt: "" },
-  };
   const failClosed = (principal: string, note: string): EvictionResult => {
     opts.log(`auth-barrier-evict: ${principal}: ${note}`);
     return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
   };
   return async (principal: string): Promise<EvictionResult> => {
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
     try {
-      // Security H3: this is a per-eviction credential for ONE ~15s delivery-admin call, not a
-      // standing connection. The `supervisor` profile is default standing-renewable (24h); mint it
-      // with a tight TTL so a COPIED credential expires almost immediately instead of carrying a
-      // day of full manager-control-tier + lease/presence authority. (The dedicated narrow
-      // delivery-admin infra profile is the #30 target; until then, bound the lifetime here.)
-      const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
-      ep = new CotalEndpoint({
-        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-barrier-evict:${opts.space}`),
-        space: opts.space,
-        servers: opts.server,
-        creds,
-        card: { id: id.id, name: "auth-barrier-evict", kind: "endpoint" },
-        channels: [],
-        consume: false,
-        watchChannels: false,
-        watchPresence: false,
-        registerPresence: false,
+      return await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
+        const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
+        if (!r.ok) return failClosed(principal, `the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
+        return checkedEviction(principal, r.data, failClosed);
       });
-      ep.on("error", () => {});
-      await ep.start();
-      const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
-      if (!r.ok) return failClosed(principal, `the delivery daemon refused the eviction: ${r.error ?? "(no error copy)"}`);
-      return checkedEviction(principal, r.data, failClosed);
     } catch (e) {
       return failClosed(principal, `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`);
-    } finally {
-      await ep?.stop().catch(() => {});
     }
   };
 }
@@ -120,50 +86,27 @@ export function makeDeliveryAdminEvictor(opts: {
  * refusal, an unreachable rail or an unusable reply leaves every holder it covers unverified.
  */
 export function makeDeliveryAdminHolderEvictor(opts: Parameters<typeof makeDeliveryAdminEvictor>[0]): (holderPrincipals: readonly string[]) => Promise<EvictionResult[]> {
-  const auth: SpaceAuth = {
-    space: opts.space,
-    operator: { seed: "", jwt: "" },
-    account: { pub: opts.dataAccount.pub, seed: "", jwt: "", signingSeed: opts.dataAccount.signingSeed, signingPub: "" },
-    sys: { pub: "", jwt: "" },
-  };
   const failClosed = (principal: string, note: string): EvictionResult => {
     opts.log(`auth-barrier-evict: ${principal}: ${note}`);
     return { principal, kicked: 0, remaining: 0, verifiedGone: false, scanComplete: false, note };
   };
   return async (principals) => {
-    const id = newIdentity();
-    let ep: CotalEndpoint | undefined;
     const evictions: EvictionResult[] = [];
     try {
-      const creds = await mintCreds(auth, id, "supervisor", { expiresInSeconds: EVICTOR_CRED_TTL_SECONDS });
-      ep = new CotalEndpoint({
-        onConnection: (nc) => opts.onConnection?.(nc, `cotal:auth-barrier-evict:${opts.space}`),
-        space: opts.space,
-        servers: opts.server,
-        creds,
-        card: { id: id.id, name: "auth-barrier-evict", kind: "endpoint" },
-        channels: [],
-        consume: false,
-        watchChannels: false,
-        watchPresence: false,
-        registerPresence: false,
+      await withDeliveryAdminEndpoint(opts, "supervisor", "auth-barrier-evict", async (ep) => {
+        for (let i = 0; i < principals.length; i += EVICT_PRINCIPALS_MAX) {
+          const chunk = principals.slice(i, i + EVICT_PRINCIPALS_MAX);
+          const r = await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, 15_000);
+          const results = r.ok && Array.isArray(r.data) && r.data.length === chunk.length ? (r.data as unknown[]) : undefined;
+          const why = !r.ok
+            ? `the delivery daemon refused the family eviction: ${r.error ?? "(no error copy)"}`
+            : `the delivery daemon answered a family eviction result set that does not match the ${chunk.length} holder(s) asked about`;
+          chunk.forEach((p, j) => evictions.push(results ? checkedEviction(p, results[j], failClosed) : failClosed(p, why)));
+        }
       });
-      ep.on("error", () => {});
-      await ep.start();
-      for (let i = 0; i < principals.length; i += EVICT_PRINCIPALS_MAX) {
-        const chunk = principals.slice(i, i + EVICT_PRINCIPALS_MAX);
-        const r = await ep.requestDeliveryAdmin("evictPrincipals", { principals: chunk }, 15_000);
-        const results = r.ok && Array.isArray(r.data) && r.data.length === chunk.length ? (r.data as unknown[]) : undefined;
-        const why = !r.ok
-          ? `the delivery daemon refused the family eviction: ${r.error ?? "(no error copy)"}`
-          : `the delivery daemon answered a family eviction result set that does not match the ${chunk.length} holder(s) asked about`;
-        chunk.forEach((p, j) => evictions.push(results ? checkedEviction(p, results[j], failClosed) : failClosed(p, why)));
-      }
     } catch (e) {
       const note = `the delivery-admin rail is unreachable (${e instanceof Error ? e.message : String(e)}); eviction is UNKNOWN and the barrier fails closed`;
       for (const p of principals.slice(evictions.length)) evictions.push(failClosed(p, note));
-    } finally {
-      await ep?.stop().catch(() => {});
     }
     return evictions;
   };

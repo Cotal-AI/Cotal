@@ -6,7 +6,7 @@
  * logged in as YOU across every repo on this box.
  */
 import { readFileSync, writeFileSync } from "node:fs";
-import { assertLifecycleToken, CotalEndpoint, isLoopbackLiteral, mintCreds, newIdentity, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
+import { assertLifecycleToken, isLoopbackLiteral, registry, resolveAuthProvider, resolveSpaceCatalogConsumer, type Command, type ParsedArgs, type SecretStore } from "@cotal-ai/core";
 import { CLI_USER_ACTOR, findCotalRoot, getSpaceAuth, homeCotalDir, loadMeshes, probeLiveness, removeCatalogMeshes, resolveSpace, userAuthStateDir, workspaceSecretStore, type AgentAuthHealth } from "@cotal-ai/workspace";
 import {
   deleteIdpSession,
@@ -17,6 +17,7 @@ import {
   revokeIdpSession,
 } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
+import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import { findInteractiveActor, findManagedActor, grantActor, loadActorLedger, revokeActor, type ActorRow } from "./ledger.js";
 import { INTERACTIVE_RETIRE_PATH, runAuthService } from "./service.js";
 import { loadAuthServiceInfo, loadOwnerSecret, loadPinnedIdp } from "./store.js";
@@ -194,31 +195,17 @@ async function evictRevokedPrincipal(space: string, principal: string): Promise<
   if (!auth) return fallback("no local signer here");
   const mesh = loadMeshes().find((m) => m.space === space);
   if (!mesh) return fallback("mesh not in the local registry");
-  const id = newIdentity();
-  const ep = new CotalEndpoint({
-    space,
-    servers: mesh.server,
-    creds: await mintCreds(auth, id, "supervisor"),
-    card: { id: id.id, name: "revoke-evict", kind: "endpoint" },
-    channels: [],
-    consume: false,
-    watchChannels: false,
-    watchPresence: false,
-    registerPresence: false,
-  });
-  ep.on("error", () => {});
   try {
-    await ep.start();
-    const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
-    if (!r.ok) return `live-connection eviction refused: ${r.error}`;
-    const d = (r.data ?? {}) as { kicked?: number; remaining?: number; verifiedGone?: boolean };
-    return d.verifiedGone
-      ? `live connections closed now (${d.kicked ?? 0} kicked, verified gone)`
-      : `live-connection eviction INCOMPLETE (${d.kicked ?? 0} kicked, ${d.remaining ?? "?"} still live) - run \`cotal doctor auth\``;
+    return await withDeliveryAdminEndpoint({ space, server: mesh.server, dataAccount: auth.account }, "supervisor", "revoke-evict", async (ep) => {
+      const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
+      if (!r.ok) return `live-connection eviction refused: ${r.error}`;
+      const d = (r.data ?? {}) as { kicked?: number; remaining?: number; verifiedGone?: boolean };
+      return d.verifiedGone
+        ? `live connections closed now (${d.kicked ?? 0} kicked, verified gone)`
+        : `live-connection eviction INCOMPLETE (${d.kicked ?? 0} kicked, ${d.remaining ?? "?"} still live) - run \`cotal doctor auth\``;
+    });
   } catch (e) {
     return fallback(e instanceof Error ? e.message : String(e));
-  } finally {
-    await ep.stop().catch(() => {});
   }
 }
 
