@@ -8644,7 +8644,7 @@ export class Manager {
         // exists that early — the goal spec does not carry it and the terminal does not exist yet.
         // A same-goalId attempt that loses the bind while the winner is still in flight can then
         // serve what the winner actually allocated instead of inventing an empty identity.
-        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, actor: agentTriple.actor, uid: agentTriple.uid, readinessDeadlineMs: readinessTimeoutMs });
+        const idx = await recordGoalIndex(gw.ctx, ref, executor.lifecycleUid, { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, readinessDeadlineMs: readinessTimeoutMs });
         // A create loss is an idempotent retry ONLY for the same incarnation. A FOREIGN iid means a
         // sibling instance accepted this goalId (the live vector is a client retry over ANYCAST, not
         // a journal consumer): this attempt provisions nothing and answers with the winner's floor,
@@ -8728,12 +8728,12 @@ export class Manager {
    *  wrote before its own ack). Refuses `unavailable` rather than inventing one — see
    *  {@link cachedSpawnAcceptance} for why an empty identity is never an acceptable answer. */
   private async acceptanceFromIndex(entry: GoalIndexEntry, ref: GoalRef, goalId: string, fingerprint: string, executor: { lifecycleUid: string; epoch: number }): Promise<SpawnAcceptance> {
-    if (entry.allocated === undefined)
-      throw new EpEnvelopeError("unavailable", `goal "${goalId}" was accepted by instance "${entry.iid}", which persisted no acceptance floor; its allocated identity is not readable from here (SPEC 13.6)`);
+    if (entry.allocated?.owner === undefined)
+      throw new EpEnvelopeError("unavailable", `goal "${goalId}" was accepted by instance "${entry.iid}", which persisted no acceptance floor naming its owner; its allocated identity is not readable from here (SPEC 13.6)`);
     const readinessDeadlineMs = entry.allocated.readinessDeadlineMs ?? (await readGoalSpec(this.goalWriter!.ctx, ref))?.value.readinessDeadlineMs;
     if (readinessDeadlineMs === undefined)
       throw new EpEnvelopeError("unavailable", `goal "${goalId}" is accepted but its readiness deadline is not readable; a synchronous follower cannot bound its wait honestly (SPEC 13.6)`);
-    return { name: entry.allocated.name, owner: DEV_OWNER, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, readinessDeadlineMs, executor };
+    return { name: entry.allocated.name, owner: entry.allocated.owner, actor: entry.allocated.actor, uid: entry.allocated.uid, goalId, fingerprint, readinessDeadlineMs, executor };
   }
 
   /** Reconstruct a cached acceptance for a same-goalId retry NOT in the live map (a prior incarnation
@@ -8756,8 +8756,11 @@ export class Manager {
     const d = (result?.data ?? {}) as { name?: string; id?: string; lifecycleUid?: string };
     const spec = await readGoalSpec(this.goalWriter!.ctx, ref);
     const readinessDeadlineMs = spec?.value.readinessDeadlineMs;
-    if (typeof d.name === "string" && d.name.length > 0 && typeof d.id === "string" && d.id.length > 0 && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
-      return { name: d.name, owner: DEV_OWNER, actor: d.id, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
+    // The terminal names the agent by its slot id: the `owner.actor` principal in user mode, the
+    // bare nkey under DEV_OWNER on a static mesh.
+    const principal = typeof d.id !== "string" || d.id.length === 0 ? null : this.userMode ? parsePrincipalKey(d.id) : { owner: DEV_OWNER, actor: d.id };
+    if (typeof d.name === "string" && d.name.length > 0 && principal !== null && typeof d.lifecycleUid === "string" && d.lifecycleUid.length > 0 && readinessDeadlineMs !== undefined)
+      return { name: d.name, owner: principal.owner, actor: principal.actor, uid: d.lifecycleUid, goalId, fingerprint, readinessDeadlineMs, executor };
     throw new EpEnvelopeError("unavailable", `goal "${goalId}" is already accepted but its allocated identity is not readable (no acceptance floor, and no terminal carrying one); retry (SPEC 13.6)`);
   }
 
