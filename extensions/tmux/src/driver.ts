@@ -380,12 +380,14 @@ export function mergedCommand(
  *  process argument — visible to any local `ps`/`tmux list-panes` — so passing the rendered `env`
  *  inline would leak the agent's creds + control token (and any model-provider key). Instead the body
  *  lives in a fresh 0o700 temp dir as a 0o600 (owner-only) script; tmux only ever sees `bash <path>`,
- *  and the secrets are read from the file, never the command line. */
-export function privateLaunch(commandBody: string): string {
+ *  and the secrets are read from the file, never the command line. The script removes its directory
+ *  before it execs, so the secrets stay on disk only until bash opens it; a caller whose tmux command
+ *  fails removes `dir` itself, since nothing will run the script. */
+export function privateLaunch(commandBody: string): { command: string; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), "cotal-tmux-"));
   const scriptPath = join(dir, "launch.sh");
-  writeFileSync(scriptPath, `#!/usr/bin/env bash\nexec ${commandBody}\n`, { mode: 0o600 });
-  return `bash ${shellQuote(scriptPath)}`;
+  writeFileSync(scriptPath, `#!/usr/bin/env bash\nrm -rf -- ${shellQuote(dir)}\nexec ${commandBody}\n`, { mode: 0o600 });
+  return { command: `bash ${shellQuote(scriptPath)}`, dir };
 }
 
 /** Type literal text into a tmux target.

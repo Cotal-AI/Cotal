@@ -17,6 +17,9 @@ cotal supervise --runtime cmux
 
 Library composition roots can instead `import "@cotal-ai/cmux"` directly.
 
+Each agent's env is written to an owner-only launch script, which keeps it off the tab's command,
+and the script removes its directory before it starts the agent.
+
 Lifecycle waits poll cmux's exact workspace inventory. Closing the workspace authoritatively tears
 down its terminal and child; an unreachable app fails the wait closed. cmux does not expose child
 completion while a workspace remains open, so that case times out rather than reporting a false exit.

@@ -30,7 +30,7 @@ checks++;
 console.log("  ✓ unsafe env names are refused");
 
 const secret = "tmux-package-test-secret";
-const launch = privateLaunch(isolatedCommand({ TOKEN: secret }, "/bin/echo", []));
+const launch = privateLaunch(isolatedCommand({ TOKEN: secret }, "/bin/echo", [])).command;
 const launchPath = launch.replace(/^bash\s+'?|'?$/g, "");
 try {
   check("private launcher command does not expose secret env", !launch.includes(secret));
