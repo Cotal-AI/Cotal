@@ -436,9 +436,11 @@ the exact recorded attempt and finishes the remaining stop and endpoint proofs i
 needing the (by then intentionally dead) manager. A partial cut never publishes `ready`. It cannot
 be combined with component names, manifest teardown, or `--dry-run`.
 
-Before anything stops, the cut reads the presence roster and refuses while an endpoint the manager
-does not own is live. A deleted presence key is the only row it reads as absent. Any other row that
-is not a card with a non-empty string `id` and a string `name` refuses the cut with
+On a mesh that runs the delivery daemon, the cut stops it first so no join or leave can change
+membership under the manager's inventory. Before any manager-owned endpoint stops, the cut then
+reads the presence roster and refuses while an endpoint the manager does not own is live. A refusal
+leaves the delivery daemon stopped. A deleted presence key is the only row it reads as absent. Any
+other row that is not a card with a non-empty string `id` and a string `name` refuses the cut with
 `presence record <subject> is malformed`.
 
 **Seat checkpoints.** After the stack is proven down, the cut writes one checkpoint per retained
