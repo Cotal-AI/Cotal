@@ -76,7 +76,7 @@ for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
   if (!setupSkill.includes(cmd)) fail(`cotal-setup skill lost its command: ${cmd}`);
 }
 
-const BAD = /(?:href="|\]\()(?:\.\.\/|docs\/|spec\/|packages\/|extensions\/|implementations\/|examples\/)/;
+const BAD = /(?:(?:href|src|srcset)="|\]\()(?:\.\.\/|docs\/|spec\/|packages\/|extensions\/|implementations\/|examples\/)/;
 function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
