@@ -78,7 +78,9 @@ import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecr
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
+  exitProof,
   isCustodialRuntime,
+  pollProvedExit,
   requireRuntimeAdopt,
   requireRuntimeReap,
   RuntimeReapUnproven,
@@ -230,6 +232,10 @@ const TURN_ANSWER_RETENTION_MS = 5 * 60_000;
  *  launch-parity smoke can assert every launch client's request timeout OUTLIVES this window — the tier
  *  rule forbids the clients importing it directly. */
 export const READINESS_TIMEOUT_MS = 30_000;
+/** How often the readiness race asks a runtime that streams no exit whether its child has exited, and
+ *  how long it waits past the window for the proof of its last read. An operator waits on this reply,
+ *  so it asks more often than the exit watch that outlives readiness. */
+const READINESS_EXIT_POLL_MS = 1_000;
 /** Managed same-session crash recovery follows the Codex host precedent: three restarts are allowed
  * inside a rolling two-minute window; the fourth crash is a loop and retires the seat loud. */
 const SESSION_RESTART_LIMIT = 3;
@@ -7146,14 +7152,16 @@ export class Manager {
    *  Presence is keyed on the EXACT freshly-minted id, never the name — a fresh id has no prior record, so
    *  any live presence for it is from THIS launch (stale/same-name records can't false-start it). The
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
-   *  catches a join/exit that landed before we subscribed). Runtimes that stream no exit signal (external surfaces,
-   *  whose `attach()` throws) race presence-vs-backstop only — better than the old "assume up". */
+   *  catches a join/exit that landed before we subscribed). A runtime whose `attach()` throws (an external
+   *  surface) streams no output or exit, so its exit leg polls the runtime's exit proof ({@link pollProvedExit}),
+   *  reads it once more when the window closes, and its failure carries no last output; one that cannot prove an
+   *  exit either races presence-vs-backstop only. */
   private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
       session = a.handle.attach();
     } catch {
-      /* external surfaces stream no exit — presence-or-backstop only */
+      /* external surfaces stream no output or exit; their exit is polled below */
     }
     const s = session;
     // Presence cards carry the wire PRINCIPAL dot-form (`<owner>.<actor>`), never a raw nkey — match
@@ -7205,7 +7213,7 @@ export class Manager {
       // the backlog reads async — the process is known dead, that's a failure, not an unknown. Reap through
       // onAgentExit so a child the launcher spawned in the window is reaped too.
       const onExit = (): void => {
-        if (done || !s) return;
+        if (done) return;
         clearTimeout(timer);
         // `stopHandle` sets `terminalizing` synchronously before it kills, and `onAgentExit` sets it
         // through `freeSlot` when it retires the seat, so only a read before the await and the reap
@@ -7215,7 +7223,7 @@ export class Manager {
           // waitForExit may close the attach stream before this snapshot
           let tail = "";
           try {
-            tail = await this.tail(s);
+            if (s) tail = await this.tail(s);
           } catch {}
           if (opts.reapOnExit !== false) this.onAgentExit(a);
           // A DELIBERATE STOP IS NOT A LAUNCH FAILURE. The despawn path owns this goal's terminal
@@ -7249,16 +7257,27 @@ export class Manager {
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
-      timer = setTimeout(
-        () =>
-          finish({
-            ok: false,
-            uncertain: true,
-            detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
-          }),
-        readinessTimeoutMs,
-      );
-      unsubExit = s ? s.onExit(onExit) : (): void => {};
+      const uncertain = (): void =>
+        finish({
+          ok: false,
+          uncertain: true,
+          detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
+        });
+      // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
+      // the window closes on a fresh read: a child that exited by then is reported as exited. Nothing
+      // bounds how long a runtime's proof takes, so it gets one more poll before the launch is uncertain.
+      timer = setTimeout(() => {
+        const proof = s ? undefined : exitProof(a.handle);
+        if (!proof) {
+          uncertain();
+          return;
+        }
+        timer = setTimeout(uncertain, READINESS_EXIT_POLL_MS);
+        proof.then(onExit, uncertain);
+      }, readinessTimeoutMs);
+      // The poll stops once the race is done, so it needs no unsubscribe.
+      if (s) unsubExit = s.onExit(onExit);
+      else pollProvedExit(a.handle, onExit, () => !done, READINESS_EXIT_POLL_MS);
       this.ep.on("presence", onPresence);
       // Subscribe-then-check (TOCTOU): a join or an exit that already landed before we subscribed.
       if (s && a.handle.status() === "exited") onExit();
