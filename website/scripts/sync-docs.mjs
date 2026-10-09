@@ -163,8 +163,15 @@ const isRepoRelative = (target) =>
 const URL_ATTRS = new Set(['href', 'src', 'srcset']);
 const SRCSET_CANDIDATE = /([\t\n\f\r ,]*)([^\t\n\f\r ]+)(?<!,)([^,]*)/g;
 
+// The URL parser's first steps: it drops leading and trailing C0 controls and spaces and every
+// tab and newline, so a value is classified by the URL the browser resolves.
+const urlInput = (value) => value.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\n\r]/g, '');
+
 function rewriteAttr(name, value, rel) {
-  const rewrite = (url) => (isRepoRelative(url) ? rewriteTarget(url, rel) : url);
+  const rewrite = (url) => {
+    const target = urlInput(url);
+    return isRepoRelative(target) ? rewriteTarget(target, rel) : url;
+  };
   if (name !== 'srcset') return rewrite(value);
   return value.replace(SRCSET_CANDIDATE, (_, lead, url, descriptors) => lead + rewrite(url) + descriptors);
 }
@@ -182,7 +189,8 @@ function* htmlEdits(node, offset, rel) {
     const { startOffset, endOffset } = node.sourceCodeLocation.attrs[source];
     yield [offset + startOffset, offset + endOffset, `${source}="${escapeAttr(next)}"`];
   }
-  for (const child of node.childNodes ?? []) yield* htmlEdits(child, offset, rel);
+  // A template holds its children in a separate content fragment, which the page ships too.
+  for (const child of (node.content ?? node).childNodes ?? []) yield* htmlEdits(child, offset, rel);
 }
 
 // The page is parsed as the site renders it (micromark with the page's syntax extensions), so
@@ -201,7 +209,9 @@ function rewriteLinks(md, rel, extensions) {
   const html = md.split('');
   for (const [kind, { type, start, end }] of events)
     if (kind === 'enter' && type === 'blockQuotePrefix') html.fill(' ', start.offset, end.offset);
-  const edits = [];
+  // Keyed by where each starts: parse5 rebuilds a misnested formatting element as a copy that
+  // carries the same source attributes, and a source attribute is rewritten once.
+  const edits = new Map();
   let attr;
   for (const [kind, token, context] of events) {
     const { type, start, end } = token;
@@ -209,22 +219,22 @@ function rewriteLinks(md, rel, extensions) {
     if (type === 'resourceDestinationString' || type === 'definitionDestinationString') {
       const target = normalizeUri(decodeString(context.sliceSerialize(token)));
       if (!isRepoRelative(target)) continue;
-      edits.push([start.offset, end.offset, rewriteTarget(target, rel).replace(/[&()]/g, '\\$&')]);
+      edits.set(start.offset, [end.offset, rewriteTarget(target, rel).replace(/[&()]/g, '\\$&')]);
     } else if (type === 'htmlFlow' || type === 'htmlText') {
       const fragment = parseFragment(html.slice(start.offset, end.offset).join(''), { sourceCodeLocationInfo: true });
-      edits.push(...htmlEdits(fragment, start.offset, rel));
+      for (const [from, to, text] of htmlEdits(fragment, start.offset, rel)) edits.set(from, [to, text]);
     } else if (type === 'mdxJsxFlowTagAttributeNamePrimary' || type === 'mdxJsxTextTagAttributeNamePrimary') {
       attr = context.sliceSerialize(token).toLowerCase();
     } else if (type === 'mdxJsxFlowTagAttributeValueLiteralValue' || type === 'mdxJsxTextTagAttributeValueLiteralValue') {
       // JSX decodes character references but has no backslash escapes, so no backslash may start one.
       const value = decodeString(context.sliceSerialize(token).replace(/\\/g, '\\\\'));
       const next = URL_ATTRS.has(attr) ? rewriteAttr(attr, value, rel) : value;
-      if (next !== value) edits.push([start.offset, end.offset, escapeAttr(next)]);
+      if (next !== value) edits.set(start.offset, [end.offset, escapeAttr(next)]);
     }
   }
   let out = '';
   let at = 0;
-  for (const [from, to, text] of edits.sort(([a], [b]) => a - b)) {
+  for (const [from, [to, text]] of [...edits].sort(([a], [b]) => a - b)) {
     out += md.slice(at, from) + text;
     at = to;
   }
