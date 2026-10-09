@@ -367,6 +367,12 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   };
 }
 
+/** Whether this session arms its event plane. The launch flag is optional, but a registration that
+ *  requires events must arm even without it. */
+export function eventPlaneArmed(config: Pick<AgentConfig, "eventsRequired">, env: NodeJS.ProcessEnv = process.env): boolean {
+  return envFlag(env, "COTAL_EVENTS") === true || config.eventsRequired === true;
+}
+
 /** Beta-feedback guidance folded into connector instructions. */
 export function feedbackLine(config: AgentConfig): string {
   const dest = config.feedbackKey

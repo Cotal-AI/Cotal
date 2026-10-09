@@ -53,6 +53,7 @@ import {
   configFromEnv,
   controlFromEnv,
   envFlag,
+  eventPlaneArmed,
   feedbackLine,
   formatInjection,
   parseToolArgs,
@@ -406,7 +407,7 @@ export async function runJcodeHost(): Promise<void> {
   // the sole reader of Cotal material and every COTAL_ key is deleted from the environment before
   // the private instance is launched, so a value read at launch time would always be absent.
   const requestTimeoutMs = requestTimeoutOverrideMs();
-  const eventsArmed = envFlag(process.env, "COTAL_EVENTS") === true;
+  const eventsArmed = eventPlaneArmed(config);
   const eventsWorkspaceRoot = eventsArmed ? resolveEventsStateRoot(process.env) : undefined;
   const def = process.env.COTAL_AGENT_FILE?.trim() ? loadAgentFile(process.env.COTAL_AGENT_FILE.trim()) : undefined;
   const cwd = process.cwd();

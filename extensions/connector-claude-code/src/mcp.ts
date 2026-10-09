@@ -13,6 +13,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   configFromEnv,
   envFlag,
+  eventPlaneArmed,
   hasIdentity,
   MeshAgent,
   startControlServer,
@@ -123,7 +124,7 @@ async function main(): Promise<void> {
       else if (agent.connected && agent.transportConnected) finish();
     });
 
-  if (envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired) {
+  if (eventPlaneArmed(config)) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
     // transcript names and that is not known until a hook hands one over. It is HELD here because
     // `onRunClosed` below has to reach it, and the two are assigned at different times.

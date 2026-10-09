@@ -54,6 +54,7 @@ import {
   MeshAgent,
   configFromEnv,
   envFlag,
+  eventPlaneArmed,
   feedbackLine,
   formatInjection,
   fmtFrom,
@@ -365,12 +366,12 @@ export async function runCodexHost(): Promise<void> {
 
   /** Publishes this thread's activity as AG-UI events on `events.<owner>.<actor>`.
    *
-   *  Armed by the launch (`COTAL_EVENTS`), so a seat the operator did not arm never reaches the
-   *  broker for an event plane it has no grant for. The emitter is built LAZILY on the first
-   *  adopt, because its source is the rollout file, whose path is not known until the thread
+   *  Armed by the launch or by a registration that requires events, so a seat with neither never
+   *  reaches the broker for an event plane it has no grant for. The emitter is built LAZILY on the
+   *  first adopt, because its source is the rollout file, whose path is not known until the thread
    *  exists, and because `start()` reaches the broker, work that must not run for a thread that
    *  never publishes. */
-  const eventsArmed = envFlag(process.env, "COTAL_EVENTS") === true;
+  const eventsArmed = eventPlaneArmed(config);
   /** TEST ONLY, and the reason it exists rather than a fixture doing this from outside.
    *
    *  The window this whole boundary rule is about is the emitter's own asynchronous setup: the
