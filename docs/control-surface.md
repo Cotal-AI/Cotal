@@ -379,6 +379,8 @@ that op. The successor completes the dead registration on boot when the freeze-h
 affirmatively gone under a complete CONNZ sweep (the same composition as
 [`cotal reconcile-gate`](cli.md#reconcile-gate)). A committed spec write is finished under that
 same freeze; only a definite no-commit abort-reopens and then runs the normal takeover.
+Once that reopen commits, the registration has completed: a governance slot it then fails to release
+is left behind the live generation, as on a normal registration, and does not fail the restart.
 It does not invent a TTL and it does not start a new freeze over a still-held one.
 
 That residue has a second half, and it is the endpoint governance slot rather than the gate. Every

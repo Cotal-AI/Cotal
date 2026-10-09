@@ -473,11 +473,10 @@ export async function registerServiceInstance(
       },
     });
     if (finished.completed) {
-      const stored = await args.barrier.progress?.load();
-      if (stored) {
-        try { await args.barrier.progress?.clear(stored.revision); }
-        catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
-      }
+      try {
+        const stored = await args.barrier.progress?.load();
+        if (stored) await args.barrier.progress?.clear(stored.revision);
+      } catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }
   }
@@ -688,8 +687,7 @@ export async function registerServiceInstance(
   } catch (err) {
     throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
-  try { await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation); }
-  catch { /* gate already reopened; a slot stamped behind its live generation is safely orphaned */ }
+  await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation);
   if (args.barrier.progress && progressRevision !== null) {
     try { await args.barrier.progress.clear(progressRevision); }
     catch { /* gate is already open; a stale freeze-bound cursor is safe to retain */ }
@@ -942,12 +940,13 @@ async function promoteHeldGovernance(kv: KV, endpoint: string, instanceId: strin
   }
 }
 
-/** Drop the retained slot after a successful Phase-4 reopen. Binding commands stay.
+/** Drop the retained slot after a completing registration's reopen. Binding commands stay.
  *  A lost release ack is recovered by re-read: already-cleared is done; still ours at
  *  this generation retries once; anything else leaves the stamp. A leftover stamp is
  *  a slot whose generation is behind the live gate (reopen already advanced past it).
- *  {@link deregisterServiceInstance} treats that as orphaned, not in-flight. The gate
- *  stays OPEN — the reopen already committed. */
+ *  {@link deregisterServiceInstance} treats that as orphaned, not in-flight. It never
+ *  throws: the gate stays OPEN, so a release that cannot finish must not report the
+ *  registration it follows as failed. */
 async function releaseHeldGovernance(kv: KV, endpoint: string, instanceId: string, frozenGeneration: number): Promise<void> {
   const attempt = async (): Promise<"done" | "retry"> => {
     const gov = await readEndpointGovernance(kv, endpoint);
@@ -959,19 +958,15 @@ async function releaseHeldGovernance(kv: KV, endpoint: string, instanceId: strin
     try {
       await updateRecordEntry(kv, recordAtomicKey(GOVERN_HEAD, [endpoint]), cleared, gov.revision);
       return "done";
-    } catch (err) {
-      let again: Awaited<ReturnType<typeof readEndpointGovernance>>;
-      try {
-        again = await readEndpointGovernance(kv, endpoint);
-      } catch (readErr) {
-        throw new EpEnvelopeError("unavailable", `the issuance gate reopened but the governance slot release did not complete; the leftover slot is behind the live gate generation and does not block deregistration (SPEC 13.7): ${(err as Error)?.message ?? String(err)}; release read-back failed: ${(readErr as Error)?.message ?? String(readErr)}`);
-      }
+    } catch {
+      const again = await readEndpointGovernance(kv, endpoint);
       if (!again.provisional) return "done";
       if (again.provisional.instanceId === instanceId && again.provisional.generation === frozenGeneration) return "retry";
       return "done";
     }
   };
-  if (await attempt() === "retry") await attempt();
+  try { if (await attempt() === "retry") await attempt(); }
+  catch { /* gate already reopened; a slot stamped behind its live generation is safely orphaned */ }
 }
 
 /** Reopen a barrier-frozen gate (token-pinned) after a registration aborted before any spec write
