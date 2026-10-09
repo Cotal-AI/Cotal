@@ -91,7 +91,7 @@ try {
   plane = await openAuthAuthorityPlane({ server: servers, space: SPACE, dir: authDir, identityRoot: authDir, dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed }, log: () => {} });
   const cap = "local-suite-cap";
   const httpCtx: ManagerServiceAuthorityCtx = {
-    space: SPACE, dir: authDir, ownerSecret, cap, secrets: new Map() as never,
+    space: SPACE, dir: authDir, ownerSecret, cap, failures: [], badCaps: [], secrets: new Map() as never,
     bridgeIdp: { issuer, audience: issuer, key: (async () => idpPair.publicKey) as never },
     managerServiceAuthority: plane.issueManagerServiceAuthority, maintainRemoteManager: plane.maintainRemoteManager,
     validateRetainedAgent: plane.validateRetainedAgent,

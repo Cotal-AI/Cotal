@@ -2462,7 +2462,8 @@ export async function dispatchManagerAuthorityRequest(
  *  the face the request arrived on. The loopback face demands the per-start capability (a same-uid
  *  file-ACL boundary via the 0600 discovery file) and attributes peers by socket address; the
  *  public face demands no capability (it has no remote meaning — the credential is the proof) and
- *  buckets failures per peer. Each face owns its budgets — neither can starve the other. */
+ *  buckets failures per peer. Each face owns its budgets — neither can starve the other.
+ *  `POST /manager-service-authority` takes the same policy and spends the same budgets. */
 interface ExchangePolicy {
   /** Demand `Authorization: Bearer <cap>` (the discovery-file capability) before anything else. */
   requireCapability: boolean;
@@ -2473,9 +2474,9 @@ interface ExchangePolicy {
   /** Name the requesting peer for failure attribution. */
   peerKey(req: IncomingMessage): string;
   /** True when this face's refused-exchange budget (for `peer`) is exhausted; prunes the window. */
-  throttled(ctx: HandlerCtx, peer: string): boolean;
+  throttled(ctx: Pick<HandlerCtx, "failures">, peer: string): boolean;
   /** Record a refused exchange against this face's budget (for `peer`). */
-  recordFailure(ctx: HandlerCtx, peer: string): void;
+  recordFailure(ctx: Pick<HandlerCtx, "failures">, peer: string): void;
 }
 
 /** The loopback face: capability-gated; peers keyed by socket remote address; one shared
@@ -2757,6 +2758,18 @@ async function handleVerifyManagedAgentEnrollment(
   }
 }
 
+/** Refuse a missing/invalid loopback capability, audited and counted in its own window (see
+ *  BAD_CAP_PER_MIN): 401 with `reason` until the window is full, then 429. */
+function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">, reason: string): void {
+  const now = Date.now();
+  while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
+  ctx.badCaps.push(now);
+  console.error("auth-service: rejected an exchange with a missing/invalid capability");
+  if (ctx.badCaps.length > BAD_CAP_PER_MIN)
+    return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry" });
+  send(res, 401, { error: reason });
+}
+
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the
  *  caller. Behavior on the loopback face is unchanged from the pre-route-table handler. */
 async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
@@ -2771,15 +2784,8 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
     // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
     const auth = req.headers.authorization ?? "";
-    if (auth !== `Bearer ${ctx.cap}`) {
-      const now = Date.now();
-      while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
-      ctx.badCaps.push(now);
-      console.error("auth-service: rejected an exchange with a missing/invalid capability");
-      if (ctx.badCaps.length > BAD_CAP_PER_MIN)
-        return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry" });
-      return send(res, 401, { error: "missing/invalid exchange capability - read it from the space's auth-service.json" });
-    }
+    if (auth !== `Bearer ${ctx.cap}`)
+      return refuseCapability(res, ctx, "missing/invalid exchange capability - read it from the space's auth-service.json");
   }
   // Refused-exchange rate limit (probing protection): count only FAILURES, on THIS face's budget.
   //
@@ -2915,8 +2921,10 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
 }
 
 /** What {@link handleManagerServiceAuthority} reads. Exported so a host that serves the route with a
- *  context it builds itself is held by the compiler to every arm the dispatcher calls. */
-export type ManagerServiceAuthorityCtx = ManagerAuthorityDispatchCtx & Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret">;
+ *  context it builds itself is held by the compiler to every arm the dispatcher calls. `failures`
+ *  and `badCaps` are the face's refusal windows, shared with its `/exchange` so neither route is a
+ *  way around the other's budget. */
+export type ManagerServiceAuthorityCtx = ManagerAuthorityDispatchCtx & Pick<HandlerCtx, "cap" | "bridgeIdp" | "ownerSecret" | "failures" | "badCaps">;
 
 /** The typed manager authority exchange, served on both faces. The face's policy decides whether the
  *  loopback capability is demanded; on the public face the verified IdP JWT is the proof, and the
@@ -2927,7 +2935,11 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
   if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
     return send(res, 415, { error: "content-type must be application/json" });
   if (policy.requireCapability && req.headers.authorization !== `Bearer ${ctx.cap}`)
-    return send(res, 401, { error: "missing/invalid exchange capability - manager-service authority requires the operator exchange capability on this face" });
+    return refuseCapability(res, ctx, "missing/invalid exchange capability - manager-service authority requires the operator exchange capability on this face");
+  // A valid token is not probing, so a throttled peer is still verified and only its refusal
+  // answers 429, as on /exchange.
+  const peer = policy.peerKey(req);
+  const peerThrottled = policy.throttled(ctx, peer);
   let body: { idpToken?: unknown; request?: unknown } | null;
   try {
     body = await readJsonBody(req) as typeof body;
@@ -2943,8 +2955,11 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
     const owner = deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, verified.sub);
     return send(res, 200, await dispatchManagerAuthorityRequest(ctx, owner, { request: body.request }));
   } catch (e) {
+    policy.recordFailure(ctx, peer);
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`auth-service: refused manager-service authority: ${reason}`);
+    if (peerThrottled)
+      return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
     return send(res, 403, { error: reason });
   }
 }

@@ -55,6 +55,26 @@ or the first `startAuthService` of a hosted context.
 Add `create` to your store, decided in one atomic step by the backend, such as a conditional create
 or an insert that fails on an existing key. A read followed by a write brings the race back.
 
+## Manager-service authority refusal budgets in 0.78.0
+
+`POST /manager-service-authority` now counts its refusals against the exchange face's budgets, as
+`POST /exchange` does. On the loopback face a missing or wrong capability counts in the
+invalid-capability window, and a refused IdP token or request counts in the refused-exchange window.
+On the public face a refusal counts in the peer's bucket. A running mesh needs nothing, and a
+request that succeeds is never throttled.
+
+### What stops working
+
+`ManagerServiceAuthorityCtx` from `@cotal-ai/auth` now requires `failures` and `badCaps`, so a host
+that builds it in an object literal without them fails to compile. The handler now calls the
+`peerKey`, `throttled` and `recordFailure` of the policy it is given. After 30 refusals in a minute
+on one face, a further refusal on either route answers 429 without its reason.
+
+### Before the upgrade
+
+Pass the `failures` and `badCaps` arrays your `/exchange` route counts in, so both routes share one
+budget per face. A host that serves only this route can pass new empty arrays.
+
 ## Token verifier clock tolerance in 0.77.0
 
 `validateUserToken`, and the `IdpConfig` that `verifyIdpToken` and `createIdpBridge` take, from

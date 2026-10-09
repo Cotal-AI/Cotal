@@ -283,7 +283,9 @@ buckets are per-source and separate from loopback exchange budgets. The in-proce
 most 1024 peer buckets: that bounds memory and isolates ordinary sources, but an attacker cycling
 more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a mint bypass; a valid
 credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
-matters to the deployment.
+matters to the deployment. A refusal at `POST /manager-service-authority` counts against the same
+budget as one at `/exchange` on that face, so after 30 refusals in a minute either route answers a
+further refusal with 429.
 
 ### Enrollment redeem
 
