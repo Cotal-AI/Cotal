@@ -72,6 +72,12 @@ function noServer(err: unknown): boolean {
   return String((err as { stderr?: unknown }).stderr ?? "").startsWith("no server running on ");
 }
 
+/** A failed tmux call's text: tmux's stderr, then Node's message, which names the command. */
+function failureText(err: unknown): string {
+  const e = err as { stderr?: unknown; message?: unknown };
+  return `${String(e.stderr ?? "")} ${String(e.message ?? "")}`.trim();
+}
+
 /** The running tmux server's pid, or undefined when no server is running. */
 export function serverPid(opts: { timeoutMs?: number } = {}): string | undefined {
   try {
@@ -85,7 +91,7 @@ export function serverPid(opts: { timeoutMs?: number } = {}): string | undefined
     }).trim();
   } catch (err) {
     if (noServer(err)) return undefined;
-    throw err;
+    throw new Error(`tmux: couldn't read the server pid: ${failureText(err)}`, { cause: err });
   }
 }
 
@@ -110,10 +116,8 @@ function windowLines(format: string): string[] {
       .split("\n")
       .filter(Boolean);
   } catch (err) {
-    const e = err as { stderr?: unknown; message?: unknown };
-    const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
     if (noServer(err)) return [];
-    throw new Error(`tmux: couldn't list windows: ${message.trim()}`, { cause: err });
+    throw new Error(`tmux: couldn't list windows: ${failureText(err)}`, { cause: err });
   }
 }
 
@@ -131,10 +135,8 @@ export function paneWindow(paneId: string): string | undefined {
       .find((l) => l.startsWith(`${paneId} `))
       ?.slice(paneId.length + 1);
   } catch (err) {
-    const e = err as { stderr?: unknown; message?: unknown };
-    const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
     if (noServer(err)) return undefined;
-    throw new Error(`tmux: couldn't list the window holding pane ${paneId}: ${message.trim()}`, { cause: err });
+    throw new Error(`tmux: couldn't list the window holding pane ${paneId}: ${failureText(err)}`, { cause: err });
   }
 }
 
@@ -157,12 +159,10 @@ export function paneState(paneId: string): PaneState {
     }
     return "exited";
   } catch (err) {
-    const e = err as { stderr?: unknown; message?: unknown };
-    const message = `${String(e.stderr ?? "")} ${String(e.message ?? "")}`;
     // No tmux server means no pane can still exist. Other failures (including permission/socket
     // errors) are unknown and must fail the preservation cut closed.
     if (noServer(err)) return "exited";
-    throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${message.trim()}`, { cause: err });
+    throw new Error(`tmux: couldn't prove pane ${paneId} exited: ${failureText(err)}`, { cause: err });
   }
 }
 
@@ -206,10 +206,7 @@ export async function waitForPaneExit(
 }
 
 function isWindowGone(err: unknown): boolean {
-  // Use both stderr (captured when stdio:"pipe") and message (contains the command + code).
-  const e = err as { stderr?: unknown; message?: unknown };
-  const msg = `${String(e.stderr ?? "")}${String(e.message ?? "")}`;
-  return /can't find window|can't find session|no current window|session not found/i.test(msg);
+  return /can't find window|can't find session|no current window|session not found/i.test(failureText(err));
 }
 
 /** The stable refs for a freshly-opened window: its window ID (`@N`) and the ID of its initial
