@@ -29,6 +29,10 @@ export const USER_TOKEN_VER = 1;
  *  re-mint is the working revocation path. */
 export const MAX_TOKEN_TTL_SEC = 900;
 
+/** Clock skew both verifiers allow on `exp`, `nbf` and `iat`. A constant because a caller-supplied
+ *  `NaN` tolerance made each of those comparisons false and switched expiry off. */
+export const CLOCK_TOLERANCE_SEC = 5;
+
 /** The elevated per-connection profiles a bearer may request at exchange time (the "views"):
  *  read-only god view, space-history purge, channel delete, channel-registry writes, and the
  *  manifest-deploy preflight. The narrowing manager-caller view is also available to an actor-secret
@@ -179,8 +183,6 @@ export interface ValidateUserTokenOpts {
   issuer: string;
   /** Exact expected audience — the space name. */
   audience: string;
-  /** Clock skew tolerance in seconds (default 5). */
-  clockToleranceSec?: number;
 }
 
 /** Validate a user bearer token. Returns the reduced, validated claims or THROWS — there is no
@@ -196,7 +198,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     algorithms: ["EdDSA"],
     issuer: opts.issuer,
     audience: opts.audience,
-    clockTolerance: opts.clockToleranceSec ?? 5,
+    clockTolerance: CLOCK_TOLERANCE_SEC,
   });
 
   // jose's `audience` option is SET-MEMBERSHIP (an aud array containing the space passes) — the
@@ -213,10 +215,9 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
   // defeating the short-lived-token revocation lever. So: iat may not be in the future, and exp
   // may not sit further than the cap from now.
   const maxTtl = viewTtlCapSec((payload.act as UserTokenActor | undefined)?.view);
-  const tol = opts.clockToleranceSec ?? 5;
   const now = Math.floor(Date.now() / 1000);
-  if (payload.iat > now + tol) throw new Error("user token: iat is in the future");
-  if (payload.exp > now + maxTtl + tol)
+  if (payload.iat > now + CLOCK_TOLERANCE_SEC) throw new Error("user token: iat is in the future");
+  if (payload.exp > now + maxTtl + CLOCK_TOLERANCE_SEC)
     throw new Error(`user token: exp is more than the ${maxTtl}s cap past now - short-lived tokens are the revocation lever`);
   if (payload.exp - payload.iat > maxTtl)
     throw new Error(`user token: lifetime ${payload.exp - payload.iat}s exceeds the ${maxTtl}s cap - short-lived tokens are the revocation lever`);
