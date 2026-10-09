@@ -122,7 +122,7 @@ import { PauseOverdue, type RunPauseHost } from "./run-pause-host.js";
 import type { RunWaitHost } from "./run-wait-host.js";
 import { loopLag, servedDespiteStarvation, type LoopLagObserver } from "./host-starvation.js";
 import type { RunScopeAuthority } from "./run-scope-authority.js";
-import { askAttemptToken, derivedToken, pauseTokens } from "./pause-tokens.js";
+import { askAttemptToken, observeToken, pauseTokens, waitTimeoutToken } from "./pause-tokens.js";
 import { delay } from "./delay.js";
 
 export interface RunMeshServices {
@@ -820,7 +820,7 @@ export class MeshHandler {
    * durable pause with a deadline, a token that survives a crash and a one-use settle is what this
    * needs, and a second timer mechanism would be a second thing to get wrong. What differs is that
    * a `waitUntil` parks MANY times under one step, so each observation's pause takes its own
-   * DERIVED token (`observe-<n>`), exactly as an ask's re-attempts and a wait's second deadline do.
+   * DERIVED token (`observeToken`), exactly as an ask's re-attempts and a wait's second deadline do.
    * Deriving rather than remembering is what makes it recoverable: a resumed run re-derives the
    * same token from the request id and the attempt index, and re-attaches to the pause the crashed
    * attempt armed instead of arming a second one.
@@ -845,7 +845,7 @@ export class MeshHandler {
     const wake = Math.min(this.now() + parseDuration(req.every), req.deadlineAt);
     const ref: CheckpointRef = {
       endpoint: this.binding.endpoint,
-      token: derivedToken(ctx.requestId, `observe-${req.attempt}`),
+      token: observeToken(ctx.requestId, req.attempt),
     };
     await this.arm(ref, wake);
     await this.settle(ref, ctx.signal);
@@ -957,7 +957,7 @@ export class MeshHandler {
       ...(channel !== undefined ? { waitChannel: channel } : {}),
       waitTimers: [
         ...(ev.event === "idle" || req.timeout !== undefined ? [ctx.requestId] : []),
-        ...(ev.event === "idle" && req.timeout !== undefined ? [derivedToken(ctx.requestId, "wait-timeout")] : []),
+        ...(ev.event === "idle" && req.timeout !== undefined ? [waitTimeoutToken(ctx.requestId)] : []),
       ],
     };
     if (this.services) {
@@ -976,7 +976,7 @@ export class MeshHandler {
       // are still live, because the crash came before it could claim them. Claim them here for the
       // same reason the live match path does: this is the ending, it just happened last time.
       await this.cancelTimer({ endpoint: this.binding.endpoint, token: ctx.requestId });
-      await this.cancelTimer({ endpoint: this.binding.endpoint, token: derivedToken(ctx.requestId, "wait-timeout") });
+      await this.cancelTimer({ endpoint: this.binding.endpoint, token: waitTimeoutToken(ctx.requestId) });
       return await this.messageAt(bound, ctx.requestId);
     }
 
@@ -992,7 +992,7 @@ export class MeshHandler {
       ? { endpoint: this.binding.endpoint, token: ctx.requestId }
       : undefined;
     const outer = idleFor !== undefined && timeoutAt !== undefined
-      ? { endpoint: this.binding.endpoint, token: derivedToken(ctx.requestId, "wait-timeout") }
+      ? { endpoint: this.binding.endpoint, token: waitTimeoutToken(ctx.requestId) }
       : undefined;
     if (primary !== undefined) {
       await this.arm(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!);

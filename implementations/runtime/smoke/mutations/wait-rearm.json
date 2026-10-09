@@ -40,7 +40,7 @@
     {
       "name": "the `wait` arm is removed: the list is back to the kinds that MINT a pause",
       "file": "implementations/runtime/src/pause-tokens.ts",
-      "find": "  if (entry.kind === \"wait\") return [id, derivedToken(id, \"wait-timeout\")];\n",
+      "find": "  if (entry.kind === \"wait\") return [id, waitTimeoutToken(id)];\n",
       "replace": "",
       "expectRed": "REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline",
       "cell": "REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline"
@@ -48,7 +48,7 @@
     {
       "name": "only the token ON the entry is recovered, not the idle wait's derived outer deadline",
       "file": "implementations/runtime/src/pause-tokens.ts",
-      "find": "return [id, derivedToken(id, \"wait-timeout\")];",
+      "find": "return [id, waitTimeoutToken(id)];",
       "replace": "return [id];",
       "expectRed": "...including the outer timeout an idle wait arms, re-derived rather than remembered",
       "cell": "...including the outer timeout an idle wait arms, re-derived rather than remembered",
