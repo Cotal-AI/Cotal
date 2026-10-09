@@ -99,7 +99,7 @@
     {
       "name": "a scope body evaluated at the call, so its effects journal outside the scope",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "find": "    const defers = spec !== undefined && spec.scope !== null && spec.optionsAt === 2;",
       "replace": "    const defers = false;",
       "expectRed": "identical on both engines: a fan-out whose body is awaited",
       "cell": "identical on both engines: a fan-out whose body is awaited",

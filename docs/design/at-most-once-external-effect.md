@@ -98,7 +98,7 @@ once: {
   optionsAt: 1,
   hashedOptions: [],
   hashesSubject: false,
-  opensScope: true,
+  scope: "once",
   signature: "once(fn, { name }) -> value",
   doc: "Run fn so that each step inside it is dispatched at most once. A resume that finds a step begun and never settled does not dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded request id, and the settler's answer becomes the step's result. fn returns what the program reads; a write from it to a binding outside it is refused (L2032). Only ask runs inside it; any other effect is refused before it begins (L4028).",
   example: 'const r = await once(async () => await ask(publisher, { name: "publish", schema: { commentId: "number" } }), { name: "publish-360" })',
