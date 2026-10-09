@@ -1179,7 +1179,9 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     // One `seen` set per combinator call: two branches calling the same helper is one defect in
     // that helper, not two, and reporting it twice tells an author to fix one line twice.
     const seen = new Set<AnyNode>();
-    const thunks = branchThunks(name === "fanOut" || name === "conclave" ? args[1] : args[0], v, scope);
+    // The body is the argument just before the options bag. Reading it from the table keeps a new
+    // scope primitive from having its data walked in place of its body.
+    const thunks = branchThunks(args[spec.optionsAt - 1], v, scope);
     for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
   }
 }
