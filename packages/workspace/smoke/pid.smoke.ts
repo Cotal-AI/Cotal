@@ -24,6 +24,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalLocalProcessPath } from "../src/local-process.js";
 import {
   commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
 } from "../src/pid.js";
@@ -293,16 +294,11 @@ try {
   check("and does NOT overwrite the record it could not read", readFileSync(mgrPid, "utf8") === corruptBefore);
 
   // ── the auth stop: its signal path is the shared `stopLocalProcess` too ────────────────────
-  const { stopAuthService } = await import("../../../implementations/cli/src/lib/auth-proc.js");
-  // The path is hex-encoded per space (readPidPath), so derive it rather than guessing: my first
-  // version invented `auth-service.pid`, the helper found nothing, and the cell failed for the wrong
+  const { AUTH_PROCESS, stopAuthService } = await import("../../../implementations/cli/src/lib/auth-proc.js");
+  // Write the fixture where the stop reads it, from the stop's own descriptor: my first version
+  // invented `auth-service.pid`, the helper found nothing, and the cell failed for the wrong
   // reason. A fixture that misses its subject proves nothing about the subject.
-  const { PID_PATH: AUTH_PID_PATH } = await import("../../../implementations/cli/src/lib/auth-proc.js").then(
-    async (m) => m as unknown as { PID_PATH?: (s: string) => string },
-  ).catch(() => ({}) as { PID_PATH?: (s: string) => string });
-  const authPid = AUTH_PID_PATH
-    ? AUTH_PID_PATH("main")
-    : join(root, ".cotal", `auth-service.${Buffer.from("main").toString("hex")}.pid`);
+  const authPid = canonicalLocalProcessPath(AUTH_PROCESS.pidFile, { root, space: "main" });
   writeFileSync(authPid, "not-a-pid\n");
   let authMalformed: string | undefined;
   try {
