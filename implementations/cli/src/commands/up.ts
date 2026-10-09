@@ -132,6 +132,7 @@ import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogD
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
+import { idpUrlProblem } from "../lib/manifest/resolve.js";
 import { failManifest } from "./topology.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -2070,6 +2071,11 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
     console.error(c.red(`✗ --idp is for user-auth spaces (this manifest's broker.auth is ${declaredStr}) - set broker.auth: "user" in the manifest, or drop --idp.`));
     process.exit(1);
   }
+  const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
+  if (idpProblem) {
+    console.error(c.red(`✗ ${idpProblem}`));
+    process.exit(1);
+  }
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +
   // broker + launch all agree on the same values.
   const eff = applyUpOverrides(prepared, opts);
@@ -2079,7 +2085,7 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   // an explicit `broker.servers` would otherwise bind one address and be probed at another.
   const server = m.broker?.host ? reconcileHostAndServer(m.broker.host, m.broker?.servers, "broker.host", "broker.servers") : (m.broker?.servers ?? DEFAULT_SERVER);
   const open = m.broker?.auth === false; // default is auth
-  const userAuth = m.broker?.auth === "user" ? { idpUrl: opts.idp ?? m.broker?.idp } : undefined; // flag > manifest
+  const userAuth = m.broker?.auth === "user" ? { idpUrl: m.broker.idp } : undefined;
   const runtime = m.runtime ?? "pty";
   // A manifest's agents are booted BY the manager `up -f` starts with the mesh, so `--no-manager`
   // against a manifest declaring agents asks for a boot that cannot deliver its own plan. Refused
@@ -2203,8 +2209,9 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
 }
 
 /** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default).
- *  `userAuth`/`idp` are consistency ASSERTIONS against the manifest, not overrides: the manifest
- *  declares the auth mode; a disagreeing flag is a hard error, never a silent re-mode. */
+ *  `userAuth` is a consistency ASSERTION against the manifest, not an override, and `idp` overrides
+ *  only on a user-auth manifest: the manifest declares the auth mode; a disagreeing flag is a hard
+ *  error, never a silent re-mode. */
 interface UpManifestFlags {
   /** The listener's transport, decided above the `--file` branch. NON-OPTIONAL: this path is one of
    *  the three that used to drop `--tls-cert`/`--tls-key` at the call boundary and serve plaintext. */
@@ -2236,6 +2243,7 @@ function applyUpOverrides(prepared: PreparedManifest, o: UpManifestFlags): Prepa
   if (o.server) broker.servers = o.server;
   if (o.host) broker.host = o.host;
   if (o.open) broker.auth = false;
+  if (o.idp) broker.idp = o.idp;
   return {
     ...prepared,
     manifest: {
