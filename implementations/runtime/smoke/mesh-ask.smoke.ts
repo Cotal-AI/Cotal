@@ -60,6 +60,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  requestGoalCancel,
   goalRefOf,
   submissionFingerprint,
   EpEnvelopeError,
@@ -170,10 +171,20 @@ const DESPAWN_OUTPUT = {
   type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
   properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
+// A cancelled step withdraws its relay through the manager's reserved cancel (SPEC 13.6 item 4).
+const CANCEL_INPUT = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
+} as const;
+const CANCEL_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.askmgr", revision: 1, attributes: [], events: [],
@@ -181,6 +192,7 @@ const DOCUMENT = {
     { name: "spawn", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED.spawn.input.closureDigest, outputDigest: COMPILED.spawn.output.closureDigest },
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
+    { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -192,7 +204,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -313,6 +325,13 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   return acceptance;
 };
 
+const cancelHandler = async (ctx: EpServeContext): Promise<unknown> => {
+  const { goalId, mode = "graceful" } = (ctx.request.args ?? {}) as { goalId: string; mode?: "graceful" | "terminate" };
+  await requestGoalCancel(goalCtx, { request: ctx.subject, goalId, mode });
+  const { fact } = await commitGoalResult(goalCtx, { ref: goalRefOf(ctx.subject, goalId), now: Date.now(), cause: "cancel", committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH } });
+  return { goalId, state: fact.state };
+};
+
 const defs: EpCommandDef[] = [
   { command: "spawn", contract: COMPILED.spawn, handler: spawnHandler },
   { command: "turn", contract: COMPILED.turn, handler: turnHandler },
@@ -320,6 +339,7 @@ const defs: EpCommandDef[] = [
     const t = ctx.request.target as { owner: string; actor: string };
     return { name: `${t.owner}.${t.actor}`, stopped: true, graceful: ((ctx.request.args ?? {}) as { graceful?: unknown }).graceful !== false };
   } },
+  { command: "cancel", contract: COMPILED.cancel, handler: cancelHandler },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   resolveTarget: (t) => mappings.get(`${t.owner}.${t.actor}`),
@@ -838,7 +858,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   // has moved on; `arm` attaches to the recorded pause either way, so the place a recomputed
   // instant showed was the relay: the seat's hold denied at now+timeout, the pause at the record.
   const recordedAt = Date.now() + 120_000;
-  const k5 = stepCtx(token("i5"), { asks: "Ship it?", addressee: name11, deadlineAt: recordedAt }, 1, "checkpoint");
+  const k5 = stepCtx(token("i5"), { attempt: 1, asks: "Ship it?", addressee: name11, deadlineAt: recordedAt }, 1, "checkpoint");
   const before5 = turnInvokes.length;
   const parked5 = h.checkpoint({ prompt: "Ship it?", timeout: "1h", onExpiry: "proceed", to: name11 } as never, k5.ctx)
     .then(() => "settled", (e: unknown) => `threw: ${(e as Error).message}`);
