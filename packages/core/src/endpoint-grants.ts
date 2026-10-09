@@ -202,8 +202,12 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop", "turn-pen
  *  but killing a peer is denial; typing into a peer is control of it, and the two are different in
  *  kind. `input` therefore rides the operator instrument set only
  *  ({@link operatorInstrumentCapabilities}), where the holder is already the administrative
- *  authority for the domain. */
-export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
+ *  authority for the domain.
+ *
+ *  `resolve-agent` rides with `spawn` wherever it is minted: it answers which harness that
+ *  caller's `spawn` would launch, which a `spawn` holder already learns by spawning, and a
+ *  detached resume needs the answer before it carries the session. */
+export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn", "resolve-agent"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
 /** The two commands that WRITE INTO a seat, granted ONLY into operator-authorized credentials
  *  (see the note above for why `input` is not in the spawn set; `turn` is the same authority

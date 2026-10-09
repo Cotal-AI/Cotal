@@ -3754,6 +3754,11 @@ export class Manager {
         return { goalId, ...(result === undefined ? {} : { result }) };
       }),
       resolveCwd: (ctx) => this.serveGated(ctx, () => this.resolveSpawnCwd(args(ctx).cwd)),
+      resolveAgent: (ctx) => this.serveGated(ctx, async () => {
+        const persona = await this.spawnPersona(args(ctx) as Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent">, callerOf(ctx), ctx.subject.caller);
+        if ("error" in persona) throw new EpEnvelopeError(persona.error.startsWith("no persona") ? "not-found" : "failed-precondition", persona.error);
+        return { agent: persona.agent };
+      }),
       // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
       // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
       // #373: arming the event plane (events: true, or the omission that arms it by default)
@@ -5596,6 +5601,72 @@ export class Manager {
     }
   }
 
+  /** The persona file a spawn loads and the harness it resolves, shared by `spawn` and the served
+   *  `resolve-agent` read: a detached resume locates the session it carries with the connector this
+   *  names, so the two doors must not drift (#2899). */
+  private async spawnPersona(
+    opts: Pick<StartAgentOpts, "name" | "config" | "agent" | "defaultAgent" | "resolved">,
+    spawner: string | undefined,
+    authenticatedCaller: EpCaller | undefined,
+  ): Promise<{ ref: string; configPath: string; def: AgentDef | undefined; agent: string } | { error: string }> {
+    // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
+    // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
+    // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
+    // free-form name (socrates) — the same model `cotal spawn` already uses. You always spawn by
+    // filename (unique on disk); two files can't collide on the key.
+    const ref = opts.name.trim();
+    if (!ref) return { error: "name required" };
+    // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
+    // `--config` path is validated by existsSync below instead.
+    if (!opts.config) {
+      const refErr = this.nameError(ref);
+      if (refErr) return { error: refErr };
+    }
+
+    // Resolve the persona file (fail loud — NO silent default-ACL fallback). A missing persona used
+    // to mint DEFAULT creds (read `general` only, default-deny publish, no capabilities), so a
+    // typo'd / renamed / spawned-by-display-name agent became live with silently-wrong ACLs — a
+    // behavioral/security bug. Fail loud instead, matching `cotal spawn` (loadAgentFile throws).
+    // This runs BEFORE the spawn path resolves its connector: the file's `agent:` pin participates in
+    // the harness choice (flag > file > COTAL_DEFAULT_AGENT > default, #869), which is impossible if
+    // the connector is materialized first.
+    let configPath: string;
+    if (opts.config) {
+      configPath = agentFilePath(this.workspaceRoot, opts.config);
+      if (!existsSync(configPath)) return { error: `agent file not found: ${configPath}` };
+    } else {
+      configPath = agentFilePath(this.workspaceRoot, ref);
+      if (!existsSync(configPath))
+        return { error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
+    }
+
+    // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
+    // harness resolution below; the spawn path's identity/ACL profile block consumes the SAME def (no
+    // second load). A manifest launch (`resolved`) materializes its own transient persona and the
+    // file is NOT its authority, so its def (and its agent pin) is deliberately not consulted here —
+    // the manifest's own `agent:` field drove the launch object already.
+    let def: AgentDef | undefined;
+    if (!opts.resolved) {
+      try {
+        def = loadAgentFile(configPath);
+      } catch (e) {
+        return { error: rejectionText(e) };
+      }
+      // Shared operator files remain launchable. Owned content follows the catalog's visibility
+      // decision before connector loading or any allocation. A hosted run acts for its admission;
+      // only a complete authenticated caller can request the current ledger's admin decision.
+      if (this.userMode && def.owner !== undefined) {
+        const acting = authenticatedCaller === undefined ? undefined
+          : this.runHosting?.admittedCaller(authenticatedCaller) ?? authenticatedCaller;
+        const personaCaller = acting === undefined ? spawner ?? "" : principalKey(acting.owner, acting.actor).key;
+        const admin = authenticatedCaller !== undefined && await this.epAdminReach(authenticatedCaller);
+        if (!this.canReadPersona(def.owner, personaCaller, admin))
+          return { error: `no persona "${ref}"` };
+      }
+    }
+    return { ref, configPath, def, agent: resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent }) };
+  }
+
   private async startAgentActive(opts: StartAgentOpts, spawner?: string, hooks?: SpawnHooks, authenticatedCaller?: EpCaller): Promise<ControlReply> {
     // Before the first await, so the grant, the launch, the retained form and the restart slot all read
     // the lists and the restart policy as admitted.
@@ -5609,63 +5680,9 @@ export class Manager {
       // A delegated launch's spawner is the user's principal, never the composition root's call.
       spawner = opts.delegatedIntent.parent;
     }
-    // The spawn argument is a persona REF — a filename in `.cotal/agents` (the unique spawn KEY), or
-    // a path via `--config`. It is NOT the mesh identity: the identity comes from inside the file
-    // (`name:`), so a persona can be filed descriptively (review-critic.md) yet present under a
-    // free-form name (socrates) — the same model `cotal spawn` already uses. You always spawn by
-    // filename (unique on disk); two files can't collide on the key.
-    const ref = opts.name.trim();
-    if (!ref) return { ok: false, error: "name required" };
-    // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
-    // `--config` path is validated by existsSync below instead.
-    if (!opts.config) {
-      const refErr = this.nameError(ref);
-      if (refErr) return { ok: false, error: refErr };
-    }
-
-    // Resolve the persona file (fail loud — NO silent default-ACL fallback). A missing persona used
-    // to mint DEFAULT creds (read `general` only, default-deny publish, no capabilities), so a
-    // typo'd / renamed / spawned-by-display-name agent became live with silently-wrong ACLs — a
-    // behavioral/security bug. Fail loud instead, matching `cotal spawn` (loadAgentFile throws).
-    // This runs BEFORE the connector resolution below: the file's `agent:` pin participates in the
-    // harness choice (flag > file > COTAL_DEFAULT_AGENT > default, #869), which is impossible if the
-    // connector is materialized first. Still synchronous (existsSync/readFileSync), so the capacity/
-    // reserve span below stays atomic.
-    let configPath: string;
-    if (opts.config) {
-      configPath = agentFilePath(this.workspaceRoot, opts.config);
-      if (!existsSync(configPath)) return { ok: false, error: `agent file not found: ${configPath}` };
-    } else {
-      configPath = agentFilePath(this.workspaceRoot, ref);
-      if (!existsSync(configPath))
-        return { ok: false, error: `no persona "${ref}" - ${configPath} not found; create it or pass --config (see \`cotal personas list\`)` };
-    }
-
-    // Load the persona ONCE, here, ahead of the connector choice. The file's `agent:` pin feeds the
-    // harness resolution below; the identity/ACL profile block later consumes the SAME def (no second
-    // load). A manifest launch (`resolved`) materializes its own transient persona and the file is
-    // NOT its authority, so its def (and its agent pin) is deliberately not consulted here — the
-    // manifest's own `agent:` field drove the launch object already.
-    let def: AgentDef | undefined;
-    if (!opts.resolved) {
-      try {
-        def = loadAgentFile(configPath);
-      } catch (e) {
-        return { ok: false, error: rejectionText(e) };
-      }
-      // Shared operator files remain launchable. Owned content follows the catalog's visibility
-      // decision before connector loading or any allocation. A hosted run acts for its admission;
-      // only a complete authenticated caller can request the current ledger's admin decision.
-      if (this.userMode && def.owner !== undefined) {
-        const acting = authenticatedCaller === undefined ? undefined
-          : this.runHosting?.admittedCaller(authenticatedCaller) ?? authenticatedCaller;
-        const personaCaller = acting === undefined ? spawner ?? "" : principalKey(acting.owner, acting.actor).key;
-        const admin = authenticatedCaller !== undefined && await this.epAdminReach(authenticatedCaller);
-        if (!this.canReadPersona(def.owner, personaCaller, admin))
-          return { ok: false, error: `no persona "${ref}"` };
-      }
-    }
-    const agent = resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent });
+    const persona = await this.spawnPersona(opts, spawner, authenticatedCaller);
+    if ("error" in persona) return { ok: false, error: persona.error };
+    const { ref, configPath, def, agent } = persona;
 
     // Materialize the requested connector up front — the ONE async step in the spawn path (a lazy
     // `cotal ext` manifest import on the published binary). It runs BEFORE the capacity/reserve span

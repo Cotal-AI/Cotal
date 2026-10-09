@@ -60,6 +60,7 @@ export const START_TIMEOUT_MS = 40_000;
 const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   managerStatus: { command: "status" },
   start: { command: "spawn" },
+  resolveAgent: { command: "resolve-agent" },
   stop: { command: "despawn", targeted: true },
   attach: { command: "attach", targeted: true },
   input: { command: "input", targeted: true },

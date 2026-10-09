@@ -66,6 +66,14 @@ absolute path on that manager's host and returns its canonical directory plus th
 refuses a relative, missing or non-directory path with `failed-precondition`; it creates nothing.
 `spawn` applies the same check at admission, before any credentials or durables are minted.
 
+The manager's `resolve-agent` command is minted beside `spawn` in the spawn capability and the
+operator instruments. It accepts the persona fields `spawn` takes (`name`, `config`, `agent`,
+`defaultAgent`) and returns `{agent}`, the harness `spawn` on that manager would launch: the flag,
+then the persona's `agent:` pin, then the caller's default, then the manager's own default. It loads
+the persona with the same visibility check as `spawn` and launches nothing. A detached `--resume`
+without `--agent` asks it before carrying a session, and a manager that does not serve it refuses
+the call.
+
 `spawn` refuses an empty or whitespace-only value in any of its optional string fields, such as
 `role`, `agent` or `identity`, with `bad-request` naming the field. To take the persona file's value,
 omit the field.

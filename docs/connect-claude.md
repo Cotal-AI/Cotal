@@ -531,7 +531,9 @@ original is untouched.
   Claude config (`~/.claude`, or `$CLAUDE_CONFIG_DIR`), sends it through a JetStream Object
   Store bucket only that instance reads, under a writer credential pinned to that one transcript,
   and prints `carried session <id> to <instance>:
-  sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. A re-run of the same bytes
+  sha256:<hex>, <sent> of <size> bytes sent in <chunks> chunks`. Without `--agent`, the CLI first asks that
+  instance which harness the persona resolves to, so a persona with `agent: claude` is carried even
+  when your `COTAL_DEFAULT_AGENT` names another connector. A re-run of the same bytes
   sends nothing, and an interrupted carry continues where it stopped. The seat forks it in a
   private Claude home under the manager's `.cotal/seat-homes/`, which no other seat's Claude
   lists or finds, and which is removed when the seat stops. When Claude starts the fork, the seat
