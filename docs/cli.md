@@ -1866,7 +1866,8 @@ reads a legacy record. Any existing `web.pid` refuses the start, whether or not 
 runs, and the start neither adopts nor reclaims it.
 
 The pidfile pid and the pin pid are two coordinates. Automatic cleanup follows **proven death of
-the pidfile target** (ESRCH on that pid): a torn sibling pin does not wedge a dead pidfile pid.
+the pidfile target** (ESRCH on that pid): a torn or unreadable sibling pin does not wedge a dead
+pidfile pid.
 A torn pairing where the pin names another pid, while the pidfile pid is still live or not proven
 dead, still refuses. Inspect both pids with `ps`. Do not delete `<pidfile>.identity` to force a
 stop; that weakens target-identity protection. Once the pidfile process is dead, rerunning
