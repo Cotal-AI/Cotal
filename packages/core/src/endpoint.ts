@@ -6452,8 +6452,8 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
-   *  cache. Best-effort — a registry the endpoint can't read leaves the cache empty (effective
-   *  policy then falls back to the default), never a fault. */
+   *  cache. A failed bind throws out of connect; an entry that does not decode is reported as a
+   *  `warning` and dropped, so its channel resolves to the default policy. */
   private async startChannelWatch(): Promise<void> {
     if (!this.channelKv) return;
     const iter = await this.channelKv.watch();
@@ -6465,25 +6465,17 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private handleChannelEntry(e: KvEntry): void {
-    const gone = e.operation === "DEL" || e.operation === "PURGE";
-    if (e.key === CHANNEL_DEFAULTS_KEY) {
-      if (gone) this.channelDefaults = {};
-      else
-        try {
-          this.channelDefaults = e.json<ChannelDefaults>();
-        } catch {
-          /* keep last good */
-        }
-      return;
-    }
-    if (gone) {
-      this.channelConfigs.delete(e.key);
-      return;
-    }
+    // Cleared before the decode, so an entry that does not decode resolves to the default as the
+    // fresh registry reads do.
+    const isDefaults = e.key === CHANNEL_DEFAULTS_KEY;
+    if (isDefaults) this.channelDefaults = {};
+    else this.channelConfigs.delete(e.key);
+    if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
-      this.channelConfigs.set(e.key, e.json<ChannelConfig>());
-    } catch {
-      /* keep last good */
+      if (isDefaults) this.channelDefaults = e.json<ChannelDefaults>();
+      else this.channelConfigs.set(e.key, e.json<ChannelConfig>());
+    } catch (err) {
+      this.emitRecoverable(new Error(`dropped channel registry entry for key ${JSON.stringify(e.key)}: ${(err as Error).message}`));
     }
   }
 
