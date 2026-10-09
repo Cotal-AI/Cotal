@@ -14,6 +14,7 @@ import {
   type BackupStreamState,
   type SpaceBackupSelection,
 } from "./backup-config.js";
+import { withDeadline } from "./deadline.js";
 import {
   dlvDurableConfig,
   dmDurableConfig,
@@ -101,20 +102,6 @@ function assertBackupStream(space: string, stream: string): string {
   return stream;
 }
 
-async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new JetStreamBackupError(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
 /** Download a no-consumer native snapshot through one ordered, deadline-bounded sink. Each ackable
  * binary chunk is ACKed only after its sink call succeeds. Completion requires a clean empty EOF
  * after all accepted chunks. */
@@ -148,7 +135,7 @@ export async function downloadStreamSnapshot(
     void sinkSettled.then(() => {
       if (inFlightSink === sinkSettled) inFlightSink = undefined;
     });
-    await withDeadline(sink, sinkTimeoutMs, "snapshot sink deadline exceeded");
+    await withDeadline(sink, sinkTimeoutMs, () => new JetStreamBackupError("snapshot sink deadline exceeded"));
   }
   // Observe the internal promise immediately; the async function's returned promise adopts it below.
   void done.catch(() => {});
@@ -192,7 +179,7 @@ export async function downloadStreamSnapshot(
     void (async () => {
       if (sink) {
         try {
-          await withDeadline(sink, sinkTimeoutMs, "snapshot sink settlement deadline exceeded");
+          await withDeadline(sink, sinkTimeoutMs, () => new JetStreamBackupError("snapshot sink settlement deadline exceeded"));
         } catch { /* the transfer already has its primary failure */ }
       }
       phase = "settled";

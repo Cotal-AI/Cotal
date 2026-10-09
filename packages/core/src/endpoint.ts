@@ -32,6 +32,7 @@ import {
 } from "./liveness.js";
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
+import { withDeadline } from "./deadline.js";
 import { inspectCredHealth } from "./provision.js";
 import {
   parseSecretStoreIdentity,
@@ -1204,16 +1205,6 @@ export class CotalEndpoint extends EventEmitter {
     return next;
   }
 
-  /** Race `p` against a `ms` deadline so a slow/hung SecretStore fetch (or preflight) cannot exceed
-   *  the daemon transaction bound. The underlying promise is not cancellable, so callers also FENCE a
-   *  late commit by re-checking the deadline before mutating {@link currentCreds}. */
-  private static async withDeadline<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error(msg)), Math.max(1, ms)); });
-    try { return await Promise.race([p, timeout]); }
-    finally { if (timer) clearTimeout(timer); }
-  }
-
   /** The one PROVE-then-adopt transaction shared by the 75% timer and the explicit reload (run under
    *  {@link runCredsTxn}). Fetch (deadline-bounded) → identity-pin → optional `expected` fingerprint →
    *  PREFLIGHT the candidate on a disposable connection → fence a late commit against the deadline →
@@ -1231,7 +1222,7 @@ export class CotalEndpoint extends EventEmitter {
     // never touch the store, the preflight, or currentCreds.
     if (Date.now() > deadline)
       throw new Error("reloadCreds: the request deadline elapsed while queued behind another credential transaction; nothing adopted");
-    const candidate = await CotalEndpoint.withDeadline(this.credsSource!(), deadline - Date.now(), "reloadCreds: the creds source did not return before the daemon deadline; nothing adopted");
+    const candidate = await withDeadline(this.credsSource!(), deadline - Date.now(), () => new Error("reloadCreds: the creds source did not return before the daemon deadline; nothing adopted"));
     const id = idFromCreds(candidate);
     if (id !== this.connId)
       throw new Error(`creds source returned identity ${id}, expected ${this.connId} - renewal may not swap the connection's nkey`);
