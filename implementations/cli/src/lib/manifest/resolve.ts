@@ -9,7 +9,7 @@
  */
 import { isAbsolute, resolve as resolvePath, dirname } from "node:path";
 import { parseDocument, LineCounter } from "yaml";
-import { assertValidChannel, assertValidName, isConcreteChannel } from "@cotal-ai/core";
+import { assertValidChannel, assertValidName, isConcreteChannel, isLoopbackLiteral } from "@cotal-ai/core";
 import { MeshManifestSchema, type RawManifest } from "./schema.js";
 import type { AgentPolicy, PersonaPermissions, ResolvedAgent, ResolvedChannel, ResolvedManifest } from "./model.js";
 import { ManifestError, type ManifestIssue } from "./errors.js";
@@ -219,9 +219,10 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
   }
 }
 
-/** Why `idp` cannot be an IdP base URL, or `undefined` when it can. `what` names its source, because
- *  `up -f --idp` overrides `broker.idp` and must pass the same check. The message never repeats the
- *  value, which may carry a credential. */
+/** Why `idp` cannot be an IdP base URL, or `undefined` when it can. The rules are the ones the auth
+ *  provider applies when the launch pins the IdP, so the dry run refuses every IdP URL the launch
+ *  would refuse. `what` names its source, because `up -f --idp` overrides `broker.idp` and must pass
+ *  the same check. The message never repeats the value, which may carry a credential. */
 export function idpUrlProblem(idp: string, what: string): string | undefined {
   let u: URL;
   try {
@@ -229,6 +230,9 @@ export function idpUrlProblem(idp: string, what: string): string | undefined {
   } catch {
     return `${what} is not a valid URL (Better Auth: <origin>/api/auth)`;
   }
+  if (u.protocol !== "https:" && !(u.protocol === "http:" && isLoopbackLiteral(u.hostname)))
+    return `${what} must be https (or http on a loopback IP literal such as 127.0.0.1 for local dev)`;
+  if (u.search || u.hash) return `${what} must not carry a query or fragment`;
   return u.username || u.password ? `${what} must not embed credentials - give the IdP base URL only` : undefined;
 }
 

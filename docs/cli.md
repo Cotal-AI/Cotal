@@ -188,7 +188,7 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 | `--accept-stale-checkpoint` | off | Explicit consent to resume a seat whose checkpoint was captured outside its recorded recency horizon |
 | `--open` | off (auth) | Unauthenticated dev mesh: no JWT, no ACLs |
 | `--user-auth` | off | Per-user auth: people `cotal login`; connects are authorized against the actor ledger |
-| `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. With `-f`, overrides the manifest's `broker.idp` under the same rules: a valid URL with no embedded credentials |
+| `--idp <url>` | none | With `--user-auth`: the IdP auth base URL to pin on first enable. With `-f`, overrides the manifest's `broker.idp` under the same rules: https (or http on a loopback IP literal), with no credentials, query or fragment |
 | `--exchange-public-port <n>` | none | With `--user-auth`: add the public exchange face on this loopback port, for an HTTPS reverse proxy to forward to |
 | `--exchange-public-url <https://…>` | none | With `--exchange-public-port`: advertise the reverse proxy's HTTPS URL in discovery |
 | `--exchange-trusted-proxy` | off | With `--exchange-public-port`: attribute public failure buckets to the last `X-Forwarded-For` hop. Enable only when the listener is reachable solely through a trusted proxy; otherwise the socket address is used |
