@@ -148,7 +148,8 @@ try {
   assert.equal(await observers[1](), 1, "broker still sees B's delivery connection after A is fenced");
   const taken = await inspectors[0].readDeliveryLeaseEntry(0);
   await inspectors[0].releaseDeliveryLease(0, taken?.revision);
-  await restarted.close();
+  await assert.rejects(restarted.close(), /still held by/, "fenced A's close reports the lease it no longer held");
+  handles.splice(handles.indexOf(restarted), 1);
   await first.close();
   await second.close();
   await second.close();

@@ -382,8 +382,10 @@ try {
 
   const cause = ((await lossContext.readiness()) as { cause?: string }).cause;
   check("unavailable cause names stopped context", /stopped \(code 1\)/i.test(String(cause)), `cause=${cause}`);
+  check("close reports the lease release broker loss left unconfirmed", await lossContext.close().then(() => false, () => true));
+  handles.splice(handles.indexOf(lossContext), 1);
 
-  assert.equal(passed, 32, "all native health and post-expiry checks ran");
+  assert.equal(passed, 33, "all native health and post-expiry checks ran");
   checksCompleted = true;
 } finally {
   delete process.env.COTAL_DELIVERY_BROKER_GONE_MS;
@@ -423,5 +425,5 @@ try {
 }
 check("fixture closes its proxy and broker and removes its owned state before success",
   !proxy.listening && (nats.exitCode !== null || nats.signalCode !== null) && !existsSync(brokerDir));
-assert.equal(passed, 34, "native health fixture includes broker-censused teardown");
+assert.equal(passed, 35, "native health fixture includes broker-censused teardown");
 console.log(`delivery native health lifetime: ${passed} passed, 0 failed`);
