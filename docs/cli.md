@@ -1720,7 +1720,9 @@ liveness check, then skips only progress bound to the same registration operatio
 revision, and holder set.
 The output reports holders completed before this attempt, completed now, and still remaining. A new
 freeze or changed holder set starts from zero. Cursor cleanup happens only after reopen; a retained
-cursor is harmless because its old gate revision cannot authorize a later freeze.
+cursor is harmless because its old gate revision cannot authorize a later freeze. The governance slot
+release after the reopen is cleanup in the same way: a slot it fails to release does not fail the
+repair, because the reopened gate is already past the slot's generation.
 
 **It refuses far more often than it acts, on purpose**, and always says which check stopped it:
 
