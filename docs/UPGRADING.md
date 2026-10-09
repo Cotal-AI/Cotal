@@ -34,6 +34,27 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Token verifier clock tolerance (unreleased)
+
+`validateUserToken`, and the `IdpConfig` that `verifyIdpToken` and `createIdpBridge` take, from
+`@cotal-ai/auth` no longer accept `clockToleranceSec`. Both verifiers allow a fixed 5 seconds of
+clock skew on `exp`, `nbf` and `iat`, the default they already applied. Nothing in the repository
+passed the option, so a running mesh behaves as before. Only code of your own that passes it is
+affected.
+
+### What stops working
+
+A call or `IdpConfig` that passes `clockToleranceSec` in an object literal no longer compiles. Plain
+JavaScript that keeps it still runs, and the value is ignored. A `NaN` value, such as `Number()` of
+an unset environment variable, used to turn off the expiry, not-before and issued-at checks in both
+verifiers, so an expired or post-dated token was accepted. A large value widened those checks by
+that many seconds. Both kinds of token are now refused.
+
+### Before the upgrade
+
+Remove `clockToleranceSec` from each call and each `IdpConfig`. A host whose clock is more than 5
+seconds off the issuer's needs its time synchronized.
+
 ## Auth context closure in 0.71.0 (unreleased)
 
 Existing deployments need no credential migration or restart for these additive APIs. Embedded

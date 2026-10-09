@@ -29,7 +29,7 @@ import type { CryptoKey, JWTVerifyGetKey } from "jose";
 import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
-import { USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
+import { CLOCK_TOLERANCE_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 import { grantCommandLine } from "./grant-command.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
@@ -42,8 +42,6 @@ export interface IdpConfig {
   /** The pinned verification key path over the IdP's JWKS — a {@link pinnedJwksResolver} on the
    *  IdP's JWKS URL, or a local public key. The token never influences key resolution. */
   key: JWTVerifyGetKey | CryptoKey;
-  /** Clock skew tolerance in seconds (default 5). */
-  clockToleranceSec?: number;
 }
 
 /** What the operator's ledger grants a (owner, actor) pair — the ONLY source of `scope`/`parent`
@@ -131,12 +129,11 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
     throw new Error("idp token: embedded key material (jku/jwk/x5u/x5c) is rejected - keys resolve only via the pinned JWKS");
   if (header.alg !== "EdDSA") throw new Error(`idp token: alg must be EdDSA (got ${String(header.alg)})`);
 
-  const tol = idp.clockToleranceSec ?? 5;
   const { payload } = await jwtVerify(token, idp.key as JWTVerifyGetKey, {
     algorithms: ["EdDSA"],
     issuer: idp.issuer,
     audience: idp.audience,
-    clockTolerance: tol,
+    clockTolerance: CLOCK_TOLERANCE_SEC,
   });
 
   // jose's `audience` option is SET-MEMBERSHIP (an aud array containing the expected value
@@ -147,7 +144,7 @@ export async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ s
     throw new Error("idp token: aud must be exactly the configured audience - a multi-audience session proof is rejected");
   if (typeof payload.exp !== "number") throw new Error("idp token: exp is required - an IdP session proof must expire");
   if (typeof payload.iat !== "number") throw new Error("idp token: iat is required");
-  if (payload.iat > Math.floor(Date.now() / 1000) + tol) throw new Error("idp token: iat is in the future");
+  if (payload.iat > Math.floor(Date.now() / 1000) + CLOCK_TOLERANCE_SEC) throw new Error("idp token: iat is in the future");
   if (typeof payload.sub !== "string" || !payload.sub)
     throw new Error("idp token: sub must be a non-empty string user id - no coercion at a trust boundary");
   return { sub: payload.sub, exp: payload.exp };
