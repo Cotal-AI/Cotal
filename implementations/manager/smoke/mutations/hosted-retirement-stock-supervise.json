@@ -23,7 +23,7 @@
     {
       "name": "stock supervision silently accepts hosted release without a host composition",
       "file": "implementations/manager/src/commands.ts",
-      "find": "          const result = await provider.prepareRemoteManagedAgentRetirement({\n            store: workspaceSecretStore(findCotalRoot()),\n            dir: join(findCotalRoot(), \".cotal\", \"auth\", space),\n            request,\n          });\n          remoteManagedAgentRetirementPrepared(result, request);\n",
+      "find": "          const result = await provider.prepareRemoteManagedAgentRetirement({ ...providerCall, request });\n          remoteManagedAgentRetirementPrepared(result, request);\n",
       "replace": "          void request;\n",
       "expectRed": "stock hosted deprovision fails closed at the host's unimplemented release refusal",
       "cell": "stock hosted deprovision fails closed at the host's unimplemented release refusal",
