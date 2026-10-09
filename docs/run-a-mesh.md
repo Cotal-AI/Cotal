@@ -425,10 +425,10 @@ through the extension surface, for example `cotal ext add @cotal-ai/orca`, then 
 terminal surfaces rather than manager-owned PTYs. Those surfaces stream no exit, so the manager
 asks the runtime every five seconds whether a seat's process has ended, and frees a seat that ended
 on its own once the runtime proves the exit. Its `seat reaped:` line says the exit detail is
-unavailable from that runtime. While a launch waits for readiness the manager asks every second, so
-a seat whose process ends before it joins the mesh is reported as exited on launch, with no last
-output, rather than as uncertain. Runtime names are open-ended and resolved from
-the registry; a missing provider or app throws, never silently falls back
+unavailable from that runtime. While a launch waits for readiness the manager asks every second and
+once more when the readiness window closes, so a seat whose process ends before it joins the mesh is
+reported as exited on launch, with no last output, rather than as uncertain. Runtime names are
+open-ended and resolved from the registry; a missing provider or app throws, never silently falls back
 ([architecture](architecture.md)).
 
 ## Mesh registry

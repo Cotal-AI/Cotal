@@ -78,6 +78,7 @@ import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecr
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
+  exitProof,
   isCustodialRuntime,
   pollProvedExit,
   requireRuntimeAdopt,
@@ -7151,8 +7152,9 @@ export class Manager {
    *  any live presence for it is from THIS launch (stale/same-name records can't false-start it). The
    *  `"presence"` event is only a wake; the roster is re-read as the source of truth (subscribe-then-check
    *  catches a join/exit that landed before we subscribed). A runtime whose `attach()` throws (an external
-   *  surface) streams no output or exit, so its exit leg polls the runtime's exit proof ({@link pollProvedExit})
-   *  and its failure carries no last output; one that cannot prove an exit either races presence-vs-backstop only. */
+   *  surface) streams no output or exit, so its exit leg polls the runtime's exit proof ({@link pollProvedExit}),
+   *  reads it once more when the window closes, and its failure carries no last output; one that cannot prove an
+   *  exit either races presence-vs-backstop only. */
   private async awaitReadiness(a: ManagedAgent, readinessTimeoutMs: number, opts: { reapOnExit?: boolean; joinedAfter?: number } = {}): Promise<{ ok: true } | { ok: false; uncertain?: boolean; deliberate?: boolean; detail: string }> {
     let session: AttachSession | undefined;
     try {
@@ -7254,15 +7256,19 @@ export class Manager {
           finish({ ok: false, detail: `${a.name} exited on launch${tail ? ` - last output: ${tail}` : ""}${exitDetail}` });
         })();
       };
-      timer = setTimeout(
-        () =>
-          finish({
-            ok: false,
-            uncertain: true,
-            detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
-          }),
-        readinessTimeoutMs,
-      );
+      const uncertain = (): void =>
+        finish({
+          ok: false,
+          uncertain: true,
+          detail: `${a.name} (${a.id}): launch status uncertain - no process exit and no mesh presence within ${Math.round(readinessTimeoutMs / 1000)}s; it may still be booting or stuck before connector startup. Inspect with \`cotal attach ${a.name}\` / \`cotal ps\`; do not stop it solely because this bounded wait elapsed.`,
+        });
+      // The exit poll read the runtime up to a poll ago, and a window can be shorter than a poll, so
+      // the window closes on a fresh read: a child that exited by then is reported as exited.
+      timer = setTimeout(() => {
+        const proof = s ? undefined : exitProof(a.handle);
+        if (proof) proof.then(onExit, uncertain);
+        else uncertain();
+      }, readinessTimeoutMs);
       // The poll stops once the race is done, so it needs no unsubscribe.
       if (s) unsubExit = s.onExit(onExit);
       else pollProvedExit(a.handle, onExit, () => !done, READINESS_EXIT_POLL_MS);

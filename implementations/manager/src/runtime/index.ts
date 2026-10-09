@@ -261,8 +261,7 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
  *  `waitForExit` confirms it, until `watching` turns false. Returns false when the handle has no
  *  `waitForExit`, so no exit of its child can be proved. */
 export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching: () => boolean, pollMs: number): boolean {
-  const wait = handle.waitForExit?.bind(handle);
-  if (!wait) return false;
+  if (!handle.waitForExit) return false;
   let waiting = false;
   const poll = setInterval(() => {
     if (!watching()) {
@@ -270,16 +269,10 @@ export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching
       return;
     }
     if (waiting) return;
-    let exited: boolean;
-    try {
-      exited = handle.status() === "exited";
-    } catch {
-      return;
-    }
-    if (!exited) return;
+    const proof = exitProof(handle);
+    if (!proof) return;
     waiting = true;
-    // Called from a continuation so a wait that throws is retried like one that rejects.
-    Promise.resolve().then(wait).then(
+    proof.then(
       () => {
         clearInterval(poll);
         onExit();
@@ -291,6 +284,21 @@ export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching
   }, pollMs);
   poll.unref();
   return true;
+}
+
+/** `handle`'s `waitForExit` once its `status()` says its child exited, or undefined while the child
+ *  runs, while `status()` throws, or when the handle has no `waitForExit`. */
+export function exitProof(handle: AgentHandle): Promise<void> | undefined {
+  const wait = handle.waitForExit?.bind(handle);
+  if (!wait) return undefined;
+  let exited: boolean;
+  try {
+    exited = handle.status() === "exited";
+  } catch {
+    return undefined;
+  }
+  // Called from a continuation so a wait that throws becomes a rejection.
+  return exited ? Promise.resolve().then(wait) : undefined;
 }
 
 /** Walk up from `startDir` to the pnpm workspace root (for spawning `pnpm cotal …`). */
