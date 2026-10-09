@@ -27,6 +27,7 @@ const state = client.loadOrCreateRemoteManagerIdentity(root, a.space);
 const assignment = { v: 1 as const, space: a.space, accountPublicKey: a.accountPublicKey, instanceId: state.instanceId, lifecycleUid: state.lifecycleUid, assignmentRevision: 1, state: "assigned" as const };
 let service: Awaited<ReturnType<typeof startAuthService>> | undefined;
 let manager: Manager | undefined;
+let managerStarted = false;
 let callerNc: Awaited<ReturnType<typeof connect>> | undefined;
 let delivery: Awaited<ReturnType<typeof bootDeliveryDaemon>> | undefined;
 let witness: Awaited<ReturnType<typeof connect>> | undefined;
@@ -90,12 +91,13 @@ try {
       ["public startAgent", () => manager!.startAgent({ name: "valid" })],
       ["public startByName", () => manager!.startByName("valid")],
       ["public delegated start", () => manager!.startAgent({ name: "delegated", delegatedIntent: {} as never })],
-    ] as const) { const reply = await invoke(); check(`${label} refuses before authority/files/persona effects`, !reply.ok && /execution: none/.test(reply.error!)); }
+    ] as const) { let reply: Awaited<ReturnType<Manager["startAgent"]>> | undefined; await assert.doesNotReject(async () => { reply = await invoke(); }, `${label} refuses before authority/files/persona effects`); check(`${label} refuses before authority/files/persona effects`, !reply!.ok && /execution: none/.test(reply!.error!)); }
     check("public launch refusals call no authority and write no files", calls === before && JSON.stringify(readdirSync(root, { recursive: true }).sort()) === files);
     assert.throws(() => manager!.adoptRuntimeHandle({ kind: "pty", id: "missing" }), /execution: none/, "none refuses runtime handle adoption"); passed++;
     const resumed = await manager.resumePreserved({ version: "cotal-manager-resume/v2", space: a.space, createdAt: new Date().toISOString(), agents: [{} as never] });
     check("retained nonempty inventory refuses before host validation or recovery", !resumed.ok && /execution: none/.test(resumed.error!) && calls === before);
     await manager.start();
+    managerStarted = true;
     check("boot checks retained inventory and runs native goal recovery", scans >= 2);
     return { owner: prepared.owner, epoch: registered.processEpoch, opts };
   };
@@ -169,4 +171,4 @@ try {
   await service!.close();
   check("authority close ends every real owned connection", (await service!.closed).connections.every((c) => c.ended));
   console.log(`no-execution native: ${passed} assertions passed`); emitSentinel({ passed, failed: 0 });
-} finally { await callerNc?.close(); await manager?.stop(); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }
+} finally { await callerNc?.close(); if (managerStarted) await manager?.stop(); await retainedWriter?.close(); await witness?.close(); try { await service?.close(); } finally { await delivery?.stop(); await fx.close(); } }

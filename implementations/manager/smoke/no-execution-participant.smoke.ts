@@ -1,3 +1,5 @@
+import * as core from "../../../packages/core/dist/index.js";
+import * as auth from "../../auth/dist/index.js";
 // Native acceptance composition. The IdP publishes a real signed JWKS, auth-service owns
 // all grants/issuance, and the participant owns genuine PTY children. No provider/model runs.
 if (process.argv[2] === "agent-bearer") {
@@ -12,9 +14,9 @@ async function main() {
   const { mkdirSync, writeFileSync, readFileSync, existsSync } = await import("node:fs");
   const { join, resolve } = await import("node:path");
   const { SignJWT, generateKeyPair, exportJWK, decodeJwt } = createRequire(new URL("../../auth/package.json", import.meta.url))("jose") as any;
-  const { CotalEndpoint, mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, registry, standaloneConnectOpts, issuedUserCaller, resolveService, invokeCommand, provisionAgentDurables } = await import("@cotal-ai/core");
+  const { CotalEndpoint, mintLifecycleUid, mintCreds, newIdentity, setupSpaceStreams, registry, standaloneConnectOpts, issuedUserCaller, resolveService, invokeCommand, provisionAgentDurables } = core;
   const { connect } = await import("@nats-io/transport-node");
-  const { startAuthService, grantActor, loadOwnerSecret, deriveOwnerForIdpSubject } = await import("../../auth/dist/index.js");
+  const { startAuthService, grantActor, loadOwnerSecret, deriveOwnerForIdpSubject } = auth;
   const { startHostedAuthFixture } = await import("../../auth/smoke/_hosted-auth-fixture.js");
   const { bootDeliveryDaemon } = await import("./_boot-delivery.js");
   const { nativeRemoteManager } = await import("./_native-remote-manager.js");

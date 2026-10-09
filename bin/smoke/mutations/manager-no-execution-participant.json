@@ -1,9 +1,10 @@
 {
   "suite": [
-    "implementations/manager/smoke/no-execution-participant.smoke.ts"
+    "implementations/manager/smoke/no-execution-participant.smoke.ts",
+    "implementations/manager/smoke/_native-remote-manager.ts"
   ],
   "guard": "Real signerless participant workflow and redeemed session retain native class queue, lifecycle and holder boundaries.",
-  "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/auth --filter @cotal-ai/manager build && pnpm smoke:no-execution-participant",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm --filter @cotal-ai/manager build && pnpm smoke:no-execution-participant",
   "progressPattern": "^PASS ",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/manager-no-execution-participant.json",
   "why": [
