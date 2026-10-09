@@ -39,7 +39,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, publicIdentities, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -403,18 +403,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           return retainedAgentAuthority(result, request);
         },
         scanGoalIndex: async () => {
-          const request = {
-            v: 1 as const,
-            kind: "manager-goal-index-scan" as const,
-            space,
-            actor: "cli",
-            instanceId: state.instanceId,
-            managerLifecycleUid: state.lifecycleUid,
-            requestId: `scan${mintLifecycleUid()}`,
-            registrationProof: retainedRegistrationProof,
-            serveEpoch: registered.processEpoch,
-            identities: publicIdentities(state),
-          };
+          const request = remoteManagerGoalIndexScanRequest(
+            state,
+            "cli",
+            retainedRegistrationProof,
+            registered.processEpoch,
+          );
           const result = await provider.scanRemoteManagerGoalIndex!({ ...providerCall, request });
           return remoteManagerGoalIndexEntries(result, request, material.owner);
         },

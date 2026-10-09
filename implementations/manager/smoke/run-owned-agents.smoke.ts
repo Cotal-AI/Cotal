@@ -331,7 +331,7 @@ try {
     mintSessionServing: async () => { throw new Error("fixture does not request attach sessions"); },
     validateRetainedAgent: async () => { throw new Error("fixture starts no retained seat"); },
     scanGoalIndex: async () => {
-      const request = { v: 1 as const, kind: "manager-goal-index-scan" as const, space, actor: "cli", instanceId: state.instanceId, managerLifecycleUid: state.lifecycleUid, requestId: `scan${mintLifecycleUid()}`, registrationProof: proof, serveEpoch: registered.processEpoch, identities: remote.publicIdentities(state) };
+      const request = remote.remoteManagerGoalIndexScanRequest(state, "cli", proof, registered.processEpoch);
       return remote.remoteManagerGoalIndexEntries(await cotalAuthProvider.scanRemoteManagerGoalIndex!({ ...callArgs, request }), request, owner);
     },
   };

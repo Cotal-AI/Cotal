@@ -442,6 +442,26 @@ export function retainedAgentAuthority(
   return authority;
 }
 
+export function remoteManagerGoalIndexScanRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+): RemoteManagerGoalIndexScanRequest {
+  return {
+    v: 1,
+    kind: "manager-goal-index-scan",
+    space: state.space,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    requestId: `scan${mintLifecycleUid()}`,
+    registrationProof,
+    serveEpoch,
+    identities: publicIdentities(state),
+  };
+}
+
 /** Bind a host-owned goal-index scan back to its request and validate every returned row before the
  * manager acts on it. The HTTP result is untrusted input even though the host authenticated it. */
 export function remoteManagerGoalIndexEntries(
