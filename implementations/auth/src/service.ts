@@ -2928,8 +2928,15 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
     return send(res, 415, { error: "content-type must be application/json" });
   if (policy.requireCapability && req.headers.authorization !== `Bearer ${ctx.cap}`)
     return send(res, 401, { error: "missing/invalid exchange capability - manager-service authority requires the operator exchange capability on this face" });
-  const body = await readJsonBody(req) as { idpToken?: unknown; request?: unknown };
-  if (typeof body.idpToken !== "string" || !body.idpToken)
+  let body: { idpToken?: unknown; request?: unknown } | null;
+  try {
+    body = await readJsonBody(req) as typeof body;
+  } catch (e) {
+    // A host may serve this export without the route tables' catch, so the body refusals are
+    // answered here; an escaped rejection would end that host's process.
+    return sendRequestError(res, e);
+  }
+  if (typeof body?.idpToken !== "string" || !body.idpToken)
     return send(res, 400, { error: "manager-service authority needs { idpToken, request }" });
   try {
     const verified = await verifyIdpToken(body.idpToken, ctx.bridgeIdp);
