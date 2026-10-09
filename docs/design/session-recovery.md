@@ -528,12 +528,13 @@ under, written at `begin` rather than reported back after the fact, and recovery
 `external` is documented as the external resource this effect bound, so a crash mid-effect is
 recoverable.
 
-The write is two-phase, in `performEffect` in `packages/lang/src/perform.ts`. On a `miss` or
-`refused` verdict it awaits `host.journal.begin(key, inputHash, now, reqId)` before the work is
-issued, with the comment that the request id has to be durable before the work is issued or a crash
-in the gap leaves real work that nothing in the journal names. After that await it re-checks
-cancellation, because the append is a gap during which a sibling can cancel this branch, and the
-measured failure was a cancelled branch's effect still being dispatched and recorded `ok`.
+The write is two-phase, in `enterStep` in `packages/lang/src/perform.ts`, the step entry that
+`performEffect` and `performWaitUntil` share. On a `miss` or `refused` verdict it awaits
+`host.journal.begin(key, inputHash, now, reqId)` before the work is issued, with the comment that
+the request id has to be durable before the work is issued or a crash in the gap leaves real work
+that nothing in the journal names. After that await it re-checks cancellation, because the append is
+a gap during which a sibling can cancel this branch, and the measured failure was a cancelled
+branch's effect still being dispatched and recorded `ok`.
 
 `requestId` in `packages/lang/src/keys.ts` derives the identity from the run, the step key, the input
 hash and the attempt, which `implementations/runtime/src/mesh-handler.ts` restates in its header as
