@@ -54,6 +54,10 @@ const USERNAME = "opencode";
  *  otherwise it is minted per launch. */
 const SECRET = process.env.OPENCODE_SERVER_PASSWORD || randomBytes(24).toString("hex");
 
+/** Run by `/bin/sh -c` as `<script> cotal-serve <record> <command> <args...>`. A record it cannot
+ *  write stops it before the command starts. */
+const RECORD_THEN_EXEC = `printf %s "$$" > "$1" && shift && exec "$@"`;
+
 /** Ask the OS for a free port (bind :0, read it, release) so co-located peers don't collide. */
 async function freePort(): Promise<number> {
   const srv = createServer();
@@ -173,7 +177,15 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const line = opencodeLine(versionRaw, BIN);
 
   mkdirSync(agentHome, { recursive: true });
-  const serve = spawn(BIN, ["serve", "--hostname", "127.0.0.1", "--port", port], {
+  // A launcher killed between starting the serve and recording it would leave a serve on this DB that
+  // the next launch cannot see, so the record has to exist before the serve does: the process writes
+  // its own pid and only then becomes the serve, which keeps that pid. Windows has no exec, so there
+  // the launcher records it after the spawn.
+  const serveArgv: [string, ...string[]] = [BIN, "serve", "--hostname", "127.0.0.1", "--port", port];
+  const [serveCommand, ...serveArgs]: [string, ...string[]] = process.platform === "win32"
+    ? serveArgv
+    : ["/bin/sh", "-c", RECORD_THEN_EXEC, "cotal-serve", pidFile, ...serveArgv];
+  const serve = spawn(serveCommand, serveArgs, {
     env: {
       ...process.env,
       ...serveEnv?.(agentHome),
@@ -185,7 +197,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  writeFileSync(pidFile, String(serve.pid));
+  if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));
 
   // Scan the server's output for the plugin's session handshake; forward boot logs to our stderr
