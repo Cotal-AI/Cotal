@@ -214,15 +214,22 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
   if (broker.idp !== undefined) {
     if (broker.auth !== "user")
       add(`broker.idp is for user-auth spaces - set broker.auth: "user" (or drop idp)`, ["broker", "idp"]);
-    let u: URL | undefined;
-    try {
-      u = new URL(broker.idp);
-    } catch {
-      add(`broker.idp is not a valid URL (Better Auth: <origin>/api/auth)`, ["broker", "idp"]);
-    }
-    if (u?.username || u?.password)
-      add(`broker.idp must not embed credentials - give the IdP base URL only`, ["broker", "idp"]);
+    const problem = idpUrlProblem(broker.idp, "broker.idp");
+    if (problem) add(problem, ["broker", "idp"]);
   }
+}
+
+/** Why `idp` cannot be an IdP base URL, or `undefined` when it can. `what` names its source, because
+ *  `up -f --idp` overrides `broker.idp` and must pass the same check. The message never repeats the
+ *  value, which may carry a credential. */
+export function idpUrlProblem(idp: string, what: string): string | undefined {
+  let u: URL;
+  try {
+    u = new URL(idp);
+  } catch {
+    return `${what} is not a valid URL (Better Auth: <origin>/api/auth)`;
+  }
+  return u.username || u.password ? `${what} must not embed credentials - give the IdP base URL only` : undefined;
 }
 
 function dedupe<T>(xs: T[]): T[] {
