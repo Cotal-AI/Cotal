@@ -65,6 +65,85 @@ if (subcommand === "seat") {
   await new Promise(() => {});
 }
 
+if (subcommand === "tool-seat") {
+  const { MeshAgent, configFromEnv, cotalToolSpecs } = await import("@cotal-ai/connector-core");
+  const { appendFileSync, existsSync, readFileSync } = await import("node:fs");
+  const { mintLifecycleUid } = await import("@cotal-ai/core");
+  const config = configFromEnv();
+  const mesh = new MeshAgent(config);
+  const trace = (event: Record<string, unknown>) => appendFileSync(process.env.U4_TRACE!, JSON.stringify({ actor: config.userAuth!.actor, uid: config.lifecycleUid, ...event,
+    ...(typeof event.text === "string" ? { text: event.text.replace(/"token"\s*:\s*"[^"]+"/g, '"token":"[redacted]"') } : {}),
+  }) + "\n");
+  mesh.on("error", () => {});
+  const tool = cotalToolSpecs(config).find((s) => s.name === "cotal_run")!;
+  const waitFor = async (condition: () => boolean | Promise<boolean>) => {
+    const deadline = Date.now() + 30_000;
+    while (!await condition()) {
+      if (Date.now() >= deadline) throw new Error("managed connector native condition timed out");
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  };
+  try {
+    await mesh.start();
+    trace({ kind: "tool-joined", runCapability: config.capabilities?.includes("run"), managerPinned: !!config.managerInstanceId });
+    if (tool) trace({ kind: "tool-guidance", truthful: tool.description.includes("managed agent on a user-auth mesh") && !tool.description.includes("static authentication with issued caller authority") });
+    if (config.name === "toolbaseline") {
+      const refused = await mesh.run("start", { source: 'log("missing-run must refuse");' });
+      trace({ kind: "tool-missing-run", hidden: !tool, ok: refused.ok, error: refused.error });
+    } else {
+      const started = await tool.run(mesh, config, { verb: "start", source: 'await checkpoint("child-owned", "Native child decision", { timeout: "1m" }); await checkpoint("child-finish", "Finish resumed child run", { timeout: "1m" });' });
+      trace({ kind: "tool-start", ...started });
+      const runId = started.text.match(/Started run (run-[a-f0-9]+)/)?.[1];
+      if (!runId || started.isError) throw new Error("native child cotal_run start refused");
+      await waitFor(async () => {
+        const status = await tool.run(mesh, config, { verb: "status", runId });
+        if (!status.isError && status.text.includes("/checkpoint:child-owned#0")) { trace({ kind: "tool-status", runId, ...status }); return true; }
+        return false;
+      });
+      // The parent observes the real drive at a native pause, requests public release, then signals.
+      await waitFor(() => existsSync(process.env.MC_RELEASE!));
+      const answer = await tool.run(mesh, config, { verb: "answer", runId, stepKey: "/checkpoint:child-owned#0", value: "native child approval" });
+      trace({ kind: "tool-answer", runId, ...answer });
+      if (answer.isError) throw new Error("native child answer refused");
+      await waitFor(async () => {
+        const status = await tool.run(mesh, config, { verb: "status", runId });
+        if (!status.isError && status.text.includes(": released,")) { trace({ kind: "tool-released", runId }); return true; }
+        return false;
+      });
+      const resumed = await tool.run(mesh, config, { verb: "resume", runId });
+      trace({ kind: "tool-resume", runId, ...resumed });
+      if (resumed.isError) throw new Error("native child resume refused");
+      await waitFor(async () => {
+        const status = await tool.run(mesh, config, { verb: "status", runId });
+        return !status.isError && status.text.includes("/checkpoint:child-finish#0");
+      });
+      const finished = await tool.run(mesh, config, { verb: "answer", runId, stepKey: "/checkpoint:child-finish#0", value: "finish" });
+      trace({ kind: "tool-answer-finish", runId, ...finished });
+      if (finished.isError) throw new Error("native child resumed checkpoint answer refused");
+      await waitFor(async () => {
+        const status = await tool.run(mesh, config, { verb: "status", runId });
+        if (!status.isError && status.text.includes(": completed,")) { trace({ kind: "tool-completed", runId }); return true; }
+        return false;
+      });
+      for (const scenario of ["parent-denied", "parent-restored", "stale-uid", "wrong-instance"]) {
+        await waitFor(() => existsSync(process.env.MC_CONTROL!) && readFileSync(process.env.MC_CONTROL!, "utf8") === scenario);
+        const originalUid = config.lifecycleUid, originalInstance = config.managerInstanceId;
+        if (scenario === "stale-uid") config.lifecycleUid = mintLifecycleUid();
+        if (scenario === "wrong-instance") config.managerInstanceId = mintLifecycleUid();
+        const result = await tool.run(mesh, config, { verb: "start", source: 'log("current caller check");' });
+        config.lifecycleUid = originalUid; config.managerInstanceId = originalInstance;
+        trace({ kind: `tool-${scenario}`, ...result });
+      }
+    }
+  } catch (error) {
+    trace({ kind: "tool-failure", reason: (error instanceof Error ? error.message : String(error)).replace(/\beyJ[\w-]+\.[\w-]+\.[\w-]+\b/g, "[redacted]").slice(0, 500) });
+  }
+  const stop = () => { void mesh.stop().finally(() => process.exit(0)); };
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  await new Promise(() => {});
+}
+
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
@@ -77,6 +156,7 @@ import {
   CotalEndpoint, createSpaceAuth, mintCreds, newIdentity, mintLifecycleUid, serverConfig, setupSpaceStreams,
   standaloneConnectOpts, isReachable, remoteManagerActors, remoteManagerRegistrationProof,
   eventChannel, loadAgentFile, readRunAdmission, runDriverCaller, readGoalResult,
+  RUN_HOST_KIND, COTAL_LANG_RUN_HOST, type RunHost, type RunHostDrive,
   epCall, issuedUserCaller, resolveService, invokeCommand, type EpCaller, type Connector, type EpAttributedReply, registry,
 } from "@cotal-ai/core";
 import { authDir, userAuthStateDir, workspaceSecretStore, saveSpaceAuth, recordMesh, assertUserAuthInfo } from "@cotal-ai/workspace";
@@ -108,6 +188,7 @@ const servers = `nats://127.0.0.1:${port}`;
 const hostDir = userAuthStateDir(hostRoot, space);
 const hostStore = workspaceSecretStore(hostRoot);
 const tracePath = join(scratch, "seat.jsonl");
+const releasePath = join(scratch, "release"), controlPath = join(scratch, "tool-control");
 writeFileSync(tracePath, "");
 let passed = 0, failed = 0;
 const check = (name: string, condition: unknown): void => {
@@ -123,7 +204,7 @@ function successful(r: EpAttributedReply): Record<string, unknown> {
   if (!r.reply.ok) throw new Error(`endpoint refused ${r.reply.error?.code}: ${r.reply.error?.message}; ${JSON.stringify(r.reply.error?.details)}`);
   return r.reply.data as Record<string, unknown>;
 }
-const trace = (): Array<Record<string, unknown>> => readFileSync(tracePath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+const trace = (): Array<Record<string, unknown>> => readFileSync(tracePath, "utf8").split("\n").slice(0, -1).filter(Boolean).map((line) => JSON.parse(line));
 let broker: ChildProcess | undefined;
 let authChild: ChildProcess | undefined;
 let manager: Manager | undefined;
@@ -135,6 +216,16 @@ let adminRequests: Array<{ owner: string; actor: string; lifecycleUid: string; a
 let mainRun: string | undefined;
 let fatal: string | undefined;
 let connectorResolutions = 0, enrollments = 0;
+const drives = new Map<string, RunHostDrive>();
+const admissions = new Map<string, ReturnType<typeof readRunAdmission>>();
+const nativeRunHost = registry.resolve<RunHost>(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
+registry.unregister(RUN_HOST_KIND, COTAL_LANG_RUN_HOST);
+const observingRunHost: RunHost = { ...nativeRunHost, drive: (planes, request, mediator) => {
+  const drive = nativeRunHost.drive(planes, request, mediator);
+  drives.set(request.runId, drive); admissions.set(request.runId, readRunAdmission(mediator!.jsm, space, "manager", request.runId));
+  return drive;
+} };
+registry.register(observingRunHost);
 
 try {
   // Native Better Auth users and sessions. No guessed JWT, callout rule copy or artificial issuance.
@@ -182,18 +273,18 @@ try {
   const row = grantActor(hostDir, { owner, actor: "cli", scope: ["spawn", "run", "supervise", "admin"], allowSubscribe: [">"], allowPublish: [">"], label: "disposable native U4 operator" });
   grantActor(hostDir, { owner: otherOwner, actor: "cli", scope: ["spawn", "run", "admin"], allowSubscribe: [], allowPublish: [], label: "disposable native U4 other owner" });
   recordMesh({ space, server: servers, root, mode: "user", policy: { events: "required" }, userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
+  const state = remote.loadOrCreateRemoteManagerIdentity(root, space);
   const connector: Connector = { kind: "connector", name: "u4-seat", requires: ["node"], eventChannel,
     buildLaunch: (o) => {
       assert(o.userAuth && o.lifecycleUid);
       const env: Record<string, string> = {};
       for (const key of ["PATH", "HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "COTAL_SKIP_CONNECTOR_SEED"]) if (process.env[key]) env[key] = process.env[key]!;
-      return { command: process.execPath, args: [...process.execArgv, self, "seat"], env: { ...env, COTAL_SPACE: o.space, COTAL_SERVERS: servers, COTAL_OWNER: o.userAuth.owner, COTAL_ACTOR: o.userAuth.actor, COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: o.lifecycleUid, COTAL_SENTINEL_CREDS: o.userAuth.sentinelCredsPath, COTAL_BEARER_CMD: JSON.stringify(o.userAuth.bearerCmd), U4_TRACE: tracePath } };
+      return { command: process.execPath, args: [...process.execArgv, self, o.name.startsWith("tool") ? "tool-seat" : "seat"], env: { ...env, COTAL_SPACE: o.space, COTAL_SERVERS: servers, COTAL_OWNER: o.userAuth.owner, COTAL_ACTOR: o.userAuth.actor, COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: o.lifecycleUid, COTAL_SENTINEL_CREDS: o.userAuth.sentinelCredsPath, COTAL_BEARER_CMD: JSON.stringify(o.userAuth.bearerCmd), COTAL_MANAGER_INSTANCE: state.instanceId, COTAL_CAPABILITIES: (o.capabilities ?? []).join(","), U4_TRACE: tracePath, MC_RELEASE: releasePath, MC_CONTROL: controlPath } };
     },
   };
   registry.register(connector);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "owned.md"), "---\nname: owned\nagent: u4-seat\ncapabilities: [spawn]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative owned seat.\n");
-  const state = remote.loadOrCreateRemoteManagerIdentity(root, space);
   const callArgs = { store: hostStore, dir: hostDir };
   const callAuthority = (request: Parameters<NonNullable<typeof cotalAuthProvider.managerServiceAuthority>>[0]["request"]) => cotalAuthProvider.managerServiceAuthority!({ ...callArgs, request });
   const prep = await callAuthority(remote.remoteManagerAuthorityRequest(state, "cli", "prepare"));
@@ -262,6 +353,49 @@ try {
   const hosting = (manager as unknown as { runHosting: RunHosting }).runHosting;
   const start = async (source: string) => String(successful(await endpoint.invokeService("manager", "run-start", { source, file: "native-u4.cotal.js" }, { deadlineMs: 20_000 })).runId);
   const status = async (runId: string) => successful(await endpoint.invokeService("manager", "run-status", { runId }, { deadlineMs: 10_000 }));
+  const runCount = async () => (successful(await endpoint.invokeService("manager", "run-ps")) as unknown as Array<{ runId: string }>).length;
+  writeFileSync(join(root, ".cotal", "agents", "toolowned.md"), "---\nname: toolowned\nagent: u4-seat\ncapabilities: [run]\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative connector workflow caller.\n");
+  const toolParent = await start('await spawn("toolowned"); await checkpoint("tool-parent", "Keep managed tool child alive", { timeout: "1m" });');
+  await until(() => trace().some((e) => e.actor === "toolowned" && (e.kind === "tool-status" || e.kind === "tool-failure")), "native tool child checkpoint status");
+  const firstToolStatus = trace().find((e) => e.kind === "tool-status");
+  if (firstToolStatus) {
+    drives.get(firstToolStatus.runId as string)!.release("native child connector resume acceptance");
+    writeFileSync(releasePath, "released requested at genuine pause");
+  }
+  await until(() => trace().some((e) => e.actor === "toolowned" && (e.kind === "tool-completed" || e.kind === "tool-failure")), "genuine child connector run outcome", 40_000);
+  const toolStarted = trace().find((e) => e.kind === "tool-start" && e.actor === "toolowned");
+  check("MC-1 genuine managed PTY cotal_run start uses its own issued manager-call path", !!toolStarted && toolStarted.isError !== true && trace().some((e) => e.kind === "tool-joined" && e.runCapability === true && e.managerPinned === true) && trace().some((e) => e.kind === "tool-completed" && e.actor === "toolowned"));
+  console.log(`MANAGED_CONNECTOR_OUTCOME ${JSON.stringify(trace().filter((e) => e.actor === "toolowned"))}`);
+  if (toolStarted?.isError === true || !trace().some((e) => e.kind === "tool-completed" && e.actor === "toolowned")) throw new Error("MC-1 genuine managed connector workflow refused");
+  check("MC-2 genuine managed child inspects answers and resumes its released recorded run", trace().some((e) => e.kind === "tool-resume" && e.isError !== true) && trace().some((e) => e.kind === "tool-answer-finish" && e.isError !== true));
+  const childRunId = firstToolStatus!.runId as string;
+  const childAdmission = (await admissions.get(childRunId)!).admission;
+  const joinedTool = trace().find((e) => e.kind === "tool-joined")!;
+  check("MC-3 real child run admission records own issued owner actor and UID", childAdmission.provenance.kind === "issued" && childAdmission.caller.owner === owner && childAdmission.caller.actor === "toolowned" && childAdmission.caller.uid === joinedTool.uid);
+  check("MC-7 shipped tool help describes managed user-auth issuance without static-only claim", trace().find((e) => e.kind === "tool-guidance")?.truthful === true);
+  grantActor(hostDir, { ...row, owner, actor: "cli", scope: ["spawn", "supervise", "admin"], lifecycleUid: row.lifecycleUid });
+  const beforeParentDenial = drives.size;
+  const recordsBeforeParentDenial = await runCount();
+  writeFileSync(controlPath, "parent-denied");
+  await until(() => trace().some((e) => e.kind === "tool-parent-denied"), "native direct parent run denial");
+  check("MC-4 current direct parent without run refuses child tool start", trace().find((e) => e.kind === "tool-parent-denied")?.isError === true && drives.size === beforeParentDenial && await runCount() === recordsBeforeParentDenial);
+  grantActor(hostDir, { ...row, owner, actor: "cli", scope: ["spawn", "run", "supervise", "admin"], lifecycleUid: row.lifecycleUid });
+  for (const scenario of ["parent-restored", "stale-uid", "wrong-instance"]) {
+    const before = drives.size;
+    const recordsBefore = await runCount();
+    writeFileSync(controlPath, scenario);
+    await until(() => trace().some((e) => e.kind === `tool-${scenario}`), `native tool ${scenario}`);
+    check(`MC-5 ${scenario} uses authentic child caller without new acceptance on denial`, (trace().find((e) => e.kind === `tool-${scenario}`)?.isError === true) === (scenario !== "parent-restored") && drives.size === before + (scenario === "parent-restored" ? 1 : 0) && await runCount() === recordsBefore + (scenario === "parent-restored" ? 1 : 0));
+  }
+  writeFileSync(join(root, ".cotal", "agents", "toolbaseline.md"), "---\nname: toolbaseline\nagent: u4-seat\ncapabilities: []\nsubscribe: []\nallowSubscribe: []\nallowPublish: []\n---\nNative child without run.\n");
+  assert.equal((await manager.startAgent({ name: "toolbaseline" }, `${owner}.cli`)).ok, true);
+  const beforeMissingRun = drives.size;
+  const recordsBeforeMissingRun = await runCount();
+  await until(() => trace().some((e) => e.kind === "tool-missing-run"), "native child missing run refusal");
+  const missingRun = trace().find((e) => e.kind === "tool-missing-run")!;
+  check("MC-6 missing child run hides tool and broker-refuses MeshAgent.run", missingRun.hidden === true && missingRun.ok === false && drives.size === beforeMissingRun && await runCount() === recordsBeforeMissingRun);
+  successful(await endpoint.invokeService("manager", "run-answer", { runId: toolParent, stepKey: "/checkpoint:tool-parent#0", value: "release" }));
+  await until(async () => ((await status(toolParent)).status as { state?: string }).state === "completed", "tool parent released");
   const program = `const seat = await spawn("owned"); await turn(seat, { name: "work", deadline: "20s" }); const answer = await ask(seat, { name: "estimate", schema: { estimate: "number", ready: "boolean" }, deadline: "20s" }); log("estimate", answer.estimate); await checkpoint("hold", "Inspect the native seat", { timeout: "1m" });`;
   mainRun = await start(program);
   await until(() => trace().some((e) => e.kind === "answer" && e.ok === true && e.run === mainRun), "native turn/ask answer", 40_000);
@@ -381,7 +515,7 @@ try {
   await until(async () => ((await status(revocationRun)).journal as Array<{ step?: string }>).some((e) => e.step === "/checkpoint:grant-hold#0"), "revocation run checkpoint");
   successful(await endpoint.invokeService("manager", "run-answer", { runId: revocationRun, stepKey: "/checkpoint:grant-hold#0", value: "release" }));
   await until(async () => ((await status(revocationRun)).status as { state?: string }).state === "completed", "revocation run released");
-  console.log("U4_DEPENDENCY: true managed-seat run-start requires U1, which is not in this base; native control uses the admitted interactive user path.");
+  console.log("U4_SCOPE: preserved native persona cells plus genuine managed PTY cotal_run start/status/answer/released-resume using its own bearerCmd; no provider/model, production or full Cloud composition acceptance.");
 } catch (error) {
   fatal = error instanceof Error ? error.message : String(error);
   console.log(`U4 native seat trace: ${JSON.stringify(trace()).slice(0, 2400)}`);

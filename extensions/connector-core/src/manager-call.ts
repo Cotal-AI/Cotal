@@ -37,10 +37,9 @@ export async function invokeUserManager(
     maxReconnectAttempts: 0,
     timeout: Math.min(opts.deadlineMs ?? 10_000, 2_000),
   });
-  // An interactive row's view is issued at the callout (SPEC 13.15) and carries the read of its own
-  // accepted row; a managed row's view carries no such grant, so the broker refuses the read and the
-  // connection keeps the legacy rail its rows name. The request surfaces that refusal as a
-  // RequestError whose cause is the permission violation.
+  // Issued interactive views and eligible managed run views carry their own accepted-row read
+  // (SPEC 13.15). A managed view without that issuance remains on its legacy rail: the broker
+  // refuses the read as a RequestError whose cause is the permission violation.
   let caller: EpCaller = triple;
   try {
     caller = await issuedUserCaller(nc, config.space, String(connectOpts.name), triple);

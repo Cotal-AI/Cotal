@@ -144,8 +144,8 @@ The recorded pins are preserved.
 
 ## From an agent session
 
-Fresh `cotal setup` defaults declare `capabilities: [spawn, run]`. On a static-auth mesh,
-that exposes `cotal_run` alongside the teammate tools. The manager must be running.
+Fresh `cotal setup` defaults declare `capabilities: [spawn, run]`. On an authenticated mesh,
+that exposes `cotal_run` alongside the teammate tools. The selected manager must support execution.
 Read `cotal_docs` pages `lang-card` and `workflows`, then try:
 
 ```json
@@ -175,13 +175,16 @@ A completed timer records its sleep step as `ok`.
    update that override too; it takes precedence over the file.
 4. Check `cotal_orientation` again, then call `cotal_run` with `verb: "ps"` before starting work.
 
-Tool visibility alone does not establish execution support. Hosted runs currently require
-a caller with issued authority. Static authentication issues it to its credentials, and user
-authentication issues it to the connection a signed-in user's `cotal run` opens. Open meshes can expose
-the tool but refuse hosted runs. On a user-auth mesh the host's own manager refuses the family by
-name, and a participant manager started with `cotal supervise` hosts the runs of its registered
-owner. A legacy credential without issued authority must be replaced through the current issuance
-path before it can start a hosted run.
+Tool visibility alone does not establish execution support. Hosted runs require issued caller
+authority. Static authentication issues it to its credentials. On a user-auth mesh, a registered
+participant manager hosts authorized runs. A managed agent invokes `cotal_run` through its own
+launcher-provided bearer command and immutable manager instance selection. Its current managed
+grant and its direct parent's current grant must both carry `run`. A removed grant, stale lifecycle
+or wrong manager selection refuses rather than borrowing a signed-in user's authority.
+
+Open meshes may expose the tool but refuse hosted runs. A local user-mode host without remote
+run authority and an `execution: "none"` control manager also refuse the family. A legacy
+credential without issued authority must be replaced through the current issuance path.
 
 ## Operating a run
 
