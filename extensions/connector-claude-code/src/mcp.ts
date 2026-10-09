@@ -207,13 +207,14 @@ async function main(): Promise<void> {
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
   // cooperative shutdown. The SOCKET PATH comes from the launch env; the first-frame TOKEN comes
-  // from the launch-material file that env points at, which is also where the hooks read it. A
-  // managed session without both is misconfigured, so fail loud rather than serve an
+  // from the launch-material file that env points at, which is also where the hooks read it, or from
+  // COTAL_CONTROL_TOKEN in a session driven by hand. The hooks are what advance presence and inject
+  // peer messages, so a session without the pair is refused, naming it, rather than served with an
   // unauthenticated (or no) control plane.
   const control = controlFromEnv();
   if (!control) {
     process.stderr.write(
-      "[cotal-connector] managed session missing its control socket path or its control token - cannot serve the control plane\n",
+      "[cotal-connector] no control endpoint for the lifecycle hooks: set COTAL_CONTROL_SOCKET to a socket path and COTAL_CONTROL_TOKEN to a random secret\n",
     );
     process.exit(1);
   }

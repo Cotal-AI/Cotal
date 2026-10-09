@@ -118,9 +118,9 @@ export async function runHookRelay(): Promise<void> {
     );
     return done("");
   }
-  // No control endpoint AT ALL is not a fault and is not warned about: a hand-driven session that
-  // sets COTAL_NAME and never had a control socket is a legitimate launch, and warning here would
-  // fire on every hook of a working session and teach the operator to ignore the channel.
+  // No control endpoint AT ALL is not warned about: the MCP server refuses that session at startup
+  // and names the missing pair, and warning here would repeat it on every hook and teach the
+  // operator to ignore the channel.
   if (!control) return done("");
   const { path, token } = control;
   const raw = (await readStdin()).trim() || "{}";

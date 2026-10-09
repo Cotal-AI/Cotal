@@ -183,7 +183,7 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `COTAL_BACKFILL_FLOOR` | The CHAT stream sequence a resumed seat's prior incarnation had reached before its preservation cut; the boot backfill reads only what came after it. Set by the manager on a preserved resume, absent on a fresh spawn. Must parse as a non-negative integer; a broken launcher's malformed value fails loud rather than silently falling back to a full replay |
 | `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment. A remote enrollment's bearer argv uses `agent-bearer --exchange-url <https://base>`; the token never falls back to a local service file |
 | `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, the required-events flag, and the control token. A PATH, never a secret |
-| `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
+| `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment. A hand-driven Claude Code or jcode session sets it itself (see [Launch material](#launch-material)) |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch). The bridge socket's first frame carries the control token from the launch material (or `COTAL_CONTROL_TOKEN` in standalone mode) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
@@ -286,6 +286,10 @@ Driving a connector session **by hand** still works the documented way: set `COT
 a material file and any of them is refused rather than resolved by precedence: one launch carries one
 identity plane. `COTAL_LINK` counts as one of them, because a join link carries the server, the auth
 and the space in a single string.
+
+A Claude Code or jcode session also serves a local control endpoint and refuses to start without
+one, so a hand-driven one sets `COTAL_CONTROL_SOCKET` to a socket path you choose and
+`COTAL_CONTROL_TOKEN` to a random secret. OpenCode, Codex and pi sessions start without them.
 
 `eventsRequired` is an additive boolean in launch material. The launcher derives it from the selected
 user-auth registration. A Claude, OpenCode, Codex, Jcode or Pi launch that carries it also sets
