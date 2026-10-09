@@ -1285,7 +1285,8 @@ function goalIndexEntryOf(ref: GoalRef, iid: string, allocated?: GoalIndexEntry[
   // Refuse a hollow floor AT THE WRITE, not only when someone reads it back: an entry naming an
   // empty identity is the exact defect this field exists to end, and letting it land would just
   // move the failure to whichever unlucky retry reads it.
-  if (allocated !== undefined && (!(["name", "actor", "uid"] as const).every((k) => typeof allocated[k] === "string" && allocated[k].length > 0) || allocated.owner === ""))
+  if (allocated !== undefined && (!(["name", "actor", "uid"] as const).every((k) => typeof allocated[k] === "string" && allocated[k].length > 0)
+    || (allocated.owner !== undefined && (typeof allocated.owner !== "string" || allocated.owner.length === 0))))
     throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an empty component; a hollow identity is never recorded (SPEC 13.6)`);
   if (allocated?.readinessDeadlineMs !== undefined && (!Number.isSafeInteger(allocated.readinessDeadlineMs) || allocated.readinessDeadlineMs <= 0))
     throw new EpEnvelopeError("internal", `the acceptance floor for goal "${ref.goalId}" has an invalid readiness deadline; an unbounded follower is never recorded (SPEC 13.6)`);
