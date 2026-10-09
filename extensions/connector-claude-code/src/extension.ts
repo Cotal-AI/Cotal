@@ -1,7 +1,7 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
 import { refuseUntrustedCwd } from "./trust.js";
 
@@ -210,7 +210,7 @@ export const claudeConnector: Connector = {
     // next start, which then reads an already-published thread as virgin and republishes sequences
     // the stream has seen. Sent only when events are on, so a session that never emits carries no
     // path it has no use for.
-    if (opts.events !== false) {
+    if (launchArmsEvents(opts)) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(

@@ -16,6 +16,7 @@ import {
   connectorLaunchOptions,
   controlEndpoint,
   eventChannel,
+  launchArmsEvents,
   launchEnv,
   materialEnv,
 } from "@cotal-ai/connector-core";
@@ -70,7 +71,7 @@ export const piConnector: Connector = {
       COTAL_NAME: opts.name,
     };
     // Arming is separate from the broker's publish grant. The WAL needs a stable root on restart.
-    if (opts.events !== false) {
+    if (launchArmsEvents(opts)) {
       if (!opts.workspaceRoot)
         throw new Error("pi connector: events were requested without workspaceRoot for the durable event log");
       env.COTAL_EVENTS = "1";

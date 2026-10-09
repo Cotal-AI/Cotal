@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { join, resolve } from "node:path";
 import { userJcodeHome } from "@1jehuang/jcode-sdk";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 import { parse as parseToml } from "smol-toml";
 import { JCODE_READINESS_TIMEOUT_MS } from "./readiness-bound.js";
 import { jcodeForkRecordPath, jcodeSeatHome, ownedJcodeFork, readJcodeForkSource } from "./session-fork.js";
@@ -170,7 +170,7 @@ export const jcodeConnector: Connector = {
     // above is what lets the CLI or manager grant the matching subject. A grant alone is not a
     // request to publish. The workspace root rides with the arm because the durable cursor and WAL
     // must live somewhere a restarted host can find again.
-    if (opts.events !== false) {
+    if (launchArmsEvents(opts)) {
       if (!opts.workspaceRoot)
         throw new Error("jcode connector: events require a workspace root for durable AG-UI state");
       env.COTAL_EVENTS = "1";

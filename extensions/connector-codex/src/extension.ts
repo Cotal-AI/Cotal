@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
 /** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
  *  bundle script) run with this same node; from SOURCE (dev), the `.ts` entry through tsx. */
@@ -215,7 +215,7 @@ export const codexConnector: Connector = {
     // That fallback is safe for an isolated codex home, which only ever has to be found by the
     // process that wrote it. It is not safe for the log, which exists to be found by a process
     // that has not started yet.
-    if (opts.events !== false) {
+    if (launchArmsEvents(opts)) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(

@@ -259,8 +259,9 @@ The journal records settled message blocks rather than live deltas. Text and rea
 arrive per persisted block, and tool activity arrives when Jcode persists the tool-use and result
 blocks. User prompt text is not republished onto the event channel. The launcher sets
 `COTAL_EVENTS` by default; pass `--no-events` to opt out on an unrestricted space. A registration
-that requires events arms the plane without that flag, from `eventsRequired` in launch material or
-`COTAL_EVENTS_REQUIRED=1` on a hand-driven user-mode launch.
+that requires events refuses `--no-events`, and its launch always carries the flag and the workspace
+root the event log lives under. A hand-driven user-mode launch with `COTAL_EVENTS_REQUIRED=1` arms
+the plane without that flag.
 
 
 For a foreground launch, the TUI opens as soon as the session is ready, before the readiness turn,

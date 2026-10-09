@@ -268,6 +268,13 @@ export function materialEnv(opts: {
   return { [LAUNCH_MATERIAL_ENV]: writeLaunchMaterial(material) };
 }
 
+/** Whether a launch arms the event plane. `events: false` opts out only when the registration
+ *  allows it: the session arms from `eventsRequired` in the material whatever the flag says, so a
+ *  launch that honoured the opt-out would hand an armed session no workspace root. */
+export function launchArmsEvents(opts: { events?: boolean; eventsRequired?: boolean }): boolean {
+  return opts.events !== false || opts.eventsRequired === true;
+}
+
 /** The per-agent EVENT channel and its classifier, RE-EXPORTED FROM CORE.
  *
  *  They were defined here, and they moved. The convention is one every connector publishes to and

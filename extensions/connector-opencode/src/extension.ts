@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, eventChannel, launchArmsEvents, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 import { opencodeLine } from "./opencode-line.js";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin/index.js`). A DIRECTORY target, not a
@@ -199,7 +199,7 @@ export const opencodeConnector: Connector = {
     // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
     // found by the process that wrote them. It is not safe for the log, which exists to be found by
     // a process that has not started yet.
-    if (opts.events !== false) {
+    if (launchArmsEvents(opts)) {
       env.COTAL_EVENTS = "1";
       if (!opts.workspaceRoot)
         throw new Error(
