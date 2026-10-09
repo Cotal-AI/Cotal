@@ -170,14 +170,21 @@ try {
   let releaseDelete!: () => void;
   const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
   raceConsumer.delete = async () => { await deleteGate; return raceDelete(); };
-  const raceStop = raceHandle.stop();
+  // The admin cred's delete is refused, so the census reads the same whether the stop waited for its
+  // fresh-epoch delete or retained nothing to delete. The connection it settles on differs: the gate
+  // opens on the closed epoch before any redial can finish, so only a retained identity waits for a fresh one.
+  let raceStopOnFreshEpoch = false;
+  const raceStop = raceHandle.stop().then(() => {
+    const nc = (observer as unknown as { nc?: import("@nats-io/transport-node").NatsConnection }).nc;
+    raceStopOnFreshEpoch = nc !== undefined && nc !== raceNc && !nc.isClosed();
+  });
   void raceStop.catch(() => {});
   void raceNc.close();
-  await wait(50);
+  await raceNc.closed();
   releaseDelete();
   const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
   for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && (await membershipConsumers()).length === 0, { raceStopSettled, consumers: await membershipConsumers() });
+  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && raceStopOnFreshEpoch && (await membershipConsumers()).length === 0, { raceStopSettled, raceStopOnFreshEpoch, consumers: await membershipConsumers() });
 
   const shutdownWatch = await observer.watchMembership(() => {});
   await wait(200);
