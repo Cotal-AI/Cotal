@@ -2157,39 +2157,38 @@ export class MeshAgent extends EventEmitter {
       const input = clean && Object.keys(clean).length ? clean : undefined;
       if (this.config.userAuth) {
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
-        const { instanceId: _instanceId, ...invokeOpts } = opts;
-        const submit = async (signal?: AbortSignal) => {
-          const bearer = await execBearerCmd([
-            ...this.config.userAuth!.bearerCmd,
-            "--manager-call",
-            ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
-          ], signal);
-          return invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, { ...invokeOpts, signal });
-        };
+        const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
+        const bearer = await execBearerCmd([
+          ...this.config.userAuth.bearerCmd,
+          "--manager-call",
+          ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
+        ]);
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
-        r = opts.follow
-          ? await this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
-              reconcile: async (goalId, attributed, context) => {
-                const instanceId = attributed.responder?.instanceId;
-                if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
-                const bearer = await execBearerCmd([
-                  ...this.config.userAuth!.bearerCmd,
-                  "--manager-call", "--manager-instance", instanceId,
-                ], context.signal, Math.min(30_000, context.deadlineMs));
-                // Validate the renewed bearer against the accepting identity, not mutable session state.
-                const config = {
-                  ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
-                  userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
-                };
-                const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
-                  signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
-                });
-                if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
-                return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
-              },
-            })
-          : await submit();
+        r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {
+          ...invokeOpts,
+          follow: follow ? (submit, prepare) => this.ep.followServiceGoal(BASELINE_LIFECYCLE_ENDPOINT, submit, opts.deadlineMs, {
+            prepare,
+            reconcile: async (goalId, attributed, context) => {
+              const instanceId = attributed.responder?.instanceId;
+              if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
+              const bearer = await execBearerCmd([
+                ...this.config.userAuth!.bearerCmd,
+                "--manager-call", "--manager-instance", instanceId,
+              ], context.signal, Math.min(30_000, context.deadlineMs));
+              // Validate the renewed bearer against the accepting identity, not mutable session state.
+              const config = {
+                ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
+                userAuth: { ...this.config.userAuth!, owner: context.caller.owner, actor: context.caller.actor },
+              };
+              const queryRes = await invokeUserManager(config, bearer, "goal-result", { goalId }, {
+                signal: context.signal, deadlineMs: Math.min(invokeOpts.deadlineMs ?? 10_000, context.deadlineMs),
+              });
+              if (queryRes.reply.ok !== true) throw new Error(queryRes.reply.error?.message ?? "goal-result query refused");
+              return queryRes.reply.data as { goalId: string; result?: GoalResultFact } | undefined;
+            },
+          }) : undefined,
+        });
       } else {
         r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, input, opts);
       }
