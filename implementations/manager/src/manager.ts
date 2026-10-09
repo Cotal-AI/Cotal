@@ -3648,11 +3648,11 @@ export class Manager {
    *  ({@link epAdminReach}, the same fresh-read authority `psOwnerFilter` consults). The
    *  `manager.admin` family (purge + the resume/preservation ops) is capability-gated at mint AND
    *  re-checked at serve time via {@link epAdminReach} (the `adminGated` wrapper) so a user's
-   *  revoked scope demotes the next call. `launch` is OWNER-EQUALITY on this door for everyone
-   *  (freelance HIGH #2): the deploy path is its only consumer and stamps the caller's own owner,
+   *  revoked scope demotes the next call. `launch` is OWNER-EQUALITY on this door for everyone:
+   *  the deploy path is its only consumer and stamps the caller's own owner,
    *  so cross-owner launch was a ctl-tier incidental never exercised, and keying it on the actor's
    *  ledger scope broke the deployer-view attenuation - uniform owner-equality is the safe tier.
-   *  TWO DELIBERATE NARROWINGS vs the ctl doors (NOT bit-exact parity, panel-accepted): (1)
+   *  TWO DELIBERATE NARROWINGS vs the ctl doors (NOT bit-exact parity): (1)
    *  `define-persona` is `admin=false` for everyone (own-persona discipline; no ep consumer needs
    *  cross-owner persona writes - an operator redefines via config, not the wire), where the ctl
    *  admin tier allowed operator cross-owner redefine; (2) launch is owner-equality-only, above.
@@ -3827,7 +3827,7 @@ export class Manager {
         return r.data;
       }),
       purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
-      // launch is OWNER-EQUALITY on the ep door for every caller (freelance HIGH #2): the deploy
+      // launch is OWNER-EQUALITY on the ep door for every caller: the deploy
       // path is the only launch consumer and its spec stamps the CALLER's own owner, so
       // owner-equality always holds for a legitimate deploy; cross-owner launch was a ctl
       // admin-tier INCIDENTAL never exercised by a real flow (static is single-owner, so the flag
@@ -3835,7 +3835,7 @@ export class Manager {
       // NOT reflect the deployer VIEW's privileged-tier attenuation - an admin user's stolen
       // deployer bearer would then bypass owner-equality (operator launch) despite the view holding
       // no admin rows. Uniform owner-equality removes that divergence in the least-privilege
-      // direction (consistent with the delta-(b) tier narrowing the panel endorsed).
+      // direction.
       // P2 item 2 (ruling 3): manifest `launch` is an ACTION through the SAME chokepoint as spawn -
       // the manifest resolve + owner-equality authz run in opLaunch's accept path, then the goal
       // drives progress + terminal. The acceptance floor is the allocated identity + goal coords.
@@ -5998,7 +5998,7 @@ export class Manager {
         return { ok: false, error: "a static managed spawn refuses endpointCapabilities (Unit B F2): the static lifecycle terminal carries no obligation-drain/frontier steps, so endpoint-rail grants are not containable in static mode" };
     }
 
-    // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
+    // The roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
     // very collision black-hole this closes. Await the snapshot (bounded internally, fail-safe on an
     // empty mesh) before allocating; the broker/auth remain the authority downstream. Deliberately
@@ -6029,7 +6029,7 @@ export class Manager {
     // exists; cleared when a live slot takes ownership. If it survives to `finally`, the spawn threw
     // AFTER provisioning (buildLaunch / runtime.spawn) — the orphan-rollback tears it down. Carries
     // `userOwner` for a user-mode spawn so that rollback runs the revoke+shred branch, not just the
-    // static durable teardown (the freelance found this window leaking the managed grant + files).
+    // static durable teardown, which would leak the managed grant + files.
     // The RESERVED custody reference rides the rollback object: a spawn that launched the seat and
     // then threw (the activation CAS refuses a slot that is not this spawn's intent) reaches the
     // `finally` with the handle only in a local, so without this the terminal has nothing to reap
