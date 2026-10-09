@@ -71,19 +71,13 @@ export async function invokeUserManager(
       if (!isPermissionDenied(e)) throw e;
     }
   };
-  // Nothing else bounds a followed call's preparation. The steps before the describe end at the
-  // deadline, and the describe spends what is left of it, so a silent manager reports itself.
+  // The describe spends what is left of the follow's deadline, so a silent manager reports itself.
+  // With nothing left it would report a silence it had no time to observe.
   const prepare = async (signal: AbortSignal, deadline: number) => {
-    const expired = () => new EpEnvelopeError("deadline-exceeded",
-      "the deadline passed before the manager was resolved; the manager request WAS NOT RUN", undefined, "not-executed");
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([connect(signal), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(expired()), deadline - Date.now()); })]);
-    } finally {
-      clearTimeout(timer);
-    }
+    await connect(signal);
     const left = deadline - Date.now();
-    if (left <= 0) throw expired();
+    if (left <= 0) throw new EpEnvelopeError("deadline-exceeded",
+      "the deadline passed before the manager was resolved; the manager request WAS NOT RUN", undefined, "not-executed");
     service = await resolve(signal, left);
   };
   const invoke = async (signal = opts.signal) => {

@@ -20,7 +20,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { openPublishDenialWatch } from "./endpoint-publish-denial.js";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom, replyRefusedBeforeEffect, replyTargetUnmapped } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, renderLifecycleBlocked, lifecycleBlockedFrom, replyRefusedBeforeEffect, replyTargetUnmapped, unansweredRequest } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   parseGoalResultFact,
@@ -100,7 +100,8 @@ export interface ResolvedService {
  * publish on the caller's rail at any nonce — acceptance therefore checks the reply SUBJECT's
  * endpoint + nonce AND the body's echoed request id, not just "first `{ok:true}` on the rail".
  * A reply that fails any of these is IGNORED (not rejected: an attacker racing a wrong-nonce reply
- * must not be able to fail an honest describe), and the wait continues to the deadline.
+ * must not be able to fail an honest describe), and the wait continues to the deadline. A signal
+ * that aborts with a `TimeoutError` ends the wait as that deadline would.
  */
 export async function describeEndpoint(
   nc: NatsConnection,
@@ -132,8 +133,12 @@ export async function describeEndpoint(
   let retryTimer: ReturnType<typeof setInterval> | undefined;
   let denialWatch: { denied: Promise<never>; release(): void } | undefined;
   let onAbort: (() => void) | undefined;
+  const startedAt = performance.now();
+  const unanswered = (ms: number) => new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : ""} within ${ms}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }]);
   const cancelled = new Promise<never>((_, reject) => {
-    onAbort = () => reject(new EpEnvelopeError("unavailable", `describe(${endpoint}) observation cancelled`));
+    onAbort = () => reject(opts.signal?.reason?.name === "TimeoutError"
+      ? unanswered(Math.round(performance.now() - startedAt))
+      : new EpEnvelopeError("unavailable", `describe(${endpoint}) observation cancelled`));
     opts.signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
@@ -176,7 +181,7 @@ export async function describeEndpoint(
         }
       }, DESCRIBE_RETRY_MS);
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint}${opts.instanceId !== undefined ? ` instance ${opts.instanceId}` : ""} within ${deadlineMs}ms on the ${rail} rail`, [{ kind: EP_UNANSWERED, endpoint, command: "describe", rail }])), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(unanswered(deadlineMs)), deadlineMs); });
     const { body: reply, responder } = await Promise.race([got, timeout, denialWatch.denied, cancelled]);
     if (reply.ok !== true) {
       // A responder ANSWERED with a refusal: it is rethrown under the responder's own code (which
@@ -539,8 +544,10 @@ export interface SubmitAndFollowGoalOptions {
   onReconnect?: (handler: (newNc: NatsConnection) => void) => () => void;
   signal?: AbortSignal;
   /** Work that must finish before the submission and cannot itself carry out the command, such as
-   *  resolving the endpoint. It is given the follow's deadline as an epoch-ms time to spend, and only
-   *  a stop races it, so its failures surface unchanged. A stop while it runs reports `not-executed`. */
+   *  resolving the endpoint. It is given the follow's deadline as an epoch-ms time to spend, and its
+   *  failures surface unchanged. At the deadline its signal aborts with a `TimeoutError`, and only a
+   *  describe that drew no reply keeps its own error then. A stop, or the deadline otherwise, reports
+   *  `not-executed`. */
   prepare?: (signal: AbortSignal, deadline: number) => Promise<void>;
 }
 
@@ -650,10 +657,22 @@ export async function submitAndFollowGoal(
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
     if (stopped) throw phaseError("unavailable");
     if (opts?.prepare) {
-      // Only a stop races the prepare. A deadline timer here would race the deadline of a describe
-      // the prepare starts after other steps, and could hide that the describe drew no reply.
-      try { await Promise.race([opts.prepare(work.signal, deadline), aborted.then(() => { throw phaseError("unavailable"); })]); }
-      catch (err) { throw stopped ? phaseError("unavailable") : err; }
+      // The deadline first aborts the prepare's signal, so a describe the prepare started after other
+      // steps reports that it drew no reply. A prepare that ignores its signal is cut off a turn later.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([opts.prepare(work.signal, deadline), aborted, new Promise<void>((resolve) => {
+          timer = setTimeout(() => {
+            work.abort(new DOMException("the goal follow's deadline passed", "TimeoutError"));
+            setImmediate(resolve);
+          }, Math.min(deadline - Date.now(), 2_147_483_647));
+        })]);
+        work.signal.throwIfAborted();
+      } catch (err) {
+        throw stopped ? phaseError("unavailable") : work.signal.aborted && !unansweredRequest(err) ? phaseError("deadline-exceeded") : err;
+      } finally {
+        clearTimeout(timer);
+      }
     }
     subscribe(opts?.currentNc?.() ?? nc);
     unbindReconnect = opts?.onReconnect?.(replaceConnection);
