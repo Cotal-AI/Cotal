@@ -255,8 +255,10 @@ epoch, preserves the caller lifecycle and validates the result against the accep
 acceptance fingerprint. Stopping the caller ends its observation, not the already accepted goal.
 
 A followed call resolves the endpoint within its deadline before the submission starts, so a
-refused or unanswered describe surfaces as its own error. On a user-auth mesh the caller obtains its
-`manager-caller` view and opens its connection before that, so a failure there surfaces unchanged.
+refused or unanswered describe surfaces as its own error. On a user-auth mesh that preparation also
+obtains the caller's `manager-caller` view and opens its connection, and a failure there surfaces
+unchanged. Those steps spend part of the deadline, so a describe that draws no reply there reports
+the expired deadline and that the request was not run.
 A describe or command publish that the broker refuses reports `not-executed`.
 Cancellation before submission reports `not-executed`. Once submission starts, cancellation or a
 lost reply reports an unknown outcome unless an attributed refusal proves otherwise. A received

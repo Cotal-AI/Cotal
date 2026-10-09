@@ -2158,11 +2158,11 @@ export class MeshAgent extends EventEmitter {
       if (this.config.userAuth) {
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
-        const bearer = await execBearerCmd([
-          ...this.config.userAuth.bearerCmd,
+        const bearer = (signal?: AbortSignal) => execBearerCmd([
+          ...this.config.userAuth!.bearerCmd,
           "--manager-call",
           ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
-        ]);
+        ], signal);
         // Subscribe before submission on the renewing main connection. A long accepted launch
         // must not inherit the short-lived control credential's expiry.
         r = await invokeUserManager({ ...this.config, managerInstanceId }, bearer, command, input, {
@@ -2172,10 +2172,10 @@ export class MeshAgent extends EventEmitter {
             reconcile: async (goalId, attributed, context) => {
               const instanceId = attributed.responder?.instanceId;
               if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
-              const bearer = await execBearerCmd([
+              const bearer = (signal?: AbortSignal) => execBearerCmd([
                 ...this.config.userAuth!.bearerCmd,
                 "--manager-call", "--manager-instance", instanceId,
-              ], context.signal, Math.min(30_000, context.deadlineMs));
+              ], signal, Math.min(30_000, context.deadlineMs));
               // Validate the renewed bearer against the accepting identity, not mutable session state.
               const config = {
                 ...this.config, managerInstanceId: instanceId, lifecycleUid: context.caller.uid,
