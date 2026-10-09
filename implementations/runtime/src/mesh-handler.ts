@@ -942,29 +942,31 @@ export class MeshHandler {
    * never throws: `??` is `otherwise`.
    *
    * `down(agent)` and `replied(agent)` are agent-addressed events with no channel, so they branch
-   * to `waitDown` and `waitReplied` before any of the channel machinery.
+   * to `waitDown` and `waitReplied` before any of the channel machinery. The binding comes first
+   * because a hosted run mints only the timers its entry records, whichever branch arms them.
    */
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
     const ev = req.event;
-    if (ev.event === "replied") return await this.waitReplied(ev, req, ctx);
-    if (ev.event === "down") return await this.waitDown(ev, req, ctx);
-    if (!isConcreteChannel(ev.channel)) {
-      throw new Error(`wait() cannot await a wildcard channel ("${ev.channel}"); an await names one channel`);
+    const channel = ev.event === "replied" || ev.event === "down" ? undefined : ev.channel;
+    if (channel !== undefined && !isConcreteChannel(channel)) {
+      throw new Error(`wait() cannot await a wildcard channel ("${channel}"); an await names one channel`);
     }
     const waitBinding = {
       ...ctx.resume,
-      waitChannel: ev.channel,
+      ...(channel !== undefined ? { waitChannel: channel } : {}),
       waitTimers: [
         ...(ev.event === "idle" || req.timeout !== undefined ? [ctx.requestId] : []),
         ...(ev.event === "idle" && req.timeout !== undefined ? [derivedToken(ctx.requestId, "wait-timeout")] : []),
       ],
     };
     if (this.services) {
-      if (ctx.resume?.waitChannel !== undefined && ctx.resume.waitChannel !== ev.channel)
+      if (ctx.resume?.waitChannel !== undefined && ctx.resume.waitChannel !== channel)
         throw new Error(`wait ${ctx.requestId} recorded a different channel`);
       await ctx.bind(waitBinding);
     }
+    if (ev.event === "replied") return await this.waitReplied(ev, req, ctx);
+    if (ev.event === "down") return await this.waitDown(ev, req, ctx);
     // A recorded seq is a previous attempt's MATCH, taken before the crash. Return that message
     // rather than looking again: the consumer has already acked it, so looking again would wait for
     // a second event the program never asked for.
@@ -1098,7 +1100,7 @@ export class MeshHandler {
    * no longer runs the seat: a seat whose connector stalled past the row's TTL renews it under the same
    * uid, and that seat is not down.
    *
-   * NOTHING BINDS, because a death is re-observable where a matched message is not: a dead
+   * THE DEATH NEVER BINDS, because a death is re-observable where a matched message is not: a dead
    * incarnation's uid never heartbeats again, so a crash between the observation and the settle
    * re-observes the same death on resume (after a fresh confirmation window) — at worst
    * with the reason upgraded from `"lapsed"` to `"superseded"` by a successor that appeared in
@@ -1180,8 +1182,8 @@ export class MeshHandler {
    * A handle outside the run's roster with no recorded turn can never be observed (only this
    * run's turns are), so it refuses loudly instead of parking on nothing.
    *
-   * NOTHING BINDS, for `down`'s reason: goal terminals are durable facts, so a crash between the
-   * observation and the settle re-observes the same reply on resume — at worst a NEWER reply
+   * THE REPLY NEVER BINDS, for `down`'s reason: goal terminals are durable facts, so a crash between
+   * the observation and the settle re-observes the same reply on resume — at worst a NEWER reply
    * completed in between. The value is the observation record, `down`-shaped:
    * `{ agent, status, note?, at }`, where `at` is the yield's own stamp. The TIMEOUT is the same
    * mediated pause every wait arms, resolving `null`, never a throw.
