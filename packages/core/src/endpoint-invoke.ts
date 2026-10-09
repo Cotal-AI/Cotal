@@ -539,9 +539,9 @@ export interface SubmitAndFollowGoalOptions {
   onReconnect?: (handler: (newNc: NatsConnection) => void) => () => void;
   signal?: AbortSignal;
   /** Work that must finish before the submission and cannot itself carry out the command, such as
-   *  resolving the endpoint. Its failures surface unchanged, and a stop or the deadline while it
-   *  runs reports `not-executed`. */
-  prepare?: (signal: AbortSignal) => Promise<void>;
+   *  resolving the endpoint. It is given the follow's deadline as an epoch-ms time to spend, and only
+   *  a stop races it, so its failures surface unchanged. A stop while it runs reports `not-executed`. */
+  prepare?: (signal: AbortSignal, deadline: number) => Promise<void>;
 }
 
 /** Subscribe before a single submission, then observe its accepted goal through live progress and
@@ -592,8 +592,9 @@ export async function submitAndFollowGoal(
       : "goal observation stopped or exceeded its deadline before submission; the manager request WAS NOT RUN",
     undefined, submitted ? "unknown" : "not-executed");
   let deadline = Date.now() + deadlineMs;
-  const bounded = async <T>(operation: () => Promise<T>, until: number, remaining = until - Date.now()): Promise<T> => {
+  const bounded = async <T>(operation: () => Promise<T>, until: number): Promise<T> => {
     if (stopped || completed) throw phaseError("unavailable");
+    const remaining = until - Date.now();
     if (remaining <= 0) throw phaseError("deadline-exceeded");
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -649,12 +650,9 @@ export async function submitAndFollowGoal(
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
     if (stopped) throw phaseError("unavailable");
     if (opts?.prepare) {
-      const prepare = opts.prepare;
-      // The whole budget rather than what is left of it: the deadline timer then has the duration of
-      // a describe in the prepare given that budget and arms after it in the same tick. Node fires
-      // equal-duration timers in the order they were armed, so a describe that drew no reply still
-      // reports itself as unanswered, while a slower step such as a stalled store read ends here.
-      try { await bounded(() => prepare(work.signal), deadline, deadlineMs); }
+      // Only a stop races the prepare. A deadline timer here would race the deadline of a describe
+      // the prepare starts after other steps, and could hide that the describe drew no reply.
+      try { await Promise.race([opts.prepare(work.signal, deadline), aborted.then(() => { throw phaseError("unavailable"); })]); }
       catch (err) { throw stopped ? phaseError("unavailable") : err; }
     }
     subscribe(opts?.currentNc?.() ?? nc);

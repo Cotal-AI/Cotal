@@ -2535,12 +2535,12 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.nc) throw new Error(this.notLiveMsg());
     const nc = this.nc;
     const caller = this.serviceCaller();
-    const resolve = async (signal = opts.signal): Promise<ResolvedService> => {
+    const resolve = async (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000): Promise<ResolvedService> => {
       signal?.throwIfAborted();
       const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
       if (cached) return cached;
       const svc = await resolveService(nc, this.space, endpoint, caller, {
-        deadlineMs: opts.deadlineMs ?? 10_000,
+        deadlineMs,
         signal,
         ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
       });
@@ -2557,13 +2557,16 @@ export class CotalEndpoint extends EventEmitter {
       return invokeCommand(nc, this.space, service, command, args, { ...invokeOpts, signal });
     };
     // A `failed-precondition` from the resolve is its own refusal, raised before any command was
-    // published, so resolving once more is a repair.
-    const resolveFirst = async (signal = opts.signal): Promise<ResolvedService> => {
+    // published, so resolving once more is a repair. The repair spends what is left of the same
+    // deadline, and with nothing left the refusal stands.
+    const resolveFirst = async (signal = opts.signal, deadline = Date.now() + (opts.deadlineMs ?? 10_000)): Promise<ResolvedService> => {
       try {
-        return await resolve(signal);
+        return await resolve(signal, deadline - Date.now());
       } catch (e) {
         if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-        return await resolve(signal);
+        const left = deadline - Date.now();
+        if (left <= 0) throw e;
+        return await resolve(signal, left);
       }
     };
     const doInvoke = async (service: ResolvedService, signal = opts.signal): Promise<EpAttributedReply> => {
@@ -2689,7 +2692,7 @@ export class CotalEndpoint extends EventEmitter {
     let service: ResolvedService;
     return this.followServiceGoal(endpoint, (signal) => doInvoke(service, signal), opts.deadlineMs ?? 10_000, {
       signal: opts.signal,
-      prepare: async (signal) => { service = await resolveFirst(signal); },
+      prepare: async (signal, deadline) => { service = await resolveFirst(signal, deadline); },
     });
   }
 

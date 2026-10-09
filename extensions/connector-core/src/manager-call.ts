@@ -1,5 +1,6 @@
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
+  EpEnvelopeError,
   dialerFor,
   goalFollowRefusal,
   invokeCommand,
@@ -20,11 +21,12 @@ import type { AgentConfig } from "./config.js";
 type ManagerConfig = Pick<AgentConfig, "space" | "servers" | "tls" | "lifecycleUid" | "userAuth" | "managerInstanceId">;
 
 /** Runs a call's submission under a goal follow. `prepare` runs the bearer command, opens the
- *  control connection and resolves the manager. It publishes nothing, so its failures surface as
- *  their own, and a stop or the deadline while it runs reports the call as not run. */
+ *  control connection and resolves the manager by the follow's deadline. It publishes nothing, so
+ *  its failures surface as their own: a describe that draws no reply reports itself as unanswered,
+ *  and a stop, or the deadline before the describe, reports the call as not run. */
 type UserManagerFollow = (
   submit: (signal?: AbortSignal) => Promise<EpAttributedReply>,
-  prepare: (signal: AbortSignal) => Promise<void>,
+  prepare: (signal: AbortSignal, deadline: number) => Promise<void>,
 ) => Promise<EpAttributedReply>;
 
 /** A control connection never replaces the seat's presence, messages or standing bearer source. */
@@ -43,8 +45,8 @@ export async function invokeUserManager(
   let instanceId: string;
   let service: ResolvedService;
   const onAbort = () => { void nc?.close(); };
-  const resolve = (signal = opts.signal) => resolveService(nc!, config.space, endpoint, caller, { instanceId, deadlineMs: opts.deadlineMs ?? 10_000, signal });
-  const prepare = async (signal = opts.signal) => {
+  const resolve = (signal = opts.signal, deadlineMs = opts.deadlineMs ?? 10_000) => resolveService(nc!, config.space, endpoint, caller, { instanceId, deadlineMs, signal });
+  const connect = async (signal = opts.signal) => {
     const token = await bearer(signal);
     ({ caller, instanceId } = managerCallerBinding(token, {
       space: config.space, owner: user.owner, actor: user.actor, lifecycleUid: config.lifecycleUid!, instanceId: config.managerInstanceId,
@@ -57,7 +59,7 @@ export async function invokeUserManager(
       timeout: Math.min(opts.deadlineMs ?? 10_000, 2_000),
     });
     // An in-flight dial has no connection handle to close yet. A late result never publishes, and
-    // it is closed here because a stopped follow has already returned.
+    // it is closed here because a follow that stopped or reached its deadline has already returned.
     if (signal?.aborted) onAbort();
     signal?.throwIfAborted();
     // Issued interactive views and eligible managed run views carry their own accepted-row read
@@ -68,7 +70,21 @@ export async function invokeUserManager(
     } catch (e) {
       if (!isPermissionDenied(e)) throw e;
     }
-    service = await resolve(signal);
+  };
+  // Nothing else bounds a followed call's preparation. The steps before the describe end at the
+  // deadline, and the describe spends what is left of it, so a silent manager reports itself.
+  const prepare = async (signal: AbortSignal, deadline: number) => {
+    const expired = () => new EpEnvelopeError("deadline-exceeded",
+      "the deadline passed before the manager was resolved; the manager request WAS NOT RUN", undefined, "not-executed");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([connect(signal), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(expired()), deadline - Date.now()); })]);
+    } finally {
+      clearTimeout(timer);
+    }
+    const left = deadline - Date.now();
+    if (left <= 0) throw expired();
+    service = await resolve(signal, left);
   };
   const invoke = async (signal = opts.signal) => {
     const unfollowable = opts.follow ? goalFollowRefusal(service) : undefined;
@@ -95,7 +111,8 @@ export async function invokeUserManager(
   opts.signal?.addEventListener("abort", onAbort, { once: true });
   try {
     if (opts.follow) return await opts.follow(invoke, prepare);
-    await prepare();
+    await connect();
+    service = await resolve();
     return await invoke();
   } finally {
     opts.signal?.removeEventListener("abort", onAbort);
