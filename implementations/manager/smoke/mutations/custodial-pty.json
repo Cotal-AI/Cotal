@@ -42,8 +42,8 @@
     {
       "name": "M4 drop custodied from the status enum",
       "file": "implementations/manager/src/manager-service-contract.ts",
-      "find": "custody: { enum: [\"legacy\", \"custodied\"] },",
-      "replace": "custody: { enum: [\"legacy\"] },",
+      "find": "custody: { enum: [\"legacy\", \"custodied\", \"none\"] },",
+      "replace": "custody: { enum: [\"legacy\", \"none\"] },",
       "expectRed": "status output accepts custodied",
       "cell": "status output accepts custodied",
       "note": "The compiled status output is the required enum pin. Dropping custodied must redden that cell.",
