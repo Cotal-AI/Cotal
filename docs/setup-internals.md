@@ -134,7 +134,8 @@ fail-loud on collision.
   listener, and `.cotal/nats.pid`. Then they run one listener-ready sequence: space setup,
   user-auth service, mesh record, transport policy, control plane. When the listener never
   answers, its broker is below the version floor, or the space setup of a fresh boot fails, `up`
-  stops the listener and removes `.cotal/nats.pid` before it exits.
+  stops the listener before it exits. It sends SIGKILL when SIGTERM does not stop it and removes
+  `.cotal/nats.pid` only once the listener has exited.
 - **Delivery daemon:** `startDeliveryDetached` / `ensureDelivery`
   ([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)) re-execs `cotal
   deliver` detached with a pre-minted scoped `delivery.creds` (auth mode only, the durable

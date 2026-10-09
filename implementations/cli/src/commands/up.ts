@@ -12,7 +12,6 @@ import {
   readSync,
   closeSync,
   lstatSync,
-  rmSync,
   realpathSync,
   readdirSync,
 } from "node:fs";
@@ -1239,6 +1238,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
   // The broker is gone — drop it from the registry (and the `current` pointer if it was the default)
   // so a later `cotal spawn` doesn't try to join a dead mesh.
   child.on("exit", async (code, signal) => {
+    if (failedListeners.has(child)) return;
     removePidPair(cotalPath("nats.pid"), String(child.pid));
     // One teardown at a time: a stop started while another is in flight is refused the reservation
     // that one holds, so wait for a Ctrl-C teardown already running instead of racing it.
@@ -1447,15 +1447,6 @@ function restoreListenerOwner(pid: number, nonce: string, startedAt: string): Pr
   return { pid, host: hostname(), startedAt, id: `restore-listener-${nonce}` };
 }
 
-function removeMatchingNatsPid(pid: number): void {
-  const path = cotalPath("nats.pid");
-  try {
-    const stat = lstatSync(path);
-    if (stat.isFile() && !stat.isSymbolicLink() && readFileSync(path, "utf8") === String(pid))
-      rmSync(path);
-  } catch { /* absent, changed, or not owned by this spawn */ }
-}
-
 function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
   return new Promise((resolveExit) => {
@@ -1470,13 +1461,24 @@ function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boole
   });
 }
 
-async function stopUnboundRestoreListener(child: ChildProcess): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return;
+/** Listeners {@link stopFailedListener} is stopping. Their launch reports its own error, so the
+ *  foreground's broker-exit handler must not report that exit as a crash and exit first. */
+const failedListeners = new WeakSet<ChildProcess>();
+
+/**
+ * Stop a listener whose launch failed before it served. A signal is not proof of exit, so SIGTERM
+ * escalates to SIGKILL and `nats.pid` is removed only once the exit is observed. A listener that
+ * outlives both keeps its record and fails loud with its pid.
+ */
+async function stopFailedListener(child: ChildProcess): Promise<void> {
+  failedListeners.add(child);
   child.kill("SIGTERM");
-  if (await waitForChildExit(child, 5_000)) return;
-  child.kill("SIGKILL");
-  if (!await waitForChildExit(child, 5_000))
-    throw new Error(`unbound restore listener process ${child.pid ?? "unknown"} did not exit`);
+  if (!await waitForChildExit(child, 5_000)) {
+    child.kill("SIGKILL");
+    if (!await waitForChildExit(child, 5_000))
+      throw new Error(`nats-server process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
+  }
+  removePidPair(cotalPath("nats.pid"), String(child.pid));
 }
 
 function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
@@ -2327,8 +2329,7 @@ async function bindSpawnedListener(child: ChildProcess, startedAt: string, bound
   try {
     bound.onSpawn(child.pid, startedAt);
   } catch (error) {
-    await stopUnboundRestoreListener(child);
-    removeMatchingNatsPid(child.pid);
+    await stopFailedListener(child);
     throw error;
   }
 }
@@ -2358,8 +2359,7 @@ async function awaitSpawnedListener(l: {
     if (!(await waitReady(server, l.creds))) throw new Error(`nats-server did not become reachable at ${server} - see ${l.log}`);
     facts = await brokerVersion(server, space, l.creds);
   } catch (e) {
-    child.kill("SIGTERM");
-    removePidPair(cotalPath("nats.pid"), String(child.pid));
+    await stopFailedListener(child);
     throw e;
   }
   if (belowPresenceSafeBroker(facts.version) && facts.presenceFileBacked)
@@ -2411,8 +2411,7 @@ async function serveReadyListener(l: {
     try {
       await postStart(server, space, setup, l.seedFile);
     } catch (e) {
-      try { child.kill("SIGTERM"); } catch { /* already gone */ }
-      try { removePidPair(cotalPath("nats.pid"), String(child.pid)); } catch { /* best effort */ }
+      await stopFailedListener(child);
       throw e;
     }
   }
