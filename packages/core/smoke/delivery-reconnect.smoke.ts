@@ -163,6 +163,8 @@ try {
   };
   (observer as unknown as { membershipFeedKv: unknown }).membershipFeedKv = raceFeed;
   const raceHandle = await observer.watchMembership(() => {});
+  // The broker marks the consumer push-bound only once it sees the subscribe, which can trail the watch.
+  for (let i = 0; i < 20 && (await membershipConsumers()).length !== 1; i++) await wait(50);
   const raceConsumers = await membershipConsumers();
   check("the public stop/close race starts with one membership consumer", raceConsumers.length === 1 && raceConsumer !== undefined, raceConsumers);
   if (!raceConsumer) throw new Error("public stop/close race did not capture broker consumer creation");
