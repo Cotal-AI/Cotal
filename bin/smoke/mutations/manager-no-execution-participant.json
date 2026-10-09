@@ -23,8 +23,8 @@
     {
       "name": "target UID currency check removed",
       "file": "packages/core/src/endpoint-serve.ts",
-      "find": "  if (mapping.lifecycleUid !== t.lifecycleUid)\n",
-      "replace": "  if (false)\n",
+      "find": "  if (mapping.lifecycleUid !== t.lifecycleUid)\n    throw new EpEnvelopeError(\"expired\", `target ${t.owner}.${t.actor} expected lifecycle ${t.lifecycleUid} but the current mapping is ${mapping.lifecycleUid} (SPEC 13.3: expired on mapping mismatch)`);\n",
+      "replace": "",
       "expectRed": "wrong lifecycle UID cannot establish participant session",
       "cell": "wrong lifecycle UID cannot establish participant session",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
