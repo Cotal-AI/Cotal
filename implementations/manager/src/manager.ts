@@ -5472,6 +5472,19 @@ export class Manager {
     return undefined;
   }
 
+  /** The refusal for an event-plane choice the registration policy or the connector cannot meet.
+   *  Spawn and resume both ask before any reserve or mint, so a seat retained without the plane
+   *  cannot come back on a space that now requires it. An absent choice arms the plane. */
+  private eventsRefusal(connector: Connector, events: boolean | undefined): string | undefined {
+    if (this.eventsRequired && events === false)
+      return `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed`;
+    if (events !== false && !connector.eventChannel)
+      return this.eventsRequired
+        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
+        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one`;
+    return undefined;
+  }
+
   /** Return connector-provided model catalogs for selector UIs. Optional by connector: a host with no
    *  local model-list API reports `supported:false` rather than blocking the manager. A connector that
    *  fails to import shows an `error:` row (from manifest enumeration) and never blocks the others. */
@@ -5954,13 +5967,9 @@ export class Manager {
     // the principal's owner is resolved further down, so deriving it from anything in scope here
     // would mean guessing at the identity the child will actually connect as. It is added at the
     // accept seam below, where the allocated triple exists.
-    if (this.eventsRequired && opts.events === false)
-      return { ok: false, error: `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed` };
+    const eventsRefused = this.eventsRefusal(connector, opts.events);
+    if (eventsRefused) return { ok: false, error: eventsRefused };
     const events = this.eventsRequired || opts.events !== false;
-    if (events && !connector.eventChannel)
-      return { ok: false, error: this.eventsRequired
-        ? `space "${this.space}" requires the event plane by registration policy, but connector "${connector.name}" does not publish one`
-        : `connector "${connector.name}" does not publish an AG-UI event plane; pass --no-events (events: false on the start op) to launch it without one` };
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
     // but-uncompleted endpoint obligation could execute AFTER its uid is declared retired. The
@@ -6897,6 +6906,8 @@ export class Manager {
       // manifest launch, so the connector must honor reopenSession before the batch starts any child.
       const unsupported = this.capabilityRefusal(connector, { variant: entry.launch.variant, prompt: entry.launch.prompt, exact });
       if (unsupported) return { ok: false, error: unsupported };
+      const eventsRefused = this.eventsRefusal(connector, entry.launch.events);
+      if (eventsRefused) return { ok: false, error: eventsRefused };
 
       let authority: Pick<PreparedResume, "id" | "creds" | "userAuth">;
       try {
