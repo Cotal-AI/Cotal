@@ -84,7 +84,9 @@ in-process plugin does everything.
   check counts as no record, and so does a recorded server that exits during it. An empty
   directory at that path also counts as no record and is removed, and one that vanishes before
   that removal still counts as no record. The launch refuses a directory that holds files and
-  leaves it in place.
+  leaves it in place. The server's process writes its own pid to `serve.pid` before it becomes the
+  server, so a launcher killed right after starting it still leaves a record that refuses the next
+  launch. Windows has no `exec`, so there the launcher writes the record after the start.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived
