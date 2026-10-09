@@ -33,7 +33,7 @@ import {
   writeRecord,
   type Check,
 } from "./meshes-add.js";
-import { addWizard, canPrompt } from "./meshes-wizard.js";
+import { addWizard, canPrompt, clackIO } from "./meshes-wizard.js";
 
 /**
  * `cotal meshes` — the registry of meshes this machine can reach, and the two verbs that maintain
@@ -297,17 +297,14 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
     // host the operator had not yet agreed to talk to, and on a pipe it did so with no way to
     // agree at all. Ask for the address itself first; the pins fetched from it are confirmed
     // separately below.
-    {
-      const { canPrompt, clackIO } = await import("./meshes-wizard.js");
-      if (!canPrompt()) {
-        console.error(c.red("✗ --from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file"));
-        process.exit(1);
-      }
-      const goFetch = await clackIO().confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false });
-      if (!goFetch) {
-        console.error(c.dim("nothing was fetched, nothing was registered"));
-        process.exit(1);
-      }
+    if (!canPrompt()) {
+      console.error(c.red("✗ --from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file"));
+      process.exit(1);
+    }
+    const goFetch = await clackIO().confirm({ message: `Fetch trust pins from ${disco}?`, initialValue: false });
+    if (!goFetch) {
+      console.error(c.dim("nothing was fetched, nothing was registered"));
+      process.exit(1);
     }
     try {
       // `redirect: "manual"`: a 302 can walk an https fetch down to http or onto another host,
@@ -336,13 +333,8 @@ async function addUserMesh(spaceArg: string | undefined, v: Values): Promise<voi
 
   // A FETCHED document is displayed and explicitly confirmed before anything trusts it: the
   // operator, not the network, adopts the pins. A file the operator already holds needs no
-  // confirmation — supplying it is the consent.
+  // confirmation — supplying it is the consent. The fetch already required a terminal.
   if (v.from) {
-    const { canPrompt, clackIO } = await import("./meshes-wizard.js");
-    if (!canPrompt()) {
-      console.error(c.red("✗ --from needs a terminal to display and confirm the fetched pins - in a script, export the bundle where the mesh runs and pass it with --user-auth-file"));
-      process.exit(1);
-    }
     const io = clackIO();
     io.note(
       [
