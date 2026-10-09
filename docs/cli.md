@@ -1076,7 +1076,8 @@ remote spawn (an enrollment or the advertised provisioning endpoint) removes onl
 credential files; its grant stays until the mesh operator revokes it, and the launch line says
 which arm you are on. A spawn through the advertised provisioning endpoint against a record that
 pins no exchange URL is refused before the grant is requested, so no credential lands on this
-machine. A `--detach` spawn is an
+machine. A foreground `--share-tools` selection that names a server the config does not declare is
+refused before anything is provisioned. A `--detach` spawn is an
 **action**: the manager accepts it and returns the allocated identity at once, then the launch
 follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
 See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
