@@ -88,10 +88,11 @@ try {
     }),
     /did not become HTTP-ready within 100ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:1\/api\/meta: .+/,
   );
-  // A different process on the bound port answers 200 with a huge space and pid: the error stays bounded.
+  // A different process on the bound port answers 200 with a huge space and pid whose JSON escaping
+  // turns each character into six bytes: the last-probe text still stays within its 300-byte cap.
   const squatter = createServer((_req, res) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ space: "s".repeat(200_000), pid: "p".repeat(200_000) }));
+    res.end(JSON.stringify({ space: "\u0001".repeat(200_000), pid: "\u0001".repeat(200_000) }));
   });
   await new Promise<void>((resolve) => squatter.listen(0, "127.0.0.1", resolve));
   try {
@@ -104,8 +105,9 @@ try {
       space: "fixture",
       timeoutMs: 600,
     }).catch((e: unknown) => { message = e instanceof Error ? e.message : String(e); });
-    assert.match(message, /did not become HTTP-ready within 600ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:\d+\/api\/meta: answered space "s+\.\.\."/);
-    assert.ok(Buffer.byteLength(message) < 500, `mismatched-body error is bounded (got ${Buffer.byteLength(message)} bytes)`);
+    assert.match(message, /did not become HTTP-ready within 600ms \(pid \d+\); last probe http:\/\/127\.0\.0\.1:\d+\/api\/meta: answered space "(?:\\u0001){40}\.\.\."/);
+    const lastProbe = message.slice(message.indexOf("; last probe ") + "; last probe ".length);
+    assert.ok(Buffer.byteLength(lastProbe) <= 300, `last-probe text stays within its 300-byte cap (got ${Buffer.byteLength(lastProbe)} bytes)`);
   } finally {
     await new Promise<void>((resolve) => squatter.close(() => resolve()));
   }

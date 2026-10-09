@@ -1337,11 +1337,12 @@ function summarizeProbeField(value: unknown, max: number): string {
   return value === undefined ? "<missing>" : value === null ? "null" : `<${Array.isArray(value) ? "array" : typeof value}>`;
 }
 
-// Bounds the whole last-probe text, whatever its parts, to a few hundred bytes of UTF-8.
+// Bounds the whole last-probe text, whatever its parts, to a few hundred bytes of UTF-8. The cut
+// leaves room for the three-byte marker, because the documented cap counts the marker too.
 function capProbeText(text: string): string {
   const buf = Buffer.from(text, "utf8");
   if (buf.length <= PROBE_TEXT_MAX_BYTES) return text;
-  return `${buf.subarray(0, PROBE_TEXT_MAX_BYTES).toString("utf8").replace(/\uFFFD+$/, "")}...`;
+  return `${buf.subarray(0, PROBE_TEXT_MAX_BYTES - 3).toString("utf8").replace(/\uFFFD+$/, "")}...`;
 }
 
 export async function waitForDetachedWeb(
