@@ -89,6 +89,7 @@ import {
   type RunStatusView,
   type SpaceAuth,
 } from "@cotal-ai/core";
+import { rejectionText } from "./rejection-text.js";
 
 /** What the host needs from the manager: its coordinates and its trust material. */
 export interface RunHostingContext {
@@ -529,7 +530,7 @@ export class RunHosting {
           try {
             admission = await readRunAdmission(planes.jsm, this.ctx.space, this.ctx.endpoint, runId);
           } catch (e) {
-            this.ctx.log(`! run ${runId} stays parked: ${(e as Error).message}`);
+            this.ctx.log(`! run ${runId} stays parked: ${rejectionText(e)}`);
             continue;
           }
           if (admission.revoked !== undefined) {
@@ -541,7 +542,7 @@ export class RunHosting {
         return out;
       });
     } catch (e) {
-      this.ctx.log(`! workflow-run boot reconcile failed: ${(e as Error).message} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume <runId>\``);
+      this.ctx.log(`! workflow-run boot reconcile failed: ${rejectionText(e)} - runs a predecessor was driving stay parked until the next restart or a \`cotal run resume <runId>\``);
       return;
     }
     if (inherited.length === 0) return;
@@ -553,7 +554,7 @@ export class RunHosting {
         if ((verdict.placements?.length ?? 0) > 1) throw new Error("its placed spawns name more than one manager instance");
         await this.launch(host, { mode: "existing", runId: r.runId, source: r.source, ...(r.file !== undefined ? { file: r.file } : {}), epoch: r.epoch, fencingToken: r.fencingToken, timeout: DEFAULT_CHECKPOINT_TIMEOUT, admission: r.admission, placements: verdict.placements ?? [] });
       } catch (e) {
-        this.ctx.log(`! run ${r.runId} could not be taken back: ${(e as Error).message}`);
+        this.ctx.log(`! run ${r.runId} could not be taken back: ${rejectionText(e)}`);
       }
     }
     this.ctx.log(`workflow-run boot reconcile: took back ${inherited.length} run(s) recorded running`);
@@ -576,14 +577,14 @@ export class RunHosting {
         try {
           run.creds = await mintCreds(auth, run.identity, "run-driver", { runDriver: pin });
         } catch (e) {
-          this.ctx.log(`! run-driver renewal for ${run.runId}: ${(e as Error).message}`);
+          this.ctx.log(`! run-driver renewal for ${run.runId}: ${rejectionText(e)}`);
         }
       }
       if (run.mediatorCreds !== undefined && inspectCredHealth(run.mediatorCreds).state !== "healthy") {
         try {
           run.mediatorCreds = await mintCreds(auth, run.mediatorIdentity, "run-mediator", { runMediator: pin });
         } catch (e) {
-          this.ctx.log(`! run-mediator renewal for ${run.runId}: ${(e as Error).message}`);
+          this.ctx.log(`! run-mediator renewal for ${run.runId}: ${rejectionText(e)}`);
         }
       }
     }
@@ -623,8 +624,9 @@ export class RunHosting {
           run.mediatorNc?.reconnect().catch(() => {}),
         ]);
       } catch (e) {
-        run.renewalDebt = { at: Date.now(), reason: (e as Error).message };
-        this.ctx.log(`! run-driver/mediator renewal for ${run.runId}: ${(e as Error).message} - last-good kept, nothing minted locally`);
+        const reason = rejectionText(e);
+        run.renewalDebt = { at: Date.now(), reason };
+        this.ctx.log(`! run-driver/mediator renewal for ${run.runId}: ${reason} - last-good kept, nothing minted locally`);
       }
     }
   }
@@ -808,7 +810,7 @@ export class RunHosting {
       // nobody's word on it: it is released, and a drive that reaches no boundary within a
       // moment has its connection closed under it, the same way a stop treats a parked drive.
       // Its own end then frees the slot.
-      drive.release(`the hosting manager gave up waiting for its activation: ${(e as Error).message}`);
+      drive.release(`the hosting manager gave up waiting for its activation: ${rejectionText(e)}`);
       const reached = await Promise.race([drive.done.then(() => true), new Promise<false>((r) => setTimeout(() => r(false), 2_000))]);
       if (!reached) {
         await nc.close();

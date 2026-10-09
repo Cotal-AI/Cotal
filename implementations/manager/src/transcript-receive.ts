@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { ensureTransferStore, fetchTransfer, listTransfers, objectStoreStream, removeTransfer, transferBucket } from "@cotal-ai/core";
+import { rejectionText } from "./rejection-text.js";
 
 /** A transfer whose last write is older than this is abandoned, and so is a claim. */
 const TRANSFER_IDLE_MS = 10 * 60_000;
@@ -184,7 +185,7 @@ export class TranscriptReceiver {
     const timer = setTimeout(() => {
       this.deadline = undefined;
       this.serial(() => this.o.withReader((nc) => this.sweep(nc)))
-        .catch((e) => this.o.log(`transcript-receive: sweep of ${this.bucket} failed: ${(e as Error).message}`));
+        .catch((e) => this.o.log(`transcript-receive: sweep of ${this.bucket} failed: ${rejectionText(e)}`));
     }, Math.max(0, at - Date.now()));
     timer.unref();
     this.deadline = { at, timer };
