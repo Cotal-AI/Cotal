@@ -154,26 +154,89 @@ function rewriteTarget(target, rel) {
   return url.href;
 }
 
+// Absolute URLs, site-root paths and same-page anchors already resolve on the site.
+const isRepoRelative = (target) =>
+  !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith('/') && !target.startsWith('#');
+
+// The attributes through which an HTML or JSX tag names a URL. A srcset lists candidates, each a
+// URL (a run of non-whitespace, less the commas that end it) and descriptors up to the next comma.
+const URL_ATTRS = new Set(['href', 'src', 'srcset']);
+const SRCSET_CANDIDATE = /([\t\n\f\r ,]*)([^\t\n\f\r ]+)(?<!,)([^,]*)/g;
+
+// The URL parser's first steps: it drops leading and trailing C0 controls and spaces and every
+// tab and newline, so a value is classified by the URL the browser resolves.
+const urlInput = (value) => value.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\n\r]/g, '');
+
+function rewriteAttr(name, value, rel) {
+  const rewrite = (url) => {
+    const target = urlInput(url);
+    return isRepoRelative(target) ? rewriteTarget(target, rel) : url;
+  };
+  if (name !== 'srcset') return rewrite(value);
+  return value.replace(SRCSET_CANDIDATE, (_, lead, url, descriptors) => lead + rewrite(url) + descriptors);
+}
+
+// Character references for the markup characters, so the value parses back the same inside either quote.
+const escapeAttr = (value) => value.replace(/[&"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+// Raw HTML is parsed as the browser parses it, so a URL attribute is read decoded, as the browser
+// resolves it. One that changes is written back whole and double-quoted.
+function* htmlEdits(node, offset, rel) {
+  for (const { prefix, name, value } of node.attrs ?? []) {
+    const next = URL_ATTRS.has(name) ? rewriteAttr(name, value, rel) : value;
+    if (next === value) continue;
+    const source = prefix ? `${prefix}:${name}` : name;
+    const { startOffset, endOffset } = node.sourceCodeLocation.attrs[source];
+    yield [offset + startOffset, offset + endOffset, `${source}="${escapeAttr(next)}"`];
+  }
+  // A template holds its children in a separate content fragment, which the page ships too.
+  for (const child of (node.content ?? node).childNodes ?? []) yield* htmlEdits(child, offset, rel);
+}
+
 // The page is parsed as the site renders it (micromark with the page's syntax extensions), so
-// only real link and definition destinations are rewritten: code, HTML and MDX JavaScript keep
-// their text, and titled, angle-bracket and reference-style links are all seen. A destination
-// is read as the site reads it, from the parser's text, where a NUL is already U+FFFD: its
-// backslash escapes and character references are decoded and the result is percent-encoded as
-// the renderer encodes it, so URL parsing neither strips whitespace nor reads a backslash as a
-// path separator. The rewritten one is escaped so it parses back to the same address.
+// only real link and definition destinations and the URL attributes of HTML and JSX tags are
+// rewritten: code and MDX JavaScript keep their text, and titled, angle-bracket and
+// reference-style links are all seen. A destination is read as the site reads it, from the
+// parser's text, where a NUL is already U+FFFD: its backslash escapes and character references
+// are decoded and the result is percent-encoded as the renderer encodes it, so URL parsing
+// neither strips whitespace nor reads a backslash as a path separator. The rewritten one is
+// escaped so it parses back to the same address.
 function rewriteLinks(md, rel, extensions) {
   // micromark skips one leading BOM and counts offsets from after it, so none may remain.
   md = md.replace(/^\uFEFF+/, '');
   const events = postprocess(parse({ extensions }).document().write(preprocess()(md, undefined, true)));
-  let out = '';
-  let at = 0;
+  // A blockquote opens each line of the HTML in it with a `>` the browser never sees.
+  const html = md.split('');
+  for (const [kind, { type, start, end }] of events)
+    if (kind === 'enter' && type === 'blockQuotePrefix') html.fill(' ', start.offset, end.offset);
+  // Keyed by where each starts: parse5 rebuilds a misnested formatting element as a copy that
+  // carries the same source attributes, and a source attribute is rewritten once.
+  const edits = new Map();
+  let attr;
   for (const [kind, token, context] of events) {
     const { type, start, end } = token;
-    if (kind !== 'enter' || (type !== 'resourceDestinationString' && type !== 'definitionDestinationString')) continue;
-    const target = normalizeUri(decodeString(context.sliceSerialize(token)));
-    if (/^[a-z][a-z0-9+.-]*:/i.test(target) || target.startsWith('/') || target.startsWith('#')) continue;
-    out += md.slice(at, start.offset) + rewriteTarget(target, rel).replace(/[&()]/g, '\\$&');
-    at = end.offset;
+    if (kind !== 'enter') continue;
+    if (type === 'resourceDestinationString' || type === 'definitionDestinationString') {
+      const target = normalizeUri(decodeString(context.sliceSerialize(token)));
+      if (!isRepoRelative(target)) continue;
+      edits.set(start.offset, [end.offset, rewriteTarget(target, rel).replace(/[&()]/g, '\\$&')]);
+    } else if (type === 'htmlFlow' || type === 'htmlText') {
+      const fragment = parseFragment(html.slice(start.offset, end.offset).join(''), { sourceCodeLocationInfo: true });
+      for (const [from, to, text] of htmlEdits(fragment, start.offset, rel)) edits.set(from, [to, text]);
+    } else if (type === 'mdxJsxFlowTagAttributeNamePrimary' || type === 'mdxJsxTextTagAttributeNamePrimary') {
+      attr = context.sliceSerialize(token).toLowerCase();
+    } else if (type === 'mdxJsxFlowTagAttributeValueLiteralValue' || type === 'mdxJsxTextTagAttributeValueLiteralValue') {
+      // JSX decodes character references but has no backslash escapes, so no backslash may start one.
+      const value = decodeString(context.sliceSerialize(token).replace(/\\/g, '\\\\'));
+      const next = URL_ATTRS.has(attr) ? rewriteAttr(attr, value, rel) : value;
+      if (next !== value) edits.set(start.offset, [end.offset, escapeAttr(next)]);
+    }
+  }
+  let out = '';
+  let at = 0;
+  for (const [from, [to, text]] of [...edits].sort(([a], [b]) => a - b)) {
+    out += md.slice(at, from) + text;
+    at = to;
   }
   return out + md.slice(at);
 }
