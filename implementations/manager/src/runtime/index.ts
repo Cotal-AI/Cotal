@@ -249,40 +249,47 @@ export function watchProvedExit(handle: AgentHandle, onExit: () => void, watchin
   try {
     session = handle.attach();
   } catch {
-    const wait = handle.waitForExit?.bind(handle);
-    if (!wait) return false;
-    let waiting = false;
-    const poll = setInterval(() => {
-      if (!watching()) {
-        clearInterval(poll);
-        return;
-      }
-      if (waiting) return;
-      let exited: boolean;
-      try {
-        exited = handle.status() === "exited";
-      } catch {
-        return;
-      }
-      if (!exited) return;
-      waiting = true;
-      // Called from a continuation so a wait that throws is retried like one that rejects.
-      Promise.resolve().then(wait).then(
-        () => {
-          clearInterval(poll);
-          onExit();
-        },
-        () => {
-          waiting = false;
-        },
-      );
-    }, EXIT_POLL_MS);
-    poll.unref();
-    return true;
+    return pollProvedExit(handle, onExit, watching, EXIT_POLL_MS);
   }
   session.onExit(onExit);
   // A child that exited before the subscription fires no event for it.
   if (handle.status() === "exited") onExit();
+  return true;
+}
+
+/** Call `onExit` once `handle`'s `status()`, read every `pollMs`, says its child exited and its
+ *  `waitForExit` confirms it, until `watching` turns false. Returns false when the handle has no
+ *  `waitForExit`, so no exit of its child can be proved. */
+export function pollProvedExit(handle: AgentHandle, onExit: () => void, watching: () => boolean, pollMs: number): boolean {
+  const wait = handle.waitForExit?.bind(handle);
+  if (!wait) return false;
+  let waiting = false;
+  const poll = setInterval(() => {
+    if (!watching()) {
+      clearInterval(poll);
+      return;
+    }
+    if (waiting) return;
+    let exited: boolean;
+    try {
+      exited = handle.status() === "exited";
+    } catch {
+      return;
+    }
+    if (!exited) return;
+    waiting = true;
+    // Called from a continuation so a wait that throws is retried like one that rejects.
+    Promise.resolve().then(wait).then(
+      () => {
+        clearInterval(poll);
+        onExit();
+      },
+      () => {
+        waiting = false;
+      },
+    );
+  }, pollMs);
+  poll.unref();
   return true;
 }
 
