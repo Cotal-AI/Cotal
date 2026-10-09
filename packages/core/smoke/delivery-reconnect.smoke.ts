@@ -26,6 +26,10 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, t = 3000): Promise<void> =>
   new Promise((resolve) => { if (proc.exitCode !== null || proc.signalCode !== null) return resolve(); proc.once("exit", () => resolve()); setTimeout(resolve, t); });
+const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) => {
+  const onConnection = (state: { connected: boolean }) => { if (state.connected) { ep.off("connection", onConnection); resolve(); } };
+  ep.on("connection", onConnection);
+});
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
@@ -181,12 +185,15 @@ try {
     raceStopOnFreshEpoch = nc !== undefined && nc !== raceNc && !nc.isClosed();
   });
   void raceStop.catch(() => {});
+  const raceHealed = reconnected(observer);
   void raceNc.close();
   await raceNc.closed();
   releaseDelete();
   const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
   for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
   check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && raceStopOnFreshEpoch && (await membershipConsumers()).length === 0, { raceStopSettled, raceStopOnFreshEpoch, consumers: await membershipConsumers() });
+  // A stop that settles before the self-heal must not leave the next cell watching mid-rebuild.
+  await Promise.race([raceHealed, wait(5000)]);
 
   const shutdownWatch = await observer.watchMembership(() => {});
   await wait(200);
@@ -227,10 +234,7 @@ try {
   terminalChanges = 0;
   const terminalBefore = await membershipConsumers();
   check("the terminal-close control starts with one membership consumer", terminalBefore.length === 1, terminalBefore);
-  const healed = new Promise<void>((resolve) => {
-    const onConnection = (state: { connected: boolean }) => { if (state.connected) { observer!.off("connection", onConnection); resolve(); } };
-    observer!.on("connection", onConnection);
-  });
+  const healed = reconnected(observer);
   await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
   await Promise.race([healed, wait(5000)]);
   await wait(200);
