@@ -446,9 +446,11 @@ A connector without the locator (jcode, OpenCode, Hermes, Codex, pi) never recei
 transcript: the CLI does not look for one, the id resolves on the manager's host as it does today,
 and the manager refuses a `resumeClaim` for that connector. When the CLI cannot load its connector it
 refuses, because only the connector can tell a local session from one that lives on the manager's
-host. The CLI looks with `--agent`, else the default agent, and sends that agent as `resumeAgent`;
-the manager refuses a launch that resolves a different connector, such as a persona pinned to another
-agent.
+host. The CLI looks with `--agent`. Without it, the CLI asks the target instance's `resolve-agent`
+which connector its `spawn` resolves for that persona, because the `agent:` pin and the manager's
+own default live on that host, and looks with the answer. It sends that agent as `resumeAgent`, and
+the manager refuses a launch that resolves a different connector, such as a persona edited between
+the two calls.
 
 The CLI prints `carried session <id> to <instance>: sha256:<hex>, <sent> of <size> bytes sent in
 <chunks> chunks`, with `<sent>` and `<chunks>` zero on a hit and the remainder after a resumed chain.

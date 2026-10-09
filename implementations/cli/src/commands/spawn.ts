@@ -481,7 +481,9 @@ async function spawnDetached(
   let resumeAgent: string | undefined;
   let resumeClaim: string | undefined;
   if (values.resume !== undefined) {
-    resumeAgent = resolveAgentType({ flag: values.agent });
+    // Without a flag the harness is the persona pin or a default, which only the target manager
+    // can read: ask it, so the carry looks with the connector the launch runs (#2899).
+    resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent: defaultAgentOverride() });
     resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
   }
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
@@ -522,6 +524,13 @@ async function spawnDetached(
     c.green(`✓ spawned ${c.bold(d.name)} (detached)`) +
       c.dim(` (${d.role ?? "no role"} · ${d.agent} · ${d.mode}) - attach with: cotal attach --name ${d.name}`),
   );
+}
+
+/** The harness the manager's `spawn` resolves for this persona, read with the same fields `start` sends. */
+async function launchAgentOrExit(t: ControlTarget, on: string | undefined, fields: { name: string; config?: string; defaultAgent?: string }): Promise<string> {
+  const reply = await askManager(t.space, t.server, "resolveAgent", fields, t.auth, "owner", undefined, { instanceId: on });
+  failIfNotOk(reply);
+  return (reply.data as { agent: string }).agent;
 }
 
 /**

@@ -26,7 +26,7 @@
  *
  * Capability labels (describe/grant vocabulary, one per tier class):
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
- *   manager.spawn    spawn                                 (privileged-grade creation)
+ *   manager.spawn    spawn / resolve-cwd / resolve-agent   (privileged-grade creation)
  *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
@@ -396,6 +396,17 @@ const RESOLVE_CWD_INPUT_SCHEMA = {
 const RESOLVE_CWD_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["cwd", "host"],
   properties: { cwd: { type: "string" }, host: { type: "string" } },
+} as const;
+
+/** The harness `spawn` resolves for these fields on this manager: the CLI asks before it carries a
+ * resume transcript, because the persona's `agent:` pin and the manager's own default live here. */
+const RESOLVE_AGENT_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name"],
+  properties: { name: { type: "string", minLength: 1 }, config: nonBlank(), agent: nonBlank(), defaultAgent: nonBlank() },
+} as const;
+const RESOLVE_AGENT_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["agent"],
+  properties: { agent: { type: "string" } },
 } as const;
 
 const GRACEFUL_INPUT_SCHEMA = {
@@ -878,6 +889,7 @@ const ROWS: CommandRow[] = [
   { name: "slots", capability: "manager.read", input: VOID_SCHEMA, output: SLOTS_OUTPUT_SCHEMA, targeted: false, handler: "slots" },
   { name: "models", capability: "manager.read", input: MODELS_INPUT_SCHEMA, output: MODELS_OUTPUT_SCHEMA, targeted: false, handler: "models" },
   { name: "resolve-cwd", capability: "manager.spawn", input: RESOLVE_CWD_INPUT_SCHEMA, output: RESOLVE_CWD_OUTPUT_SCHEMA, targeted: false, handler: "resolveCwd" },
+  { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
   // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
   // instrument's cross-agent reach (rev 3, the 1c admin-reach decision): the any-mode subject row
@@ -1036,7 +1048,11 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  unchanged.
  *
  *  25 = `status` requires execution, runHosting and terminalSessions, and custody admits none.
- *  Explicit pooled execution:none has no Runtime and refuses seat/workflow admission. */
+ *  Explicit pooled execution:none has no Runtime and refuses seat/workflow admission.
+ *
+ *  26 = `resolve-agent` answers which harness `spawn` resolves for a persona, so a detached resume
+ *  carries its session for the connector the launch runs (#2899). A new served command cannot fold
+ *  into 25. */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -1054,7 +1070,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 25,
+    revision: 26,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -1114,6 +1130,7 @@ export interface ManagerServiceHandlers {
   slots(ctx: EpServeContext): unknown | Promise<unknown>;
   models(ctx: EpServeContext): unknown | Promise<unknown>;
   resolveCwd(ctx: EpServeContext): unknown | Promise<unknown>;
+  resolveAgent(ctx: EpServeContext): unknown | Promise<unknown>;
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;
   despawn(ctx: EpServeContext): unknown | Promise<unknown>;
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
