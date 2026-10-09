@@ -776,9 +776,16 @@ async function runStartedDelivery(
         // nats.js never answers a request written to a socket that dropped, nor one buffered while it
         // was down (each dial discards the buffer), even once the same connection reconnects. Such a
         // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
+        // A transport still down is waited for as long as a serving daemon waits for its broker.
         const generation = transportGeneration;
-        left = await release().catch((e) => {
-          if (transportGeneration === generation || !transportUp) throw e;
+        left = await release().catch(async (e) => {
+          if (!transportUp) await new Promise<void>((resolve) => {
+            const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
+            const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
+            const timer = setTimeout(done, BROKER_GONE_MS);
+            ep.on("transport", onTransport);
+          });
+          if (!transportUp || transportGeneration === generation) throw e;
           return release();
         });
       } catch (e) {

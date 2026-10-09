@@ -181,10 +181,11 @@ after the delivery responder is bound. `close()` withdraws serving and releases 
 owned by that instance. It closes both membership connections even when a disconnected drain
 fails, so they cannot reconnect after closure. It rejects when the lease row is still there
 afterwards, held by another instance or left by a release that did not commit, or when the broker
-cannot confirm the release. If the delivery connection reconnects while the release is in flight,
-`close()` repeats the release once on the reconnected connection before it decides. `drain()`
-returns the same promise. A successor is refused while such
-a row lives, and the bucket TTL expires a row the instance left. Credential-expiry health state clears after
+cannot confirm the release. If the delivery connection drops or is down while the release is in
+flight, `close()` waits up to the broker-gone window (`COTAL_DELIVERY_BROKER_GONE_MS`, 15 seconds
+by default) for it to reconnect, and repeats the release once on the reconnected connection before
+it decides. `drain()` returns the same promise. A successor is refused while such a row lives, and
+the bucket TTL expires a row the instance left. Credential-expiry health state clears after
 successful broker-verified adoption through the existing `reloadCreds` rail. A failed start
 refuses locally without exiting the host process or stopping another account's delivery service.
 If a health fault occurs during an asynchronous store read, startup rejects when the read returns
