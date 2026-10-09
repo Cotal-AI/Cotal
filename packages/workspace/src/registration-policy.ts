@@ -23,12 +23,33 @@ export interface UserBundle {
  *  requires the pinned exchange URL: for a remote entry the endpoints are a trust position, not a
  *  convenience, because no local `up` exists to re-derive them. */
 export function checkUserBundle(raw: string): Check<UserBundle> {
-  let doc: Partial<UserBundle> & { userAuth?: unknown };
+  let doc: unknown;
   try {
-    doc = JSON.parse(raw) as never;
+    doc = JSON.parse(raw);
   } catch {
     return bad("✗ the user-auth bundle is not JSON - export it where the mesh runs and pass the file unmodified");
   }
+  return checkBundleDocument(doc);
+}
+
+/** A fetched discovery document, checked as a user bundle. A body that does not parse is refused
+ *  with the URL and content type that answered: the operator holds no file to re-export, and a
+ *  catch-all route answering the well-known path with an HTML page is the usual cause. Parsing
+ *  decides rather than the content type, because static hosts serve that extensionless path as
+ *  `application/octet-stream` or `text/plain`. */
+export async function checkDiscoveryDocument(res: Response): Promise<Check<UserBundle>> {
+  const raw = await res.text();
+  let doc: unknown;
+  try {
+    doc = JSON.parse(raw);
+  } catch {
+    return bad(`✗ ${res.url} answered ${res.status} with ${res.headers.get("content-type") ?? "no content type"}, not the JSON discovery document`);
+  }
+  return checkBundleDocument(doc);
+}
+
+function checkBundleDocument(parsed: unknown): Check<UserBundle> {
+  const doc = parsed as Partial<UserBundle> & { userAuth?: unknown };
   if (doc === null || typeof doc !== "object") return bad("✗ the user-auth bundle must be a JSON object");
   if (typeof doc.space !== "string" || !doc.space) return bad("✗ the user-auth bundle names no space");
   if (typeof doc.server !== "string" || !doc.server) return bad("✗ the user-auth bundle names no broker server");
@@ -186,7 +207,7 @@ export async function refreshRegistrationPolicy(target: { space: string; policy?
   }
   if (!response.ok)
     throw new Error(`manual registration "${entry.space}" policy refresh at ${entry.userAuth.endpoints.url} answered HTTP ${response.status}`);
-  const checked = checkUserBundle(await response.text());
+  const checked = await checkDiscoveryDocument(response);
   if (!checked.ok) throw new Error(`manual registration "${entry.space}" policy refresh: ${checked.message.replace(/^✗ /, "")}`);
   if (!sameRegistrationTrust(entry, checked.value))
     throw new Error(`manual registration "${entry.space}" policy refresh returned different space, broker, transport, or user-auth trust pins`);
