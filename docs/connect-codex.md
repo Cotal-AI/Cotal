@@ -56,6 +56,10 @@ The **variant** is Codex's reasoning effort (`minimal` | `low` | `medium` | `hig
 Like the `codex` CLI itself, the connector does not validate model ids or efforts locally. An
 unknown value fails at request time, server-side.
 
+The catalog comes from a short-lived `codex app-server`. If it exits, closes its input, or does
+not answer `model/list` within 10 seconds, `cotal models` reports that as the Codex error and the
+manager keeps serving the other connectors.
+
 Model and variant are published on presence, which is where `cotal roster` and the web dashboard's
 `model · variant` badge read them from. The variant appears only when you asked for one (via
 `--variant` or `variant:` in the agent file): there is no way to read the effort back off a running
