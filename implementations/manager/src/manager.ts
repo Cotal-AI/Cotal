@@ -5473,8 +5473,8 @@ export class Manager {
   }
 
   /** The refusal for an event-plane choice the registration policy or the connector cannot meet.
-   *  Spawn and resume both ask before any reserve or mint, so a seat retained without the plane
-   *  cannot come back on a space that now requires it. An absent choice arms the plane. */
+   *  Spawn and resume both ask before a seat's launch is built, so a seat retained without the
+   *  plane cannot come back on a space that now requires it. An absent choice arms the plane. */
   private eventsRefusal(connector: Connector, events: boolean | undefined): string | undefined {
     if (this.eventsRequired && events === false)
       return `space "${this.space}" requires the event plane by registration policy; --no-events (events: false on the start op) is not allowed`;
