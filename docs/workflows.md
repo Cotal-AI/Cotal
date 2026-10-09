@@ -491,7 +491,9 @@ same 30-second confirmation for a lapsed row, and is the catchable L4002, and a 
 marked on the deadline terminal reads the same way. Two
 turns on one seat, from two branches or from two runs, reach it one at a time: the language
 dispatches the second when the first settles, and the manager shows a seat the oldest unsettled
-turn alone. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
+turn alone. A turn's goal id belongs to the caller that submitted it, so two callers may each submit
+a turn under the same id. A seat yields by goal id alone, so the manager refuses to hand one seat
+a second caller's turn under an id it already holds. On an auth mesh the relay needs no extra grant: every spawned seat's baseline
 credential carries its own pull, yield, and caller-bound answer rows, the run driver's operator instrument carries the
 turn request and the `inspect` read that confirms a lapse, and the manager arms the deadline hold over its own serve grant and expires it
 itself once due. An accept the manager cannot finish is unwound to a failed terminal on the goal

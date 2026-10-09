@@ -1114,10 +1114,18 @@ function parseTurnNote(raw: string): TurnNote | undefined {
   return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
 }
 
-/** A turn hold's token, DERIVED from the goal id (same recipe as the runtime's pause tokens): a
- *  same-goalId retry or a successor incarnation re-derives the identical token with no lookup. */
-function turnHoldToken(goalId: string): string {
-  return createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+/** A turn relay's key in the manager's maps: the caller triple and goal id the goal plane stores
+ *  the turn under, because a goal id is the caller's own (SPEC 13.6 item 1) and two callers may
+ *  pick the same one. Every part is a subject token, so the dotted join is unambiguous. */
+function turnKey(ref: GoalRef): string {
+  return `${ref.caller.owner}.${ref.caller.actor}.${ref.caller.uid}.${ref.goalId}`;
+}
+
+/** A turn hold's token, DERIVED from the relay key (same recipe as the runtime's pause tokens): a
+ *  same-goal retry or a successor incarnation re-derives the identical token with no lookup, and
+ *  two callers' turns under one goal id never share a hold. */
+function turnHoldToken(ref: GoalRef): string {
+  return createHash("sha256").update(`${turnKey(ref)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
 }
 
 /**
@@ -1337,9 +1345,9 @@ export class Manager {
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   private agentGoals = new Map<string, GoalRef>();
   /**
-   * The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin): a
-   * same-goalId retry serves the identical acceptance; cross-incarnation retries rebuild from
-   * the goal-index entry (its acceptance floor + note).
+   * The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin), by
+   * {@link turnKey}: a same-goal retry serves the identical acceptance; cross-incarnation retries
+   * rebuild from the goal-index entry (its acceptance floor + note).
    *
    * One entry per turn this incarnation accepted: the acceptance a duplicate submission is served
    * from, and — once the turn settles — the answer a RETRIED yield is served from.
@@ -1360,7 +1368,7 @@ export class Manager {
    * window would hear `not-found` again.
    */
   private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>();
-  /** Every relayed turn awaiting its seat's yield, by goal id. The seat's `turn-pending` pull
+  /** Every relayed turn awaiting its seat's yield, by {@link turnKey}. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
    *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
    *  Rebuilt at boot from goal-index entries carrying a turn note. */
@@ -8393,7 +8401,7 @@ export class Manager {
       // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep
       // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
       for (const entry of entries) {
-        if (this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(entry.ref.goalId)) continue; // never settle a goal THIS incarnation drives
+        if (this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(turnKey(entry.ref))) continue; // never settle a goal THIS incarnation drives
         try {
           // A note marks a TURN entry: its relay is rebuilt (the hold is its bounded ending), never
           // settled uncertain — the spawn arm's readiness window is the wrong ending for a relay.
@@ -8762,15 +8770,18 @@ export class Manager {
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
+    const key = turnKey(ref);
     const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
     const acceptedAt = Date.now();
 
-    const prior = this.turnAcceptances.get(goalId)?.acceptance;
+    const prior = this.turnAcceptances.get(key)?.acceptance;
     if (prior !== undefined) {
       if (prior.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
       return prior;
     }
+    // Refused here, before anything durable, so the caller's goal id stays free for another seat.
+    this.assertSeatTurnFree(a, t, goalId);
 
     const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
     const payload = String(raw.payload);
@@ -8829,7 +8840,7 @@ export class Manager {
       // none. Measured on an auth mesh: minted over the goal-writer, the schedule publish was
       // broker-denied and every accept unwound.
       await mintCheckpoint(gw.ctx.kv, jetstream(serve.nc), this.space, {
-        ref: { endpoint: ref.endpoint, token: turnHoldToken(goalId) },
+        ref: { endpoint: ref.endpoint, token: turnHoldToken(ref) },
         instanceId: this.managerInstanceId,
         epoch: executor.epoch,
         goal: { caller: { owner: ctx.subject.caller.owner, actor: ctx.subject.caller.actor, uid: ctx.subject.caller.uid }, goalId },
@@ -8837,6 +8848,9 @@ export class Manager {
         deadline: deadlineAt,
         now: acceptedAt,
       });
+      // Again after the awaits, with no await before the maps are written: another caller's
+      // accept of this id to this seat may have finished meanwhile, and this unwinds the loser.
+      this.assertSeatTurnFree(a, t, goalId);
     } catch (e) {
       // The accept is inline (no launch closure to fail later), so a post-bind throw unwinds HERE:
       // commit the failed terminal this attempt owns, clear the index, and refuse the accept — an
@@ -8862,13 +8876,13 @@ export class Manager {
       ref, goalId,
       seat: { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid },
       payload, acceptedAt, deadlineAt,
-      holdToken: turnHoldToken(goalId), holdEpoch: executor.epoch,
+      holdToken: turnHoldToken(ref), holdEpoch: executor.epoch,
       ...(handoffFrom !== undefined ? { handoffFrom } : {}),
     };
-    this.pendingTurns.set(goalId, pending);
+    this.pendingTurns.set(key, pending);
     this.ensureTurnSweep();
     const acceptance: TurnAcceptance = { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid, goalId, fingerprint, deadlineAt, executor };
-    this.turnAcceptances.set(goalId, { acceptance, ref });
+    this.turnAcceptances.set(key, { acceptance, ref });
     this.emitGoalProgress(ref, executor.epoch, { phase: "relayed" });
     return acceptance;
   }
@@ -8899,6 +8913,22 @@ export class Manager {
     return { turns };
   }
 
+  /** A seat names a turn by goal id alone when it yields, so one incarnation holding two callers'
+   *  turns under one id could not say which of the two it answered. */
+  private assertSeatTurnFree(a: ManagedAgent, t: { owner: string; actor: string; lifecycleUid: string }, goalId: string): void {
+    if (this.seatTurnKey({ owner: t.owner, actor: t.actor, uid: t.lifecycleUid }, goalId) !== undefined)
+      throw new EpEnvelopeError("failed-precondition", `seat "${a.name}" already holds another caller's turn "${goalId}"; a seat yields by goal id, so it is never handed two turns under one (SPEC 13.6)`);
+  }
+
+  /** The relay key of the turn addressed to seat incarnation `c` under `goalId`, pending or kept
+   *  for a retried yield. The accept path never hands one incarnation two turns under one goal
+   *  id, so at most one matches. */
+  private seatTurnKey(c: { owner: string; actor: string; uid: string }, goalId: string): string | undefined {
+    for (const [key, { acceptance: a }] of this.turnAcceptances)
+      if (a.goalId === goalId && a.owner === c.owner && a.actor === c.actor && a.uid === c.uid) return key;
+    return undefined;
+  }
+
   /** The seat's yield: claim the hold (one-use; expiry fails closed), then commit the goal
    *  `succeeded` carrying the TurnResult. A yield AFTER the deadline drives the deadline terminal
    *  instead and refuses — the expiry outcome stands, never a late success over it. */
@@ -8916,17 +8946,16 @@ export class Manager {
     const yieldNote = raw.note === undefined ? undefined : String(raw.note);
     if (status === "handoff" && (to === undefined || to.length === 0))
       throw new EpEnvelopeError("failed-precondition", `a handoff yield names its addressee ("to"); a handoff to nobody relays nothing`);
-    const p = this.pendingTurns.get(goalId);
+    const key = this.seatTurnKey(c, goalId);
+    if (key === undefined) throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
+    const p = this.pendingTurns.get(key);
     if (!p) {
       // A YIELD WHOSE REPLY WAS LOST IS NOT A YIELD THAT FAILED. The commit deleted the pending
       // turn, so a retry found nothing and heard `not-found` — which a seat reads as "drop it",
       // reporting failure for work the run already has. The answer the first reply carried is
       // served again instead, to the addressee it was addressed to and nobody else.
-      const settled = this.turnAcceptances.get(goalId);
+      const settled = this.turnAcceptances.get(key);
       if (settled !== undefined) {
-        const a = settled.acceptance;
-        if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)
-          throw new EpEnvelopeError("permission-denied", `turn "${goalId}" was addressed to ${a.owner}.${a.actor}/${a.uid}; a yield is the addressee's own (SPEC 13.6)`);
         if (settled.settled !== undefined) return { goalId, state: settled.settled.state };
         // The in-memory answer is not yet remembered (pending deleted before the terminal CAS,
         // or a concurrent sweep dropped `settled` while the commit was still in flight). The
@@ -8934,15 +8963,13 @@ export class Manager {
         if (settled.ref !== undefined) {
           const ended = await readGoalResult(gw.ctx, settled.ref);
           if (ended !== undefined) {
-            this.rememberSettledTurn(goalId, ended.state, ended.ts);
+            this.rememberSettledTurn(key, ended.state, ended.ts);
             return { goalId, state: ended.state };
           }
         }
       }
       throw new EpEnvelopeError("not-found", `no pending turn "${goalId}" on this manager`);
     }
-    if (p.seat.owner !== c.owner || p.seat.actor !== c.actor || p.seat.uid !== c.uid)
-      throw new EpEnvelopeError("permission-denied", `turn "${goalId}" is addressed to ${p.seat.owner}.${p.seat.actor}/${p.seat.uid}; a yield is the addressee's own (SPEC 13.6)`);
     const cpRef = { endpoint: p.ref.endpoint, token: p.holdToken };
     try {
       await resumeCheckpoint(gw.ctx.kv, gw.ctx.js, gw.ctx.jsm, this.space, { ref: cpRef, presenter: { id: MANAGER_ENDPOINT, lifecycleUid: this.managerInstanceId }, now: Date.now() });
@@ -8972,9 +8999,9 @@ export class Manager {
     });
     this.emitGoalProgress(p.ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
     await clearGoalIndex(gw.ctx, p.ref);
-    this.pendingTurns.delete(goalId);
-    this.markTurnLatchDropped(goalId, at);
-    this.rememberSettledTurn(goalId, fact.state, at);
+    this.pendingTurns.delete(key);
+    this.markTurnLatchDropped(key, at);
+    this.rememberSettledTurn(key, fact.state, at);
     this.maybeStopTurnSweep();
     return { goalId, state: fact.state };
   }
@@ -8997,14 +9024,14 @@ export class Manager {
     const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
     const goalId = String(raw.goalId);
     const ref = goalRefOf(ctx.subject, goalId);
-    const p = this.pendingTurns.get(goalId);
-    const c = p?.ref.caller;
-    if (p === undefined || c?.owner !== ref.caller.owner || c.actor !== ref.caller.actor || c.uid !== ref.caller.uid) {
+    const key = turnKey(ref);
+    const p = this.pendingTurns.get(key);
+    if (p === undefined) {
       const ended = await readGoalResult(gw.ctx, ref);
       if (ended !== undefined) throw goalAlreadyTerminal(goalId, ended);
       throw new EpEnvelopeError("failed-precondition", `no turn "${goalId}" of this caller is pending on this manager; cancel withdraws a relayed turn (SPEC 13.6)`);
     }
-    this.pendingTurns.delete(goalId);
+    this.pendingTurns.delete(key);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     let fact: GoalResultFact;
     try {
@@ -9015,13 +9042,13 @@ export class Manager {
       // The remembered answer is read after the durable one, with no await before the put back:
       // a yield that has dropped the entry remembered its answer, and one still committing drops
       // the entry it finds. An ended relay is stamped so its acceptance still ages off.
-      if ((await readGoalResult(gw.ctx, ref)) !== undefined) this.markTurnLatchDropped(goalId);
-      else if (this.turnAcceptances.get(goalId)?.settled === undefined) this.pendingTurns.set(goalId, p);
+      if ((await readGoalResult(gw.ctx, ref)) !== undefined) this.markTurnLatchDropped(key);
+      else if (this.turnAcceptances.get(key)?.settled === undefined) this.pendingTurns.set(key, p);
       throw e;
     }
     this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
-    this.markTurnLatchDropped(goalId);
-    this.rememberSettledTurn(goalId, fact.state, Date.now());
+    this.markTurnLatchDropped(key);
+    this.rememberSettledTurn(key, fact.state, Date.now());
     await clearGoalIndex(gw.ctx, ref);
     this.maybeStopTurnSweep();
     return { goalId, state: fact.state };
@@ -9034,8 +9061,9 @@ export class Manager {
   private async commitTurnDeadline(p: PendingTurn): Promise<void> {
     const gw = this.goalWriter;
     if (!gw) return;
-    if (!this.pendingTurns.delete(p.goalId)) return;
-    this.markTurnLatchDropped(p.goalId);
+    const key = turnKey(p.ref);
+    if (!this.pendingTurns.delete(key)) return;
+    this.markTurnLatchDropped(key);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
     try {
       await this.assertGoalWriterEpochCurrent(epoch);
@@ -9045,7 +9073,7 @@ export class Manager {
       // (the delete at the top of this function) and after this CAS has to name this terminal.
       // Clearing first, then remembering, left a window where maybeStopTurnSweep saw no pending
       // turn and no settled answer, wiped the acceptance, and rememberSettledTurn no-op'd.
-      this.rememberSettledTurn(p.goalId, fact.state, Date.now());
+      this.rememberSettledTurn(key, fact.state, Date.now());
       await clearGoalIndex(gw.ctx, p.ref);
     } catch (e) { console.error(`! turn deadline terminal for ${p.goalId}: ${rejectionText(e)}`); }
     this.maybeStopTurnSweep();
@@ -9085,16 +9113,16 @@ export class Manager {
 
   /** The answer a retried yield is served, held for {@link TURN_ANSWER_RETENTION_MS}. Only for a
    *  turn this incarnation accepted: an entry it has no acceptance for is one it cannot vouch for. */
-  private rememberSettledTurn(goalId: string, state: string, at: number): void {
-    const entry = this.turnAcceptances.get(goalId);
+  private rememberSettledTurn(key: string, state: string, at: number): void {
+    const entry = this.turnAcceptances.get(key);
     if (entry === undefined) return;
     entry.settled = { state, at };
   }
 
   /** Stamp when the pending latch dropped, so an unsettled leftover ages off that instant rather
    *  than the original deadline. Idempotent: the first drop is the one the retry window starts at. */
-  private markTurnLatchDropped(goalId: string, at = Date.now()): void {
-    const entry = this.turnAcceptances.get(goalId);
+  private markTurnLatchDropped(key: string, at = Date.now()): void {
+    const entry = this.turnAcceptances.get(key);
     if (entry === undefined || entry.leftoverSince !== undefined) return;
     entry.leftoverSince = at;
   }
@@ -9127,11 +9155,11 @@ export class Manager {
     // An UNSETTLED acceptance whose pending latch is already gone is the in-flight (or failed)
     // deadline commit: keep it for the same window so a late yield can still read the durable
     // terminal, then drop it so a commit that never remembered cannot pin the sweep forever.
-    for (const [goalId, e] of [...this.turnAcceptances.entries()]) {
-      if (this.pendingTurns.has(goalId)) continue;
+    for (const [key, e] of [...this.turnAcceptances.entries()]) {
+      if (this.pendingTurns.has(key)) continue;
       // Unsettled leftovers age off the latch-drop stamp, never `deadlineAt`.
       const at = e.settled?.at ?? e.leftoverSince;
-      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);
+      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);
     }
     // The prune above is the one event after which the sweep may have nothing left to do, and
     // the settle-time callers cannot see it: they run when an answer has just been remembered.
@@ -9182,7 +9210,7 @@ export class Manager {
       payload: parsed.payload,
       acceptedAt: spec.value.acceptedAt,
       deadlineAt: parsed.deadlineAt,
-      holdToken: turnHoldToken(entry.ref.goalId), holdEpoch: parsed.holdEpoch,
+      holdToken: turnHoldToken(entry.ref), holdEpoch: parsed.holdEpoch,
       ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
     };
     // The hold is the relay's bounded ending, minted AFTER the index entry and the goal record,
@@ -9192,13 +9220,14 @@ export class Manager {
       console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);
       return;
     }
-    this.pendingTurns.set(p.goalId, p);
+    const key = turnKey(p.ref);
+    this.pendingTurns.set(key, p);
     // THE ACCEPTANCE TOO, or the adopted turn's answer is never remembered: `rememberSettledTurn`
     // writes only against an acceptance this incarnation holds, and adoption rebuilt the pending
     // relay without one, so a yield whose reply was lost after a restart still heard `not-found`
     // on the very path adoption exists for. The acceptance is rebuilt from the same records the
     // relay was: the spec holds the fingerprint, the index holds the seat, the note the deadline.
-    this.turnAcceptances.set(p.goalId, {
+    this.turnAcceptances.set(key, {
       acceptance: {
         name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,
         fingerprint: spec.value.fingerprint, deadlineAt: p.deadlineAt,
