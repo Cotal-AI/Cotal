@@ -14,6 +14,7 @@ export class MemoryStore implements SecretStore {
   constructor(readonly identity: { kind: "injected"; coordinate: string }) {}
   async get(k: string) { return this.values.get(k); }
   async put(k: string, v: string) { this.values.set(k, v); }
+  async create(k: string, v: string) { if (this.values.has(k)) return false; this.values.set(k, v); return true; }
   async delete(k: string) { this.values.delete(k); }
 }
 

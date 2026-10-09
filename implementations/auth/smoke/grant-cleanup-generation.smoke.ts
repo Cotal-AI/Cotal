@@ -10,7 +10,7 @@ import { findManagedActor } from "../src/ledger.js";
 import { deriveOwnerToken } from "../src/derive.js";
 
 const dir=mkdtempSync(join(tmpdir(),"grant-custody-")), values=new Map<string,string>();
-const store={identity:{kind:"injected" as const,coordinate:dir},async get(k:string){return values.get(k);},async put(k:string,v:string){values.set(k,v);},async delete(k:string){values.delete(k);}};
+const store={identity:{kind:"injected" as const,coordinate:dir},async get(k:string){return values.get(k);},async put(k:string,v:string){values.set(k,v);},async create(k:string,v:string){if(values.has(k))return false;values.set(k,v);return true;},async delete(k:string){values.delete(k);}};
 let passed=0,failed=0;
 function check(name:string,ok:boolean){assert.ok(ok,name);console.log(`✓ ${name}`);passed++;}
 try {

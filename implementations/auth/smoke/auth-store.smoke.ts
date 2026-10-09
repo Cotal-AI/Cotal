@@ -144,6 +144,7 @@ try {
   const recordingEmpty: SecretStore = {
     get: async (key) => { reads.push(key); return undefined; },
     put: async () => { throw new Error("BUG: the auth-service read path must never put"); },
+    create: async () => { throw new Error("BUG: the auth-service read path must never create"); },
     delete: async () => { throw new Error("BUG: the auth-service read path must never delete"); },
   };
   await rejects("injected + absent keys is a hard error naming the missing kinds — never local generation",
@@ -177,6 +178,7 @@ try {
   const hostedStore: SecretStore = {
     get: async (key) => provisioned.get(key),
     put: async () => { throw new Error("BUG: the auth-service read path must never put"); },
+    create: async () => { throw new Error("BUG: the auth-service read path must never create"); },
     delete: async () => { throw new Error("BUG: the auth-service read path must never delete"); },
   };
   const hostedDir = userAuthStateDir(root, "hosted");
@@ -216,6 +218,7 @@ try {
   const recordingDeleter: SecretStore = {
     get: async () => undefined,
     put: async () => { throw new Error("BUG: deprovision must never put"); },
+    create: async () => { throw new Error("BUG: deprovision must never create"); },
     delete: async (key) => { deleted.push(key); },
   };
   await cotalAuthProvider.deprovisionSecrets({ store: recordingDeleter, space: "hosted" });
@@ -225,6 +228,7 @@ try {
   const failingDeleter: SecretStore = {
     get: async () => undefined,
     put: async () => { throw new Error("BUG: deprovision must never put"); },
+    create: async () => { throw new Error("BUG: deprovision must never create"); },
     delete: async (key) => { deleted.push(key); if (key.endsWith("issuer.json")) throw new Error("backend down"); },
   };
   deleted.length = 0;

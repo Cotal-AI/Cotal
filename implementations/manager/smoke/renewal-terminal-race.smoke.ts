@@ -106,6 +106,13 @@ class PausingSecretStore implements SecretStore {
     this.values.set(key, value);
   }
 
+  async create(key: string, value: string): Promise<boolean> {
+    if (this.values.has(key)) return false;
+    this.deleted.delete(key);
+    this.values.set(key, value);
+    return true;
+  }
+
   delete(key: string): Promise<void> {
     this.deleted.add(key);
     this.values.delete(key);

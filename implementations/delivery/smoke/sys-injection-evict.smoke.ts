@@ -222,6 +222,7 @@ class MemoryStore implements SecretStore {
   reads = 0;
   async get(key: string): Promise<string | undefined> { this.reads++; return this.map.get(key); }
   async put(key: string, value: string): Promise<void> { this.map.set(key, value); }
+  async create(key: string, value: string): Promise<boolean> { if (this.map.has(key)) return false; this.map.set(key, value); return true; }
   async delete(key: string): Promise<void> { this.map.delete(key); }
 }
 const storeA = new MemoryStore();

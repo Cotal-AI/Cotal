@@ -45,6 +45,14 @@ export interface SecretStore {
    *  renewal. Private perms / hardening beyond the atomicity guarantee remain the adapter's concern. */
   put(key: string, value: string): Promise<void>;
 
+  /** Store `value` under `key` only while `key` is absent, deciding that in one atomic step: of
+   *  concurrent creates of one key exactly one resolves `true`, and the others resolve `false` with
+   *  the winner's value untouched. A concurrent `get` observes the key absent or the complete value
+   *  (FS adapter → temp + exclusive link; a managed backend → a conditional create). A load-or-create
+   *  kind writes its first value here and adopts the stored one when it loses, because a read
+   *  followed by `put` lets two first callers each keep a value of their own. */
+  create(key: string, value: string): Promise<boolean>;
+
   /** Remove `key`. Idempotent. The ONLY portable contract is: after a successful `delete`,
    *  `get(key)` returns absent. This is NOT cryptographic shred, revocation, or credential kill —
    *  a backend may retain recoverable versions, and any already-issued NATS cred or signing seed

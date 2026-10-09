@@ -28,6 +28,7 @@ const rejects = async (name: string, fn: () => Promise<unknown>, msgPart: string
 const emptyStore: SecretStore = {
   get: async () => undefined,
   put: async () => { throw new Error("BUG: the daemon read path must never put"); },
+  create: async () => { throw new Error("BUG: the daemon read path must never create"); },
   delete: async () => { throw new Error("BUG: the daemon read path must never delete"); },
 };
 const args = (values: Record<string, string | boolean>): ParsedArgs => ({ values, positionals: [], raw: [] });

@@ -44,7 +44,7 @@ try {
   const cwdCotal = join(process.cwd(), ".cotal");
   const footprint = () => JSON.stringify([readdirSync(process.cwd()).sort(), existsSync(cwdCotal) ? readdirSync(cwdCotal, { recursive: true }).map(String).sort() : null]);
   const cwdBefore = footprint();
-  const anonymous: SecretStore = { get: (k) => a.store.get(k), put: (k, v) => a.store.put(k, v), delete: (k) => a.store.delete(k) };
+  const anonymous: SecretStore = { get: (k) => a.store.get(k), put: (k, v) => a.store.put(k, v), create: (k, v) => a.store.create(k, v), delete: (k) => a.store.delete(k) };
   await refuses(startAuthService({ ...inputs[0], store: anonymous }), /must declare a stable identity/, "identity-less store refuses");
   await refuses(startAuthService({ ...inputs[0], storeIdentity: b.store.identity }), /identity does not match/, "wrong store identity refuses");
   await refuses(startAuthService({ ...inputs[0], context: inputs[1].context }), /data account does not match/, "wrong assigned account refuses");

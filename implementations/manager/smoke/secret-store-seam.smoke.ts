@@ -41,7 +41,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 /** The seam probe: a real store that records every access that reaches it. */
-interface Access { op: "get" | "put" | "delete"; key: string }
+interface Access { op: "get" | "put" | "create" | "delete"; key: string }
 function recordingStore(inner: SecretStore): SecretStore & { seen: Access[]; sawSince(from: number, op: Access["op"], key: string): boolean } {
   const seen: Access[] = [];
   return {
@@ -49,6 +49,7 @@ function recordingStore(inner: SecretStore): SecretStore & { seen: Access[]; saw
     sawSince: (from, op, key) => seen.slice(from).some((a) => a.op === op && a.key === key),
     async get(key) { seen.push({ op: "get", key }); return inner.get(key); },
     async put(key, value) { seen.push({ op: "put", key }); return inner.put(key, value); },
+    async create(key, value) { seen.push({ op: "create", key }); return inner.create(key, value); },
     async delete(key) { seen.push({ op: "delete", key }); return inner.delete(key); },
   };
 }

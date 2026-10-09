@@ -34,6 +34,27 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## SecretStore create-only write in 0.78.0
+
+`SecretStore` from `@cotal-ai/core` has a fourth method, `create(key, value)`. It stores the value
+only while the key is absent and resolves `true`, or resolves `false` and leaves the stored value in
+place. The auth secret kinds made once per space now write their first value through it: the callout
+account, the issuer keys, the owner secret and a hosted auth plane's instance identity. Before, two
+first calls on one space each made a value, the later `put` replaced the earlier one, and the earlier
+caller kept using a value the store no longer held. The filesystem store implements `create` with an
+exclusive create, so a CLI root needs nothing, and stored values do not change.
+
+### What stops working
+
+A store of your own without `create` no longer compiles as a `SecretStore`. Plain JavaScript gets a
+`TypeError` at the first call that makes one of those kinds, such as `prepareServer` on a new space
+or the first `startAuthService` of a hosted context.
+
+### Before the upgrade
+
+Add `create` to your store, decided in one atomic step by the backend, such as a conditional create
+or an insert that fails on an existing key. A read followed by a write brings the race back.
+
 ## Token verifier clock tolerance in 0.77.0
 
 `validateUserToken`, and the `IdpConfig` that `verifyIdpToken` and `createIdpBridge` take, from

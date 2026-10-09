@@ -147,14 +147,14 @@ through the existing scoped host operation so deregistration can finish without 
 | `createIdpBridge` | exchange a verified IdP JWT for a Cotal bearer (see [the callout contract](identity-and-auth.md#the-idp-callout-contract)). |
 | `deriveOwnerToken`, `validateUserToken` | owner derivation; strict bearer validation. |
 | `cotalAuthProvider` | the self-registering `auth-provider` extension. |
-| `ensureCalloutAuth`/`loadCalloutAuth`, `ensureIssuer`/`loadIssuer`, `ensureOwnerSecret`/`loadOwnerSecret` | read/write the auth secret kinds through a `SecretStore`. |
+| `ensureCalloutAuth`/`loadCalloutAuth`, `ensureIssuer`/`loadIssuer`, `ensureOwnerSecret`/`loadOwnerSecret` | read/write the auth secret kinds through a `SecretStore`. Each `ensure*` writes its first value with `create`, so concurrent first calls on one space return the one value the store holds. |
 | `PLANE_CLAIM_REFUSED`, `planeClaimRefusal`, `PlaneClaimRefusal` *(type)* | every plane-claim refusal carries a `PLANE_CLAIM_REFUSED` detail, and `planeClaimRefusal(err)` reads its `reason`: `corrupt`, `live-peer`, `unknown`, `concurrent`, `fenced`, `released` or `lost`. Only `unknown`, an inconclusive liveness observation, is coded `unavailable`. A host can retry contention and stop on a corrupt row without matching message text. |
 
 **Seams and the wire** (all `@cotal-ai/core` unless noted)
 
 | symbol | purpose |
 |---|---|
-| `SecretStore` *(type)* | the durable hosted-secret seam (get/put/delete); `get()` returns raw seeds/keys into process memory, so it is a blob seam, not HSM/KMS signing. |
+| `SecretStore` *(type)* | the durable hosted-secret seam (get/put/create/delete). `create` writes only while the key is absent and reports whether it did, so it must be one atomic step in the backend. `get()` returns raw seeds/keys into process memory, so it is a blob seam, not HSM/KMS signing. |
 | `FsSecretStore`, `workspaceSecretStore(root)` | the filesystem default. **These live in `@cotal-ai/workspace`, not core.** |
 | `AuthProvider` *(type)*, `Connector` *(type)*, `Runtime` *(type)*, `Command` *(type)* | the extension contracts; implementations self-register on import. |
 | `registry` | the shared registry a composition root pulls surfaces into. |
