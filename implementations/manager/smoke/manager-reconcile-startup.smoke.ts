@@ -337,7 +337,7 @@ try {
     const refusedRetry = await doors.serveTurnYield(stranger, { goalId: "done-already", status: "done" })
       .then(() => "served" as const, (e: unknown) => e as { code?: string });
     check("and only to the addressee it was addressed to",
-      refusedRetry !== "served" && (refusedRetry as { code?: string }).code === "permission-denied", refusedRetry);
+      refusedRetry !== "served" && (refusedRetry as { code?: string }).code === "not-found", refusedRetry);
 
     // AND THE ANSWER IS NOT KEPT FOREVER. It exists for the window a lost reply is retried in;
     // holding it past that is one entry per turn for the process lifetime, which is what the map
@@ -422,6 +422,11 @@ try {
     const serveEpoch = (manager as unknown as { serviceServe?: { grant: { epoch: number } } }).serviceServe?.grant.epoch ?? 0;
     const seatUid = mintLifecycleUid();
     const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
+    // The manager keys a relay, and derives its hold, by the caller triple plus the goal id.
+    const relayKey = (id: string) => `${runner.owner}.${runner.actor}.${runner.uid}.${id}`;
+    // The hold token is the manager's own derivation (a module-private function), spelled here the
+    // same way so the fixture's hold is the one the yield path claims.
+    const holdTokenOf = (id: string) => createHash("sha256").update(`${relayKey(id)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
     const goalId = "g".repeat(43);
     const ref: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId };
     const ACCEPTED_AT = Date.now() - 90_000;
@@ -436,7 +441,9 @@ try {
     });
     const allocated = { name: "adopted-seat", actor: "seat9", uid: seatUid };
     const DEADLINE_AT = Date.now() + 600_000;
-    const note = JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, owner: "local" });
+    // The note records the hold token, as the accept path writes it.
+    const noteOf = (id: string) => JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, owner: "local", holdToken: holdTokenOf(id) });
+    const note = noteOf(goalId);
     await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, note);
     // The turn's HOLD, minted exactly as the accept path mints it: the record over the goal-writer's
     // KV, the `.schedule` request over the SERVE connection (the timer row is the serving instance's
@@ -444,9 +451,7 @@ try {
     // claims the hold, so a fixture without it is a turn no seat could ever yield.
     const serveJs = jetstream((manager as unknown as { serviceServe: { nc: Parameters<typeof jetstream>[0] } }).serviceServe.nc);
     await mintCheckpoint(actx.kv, serveJs, space, {
-      // The hold token is the manager's own derivation (a module-private function), spelled here the
-      // same way so the fixture's hold is the one the yield path claims.
-      ref: { endpoint: MANAGER_ENDPOINT, token: createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43) },
+      ref: { endpoint: MANAGER_ENDPOINT, token: holdTokenOf(goalId) },
       instanceId: doors.managerInstanceId, epoch: serveEpoch,
       goal: { caller: runner, goalId },
       holder: { id: MANAGER_ENDPOINT, lifecycleUid: doors.managerInstanceId },
@@ -454,7 +459,7 @@ try {
     });
 
     await doors.adoptTurnGoal({ ref, iid: doors.managerInstanceId, allocated, note });
-    const adopted = doors.pendingTurns.get(goalId);
+    const adopted = doors.pendingTurns.get(relayKey(goalId));
     check("the boot sweep adopts a predecessor's accepted turn back into the pending index",
       adopted !== undefined && adopted.seat.name === "adopted-seat", adopted);
     check("stamped with the acceptance time its goal RECORDS, never the instant the manager booted",
@@ -495,11 +500,11 @@ try {
       acceptedEpoch: 0, requestId: holdless, sourceSeq: 0, acceptedAt: ACCEPTED_AT, readinessDeadlineMs: 600_000,
       target: { owner: "local", actor: "seat9", lifecycleUid: seatUid, mappingRevision: 0 },
     });
-    await recordGoalIndex(actx, holdlessRef, doors.managerInstanceId, allocated, note);
-    await doors.adoptTurnGoal({ ref: holdlessRef, iid: doors.managerInstanceId, allocated, note });
+    await recordGoalIndex(actx, holdlessRef, doors.managerInstanceId, allocated, noteOf(holdless));
+    await doors.adoptTurnGoal({ ref: holdlessRef, iid: doors.managerInstanceId, allocated, note: noteOf(holdless) });
     check("a turn whose hold was never minted is not adopted as pending: nothing could settle it",
-      !doors.pendingTurns.has(holdless) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(holdless),
-      { pending: doors.pendingTurns.has(holdless) });
+      !doors.pendingTurns.has(relayKey(holdless)) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(relayKey(holdless)),
+      { pending: doors.pendingTurns.has(relayKey(holdless)) });
 
     // #1262: a late yield after the deadline committed. The CI flake is not "the deny lost to a
     // success" — the deny held — and it is not the durable goal-index drop itself: the yield path
@@ -545,7 +550,7 @@ try {
         target: { owner: "local", actor: allocated.actor, lifecycleUid: seatUid, mappingRevision: 0 },
       });
       await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, lateNote);
-      const holdToken = createHash("sha256").update(`${goalId}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+      const holdToken = holdTokenOf(goalId);
       await mintCheckpoint(actx.kv, serveJs, space, {
         ref: { endpoint: MANAGER_ENDPOINT, token: holdToken },
         instanceId: doors.managerInstanceId, epoch: serveEpoch,
@@ -559,8 +564,8 @@ try {
         payload: "too late", acceptedAt: LATE_ACCEPTED, deadlineAt: LATE_DEADLINE,
         holdToken, holdEpoch: serveEpoch,
       };
-      lateDoors.pendingTurns.set(goalId, pending);
-      lateDoors.turnAcceptances.set(goalId, {
+      lateDoors.pendingTurns.set(relayKey(goalId), pending);
+      lateDoors.turnAcceptances.set(relayKey(goalId), {
         acceptance: {
           name: allocated.name, owner: "local", actor: allocated.actor, uid: seatUid, goalId,
           fingerprint, deadlineAt: LATE_DEADLINE,
@@ -582,7 +587,7 @@ try {
       check("the deadline deny is the goal's terminal, reason `turn-deadline`; no success over it",
         deniedLate?.state === "failed" && (deniedLate.data as { reason?: string } | undefined)?.reason === "turn-deadline",
         deniedLate);
-      const stamped = lateDoors.turnAcceptances.get(lateId);
+      const stamped = lateDoors.turnAcceptances.get(relayKey(lateId));
       check("commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
         typeof stamped?.leftoverSince === "number" && stamped.leftoverSince > LATE_DEADLINE,
         stamped);
@@ -590,8 +595,8 @@ try {
       // answer not remembered. This is the window between pendingTurns.delete and
       // rememberSettledTurn (and the window a concurrent sweep's maybeStopTurnSweep can
       // drop the settled field while leaving the acceptance the yield still addresses).
-      lateDoors.pendingTurns.delete(lateId);
-      const kept1 = lateDoors.turnAcceptances.get(lateId);
+      lateDoors.pendingTurns.delete(relayKey(lateId));
+      const kept1 = lateDoors.turnAcceptances.get(relayKey(lateId));
       if (kept1) delete kept1.settled;
       const afterCommitBeforeIndexDrop = await lateDoors.serveTurnYield(adoptedSeat, { goalId: lateId, status: "done" }).then((r) => r, asValue);
       check("a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
@@ -610,8 +615,8 @@ try {
       // Ordering 2: terminal committed AND the index already cleared — the auth-mesh smoke's
       // observed state when it yields after resultOf returns the deny.
       await clearGoalIndex(actx, ref);
-      lateDoors.pendingTurns.delete(lateId);
-      const kept2 = lateDoors.turnAcceptances.get(lateId);
+      lateDoors.pendingTurns.delete(relayKey(lateId));
+      const kept2 = lateDoors.turnAcceptances.get(relayKey(lateId));
       if (kept2) delete kept2.settled;
       const afterIndexDrop = await lateDoors.serveTurnYield(adoptedSeat, { goalId: lateId, status: "done" }).then((r) => r, asValue);
       check("a yield after the deny committed AND the index dropped is still told the turn ended failed, never `not-found`",

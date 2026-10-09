@@ -168,7 +168,7 @@ try {
   c("a turn is accepted against the live seat", (a1 as { ok?: boolean }).ok === true, a1);
 
   const pendingOf = (mgr: Manager): { seatDiedAt?: number } | undefined =>
-    (mgr as unknown as { pendingTurns: Map<string, { seatDiedAt?: number }> }).pendingTurns.get(g1);
+    (mgr as unknown as { pendingTurns: Map<string, { seatDiedAt?: number }> }).pendingTurns.get(`${runner.owner}.${runner.actor}.${runner.uid}.${g1}`);
 
   if (typeof firstPid === "number") {
     try { process.kill(firstPid, "SIGKILL"); } catch (e) { c("SIGKILL the live pid", false, e); }

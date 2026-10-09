@@ -59,8 +59,8 @@
     {
       "name": "the boot sweep stamps every adopted turn's seat dead",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    this.pendingTurns.set(p.goalId, p);\n",
-      "replace": "    this.pendingTurns.set(p.goalId, p);\n    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
+      "find": "    this.pendingTurns.set(key, p);\n",
+      "replace": "    this.pendingTurns.set(key, p);\n    if (this.agents.get(p.seat.name)?.lifecycleUid !== p.seat.uid) this.failSeatTurns(p.seat.name, p.seat.uid);\n",
       "expectRed": "and NOT marked as addressing a dead seat",
       "cell": "and NOT marked as addressing a dead seat: an empty agents map at boot is not evidence of death",
       "note": "The agents map is EMPTY during reconcile: seats re-register later, so 'not in the map' meant 'not yet re-registered' and every adopted turn's deadline terminal carried `agentDownAt`, raising L4002 where the reference says L4003."
@@ -86,8 +86,8 @@
     {
       "name": "a retried yield hears not-found for work that committed",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const settled = this.turnAcceptances.get(goalId);\n      if (settled !== undefined) {",
-      "replace": "      const settled = this.turnAcceptances.get(goalId);\n      if (false && settled !== undefined) {",
+      "find": "      const settled = this.turnAcceptances.get(key);\n      if (settled !== undefined) {",
+      "replace": "      const settled = this.turnAcceptances.get(key);\n      if (false && settled !== undefined) {",
       "expectRed": "a retried yield is served the answer the lost reply carried, never `not-found`",
       "cell": "a retried yield is served the answer the lost reply carried, never `not-found`",
       "note": "The commit deletes the pending turn, so a retry after a lost reply found nothing and the seat read `not-found` as 'drop it': failure reported for work the run already has."
@@ -95,8 +95,8 @@
     {
       "name": "a settled answer is served to anyone who asks",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        if (a.owner !== c.owner || a.actor !== c.actor || a.uid !== c.uid)\n          throw new EpEnvelopeError(\"permission-denied\", `turn \"${goalId}\" was addressed to",
-      "replace": "        if (false)\n          throw new EpEnvelopeError(\"permission-denied\", `turn \"${goalId}\" was addressed to",
+      "find": "      if (a.goalId === goalId && a.owner === c.owner && a.actor === c.actor && a.uid === c.uid) return key;",
+      "replace": "      if (a.goalId === goalId) return key;",
       "expectRed": "and only to the addressee it was addressed to",
       "cell": "and only to the addressee it was addressed to",
       "note": "A yield is the addressee's own, and so is the answer a retry of it is served."
@@ -104,8 +104,8 @@
     {
       "name": "settled answers are kept for the process lifetime",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
-      "replace": "      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) void goalId;",
+      "find": "      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);",
+      "replace": "      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) void key;",
       "expectRed": "the sweep drops a settled answer once its retry window has passed",
       "cell": "the sweep drops a settled answer once its retry window has passed, and keeps a fresh one",
       "note": "The map had no eviction at all: one entry per turn for the life of the process. The mutant keeps the loop and its scope intact and only removes the delete; a first draft replaced the whole if with statements that referenced the loop bindings OUTSIDE the loop, which is a ReferenceError every sweep tick and graded WRONG-RED about nothing."
@@ -113,8 +113,8 @@
     {
       "name": "an unsettled leftover acceptance is kept for the process lifetime",
       "file": "implementations/manager/src/manager.ts",
-      "find": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
-      "replace": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(goalId);",
+      "find": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);",
+      "replace": "      const at = e.settled?.at ?? e.leftoverSince;\n      if (e.settled !== undefined && at !== undefined && now - at >= TURN_ANSWER_RETENTION_MS) this.turnAcceptances.delete(key);",
       "expectRed": "the sweep drops a stale unsettled acceptance once its retry window has passed",
       "cell": "the sweep drops a stale unsettled acceptance once its retry window has passed, and keeps a fresh one",
       "note": "#1262 follow-through. maybeStopTurnSweep used to wipe the map the moment pending was empty, which is the in-flight deadline window. After that wipe was removed, an acceptance whose deadline commit never remembered would pin the 5s sweep forever."
@@ -131,8 +131,8 @@
     {
       "name": "commitTurnDeadline never stamps leftoverSince",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (!this.pendingTurns.delete(p.goalId)) return;\n    this.markTurnLatchDropped(p.goalId);",
-      "replace": "    if (!this.pendingTurns.delete(p.goalId)) return;",
+      "find": "    if (!this.pendingTurns.delete(key)) return;\n    this.markTurnLatchDropped(key);",
+      "replace": "    if (!this.pendingTurns.delete(key)) return;",
       "expectRed": "commitTurnDeadline stamps leftoverSince when the pending latch drops",
       "cell": "commitTurnDeadline stamps leftoverSince when the pending latch drops, not the original deadline",
       "note": "Without this stamp a failed deadline commit leaves an acceptance with no settled and no leftoverSince, so the sweep never ages it off."
@@ -158,8 +158,8 @@
     {
       "name": "adoption rebuilds the pending relay and not the acceptance its answer is remembered against",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    this.turnAcceptances.set(p.goalId, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
-      "replace": "    if (false) this.turnAcceptances.set(p.goalId, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
+      "find": "    this.turnAcceptances.set(key, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
+      "replace": "    if (false) this.turnAcceptances.set(key, {\n      acceptance: {\n        name: p.seat.name, owner: p.seat.owner, actor: p.seat.actor, uid: p.seat.uid, goalId: p.goalId,",
       "expectRed": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
       "cell": "an adopted turn yields, and a retry of that yield is served the answer it earned, never `not-found`",
       "note": "rememberSettledTurn writes only against an acceptance this incarnation holds. Adoption rebuilt pendingTurns alone, so a yield whose reply was lost after a restart still heard not-found on the one path adoption exists for."
@@ -167,7 +167,7 @@
     {
       "name": "a late yield after the deadline committed hears not-found instead of the deny",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        if (settled.ref !== undefined) {\n          const ended = await readGoalResult(gw.ctx, settled.ref);\n          if (ended !== undefined) {\n            this.rememberSettledTurn(goalId, ended.state, ended.ts);\n            return { goalId, state: ended.state };\n          }\n        }",
+      "find": "        if (settled.ref !== undefined) {\n          const ended = await readGoalResult(gw.ctx, settled.ref);\n          if (ended !== undefined) {\n            this.rememberSettledTurn(key, ended.state, ended.ts);\n            return { goalId, state: ended.state };\n          }\n        }",
       "replace": "        if (settled.ref !== undefined) {\n          void settled.ref;\n        }",
       "expectRed": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",
       "cell": "a yield after the deny committed, before the index drop, is told the turn ended failed, never `not-found`",

@@ -65,7 +65,7 @@ c("WRONG-TODAY: the manager's own serve paths write the goalidx row (`recordGoal
 // The sweep's skip reads two in-memory maps now (the turn relay keeps its own twin); both are the
 // same Model-B dependence on a live incarnation's memory, and both go when the flip lands.
 c("WRONG-TODAY: the boot sweep skips goals via `goalAcceptances` (and its turn twin), IN-MEMORY maps the serve paths fill",
-  count("this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(entry.ref.goalId)") === 1
+  count("this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(turnKey(entry.ref))") === 1
     && count("this.goalAcceptances.set(") === 1);
 pending("the CANONICALIZER writes goalidx create-only BEFORE the bind (step 4a), so the index no longer depends on a live manager's memory");
 
