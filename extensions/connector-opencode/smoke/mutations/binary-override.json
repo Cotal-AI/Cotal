@@ -76,8 +76,8 @@
     {
       "name": "plugin2.ts clears the boot prompt before the submission has landed",
       "file": "extensions/connector-opencode/src/plugin2.ts",
-      "find": "    busy = true;\n    surfaced = ids;\n    briefed = true;\n    try {\n      await opencodeApi(",
-      "replace": "    busy = true;\n    surfaced = ids;\n    briefed = true;\n    if (boot !== undefined) bootPrompt = undefined;\n    try {\n      await opencodeApi(",
+      "find": "    busy = true;\n    briefed = true;\n    try {\n      await opencodeApi(",
+      "replace": "    busy = true;\n    briefed = true;\n    if (boot !== undefined) bootPrompt = undefined;\n    try {\n      await opencodeApi(",
       "expectRed": "a failed boot submission keeps the prompt and the next drive submits it",
       "cell": "a failed boot submission keeps the prompt and the next drive submits it"
     }

@@ -34,8 +34,8 @@
     {
       "name": "R1 a durable redelivery of a still-pending item refreshes the ack handle without re-announcing it",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        existing.ack = delivery.ack;\n        this.emit(\"incoming\", existing.item);",
-      "replace": "        existing.ack = delivery.ack;",
+      "find": "        if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);\n        this.emit(\"incoming\", existing.item);",
+      "replace": "        if (this.inFlightIds.has(existing.item.recvKey)) this.keepOwned(existing.item.recvKey);",
       "expectRed": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
       "cell": "live-first/durable-second: the durable pending duplicate re-announces through incoming",
       "note": "Restores the swallow this branch had before the re-announce landed: the redelivery arrives, the ack handle is refreshed, and nothing tells the wake policy the message is still there. A session in that state sits idle with the message buffered and un-acked for as long as anything waits on it."
@@ -43,8 +43,8 @@
     {
       "name": "R2 a durable redelivery re-announces but keeps the stale ack handle, so the commit lands on a handle the server has already replaced",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        existing.ack = delivery.ack;\n        this.emit(\"incoming\", existing.item);",
-      "replace": "        this.emit(\"incoming\", existing.item);",
+      "find": "        existing.ack = delivery.ack;",
+      "replace": "",
       "expectRed": "live-first/durable-second: the DURABLE ack committed (upgraded from the live no-op)",
       "cell": "live-first/durable-second: the DURABLE ack committed (upgraded from the live no-op)",
       "note": "The other half of the same two lines, and the positive control for R1: a run that kills this one has demonstrably reached this file, so an R1 that survived would be a reportable coverage gap rather than an ungradable one."

@@ -24,8 +24,8 @@
     {
       "name": "W1 a second overlapping frame does not increment the existing hold",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    for (const id of ids) this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);",
-      "replace": "    for (const id of ids) this.inFlightIds.set(id, 1);",
+      "find": "      this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);",
+      "replace": "      this.inFlightIds.set(id, 1);",
       "expectRed": "one frame's verdict does not unprotect the overlapping id",
       "cell": "one frame's verdict does not unprotect the overlapping id",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
@@ -34,8 +34,8 @@
     {
       "name": "W2 the first frame verdict releases an id another frame still holds",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "      if (held <= 1) this.inFlightIds.delete(id);\n      else this.inFlightIds.set(id, held - 1);",
-      "replace": "      this.inFlightIds.delete(id);",
+      "find": "      if (held <= 1) {\n        this.inFlightIds.delete(id);\n        this.stopRenewal(id);\n      } else this.inFlightIds.set(id, held - 1);",
+      "replace": "      this.inFlightIds.delete(id);\n      this.stopRenewal(id);",
       "expectRed": "one frame's verdict does not unprotect the overlapping id",
       "cell": "one frame's verdict does not unprotect the overlapping id",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",

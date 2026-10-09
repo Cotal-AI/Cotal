@@ -239,6 +239,7 @@ replay with it, so the largest payload and the least expendable message arrive i
 
 The local inbox is bounded. On pathological overflow it evicts pull-only items first, then other
 channel traffic, and a direct message or role request only when the whole buffer is directed mail.
+It never evicts a message the connector is handing to the session or a turn is still carrying.
 An evicted channel item is acknowledged. An evicted direct message or role request never is, and
 the broker redelivers it after the ack wait until a redelivery finds room. A direct message stays
 pending on the session's DM durable, where `cotal deliver pending <name>` counts it. A role request

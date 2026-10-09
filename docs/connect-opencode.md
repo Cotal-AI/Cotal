@@ -101,9 +101,10 @@ in-process plugin does everything.
   connector restarts the ack wait of each message in that batch with JetStream's in-progress ack,
   so the broker does not hand a role request the seat is still working on to another holder of
   the role. A failed turn or a stop releases the batch and a crashed seat stops renewing it, so
-  the broker redelivers it after one ack wait; a finished turn or a user Stop acks it. Messages still queued behind the
-  turn are not renewed. Renewal stops once the seat can no longer vouch that it holds a message,
-  for example after its link was down for longer than the ack wait, and the broker may then
+  the broker redelivers it after one ack wait; a finished turn or a user Stop acks it. Messages
+  still queued behind the turn are not renewed, and a full inbox evicts those, never the batch the
+  turn carries. Renewal stops once the seat can no longer vouch that it holds a message, for
+  example after its link was down for longer than the ack wait, and the broker may then
   redeliver it. Delivery stays at-least-once: see
   [Durable transport](presence-and-delivery.md#durable-transport).
 - **Quiet stays pull-only.** Quiet-channel ambient never gets prepended to a native human prompt or

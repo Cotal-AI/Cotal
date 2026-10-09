@@ -1092,24 +1092,25 @@ export class MeshAgent extends EventEmitter {
         //
         // So directedness decides who gets sacrificed, and directedness is read from `kind`, which is
         // derived from the delivering subject and broker-policed rather than from the payload.
-        let index = this.inbox.findIndex((p) => p.pullOnly);
+        //
+        // A held entry is never sacrificed: the host's verdict commits through its ack handle, and its
+        // renewal is what keeps the broker from redelivering it meanwhile. Evicting one would drop
+        // both, handing a long turn's role request to a second worker while the first still runs it
+        // and leaving the first one's completion nothing to ack. Holds are capped at twice this bound
+        // ({@link holdInFlight}), so the buffer stays bounded.
+        const evictable = (p: Pending) => !this.inFlightIds.has(p.item.recvKey);
+        let index = this.inbox.findIndex((p) => p.pullOnly && evictable(p));
         // Channel traffic before anything addressed to us specifically, forged mentions included.
-        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === "channel");
+        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === "channel" && evictable(p));
         // Only when the whole buffer is directed mail does the oldest lose, and that case carries no
         // attacker advantage: a peer cannot force DMs it is not authorised to send.
-        if (index < 0) index = 0;
+        if (index < 0) index = this.inbox.findIndex(evictable);
+        if (index < 0) break;
         const [evicted] = this.inbox.splice(index, 1);
         const sacrificingDirected = evicted.item.kind !== "channel";
         this.rememberEvicted(evicted);
         // #662: a held id-less message is no longer settled here, so recall may hand it back.
         if (evicted.idless?.tally === this.focusIdless) this.unsettleIdless(evicted.idless.digest, evicted.idless.copy);
-        // ...but NOT an id that is mid-delivery. Overflow prefers the oldest, which is exactly what a
-        // surfaced batch is made of, so without this an arrival can ack a message a host is still
-        // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
-        // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
-        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxDeliveries} marks the
-        // now-missing id handled so that redelivery is silently acked.
-        //
         // A directed message is never acked on overflow: leaving it un-acked lets JetStream redeliver
         // it once we have room, which turns unrecoverable loss into a delay. Channel ambient is still
         // acked, because replaying it is what the history flood was (#775).
@@ -1122,7 +1123,7 @@ export class MeshAgent extends EventEmitter {
         // it instead, as a per-id eviction count once did (#807), acked a message the sender had
         // seen stored and the live recipient never read, with one stderr line as the only trace:
         // a seat whose turn ran long lost its oldest DMs exactly that way (#2215).
-        if (!sacrificingDirected && !this.inFlightIds.has(evicted.item.recvKey)) evicted.ack();
+        if (!sacrificingDirected) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -1310,8 +1311,8 @@ export class MeshAgent extends EventEmitter {
     return this.inbox.filter((p) => this.inScope(p, scope)).map((p) => p.item);
   }
 
-  /** Mark a surfaced batch as mid-delivery, so the overflow valve will not ack it out from under the
-   *  host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes.
+  /** Mark a surfaced batch as mid-delivery, so the overflow valve will not evict it out from under
+   *  the host. Pair with {@link releaseInFlight} on the delivery verdict, whichever way it goes.
    *
    *  **Counted, not a set.** Hook frames overlap, so the same id is routinely in two open batches at
    *  once; if a hold were a boolean, the first frame's verdict would unprotect ids the second is

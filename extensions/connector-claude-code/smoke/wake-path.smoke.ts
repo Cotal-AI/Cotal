@@ -552,8 +552,8 @@ try {
     stdoutBytes: starvedBig.stdout.length,
   });
   await sleep(500);
-  // The oldest id was evicted+acked by the overflow while it was mid-delivery. Nothing showed it to
-  // the model. It must still come back — JetStream redelivery is the only thing that can bring it.
+  // The overflow landed while the oldest id was held mid-delivery, so the valve passed over it, and
+  // nothing showed it to the model. The failed handoff must leave it pending, buffered or redelivered.
   const backAfterOverflow = async (): Promise<boolean> => {
     for (let i = 0; i < (ACK_WAIT_MS + 8_000) / 250 && !stillPending(oldest); i++) await sleep(250);
     return stillPending(oldest);
@@ -561,7 +561,7 @@ try {
   const recovered = await backAfterOverflow();
   console.log(`    (after a failed handoff + overflow, ${oldest} recoverable: ${recovered})`);
   check(
-    "a message evicted by overflow WHILE in flight is not consumed by a failed handoff",
+    "a message held in flight through an overflow is not consumed by a failed handoff",
     recovered,
     { oldest, stillBuffered: agent.inboxCount("automatic") },
   );
