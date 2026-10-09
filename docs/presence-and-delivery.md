@@ -210,6 +210,19 @@ from that buffer but left unacknowledged: it stays pending on the recipient's du
 broker redelivers it after the durable's ack wait, so it lands once the session drains
 ([Connect Claude](connect-claude.md#how-messages-reach-the-session)).
 
+A connector that acks only when a turn ends keeps the messages that turn carries from being
+redelivered while it runs, by restarting their ack wait with JetStream's in-progress ack
+([Connect OpenCode](connect-opencode.md#how-it-binds)). A redelivered copy says so: the broker
+counts each delivery, and a connector marks a message the broker delivered more than once as
+redelivered in the frame it injects. The count comes from the broker, so a sender cannot forge
+or hide it.
+
+Delivery stays at-least-once, so a role request can still run twice: when its holder crashes or
+fails a turn after acting, or when renewal lapsed and the broker handed the request to another
+holder of the role. A stored sequence proves the broker accepted the request, not that one worker
+completed it alone. Work with side effects that must not repeat needs its own ownership or an
+idempotency key.
+
 ## Channel delivery
 
 Channel delivery has two wire-observable classes, fixed per channel

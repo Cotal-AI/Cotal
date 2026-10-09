@@ -7,6 +7,7 @@ import {
   headers,
   tokenAuthenticator,
   nanos,
+  millis,
   AuthorizationError,
   PermissionViolationError,
   UserAuthenticationExpiredError,
@@ -5526,6 +5527,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!liveDeliveryPlane) this.emit("warning", new Error(
       `delivery durable "${durable}" for space "${this.space}" bound while the plane this connection reaches has no ready delivery lease, so the durable delivers nothing until a delivery daemon serves this plane. If a daemon serves this space on another plane, reconnect against it, which re-binds the durable there.`,
     ));
+    const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {
@@ -5546,8 +5548,7 @@ export class CotalEndpoint extends EventEmitter {
         }
         const msg = authenticatedChannelMessage(raw.msg, raw.channel);
         if (msg.from?.id === this.card.id) { m.ack(); continue; } // own echo (defensive)
-        const delivery: Delivery = { ack: () => m.ack(), nak: () => m.nak(), durable: true };
-        this.emit("message", msg, delivery, { historical: false, kind: "channel" } satisfies MessageMeta);
+        this.emit("message", msg, durableDelivery(m, ackWaitMs), { historical: false, kind: "channel" } satisfies MessageMeta);
       }
     })().catch((e) => { if (!this.stopped) this.emit("error", e as Error); });
   }
@@ -5766,6 +5767,7 @@ export class CotalEndpoint extends EventEmitter {
   private async pump(stream: string, durable: string): Promise<void> {
     if (!this.js) throw new Error("endpoint not started");
     const consumer = await this.js.consumers.get(stream, durable);
+    const ackWaitMs = await ackWaitOf(consumer);
     const msgs = await consumer.consume();
     this.streamMsgs.push(msgs);
     void (async () => {
@@ -5816,8 +5818,7 @@ export class CotalEndpoint extends EventEmitter {
           // is coalesced downstream by the receiver's commit-aware id-dedup (MeshAgent.ingest keeps ONE
           // entry and takes THIS durable ack handle) — so the durable copy is acked only once handled.
         }
-        const delivery: Delivery = { ack: () => m.ack(), nak: () => m.nak(), durable: true };
-        this.emit("message", authenticatedMessage(msg, parsed), delivery, {
+        this.emit("message", authenticatedMessage(msg, parsed), durableDelivery(m, ackWaitMs), {
           historical: false,
           kind: kindFromParsed(parsed.kind),
         } satisfies MessageMeta);
@@ -6755,6 +6756,24 @@ function authenticatedDmMessage<M extends CotalMessage>(msg: M, to: string): Cot
   if (msg.to === to && (msg as CotalMessage).channel === undefined && msg.toService === undefined) return msg;
   const { channel: _channel, toService: _toService, ...base } = msg;
   return { ...base, to } as CotalMessage & M;
+}
+
+/** The ack wait the broker reports for a bound consumer: how long a copy it delivers stays with
+ *  its reader without an ack. */
+async function ackWaitOf(consumer: Consumer): Promise<number> {
+  const { config } = await consumer.info(true);
+  if (config.ack_wait === undefined) throw new Error(`consumer ${config.durable_name} reports no ack wait`);
+  return millis(config.ack_wait);
+}
+
+/** A JetStream copy's {@link Delivery}, carrying the broker's own redelivery state for it. */
+function durableDelivery(m: JsMsg, ackWaitMs: number): Delivery {
+  return {
+    ack: () => m.ack(),
+    nak: () => m.nak(),
+    durable: true,
+    redelivery: { deliveryCount: m.info.deliveryCount, ackWaitMs, working: () => m.working() },
+  };
 }
 
 /** History drain keeps `m.json()` and used to throw the subject away. SPEC §5: on receive, verify

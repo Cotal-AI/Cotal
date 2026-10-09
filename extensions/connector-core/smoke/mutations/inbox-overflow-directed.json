@@ -36,22 +36,22 @@
     {
       "name": "M1 the shipped defect: no channel tier, so eviction falls through to the oldest entry",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === \"channel\");",
+      "find": "        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === \"channel\" && evictable(p));",
       "replace": "",
       "expectRed": "the waiting DM is STILL PRESENT after the flood"
     },
     {
       "name": "M2 ack a sacrificed directed message (loss becomes unrecoverable again)",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (!sacrificingDirected && !this.inFlightIds.has(evicted.item.recvKey)) evicted.ack();",
-      "replace": "        if (!this.inFlightIds.has(evicted.item.recvKey)) evicted.ack();",
+      "find": "        if (!sacrificingDirected) evicted.ack();",
+      "replace": "        evicted.ack();",
       "expectRed": "sacrificed DMs are NOT acked, so the broker can redeliver them"
     },
     {
       "name": "M3 trust the forgeable payload instead of the subject-derived kind",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === \"channel\");",
-      "replace": "        if (index < 0) index = this.inbox.findIndex((p) => !p.item.mentionsMe);",
+      "find": "        if (index < 0) index = this.inbox.findIndex((p) => p.item.kind === \"channel\" && evictable(p));",
+      "replace": "        if (index < 0) index = this.inbox.findIndex((p) => !p.item.mentionsMe && evictable(p));",
       "expectRed": "the waiting DM is STILL PRESENT after the flood"
     },
     {
@@ -64,7 +64,7 @@
     {
       "name": "M5 sacrifice live channel traffic before pull-only backlog",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "        let index = this.inbox.findIndex((p) => p.pullOnly);",
+      "find": "        let index = this.inbox.findIndex((p) => p.pullOnly && evictable(p));",
       "replace": "        let index = -1;",
       "expectRed": "a live channel item outlives historical backlog"
     },

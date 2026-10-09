@@ -452,6 +452,11 @@ export interface Delivery {
    *  cross-path duplicate must NOT downgrade a durable ack to a live no-op — else the durable copy
    *  is never committed, JetStream redelivers it, and it double-surfaces. See {@link DeliveryClass}. */
   durable: boolean;
+  /** A durable copy's redelivery state, read from the broker and never from the payload. Absent on
+   *  a live copy, which nothing redelivers. The broker hands an unacked copy to another reader of its
+   *  consumer once `ackWaitMs` passes without an ack or a `working()` call, which restarts that wait
+   *  (JetStream's in-progress ack). `deliveryCount` is 1 on the first delivery. */
+  redelivery?: { deliveryCount: number; ackWaitMs: number; working(): void };
 }
 
 /** Control-plane request/reply (e.g. CLI → manager). */
