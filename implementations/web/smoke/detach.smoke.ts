@@ -99,6 +99,7 @@ try {
     let message = "";
     await waitForDetachedWeb(child, {
       pidPath,
+      sessionPath,
       url: `http://127.0.0.1:${port}/`,
       space: "fixture",
       timeoutMs: 600,
