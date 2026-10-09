@@ -104,7 +104,7 @@
     {
       "name": "E4 the emitter stops waiting for the mesh",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);",
+      "find": "        await waitForEventConnection();",
       "replace": "",
       "expectRed": "the emitter path AWAITS the mesh link",
       "cell": "the emitter path AWAITS the mesh link",
@@ -113,8 +113,8 @@
     {
       "name": "E5 the wait survives but moves AFTER what it guards",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);\n        return startEmitter();",
-      "replace": "        const emitter = await startEmitter();\n        await agent.whenConnected(20_000);\n        return emitter;",
+      "find": "        await waitForEventConnection();\n        return startEmitter();",
+      "replace": "        const emitter = await startEmitter();\n        await waitForEventConnection();\n        return emitter;",
       "expectRed": "…and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
       "cell": "…and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
       "note": "Runs the actual emitter-start closure before the same bare wait; the presence cell stays green, so only the behavioral ordering assertion can kill it."
@@ -131,8 +131,8 @@
     {
       "name": "E7 the wait is COMMENTED OUT, leaving the text in place",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);",
-      "replace": "        // await agent.whenConnected(20_000);",
+      "find": "        await waitForEventConnection();",
+      "replace": "        // await waitForEventConnection();",
       "expectRed": "the emitter path AWAITS the mesh link",
       "cell": "the emitter path AWAITS the mesh link",
       "note": "Found by the review lane, not by me. The guard is GONE and every character a source scan looks for is still on disk. This is the hazard I identified for extension.ts, wrote a comment explaining, and then did not apply to mcp.ts or agent.ts ten lines later — so the defence now lives in one `strip` helper every source-reading cell uses, rather than in one cell's discipline."
@@ -149,11 +149,29 @@
     {
       "name": "E9 the await is guarded into unreachability",
       "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        await agent.whenConnected(20_000);",
-      "replace": "        if (false) await agent.whenConnected(20_000);",
+      "find": "        await waitForEventConnection();",
+      "replace": "        if (false) await waitForEventConnection();",
       "expectRed": "as a BARE statement, not guarded into unreachability",
       "cell": "…as a BARE statement, not guarded into unreachability",
       "note": "Found by the review lane. Typechecks, keeps every character the presence and ordering cells look for, and RESTORES the original race. The lesson is one I had already learned elsewhere and did not apply here: driving a method does not witness the CALL PATH that uses it, because the mutation removes the call. NAMED RESIDUAL — this is killed structurally, not by a call-path witness, so a subtler guard would still evade it."
+    },
+    {
+      "name": "the recorder pumps without waiting for reconnection",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        waitLive: waitForEventConnection,",
+      "replace": "",
+      "expectRed": "event pumps use the same connection wait as emitter startup",
+      "cell": "event pumps use the same connection wait as emitter startup",
+      "note": "Removing the holder hook restores the reproduced required-event MCP exit when an ordinary tool hook arrives during a transport gap. This cell checks wiring; the native user-auth relay reproduction establishes the process-level failure."
+    },
+    {
+      "name": "the recorder treats a bound disconnected endpoint as live",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "      else if (agent.connected && agent.transportConnected) finish();",
+      "replace": "      else if (agent.connected) finish();",
+      "expectRed": "an existing bind without live transport cannot release the event wait",
+      "cell": "an existing bind without live transport cannot release the event wait",
+      "note": "The native reconnect window can retain the Cotal bind while server information is unavailable. Both states must be live."
     },
     {
       "name": "E10 the promised grace window is clamped",

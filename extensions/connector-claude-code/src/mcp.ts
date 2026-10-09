@@ -91,7 +91,37 @@ async function main(): Promise<void> {
   // handler to its error hook and the session would run on with the flag unread.
   const channelFlag = envFlag(process.env, "COTAL_CHANNEL");
   const agent = new MeshAgent(config);
-  agent.start(); // background connect with retry — never blocks tool serving
+  const eventWaitStop = new AbortController();
+  // A Cotal bind can remain current while nats.js is reconnecting and has no server info.
+  // Wait for both edges before starting or pumping the recorder. Its transcript stays durable
+  // while the endpoint owns reconnection; shutdown cancels the wait instead of a timer killing MCP.
+  const waitForEventConnection = (): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      const release = (): void => {
+        agent.off("connection", onConnection);
+        agent.off("transport", onTransport);
+        eventWaitStop.signal.removeEventListener("abort", onStop);
+      };
+      const finish = (): void => {
+        release();
+        resolve();
+      };
+      const onStop = (): void => {
+        release();
+        reject(new Error("seat stopping while the mesh connection is down; unpublished events stay in the transcript"));
+      };
+      const onConnection = (e: { connected: boolean }): void => {
+        if (e.connected && agent.transportConnected) finish();
+      };
+      const onTransport = (e: { connected: boolean }): void => {
+        if (e.connected && agent.connected) finish();
+      };
+      agent.on("connection", onConnection);
+      agent.on("transport", onTransport);
+      eventWaitStop.signal.addEventListener("abort", onStop);
+      if (eventWaitStop.signal.aborted) onStop();
+      else if (agent.connected && agent.transportConnected) finish();
+    });
 
   if (envFlag(process.env, "COTAL_EVENTS") || config.eventsRequired) {
     // The mapper is built inside the emitter factory, because it is keyed on the thread the
@@ -153,17 +183,9 @@ async function main(): Promise<void> {
           });
         };
 
-        // WAIT FOR THE MESH FIRST. This factory runs off the FIRST lifecycle hook, and with
-        // `--prompt` that hook lands within a second of launch — several seconds before the
-        // endpoint's first bind. Starting the emitter against the unbound endpoint answered
-        // "endpoint not started", and the holder is terminal on error BY DESIGN (a retry would
-        // re-run WAL recovery on a stream it already failed to establish) — so losing this race
-        // once silenced the event plane for the entire session, with one stderr line nothing
-        // surfaces as the only record. Measured live: the emitter died before the "connected to"
-        // log line every time. The wait is generous because it happens once, off the hot path,
-        // and a session that outlives it gets its whole plane; the timeout still fails into the
-        // holder's terminal error rather than hanging the hook.
-        await agent.whenConnected(20_000);
+        // Capture the source boundary above before waiting, so records written during a delayed
+        // initial connection remain eligible for publication when the endpoint becomes live.
+        await waitForEventConnection();
         return startEmitter();
       },
       {
@@ -177,6 +199,7 @@ async function main(): Promise<void> {
         // published stream has already finished and the emitter would refuse the batch. Keyed on
         // the id, so a newer run opened in between is left alone.
         onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+        waitLive: waitForEventConnection,
       },
     );
   }
@@ -200,7 +223,11 @@ async function main(): Promise<void> {
   // `wake` is likewise assigned later, so a shutdown frame arriving before the MCP server exists
   // reads `undefined`.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
+  let stopping = false;
   const shutdown = async (code = 0) => {
+    if (stopping) return;
+    stopping = true;
+    eventWaitStop.abort();
     try {
       controlServer?.close();
     } catch {
@@ -219,6 +246,11 @@ async function main(): Promise<void> {
     claude.handle,
     { fatalBind: true, onShutdown: () => void shutdown(), onReply: claude.onReply },
   );
+  await new Promise<void>((resolve, reject) => {
+    controlServer!.once("listening", resolve);
+    controlServer!.once("error", reject);
+  });
+  agent.start(); // custody is claimed before background broker connect, after control bind
 
   const server = new McpServer(
     { name: "cotal", version: "0.0.0" },

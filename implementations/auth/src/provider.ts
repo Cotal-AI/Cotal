@@ -16,10 +16,11 @@
 import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
+import { acquireLock } from "@cotal-ai/core";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
-import { findActorUnified, findInteractiveActor, grantManagedActor, newActorToken, revokeManagedActor } from "./ledger.js";
+import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
 import { userAuthTrustFingerprint, validateRetainedManagedAgent } from "./continuity.js";
 import {
   AUTH_PROVIDER_NAME,
@@ -611,28 +612,41 @@ export const cotalAuthProvider: AuthProvider = {
    *  IdP-exchangeable by construction) carrying the agent's ACLs + the hash of a fresh per-agent
    *  secret. Upsert semantics rotate the secret on respawn — a captured old secret dies the moment
    *  its agent is respawned. */
-  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid }) {
+  async grantAgent({ store, dir, space, owner, actor, scope, allowSubscribe, allowPublish, role, parent, label, lifecycleUid, fresh }) {
     const callout = await loadCalloutAuth(store, space);
     if (!callout)
       throw new Error(`space "${space}" has no user-auth material under ${dir} - enable it with \`cotal up --user-auth --idp <url>\` before spawning user-mode agents`);
-    const { actorToken, tokenHash } = newActorToken();
-    grantManagedActor(dir, {
-      owner,
-      actor,
-      scope,
-      allowSubscribe,
-      allowPublish,
-      ...(role ? { role } : {}),
-      ...(parent ? { parent } : {}),
-      ...(label ? { label } : {}),
-      tokenHash,
-      lifecycleUid,
-    });
-    return { actorToken, sentinelCreds: callout.sentinelCreds };
+    const claim = acquireLock(join(dir, "managed-grant.lock"), { label: "managed grant mutation" });
+    try {
+      if (fresh && findActorUnified(dir, owner, actor) !== undefined)
+        throw new Error(`actor "${actor}" already has a grant; no grant was replaced`);
+      const { actorToken, tokenHash } = newActorToken();
+      grantManagedActor(dir, {
+        owner,
+        actor,
+        scope,
+        allowSubscribe,
+        allowPublish,
+        ...(role ? { role } : {}),
+        ...(parent ? { parent } : {}),
+        ...(label ? { label } : {}),
+        tokenHash,
+        lifecycleUid,
+      });
+      return { actorToken, sentinelCreds: callout.sentinelCreds };
+    } finally {
+      claim.release();
+    }
   },
 
-  async revokeAgent({ dir, owner, actor }) {
-    return revokeManagedActor(dir, owner, actor);
+  async revokeAgent({ dir, owner, actor, lifecycleUid, actorToken }) {
+    const claim = acquireLock(join(dir, "managed-grant.lock"), { label: "managed grant mutation" });
+    try {
+      if (actorToken !== undefined && findActorUnified(dir, owner, actor)?.tokenHash !== hashActorToken(actorToken)) return false;
+      return lifecycleUid === undefined ? revokeManagedActor(dir, owner, actor) : revokeManagedActorAt(dir, owner, actor, lifecycleUid);
+    } finally {
+      claim.release();
+    }
   },
 
   /** The delete half of the seam pair: drop the four secret kinds from the store, attempting all

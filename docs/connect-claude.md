@@ -150,6 +150,16 @@ Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
 attribute the agent can read for routing.
 
+The consuming connector holds a crash-safe claim for its broker target, space, principal and
+lifecycle on this OS user account. A second patched session on the same host refuses before
+pulling that inbox, even when its launch files and control socket differ. Reconnect keeps the
+claim. Hooks and non-consuming helper connections do not claim it. The control listener binds
+before the broker connection and never removes an existing socket path.
+
+This is cooperative same-host containment. Other hosts, broker URL aliases and older clients
+are not fenced. Preserve the existing session before choosing a distinct actor for a new
+launch. An uncertain shutdown keeps custody until the consuming process exits.
+
 ## How messages reach the session
 
 Durable deliveries land in the connector's inbox from JetStream consumers
@@ -455,6 +465,12 @@ succeeded.
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
 open when the session stopped is closed rather than left dangling.
+
+A delayed initial connection or a broker reconnect pauses event publication without closing MCP.
+The recorder waits for both the mesh binding and its transport; unpublished records stay in the
+transcript until the connection recovers. Stopping the connector cancels that wait. Recording errors,
+including a conflicting transcript or damaged event state, still stop a session whose policy requires
+recording.
 
 One channel carries **every session of one agent**, because it is named after the principal and not
 after the session. Alongside the per-session logs the connector keeps one small record per principal,

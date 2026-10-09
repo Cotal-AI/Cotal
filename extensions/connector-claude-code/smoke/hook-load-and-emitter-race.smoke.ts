@@ -77,11 +77,11 @@ check("BOTH pass --plugin-dir, so the plugin's hooks are actually loaded",
 
 // ---- 3. the emitter race ----
 const mcp = strip(read("src/mcp.ts"));
-const iWait = mcp.indexOf("await agent.whenConnected(");
+const iWait = mcp.indexOf("await waitForEventConnection(");
 const iStart = mcp.indexOf("return startEmitter();");
 console.log("\nthe emitter — it must not start against an unbound endpoint:");
 check("the emitter path AWAITS the mesh link", iWait !== -1);
-// REACHABILITY, not just presence. `if (false) await agent.whenConnected(20_000)` keeps every
+// REACHABILITY, not just presence. `if (false) await waitForEventConnection()` keeps every
 // character the cell above looks for and restores the original race — found by a review lane on
 // this branch. Requiring the await to be a BARE STATEMENT (line starts with `await`) rejects the
 // guarded form. NAMED RESIDUAL, because this is still source and not a call-path witness: a more
@@ -90,11 +90,19 @@ check("the emitter path AWAITS the mesh link", iWait !== -1);
 // is a nested closure inside the tool registration, so that needs a harness this suite does not
 // have. Recorded as open rather than papered over.
 check("…as a BARE statement, not guarded into unreachability",
-  mcp.split("\n").some((l) => /^\s*await agent\.whenConnected\(/.test(l)),
-  mcp.split("\n").filter((l) => l.includes("agent.whenConnected(")));
+  mcp.split("\n").some((l) => /^\s*await waitForEventConnection\(/.test(l)),
+  mcp.split("\n").filter((l) => l.includes("waitForEventConnection(")));
 check("instrument control: the guarded emitter start call is in this file", iStart !== -1);
 check("…and the wait comes BEFORE the emitter starts (the ordering IS the fix)",
   iWait !== -1 && iStart !== -1 && iWait < iStart, { iWait, iStart });
+
+check("event pumps use the same connection wait as emitter startup",
+  /waitLive:\s*waitForEventConnection/.test(mcp));
+check("an existing bind without live transport cannot release the event wait",
+  /else if \(agent\.connected && agent\.transportConnected\) finish\(\)/.test(mcp));
+const iAbort = mcp.indexOf("eventWaitStop.abort();");
+check("shutdown cancels event waiting before it closes the endpoint",
+  iAbort !== -1 && iAbort < mcp.indexOf("await agent.stop();"));
 
 const agent = strip(readFileSync(join(root, "..", "connector-core", "src", "agent.ts"), "utf8"));
 check("connector-core exposes a PUBLIC bounded wait for callers outside the op methods",
@@ -157,6 +165,6 @@ const msg = await fakeAgent(false).whenConnected(60).then(() => "", (e: Error) =
 check("…and the refusal names the broker it could not reach", msg.includes("59999"), msg);
 
 console.log(`\nHOOK-LOAD/EMITTER-RACE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
-const EXPECTED = 19;
+const EXPECTED = 22;
 if (pass + fail !== EXPECTED) { console.log(`  ✗ FAIL: expected ${EXPECTED} cells, ran ${pass + fail}`); process.exitCode = 1; }
 if (fail) process.exitCode = 1;

@@ -353,13 +353,14 @@ SIGTERM.
 **Your agents are yours.** `cotal spawn` on a user mesh grants a managed actor under the
 *spawning operator's* owner and launches the agent with a bearer command instead of a
 creds file. The agent exchanges its spawn-time secret for short bearers (five minutes or
-less) and refreshes ahead of each expiry. Rows are runtime grants: every start rotates
-the secret, every stop or despawn revokes the row, so a non-running agent holds no
-standing authority. A spawn whose auth preflight fails is rolled back: the manager, or `cotal spawn`
-itself for a foreground agent, revokes the row, shreds the secret files and deletes the broker
-footprint. Every step runs even when an earlier one fails, and the refusal names each step that
-failed. A foreground agent's exit runs the same teardown. Manifest deploys (`up -f`)
-stamp the logged-in owner into the launch, so those agents are yours too.
+less) and refreshes ahead of each expiry. A locally provisioned foreground launch refuses an
+existing actor rather than rotating another launch's secret. Its exit and failed-start cleanup
+revoke only the grant matching the launch's token and lifecycle. Broker-footprint deletion follows
+a successful owned revoke; credential files are removed only while they still hold this launch's
+material. Cleanup reports failures without deleting a successor's state. A crashed launcher can
+leave a grant that needs operator recovery. Remote foreground launches remove their own local
+material but leave revocation to the issuer. Managed despawn follows the retirement sequence below.
+Manifest deploys (`up -f`) stamp the logged-in owner into the launch, so those agents are yours too.
 
 **Despawn tears the lifecycle down, then frees the name.** When you despawn an agent, the manager
 drives the *full* teardown of that lifecycle: it shreds the local credential files, revokes the

@@ -255,6 +255,8 @@ export interface AuthProvider extends Extension {
    * rotates its secret. MUST fail loud when the space has no user-auth material in `store`/`dir`.
    */
   grantAgent(opts: {
+    /** A genuinely new foreground launch refuses an existing row rather than rotating it. */
+    fresh?: boolean;
     store: SecretStore;
     dir: string;
     space: string;
@@ -275,7 +277,7 @@ export interface AuthProvider extends Extension {
   /** Revoke an agent grant. False when there was nothing to revoke. New exchanges and new
    *  connects die immediately (both boundaries read the ledger fresh); an already-live
    *  connection dies at its bearer-bound JWT expiry (live eviction is a separate lever). */
-  revokeAgent(opts: { dir: string; owner: string; actor: string }): Promise<boolean>;
+  revokeAgent(opts: { dir: string; owner: string; actor: string; lifecycleUid?: string; actorToken?: string }): Promise<boolean>;
   /**
    * Read-only FRESH capability-scope read for one granted principal — `undefined` when the
    * principal holds no grant (for an authorization read, unknowable is "no grant": fail-closed).

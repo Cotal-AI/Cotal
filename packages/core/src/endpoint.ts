@@ -667,6 +667,10 @@ export class CotalEndpoint extends EventEmitter {
   private attentionMode?: AttentionMode;
   private channelModes?: Record<string, ChannelMode>;
   private stopped = false;
+  private stopPromise?: Promise<void>;
+  private startPromise?: Promise<void>;
+  /** Includes detached predecessors until their actual connection reports closed. */
+  private readonly ownedConnections = new Set<NatsConnection>();
   /** In-flight rebuild (drain+rebind) — serializes manual reconnect, the supervisor's
    *  closed(), and reestablishLoop so only ONE rebuild runs at a time (a second trigger
    *  coalesces onto the shared promise, never starts a parallel connectAndBind). */
@@ -897,7 +901,16 @@ export class CotalEndpoint extends EventEmitter {
     return Boolean(this.currentCreds || this.credsSource) || this.userMode;
   }
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    if (this.startPromise) return this.startPromise;
+    const flight = this.startOnce().finally(() => {
+      if (this.startPromise === flight) this.startPromise = undefined;
+    });
+    this.startPromise = flight;
+    return flight;
+  }
+
+  private async startOnce(): Promise<void> {
     await this.connectAndBind();
     // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
     // rebuild path already closes that race; initial start needs the same fence or the late bind
@@ -1138,11 +1151,9 @@ export class CotalEndpoint extends EventEmitter {
   private async closeWithoutLibraryReconnect(nc: NatsConnection | undefined): Promise<void> {
     if (!nc) return;
     this.disableLibraryReconnect(nc);
-    try {
-      await nc.close();
-    } catch {
-      /* already closing */
-    }
+    await nc.close();
+    if (!nc.isClosed()) throw new Error("endpoint connection closure is unproved; consumer custody must be retained");
+    this.ownedConnections.delete(nc);
   }
 
   /** Disable nats-core reconnect shortly before the JWT authenticated on this wire expires. The small
@@ -1397,6 +1408,9 @@ export class CotalEndpoint extends EventEmitter {
     });
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
+    this.ownedConnections.add(this.nc);
+    const owned = this.nc;
+    void owned.closed().then(() => this.ownedConnections.delete(owned));
     this.onConnection?.(this.nc);
     requireBrokerFloor(this.nc);
     this.armAuthExpiryReconnectFence(this.nc);
@@ -1803,6 +1817,9 @@ export class CotalEndpoint extends EventEmitter {
       this.emit("transport", { connected: false } satisfies TransportState);
       this.emit("connection", { connected: false });
       await this.closeWithoutLibraryReconnect(oldNc);
+      // stop() can arrive while the old epoch closes. Do not start another authentication
+      // handshake after it: a terminal credential may already have expired in that window.
+      if (this.stopped) return;
       await this.connectAndBind();
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
@@ -1887,8 +1904,11 @@ export class CotalEndpoint extends EventEmitter {
   /** The presence epoch moves first: a bind still awaiting the broker must find it moved
    *  before any await below gives it a window to install a watch on a stopped endpoint
    *  (see {@link startPresenceWatch}). */
-  async stop(): Promise<void> {
-    if (this.stopped) return;
+  stop(): Promise<void> {
+    return this.stopPromise ??= this.stopOnce();
+  }
+
+  private async stopOnce(): Promise<void> {
     if (this.nc) this.disableLibraryReconnect(this.nc);
     this.stopped = true;
     for (const follower of this.activeGoalFollowers) {
@@ -1951,17 +1971,19 @@ export class CotalEndpoint extends EventEmitter {
     } catch {
       /* best-effort graceful leave */
     }
-    try {
-      await this.closeWithoutLibraryReconnect(this.nc);
-    } catch {
-      /* ignore */
-    }
+    await this.closeWithoutLibraryReconnect(this.nc);
     // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
     // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
     // way out. A stopped endpoint has no live basis for "this bucket is refusing writes", and the
     // duration is computed from `Date.now()`, so a retained record does not merely go stale: it keeps
     // COUNTING UP for as long as the dead object is held.
     this.clearPresenceWriteFailure();
+    // Custody callers must not observe stop completion while a concurrent rebind can still
+    // publish a late consuming connection. doRebuild closes its stopped epoch before resolving.
+    await this.rebuildPromise;
+    await this.startPromise;
+    if ([...this.ownedConnections].some((nc) => !nc.isClosed()))
+      throw new Error("endpoint stop could not prove its connection closed; local consumer custody must be retained");
   }
 
   // ---- messaging -----------------------------------------------------------
