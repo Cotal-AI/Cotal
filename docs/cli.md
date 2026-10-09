@@ -536,8 +536,10 @@ One configurable cleanup verb; every target requires `--force`.
   it, any crash residue a normal `down` would have swept (stale pidfiles, `run/`), and the mesh's
   registry entry; the next `cotal up` mints a fresh identity.
 
-`history` needs the mesh up; `store` and `all` refuse while any recorded mesh process is still
-alive or any same-root recorded broker endpoint remains reachable (run `cotal down` first). They
+`history` needs the mesh up; `store` and `all` refuse while any recorded mesh process may still be
+running or any same-root recorded broker endpoint remains reachable (run `cotal down` first). A
+record counts as stopped only when it is absent, empty, or names a pid the kernel reports gone, so
+unattributable content, a removal reservation, or a pid whose liveness cannot be read refuses. They
 also refuse outright on a root that holds accounts for several spaces: the store and the broker
 trust record are shared by every space on the broker, so both targets would take out all of them
 and no `--space` can narrow that. `down`, `backup` and `up --restore` refuse there for the same
@@ -562,7 +564,8 @@ cotal up --restore <dir> [--restore-only registry] [--accept-missing-source]
 ```
 
 Backup is offline-only. It requires the stable `ready` record from `down --preserve-state`, an exact
-store match, no live recorded process, and an unreachable exact endpoint from the recorded cut.
+store match, no recorded process that may still be running (the same test `clean` uses), and an
+unreachable exact endpoint from the recorded cut.
 That endpoint is probed immediately before cloning, so a live broker with a missing or stale pidfile
 is still refused. It claims the cut, reflink/copies the stopped source to a
 private attempt clone, and opens only that clone on a random loopback bootstrap broker with an
@@ -868,7 +871,8 @@ connect; that auth-required refusal is the pass. The sentinel credentials land i
 the entry's root; the registry records only the path.
 
 `meshes rm` drops records. It never stops a mesh. For a mesh running on this machine `cotal down`
-is the right verb, and `rm` says so unless you pass `--force`. A hand-added record is removed by
+is the right verb, and `rm` says so unless you pass `--force`. A broker record that cannot be proven
+stopped counts as running, as it does for `clean`. A hand-added record is removed by
 `meshes rm`, by an `add --force` replacement, or by a `cotal up` that actually starts the broker for that same space, server and root, which becomes that
 mesh and so takes the record over (a `cotal up` for that space anywhere else refuses instead).
 Nothing that merely *infers* a record is stale from a dead broker touches it: an

@@ -372,13 +372,13 @@ async function printProject(root: string, cmd: string, selected: Selected, value
     // `formatProc` greens any live pid, which is how `delivery running (pid N)` came to be printed
     // identically over a bound responder and one that never bound. The suffix names which it is,
     // and when unbound it names the CONSEQUENCE rather than a reconcile that has not happened yet.
-    const detail = component.name === "delivery" ? deliveryRowNote(state.live, responder) : "";
+    const detail = component.name === "delivery" ? deliveryRowNote(state.liveness === "alive", responder) : "";
     row(component.name, `${formatProc(state)}${detail}`);
   }
   // A stopped mesh with a persisted store: name the reset verb. Stale state (e.g. durables from
   // an older Cotal generation) is otherwise invisible until a spawn fails on it. The restart is
   // deliberately "your usual flags", never a bare `up` (mode/name/store-dir aren't recorded).
-  if (!nats?.live && existsSync(join(root, ".cotal", "nats")))
+  if (nats?.liveness !== "alive" && existsSync(join(root, ".cotal", "nats")))
     row("stored state", c.dim(`JetStream store persists across down/up - if stale: ${cmd} clean store --force, then \`up\` with your usual flags (\`clean all\` also resets identity)`));
 }
 
@@ -684,7 +684,7 @@ function proc(path: string): Proc {
 }
 
 function formatProc(p: Proc): string {
-  if (p.live) return c.green(`running (pid ${p.pid})`);
+  if (p.liveness === "alive") return c.green(`running (pid ${p.pid})`);
   return c.dim(p.pid ? `${p.note} (${p.pid})` : (p.note ?? "down"));
 }
 
@@ -706,7 +706,7 @@ function formatProc(p: Proc): string {
  *  never reaches the probe at all (the early return below), so a stopped manager still reads as the
  *  dim stopped row, not `not serving` — a dead pid is not a live pid that will not answer. */
 async function managerRowState(target: MeshTarget | undefined, state: Proc, space: string): Promise<string> {
-  if (!state.live) return formatProc(state);
+  if (state.liveness !== "alive") return formatProc(state);
   let deliveryAware = false;
   let markerUnreadable = "";
   try {

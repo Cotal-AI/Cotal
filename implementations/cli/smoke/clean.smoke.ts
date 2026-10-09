@@ -278,10 +278,10 @@ try {
   writeFileSync(join(probeDir, "junk.pid"), "abc");
   check("probe: garbage pidfile is 'bad pidfile'", pidfileState(join(probeDir, "junk.pid")).note === "bad pidfile");
   writeFileSync(join(probeDir, "self.pid"), String(process.pid));
-  check("probe: a live pid reads alive", pidfileState(join(probeDir, "self.pid")).live === true);
+  check("probe: a live pid reads alive", pidfileState(join(probeDir, "self.pid")).liveness === "alive");
   if (process.platform !== "win32") {
     writeFileSync(join(probeDir, "init.pid"), "1");
-    check("probe: an unsignalable pid (EPERM) reads ALIVE", pidfileState(join(probeDir, "init.pid")).live === true);
+    check("probe: an unsignalable pid (EPERM) reads ALIVE", pidfileState(join(probeDir, "init.pid")).liveness === "alive");
     const epermRoot = meshRoot();
     writeFileSync(join(epermRoot, ".cotal", "nats.pid"), "1");
     check("a pid we cannot signal (EPERM) still blocks cleanup", /pid 1$/.test(liveMeshProcess(epermRoot) ?? ""), liveMeshProcess(epermRoot));
