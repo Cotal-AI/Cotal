@@ -5987,16 +5987,6 @@ export class Manager {
     const eventsRefused = this.eventsRefusal(connector, opts.events);
     if (eventsRefused) return { ok: false, error: eventsRefused };
     const events = this.eventsRequired || opts.events !== false;
-    // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
-    // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
-    // but-uncompleted endpoint obligation could execute AFTER its uid is declared retired. The
-    // refusal sits at spawn-accept, before any provisioning, over the same records a persona or
-    // manifest self-claim would ride in on — capabilities cannot slip past it into the grant path.
-    if (this.auth && !this.userMode) {
-      const claims: Record<string, unknown>[] = [opts as unknown as Record<string, unknown>, (opts.resolved ?? {}) as unknown as Record<string, unknown>];
-      if (claims.some((c) => c.endpointCapabilities !== undefined))
-        return { ok: false, error: "a static managed spawn refuses endpointCapabilities (Unit B F2): the static lifecycle terminal carries no obligation-drain/frontier steps, so endpoint-rail grants are not containable in static mode" };
-    }
 
     // #4 A4 (panel): the roster the allocation consults must reflect the initial presence snapshot,
     // or a spawn immediately after manager boot races an already-live unmanaged peer and re-opens the
