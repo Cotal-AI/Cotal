@@ -918,20 +918,24 @@ async function staticServiceAuth(auth: SpaceAuth | undefined): Promise<{ creds?:
   };
 }
 
+/** The fields of a manager `status` answer that its component row reads. */
+type ManagerServiceStatus = {
+  instanceId?: unknown;
+  runtime?: unknown;
+  staticReconciliation?: {
+    state?: unknown;
+    lastSweep?: { error?: unknown };
+    failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
+  };
+};
+
 /** A service registration is the health target itself.  Calling its `status` command through a
  * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
  * rail; a one-shot standalone caller does. */
 async function managerServiceHealth(
   target: MeshTarget,
   auth: ({ creds?: string } | { bearer: string; sentinelCreds: string }) & { caller: { owner: string; actor: string; uid: string } },
-): Promise<{
-  instanceId?: unknown;
-  runtime?: unknown;
-  staticReconciliation?: {
-    state?: unknown;
-    failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
-  };
-}> {
+): Promise<ManagerServiceStatus> {
   const nc = await dialerFor(target.server)({
     servers: target.server,
     ...standaloneConnectOpts(
@@ -948,14 +952,7 @@ async function managerServiceHealth(
     const response = await invokeRepairingSplit(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
       throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
-    return response.reply.data as {
-      instanceId?: unknown;
-      runtime?: unknown;
-      staticReconciliation?: {
-        state?: unknown;
-        failures?: Array<{ alias?: unknown; phase?: unknown; disposition?: unknown; nextRetryAt?: unknown; remedy?: unknown }>;
-      };
-    };
+    return response.reply.data as ManagerServiceStatus;
   } finally {
     await nc.drain().catch(() => nc.close());
   }
@@ -1018,6 +1015,7 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext, c
       facts.push("static reconciliation not reported by this manager build");
     } else {
       facts.push(`static reconciliation ${String(reconcile.state ?? "unreported")}`);
+      if (typeof reconcile.lastSweep?.error === "string") facts.push(`static sweep error=${reconcile.lastSweep.error}`);
       for (const failure of reconcile.failures ?? []) {
         const next = typeof failure.nextRetryAt === "string" ? ` nextRetryAt=${failure.nextRetryAt}` : "";
         const remedy = typeof failure.remedy === "string" ? ` remedy=${failure.remedy}` : "";
