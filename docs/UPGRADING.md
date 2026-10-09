@@ -34,7 +34,7 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Token verifier clock tolerance (unreleased)
+## Token verifier clock tolerance in 0.77.0
 
 `validateUserToken`, and the `IdpConfig` that `verifyIdpToken` and `createIdpBridge` take, from
 `@cotal-ai/auth` no longer accept `clockToleranceSec`. Both verifiers allow a fixed 5 seconds of
