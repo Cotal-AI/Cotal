@@ -614,8 +614,13 @@ async function runStartedDelivery(
     BROKER_GONE_MS,
     BROKER_GONE_BACKSTOP_MS,
   );
+  // close() reads these to tell a lease read lost with a dropped socket from one the broker did not answer.
+  let transportUp = true;
+  let transportGeneration = 0;
   ep.on("transport", ({ connected }: { connected: boolean }) => {
     health.transport(connected);
+    transportUp = connected;
+    if (connected) transportGeneration++;
   });
   ep.on("error", (e: Error) => {
     if (e.name === "UserAuthenticationExpiredError" || (e as { cause?: { name?: string } }).cause?.name === "UserAuthenticationExpiredError") {
@@ -761,11 +766,21 @@ async function runStartedDelivery(
       try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
       // `releaseDeliveryLease` swallows a delete that did not commit, so the row the broker holds
       // afterwards is the verdict: while one is there, a successor is refused.
-      let left: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
-      try {
+      const release = async () => {
         const own = await ep.readDeliveryLeaseEntry(shard);
         if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-        left = await ep.readDeliveryLeaseEntry(shard);
+        return ep.readDeliveryLeaseEntry(shard);
+      };
+      let left: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
+      try {
+        // nats.js never answers a request written to a socket that dropped, nor one buffered while it
+        // was down (each dial discards the buffer), even once the same connection reconnects. Such a
+        // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
+        const generation = transportGeneration;
+        left = await release().catch((e) => {
+          if (transportGeneration === generation || !transportUp) throw e;
+          return release();
+        });
       } catch (e) {
         throw new Error(`delivery: the lease release for shard ${shard} could not be confirmed (${(e as Error).message}); the bucket TTL expires a row left behind`, { cause: e });
       } finally {
