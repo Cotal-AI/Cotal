@@ -1,5 +1,19 @@
 # @cotal-ai/auth
 
+## 0.77.0
+
+### Minor Changes
+
+- 6979e05: `validateUserToken` and the `IdpConfig` of `verifyIdpToken` and `createIdpBridge` no longer take `clockToleranceSec`. Both verifiers allow a fixed 5 seconds of clock skew, the default they already applied. Nothing in the repository passed the option, and a `NaN` value, such as `Number()` of an unset environment variable, turned off the expiry, not-before and issued-at checks so an expired or post-dated token was accepted, while a large value widened them by that many seconds.
+
+### Patch Changes
+
+- Updated dependencies [6861390]
+- Updated dependencies [7d1b600]
+  - @cotal-ai/core@0.77.0
+  - @cotal-ai/workspace@0.77.0
+  - @cotal-ai/lang@0.77.0
+
 ## 0.76.0
 
 ### Minor Changes
