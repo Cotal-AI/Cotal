@@ -423,13 +423,16 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
  *  legacy sweep), the canonical one wins — it is the newer scheme's write. A registry file that
  *  does not parse or does not carry the {@link MeshEntry} shape throws naming the file; the CLI
  *  renders that as one `✗` line, so the operator reads WHICH record is wrong instead of a
- *  TypeError from the renderer (or a silently `undefined` column in `status`). */
+ *  TypeError from the renderer (or a silently `undefined` column in `status`). Only an absent
+ *  registry directory is an empty registry: one that exists but cannot be read throws, because
+ *  callers act on "no meshes recorded" and an unread registry has not shown that. */
 export function loadMeshes(): MeshEntry[] {
   let files: string[];
   try {
     files = readdirSync(meshesDir()).filter((f) => f.endsWith(".json"));
-  } catch {
-    return []; // no registry yet
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no registry yet
+    throw e;
   }
   const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
   for (const f of files.sort()) {
