@@ -424,6 +424,9 @@ try {
     const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
     // The manager keys a relay, and derives its hold, by the caller triple plus the goal id.
     const relayKey = (id: string) => `${runner.owner}.${runner.actor}.${runner.uid}.${id}`;
+    // The hold token is the manager's own derivation (a module-private function), spelled here the
+    // same way so the fixture's hold is the one the yield path claims.
+    const holdTokenOf = (id: string) => createHash("sha256").update(`${relayKey(id)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
     const goalId = "g".repeat(43);
     const ref: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId };
     const ACCEPTED_AT = Date.now() - 90_000;
@@ -438,7 +441,9 @@ try {
     });
     const allocated = { name: "adopted-seat", actor: "seat9", uid: seatUid };
     const DEADLINE_AT = Date.now() + 600_000;
-    const note = JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, owner: "local" });
+    // The note records the hold token, as the accept path writes it.
+    const noteOf = (id: string) => JSON.stringify({ payload: "do the thing", deadlineAt: DEADLINE_AT, holdEpoch: serveEpoch, owner: "local", holdToken: holdTokenOf(id) });
+    const note = noteOf(goalId);
     await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, note);
     // The turn's HOLD, minted exactly as the accept path mints it: the record over the goal-writer's
     // KV, the `.schedule` request over the SERVE connection (the timer row is the serving instance's
@@ -446,9 +451,7 @@ try {
     // claims the hold, so a fixture without it is a turn no seat could ever yield.
     const serveJs = jetstream((manager as unknown as { serviceServe: { nc: Parameters<typeof jetstream>[0] } }).serviceServe.nc);
     await mintCheckpoint(actx.kv, serveJs, space, {
-      // The hold token is the manager's own derivation (a module-private function), spelled here the
-      // same way so the fixture's hold is the one the yield path claims.
-      ref: { endpoint: MANAGER_ENDPOINT, token: createHash("sha256").update(`${relayKey(goalId)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43) },
+      ref: { endpoint: MANAGER_ENDPOINT, token: holdTokenOf(goalId) },
       instanceId: doors.managerInstanceId, epoch: serveEpoch,
       goal: { caller: runner, goalId },
       holder: { id: MANAGER_ENDPOINT, lifecycleUid: doors.managerInstanceId },
@@ -497,8 +500,8 @@ try {
       acceptedEpoch: 0, requestId: holdless, sourceSeq: 0, acceptedAt: ACCEPTED_AT, readinessDeadlineMs: 600_000,
       target: { owner: "local", actor: "seat9", lifecycleUid: seatUid, mappingRevision: 0 },
     });
-    await recordGoalIndex(actx, holdlessRef, doors.managerInstanceId, allocated, note);
-    await doors.adoptTurnGoal({ ref: holdlessRef, iid: doors.managerInstanceId, allocated, note });
+    await recordGoalIndex(actx, holdlessRef, doors.managerInstanceId, allocated, noteOf(holdless));
+    await doors.adoptTurnGoal({ ref: holdlessRef, iid: doors.managerInstanceId, allocated, note: noteOf(holdless) });
     check("a turn whose hold was never minted is not adopted as pending: nothing could settle it",
       !doors.pendingTurns.has(relayKey(holdless)) && !(adopting as unknown as { turnAcceptances: Map<string, unknown> }).turnAcceptances.has(relayKey(holdless)),
       { pending: doors.pendingTurns.has(relayKey(holdless)) });
@@ -547,7 +550,7 @@ try {
         target: { owner: "local", actor: allocated.actor, lifecycleUid: seatUid, mappingRevision: 0 },
       });
       await recordGoalIndex(actx, ref, doors.managerInstanceId, allocated, lateNote);
-      const holdToken = createHash("sha256").update(`${relayKey(goalId)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+      const holdToken = holdTokenOf(goalId);
       await mintCheckpoint(actx.kv, serveJs, space, {
         ref: { endpoint: MANAGER_ENDPOINT, token: holdToken },
         instanceId: doors.managerInstanceId, epoch: serveEpoch,

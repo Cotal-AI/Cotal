@@ -1100,6 +1100,9 @@ interface TurnNote {
   deadlineAt: number;
   holdEpoch: number;
   owner: string;
+  /** The deadline hold's token. A note written before it was recorded has none: that hold's token
+   *  was derived from the goal id alone, and adoption must find the hold actually minted. */
+  holdToken?: string;
   handoffFrom?: string;
 }
 
@@ -1110,8 +1113,9 @@ function parseTurnNote(raw: string): TurnNote | undefined {
   const n = o as Record<string, unknown>;
   if (typeof n.payload !== "string" || typeof n.deadlineAt !== "number"
     || typeof n.holdEpoch !== "number" || typeof n.owner !== "string") return undefined;
+  if (n.holdToken !== undefined && typeof n.holdToken !== "string") return undefined;
   if (n.handoffFrom !== undefined && typeof n.handoffFrom !== "string") return undefined;
-  return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
+  return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.holdToken === "string" ? { holdToken: n.holdToken } : {}), ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
 }
 
 /** A turn relay's key in the manager's maps: the caller triple and goal id the goal plane stores
@@ -1121,11 +1125,10 @@ function turnKey(ref: GoalRef): string {
   return `${ref.caller.owner}.${ref.caller.actor}.${ref.caller.uid}.${ref.goalId}`;
 }
 
-/** A turn hold's token, DERIVED from the relay key (same recipe as the runtime's pause tokens): a
- *  same-goal retry or a successor incarnation re-derives the identical token with no lookup, and
+/** A turn hold's token, DERIVED (same recipe as the runtime's pause tokens) from the relay key, so
  *  two callers' turns under one goal id never share a hold. */
-function turnHoldToken(ref: GoalRef): string {
-  return createHash("sha256").update(`${turnKey(ref)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+function turnHoldToken(key: string): string {
+  return createHash("sha256").update(`${key}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
 }
 
 /**
@@ -8790,7 +8793,8 @@ export class Manager {
       throw new EpEnvelopeError("deadline-exceeded", `goal "${goalId}" names a deadline already past (${new Date(deadlineAt).toISOString()}); a turn with no time left to serve it is never accepted (SPEC 13.6)`);
     const deadlineMs = deadlineAt - acceptedAt;
     const handoffFrom = raw.handoffFrom === undefined ? undefined : String(raw.handoffFrom);
-    const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
+    const holdToken = turnHoldToken(key);
+    const note = JSON.stringify({ payload, deadlineAt, holdEpoch: executor.epoch, owner: t.owner, holdToken, ...(handoffFrom !== undefined ? { handoffFrom } : {}) } satisfies TurnNote);
 
     // A goal that already ENDED is never accepted again, whatever the retry carries: the bind is
     // create-only and outlives an unwind (the failed terminal, the cleared index), so a retry of an
@@ -8840,7 +8844,7 @@ export class Manager {
       // none. Measured on an auth mesh: minted over the goal-writer, the schedule publish was
       // broker-denied and every accept unwound.
       await mintCheckpoint(gw.ctx.kv, jetstream(serve.nc), this.space, {
-        ref: { endpoint: ref.endpoint, token: turnHoldToken(ref) },
+        ref: { endpoint: ref.endpoint, token: holdToken },
         instanceId: this.managerInstanceId,
         epoch: executor.epoch,
         goal: { caller: { owner: ctx.subject.caller.owner, actor: ctx.subject.caller.actor, uid: ctx.subject.caller.uid }, goalId },
@@ -8876,7 +8880,7 @@ export class Manager {
       ref, goalId,
       seat: { name: a.name, owner: t.owner, actor: t.actor, uid: t.lifecycleUid },
       payload, acceptedAt, deadlineAt,
-      holdToken: turnHoldToken(ref), holdEpoch: executor.epoch,
+      holdToken, holdEpoch: executor.epoch,
       ...(handoffFrom !== undefined ? { handoffFrom } : {}),
     };
     this.pendingTurns.set(key, pending);
@@ -9210,7 +9214,7 @@ export class Manager {
       payload: parsed.payload,
       acceptedAt: spec.value.acceptedAt,
       deadlineAt: parsed.deadlineAt,
-      holdToken: turnHoldToken(entry.ref), holdEpoch: parsed.holdEpoch,
+      holdToken: parsed.holdToken ?? turnHoldToken(entry.ref.goalId), holdEpoch: parsed.holdEpoch,
       ...(parsed.handoffFrom !== undefined ? { handoffFrom: parsed.handoffFrom } : {}),
     };
     // The hold is the relay's bounded ending, minted AFTER the index entry and the goal record,
