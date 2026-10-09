@@ -436,6 +436,11 @@ the exact recorded attempt and finishes the remaining stop and endpoint proofs i
 needing the (by then intentionally dead) manager. A partial cut never publishes `ready`. It cannot
 be combined with component names, manifest teardown, or `--dry-run`.
 
+Before anything stops, the cut reads the presence roster and refuses while an endpoint the manager
+does not own is live. A deleted presence key is the only row it reads as absent. Any other row that
+is not a card with a non-empty string `id` and a string `name` refuses the cut with
+`presence record <subject> is malformed`.
+
 **Seat checkpoints.** After the stack is proven down, the cut writes one checkpoint per retained
 seat under `.cotal/maintenance/v1/checkpoints/<attempt>/<seat>/`, and prints the path, the
 continuity class and the generation for each. The path carries the preservation attempt because a
