@@ -615,12 +615,14 @@ async function runStartedDelivery(
     BROKER_GONE_BACKSTOP_MS,
   );
   // close() reads these to tell a lease read lost with a dropped socket from one the broker did not answer.
-  let transportUp = true;
+  let transportDownSince: number | undefined;
   let transportGeneration = 0;
   ep.on("transport", ({ connected }: { connected: boolean }) => {
     health.transport(connected);
-    transportUp = connected;
-    if (connected) transportGeneration++;
+    if (connected) {
+      transportDownSince = undefined;
+      transportGeneration++;
+    } else transportDownSince ??= Date.now();
   });
   ep.on("error", (e: Error) => {
     if (e.name === "UserAuthenticationExpiredError" || (e as { cause?: { name?: string } }).cause?.name === "UserAuthenticationExpiredError") {
@@ -777,16 +779,18 @@ async function runStartedDelivery(
         // was down (each dial discards the buffer), even once the same connection reconnects. Such a
         // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
         // A lost read rejects the attempt, and a lost delete leaves this instance's row.
-        // A transport still down is waited for as long as a serving daemon waits for its broker.
+        // A transport still down is waited for as long as a serving daemon waits for its broker, so
+        // the window counts from the drop.
         const generation = transportGeneration;
         const reconnected = async () => {
-          if (!transportUp) await new Promise<void>((resolve) => {
+          const downSince = transportDownSince;
+          if (downSince !== undefined) await new Promise<void>((resolve) => {
             const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
             const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
-            const timer = setTimeout(done, BROKER_GONE_MS);
+            const timer = setTimeout(done, downSince + BROKER_GONE_MS - Date.now());
             ep.on("transport", onTransport);
           });
-          return transportUp && transportGeneration !== generation;
+          return transportDownSince === undefined && transportGeneration !== generation;
         };
         left = await release().then(
           async (row) => row !== undefined && ep.ownsDeliveryLease(row.info) && await reconnected() ? release() : row,
