@@ -19,8 +19,8 @@ import {
   EpEnvelopeError,
   isPublishPermissionDenied,
   unansweredRequest,
-  renderLifecycleBlocked,
   controlReplyFrom,
+  controlReplyFromThrown,
   runAgentBearer,
   type EpAttributedReply,
   type EpVerbTarget,
@@ -2205,13 +2205,9 @@ export class MeshAgent extends EventEmitter {
       // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
       // observed silence.
       if (e instanceof EpEnvelopeError)
-        return {
-          ok: false,
-          error: unansweredRequest(e)
-            ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
-            : renderLifecycleBlocked(`${e.code}: ${e.message}`, e),
-          ...(e.details ? { details: e.details } : {}),
-        };
+        return controlReplyFromThrown(e, unansweredRequest(e)
+          ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
+          : `${e.code}: ${e.message}`);
       return { ok: false, error: (e as Error).message };
     }
     return controlReplyFrom(r.reply);
