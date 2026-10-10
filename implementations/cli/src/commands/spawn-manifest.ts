@@ -21,6 +21,7 @@ import {
   MANAGER_LEASE_TTL_MS,
   mintCreds,
   newIdentity,
+  principalKey,
   readChannelRegistry,
   seedChannelRegistry,
   type ControlReply,
@@ -205,6 +206,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     //      channels-only deploy — no need to stand up a manager.
     const agents: LedgerAgent[] = [...(prior?.created.agents ?? [])];
     const launchedNow: string[] = [];
+    const pendingNow: string[] = [];
     if (agentPlan.willCreate.length) {
       // The manager reads the run spec by runId on each `launch` (a remote manager gets it pushed
       // inline instead, below). USER MODE stamps the deploy's owner (the login's derived owner,
@@ -274,7 +276,10 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       }
       for (const e of agentPlan.willCreate) {
         const reply: ControlReply = await launchAgent(ep, runId, e.agent.name, remote ? spec : undefined);
-        if (!reply.ok) {
+        // An uncertain launch is still managed and may yet join, so this run owns it as it owns a
+        // started one: left out of the ledger, `down -f` would never stop it.
+        const pending = reply.code === "uncertain";
+        if (!reply.ok && !pending) {
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
           continue;
         }
@@ -284,8 +289,13 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         // derives the lifecycle-keyed cred path this spawn materialized (a pre-split manager's reply
         // carries none → legacy name-keyed path). Parsed, not cast: a row that the reader would
         // refuse now fails HERE, naming the field, instead of at teardown.
-        const d = (reply.data ?? {}) as { name?: unknown; id?: unknown; lifecycleUid?: unknown };
+        const d = pending ? acceptedAgent(reply.data, Boolean(user)) : (reply.data ?? {}) as { name?: unknown; id?: unknown; lifecycleUid?: unknown };
         agents.push(buildLedgerAgentRow({ requested: e.agent.name, hash: e.hash }, d));
+        if (pending) {
+          pendingNow.push(String(d.name));
+          console.log(c.yellow(`~ ${e.agent.name}: ${reply.error}`) + c.dim(" This run owns it, so do not launch it again."));
+          continue;
+        }
         launchedNow.push(String(d.name));
         console.log(c.green(`✓ launched ${d.name}`) + c.dim(` (${e.agent.agentType})`));
       }
@@ -305,6 +315,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       manifestPath: abs,
       created: channelPlan.create.map((ch) => ch.name),
       launched: launchedNow,
+      pending: pendingNow,
       existsUnmanaged: channelPlan.existsUnmanaged.map((x) => x.channel.name),
       unmanaged,
     }));
@@ -335,6 +346,16 @@ function applyOverrides(prepared: PreparedManifest, o: SpawnManifestFlags): Prep
 }
 
 const dedupe = (xs: string[]): string[] => [...new Set(xs)];
+
+/** The spawned identity of an `uncertain` launch. Its reply carries only the acceptance, which names
+ *  the agent by owner and actor, so `id` is derived as the manager derives it for a started one:
+ *  `owner.actor` under user auth, the bare actor otherwise. */
+function acceptedAgent(data: unknown, userAuth: boolean): { name?: unknown; id?: unknown; lifecycleUid?: unknown } {
+  const a = (data ?? {}) as { name?: unknown; owner?: unknown; actor?: unknown; uid?: unknown };
+  if (!userAuth) return { name: a.name, id: a.actor, lifecycleUid: a.uid };
+  const id = typeof a.owner === "string" && typeof a.actor === "string" ? principalKey(a.owner, a.actor).key : undefined;
+  return { name: a.name, id, lifecycleUid: a.uid };
+}
 
 /** Keep one entry per nkey id (defensive — `willCreate` excludes prior-owned, so no dup in practice). */
 function dedupeAgents(agents: LedgerAgent[]): LedgerAgent[] {
