@@ -228,26 +228,40 @@ function meshFile(space: string): string {
   return join(meshesDir(), meshFileName(space));
 }
 
-/** Remove every PRE-HEX registry file that records one of `spaces` (`<encodeURIComponent>.json`
- *  stems from older builds). Matched by each document's own `space` - never by decoding the
- *  filename, which would case-fold on this filesystem - so a legacy record can neither shadow nor
- *  resurrect a mesh the canonical file no longer records. A file that will not parse is left for
- *  {@link loadMeshes} to refuse by name. The sweep reads every other record, so a batch shares one. */
-function removeLegacyMeshFiles(spaces: ReadonlySet<string>): void {
+/** Every PRE-HEX registry file (`<encodeURIComponent>.json` stems from older builds), by the space it
+ *  records. Matched by each document's own `space` - never by decoding the filename, which would
+ *  case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh the
+ *  canonical file no longer records. A file that will not parse is left for {@link loadMeshes} to
+ *  refuse by name. The scan reads every record, so a batch shares one. */
+function legacyMeshFiles(): Map<string, string[]> {
+  const bySpace = new Map<string, string[]>();
   let files: string[];
   try {
     files = readdirSync(meshesDir());
   } catch {
-    return; // no registry yet
+    return bySpace; // no registry yet
   }
-  const canonical = new Set([...spaces].map(meshFileName));
   for (const f of files) {
-    if (canonical.has(f) || !f.endsWith(".json")) continue;
+    if (!f.endsWith(".json")) continue;
     try {
-      const doc = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
-      if (spaces.has(doc.space)) rmSync(join(meshesDir(), f), { force: true });
+      const { space } = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
+      if (f !== meshFileName(space)) bySpace.set(space, [...(bySpace.get(space) ?? []), f]);
     } catch {
-      /* unparseable stray - not provably a record of these spaces, leave it */
+      /* unparseable stray - not provably a record of any space, leave it */
+    }
+  }
+  return bySpace;
+}
+
+/** Remove the {@link legacyMeshFiles} that record one of `spaces`. */
+function removeLegacyMeshFiles(spaces: Iterable<string>, legacy: ReadonlyMap<string, readonly string[]>): void {
+  for (const space of spaces) {
+    for (const f of legacy.get(space) ?? []) {
+      try {
+        rmSync(join(meshesDir(), f), { force: true });
+      } catch {
+        /* left like an unparseable stray: whether a failed unlink should fail the write or removal is #3735 */
+      }
     }
   }
 }
@@ -279,7 +293,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     renameSync(tmp, file); // atomic replace — a reader never sees a half-written record
     spaces.add(m.space);
   }
-  if (spaces.size > 0) removeLegacyMeshFiles(spaces); // a pre-hex record for these spaces must not survive as a duplicate
+  if (spaces.size > 0) removeLegacyMeshFiles(spaces, legacyMeshFiles()); // a pre-hex record for these spaces must not survive as a duplicate
 }
 
 /** Drop a mesh from the registry (on `cotal down` / a stale-entry prune). Absent ⇒ no-op. */
@@ -287,12 +301,15 @@ export function removeMesh(space: string): void {
   removeMeshes([space]);
 }
 
-/** {@link removeMesh} for several meshes, with one pre-hex sweep for the whole batch. An empty batch
- *  touches nothing. */
-export function removeMeshes(spaces: readonly string[]): void {
-  if (spaces.length === 0) return;
-  for (const space of spaces) rmSync(meshFile(space), { force: true });
-  removeLegacyMeshFiles(new Set(spaces)); // else a pre-hex record would resurrect the mesh in every listing
+/** {@link removeMesh} for several meshes, with one pre-hex scan for the whole batch. Each mesh is
+ *  removed with its pre-hex records as `spaces` yields it, before the next is pulled, so a generator
+ *  can act on each removal before the next one. An empty batch touches nothing. */
+export function removeMeshes(spaces: Iterable<string>): void {
+  let legacy: Map<string, string[]> | undefined;
+  for (const space of spaces) {
+    rmSync(meshFile(space), { force: true });
+    removeLegacyMeshFiles([space], (legacy ??= legacyMeshFiles())); // else a pre-hex record would resurrect the mesh in every listing
+  }
 }
 
 /**
@@ -340,9 +357,23 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
+/** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed. An empty
+ *  batch touches nothing. */
+function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
+  // Cleared right after its own entry, so a pointer that cannot be cleared stops the batch before the next
+  // removal. Read per entry: a concurrent `cotal use` can move the pointer while the batch runs.
+  function* releasing(): Generator<string> {
+    for (const space of spaces) {
+      yield space;
+      if (getCurrent() === space) clearCurrent();
+    }
+  }
+  removeMeshes(releasing());
+}
+
 /**
  * Drop the entries recorded for THIS project root because the mesh they describe was just stopped
- * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer per removed entry.
+ * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer if it names one.
  * Returns the removed space names.
  *
  * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
@@ -353,13 +384,8 @@ export function meshesForRoot(root: string): MeshEntry[] {
  * of those leaves.
  */
 export function removeMeshesByRoot(root: string): string[] {
-  const removed: string[] = [];
-  for (const m of meshesForRoot(root)) {
-    if (m.origin === "manual" || m.origin === "catalog") continue;
-    removeMesh(m.space);
-    if (getCurrent() === m.space) clearCurrent();
-    removed.push(m.space);
-  }
+  const removed = localMeshesForRoot(root).map((m) => m.space);
+  removeMeshesReleasingCurrent(removed);
   return removed;
 }
 
@@ -374,13 +400,8 @@ export function localMeshesForRoot(root: string): MeshEntry[] {
 /** Remove only the discovered entries owned by one proved account. Manual and local entries with
  *  the same root or IdP are never included. Returns removed names and clears a matching selection. */
 export function removeCatalogMeshes(ownerKey: string): string[] {
-  const removed: string[] = [];
-  for (const m of loadMeshes()) {
-    if (m.origin !== "catalog" || m.catalogOwner !== ownerKey) continue;
-    removeMesh(m.space);
-    if (getCurrent() === m.space) clearCurrent();
-    removed.push(m.space);
-  }
+  const removed = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === ownerKey).map((m) => m.space);
+  removeMeshesReleasingCurrent(removed);
   return removed.sort();
 }
 
