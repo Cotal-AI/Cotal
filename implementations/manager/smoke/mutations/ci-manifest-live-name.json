@@ -1,0 +1,20 @@
+{
+  "suite": [
+    "implementations/manager/smoke/manager-service-ops.smoke.ts"
+  ],
+  "guard": "A valid non-event manifest launch that collides with a live incarnation must reach the manifest-name pin guard and refuse, while a persona-derived spawn still numbers.",
+  "command": "pnpm smoke:manager-service-ops",
+  "completionMarker": "MANAGER SERVICE OPS SMOKE",
+  "progressPattern": "  \u2713 ",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/ci-manifest-live-name.json",
+  "mutations": [
+    {
+      "name": "manifest name pin removed while imperative identity pin remains",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const hardPinned = opts.identity !== undefined || opts.resolved !== undefined;",
+      "replace": "    const hardPinned = opts.identity !== undefined;",
+      "expectRed": "M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent auto-number (breaking vs shipped main, and the arm nothing covered)",
+      "cell": "M6 manifest-declared: a launch onto a LIVE name REFUSES, never a silent auto-number (breaking vs shipped main, and the arm nothing covered)"
+    }
+  ]
+}
