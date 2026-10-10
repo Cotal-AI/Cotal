@@ -1,7 +1,7 @@
 {
   "suite": ["packages/core/smoke/environment-manager-grants.smoke.ts"],
   "command": "pnpm smoke:environment-manager-grants",
-  "completionMarker": "ENVIRONMENT MANAGER GRANTS COMPLETE",
+  "completionMarker": "ENVIRONMENT MANAGER GRANTS FINISHED",
   "mutations": [
     {
       "file": "packages/core/src/endpoint-serve-kv.ts",

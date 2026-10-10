@@ -25,6 +25,14 @@ import { awaitBrokerReady, countedAssert, emitSentinel, freePort, killAndAwaitEx
 
 const counted = countedAssert(nodeAssert);
 const assert: typeof nodeAssert = counted.assert;
+let failures = 0;
+const check = async (fn: () => unknown | Promise<unknown>) => {
+  try { await fn(); }
+  catch (error) {
+    failures++;
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+};
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 const space = "environmentgrants";
@@ -62,8 +70,8 @@ const open = async (creds: string, id: string) => {
   return nc;
 };
 const denied = async (nc: NatsConnection, subject: string, body: unknown, label: string) => {
-  await assert.rejects(() => nc.request(subject, enc.encode(JSON.stringify(body)), { timeout: 1000 }),
-    /Permissions Violation/i, label);
+  await check(() => assert.rejects(() => nc.request(subject, enc.encode(JSON.stringify(body)), { timeout: 1000 }),
+    /Permissions Violation/i, label));
 };
 
 try {
@@ -89,25 +97,25 @@ try {
   await provisionEndpointGateOpen(authKv, { endpoint: "manager", instanceId,
     principal: `${owner}.${actors.serve}`, authorityFamily: "environment-manager" });
   const born = parseEndpointGate((await authKv.get(key))!.value, key);
-  assert.equal(born.authorityFamily, "environment-manager", "admission gate retains its family at birth");
+  await check(() => assert.equal(born.authorityFamily, "environment-manager", "admission gate retains its family at birth"));
   const barrier = endpointRegistrationBarrier(authKv, space, { endpoint: "manager", instanceId,
     opId: mintLifecycleUid() });
   const before = await barrier.observe();
   assert.ok(before && before.state === "open");
   const freeze = await barrier.freeze(before.revision);
   assert.ok(freeze);
-  assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).authorityFamily,
-    "environment-manager", "registration freeze preserves family");
+  await check(async () => assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).authorityFamily,
+    "environment-manager", "registration freeze preserves family"));
   assert.equal(await barrier.reopen(freeze, { generation: before.generation + 1,
     processEpoch: 1, registrationRevision: 1, nameAuthorityRevision: 0 }), true);
-  assert.equal((await barrier.observe())!.authorityFamily, "environment-manager",
-    "registration reopen preserves family");
+  await check(async () => assert.equal((await barrier.observe())!.authorityFamily, "environment-manager",
+    "registration reopen preserves family"));
   const gate = serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
   assert.equal(await gate.commit((await gate.observe())!.revision), true);
-  assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).authorityFamily,
-    "environment-manager", "mint touch preserves family");
-  await assert.rejects(() => provisionEndpointGateOpen(authKv, { endpoint: "manager", instanceId,
-    principal: `${owner}.${actors.serve}` }), /FOREIGN content/, "plain re-provision cannot strip a family");
+  await check(async () => assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).authorityFamily,
+    "environment-manager", "mint touch preserves family"));
+  await check(() => assert.rejects(() => provisionEndpointGateOpen(authKv, { endpoint: "manager", instanceId,
+    principal: `${owner}.${actors.serve}` }), /FOREIGN content/, "plain re-provision cannot strip a family"));
 
   const input = compileContract({ root: { type: "object", properties: {}, additionalProperties: false } });
   const output = compileContract({ root: { type: "object", properties: { command: { type: "string" } },
@@ -145,6 +153,7 @@ try {
   await serveNc.flush();
 
   for (const [profile, actor] of profiles) {
+    const failuresBefore = failures;
     const identity = newIdentity();
     const opts = { principal: { owner, actor }, lifecycleUid, environmentManager: pin, expiresAt };
     const creds = await mintCreds(auth, identity, profile, opts);
@@ -213,14 +222,15 @@ try {
     const pr = { owner, actor, connId: identity.id, lifecycleUid };
     assert.throws(() => permissionsFor(profile, space, { ...pr, actor: "foreign" }, opts), /actor/, `${profile} actor pin required`);
     assert.throws(() => permissionsFor(profile, space, { ...pr, lifecycleUid: mintLifecycleUid() }, opts), /lifecycle/, `${profile} lifecycle pin required`);
-    await assert.rejects(() => mintCreds(auth, identity, profile, { ...opts, expiresAt: expiresAt + 1 }), /admission/, `${profile} mint expiry cannot exceed admission`);
-    await assert.rejects(() => mintPublicUserJwt(auth, identity.id, profile, { ...opts, expiresAt: expiresAt + 1 }), /admission/,
-      `${profile} public-key mint expiry cannot exceed admission`);
-    console.log(`  ✓ ${profile}: native positive control and raw authority denials`);
+    await check(() => assert.rejects(() => mintCreds(auth, identity, profile, { ...opts, expiresAt: expiresAt + 1 }), /admission/, `${profile} mint expiry cannot exceed admission`));
+    await check(() => assert.rejects(() => mintPublicUserJwt(auth, identity.id, profile, { ...opts, expiresAt: expiresAt + 1 }), /admission/,
+      `${profile} public-key mint expiry cannot exceed admission`));
+    if (failures === failuresBefore) console.log(`  ✓ ${profile}: native positive control and raw authority denials`);
+    else console.error(`  ✗ ${profile}: ${failures - failuresBefore} checks failed`);
   }
   assert.equal(effects, 2, "only the two allowed bound commands reached their handlers");
-  assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).authorityFamily, "environment-manager",
-    "every guest raw-write attempt left the family intact");
+  await check(async () => assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).authorityFamily, "environment-manager",
+    "every guest raw-write attempt left the family intact"));
   for (const value of [null, "human", "platform-control", "other", 1]) {
     assert.throws(() => parseEndpointGate(enc.encode(JSON.stringify({ ...born, authorityFamily: value })), key), /authorityFamily/);
   }
@@ -235,5 +245,6 @@ try {
   releaseBroker();
   await rm(directory, { recursive: true, force: true });
 }
-console.log("ENVIRONMENT MANAGER GRANTS COMPLETE (profile/gate substrate only)");
-emitSentinel({ passed: counted.cells(), failed: 0 });
+console.log(`ENVIRONMENT MANAGER GRANTS FINISHED (${failures} failed; profile/gate substrate only)`);
+emitSentinel({ passed: counted.cells() - failures, failed: failures });
+if (failures) process.exitCode = 1;
