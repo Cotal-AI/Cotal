@@ -15,6 +15,9 @@ import.
   (`env -i`) so the tmux server's environment doesn't reach agents. Graceful stop types `/exit`
   then kills the window; hard stop kills immediately. Exit waits poll the stable pane id and honor
   tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
+  A restarted tmux server reuses window and pane ids, so a handle acts only on the server that
+  opened its window: once that server is gone the seat reads as exited, and stop and interrupt
+  leave the new server's windows alone.
   Each handle carries a reference to its tmux server, window and pane, so a later manager can reap
   the seat after the one that spawned it is gone. The reap closes the window while the session
   still holds it, even when the agent's pane already exited. It refuses a pane that has moved out of

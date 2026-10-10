@@ -58,9 +58,11 @@ export class TmuxRuntime implements Runtime {
     // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
     const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
-    // A restarted tmux server reuses window and pane ids, so the watch acts only on the one that opened
-    // this window. It ends the seat's pane, wherever it is now: the window may hold another pane by then.
-    const call = { ...CONFIRM_CALL, server: serverPid };
+    // A restarted tmux server reuses window and pane ids, so the watch and the handle act only on the one
+    // that opened this window. The watch ends the seat's pane, wherever it is now: the window may hold
+    // another pane by then.
+    const ownServer = { server: serverPid };
+    const call = { ...CONFIRM_CALL, ...ownServer };
     watch?.({
       read: () => tmux.capturePane(paneId, serverPid),
       enter: () => tmux.sendKey("Enter", paneId, call),
@@ -81,18 +83,18 @@ export class TmuxRuntime implements Runtime {
       reference: { kind: "tmux", id: `${serverPid}.${windowId}.${paneId}` },
       status: () => {
         try {
-          return tmux.paneState(paneId);
+          return tmux.paneState(paneId, ownServer);
         } catch {
           return "running";
         }
       },
       stop: (opts) => {
-        if (opts?.graceful === false) return tmux.closeWindow(windowId);
+        if (opts?.graceful === false) return tmux.closeWindow(windowId, ownServer);
         // Graceful: type `/exit` so the Claude session shuts down cleanly (its SessionEnd
         // hook leaves the mesh), then close the now-idle window regardless.
         try {
-          tmux.send("/exit", windowId);
-          tmux.sendKey("Enter", windowId);
+          tmux.send("/exit", windowId, ownServer);
+          tmux.sendKey("Enter", windowId, ownServer);
         } catch {
           /* window already gone — still ensure it's closed below */
         }
@@ -101,15 +103,15 @@ export class TmuxRuntime implements Runtime {
         // tmux failure rather than let teardown cleanup take the process down.
         setTimeout(() => {
           try {
-            tmux.closeWindow(windowId);
+            tmux.closeWindow(windowId, ownServer);
           } catch (err) {
             console.error(`tmux runtime: failed to close window for "${name}":`, err);
           }
         }, GRACE_MS);
       },
-      waitForExit: () => tmux.waitForPaneExit(paneId),
+      waitForExit: () => tmux.waitForPaneExit(paneId, ownServer),
       interrupt: () => {
-        tmux.sendKey("C-c", windowId);
+        tmux.sendKey("C-c", windowId, ownServer);
       },
       attach: () => {
         throw new Error(

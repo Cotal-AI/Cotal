@@ -140,12 +140,13 @@ export function paneWindow(paneId: string): string | undefined {
 
 export type PaneState = "running" | "exited";
 
-/** Authoritative process state for a stable pane ID. A successful full-server listing that no
- * longer contains the pane proves exit; `pane_dead=1` also handles `remain-on-exit` configurations.
- * Provider/permission failures throw instead of turning uncertainty into a false exit. */
-export function paneState(paneId: string): PaneState {
+/** Authoritative process state for a stable pane ID, on server `opts.server` only when given: another
+ * server lists nothing, so its pane with the same id reads as exited. A successful full-server listing
+ * that no longer contains the pane proves exit; `pane_dead=1` also handles `remain-on-exit`
+ * configurations. Provider/permission failures throw instead of turning uncertainty into a false exit. */
+export function paneState(paneId: string, opts: { server?: string } = {}): PaneState {
   try {
-    const panes = execFileSync("tmux", ["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"], {
+    const panes = execFileSync("tmux", onServer(opts.server, ["list-panes", "-a", "-F", "#{pane_id} #{pane_dead}"]), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: EXIT_PROBE_MS,
@@ -186,19 +187,20 @@ export function capturePane(paneId: string, server: string): string | undefined 
   return paneState(paneId) === "exited" || serverPid({ timeoutMs: EXIT_PROBE_MS }) !== server ? undefined : screen;
 }
 
-/** Bounded polling over tmux's authoritative pane inventory. */
+/** Bounded polling over tmux's authoritative pane inventory, on server `opts.server` only when given. */
 export async function waitForPaneExit(
   paneId: string,
   opts: {
     timeoutMs?: number;
     pollMs?: number;
+    server?: string;
   } = {},
 ): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? EXIT_WAIT_MS;
   const pollMs = opts.pollMs ?? EXIT_POLL_MS;
   const deadline = Date.now() + timeoutMs;
   while (true) {
-    if (paneState(paneId) === "exited") return;
+    if (paneState(paneId, { server: opts.server }) === "exited") return;
     const remaining = deadline - Date.now();
     if (remaining <= 0) throw new Error(`tmux: pane ${paneId} did not exit within ${timeoutMs}ms`);
     await new Promise((resolve) => setTimeout(resolve, Math.min(pollMs, remaining)));
@@ -281,10 +283,11 @@ function onServer(server: string | undefined, args: string[]): string[] {
   return server === undefined ? args : ["if-shell", "-F", `#{==:#{pid},${server}}`, args.map(shellQuote).join(" ")];
 }
 
-/** Kill a tmux window by target (window ID `@N`, or `session:name`). Idempotent: already-gone is a no-op. */
-export function closeWindow(target: string): void {
+/** Kill a tmux window by target (window ID `@N`, or `session:name`), on server `opts.server` only when
+ *  given. Idempotent: already-gone is a no-op. */
+export function closeWindow(target: string, opts: { server?: string } = {}): void {
   try {
-    execFileSync("tmux", ["kill-window", "-t", target], { stdio: "pipe" });
+    execFileSync("tmux", onServer(opts.server, ["kill-window", "-t", target]), { stdio: "pipe" });
   } catch (err) {
     if (isWindowGone(err)) return;
     throw err;
@@ -388,10 +391,10 @@ export function privateLaunch(commandBody: string): string {
   return `bash ${shellQuote(scriptPath)}`;
 }
 
-/** Type literal text into a tmux target.
+/** Type literal text into a tmux target, on server `opts.server` only when given.
  *  `-l` bypasses tmux's key-name lookup; `--` guards against text starting with `-`. */
-export function send(text: string, target: string): void {
-  execFileSync("tmux", ["send-keys", "-l", "-t", target, "--", text], { stdio: "ignore" });
+export function send(text: string, target: string, opts: { server?: string } = {}): void {
+  execFileSync("tmux", onServer(opts.server, ["send-keys", "-l", "-t", target, "--", text]), { stdio: "ignore" });
 }
 
 /** Send a named key sequence (e.g. `"Enter"`, `"C-c"`) to a tmux target, on server `opts.server` only
