@@ -1,7 +1,8 @@
 import { Bucket, KvWatchInclude } from "@nats-io/kv/internal";
 import type { KV, KvEntry, KvWatchEntry } from "@nats-io/kv";
-import { JetStreamApiCodes, JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
+import { JetStreamApiError, type ConsumerAPI, type ConsumerInfo, type MsgRequest, type NextMsgRequest } from "@nats-io/jetstream";
 import { isPublishPermissionDenied } from "./endpoint.js";
+import { isConsumerNotFound } from "./jetstream-missing.js";
 
 /**
  * The ONE sanctioned way to read every live entry of a KV bucket.
@@ -247,7 +248,7 @@ export async function liveKvEntries(
           // A profile without the delete row (#691) is refused for every name alike, and the broker
           // reaps those consumers at their inactive_threshold.
           if (isPublishPermissionDenied(e)) break;
-          if (!(e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound)) throw e;
+          if (!isConsumerNotFound(e)) throw e;
           if (!answered[i]) unanswered ??= target;
         }
       }

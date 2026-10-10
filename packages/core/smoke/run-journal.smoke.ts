@@ -940,7 +940,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
         consumers: {
           ...jsm.consumers,
           add: jsm.consumers.add.bind(jsm.consumers),
-          delete: async () => { throw Object.assign(new Error("consumer not found"), { code: 10014, name: "ConsumerNotFoundError" }); },
+          delete: () => jsm.consumers.delete(STREAM, "wfj_never-existed"),
         },
       } as unknown as typeof jsm;
       try { await replayRunJournal(js, gone, SPACE, "r-5s", tid()); return true; } catch { return false; }

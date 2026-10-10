@@ -66,6 +66,7 @@ import { jetstream, jetstreamManager, type ConsumerInfo, type JetStreamClient, t
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { wfjStreamName, wfjSubject, runJournalConsumerConfig } from "./endpoint-binding.js";
 import { isCasLoss } from "./endpoint-records.js";
+import { isConsumerNotFound } from "./jetstream-missing.js";
 
 /**
  * The successor's first act, and the only record the runtime layer writes that is not a step.
@@ -326,16 +327,6 @@ export function assertReplayConsumerFresh(
   if (!replayConsumerIsFresh(info)) {
     throw new RunJournalReplayRaced(run, durable, info.delivered.consumer_seq);
   }
-}
-
-/**
- * Measured on the repo's broker floor: `name: "ConsumerNotFoundError"`, `code: 10014`.
- *
- * Exported so the one error the replay is allowed to swallow can be checked against a real one.
- */
-export function isConsumerNotFound(e: unknown): boolean {
-  const err = e as { name?: unknown; code?: unknown } | null | undefined;
-  return Number(err?.code) === 10014 || err?.name === "ConsumerNotFoundError";
 }
 
 /** Measured on nats-server 2.15: a create whose config differs from the durable of that name is a

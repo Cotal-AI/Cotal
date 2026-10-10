@@ -46,9 +46,9 @@
  *   drain makes an OUT-OF-FILTER delivery from a foreign re-resolution loud, while a foreign
  *   same-or-narrower filter stays covered by that composition assumption, not by the check.
  */
-import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerToken, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerToken, isConsumerNotFound, parseGoalIndexEntry, parseRecordKey, recordsBucket, recordsKvStreamName, type GoalIndexEntry, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
@@ -128,12 +128,6 @@ export interface RecordsScanner {
   /** Tear down the owned credential+connection. */
   close(): Promise<void>;
 }
-
-/** STRUCTURAL not-found classification (not a message regex): @nats-io/jetstream throws a
- *  JetStreamApiError whose `.code` is the JS API err_code (`JetStreamApiCodes.ConsumerNotFound` =
- *  10014); `.status` is the HTTP 404. The pre-clean proceeds ONLY on this exact structured shape. */
-const isConsumerNotFound = (e: unknown): boolean =>
-  e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound;
 
 /** The records scanner's BRAND (site-3, mirroring the auth scanner): the ONLY way to be a
  *  RecordsScanner a registry/mediator accepts is to be built by {@link buildScanner} in THIS module,
