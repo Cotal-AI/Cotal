@@ -15,6 +15,8 @@
       "@cotal-ai/delivery",
       "@cotal-ai/web",
       "@cotal-ai/linear",
+      "@cotal-ai/environments",
+      "@cotal-ai/tenki",
       "@cotal-ai/cmux",
       "@cotal-ai/orca",
       "@cotal-ai/tmux",
