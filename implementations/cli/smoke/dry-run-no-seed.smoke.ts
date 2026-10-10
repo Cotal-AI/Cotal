@@ -208,5 +208,3 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
 }
 
 finish(); // emits the cell-count sentinel and sets a non-zero exit code on any failed cell
-
-
