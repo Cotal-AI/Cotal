@@ -19,8 +19,8 @@
     {
       "name": "the pending verdict replays instead of re-entering the live path, so a resumed wait never looks again",
       "file": "packages/lang/src/perform.ts",
-      "find": "    case \"refused\":\n    case \"pending\":\n    case \"miss\":\n      break;\n  }\n\n  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n  const stop = host.options.shouldStop?.();\n  if (stop !== undefined) throw new RunReleased(stop);",
-      "replace": "    case \"pending\":\n      return (verdict.entry.observations ?? []).at(-1)?.value;\n    case \"refused\":\n    case \"miss\":\n      break;\n  }\n\n  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n  const stop = host.options.shouldStop?.();\n  if (stop !== undefined) throw new RunReleased(stop);",
+      "find": "  frame: Frame,\n): Promise<unknown> {\n  // THE DEADLINE IS ABSOLUTE AND IT IS READ BACK",
+      "replace": "  frame: Frame,\n): Promise<unknown> {\n  if (pending !== undefined) return (pending.observations ?? []).at(-1)?.value;\n  // THE DEADLINE IS ABSOLUTE AND IT IS READ BACK",
       "expectRed": "THE PROPERTY: the resumed wait OBSERVES THE WORLD AGAIN rather than replaying what it last saw",
       "note": "The subtlest wrong fix available: the observations are still RECORDED as observations, and the entry is still left pending, so every cell about the journal's shape stays green. What changes is the only thing that matters, which is that the resumed run hands back the newest recorded observation instead of looking. This is the mutant that would survive a suite which only inspected the record, which is why the property cell asserts on the handler's OWN look count rather than on what the program printed."
     },

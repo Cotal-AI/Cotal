@@ -10,7 +10,7 @@
  */
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
 import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
-import { Journal, JournalAppendRejected, RunClock, type EntryError, type LookupVerdict } from "./journal.js";
+import { Journal, JournalAppendRejected, RunClock, type EntryError, type JournalEntry, type LookupVerdict } from "./journal.js";
 import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
 import { parseDuration } from "./duration.js";
@@ -202,19 +202,32 @@ function countEffect(host: EffectHost, verdict: LookupVerdict): void {
   }
 }
 
+/** A live step: its entry is begun (or recovered) and its handler context is ready. */
+type LiveStep = {
+  readonly key: StepKey;
+  readonly inputHash: string;
+  /** The entry a previous activation began and never settled, when this one is recovering it. */
+  readonly pending: JournalEntry | undefined;
+  readonly ctx: EffectContext;
+};
+
 /**
- * Perform one effect, or replay it.
+ * Enter one step: allocate its key, serve or throw what the journal recorded for it, and otherwise
+ * run the checks that guard a new dispatch, begin its entry and hand the live step to `live`, which
+ * must reach its dispatch before its first await.
  *
- * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
- * and in `pending` it is told to re-bind rather than re-issue.
+ * ONE ENTRY FOR EVERY EFFECT, `waitUntil` included. A wait cannot go through {@link performEffect}
+ * as a whole, because a non-terminal observation leaves its entry pending, but nothing before its
+ * first observation differs, and a second copy of these rules is one that can change alone and
+ * leave one kind replaying, stopping or recovering differently from the rest.
  */
-export async function performEffect(
+async function enterStep(
   host: EffectHost,
   kind: EffectKind,
   name: string,
   hashedInput: unknown,
-  perform: (ctx: EffectContext, inputHash: string) => Promise<unknown>,
   frame: EffectFrame,
+  live: (step: LiveStep) => Promise<unknown>,
 ): Promise<unknown> {
   const key = frame.keys.nextEffect(kind, name);
   const inputHash = digest(hashedInput ?? null);
@@ -262,16 +275,13 @@ export async function performEffect(
 
   countEffect(host, verdict);
 
-  const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
   // RECOVERY SUBMITS UNDER THE RECORDED IDENTITY. Re-deriving happens to agree whenever nothing
   // moved, which is exactly why it read as correct: the whole point of writing the id down is
   // the case where it does NOT agree, and a resumed run that re-derives is reissuing under an
   // identity the far side may never have seen. An entry with no recorded id predates this rule.
-  const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
+  const pending = verdict.verdict === "pending" ? verdict.entry : undefined;
+  const recorded = pending?.requestId !== undefined ? pending : undefined;
   const reqId = recorded?.requestId ?? requestId(host.options.runId, key, inputHash);
-  // AT MOST ONCE (spec/cotal-lang.md §7.8): a pending step under `once` may already have written,
-  // so it is never dispatched again. Its outcome is unknown, and a hold asks for it.
-  if (verdict.verdict === "pending" && atMostOnce(key.scope)) return await performHold(host, key, reqId, verdict.entry.hold, frame);
   // WHICH attempt is open, not merely which id. An id alone cannot say how much of an escalation
   // chain is already spent, and a recovery that cannot tell replays the hop: it mints again under
   // the id the far side already holds and reads that mint's cached expiry back as a fresh
@@ -303,7 +313,7 @@ export async function performEffect(
     // so a resumed run reissues the same id rather than creating a second goal.
     requestId: reqId,
     attempt,
-    ...(resume !== undefined ? { resume } : {}),
+    ...(pending?.external !== undefined ? { resume: pending.external } : {}),
     // THE THIRD PATH INTO AN ENTRY, and until this line the only one with no rule. The other two sit
     // a few lines apart (the RESULT at the settle below, the ARGUMENTS in `dispatchPrimitive`), and
     // a handler's own `ctx.bind` reached `journal.bind` with nothing in between. Measured before this
@@ -324,6 +334,43 @@ export async function performEffect(
       await host.journal.bind(key, external);
     },
   };
+  // CALLED, NOT RETURNED. The cancellation check above has to share a synchronous turn with the
+  // dispatch it guards. Handing the step back to an awaiting caller reopens the gap that check
+  // closes: measured that way, a race's loser was dispatched with its signal already cancelled and
+  // settled `ok`.
+  return await live({ key, inputHash, pending, ctx });
+}
+
+/**
+ * Perform one effect, or replay it.
+ *
+ * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
+ * and in `pending` it is told to re-bind rather than re-issue.
+ */
+export async function performEffect(
+  host: EffectHost,
+  kind: EffectKind,
+  name: string,
+  hashedInput: unknown,
+  perform: (ctx: EffectContext, inputHash: string) => Promise<unknown>,
+  frame: EffectFrame,
+): Promise<unknown> {
+  return await enterStep(host, kind, name, hashedInput, frame, (step) => dispatchStep(host, step, perform, frame));
+}
+
+/**
+ * Dispatch a live step's handler and settle its entry with the outcome, or open the hold of a
+ * pending step that `once` forbids dispatching again.
+ */
+async function dispatchStep(
+  host: EffectHost,
+  { key, inputHash, pending, ctx }: LiveStep,
+  perform: (ctx: EffectContext, inputHash: string) => Promise<unknown>,
+  frame: EffectFrame,
+): Promise<unknown> {
+  // AT MOST ONCE (spec/cotal-lang.md §7.8): a pending step under `once` may already have written,
+  // so it is never dispatched again. Its outcome is unknown, and a hold asks for it.
+  if (pending !== undefined && atMostOnce(key.scope)) return await performHold(host, key, ctx.requestId, pending.hold, frame);
 
   // TWO FAILURE DOMAINS, AND THE TERMINAL APPEND IS NOT IN THE HANDLER'S.
   //
@@ -479,8 +526,9 @@ async function performHold(
  * the entry with {@link Journal.observe} and the entry STAYS PENDING. `lookup` answers `pending`
  * for it, which routes to the live path, so a resumed run OBSERVES AGAIN. Only the terminal
  * observation settles, because only that one is an answer. Everything else about the entry is the
- * ordinary contract: it begins before the first observation, it carries the request id a handler
- * waits under, and the two failure domains stay separate.
+ * ordinary contract, entered through {@link enterStep} like every other effect: it begins before
+ * the first observation, it carries the request id a handler waits under, and the two failure
+ * domains stay separate.
  *
  * WHO OWNS WHAT. The program owns the probe and the predicate; the runtime owns the cadence and
  * the deadline. A program that hand-rolled this with `sleep` in a loop owns all four, which is the
@@ -497,48 +545,26 @@ async function performWaitUntil(
   deadline: string,
   frame: Frame,
 ): Promise<unknown> {
-  const key = frame.keys.nextEffect("waitUntil", name);
-  const inputHash = digest(hashedInput ?? null);
-  const verdict = host.journal.lookup(key, inputHash);
+  // A SETTLED `waitUntil` replays like any other step, and it must: what settled it was the
+  // TERMINAL observation, which IS an answer, and re-observing a wait that already finished
+  // would re-ask a question the run has answered. Only the unfinished ones re-observe.
+  return await enterStep(host, "waitUntil", name, hashedInput, frame, (step) =>
+    observeUntil(host, step, name, probe, terminal, every, deadline, frame));
+}
 
-  switch (verdict.verdict) {
-    // A SETTLED `waitUntil` replays like any other step, and it must: what settled it was the
-    // TERMINAL observation, which IS an answer, and re-observing a wait that already finished
-    // would re-ask a question the run has answered. Only the unfinished ones re-observe.
-    case "replay":
-      if (verdict.entry.endedAt !== undefined) frame.clock.advance(verdict.entry.endedAt);
-      return verdict.entry.result;
-    case "replay-failed": {
-      if (verdict.entry.endedAt !== undefined) frame.clock.advance(verdict.entry.endedAt);
-      const e = verdict.entry.error as EntryError;
-      throw new EffectError(e.code, e.kind, e.message, e.detail);
-    }
-    case "replay-cancelled":
-      throw new Cancelled("this branch was cancelled on the recorded run");
-    case "diverged":
-      throw new RunDivergence(stepKeyString(key), verdict.recordedHash, verdict.programHash);
-    case "refused":
-    case "pending":
-    case "miss":
-      break;
-  }
-
-  if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? "cancelled");
-  const stop = host.options.shouldStop?.();
-  if (stop !== undefined) throw new RunReleased(stop);
-
-  countEffect(host, verdict);
-
-  const recorded = verdict.verdict === "pending" ? verdict.entry : undefined;
-  const reqId = recorded?.requestId ?? requestId(host.options.runId, key, inputHash);
-  if (verdict.verdict === "miss" || verdict.verdict === "refused") {
-    await host.journal.begin(key, inputHash, host.options.handler.now(), reqId);
-    if (frame.signal.cancelled) {
-      await host.journal.settle(key, { status: "cancelled" }, host.options.handler.now());
-      throw new Cancelled(frame.signal.reason ?? "cancelled");
-    }
-  }
-
+/**
+ * Observe a live `waitUntil` until a terminal observation or the deadline settles its entry.
+ */
+async function observeUntil(
+  host: EffectHost,
+  { key, pending, ctx }: LiveStep,
+  name: string,
+  probe: (frame: EffectFrame) => Promise<unknown>,
+  terminal: ((frame: EffectFrame, observation: unknown) => Promise<unknown>) | undefined,
+  every: string,
+  deadline: string,
+  frame: Frame,
+): Promise<unknown> {
   // THE DEADLINE IS ABSOLUTE AND IT IS READ BACK, never recomputed from a clock that has moved.
   // Recomputing `now + deadline` on every activation is how an hour-long wait becomes immortal:
   // each crash would hand it a fresh hour, and a run that should have given up at 11:00 goes on
@@ -547,22 +573,10 @@ async function performWaitUntil(
   const startedAt = host.journal.get(key)?.startedAt ?? host.options.handler.now();
   const deadlineAt = startedAt + parseDuration(deadline);
 
-  let attempt = (recorded?.observations ?? []).length;
+  // Which observation this is, carried on the request. It is not `ctx.attempt`, the attempt the
+  // request id names, which every observation shares.
+  let attempt = (pending?.observations ?? []).length;
   for (;;) {
-    const ctx: EffectContext = {
-      key,
-      signal: frame.signal,
-      requestId: reqId,
-      // The attempt `reqId` names. Every observation shares it; which observation this is rides on
-      // the request.
-      attempt: recorded?.attempt ?? 0,
-      ...(recorded?.external !== undefined ? { resume: recorded.external } : {}),
-      bind: async (external) => {
-        assertCrossable(external, `the binding of ${stepKeyString(key)}`);
-        await host.journal.bind(key, external);
-      },
-    };
-
     // EACH OBSERVATION GETS ITS OWN KEY NAMESPACE, and this is the half of the fix that is easy
     // to miss. The probe reaches the world by performing effects, and those effects allocate keys
     // in the frame it runs in. Share one namespace across observations and observation 2's probe
