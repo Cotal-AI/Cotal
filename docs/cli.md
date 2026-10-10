@@ -330,7 +330,9 @@ Bare `cotal down` stops the whole local stack in dependency order and leaves man
 when their runtime lets them outlive the manager. Before signalling the manager it verifies the spare
 capability of the exact recorded manager, which records what that manager's stop does with its
 seats, and it reports the agents left behind plus `cotal down --with-agents` as the explicit reap.
-When the manager had no managed agents, it prints no report.
+When the manager had no managed agents, it prints no report. When they cannot be listed, for
+example on a user-auth mesh with no login on this machine, it prints
+`could not list managed agents (<reason>)` and the stop continues.
 The built-in pty runtime keeps each PTY inside the manager process, so those seats cannot outlive
 it: every manager stop stops and deprovisions them, and `down` reports them as stopped. Every manager
 stop the CLI makes runs this one path: `down`, Ctrl-C on a foreground `cotal up`, the teardown after
