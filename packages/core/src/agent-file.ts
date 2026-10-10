@@ -400,6 +400,12 @@ export function composeWirePersona(args: WirePersonaArgs, existing?: AgentDef): 
   return def;
 }
 
+/** The persona catalog of a root, `<root>/.cotal/agents`. Every surface that loads, lists or names
+ *  a persona derives the directory from here, so moving the catalog moves all of them together. */
+export function personaDir(root: string): string {
+  return join(root, ".cotal", "agents");
+}
+
 /** Resolve a name-or-path to an agent file. A path (absolute, contains a slash — `/` or, on
  *  Windows, `\` — or ends in `.md`) is used as given; a bare name maps to the directory
  *  convention `<root>/.cotal/agents/<name>.md`. */
@@ -407,7 +413,7 @@ export function agentFilePath(root: string, nameOrPath: string): string {
   if (isAbsolute(nameOrPath)) return nameOrPath;
   if (nameOrPath.includes("/") || nameOrPath.includes("\\") || nameOrPath.endsWith(".md"))
     return resolve(root, nameOrPath);
-  return join(root, ".cotal", "agents", `${nameOrPath}.md`);
+  return join(personaDir(root), `${nameOrPath}.md`);
 }
 
 /** One `.cotal/agents/*.md` catalog entry. A malformed file is an `error` row, not a throw —
@@ -422,7 +428,7 @@ export interface PersonaCatalogEntry {
 /** The workspace persona catalog: every `.cotal/agents/*.md` under `root`, sorted by filename
  *  stem. Filesystem-only — no mesh. Missing directory ⇒ empty catalog, not an error. */
 export function listPersonaCatalog(root: string): PersonaCatalogEntry[] {
-  const dir = join(root, ".cotal", "agents");
+  const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
