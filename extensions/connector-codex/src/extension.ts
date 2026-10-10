@@ -87,6 +87,12 @@ async function listCodexModels(): Promise<ModelCatalog> {
         clearTimeout(timer);
         reject(new Error(`codex app-server exited (${code}) before model/list answered`));
       });
+      // A write to a pipe the child already closed fails on stdin, which the ChildProcess does not
+      // forward; without this listener that `error` is uncaught and takes the manager down.
+      child.stdin!.on("error", (e) => {
+        clearTimeout(timer);
+        reject(new Error(`codex app-server stdin failed before model/list answered (${e.message})`));
+      });
       child.stdin!.write(
         JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "cotal", title: "Cotal", version: "0.0.0" } } }) + "\n",
       );
