@@ -228,26 +228,40 @@ function meshFile(space: string): string {
   return join(meshesDir(), meshFileName(space));
 }
 
-/** Remove every PRE-HEX registry file that records one of `spaces` (`<encodeURIComponent>.json`
- *  stems from older builds). Matched by each document's own `space` - never by decoding the
- *  filename, which would case-fold on this filesystem - so a legacy record can neither shadow nor
- *  resurrect a mesh the canonical file no longer records. A file that will not parse is left for
- *  {@link loadMeshes} to refuse by name. The sweep reads every other record, so a batch shares one. */
-function removeLegacyMeshFiles(spaces: ReadonlySet<string>): void {
+/** Every PRE-HEX registry file (`<encodeURIComponent>.json` stems from older builds), by the space it
+ *  records. Matched by each document's own `space` - never by decoding the filename, which would
+ *  case-fold on this filesystem - so a legacy record can neither shadow nor resurrect a mesh the
+ *  canonical file no longer records. A file that will not parse is left for {@link loadMeshes} to
+ *  refuse by name. The scan reads every record, so a batch shares one. */
+function legacyMeshFiles(): Map<string, string[]> {
+  const bySpace = new Map<string, string[]>();
   let files: string[];
   try {
     files = readdirSync(meshesDir());
   } catch {
-    return; // no registry yet
+    return bySpace; // no registry yet
   }
-  const canonical = new Set([...spaces].map(meshFileName));
   for (const f of files) {
-    if (canonical.has(f) || !f.endsWith(".json")) continue;
+    if (!f.endsWith(".json")) continue;
     try {
-      const doc = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
-      if (spaces.has(doc.space)) rmSync(join(meshesDir(), f), { force: true });
+      const { space } = JSON.parse(readFileSync(join(meshesDir(), f), "utf8")) as MeshEntry;
+      if (f !== meshFileName(space)) bySpace.set(space, [...(bySpace.get(space) ?? []), f]);
     } catch {
-      /* unparseable stray - not provably a record of these spaces, leave it */
+      /* unparseable stray - not provably a record of any space, leave it */
+    }
+  }
+  return bySpace;
+}
+
+/** Remove the {@link legacyMeshFiles} that record one of `spaces`. */
+function removeLegacyMeshFiles(spaces: Iterable<string>, legacy: ReadonlyMap<string, readonly string[]>): void {
+  for (const space of spaces) {
+    for (const f of legacy.get(space) ?? []) {
+      try {
+        rmSync(join(meshesDir(), f), { force: true });
+      } catch {
+        /* left like an unparseable stray: whether a failed unlink should fail the write or removal is #3735 */
+      }
     }
   }
 }
@@ -279,7 +293,7 @@ export function recordMeshes(entries: Iterable<MeshEntry>): void {
     renameSync(tmp, file); // atomic replace — a reader never sees a half-written record
     spaces.add(m.space);
   }
-  if (spaces.size > 0) removeLegacyMeshFiles(spaces); // a pre-hex record for these spaces must not survive as a duplicate
+  if (spaces.size > 0) removeLegacyMeshFiles(spaces, legacyMeshFiles()); // a pre-hex record for these spaces must not survive as a duplicate
 }
 
 /** Drop a mesh from the registry (on `cotal down` / a stale-entry prune). Absent ⇒ no-op. */
@@ -287,19 +301,14 @@ export function removeMesh(space: string): void {
   removeMeshes([space]);
 }
 
-/** {@link removeMesh} for several meshes, with one pre-hex sweep for the whole batch. Each record is
- *  removed as `spaces` yields it, before the next is pulled, so a generator can act on each removal
- *  before the next one. An empty batch touches nothing. */
+/** {@link removeMesh} for several meshes, with one pre-hex scan for the whole batch. Each mesh is
+ *  removed with its pre-hex records as `spaces` yields it, before the next is pulled, so a generator
+ *  can act on each removal before the next one. An empty batch touches nothing. */
 export function removeMeshes(spaces: Iterable<string>): void {
-  const removed = new Set<string>();
-  try {
-    for (const space of spaces) {
-      rmSync(meshFile(space), { force: true });
-      removed.add(space);
-    }
-  } finally {
-    // Also when a removal fails partway: a pre-hex record would resurrect a removed mesh in every listing.
-    if (removed.size > 0) removeLegacyMeshFiles(removed);
+  let legacy: Map<string, string[]> | undefined;
+  for (const space of spaces) {
+    rmSync(meshFile(space), { force: true });
+    removeLegacyMeshFiles([space], (legacy ??= legacyMeshFiles())); // else a pre-hex record would resurrect the mesh in every listing
   }
 }
 
@@ -351,24 +360,15 @@ export function meshesForRoot(root: string): MeshEntry[] {
 /** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed. An empty
  *  batch touches nothing. */
 function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
-  const released = new Set<string>();
   // Cleared right after its own entry, so a pointer that cannot be cleared stops the batch before the next
   // removal. Read per entry: a concurrent `cotal use` can move the pointer while the batch runs.
   function* releasing(): Generator<string> {
     for (const space of spaces) {
       yield space;
       if (getCurrent() === space) clearCurrent();
-      released.add(space);
     }
   }
-  try {
-    removeMeshes(releasing());
-  } finally {
-    // Read again once the pre-hex sweep is done, also after a failed removal: until the sweep removes a
-    // released mesh's pre-hex record, a concurrent `cotal use` can still select that mesh through it.
-    const current = released.size > 0 ? getCurrent() : undefined;
-    if (current !== undefined && released.has(current)) clearCurrent();
-  }
+  removeMeshes(releasing());
 }
 
 /**
