@@ -1,28 +1,27 @@
 /**
- * The manager's v0.4 SERVICE CONTRACT (control-surface P2 item 1): the §13.7 cluster document +
+ * The manager's v0.4 SERVICE CONTRACT: the §13.7 cluster document +
  * compiled command contracts that let the manager register as an ordinary `service` endpoint and
- * serve typed commands on the `ep.*` rails, dual-served beside its bespoke
- * `ctl.<tier>.<owner>.<actor>` control subjects until 1d deletes those.
+ * serve typed commands on the `ep.*` rails.
  *
  * This module is PURE DATA + schema (no broker, no barrier, no wire I/O): the content-addressed
  * cluster document (the authority for every command's served shape) and the provenance-branded
  * `compileContract` pairs each `EpCommandDef` must carry. The registration/serve WIRING lives in
  * the manager (`registerManagerService`).
  *
- * REVISION 2 (slice 1b): the FULL op fan-out. Every served `ctl` op maps to a typed command; the
+ * REVISION 2: the FULL op fan-out. Every served `ctl` op maps to a typed command; the
  * v0.3 op names map onto the Appendix-B caller vocabulary where one exists (`start` -> `spawn`;
  * the named `stop` -> `despawn` — on the v0.3 surface a named stop and a despawn are the same
  * terminal; the self no-name `stop` -> `stop` with authz-mode `self`; the per-agent `status`
- * read -> `inspect`, distinct from the 1a manager-level `status`). Targeting: `despawn`/`attach`
+ * read -> `inspect`, distinct from the manager-level `status`). Targeting: `despawn`/`attach`
  * ride owner mode (the target block names the agent's principal + lifecycle uid; the fresh
- * resolver checks currency). `child` mode is DELIBERATELY NOT DECLARED anywhere — the panel's 1b
- * gate requires a DURABLE spawner record before child mode exists, so it fails closed by absence
+ * resolver checks currency). `child` mode is DELIBERATELY NOT DECLARED anywhere — child mode
+ * requires a DURABLE spawner record before it exists, so it fails closed by absence
  * until that record lands; own-child narrowing on despawn/attach meanwhile rides the SAME
  * `authorizeNamedControl` policy the ctl privileged tier runs (in-memory spawner, identical
  * source both doors). `ledger` mode is likewise absent (admin != ledger in static mode): every
  * admin-class command is untargeted + capability-gated — the broker grant (who holds the
  * request-publish row) stays the load-bearing tier boundary, exactly as the ctl cred layer is
- * today; the 1c migration table names who mints which capability.
+ * today.
  *
  * Capability labels (describe/grant vocabulary, one per tier class):
  *   manager.read     status / ps / inspect / models / list-personas / show-persona
@@ -54,7 +53,7 @@ export const MANAGER_CLUSTER_URN = "ai.cotal.manager";
 
 // ---- output/input schemas (closed unless the payload is genuinely open) ------------------------
 
-/** The read-only manager-health output (1a). Manager-LEVEL — per-agent rows are `ps`/`inspect`. */
+/** The read-only manager-health output. Manager-LEVEL — per-agent rows are `ps`/`inspect`. */
 const STATUS_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -315,7 +314,7 @@ const INSPECT_INPUT_SCHEMA = {
  *  fresh object per field, because the canonical serializer refuses a shared reference as circular. */
 const nonBlank = () => ({ type: "string", pattern: "^\\s*\\S" }) as const;
 
-/** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the 1b
+/** `spawn` input: EXACTLY the ctl `start` op's coercion surface (manager.ts `opStart`, the
  *  fidelity oracle) — same fields, same types, nothing extra. Deep semantics (connector-specific
  *  launchOptions keys) stay in the SHARED handler/connector validation. */
 const SPAWN_INPUT_SCHEMA = {
@@ -361,11 +360,11 @@ const SPAWN_INPUT_SCHEMA = {
  *  than carrying a second, driftable copy of it. */
 export const SPAWN_INPUT_KEYS: readonly string[] = Object.keys(SPAWN_INPUT_SCHEMA.properties);
 
-/** `spawn` success output (P2 item 2): the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
- *  (name + the owner/actor/uid addressing triple item 1 addresses by) plus the goal coordinates
+/** `spawn` success output: the ACTION ACCEPTANCE floor — the ALLOCATED agent identity
+ *  (name + the owner/actor/uid addressing triple) plus the goal coordinates
  *  (goalId = the request id), the accepted readiness budget a synchronous follower must outlive,
- *  and the executor coordinate (the manager incarnation its terminal fences on). No secret material
- *  (pin 7). The spawned identity + outcome ride the goal's progress + terminal, not this reply. */
+ *  and the executor coordinate (the manager incarnation its terminal fences on). No secret material.
+ *  The spawned identity + outcome ride the goal's progress + terminal, not this reply. */
 const SPAWN_OUTPUT_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -422,7 +421,7 @@ const STOP_OUTPUT_SCHEMA = {
   properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
 
-// P2 item 6: attach returns the holder-bound §13.6 session GRANT, never a 127.0.0.1 ws:// URL. The
+// Attach returns the holder-bound §13.6 session GRANT, never a 127.0.0.1 ws:// URL. The
 // grant is a signed, presenter-equality-bound offer (sessionId/subjects/serving/exp/sig) — non-bearer
 // (a leak releases nothing) and never logged. The caller redeems it over the mesh (meshSessionTransport)
 // with a per-session rails-only cred it mints itself. The object is signature-validated, not schema-shaped.
@@ -670,7 +669,7 @@ const LAUNCH_INPUT_SCHEMA = {
     spec: { type: "object" },
   },
 } as const;
-/** `launch` success output (P2 item 2, ruling 3): the SAME ACTION ACCEPTANCE floor as `spawn` - the
+/** `launch` success output: the SAME ACTION ACCEPTANCE floor as `spawn` - the
  *  allocated identity + goal coordinates. The manifest details (requested/runId/hash) that the
  *  pre-action reply carried are re-derivable by the deploy caller (it submitted the runId + name) and
  *  are not part of the goal acceptance; the spawned outcome rides the goal terminal. */
@@ -679,7 +678,7 @@ const LAUNCH_OUTPUT_SCHEMA = SPAWN_OUTPUT_SCHEMA;
 // The resume/preservation family (admin maintenance coordination). Inputs pin the coordination
 // keys; the INVENTORY payload and the plan/result outputs stay OPEN objects — their deep schema
 // is the SHARED `parseResumeControlArgs`/plan validation in the handlers (the ctl parser is the
-// single deep gate both doors run), and item 2's action model reshapes these surfaces anyway.
+// single deep gate both doors run), and the action model reshapes these surfaces anyway.
 const ATTEMPT_INPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["attemptId"],
   properties: { attemptId: { type: "string", minLength: 1 } },
@@ -895,7 +894,7 @@ const ROWS: CommandRow[] = [
   { name: "resolve-agent", capability: "manager.spawn", input: RESOLVE_AGENT_INPUT_SCHEMA, output: RESOLVE_AGENT_OUTPUT_SCHEMA, targeted: false, handler: "resolveAgent" },
   { name: "spawn", capability: "manager.spawn", input: SPAWN_INPUT_SCHEMA, output: SPAWN_OUTPUT_SCHEMA, targeted: false, handler: "spawn" },
   // `owner` = the caller's own domain (the spawn capability's standing mint); `any` = the operator
-  // instrument's cross-agent reach (rev 3, the 1c admin-reach decision): the any-mode subject row
+  // instrument's cross-agent reach (rev 3): the any-mode subject row
   // is mintable only under operator policy (§13.2), so the broker grant is the tier boundary and
   // the handler maps mode `any` to its admin authorization path — no wire synonym command.
   { name: "despawn", capability: "manager.lifecycle", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "despawn" },
@@ -951,22 +950,22 @@ const TABLE = serviceContractTable(ROWS);
  *  LAZY: a pair compiles on its first access, so importing the module alone pays no Ajv compile. */
 export const MANAGER_CONTRACTS = TABLE.contracts;
 
-/** Every §13.7 contract artifact the manager PUBLISHES to the EPC store at registration (P2 item
- *  1, 1c): each DISTINCT schema root plus its single-member closure manifest — the two artifacts
+/** Every §13.7 contract artifact the manager PUBLISHES to the EPC store at registration: each
+ *  DISTINCT schema root plus its single-member closure manifest — the two artifacts
  *  a caller fetches at a command's input/output CLOSURE digest (`fetchContractClosure` walks
  *  manifest → root) to recompile the digest-matching validators. The cluster document + ITS
  *  manifest ride separately ({@link managerClusterArtifacts}). */
 export const managerContractArtifactValues = TABLE.artifactValues;
 
-/** The 1a `status` pair, kept as a named export (existing callers/smokes). */
+/** The `status` pair, kept as a named export (existing callers/smokes). */
 export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: CompiledContract } =
   new Proxy({} as { input: CompiledContract; output: CompiledContract }, {
     get: (_, key: string | symbol) => MANAGER_CONTRACTS.status[key as "input" | "output"],
   });
 
 /** The §13.7 cluster DOCUMENT: the content-addressed authority for the manager's served command
- *  surface. Revisions: 3 = the 1c any-mode despawn/attach admission; 4 = item-2's spawn-as-action;
- *  5 = item-6's `attach` output flip (ws:// URL → the holder-bound §13.6 session grant).
+ *  surface. Revisions: 3 = the any-mode despawn/attach admission; 4 = spawn-as-action;
+ *  5 = the `attach` output flip (ws:// URL → the holder-bound §13.6 session grant).
  *
  *  6 = `launch` accepts the inline `spec` of a remote manifest deploy. The handler branch for it
  *  merged in ahead of the schema, so the compiled contract refused every request that carried the

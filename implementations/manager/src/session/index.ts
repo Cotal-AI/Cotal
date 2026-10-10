@@ -1,5 +1,5 @@
 /**
- * P2 item 6 — the manager's mesh-attach session plane: the offer mint + redeem enforcement, the
+ * The manager's mesh-attach session plane: the offer mint + redeem enforcement, the
  * PTY ↔ rail bridge, and the application framing over the core §13.6 session composite. The
  * generic composite (grant/redeem/rails/ledger) lives in `@cotal-ai/core` +
  * `implementations/auth`; this module is the manager-side CONSUMER that replaces the loopback

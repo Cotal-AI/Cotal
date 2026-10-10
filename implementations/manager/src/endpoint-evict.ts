@@ -1,6 +1,6 @@
 /**
- * The manager's VERIFIED-EVICTION seam for its own endpoint-registration barrier (SPEC 13.1, P2
- * item 3, slice 3a). A restart re-registers the SAME logical instanceId with an ADVANCED epoch, and
+ * The manager's VERIFIED-EVICTION seam for its own endpoint-registration barrier (SPEC 13.1). A
+ * restart re-registers the SAME logical instanceId with an ADVANCED epoch, and
  * §13.1 requires the SUPERSEDED serve family to die BEFORE the new authority is visible — so the
  * registration barrier's PHASE 2 must VERIFY-EVICT the predecessor's serve principal. The `$SYS`
  * scan → KICK → verify capability lives with the DELIVERY DAEMON (co-located with the broker), never
@@ -158,7 +158,7 @@ export function makeManagerEndpointEvictionEvidence(opts: {
       r = await untilDeliveryAdminAnswers(opts.unreachableWaitMs ?? 0, ask, (reason, delayMs) =>
         opts.log(`manager-endpoint-evict: ${principal}: the ctl.delivery-admin rail did not answer (${reason}); retrying in ${delayMs / 1000}s`));
     } catch (e) {
-      // NO-ORACLE = LOUD (pin 3, SPEC 13.1, no-fallbacks): the delivery-admin rail is unreachable, so
+      // NO-ORACLE = LOUD (SPEC 13.1, no-fallbacks): the delivery-admin rail is unreachable, so
       // eviction is UNKNOWN. THROW naming the cure so the barrier's PHASE-2 error carries it and the
       // gate stays frozen — never a silent skip that could resurrect old-epoch authority.
       throw new Error(

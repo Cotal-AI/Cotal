@@ -1,5 +1,5 @@
 /**
- * The manager console's browser session-client bundle ENTRY (P2 item 6). esbuild bundles this (and
+ * The manager console's browser session-client bundle ENTRY. esbuild bundles this (and
  * ONLY this: the browser-safe core subpath + nats-core's ws connect) into
  * `dist/console/session-bundle.js`, served as a static asset. It runs IN THE BROWSER — the manager's
  * node side never imports it (nats-core's ws path is baked into the bundle at build time; node rides

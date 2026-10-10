@@ -1,11 +1,11 @@
 /**
- * The manager-side session ESTABLISHMENT (P2 item 6): mint the holder/target-lifecycle/
+ * The manager-side session ESTABLISHMENT: mint the holder/target-lifecycle/
  * instance+epoch-bound OFFER, and enforce its ONE-USE redemption through the §13.6 composite.
  *
- * Item 6 owns the offer mint + the STATIC redeem enforcement (this module) + the PTY bridge + the
- * CLI/console clients + restart termination. The auth-service USER-MODE redemption handler
+ * The wired path is the offer mint + the STATIC redeem enforcement (this module) + the PTY bridge
+ * + the CLI/console clients + restart termination. The auth-service USER-MODE redemption handler
  * (callout-minted per-session credentials) and the barrier session reconciler (the auth session
- * ledger's `reconcileSessionForTakeover`) are the #29 auth-trigger slice — OUT of item 6. This
+ * ledger's `reconcileSessionForTakeover`) are the #29 auth-trigger slice, outside that path. This
  * module exposes both halves through ONE {@link RedemptionSeam} interface: {@link
  * staticRedemptionSeam} (wired) and {@link userModeRedemptionSeam} (a loud refusal until #29 lands
  * — a user-mode attach must fail, never silently degrade to the static path).
@@ -35,13 +35,13 @@ import {
 } from "@cotal-ai/core";
 import { MANAGER_ENDPOINT } from "../manager-service-contract.js";
 
-/** The attached agent's incarnation coordinate — the "target lifecycle" the offer binds (pin 1). */
+/** The attached agent's incarnation coordinate — the "target lifecycle" the offer binds. */
 export interface SessionTarget {
   name: string;
   lifecycleUid: string;
 }
 
-/** The item-6 attach offer: the signed §13.6 grant plus the manager-side target binding. The REPLY
+/** The attach offer: the signed §13.6 grant plus the manager-side target binding. The REPLY
  *  to the caller carries the `grant` only (holder-bound, non-bearer — a leak releases nothing);
  *  `target` stays server-side (the caller already named it in the attach request). */
 export interface AttachOffer {
@@ -51,8 +51,8 @@ export interface AttachOffer {
 
 export interface MintAttachOfferArgs {
   space: string;
-  /** The serving manager incarnation: its lifecycleUid + the current serve-gate epoch (item-3 seam
-   *  — the §13.1 endpoint gate epoch; a successor incarnation advancing it refuses old sessions). */
+  /** The serving manager incarnation: its lifecycleUid + the current serve-gate epoch (the
+   *  §13.1 endpoint gate epoch; a successor incarnation advancing it refuses old sessions). */
   serving: { instanceId: string; epoch: number };
   /** The redeeming caller's triple, taken from the authenticated attach request (ctx.subject.caller). */
   holder: { id: string; lifecycleUid: string; processEpoch: number };
@@ -172,7 +172,7 @@ export interface StaticRedemptionDeps {
 }
 
 /**
- * The STATIC redeem seam (item 6's wired path): the manager runs the §13.6 redemption — verify the
+ * The STATIC redeem seam (the wired path): the manager runs the §13.6 redemption — verify the
  * signed grant, then `redeemSession` (the one-use `issuing` create-CAS + presenter-equality + the
  * gate-pinned stage + the finalize's fresh epoch re-checks) — and, for the SERVING half, mints,
  * stages, releases and revokes a real per-session credential through {@link SessionServing}.
@@ -285,12 +285,12 @@ export function staticRedemptionSeam(deps: StaticRedemptionDeps): RedemptionSeam
 
 /** The USER-MODE redeem seam: UNWIRED (the #29 auth-trigger slice owns the callout-minted
  *  per-session credential path). It REFUSES LOUD, naming the path — a user-mode attach fails rather
- *  than degrading to the static seam (item-6 binding no-fallback rule). */
+ *  than degrading to the static seam (no fallbacks). */
 export function userModeRedemptionSeam(): RedemptionSeam {
   const refuse = (): Promise<never> => Promise.reject(new EpEnvelopeError(
     "unimplemented",
     "user-mode session redemption (callout-minted per-session credentials) is not wired in this build; " +
-      "it is the #29 auth-trigger slice. A user-mode attach fails loud rather than degrading (SPEC 13.6, item-6 no-fallback).",
+      "it is the #29 auth-trigger slice. A user-mode attach fails loud rather than degrading (SPEC 13.6).",
   ));
   return { redeem: refuse, serving: refuse };
 }

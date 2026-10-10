@@ -1,18 +1,18 @@
 /**
- * The manager's SESSION PLANE (P2 item 6, 6b): offer mint + redeem ENFORCEMENT + PTY-bridge
+ * The manager's SESSION PLANE: offer mint + redeem ENFORCEMENT + PTY-bridge
  * standup. Each live session serves on its OWN short-lived connection under its OWN per-session
  * credential (SPEC 13.6); the standing connection this plane's ledger rides carries no session rail. The manager holds a single {@link ManagerSessionPlane} field; this module
  * keeps manager.ts surgical — the wiring is a boot line, an attach-handler call, and a stop line.
  *
- * STATIC design (item-6, coordinator-ruled): the mint and the redeem COLLAPSE into
+ * STATIC design: the mint and the redeem COLLAPSE into
  * {@link ManagerSessionPlane.establishAttach}, with the presenter fixed to the AUTHENTICATED attach
  * caller (`ctx.subject.caller`). This is deliberate and buys three things: (1) no un-redeemed-offer
  * window (the offer is born redeemed — a leaked grant releases nothing, and there is no dangling
- * bearer-ish artifact); (2) no new ep command and no `manager-service-contract` churn (item-2 is
- * live-editing that file); (3) redeem enforcement is still core's `redeemSession` — the one-use
+ * bearer-ish artifact); (2) no new ep command and no `manager-service-contract` churn;
+ * (3) redeem enforcement is still core's `redeemSession` — the one-use
  * `issuing` create-CAS plus presenter-equality on the signed grant, unchanged. The WIRE
  * offer/redeem SEPARATION (a second CLI presentation that mints the caller's per-session
- * credential) is the USER-MODE #29 shape; that path stays out of item 6 and refuses loud here.
+ * credential) is the USER-MODE #29 shape; that path refuses loud here.
  *
  * The manager cannot import implementations/auth (implementations never import each other), so the
  * durable ledger is a manager-local {@link kvManagerSessionLedger} over the SAME core row/key

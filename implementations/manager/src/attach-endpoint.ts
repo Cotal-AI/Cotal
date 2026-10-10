@@ -19,7 +19,7 @@ const ASSETS: Record<string, { path: string; type: string }> = {
 
 /** Anything the console page needs to render itself, served from this dir. `session-bundle.js` is
  *  the pre-built (esbuild) mesh §13.6 session client — present only in a built dist, so the page
- *  falls back to a clear "bundle not loaded" notice when running from source (P2 item 6). */
+ *  falls back to a clear "bundle not loaded" notice when running from source. */
 const PAGE: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "console/index.html"), type: "text/html" },
   "/app.js": { path: join(here, "console/app.js"), type: "text/javascript" },
@@ -52,7 +52,7 @@ export interface FeedEvent {
   data: unknown;
 }
 
-/** What `POST /session/<name>` returns: the console's mesh §13.6 session establishment (P2 item 6).
+/** What `POST /session/<name>` returns: the console's mesh §13.6 session establishment.
  *  The `grant` is the holder-bound offer (no ws:// URL, non-bearer); `wsUrl` is the broker's
  *  localhost websocket listener; `creds` is the per-session, rails-only session-caller credential the
  *  browser connects with. NO 127.0.0.1 terminal transport — the terminal rides the mesh session. */
@@ -62,19 +62,19 @@ export interface SessionEstablishment {
   creds: string;
 }
 
-/** The manager-injected session establisher (P2 item 6): given a managed agent name, mint the offer
+/** The manager-injected session establisher: given a managed agent name, mint the offer
  *  through the ONE {@link import("./session/plane.js").ManagerSessionPlane} + the per-session caller
  *  credential, and return what the browser needs to connect. INJECTED — the face never constructs a
- *  plane; the manager wires the single plane + the cred mint at boot (6b-2). Absent ⇒ the route 503s
- *  (an open mesh with no console session client, or the pre-6b-2 stub). */
+ *  plane; the manager wires the single plane + the cred mint at boot. Absent ⇒ the route 503s
+ *  (an open mesh with no console session client). */
 export type SessionEstablisher = (name: string) => Promise<SessionEstablishment>;
 
 /**
  * The manager's local HTTP face. It serves the **console** (a lightweight xterm.js page + its
  * assets) and is the browser's credential broker: `POST /session/<name>` mints a mesh §13.6 session
  * for the console to drive the terminal over the broker's WebSocket listener. The terminal never
- * rides a manager-hosted socket (P2 item 6 replaced the loopback `ws://.../attach/` transport with
- * the mesh session, closing the bearer-less-local hole) — `cotal attach` reaches a manager on
+ * rides a manager-hosted socket (the mesh session replaced the loopback `ws://.../attach/`
+ * transport, closing the bearer-less-local hole) — `cotal attach` reaches a manager on
  * another machine over the mesh, not by dialing this face.
  *
  * **Where it binds, and why it is credentialed.** The bind address is an explicit option (default
@@ -112,8 +112,8 @@ export class AttachEndpoint {
     /** Events replayed to each console as it connects to `/feed` (e.g. the current roster). */
     private readonly snapshot: () => FeedEvent[],
     port = 0,
-    /** P2 item 6: the manager-injected mesh-session establisher backing `POST /session/<name>`
-     *  (the console's session-client transport). Absent ⇒ the route 503s. Wired at 6b-2. */
+    /** The manager-injected mesh-session establisher backing `POST /session/<name>`
+     *  (the console's session-client transport). Absent ⇒ the route 503s. */
     private readonly establishSession?: SessionEstablisher,
     /** Bind address, and the host advertised in {@link consoleUrl}. Defaults to loopback; the
      *  manager passes an operator-chosen address when the console is meant to be reachable from
@@ -132,7 +132,7 @@ export class AttachEndpoint {
     this.#port = port;
     this.#host = host;
     this.#http = createServer((req, res) => this.#onRequest(req, res));
-    // HTTP-only face: refuse any WebSocket upgrade with a clean 400 (P2 item 6 removed the loopback
+    // HTTP-only face: refuse any WebSocket upgrade with a clean 400 (there is no loopback
     // `ws://.../attach/` terminal transport — the console drives the terminal over the mesh session).
     // A proper response beats leaving a stray/malformed upgrade hanging or resetting it abruptly.
     this.#http.on("upgrade", (_req, socket) => socket.end("HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n"));
@@ -240,7 +240,7 @@ export class AttachEndpoint {
           return;
         }
       }
-      // P2 item 6: the console's mesh §13.6 session establishment. `POST /session/<name>` mints the
+      // The console's mesh §13.6 session establishment. `POST /session/<name>` mints the
       // holder-bound offer + the per-session caller credential (via the injected establisher) and
       // returns {grant, wsUrl, creds} for the browser to open the caller rail — no ws:// terminal
       // transport in the reply.
@@ -280,9 +280,9 @@ export class AttachEndpoint {
     }
   }
 
-  /** `POST /session/<name>` (P2 item 6): establish a mesh §13.6 session for the console and return
+  /** `POST /session/<name>`: establish a mesh §13.6 session for the console and return
    *  {grant, wsUrl, creds}. POST because it has side effects (it mints a one-use offer + a
-   *  per-session credential). 503 when no establisher is wired (open mesh / pre-6b-2). */
+   *  per-session credential). 503 when no establisher is wired (open mesh). */
   #onSession(req: IncomingMessage, res: ServerResponse, path: string): void {
     if (req.method !== "POST") {
       res.writeHead(405, { allow: "POST" }).end("method not allowed");
