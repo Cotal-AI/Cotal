@@ -31,6 +31,12 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     rows.push({ profile, variant, permissions: permissionsFor(profile, space, pr, opts), producer: "permissionsFor" });
   };
   const run = { endpoint: "manager", runId: "census-run", takeoverId: "take0001", instanceId: instance, epoch: 1 };
+  const environment = (profile: Profile, actor: string) => {
+    const owner = `u_${"a".repeat(26)}`;
+    one(profile, { environmentManager: { owner, instanceId: instance, lifecycleUid: uid,
+      authorityEndpoint: "test.example.environment", authorityInstanceId: instance,
+      expiresAt: Math.floor(Date.now() / 1000) + 300 } }, "manager-only", { ...principal, owner, actor });
+  };
   const producers: Record<Profile, () => void> = {
     agent() {
       one("agent");
@@ -85,6 +91,10 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         one("remote-manager", { remoteManager: { owner: "local", instanceId: instance, actor } }, actor.startsWith("manager_exec") ? "executor" : "server", { ...principal, actor });
       }
     },
+    "environment-bootstrap": () => environment("environment-bootstrap", `manager_bootstrap_${instance}`),
+    "environment-manager-supervisor": () => environment("environment-manager-supervisor", `manager_${instance}`),
+    "environment-manager-executor": () => environment("environment-manager-executor", `manager_exec_${instance}`),
+    "environment-manager-goal-writer": () => environment("environment-manager-goal-writer", `manager_goal_${instance}`),
   };
   const nonProfiles = ["membership-observer", "connection-evictor"];
   assert.deepEqual(Object.keys(producers).sort(), Object.keys(CREDENTIAL_LIFETIMES).filter((kind) => !nonProfiles.includes(kind)).sort(), "every Profile must have a producer");
@@ -93,7 +103,8 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
   for (const view of USER_TOKEN_VIEWS) {
     const required = VIEW_REQUIRED_SCOPE[view];
     const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
+    const sessionClaim = { endpoint: "manager", sessionId: session, epoch: 1, exp: 2_000_000_000 };
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
     // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
     // ownership and registration validation are graded by the live exchange suites, not this census.
     const produce = calloutPermissions(
@@ -101,6 +112,11 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
       async (selectedOwner, selectedInstance) => {
         assert.equal(selectedOwner, owner);
         assert.equal(selectedInstance, instance);
+      },
+      async (selectedPrincipal, claim) => {
+        assert.deepEqual(selectedPrincipal, { owner, actor: "census", lifecycleUid: uid });
+        assert.deepEqual(claim, { endpoint: sessionClaim.endpoint, sessionId: sessionClaim.sessionId, epoch: sessionClaim.epoch });
+        return sessionClaim;
       },
     );
     if (view === "manager-service") {
@@ -236,6 +252,10 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
+  // Manager-only infrastructure duties, like remote-manager. This classification is not
+  // an isolation proof; host admission and the child UID boundary remain separate requirements.
+  "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
+  "environment-manager-goal-writer",
 ]);
 
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */
