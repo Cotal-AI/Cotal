@@ -1213,7 +1213,7 @@ it is not limited to child processes owned by the manager.
 
 ```bash
 cotal describe <endpoint> [--on <instance>]                        [--space <s>]
-cotal invoke <endpoint> <command> [--args '<json>']              [--space <s>]
+cotal invoke <endpoint> <command> [--on <instance>] [--args '<json>'] [--space <s>]
 cotal invoke <endpoint> <command> --name <agent> [--admin]       [--space <s>]
 ```
 
@@ -1233,6 +1233,18 @@ endpoint's schemas - this is the same trust chain every built-in control command
 auth mesh: the manager registers its service on both static and per-user meshes (a signed-in user
 rides their bearer; each visible or invoked command still requires its existing grant, and cross-agent
 reach needs the `admin` scope). An open mesh has no service registry.
+
+For an endpoint other than `manager`, both commands require an explicit `--on <instance>` and a
+registered user-auth mesh. They acquire a dedicated caller from the account authority for that
+instance and command selection. `--creds`, `--admin`, `--name`, `--self` and session targeting are
+unsupported on this path. A broker override must match the registered broker.
+
+The deployment must install its public trust record at
+`<root>/.cotal/auth/space.<hex>/endpoint-deployment-trust.json`. The protected directories require
+0700 and the regular file requires 0600, owned by the invoking user. Symlinks, missing, oversized,
+expired or mismatched records refuse before acquisition. The file is rechecked before connecting.
+The CLI binds the accepted caller generation and resolved service to the signed receipt before
+invocation. It does not borrow manager credentials or retry on a legacy rail.
 
 ## Managed seats
 

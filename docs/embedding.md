@@ -165,6 +165,23 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `CotalEndpoint`, subjects, message types | the wire client and shapes. |
 | `ParsedArgs` *(type)* | the shape the daemon runners take (see below). |
 
+### Generic endpoint callers
+
+`resolveEndpointCallerTarget(flags, selection, { deadlineMs? })` from `@cotal-ai/workspace` uses
+the selected registered user-auth mesh. The selection names one endpoint instance and explicit
+commands, including `describe`. The registered provider must implement `endpointCallerAuthority`.
+It returns `{ nc, space, server, root, caller, receipt, service }`; the consumer owns closing `nc`.
+The helper binds the accepted issued caller and resolved service to the verified receipt. It
+refuses raw credentials and does not use manager instruments or split-repair retries.
+
+The deployment installs its public record at
+`<root>/.cotal/auth/space.<hex>/endpoint-deployment-trust.json`. `loadEndpointDeploymentTrust(root,
+space, exchangeOrigin)` checks owned 0700 directories, an owned 0600 regular file, bounded bytes
+and the public record's pins. Its `assertCurrent()` rechecks bytes and file identities; the caller
+helper runs that check immediately before connecting. Neither export supplies deployment trust,
+a login session or authority-side lifecycle enforcement. Export availability and source CLI
+execution alone do not establish authenticated or installed-package acceptance.
+
 For a Linux Unix-socket adapter, `peerCredentials(socket)` from `@cotal-ai/seat` returns
 kernel-observed peer `pid`, `uid` and `gid`. Compare these against the host's authorization
 policy; request-supplied identity and process liveness do not replace that policy or a
