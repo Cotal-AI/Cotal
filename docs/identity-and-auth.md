@@ -588,6 +588,32 @@ material** rather than through `COTAL_CREDS` in an environment every descendant 
 inherits (see [Configuration](config.md#launch-material)); a session you drive by hand
 still sets `COTAL_CREDS` itself.
 
+## Hosted endpoint authority
+
+The experimental `startAuthService` endpoint-authority composition receives a deployment
+assignment transaction and serves dedicated `/endpoint-service-authority` and
+`/endpoint-caller-authority` HTTP doors. Its `endpointDeploymentTrust` handle projects public
+pins from the authenticated host store and assigned account. The deployment root distributes
+those pins through its authenticated configuration channel. Responses and catalogs never
+install trust. `parseEndpointDeploymentTrustRecord` validates the closed public record but
+does not authenticate arbitrary JSON.
+
+The optional provider methods `endpointCallerAuthority` and `endpointServingControlAuthority`
+use the real signed-in session, explicit deployment pins and an exact instance selection.
+Caller receipts bind the bearer digest, principal, commands and serving currency. Control
+requires the activated holder proof. Application commands still go directly to the serving
+endpoint. A caller reads its native issued generation with `issuedUserCaller` using
+`connectionAcceptedToken` for its connection nonce. `assertEndpointCallerResolvedService`
+checks the native describe against the verified caller receipt before invocation.
+
+Caller acquisition rechecks bearer and receipt expiry after its final authority read.
+An ordinary caller source also requires the serving gate to remain open at its recorded
+registration and process currency. These checks do not establish drain or eviction.
+
+The embedded host publishes its listener with `saveAuthServiceInfo` when using the local
+registered session provider. Installed CLI acquisition, independent serving workers,
+clock-race and uncertain-write proofs, drain and eviction remain gated.
+
 ## Honest limitations (v0)
 
 - **The signing key is hot** on the mint/manager box of a static-auth mesh; the "real

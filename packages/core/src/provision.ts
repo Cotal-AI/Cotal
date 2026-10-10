@@ -85,7 +85,7 @@ import {
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
 import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, endpointPlaneStreamNames, eptReqStreamName, eptStreamName, hardenedAuthorityStreamNames, timerWriterDurable, timerWriterGrants } from "./endpoint-binding.js";
-import { epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
+import { endpointToken, epsSubject, epCallerReplyFilter, assertGeneration, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, type EpCaller, type IssuedCaller } from "./endpoint-subjects.js";
 import { acceptedReadGrant, acceptedBucket, importNativeSubjectPermissions, issuedBucket, writeAcceptedRow, type IssuanceSeam, type IssuedAuthorityRef } from "./issued-authority.js";
 import { admissionBucket, admissionKey, revocationKey } from "./run-admission.js";
 import { runDriverGrants, runMediatorGrants, runOperatorGrants, type RunDriverGrantArgs, type RunOperatorGrantArgs } from "./run-driver-grants.js";
@@ -105,6 +105,7 @@ import {
 export type Profile =
   | "agent"
   | "manager-caller"
+  | "endpoint-caller"
   | "observer"
   | "admin"
   | "supervisor"
@@ -255,6 +256,7 @@ export const ROTATION_RENEWED_TTL_SEC = 30 * 24 * 60 * 60;
 export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePolicy> = {
   agent: { class: "mixed", note: "manager children, foreground spawn/join, and cotal mint static outputs all use this profile; split or repair flow required before default exp" },
   "manager-caller": { class: "mixed", note: "short-lived user-auth view bound to the bearer expiry and one manager instance" },
+  "endpoint-caller": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "minimal issued caller, pinned to one endpoint instance with explicit operations" },
   observer: { class: "static-operator-managed", note: "out-of-band dashboard/audit credential from cotal mint" },
   admin: { class: "static-operator-managed", note: "out-of-band elevated dashboard/audit credential from cotal mint" },
   supervisor: { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "manager", note: "manager's always-on endpoint; the manager holds the DATA seed and self-remints via the endpoint creds source" },
@@ -586,6 +588,8 @@ export interface MintOpts {
   endpointCapabilities?: EpCapability[];
   /** `manager-caller` profile only: the one manager instance every request row pins. */
   managerInstanceId?: string;
+  /** Trusted issuer input only. No agent/admin/Manager baseline is added. */
+  endpointCaller?: { endpoint: string; instanceId: string; capabilities: EpCapability[] };
   /** The caller's lifecycle UID (SPEC §13.1), minted by the managing authority BEFORE the
    *  entity is reachable. REQUIRED with `endpointCapabilities` — every endpoint-rail row
    *  forge-locks it as the third caller token. */
@@ -1026,7 +1030,7 @@ export async function mintPublicUserJwt(
   opts: MintOpts,
 ): Promise<{ jwt: string; exp: number }> {
   if (!isUserNkey(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
-  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
+  if (!["remote-manager", "endpoint-serve", "endpoint-caller", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
     throw new Error(`mintPublicUserJwt: profile "${profile}" is not part of the closed remote manager protocol`);
   const pr: MintPrincipal = {
     owner: opts.principal?.owner ?? DEV_OWNER,
@@ -1071,7 +1075,7 @@ export async function mintPublicUserJwt(
 
 /** The profiles whose credential carries caller rails, and can therefore be minted as an
  *  issuance (SPEC 13.15). Everything else is infrastructure or a one-shot with no rail to bind. */
-const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer", "manager-caller"]);
+const ISSUABLE_PROFILES: ReadonlySet<Profile> = new Set<Profile>(["agent", "control-caller-privileged", "control-caller-admin", "deployer", "manager-caller", "endpoint-caller"]);
 
 /** Build the NATS user permission object for a profile: a default-deny allow-list scoped to
  *  exactly what each profile does. Every profile is now enumerated least-privilege — the former
@@ -1102,12 +1106,15 @@ export function permissionsFor(
   // The "endpoint-serve" profile is excluded so its own arm below keeps the call-mintCreds redirect.
   if (opts.endpointServe && profile !== "endpoint-serve")
     throw new Error(`permissionsFor: endpointServe rides the dedicated "endpoint-serve" profile - a serve credential is per-instance authority (SPEC 13.9), never folded into a "${profile}" cred`);
+  if (opts.endpointCaller && profile !== "endpoint-caller")
+    throw new Error('permissionsFor: endpointCaller requires the dedicated "endpoint-caller" profile');
   // An issuance binds CALLER rails (SPEC 13.15). A profile with no caller rail has nothing to bind
   // the generation to, so `issued` on it is a misconfiguration refused here, never dropped.
   if (opts.issued && !ISSUABLE_PROFILES.has(profile))
     throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
+  if (profile === "endpoint-caller") return endpointCallerPermissions(space, pr, opts);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer
   if (profile === "supervisor") return supervisorPermissions(space, pr); // always-on daemon
   if (profile === "provisioner") return provisionerPermissions(space, pr); // ephemeral onboarding authority
@@ -1557,6 +1564,29 @@ export function permissionsFor(
 
 /** One seat's manager control view. It carries no agent messaging or delivery surface, and every
  * manager request, including describe, is pinned to one exact registered instance. */
+function endpointCallerPermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
+  if (!opts.issued) throw new Error("endpoint-caller requires issued authority");
+  if (!pr.lifecycleUid) throw new Error("endpoint-caller requires lifecycleUid");
+  const grant = opts.endpointCaller;
+  if (!grant) throw new Error("endpoint-caller requires endpointCaller");
+  const instanceId = assertLifecycleToken(grant.instanceId, "instanceId");
+  endpointToken(grant.endpoint);
+  if (grant.capabilities.length === 0) throw new Error("endpoint-caller requires explicit operations");
+  for (const cap of grant.capabilities) {
+    if (cap.endpoint !== grant.endpoint) throw new Error("endpoint-caller capability names another endpoint");
+    if (cap.journal) throw new Error("endpoint-caller journal resources are unsupported");
+    if (cap.instanceId !== undefined && cap.instanceId !== instanceId) throw new Error("endpoint-caller capability names another instanceId");
+  }
+  const caps = [{ endpoint: grant.endpoint, command: "describe" }, ...grant.capabilities]
+    .map(cap => ({ ...cap, instanceId, instanceOnly: true, routes: [] as EpCapability["routes"] }));
+  const caller = issuedCallerFor({ owner: pr.owner, actor: pr.actor, uid: assertLifecycleToken(pr.lifecycleUid) }, opts);
+  const rows = epCallerGrantRows(space, caps, caller);
+  return {
+    pub: { allow: [`$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`, acceptedReadGrant(space, opts.issued.acceptedToken), ...rows.pub] },
+    sub: { allow: [`_INBOX_${pr.connId}.>`, ...rows.sub] },
+  };
+}
+
 function managerCallerPermissions(space: string, pr: MintPrincipal, opts: MintOpts): Record<string, unknown> {
   if (!pr.lifecycleUid)
     throw new Error("permissionsFor(manager-caller): a lifecycleUid is required");
@@ -2065,7 +2095,7 @@ function endpointServePermissions(space: string, pr: MintPrincipal, opts: MintOp
   // from the brand-verified artifact surface, not the caller.
   const ephemeralCommands = snap.commands.filter((cmd) => opts.endpointServe!.surface[cmd].class === "ephemeral");
   const rows = epServeGrantRows(space, {
-    endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, ephemeralCommands,
+    endpoint: snap.endpoint, instanceId: snap.instanceId, epoch: snap.epoch, ephemeralCommands, routes: opts.endpointServe.routes,
   });
   // §13.9 bind rows, from the BRANDED snapshot only (journal class is registered truth,
   // pools are the authorizing provisioner's pre-created durables): a journal-class instance
