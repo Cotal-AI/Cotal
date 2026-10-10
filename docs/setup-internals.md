@@ -252,8 +252,9 @@ dir. An unproven entry is refused the same way: a missing identity answer is not
 released install.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
-atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
-whole reconcile and every `cotal ext` mutation; a live reconcile is waited on, not mistaken for a crash.
+atomic hard-link publish, PID + process-start liveness, dead-owner reclaim, and one bounded wait that
+covers both a live owner and a reclaim in progress) guards the whole reconcile and every `cotal ext`
+mutation; a live reconcile is waited on, not mistaken for a crash.
 A crash **cursor** is journaled before each connector mutation and cleared only at the final commit, so
 a SIGKILL mid-run is detected on the next boot (fail loud → `ext seed --repair` re-installs the
 interrupted connector before it clears the evidence). Seed children are authenticated (they carry the

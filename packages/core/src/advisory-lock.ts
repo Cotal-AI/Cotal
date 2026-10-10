@@ -59,7 +59,8 @@ export interface AcquireOptions {
   readonly waitMs?: number;
   /** Poll interval while waiting (default 200). */
   readonly pollMs?: number;
-  /** The loud error thrown when the wait bound elapses with the lock still live-held. */
+  /** The loud error thrown when the wait bound elapses with the lock still live-held or its reclaim
+   *  still in progress; `owner` is that live holder. */
   readonly onTimeout?: (owner: LockOwner) => Error;
 }
 
@@ -303,7 +304,8 @@ function reclaimPollMs(pollMs: number): number {
 
 /**
  * Acquire the lock at `path`. Returns a handle whose {@link HeldLock.release} removes it (idempotent,
- * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live one, then throws.
+ * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live owner or a
+ * reclaim in progress, then throws.
  */
 export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
   const waitMs = opts.waitMs ?? 300000;
@@ -319,11 +321,9 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
       case "retry":
         continue;
       case "reclaiming":
-        sleepSync(reclaimPollMs(pollMs));
-        continue;
       case "held":
         if (Date.now() >= deadline) throw lockTimeoutError(path, opts, result.owner, waitMs);
-        sleepSync(pollMs);
+        sleepSync(result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs);
     }
   }
 }
