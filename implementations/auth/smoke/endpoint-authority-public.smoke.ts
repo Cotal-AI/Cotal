@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -16,18 +17,42 @@ import { fromSeed } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import * as core from "@cotal-ai/core";
 import * as authApi from "@cotal-ai/auth";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal, awaitBrokerReady, killAndAwaitExit } from "@cotal-ai/smoke-kit";
+import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal, awaitBrokerReady, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 import { MemoryStore } from "./_hosted-auth-fixture.js";
 import { pickFreePort } from "./_free-port.js";
 import { serializedFor } from "../src/serialized.js";
 import { openAuthorityClient, type AuthorityClient } from "../src/authority-client.js";
+import { runEndpointCallerCLI, type EndpointCallerCLIResult } from "../../cli/smoke/endpoint-caller-child.js";
 
-const reportPath = process.env.ENDPOINT_U12_REPORT;
+// CI source entry owns its report and login home. Child text stays in the private report.
+// Named CLI predicates are separate from native A/B and installed-package acceptance.
+const hostedCLI = process.argv.includes("--cli-describe-causal");
+if (hostedCLI && (process.argv.slice(2).length !== 1 || ["ENDPOINT_PUBLIC_CLI", "ENDPOINT_U12_REPORT", "ENDPOINT_PREPARE_REFUSAL", "COTAL_HOME"].some(name => process.env[name] !== undefined))) throw new Error("hosted CLI entry requires only --cli-describe-causal without fixture overrides");
+const publicLog = console.log.bind(console), publicError = console.error.bind(console);
+if (hostedCLI) {
+  // Dependency diagnostics are not part of this entry's public protocol.
+  console.log = console.error = console.warn = console.info = console.debug = () => {};
+}
+const hostedReportDir = hostedCLI ? mkdtempSync(join(tmpdir(), "endpoint-cli-report-")) : undefined;
+const cliMode = hostedCLI || process.env.ENDPOINT_PUBLIC_CLI === "1";
+let namedControlsAttempted = 0, namedFailure: string | null = null;
+let activeCLI: string | null = null, cliPhase: "setup" | "child" | "predicate" | "complete" = "setup";
+const cliChecks: string[] = [];
+const cliOutcomes: { cell: string; result: unknown }[] = [];
+let cliCustodyOutstanding = false;
+const reportPath = hostedReportDir ? join(hostedReportDir, "result.json") : process.env.ENDPOINT_U12_REPORT;
 if (!reportPath) throw new Error("owned report required");
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN + "-endpoint-public-"));
 const releasePath = teardownPathOnSignal(dir);
+const previousFixtureHome = process.env.COTAL_HOME;
+if (hostedCLI) {
+  const fixtureHome = join(dir, "host-home");
+  core.mkSecretDir(fixtureHome);
+  process.env.COTAL_HOME = fixtureHome;
+}
 const checks: string[] = [], cleanupErrors: string[] = [], connections: NatsConnection[] = [];
-const cell = (name: string, value: unknown) => { assert.ok(value, name); checks.push(name); console.log(JSON.stringify({ cell: name, passed: true, scope: "public-http-native-callout-diagnostic" })); };
+const cell = (name: string, value: unknown) => { if (hostedCLI) { namedControlsAttempted++; namedFailure = name; } assert.ok(value, name); checks.push(name); namedFailure = null; (hostedCLI ? publicLog : console.log)(JSON.stringify({ cell: name, passed: true, scope: "public-http-native-callout-diagnostic" })); };
 let broker: ReturnType<typeof spawn> | undefined, releaseBroker: (() => void) | undefined;
 let handle: authApi.AuthServiceHandle | undefined, failure: unknown;
 let policyWriter: AuthorityClient | undefined;
@@ -82,7 +107,7 @@ try {
   let currentAssignment: core.EndpointDeploymentAssignment | null = { account, lifecycleUid: core.mintLifecycleUid(), state: "active", expiresAt: ceiling.expiresAt };
   const assignment = structuredClone(currentAssignment), assignmentFlights = new Map<string, Promise<unknown>>();
   const deployment: core.EndpointAuthorityDeployment = { assignment, withCurrentAssignment: (expected, operation) => serializedFor(assignmentFlights, "deployment", async () => { if (!currentAssignment || core.canonicalJson(currentAssignment) !== core.canonicalJson(expected)) throw new Error("deployment assignment replaced"); core.parseEndpointDeploymentAssignment(currentAssignment); const result = await operation(); core.parseEndpointDeploymentAssignment(currentAssignment); return result; }) };
-  handle = await authApi.startAuthService({ context: { accountPublicKey: account.accountPublicKey, lifecycleUid: core.mintLifecycleUid() }, space, servers, store, storeIdentity: store.identity, stateDir, endpointAuthority: { policy, deployment } });
+  handle = await authApi.startAuthService({ context: { accountPublicKey: account.accountPublicKey, lifecycleUid: core.mintLifecycleUid() }, space, servers, store, storeIdentity: store.identity, stateDir, endpointAuthority: { policy, deployment }, ...(cliMode ? { publicFace: { port: 0, trustedProxy: false } } : {}) });
   cell("P02-public-startAuthService-ready", (await handle.readiness()).state === "ready");
   // Embedded hosts publish their returned listener handle for the local registered provider.
   // startAuthService intentionally does not install the CLI daemon's ambient discovery file.
@@ -134,9 +159,79 @@ try {
   const serveNc = await connect({ servers, ...core.standaloneConnectOpts({ tls: false, creds: new TextDecoder().decode(fmtCreds(active.serveJwt as string, fromSeed(new TextEncoder().encode(holder.seed)))) }), maxReconnectAttempts: 0 }); connections.push(serveNc);
   servingHandle = core.serveEndpoint(serveNc, space, adoption.grant, [{ command: "increment", contract, handler: () => ({ effects: ++effects }) }], { view: () => { throw new Error("delegated describe must use authenticated stock admission"); } }, { requestAuthority: adoption.requestAuthority });
   await serveNc.flush();
+  const runCLIChecks = async (handle: authApi.AuthServiceHandle) => {
+    // The host installs public trust. The child receives only its own remote registration,
+    // genuine device-login session and public sentinel, never the injected store or signing seeds.
+    assert.ok(handle.publicUrl, "CCLI-public-face-bound");
+    const clientRoot = join(dir, "remote-client"), clientHome = join(dir, "remote-home");
+    core.mkSecretDir(clientRoot);
+    core.mkSecretDir(join(clientRoot, ".cotal"));
+    core.mkSecretDir(join(clientRoot, ".cotal", "auth"));
+    const clientState = userAuthStateDir(clientRoot, space);
+    core.mkSecretDir(clientState);
+    authApi.saveIdpSession(clientHome, idpUrl, login.session);
+    const sentinelCredsPath = join(clientState, "sentinel.creds");
+    core.writeSecretFile(sentinelCredsPath, ordinary.sentinelCreds);
+    const publicUrl = handle.publicUrl;
+    const clientRecord = { v: 2, kind: "cotal.endpoint-deployment-trust", space, exchangeOrigin: new URL(publicUrl).origin, provisionedAt: Math.floor(Date.now() / 1000), trust };
+    core.parseEndpointDeploymentTrustRecord(clientRecord, { space, exchangeOrigin: new URL(publicUrl).origin });
+    const trustPath = join(clientState, "endpoint-deployment-trust.json");
+    core.writeSecretFile(trustPath, JSON.stringify(clientRecord));
+    const previousHome = process.env.COTAL_HOME;
+    try {
+      process.env.COTAL_HOME = clientHome;
+      recordMesh({ space, server: servers, root: clientRoot, mode: "user", origin: "manual", userAuth: { provider: authApi.cotalAuthProvider.name, idp: { url: idpUrl, issuer: origin, audience: origin }, remote: true, endpoints: { url: publicUrl }, sentinelCredsPath } });
+    } finally {
+      if (previousHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = previousHome;
+    }
+    // This is the source composition root with the existing seed guard, not an installed CLI.
+    // Explicit --space selects the separate remote root even though tsx resolves from the checkout.
+    const childInput = { cwd: fileURLToPath(new URL("../../../", import.meta.url)), timeoutMs: 30000, closeWaitMs: 1000, maxOutputBytes: 8192, env: { PATH: process.env.PATH, HOME: clientHome, COTAL_HOME: clientHome, XDG_CONFIG_HOME: join(clientHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" } };
+    const secrets = [login.session.token, ordinary.bearer, ordinary.sentinelCreds, caller.bearer, control.bearer, handle.cap, holder.seed, root.operator.seed!, auth.account.signingSeed!, active.serveJwt as string, active.attestation as string, cookie];
+    const diagnostic = (text: string) => {
+      let redacted = text;
+      for (const secret of secrets) if (secret) redacted = redacted.split(secret).join("[redacted]");
+      redacted = redacted.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted-jwt]").replace(/\bS[A-Z2-7]{57}\b/g, "[redacted-seed]");
+      const bytes = Buffer.from(redacted);
+      return { text: bytes.subarray(0, 8192).toString("utf8"), originalBytes: Buffer.byteLength(text), redactedBytes: bytes.length, truncated: bytes.length > 8192 };
+    };
+    const runCLI = async (name: string, args: string[]) => {
+      if (hostedCLI) { activeCLI = name; cliPhase = "child"; }
+      let result: EndpointCallerCLIResult;
+      try {
+        result = await runEndpointCallerCLI(childInput, args);
+      } catch (error) {
+        cliCustodyOutstanding = true;
+        cliOutcomes.push({ cell: name, result: { returnedResult: false, errorName: error instanceof Error ? error.name : "unknown", error: diagnostic(String(error)), reportedBoundary: "child-helper-rejected-before-result", terminalCustodyEstablished: false } });
+        throw error;
+      }
+      cliCustodyOutstanding = !result.closeObserved || result.closeWaitExpired;
+      cliOutcomes.push({ cell: name, result: { code: result.code, signal: result.signal, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, killAttempted: result.killAttempted, killAccepted: result.killAccepted, killError: result.killError === null ? null : diagnostic(result.killError), terminationReason: result.terminationReason, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, spawnError: result.spawnError === null ? null : { code: result.spawnError.code, message: diagnostic(result.spawnError.message) }, childError: result.childError === null ? null : { code: result.childError.code, message: diagnostic(result.childError.message) }, stdout: diagnostic(result.stdout), stderr: diagnostic(result.stderr), custody: cliCustodyOutstanding ? "unknown" : "known-child-close-observed", reportedBoundary: result.stderr.includes("native endpoint descriptor and verified caller receipt currency disagree") ? "receipt-currency-refusal" : "unclassified-child-result" } });
+      assert.ok(!cliCustodyOutstanding, name + "-known-child-close-required-custody-unknown");
+      assert.ok(!result.timedOut && result.terminationReason === null && result.spawnError === null && result.childError === null && !result.killAttempted && result.killAccepted === null && result.killError === null, name + "-ordinary-child-result-required");
+      if (hostedCLI) publicLog(JSON.stringify({ scope: "hosted-source-cli-child-result", cell: name, code: result.code, signalObserved: result.signal !== null, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, receiptCurrencyRefusalObserved: result.stderr.includes("native endpoint descriptor and verified caller receipt currency disagree"), stdoutHasEndpoint: result.stdout.includes(endpoint), stdoutHasOwner: result.stdout.includes(`owner ${owner}`), stdoutHasInstance: result.stdout.includes(`instance ${instanceId}`), effects }));
+      return result;
+    };
+    const cliCell = (name: string, value: unknown) => { if (hostedCLI) { cliPhase = "predicate"; namedControlsAttempted++; namedFailure = name; } assert.ok(value, name); cliChecks.push(name); namedFailure = null; (hostedCLI ? publicLog : console.log)(JSON.stringify({ cell: name, passed: true, scope: "source-cli-remote-describe-diagnostic" })); };
+    const describe = await runCLI("CCLI01", ["describe", endpoint, "--on", instanceId, "--space", space]);
+    cliCell("CCLI01-source-remote-describe-exact-instance-zero-effect", describe.code === 0 && describe.signal === null && !describe.timedOut && describe.stdout.includes(endpoint) && describe.stdout.includes(`owner ${owner}`) && describe.stdout.includes(`instance ${instanceId}`) && effects === 0);
+    const wrongInstance = core.mintLifecycleUid();
+    const wrong = await runCLI("CCLI02", ["describe", endpoint, "--on", wrongInstance, "--space", space]);
+    cliCell("CCLI02-source-remote-wrong-instance-refused-zero-effect", wrong.code === 1 && wrong.signal === null && !wrong.timedOut && wrong.stderr.includes(`endpoint authority record endpoint-reservation.${wrongInstance} is absent/deleted`) && effects === 0);
+    const ungranted = await runCLI("CCLI03", ["invoke", endpoint, "other", "--on", instanceId, "--space", space]);
+    cliCell("CCLI03-source-remote-ungranted-command-refused-zero-effect", ungranted.code === 1 && ungranted.signal === null && !ungranted.timedOut && ungranted.stderr.includes("caller policy denied") && effects === 0);
+    core.writeSecretFile(trustPath, JSON.stringify({ ...clientRecord, exchangeOrigin: "https://other.example" }));
+    const wrongOrigin = await runCLI("CCLI04", ["describe", endpoint, "--on", instanceId, "--space", space]);
+    cliCell("CCLI04-source-remote-wrong-trust-origin-refused-zero-effect", wrongOrigin.code === 1 && wrongOrigin.signal === null && !wrongOrigin.timedOut && wrongOrigin.stderr.includes("endpoint trust record exchange origin mismatch") && effects === 0);
+    if (hostedCLI) { activeCLI = null; cliPhase = "complete"; }
+  };
+  // Hosted mode selects CLI-first diagnostic reach, not a change to either selection.
+  if (hostedCLI) await runCLIChecks(handle);
   const resolved = await core.resolveService(callerNc, space, endpoint, accepted, { instanceId, deadlineMs: 5000 });
   core.assertEndpointCallerResolvedService(resolved, caller.receipt);
   cell("R04-native-descriptor-receipt-bound", resolved.responder.instanceId === instanceId && resolved.owner === owner);
+  if (cliMode && !hostedCLI) await runCLIChecks(handle);
   const invoked = await core.invokeCommand(callerNc, space, resolved, "increment", undefined, { deadlineMs: 5000 });
   cell("R05-native-effect-through-public-caller-control", invoked.reply.ok && effects === 1);
   await assert.rejects(core.resolveService(callerNc, space, endpoint, accepted, { deadlineMs: 1200 }), /permission-denied|REFUSED BY THE BROKER/);
@@ -247,18 +342,54 @@ try {
   cell("R09-stale-root-projection-refused", true);
   }
 
-} catch (error) { failure = error; console.error(error instanceof Error ? error.stack : String(error)); }
+} catch (error) {
+  failure = error;
+  if (!hostedCLI) console.error(error instanceof Error ? error.stack : String(error));
+  else if (namedFailure) publicError(JSON.stringify({ scope: "hosted-source-cli-describe", failedCell: namedFailure, assertionFailure: error instanceof assert.AssertionError }));
+  else publicError("hosted CLI entry failed outside an original named predicate; private report retained");
+}
 finally {
-  clearTimeout(timer);
-  restoreClockProbe?.();
-  try { await servingHandle?.stop(); } catch (error) { cleanupErrors.push(String(error)); }
-  for (const nc of connections.reverse()) try { await nc.close(); await nc.closed(); } catch (error) { cleanupErrors.push(String(error)); }
-  try { await policyWriter?.close(); } catch (error) { cleanupErrors.push(String(error)); }
-  try { await handle?.close(); if (handle) await handle.closed; } catch (error) { cleanupErrors.push(String(error)); }
-  await new Promise<void>(resolve => { idpHttp.closeAllConnections(); idpHttp.close(() => resolve()); });
-  if (broker) try { await killAndAwaitExit(broker, "SIGTERM"); } catch (error) { cleanupErrors.push(String(error)); }
-  releaseBroker?.();
-  rmSync(dir, { recursive: true, force: true }); releasePath();
-  writeFileSync(reportPath, JSON.stringify({ scope: "public-http-native-callout-diagnostic", checks, assertions: checks.length, passed: !failure && cleanupErrors.length === 0, failure: failure ? String(failure) : null, cleanupErrors, startAuthServicePublicLifecycle: checks.includes("P02-public-startAuthService-ready"), rootProviderOrdinaryLogin: checks.includes("P03-root-provider-logged-in-bearer"), realUserCallout: checks.includes("P08-real-native-user-callout-connect"), providerEndpointSelectionAPI: checks.includes("R02-dedicated-signed-in-provider-receipt"), authenticatedDeploymentReceipt: checks.includes("R01-authenticated-host-trust-projection"), signerlessPublicServingControl: checks.includes("R03-holder-proved-public-serving-control"), effects, fullU1U2Acceptance: false, fixtureResidual: "Deployment signer/store/policy setup stays in trusted harness; exact policy-key writer has stream-wide leader metadata read, signerless adoption/control/serve connections in one harness process, no independent A/B worker proof." }, null, 2) + "\n", { mode: 0o600 });
-  if (failure || cleanupErrors.length) process.exitCode = 1;
+  try {
+    clearTimeout(timer);
+    restoreClockProbe?.();
+    try { await servingHandle?.stop(); } catch (error) { cleanupErrors.push(String(error)); }
+    for (const nc of connections.reverse()) try { await nc.close(); await nc.closed(); } catch (error) { cleanupErrors.push(String(error)); }
+    try { await policyWriter?.close(); } catch (error) { cleanupErrors.push(String(error)); }
+    try { await handle?.close(); if (handle) await handle.closed; } catch (error) { cleanupErrors.push(String(error)); }
+    await new Promise<void>(resolve => { idpHttp.closeAllConnections(); idpHttp.close(() => resolve()); });
+    if (broker) try { await killAndAwaitExit(broker, "SIGTERM"); } catch (error) { cleanupErrors.push(String(error)); }
+    const brokerExitObserved = !broker || broker.exitCode !== null || broker.signalCode !== null;
+    if (hostedCLI && !brokerExitObserved) cleanupErrors.push("owned broker exit unconfirmed");
+    if (!hostedCLI || brokerExitObserved) {
+      releaseBroker?.();
+      rmSync(dir, { recursive: true, force: true }); releasePath();
+    }
+    if (hostedCLI) {
+      if (previousFixtureHome === undefined) delete process.env.COTAL_HOME;
+      else process.env.COTAL_HOME = previousFixtureHome;
+    }
+    const privateFailure = failure ? String(failure) : null;
+    const boundedFailure = hostedCLI && privateFailure !== null ? Buffer.from(privateFailure).subarray(0, 8192).toString("utf8") : privateFailure;
+    writeFileSync(reportPath, JSON.stringify({ scope: "public-http-native-callout-diagnostic", checks, assertions: checks.length, passed: !failure && cleanupErrors.length === 0 && (!hostedCLI || !cliCustodyOutstanding), failure: boundedFailure, cleanupErrors: hostedCLI ? cleanupErrors.map(error => Buffer.from(error).subarray(0, 8192).toString("utf8")) : cleanupErrors, ...(hostedCLI ? { hostedCLI: true, activeCLI, cliPhase, namedFailure, namedControlsAttempted, brokerExitObserved } : {}), startAuthServicePublicLifecycle: checks.includes("P02-public-startAuthService-ready"), rootProviderOrdinaryLogin: checks.includes("P03-root-provider-logged-in-bearer"), realUserCallout: checks.includes("P08-real-native-user-callout-connect"), providerEndpointSelectionAPI: checks.includes("R02-dedicated-signed-in-provider-receipt"), authenticatedDeploymentReceipt: checks.includes("R01-authenticated-host-trust-projection"), signerlessPublicServingControl: checks.includes("R03-holder-proved-public-serving-control"), effects, ...(cliMode ? { cliMode: "source-remote-describe-only", cliChecks, cliAssertions: cliChecks.length, cliOutcomes, cliCustodyOutstanding, childRetirementProved: false, installedCLIQualification: false, cliPositiveInvokeAcceptance: false, cliWriteEffectAcceptance: false } : {}), fullU1U2Acceptance: false, fixtureResidual: "Deployment signer/store/policy setup stays in trusted harness; exact policy-key writer has stream-wide leader metadata read, signerless adoption/control/serve connections in one harness process, no independent A/B worker proof." }, null, 2) + "\n", { mode: 0o600 });
+    if (failure || cleanupErrors.length || cliCustodyOutstanding) process.exitCode = 1;
+    if (hostedCLI) {
+      const passed = checks.length + cliChecks.length;
+      const failedControls = namedControlsAttempted - passed;
+      const setupFailure = !!failure && failedControls === 0;
+      const failed = failedControls + Number(setupFailure) + Number(cleanupErrors.length > 0) + Number(cliCustodyOutstanding);
+      publicLog(JSON.stringify({ scope: "hosted-source-cli-describe", namedControlsAttempted, namedControlsPassed: passed, namedControlsFailed: failedControls, setupFailure, cliPhase, activeCLI, failedCell: namedFailure, cleanupConfirmed: cleanupErrors.length === 0 && brokerExitObserved && !cliCustodyOutstanding, cliCustodyOutstanding, knownBrokerExitObserved: brokerExitObserved, childRetirementProved: false, reportRetained: true, laterControlsUnreached: !!failure, installedCLIQualification: false, fullEndpointAcceptance: false }));
+      // Emit only this entry's safe terminal protocol, while dependency logs stay suppressed.
+      const log = console.log;
+      console.log = publicLog;
+      try { emitSentinel({ passed, failed }); } finally { console.log = log; }
+    }
+  } catch (error) {
+    if (!hostedCLI) throw error;
+    process.exitCode = 1;
+    publicError("hosted CLI cleanup or report did not complete; custody and report remain unconfirmed");
+    publicLog(JSON.stringify({ scope: "hosted-source-cli-describe", cleanupConfirmed: false, reportRetained: false, cliCustodyOutstanding, childRetirementProved: false, fullEndpointAcceptance: false }));
+    const passed = checks.length + cliChecks.length;
+    const failed = namedControlsAttempted - passed + Number(!!failure && namedControlsAttempted === passed) + 1;
+    publicLog(`COTAL_SMOKE_SENTINEL cells=${passed + failed} passed=${passed} failed=${failed}`);
+  }
 }
