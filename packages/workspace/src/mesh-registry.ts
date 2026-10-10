@@ -340,9 +340,18 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
+/** {@link removeMeshes}, then clear the `current` pointer if it names one of `spaces`. An empty batch
+ *  touches nothing. */
+function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
+  if (spaces.length === 0) return;
+  removeMeshes(spaces);
+  const current = getCurrent();
+  if (current && spaces.includes(current)) clearCurrent();
+}
+
 /**
  * Drop the entries recorded for THIS project root because the mesh they describe was just stopped
- * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer per removed entry.
+ * or wiped (`cotal down` / `cotal clean all`), releasing the `current` pointer if it names one.
  * Returns the removed space names.
  *
  * OPERATOR-REGISTERED entries are skipped. The root is shared, not owned: `cotal meshes add`
@@ -353,13 +362,8 @@ export function meshesForRoot(root: string): MeshEntry[] {
  * of those leaves.
  */
 export function removeMeshesByRoot(root: string): string[] {
-  const removed: string[] = [];
-  for (const m of meshesForRoot(root)) {
-    if (m.origin === "manual" || m.origin === "catalog") continue;
-    removeMesh(m.space);
-    if (getCurrent() === m.space) clearCurrent();
-    removed.push(m.space);
-  }
+  const removed = localMeshesForRoot(root).map((m) => m.space);
+  removeMeshesReleasingCurrent(removed);
   return removed;
 }
 
@@ -374,13 +378,8 @@ export function localMeshesForRoot(root: string): MeshEntry[] {
 /** Remove only the discovered entries owned by one proved account. Manual and local entries with
  *  the same root or IdP are never included. Returns removed names and clears a matching selection. */
 export function removeCatalogMeshes(ownerKey: string): string[] {
-  const removed: string[] = [];
-  for (const m of loadMeshes()) {
-    if (m.origin !== "catalog" || m.catalogOwner !== ownerKey) continue;
-    removeMesh(m.space);
-    if (getCurrent() === m.space) clearCurrent();
-    removed.push(m.space);
-  }
+  const removed = loadMeshes().filter((m) => m.origin === "catalog" && m.catalogOwner === ownerKey).map((m) => m.space);
+  removeMeshesReleasingCurrent(removed);
   return removed.sort();
 }
 
