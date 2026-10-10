@@ -50,7 +50,9 @@ pnpm build         # tsc build across all packages
 pnpm check         # every local check, :live suites included; runs every step and lists each failure at the end
 ```
 
-ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev. Node &gt;= 22.
+ESM only (`"type": "module"`); `tsx` runs TS directly, but packages import each other from their
+built `dist/`, so run `pnpm build` after `pnpm install` and after editing a package
+([docs/cli.md](docs/cli.md#running-it)). Node &gt;= 22.
 
 ## Repository map
 
