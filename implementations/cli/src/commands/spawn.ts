@@ -1043,6 +1043,11 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   }
   if (target.mode === "user" && target.userAuth?.remote && (enrollmentUrl || redeemedEnrollment)) {
     if (!redeemedEnrollment) {
+      // The record alone decides this refusal, and the redemption below spends the enrollment.
+      if (!target.userAuth.endpoints?.url) {
+        console.error(c.red(`✗ ${noExchangeEndpoint(space)}`));
+        process.exit(1);
+      }
       try {
         const provider = resolveAuthProvider();
         if (!provider.postAgentEnrollment)
@@ -1383,6 +1388,11 @@ async function shredAgentMaterial(
   await attemptCleanup(failed, "health file", () => rmSync(paths.health, { force: true }));
 }
 
+/** Both remote arms refuse a record that pins no exchange URL with this sentence, before any request. */
+function noExchangeEndpoint(space: string): string {
+  return `mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``;
+}
+
 /** Foreground REMOTE-USER onboarding — the participant path for a mesh registered with
  *  `meshes add --from` that advertises an agent-provisioning endpoint (U6 §2).
  *
@@ -1429,7 +1439,7 @@ async function provisionRemoteUserForeground(
   // Checked before the grant is requested, because `fail` exits without running the shred in the
   // catch below and would leave the granted material on disk.
   const exchangeUrl = "body" in source ? source.exchangeUrl : target.userAuth?.endpoints?.url;
-  if (!exchangeUrl) return fail(`mesh "${space}" records no exchange endpoint - re-register it with \`cotal meshes add ${space} --from <url> --mode user\``);
+  if (!exchangeUrl) return fail(noExchangeEndpoint(space));
   let body: unknown;
   const materialClaim = acquireLock(`${paths.actorToken}.launch.lock`, {
     waitMs: 0,
