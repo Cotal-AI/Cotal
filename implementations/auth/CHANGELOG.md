@@ -1,5 +1,33 @@
 # @cotal-ai/auth
 
+## 0.78.0
+
+### Minor Changes
+
+- c4cd8dc: `POST /manager-service-authority` now applies the exchange face's refusal budgets, as `POST /exchange` does. A missing or wrong loopback capability counts in the invalid-capability window, and a refused IdP token or request counts against the face's refused-exchange budget, per peer on the public face. After 30 refusals in a minute a further refusal answers 429, where the route used to answer 401 or 403 without limit. `ManagerServiceAuthorityCtx` now requires the `failures` and `badCaps` windows, so a host that builds it without them no longer compiles; see the upgrading guide.
+- 70fb24e: `SecretStore` gains `create(key, value)`, a write that stores the value only while the key is absent and resolves whether it did. `FsSecretStore` implements it with an exclusive create. `ensureCalloutAuth`, `ensureIssuer`, `ensureOwnerSecret` and the hosted auth plane's instance identity now write their first value through it and adopt the stored value when another caller created it first. Before, two concurrent first calls on one space each minted a value, the later `put` replaced the earlier one, and the earlier caller kept a value the store no longer held: one IdP subject could derive two owners, a bearer could be signed by a key the stored issuer does not publish, and a prepared broker could preload a callout account the auth service never loads. A store of your own must now implement `create` as one atomic step; see the upgrade guide.
+
+### Patch Changes
+
+- af7fd7a: `handleManagerServiceAuthority` now answers a body over 64 KiB with 413 and a body that is not JSON with 400 itself, and answers a JSON `null` body with the same 400 as a body without `idpToken`. Before, those rejections escaped the returned promise, so a host that served the export behind its own `http.createServer` exited on such a request instead of answering it. The auth service's own listeners already answered 413 and 400.
+- Updated dependencies [a7f39aa]
+- Updated dependencies [981b567]
+- Updated dependencies [8b92413]
+- Updated dependencies [a74b832]
+- Updated dependencies [d04629a]
+- Updated dependencies [905a78b]
+- Updated dependencies [8344353]
+- Updated dependencies [f9a71ce]
+- Updated dependencies [b9499b3]
+- Updated dependencies [c2d8362]
+- Updated dependencies [70fb24e]
+- Updated dependencies [de3c0f7]
+- Updated dependencies [a32e955]
+- Updated dependencies [7d13389]
+  - @cotal-ai/workspace@0.78.0
+  - @cotal-ai/core@0.78.0
+  - @cotal-ai/lang@0.78.0
+
 ## 0.77.1
 
 ### Patch Changes

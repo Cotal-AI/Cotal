@@ -1,5 +1,17 @@
 # @cotal-ai/lang
 
+## 0.78.0
+
+### Minor Changes
+
+- a74b832: `PrimitiveSpec.opensScope` is replaced by `scope`, the `ScopeKind` a primitive opens or `null`. A scope row in `PRIMITIVES` now has to name a member of `ScopeKind` to compile, and both engines read that kind from the table instead of casting the primitive's name to it, so a new scope primitive left out of the union no longer reaches the journal as a kind its readers do not know. Code that read `spec.opensScope` reads `spec.scope !== null`.
+
+### Patch Changes
+
+- 8b92413: The static captured-write check (L2032) now reads a scope's body position from the syntax table, as the argument just before the options bag. It used to name `fanOut` and `conclave` as the primitives whose body is the second argument, so a scope primitive added to the table with its body second had its first argument walked and a captured write in its body passed `validate` with no error. The five current scope primitives validate as before.
+- d04629a: Whether a scope calls the handler itself is now its own `dispatches` row in `scopeTraits`, and `performScope` reads it there. Before, it inferred dispatch from whether the scope hashes a subject, so changing `conclave`'s `hashesSubject` still typechecked and then silently dropped the conclave's durable request id, its cancel re-check after begin and its count against the effect ceiling (L4009), and let a migration walk into a settled conclave and call the handler's `openConclave` where it used to refuse with `UnwalkableScope`. Shipped behaviour is unchanged.
+- 905a78b: `waitUntil` now enters its step through the same code as every other effect. The replay verdicts, the cancellation checks, the host stop, request-id recovery and the `begin` append were written out a second time for `waitUntil`, so a rule changed in one copy could leave waits replaying, stopping or recovering differently from the rest. Behaviour is unchanged.
+
 ## 0.77.1
 
 ## 0.77.0

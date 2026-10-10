@@ -1,5 +1,13 @@
 # @cotal-ai/tmux
 
+## 0.78.0
+
+### Patch Changes
+
+- b4b8adc: The tmux driver's `closeWindow`, `closeWindowIfHeld` and `closePane`, and so the tmux runtime's stop and reap and the tmux `TerminalLayout`'s `close`, now read a target as already gone only from the start of tmux's own `can't find window: `, `can't find session: ` or `can't find pane: ` report, and throw on any other failure. Before, the phrase could match anywhere in stderr or the error message, so a close that failed on a missing socket or an unsafe socket directory, with one of those words in the socket path or the target, returned as a finished close, or for `closeWindowIfHeld` as a window it did not hold, while the window kept running.
+- 56f63a5: The tmux and cmux runtimes no longer leave a seat's launch script on disk. Each spawn wrote the seat's rendered launch env, including any model-provider keys and spawn env values it forwards, to an owner-only script in a temp directory and never removed it, so the values stayed there after the agent started and exited. The script now removes its directory before it starts the agent and does not start the agent when that removal fails, and a spawn whose tmux window or cmux tab fails to open removes it at once. `privateLaunch` and `paneCommand` now return the command together with the script's directory.
+- 2415517: `tmux.serverPid`, and so `TmuxRuntime.reap`, now throws a `tmux: couldn't read the server pid: ...` error with the original error as its cause when tmux cannot be queried, as the driver's other queries do. It used to rethrow the bare `Command failed: tmux display-message -p #{pid}` or `spawnSync tmux ENOENT` error. A server that is not running still reads as no server.
+
 ## 0.77.1
 
 ## 0.77.0

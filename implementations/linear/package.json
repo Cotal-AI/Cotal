@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/linear",
   "description": "Cotal Linear integration: serves the official Linear MCP server as a registered Cotal endpoint and adds the `linear` operator command.",
-  "version": "0.77.1",
+  "version": "0.78.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

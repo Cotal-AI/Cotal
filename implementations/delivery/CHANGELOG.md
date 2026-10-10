@@ -1,5 +1,23 @@
 # @cotal-ai/delivery
 
+## 0.78.0
+
+### Patch Changes
+
+- 87ef6f3: A hosted delivery `close()` whose lease release is in flight while the delivery connection drops now waits for the connection to reconnect, up to the broker-gone window (`COTAL_DELIVERY_BROKER_GONE_MS`, 15 seconds by default) counted from the drop, and repeats the release once on the reconnected connection before it decides. Before, a lease read or delete written to the dropped socket, or buffered while it was down, timed out after 5 seconds although the broker answered again, so `close()` rejected, every later `close()` and `drain()` returned that rejection, and a successor was refused until the bucket TTL expired the row. A release that still cannot be confirmed, including one whose connection does not come back within that window, still rejects.
+- Updated dependencies [a7f39aa]
+- Updated dependencies [981b567]
+- Updated dependencies [8344353]
+- Updated dependencies [f9a71ce]
+- Updated dependencies [b9499b3]
+- Updated dependencies [c2d8362]
+- Updated dependencies [70fb24e]
+- Updated dependencies [de3c0f7]
+- Updated dependencies [a32e955]
+- Updated dependencies [7d13389]
+  - @cotal-ai/workspace@0.78.0
+  - @cotal-ai/core@0.78.0
+
 ## 0.77.1
 
 ### Patch Changes
