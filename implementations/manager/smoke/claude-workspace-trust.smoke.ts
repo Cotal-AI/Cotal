@@ -68,6 +68,7 @@ try {
       ["custody", new CustodialPtyRuntime(join(root, "seats"))],
       ["tmux", new TmuxRuntime(tmuxSession)],
     ];
+    const failures: string[] = [];
     for (const [name, runtime] of runtimes) {
       const work = join(root, name); mkdirSync(work);
       const native = claudeConnector.buildLaunch({ ...opts, cwd: work, resolvedBinaries: { claude: binary } });
@@ -88,12 +89,18 @@ try {
         }
         assert.ok(trusted, `${name}: native Claude accepts managed workspace trust automatically`);
         console.log(`PASS ${name}: real Claude persisted trust through its own dialog; no model request`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(message);
+        console.error(`FAIL ${message}`);
       } finally {
         handle.stop({ graceful: false });
         await handle.waitForExit?.();
         discardLaunchArtifacts(native.artifacts);
       }
     }
+    console.log("CLAUDE WORKSPACE TRUST NATIVE COMPLETE");
+    assert.equal(failures.length, 0, failures.join("\n"));
   }
 } finally {
   if (ownsTmuxSession) execFileSync("tmux", ["kill-session", "-t", tmuxSession], { stdio: "ignore" });
