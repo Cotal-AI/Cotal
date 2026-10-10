@@ -10,6 +10,7 @@ import {
   dialerFor,
   dmDurable,
   dmStream,
+  isConsumerNotFound,
   parsePrincipalKey,
   resolvePeer,
   standaloneConnectOpts,
@@ -18,7 +19,7 @@ import {
   type Presence,
 } from "@cotal-ai/core";
 import { connectOrExit } from "@cotal-ai/workspace";
-import { jetstream, jetstreamManager, JetStreamApiCodes, JetStreamApiError } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 
 type Values = { space?: string; server?: string; creds?: string; limit?: string; durable?: string; json?: boolean };
 
@@ -117,7 +118,7 @@ export async function runPending(args: ParsedArgs): Promise<void> {
     try {
       info = await jsm.consumers.info(stream, durable);
     } catch (e) {
-      if (e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound) {
+      if (isConsumerNotFound(e)) {
         if (values.durable) notFoundDurable(durable, space);
         notFound(name, space);
       }

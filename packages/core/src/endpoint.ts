@@ -47,6 +47,7 @@ import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
 import { readAcceptedRow } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
+import { isJetStreamMissing } from "./jetstream-missing.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
@@ -57,7 +58,6 @@ import {
   AckPolicy,
   DeliverPolicy,
   JetStreamApiCodes,
-  JetStreamApiError,
   type JetStreamClient,
   type JetStreamManager,
   type Consumer,
@@ -7098,13 +7098,6 @@ export function isPermissionDenied(e: unknown): boolean {
   if (e instanceof PermissionViolationError) return true;
   if ((e as { cause?: unknown } | null)?.cause instanceof PermissionViolationError) return true;
   return /permissions?\s+violation/i.test(String((e as { message?: unknown } | null)?.message ?? ""));
-}
-
-/** True only for the structured JetStream API absence codes named by the caller. A status 404 or
- * message regex is too broad here: the catch sites use absence to produce a successful empty/fresh
- * result, so a permission denial, timeout, or protocol failure must never pass as "not found". */
-function isJetStreamMissing(e: unknown, ...codes: number[]): boolean {
-  return e instanceof JetStreamApiError && codes.includes(e.code);
 }
 
 /** The ordered consumer behind a KV watch, which nats.js keeps on the iterator and the KV types hide. */

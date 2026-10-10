@@ -1,5 +1,5 @@
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
-import { assertAdmittedSubscribe, chatStream, chatSubject, subjectMatches, waitConsumerConfig, waitConsumerName, type RunAdmissionView } from "@cotal-ai/core";
+import { assertAdmittedSubscribe, chatStream, chatSubject, isConsumerNotFound, subjectMatches, waitConsumerConfig, waitConsumerName, type RunAdmissionView } from "@cotal-ai/core";
 import { RunScopeAuthority, RunScopeDenied, WaitReceipts, type WaitReceipt } from "./run-scope-authority.js";
 
 export interface RunWaitMessage {
@@ -74,7 +74,7 @@ export function createRunWaitHost(
       try {
         await broker.jsm.consumers.delete(stream, waitConsumerName(requestId));
       } catch (error) {
-        if ((error as { code?: unknown })?.code !== 10014) throw error;
+        if (!isConsumerNotFound(error)) throw error;
       }
       receipts.close(requestId);
     },

@@ -62,9 +62,9 @@
  *    class, excluded by the one-plane-per-space composition; a foreign re-resolution of the name is
  *    made loud by the per-message exact-prefix validation in the drain.
  */
-import { AckPolicy, DeliverPolicy, JetStreamApiCodes, JetStreamApiError, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
+import { AckPolicy, DeliverPolicy, jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
-import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken, epAuthBucket, isConsumerNotFound, type PlaneConnTuple } from "@cotal-ai/core";
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
@@ -136,13 +136,6 @@ export interface AuthLedgerScanner {
   /** Tear down the owned credential+connection. */
   close(): Promise<void>;
 }
-
-/** STRUCTURAL not-found classification (not a message regex): @nats-io/jetstream@3.4.0 throws a
- *  ConsumerNotFoundError extends JetStreamApiError whose `.code` is the JS API err_code
- *  (`JetStreamApiCodes.ConsumerNotFound` = 10014); `.status` is the HTTP 404. The pre-clean proceeds
- *  ONLY on this exact structured shape — any other error fails the scan closed. */
-const isConsumerNotFound = (e: unknown): boolean =>
-  e instanceof JetStreamApiError && e.code === JetStreamApiCodes.ConsumerNotFound;
 
 /** The production scanner's BRAND (HIGH: security/distsys, site-1 re-verify): the ONLY way to be an
  *  AuthLedgerScanner the barrier registry accepts is to be built by {@link buildScanner} in THIS

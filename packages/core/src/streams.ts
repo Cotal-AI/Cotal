@@ -48,6 +48,7 @@ import {
 import type { KV } from "@nats-io/kv";
 import { idFromCreds } from "./identity.js";
 import { requireBrokerFloor } from "./broker-floor.js";
+import { isConsumerNotFound } from "./jetstream-missing.js";
 import { createEndpointStreams } from "./endpoint-binding.js";
 import { openAclRegistry, deleteAcl } from "./acls.js";
 import { openMembersRegistry, deleteMember } from "./members.js";
@@ -1001,7 +1002,7 @@ async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, n
       await jsm.consumers.info(stream, name);
       return true;
     } catch (e) {
-      if ((e as { code?: number }).code === 10014) return false;
+      if (isConsumerNotFound(e)) return false;
       throw e;
     }
   };
@@ -1012,7 +1013,7 @@ async function deleteConsumerIdempotent(jsm: JetStreamManager, stream: string, n
   } catch (e) {
     // An overlapping deletion can return not-found after our pre-read. Native post-state settles
     // disappearance, but cannot attribute that deletion or an acknowledgment to this caller.
-    if ((e as { code?: number }).code !== 10014) throw e;
+    if (!isConsumerNotFound(e)) throw e;
     if (!(await present())) return "disappeared";
     throw e;
   }
