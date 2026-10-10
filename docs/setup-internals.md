@@ -119,7 +119,11 @@ with the log path and a non-zero exit. It still launches nothing. The control pl
 `cotal_spawn` find a manager right after `up`. The control plane comes up in cutover order:
 old-manager preflight → **delivery daemon** (auth mode only) → **manager**, via
 `ensureControlPlane`
-([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The detached
+([`lib/delivery-proc.ts`](../implementations/cli/src/lib/delivery-proc.ts)). The preflight reads
+the manager record once and judges that one process: it stops a live manager whose
+`manager.<key>.delivery-aware` marker does not hold its pid, and leaves one whose marker does or
+that exited while the preflight looked. The stop signals only that pid. A manager that replaced the
+record in the meantime is left running, and the delivery daemon's own check judges it. The detached
 processes, all stopped by `cotal down`:
 
 With no explicit `--server`, `cotal up` auto-selects a free local port when the default broker

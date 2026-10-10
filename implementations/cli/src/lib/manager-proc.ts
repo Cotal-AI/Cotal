@@ -117,26 +117,22 @@ export function managerUp(space: string = folderSpace()): boolean {
 
 
 
-/** True if the live manager carries a delivery-aware marker BOUND to its current pid (i.e. it's THIS
- *  build, non-hosting). Fail-closed: the marker stores the pid it was written for, and this requires it
- *  to equal the live `manager.pid` — a stale marker left by a crash, a mismatch, or an unparseable file
- *  all read as NOT delivery-aware, so a live old hosting `manager.pid` can't be mistaken for non-hosting
- *  and the delivery preflight stops it. */
-export function managerHasDeliveryMarker(space: string = folderSpace()): boolean {
-  const markerPath = DELIVERY_AWARE_MARKER(space);
-  const pidPath = PID_PATH(space);
+/** True if the manager at `pid` carries a delivery-aware marker BOUND to it (i.e. it's THIS build,
+ *  non-hosting). `pid` comes from the caller's own record read: the manager removes its record on exit
+ *  and a start replaces it, so reading the pidfile again here would answer about a different process
+ *  than the one the caller judged. Fail-closed: the marker stores the pid it was written for, and a
+ *  stale marker left by a crash, a mismatch, or an unparseable file all read as NOT delivery-aware, so
+ *  a live old hosting manager can't be mistaken for non-hosting and the delivery preflight stops it. */
+export function managerHasDeliveryMarker(pid: number, space: string = folderSpace()): boolean {
   let markerPid: number;
-  let livePid: number;
   try {
-    // The pid record first: with no manager there is nothing to bind, so a leftover marker is never read.
-    livePid = Number(readFileSync(pidPath, "utf8").trim());
-    markerPid = Number(readFileSync(markerPath, "utf8").trim());
+    markerPid = Number(readFileSync(DELIVERY_AWARE_MARKER(space), "utf8").trim());
   } catch (e) {
-    // A manager removes both records on exit, so either can be gone by the time it is read.
+    // A manager removes its marker on exit, so it can be gone by the time it is read.
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw e;
   }
-  return Number.isFinite(markerPid) && Number.isFinite(livePid) && markerPid === livePid;
+  return markerPid === pid;
 }
 
 /** Start the control-plane manager detached (pid in `.cotal/manager.<spaceKey>.pid`, output to
@@ -326,8 +322,13 @@ export const MANAGER_PROCESS = {
  *  the delivery cutover preflight run it, so each holds the stop reservation, refuses a concurrent stop,
  *  and escalates a wedged manager to SIGKILL. A default stop signals only a manager that published the
  *  capability to spare its managed agents, and reports the agents it left; `withAgents` arms their reap
- *  instead. Throws, with the records kept, when the stop is refused or the death is not confirmed. */
-export async function stopManager(space: string = folderSpace(), { withAgents = false } = {}): Promise<boolean> {
+ *  instead. `pid` binds the stop to the manager the caller judged: a record a successor published since
+ *  is left whole and the stop returns false. Throws, with the records kept, when the stop is refused or
+ *  the death is not confirmed. */
+export async function stopManager(
+  space: string = folderSpace(),
+  { withAgents = false, pid }: { withAgents?: boolean; pid?: number } = {},
+): Promise<boolean> {
   const context = ctx(space);
   let spared: SpareSeatRow[] | undefined;
   let spareSeats: ManagerSpareSeats | undefined;
@@ -338,6 +339,7 @@ export async function stopManager(space: string = folderSpace(), { withAgents = 
     else if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);
   }
   const found = await stopLocalProcess(MANAGER_PROCESS, context, {
+    pid,
     owns: commandIsCotalSupervisor,
     beforeSignal: (attempt) => {
       if (attempt.target.token === undefined) {
@@ -356,6 +358,9 @@ export async function stopManager(space: string = folderSpace(), { withAgents = 
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
   });
+  // A stop that found no record of its own leaves the artifacts: with `pid` they belong to the
+  // successor whose record it left.
+  if (!found) return false;
   for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, context), { force: true });
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
   else if (spared) printSparedAgents(spared, spareSeats);

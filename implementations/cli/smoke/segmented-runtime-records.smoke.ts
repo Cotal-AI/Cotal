@@ -88,12 +88,12 @@ try {
 
   console.log("\n2) the delivery-aware marker is per-space too");
   place(MANAGER_DELIVERY_AWARE_MARKER, ALPHA, aPid);
-  check("alpha's marker is bound to alpha's live manager", managerHasDeliveryMarker(ALPHA));
-  check("...and beta, which has no marker, is not delivery-aware by proximity", !managerHasDeliveryMarker(BETA));
+  check("alpha's marker is bound to alpha's live manager", managerHasDeliveryMarker(aPid, ALPHA));
+  check("...and beta, which has no marker, is not delivery-aware by proximity", !managerHasDeliveryMarker(bPid, BETA));
   // The old shared name made this specific mis-pairing possible: one marker holding alpha's pid,
   // read as beta's answer. It cannot be produced now, so assert the pairing rather than the name.
   place(MANAGER_DELIVERY_AWARE_MARKER, BETA, aPid);
-  check("a marker holding ANOTHER space's pid does not make this space delivery-aware", !managerHasDeliveryMarker(BETA));
+  check("a marker holding ANOTHER space's pid does not make this space delivery-aware", !managerHasDeliveryMarker(bPid, BETA));
 
   console.log("\n3) stopping one space's manager leaves the other's running and recorded");
   const stopped = await stopManager(ALPHA);
