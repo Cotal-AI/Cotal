@@ -4773,8 +4773,12 @@ export class Manager {
         this.retiring.delete(a.name);
         console.error(`despawn ${a.name}: the agent's retirement completed; the name is free for reuse`);
       }
-    } else {
+    } else if (cur) {
       console.error(`despawn ${a.name}: retirement confirmed for a prior lifecycle of "${a.name}"; the current hold is left intact`);
+    } else {
+      // No hold stands, as after an orphaned spawn's rollback: that lifecycle was never despawned and
+      // has no successor, so this line names neither.
+      console.error(`retire ${a.name}: lifecycle ${a.lifecycleUid} retired; the name had no hold to clear`);
     }
   }
 
