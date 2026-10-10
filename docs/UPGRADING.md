@@ -34,6 +34,20 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Managed Claude workspace trust
+
+Upgrade the Claude connector, core, manager and chosen terminal runtime together. Managed
+launches now accept the authorized workspace through Claude's native startup dialog. They
+no longer require a prior interactive visit to that directory. Claude retains its normal
+repository and linked-worktree trust semantics, including any trust it persists for later
+sessions. Foreground launches and tool permission modes do not change.
+
+The launch recipe includes optional startup choices before its final confirmation. A custom
+runtime must implement `LaunchSpec.confirmBefore`, or refuse a recipe carrying it. Ignoring
+it leaves an untrusted launch at the native dialog until startup times out. Existing running
+seats need no restart for this change; adopt the new runtime before launching new seats.
+No credentials, mesh records or operator configuration files need manual migration.
+
 ## AG-UI `takeCodePoints` export in 0.79.0
 
 `@cotal-ai/connector-core` no longer exports `takeCodePoints`. The AG-UI preview splitter is its

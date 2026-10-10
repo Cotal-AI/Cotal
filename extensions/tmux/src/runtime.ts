@@ -46,7 +46,8 @@ export class TmuxRuntime implements Runtime {
     let launch: { command: string; dir: string };
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
+      if (spec.confirmBefore?.length && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore);
       tmux.ensureSession(this.session, cwd);
       // P3: env -i strips the tmux server's inherited environment; only the connector-declared
       // env reaches the spawned agent (identity, model key, OS allow-list). privateLaunch keeps those
@@ -72,6 +73,7 @@ export class TmuxRuntime implements Runtime {
     watch?.({
       read: () => tmux.capturePane(paneId, serverPid),
       enter: () => tmux.sendKey("Enter", paneId, call),
+      down: () => tmux.sendKey("Down", paneId, call),
       fail: (message) => {
         console.error(`tmux runtime: "${name}": ${message}`);
         try {

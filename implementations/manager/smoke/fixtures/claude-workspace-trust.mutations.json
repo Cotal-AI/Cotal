@@ -1,0 +1,19 @@
+{
+  "suite": ["implementations/manager/smoke/claude-workspace-trust.smoke.ts"],
+  "guard": "managed Claude workspace trust selects Yes before confirming, without changing tool permissions",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm exec tsx implementations/manager/smoke/claude-workspace-trust.smoke.ts --live",
+  "completionMarker": "PASS tmux: real Claude persisted trust through its own dialog; no model request",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/claude-workspace-trust.mutations.json",
+  "mutations": [
+    {
+      "name": "press Enter on the native default No choice instead of selecting Yes",
+      "file": "implementations/manager/src/runtime/pty.ts",
+      "find": "key: (key) => proc.write(key === \"Down\" ? \"\\x1b[B\" : \"\\r\"),",
+      "replace": "key: (_key) => proc.write(\"\\r\"),",
+      "expectRed": "pty: native Claude accepts managed workspace trust automatically",
+      "cell": "pty: native Claude accepts managed workspace trust automatically",
+      "note": "Requires COTAL_TEST_CLAUDE_BINARY naming an installed Claude binary. The real native dialog exits on its default No choice; no model request or production credential is used.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

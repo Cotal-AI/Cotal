@@ -111,7 +111,7 @@ export function carriedForkRecord(home: string): string {
 }
 
 /** Fill the seat's home: the carried transcript where `--resume` finds it, and the first-run state a
- *  fresh home would otherwise prompt for, trusting only the launch directory already checked. */
+ *  fresh home would otherwise prompt for, trusting the authorized launch directory. */
 export function placeCarried(home: string, transcript: string, resume: string | undefined, cwd: string): Record<string, string> {
   writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, projects: { [cwd]: { hasTrustDialogAccepted: true } } }), { mode: 0o600 });
   if (resume !== undefined) {
