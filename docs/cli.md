@@ -2004,6 +2004,9 @@ seed/refresh entirely (for a controlled or offline setup that manages connectors
 seed` still runs on request. `cotal agent-bearer` never takes the seed at all: it is exec'd by
 spawned seats on every bearer refresh, so it neither reconciles nor is refused by the store's
 generation (see [Plumbing](#plumbing)).
+`cotal completion` skips the seed as well, so a shell profile that sources its stub never reconciles
+and is never refused by the store's generation or the source-checkout guard. Printing a stub writes
+nothing, and `completion install` writes only shell configuration.
 
 ## completion
 
