@@ -77,6 +77,7 @@ For protocol implementers:
 |---|---|
 | [Build a client](build-a-client.md) | How do I implement a conformant client in another language? |
 | [Embedding Cotal](embedding.md) | How do I build a service on the published `@cotal-ai/*` packages? |
+| [Environment provisioning](environment-provisioning.md) | How does a host provision provider VMs while keeping agent lifecycle with its manager? |
 
 ## Concepts
 

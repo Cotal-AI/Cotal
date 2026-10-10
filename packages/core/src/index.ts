@@ -82,6 +82,7 @@ export * from "./startup-confirm.js";
 export * from "./loopback.js";
 export * from "./managed-handoff.js";
 export * from "./environment.js";
+export * from "./environment-provision.js";
 export * from "./terminal.js";
 export * from "./registry.js";
 export * from "./auth-provider.js";

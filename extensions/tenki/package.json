@@ -1,0 +1,22 @@
+{
+  "name": "@cotal-ai/tenki",
+  "description": "Tenki environment provisioning adapter for Cotal.",
+  "version": "0.78.1",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/Cotal-AI/Cotal.git", "directory": "extensions/tenki" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/provider.smoke.ts",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": { "@tenkicloud/sandbox": "1.4.1" },
+  "peerDependencies": { "@cotal-ai/core": "*" },
+  "devDependencies": { "@cotal-ai/core": "workspace:*" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" }
+}

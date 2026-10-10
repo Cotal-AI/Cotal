@@ -1,0 +1,22 @@
+{
+  "name": "@cotal-ai/environments",
+  "description": "Owner-scoped environment provisioning and cleanup for Cotal hosts.",
+  "version": "0.78.1",
+  "license": "Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/Cotal-AI/Cotal.git", "directory": "implementations/environments" },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx smoke/service.smoke.ts && tsx smoke/wire.smoke.ts",
+    "prepublishOnly": "pnpm run build"
+  },
+  "dependencies": { "@nats-io/kv": "^3.4.0", "@nats-io/transport-node": "^3.4.0" },
+  "peerDependencies": { "@cotal-ai/core": "*" },
+  "devDependencies": { "@cotal-ai/core": "workspace:*", "@cotal-ai/smoke-kit": "workspace:*", "@nats-io/jetstream": "^3.4.0" },
+  "files": ["dist"],
+  "publishConfig": { "access": "public" }
+}

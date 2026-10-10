@@ -817,6 +817,35 @@ importers:
         specifier: workspace:*
         version: link:../smoke-kit
 
+  extensions/tenki:
+    dependencies:
+      '@tenkicloud/sandbox':
+        specifier: 1.4.1
+        version: 1.4.1
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+
+  implementations/environments:
+    dependencies:
+      '@nats-io/kv':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
+    devDependencies:
+      '@cotal-ai/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+
 packages:
 
   '@1jehuang/jcode-darwin-arm64@1.1.0':
@@ -3277,6 +3306,37 @@ packages:
 
   zod@4.4.3:
     resolution: {integrity: sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==}
+
+  '@bufbuild/protobuf@2.12.1':
+    resolution: { integrity: sha512-BvAMfS6LrgZiryOAZ4pBYucu4wG/Ei/9o9DZ9akbREnMLbPJiom2i8b9C8IsKErQoiKqVhrerzt3kOT/RrzLHg== }
+
+  '@connectrpc/connect-node@2.1.2':
+    resolution: { integrity: sha512-+i/aAOpsI8sIx1mbYp6d99zvxaUSF6t/jP9Ux9maAmjsZPgmIQ3JuIeYi0zJIP9zlCnBlJjkpPosshCgdRuThQ== }
+    engines: { node: '>=20' }
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.7.0
+      '@connectrpc/connect': 2.1.2
+
+  '@connectrpc/connect@2.1.2':
+    resolution: { integrity: sha512-MXkBijtcX09R10Eb6sFeIetc6w6746eio6xtfuyVOH7oQAacT1X0GzMIQFux6Qy8cq3W/T5qX5Bei8YbFtmRGA== }
+    peerDependencies:
+      '@bufbuild/protobuf': ^2.7.0
+
+  '@tenkicloud/sandbox@1.4.1':
+    resolution: { integrity: sha512-0H7+EornkIlTc6GTMFMdkSKijvXOjqYkSWsZNeEcYh7vPjtnxFmrElTUXEBmPTeZXL2gmt+iPrhEcBthBopGHw== }
+    engines: { node: '>=18' }
+
+  ws@8.21.3:
+    resolution: { integrity: sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw== }
+    engines: { node: '>=10.0.0' }
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
 
 snapshots:
 
@@ -5865,3 +5925,26 @@ snapshots:
   zod@4.1.8: {}
 
   zod@4.4.3: {}
+
+  '@bufbuild/protobuf@2.12.1': {}
+
+  '@connectrpc/connect-node@2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))':
+    dependencies:
+      '@bufbuild/protobuf': 2.12.1
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.1)
+
+  '@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1)':
+    dependencies:
+      '@bufbuild/protobuf': 2.12.1
+
+  '@tenkicloud/sandbox@1.4.1':
+    dependencies:
+      '@bufbuild/protobuf': 2.12.1
+      '@connectrpc/connect': 2.1.2(@bufbuild/protobuf@2.12.1)
+      '@connectrpc/connect-node': 2.1.2(@bufbuild/protobuf@2.12.1)(@connectrpc/connect@2.1.2(@bufbuild/protobuf@2.12.1))
+      ws: 8.21.3
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
+
+  ws@8.21.3: {}
