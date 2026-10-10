@@ -2,14 +2,15 @@
 //
 // The lowest-risk header variant: replay the three existing connection-type
 // scenes (multicast -> unicast -> anycast) back-to-back inside a square frame,
-// then resolve to the cotal wordmark. Each Mode card is authored for an 860x620
-// stage and paints its own cream, so ScaleToFit drops it into the 1080x1080
+// then resolve to the cotal wordmark. Each Mode card is authored for MODE_STAGE
+// and paints its own cream, so ScaleToFit drops it into the 1080x1080
 // CreamStage with matching cream margins above and below.
 
 import React from "react";
 import { ModeMulticast, MULTICAST_DURATION } from "../modes/Multicast";
 import { ModeUnicast, UNICAST_DURATION } from "../modes/Unicast";
 import { ModeAnycast, ANYCAST_DURATION } from "../modes/Anycast";
+import { MODE_STAGE } from "../modes/scene";
 import {
   CreamStage,
   ScaleToFit,
@@ -51,17 +52,17 @@ export const HeaderModesReel: React.FC = () => {
       >
         <Series>
           <Series.Sequence durationInFrames={MULTICAST_DURATION}>
-            <ScaleToFit w={860} h={620}>
+            <ScaleToFit w={MODE_STAGE.w} h={MODE_STAGE.h}>
               <ModeMulticast />
             </ScaleToFit>
           </Series.Sequence>
           <Series.Sequence durationInFrames={UNICAST_DURATION}>
-            <ScaleToFit w={860} h={620}>
+            <ScaleToFit w={MODE_STAGE.w} h={MODE_STAGE.h}>
               <ModeUnicast />
             </ScaleToFit>
           </Series.Sequence>
           <Series.Sequence durationInFrames={ANYCAST_DURATION}>
-            <ScaleToFit w={860} h={620}>
+            <ScaleToFit w={MODE_STAGE.w} h={MODE_STAGE.h}>
               <ModeAnycast />
             </ScaleToFit>
           </Series.Sequence>
