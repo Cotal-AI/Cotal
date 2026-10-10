@@ -1301,7 +1301,8 @@ function thrownError(value: unknown): EntryError {
 
 /**
  * What a failed scope throws, built from its record alone: a replay has nothing else, and a live run
- * whose scope failed with a thrown value builds it here too, so `catch` binds the same value on both.
+ * builds it here too whenever the record is not the failure it caught, so `catch` binds the same
+ * value on both.
  */
 function scopeFailure(e: EntryError): unknown {
   return e.thrown !== undefined ? e.thrown.value : new EffectError(e.code, e.kind, e.message, e.detail);
@@ -1541,6 +1542,11 @@ export async function performScope(
     // ran out of stack is a fact about the host, so recording it would replay as a catchable
     // `L4000` on a host with more stack, where the same branch succeeds.
     if (isStackExhaustion(reason)) throw reason;
+    // AN ENGINE FAULT IS NOT AN OUTCOME EITHER: the compiled engine broke its own contract, which no
+    // program may catch, and a native `ReferenceError` is that fault before the engine wraps it. The
+    // class lives in the engine, which imports this module, so it is matched by name as the engine's
+    // own uncatchable set matches it.
+    if (reason instanceof ReferenceError || (reason instanceof Error && reason.name === "EngineFault")) throw reason;
     // A CAPABILITY REFUSAL OF THE SCOPE'S OWN DISPATCH (a conclave's open): nothing was entered
     // and nothing was attempted, so the scope settles `refused` exactly as an effect does, and
     // the run is held for a host that can open it.
@@ -1567,12 +1573,17 @@ export async function performScope(
     // A VALUE THE PROGRAM THREW IS RECORDED WHOLE (#2845). A replay delivers nothing but this
     // record, and it used to deliver the generic fault where the live run had rethrown the value, so
     // a resumed `catch` bound `{ code: "L4000", ... }` where the live one bound `"failure"`, and a
-    // program branching on it diverged. An `Error` is never the program's (it cannot construct one)
-    // and is still rethrown as itself: some classes that reach here unwind the run (the compiled
-    // engine's `EngineFault`), and an `EffectError` built from the record would make them catchable.
+    // program branching on it diverged.
+    //
+    // ANY OTHER `Error` IS DELIVERED FROM ITS RECORD TOO (#3215), and so is an `EffectError` whose
+    // detail the record could not keep. Rethrown as itself, a live `catch` bound it as kind `host`,
+    // or with the handler's kind and the unkept detail, while a resume bound the record's
+    // `scope-fault`, and a program branching on it diverged. The classes that unwind the run have
+    // left by the ladder above.
+    const recorded = reason instanceof EffectError ? recordableError(reason, "scope-fault") : undefined;
     const err: EntryError =
-      reason instanceof EffectError
-        ? recordableError(reason, "scope-fault").error
+      recorded !== undefined
+        ? recorded.error
         : reason instanceof RuntimeFault
           ? { code: reason.code, kind: "runtime", message: messageOf(reason) }
           : reason instanceof Error
@@ -1584,7 +1595,7 @@ export async function performScope(
       ...facts,
       ...digestFacts(branchDigest, facts.cancel?.losers),
     });
-    throw reason instanceof Error ? reason : scopeFailure(err);
+    throw recorded?.faithful === true || reason instanceof RuntimeFault ? reason : scopeFailure(err);
   }
 
   // THE FACTS A SETTLED SCOPE CARRIES, assembled ONCE. Both the fence below and the success settle
@@ -1615,13 +1626,9 @@ export async function performScope(
     assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`, scopeKey.kind);
   } catch (e) {
     if (!(e instanceof NotCrossable)) throw e;
-    await host.journal.settle(
-      scopeKey,
-      { status: "failed", error: { code: "L4000", kind: "scope-fault", message: e.message } },
-      frame.clock.now(),
-      settledFacts,
-    );
-    throw e;
+    const error: EntryError = { code: "L4000", kind: "scope-fault", message: e.message };
+    await host.journal.settle(scopeKey, { status: "failed", error }, frame.clock.now(), settledFacts);
+    throw scopeFailure(error);
   }
 
   await host.journal.settle(

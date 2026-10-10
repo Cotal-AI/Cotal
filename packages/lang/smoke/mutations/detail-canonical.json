@@ -20,8 +20,8 @@
     {
       "name": "only the effect site is checked, and the scope's own failure record is left open",
       "file": "packages/lang/src/perform.ts",
-      "find": "        ? recordableError(reason, \"scope-fault\").error",
-      "replace": "        ? { code: reason.code, kind: reason.kind, message: reason.message, ...(reason.detail !== undefined ? { detail: reason.detail } : {}) }",
+      "find": "    const recorded = reason instanceof EffectError ? recordableError(reason, \"scope-fault\") : undefined;",
+      "replace": "    const recorded = reason instanceof EffectError ? { error: { code: reason.code, kind: reason.kind, message: reason.message, ...(reason.detail !== undefined ? { detail: reason.detail } : {}) }, faithful: true } : undefined;",
       "expectRed": "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
       "completionMarker": "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
       "cell": "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",

@@ -20,8 +20,8 @@
     {
       "name": "the EffectError arm is dropped and every handler failure flattens",
       "file": "packages/lang/src/perform.ts",
-      "find": "      reason instanceof EffectError\n        ? recordableError(reason, \"scope-fault\").error\n        : reason instanceof RuntimeFault",
-      "replace": "      false\n        ? recordableError(reason, \"scope-fault\").error\n        : reason instanceof RuntimeFault",
+      "find": "      recorded !== undefined\n        ? recorded.error\n        : reason instanceof RuntimeFault",
+      "replace": "      false\n        ? recorded.error\n        : reason instanceof RuntimeFault",
       "expectRed": "and a handler's own coded failure keeps its code and kind through the same settle",
       "completionMarker": "a handler's plain throw inside a scope still settles as the generic L4000 scope-fault, unchanged by the program-refusal rule",
       "cell": "and a handler's own coded failure keeps its code and kind through the same settle",

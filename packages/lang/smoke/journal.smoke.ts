@@ -1151,12 +1151,7 @@ await sleep("3h", { name: "after-the-catch" });
   } catch (e) {
     caught = e;
   }
-  // ASSERTED ON THE RECORD, NOT ON THE CAUGHT ERROR, and that is a finding rather than a style
-  // choice: `performScope` records a coded EntryError and RETHROWS THE RAW REASON, so a program
-  // catching a scope fault sees an error with no language code where the effect path hands it one.
-  // Measured with a plain `throw new Error("boom")` on both paths, so it predates this guard and is
-  // the scope path's own behaviour. Writing this cell by analogy to the effect side above would have
-  // reded it for a reason that has nothing to do with the binding.
+  // ASSERTED ON THE RECORD, which is what the scope delivers its failure from, live and on a resume.
   const settled = journal.entries().find((e) => e.kind === "conclave");
   ok(
     "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
@@ -1279,7 +1274,7 @@ await sleep("3h", { name: "after-the-catch" });
   const settled = live.entries()[0];
   ok(
     "the scope is RECORDED as a fault rather than completing with a value the record cannot hold",
-    liveOutcome.completed === false && liveOutcome.name === "NotCrossable"
+    liveOutcome.completed === false && liveOutcome.name === "EffectError"
       && settled?.status === "failed" && settled?.error?.code === "L4000" && settled?.kind === "parallel",
     { outcome: liveOutcome, status: settled?.status, code: settled?.error?.code },
   );
@@ -1408,7 +1403,7 @@ await sleep("3h", { name: "after-the-catch" });
       { runId: "r-det-s", journal, handler: thrower },
     );
   } catch {
-    // The scope path rethrows its raw reason, which is the parked asymmetry; the record is the subject here.
+    // The record is the subject here.
   }
   const scoped = journal.entries().find((e) => e.kind === "conclave");
   ok(
@@ -1493,7 +1488,7 @@ await sleep("3h", { name: "after-the-catch" });
       { runId: "r-sf1-c", journal, handler: plain },
     );
   } catch {
-    // The scope path rethrows its raw reason; the record is the subject here.
+    // The record is the subject here.
   }
   const plainEntry = journal.entries().find((e) => e.kind === "conclave");
   ok(

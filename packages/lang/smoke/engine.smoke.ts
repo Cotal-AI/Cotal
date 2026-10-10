@@ -912,10 +912,11 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
   // half of the compiler, and a stated breach wraps no native error to hang a cause on.
   ok("a stated breach carries no ReferenceError diagnosis and wraps no cause",
     !(e as Error).message.includes("zero free identifiers") && (e as EngineFault).cause === undefined, String(e).slice(0, 300));
-  // The entry HAS begun by then, and settles failed: the refusal happens inside the scope, which is
-  // exactly where the walker evaluates that argument.
+  // The entry HAS begun by then: the refusal happens inside the scope, which is exactly where the
+  // walker evaluates that argument. It settles nothing, because a resume would replay a recorded
+  // failure as one a program can catch.
   const entries = h.run.journal.entries();
-  ok("the scope's entry was begun and settled failed, not skipped", entries.length === 1 && entries[0]?.kind === "fanOut" && entries[0]?.status === "failed", entries.map((x) => `${x.kind}/${x.status}`));
+  ok("the scope's entry was begun and left pending, not skipped", entries.length === 1 && entries[0]?.kind === "fanOut" && entries[0]?.state === "pending", entries.map((x) => `${x.kind}/${x.state}`));
 }
 
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
@@ -3047,7 +3048,7 @@ let n = 1;
   ok(
     "and the walker, the in-process engine and a REAL THREAD all refuse it with the same rule and the same words",
     walkerSaid.refused && engineSaid.refused
-      && walkerSaid.name === "NotCrossable" && engineSaid.name === "NotCrossable" && workerAnswer.name === "NotCrossable"
+      && walkerSaid.name === "EffectError" && engineSaid.name === "EffectError" && workerAnswer.name === "EffectError"
       && walkerSaid.message === engineSaid.message && engineSaid.message === workerAnswer.message,
     { walker: walkerSaid.refused ? walkerSaid.name : null, engine: engineSaid.refused ? engineSaid.name : null,
       worker: workerAnswer.name, same: walkerSaid.refused && walkerSaid.message === workerAnswer.message },
@@ -3085,7 +3086,7 @@ let n = 1;
 
   ok(
     "a CONCLAVE body's own record field is not a branch slot, so an absent field in it is refused like any other recorded value",
-    w !== null && en !== null && t.ok === false && w.name === "NotCrossable" && en.name === "NotCrossable" && t.name === "NotCrossable",
+    w !== null && en !== null && t.ok === false && w.name === "EffectError" && en.name === "EffectError" && t.name === "EffectError",
     { walker: w?.name, engine: en?.name, worker: t.name },
   );
   ok(

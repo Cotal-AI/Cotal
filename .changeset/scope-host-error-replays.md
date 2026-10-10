@@ -1,0 +1,5 @@
+---
+"@cotal-ai/lang": patch
+---
+
+A host `Error` that fails a concurrency scope now reaches `catch` as the scope's recorded `{ code: "L4000", kind: "scope-fault", message }` on the live run, as it already did on resume. Before this, a `parallel` whose branch returned a function, or a `conclave` whose handler threw a plain `Error` on open, was caught as kind `host` live and as kind `scope-fault` on resume, on both engines, so a program that branched on the caught kind diverged (`L5001`) on the resume of unchanged source. A handler `EffectError` that fails a scope with a `detail` the journal cannot keep is delivered from its record live too, where the live `catch` used to bind the handler's own kind and detail. An uncaught scope value refusal now fails the run as that `L4000` `EffectError` rather than as `NotCrossable`. A compiled-engine fault raised inside a scope, including a native `ReferenceError`, now settles nothing, so it is not recorded as a `scope-fault` that a resume would replay as a catchable failure.
