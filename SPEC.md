@@ -1494,12 +1494,32 @@ an owner's IdP session.
 Before issuance, the external authority MUST durably bind the environment record ID,
 owner, space, data-account public key, manager instance ID, manager lifecycle UID,
 bootstrap caller triple, admission revision and finite expiry. These coordinates come
-from host admission, never guest claims. Every issuance pins the admission revision through
-its native issuance-gate CAS; ending the admission participates in that gate fence. A fresh
-admission read alone MUST NOT permit material to escape a concurrent termination. The
-admission also records the only permitted
+from host admission, never guest claims. The bootstrap caller uses that manager lifecycle
+UID and the sixth fixed actor `manager_bootstrap_<instanceId>`. This temporary actor is
+separate from the five standing identities. Admission reserves the UID and creates
+`epgate.manager.<instanceId>` frozen under one host-selected registration operation intent
+before bootstrap mint. A host-owned `stage.environment-manager.<instanceId>` record binds
+its family, environment, revision and operation ID and is never deleted, including after
+retirement. The bootstrap mint writes `cred.<managerUid>.<credentialId>` with the native
+`sourceChain: [root]` lineage (§13.1) and admission expiry, then CAS-pins that staged gate before returning
+material. Only the fixed bootstrap profile is usable in this pre-preparation phase.
+`prepare` continues that same registration operation, never a second intent.
+
+Every issuance pins the admission revision through its native issuance-gate CAS.
+Termination MUST first advance/freeze that gate and revoke the bootstrap credential through
+the existing registration-abort or retirement intent, then mark the private admission
+ended. Issuance records the revision it observed in its gate intent and CAS; a termination
+advance makes the stale CAS fail without returning material. A crash between those steps
+leaves closing/retirement-pending state and resumes the same intent. Auth unavailability
+cannot prevent bounded provider termination, but MUST NOT be reported as completed authority
+retirement. The auth gate is the issuance fence; the private admission store records its
+outcome. A fresh admission read alone MUST NOT permit material to escape a concurrent
+termination. The admission also records the only permitted
 child actor and its delegation ceiling. Its first enrollment binds one host-selected
-child UID permanently; retirement does not permit a second child lifecycle. Missing
+child UID permanently; retirement does not permit a second child lifecycle. This is a
+single-shot environment: a crashed child cannot be relaunched under its handed-off UID
+(§13.17) or replaced by another UID. Lang reports that failure; a replacement requires a
+new admitted environment. Missing
 manager registration, child enrollment, run admission or terminal retirement policy MUST
 refuse admission before bootstrap issuance.
 
@@ -1514,8 +1534,18 @@ broker-authenticated, instance-bound caller issued for the corresponding manager
 the current registration proof and the current process fence. The host-issued proof MUST
 also bind this authority family, environment ID and admission revision. A human or platform
 registration proof MUST NOT validate here, nor an environment proof under either other
-family. Admission MUST refuse an instance already bound to another family, including the
-same owner's human manager; it provides no takeover or force path.
+family. This requires a distinct, family-discriminated environment registration-proof
+derivation binding the existing coordinates and artifacts plus environment ID and admission
+revision; the current human/platform derivation cannot be reused unchanged. Admission MUST
+refuse an instance already bound to another family, including the same owner's human
+manager; it provides no takeover or force path.
+
+Symmetrically, human `manager-service` and `platform-control` prepare, activate, renew,
+maintenance and retirement MUST refuse `permission-denied` before effect for an instance or
+lifecycle whose gate or stage names `environment-manager`, under any owner. They gain no
+takeover or repair path through this insertion. The family check precedes any freeze, epoch
+advance, liveness probe, eviction, deregistration or credential issue. An unreadable family
+binding refuses. Environment-bound cleanup remains the external host's admitted path.
 
 The manager and child MUST have separate effective OS users and private material stores.
 Child launch material crosses into the child's store by value, never as paths into the
@@ -2606,10 +2636,15 @@ login and ledger scope. A start after revocation or expiry requires a fresh `pre
 `activate` under a current assignment.
 
 **Environment manager bootstrap and registration.** A hosting authority MAY serve this
-family as an ordinary registered, instance-addressed endpoint. Its bootstrap principal
-has the fixed `environment-bootstrap` grant of §13.9, not manager supervisor or executor
-authority. The host issues it only after admission and caps its lifetime at the lesser of
-five minutes and the environment admission's remaining lifetime.
+family as an ordinary registered, instance-addressed endpoint. `bootstrap` is an ephemeral
+command, idempotent by its authenticated caller reservation and canonical fingerprint,
+not a journal action or caller-selected `id`. Wrong-class invocation MUST refuse before
+effect. Its bootstrap principal has the fixed `environment-bootstrap` grant of §13.9,
+not manager supervisor or executor authority. The host admits first, waits for observed
+provider RUNNING, then mints and delivers the file through a native post-boot secret/file
+channel. It caps lifetime at the lesser of five minutes and remaining admission lifetime;
+no channel or insufficient remaining lifetime refuses delivery rather than using an
+expired create-time file. No provider create or guest boot acknowledgement is registration.
 
 The bootstrap file carries version one, the environment record ID, preselected manager
 instance and lifecycle, credential and private connection nkey, finite expiry, pinned WSS
@@ -2617,7 +2652,10 @@ broker hostname, authority endpoint and instance, and the two bootstrap commands
 digests. It carries no owner session, account signing seed, profile selector or grants.
 The verified immutable image's system trust store anchors TLS; deployments using a private
 CA MUST separately supply explicit digest-bound mesh trust. Certificate and hostname
-verification MUST remain enabled. Bootstrap admits no trust-on-first-use path.
+verification MUST remain enabled. Bootstrap admits no trust-on-first-use path. The host
+MUST NOT retain the private bootstrap seed after writing the private file; its durable
+record holds only digest, recipient lifecycle, expiry and consumed state. The guest MUST
+refuse any file version other than one before connecting.
 
 The manager takes and unlinks the manager-only file before ordinary command handling or
 connecting a plane. It generates the five manager nkeys locally and atomically persists
@@ -2660,6 +2698,10 @@ the same preparation's frozen gate; later operations require the current open re
 All issued material stays inside the admission's five-key family and expiry. The guest
 atomically persists prepared and activated material in its manager-only store. A restart
 uses that identity and proof at a newly admitted process epoch, never bootstrap redemption.
+Renewal rides the still-valid executor connection and MUST be scheduled before its JWT
+expiry. A manager stopped beyond executor validity cannot renew or redeem bootstrap again;
+that admission becomes terminal and external cleanup must close it. There is no owner
+login, static credential or fresh-key fallback.
 Maintenance targets only the admitted instance; a foreign governance-slot holder blocks
 registration and requires its own authorized repair path.
 
@@ -2673,7 +2715,9 @@ supervise restart policy, caller cwd, resume, exact continuity and shared MCP se
 Repository/ref checkout is admitted workload configuration; Lang worktree identity is a
 logical exclusion key rather than a workstation path.
 
-A preparation not activated before bootstrap expiry becomes terminal durably. The external
+A bootstrap never presented before expiry, or a preparation not activated before expiry,
+becomes terminal durably. Activation MUST revoke the bootstrap credential and fence its
+further use through the registration barrier before releasing activated material. The external
 host revokes prepared credentials and burns or retires the reserved UID; an unavailable
 revocation service leaves a persisted cleanup obligation, never reusable admission.
 Environment expiry or forced close proceeds independently of the guest manager. Observed
@@ -2686,10 +2730,14 @@ separate facts; host-side retirement failure remains pending and does not erase 
 | Wrong authenticated bootstrap/manager caller or foreign environment, owner, account, instance or UID | `permission-denied`, no issuance or lifecycle effect (§13.1, §13.9) |
 | Changed request at an existing bootstrap reservation | `conflict`, original reservation retained (§13.1, §13.6) |
 | Expired bootstrap, ended admission or completed registration used as bootstrap | `permission-denied`, no new preparation (§13.1, §13.6) |
+| Bootstrap mint without an admission-pinned frozen registration gate and the same live operation intent | Refuse with no material (§13.1, §13.6) |
+| Human or platform operation naming an environment-family gate or stage | `permission-denied`, no takeover, repair, issuance or retirement (§13.1, §13.6) |
 | Missing or unreadable current admission, ledger or gate | Refuse before effect; no cached authorization (§13.1) |
 | Stale admission revision, proof or process epoch | `conflict`, no replacement material (§13.1, §13.6) |
 | Missing child/run/retirement policy or unsupported UID/material delivery | `unimplemented`, admission or launch remains refused (§13.1, §14) |
 | Second child actor or lifecycle, including after terminal retirement | `permission-denied`, first binding retained (§13.1, §13.6) |
+| Child scope, channels or capabilities exceeding the admission ceiling | `permission-denied`, first binding retained (§13.1, §13.6) |
+| Run not admitted by the recorded owner, or placement naming another instance | `permission-denied`, no admission, attempt or launch (§13.6, §14) |
 | Foreign maintenance target or foreign slot-holder repair | `permission-denied`, no probe, eviction or repair (§13.1, §13.6) |
 | Ambiguous preparation, result retention or retirement | Preserve the held operation or cleanup obligation; never infer success (§13.1, §13.6) |
 
@@ -3586,8 +3634,11 @@ It subscribes only to
 `ep.reply.<authorityEndpoint>.<authorityInstanceId>.*.<cO>.<cA>.<cUid>.*` and its own
 connection-scoped inbox. Endpoint and instance tokens use §13.2's native encoding. The
 commands are ephemeral and untargeted; the nonce is the only wildcard request token.
-The bootstrap file's pinned contracts eliminate any need for describe, artifact-store,
-class or scatter grants. This profile grants no messaging, presence, JetStream API,
+The released stock bootstrap client embeds both complete command contract artifacts and
+verifies their digests against the admitted file before sending. It uses a minimal native
+request/reply path over these literal subjects, not `invokeCommand` or a fabricated
+`ResolvedService`. That explicit client path requires no describe, artifact-store, class
+or scatter grants. This profile grants no messaging, presence, JetStream API,
 consumer, KV, manager, signer or other authority-endpoint access.
 
 For an admitted environment manager, the five existing registration profiles remain
@@ -3800,7 +3851,7 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Remote manager-service registration and renewal (§13.1/§13.6) | the trusted auth path is the sole gate/ledger writer and host JWT issuer; a user manager presents only the server-authored closed view | exactly one staged `{ owner, managerActor, lifecycleUid, instanceId }` family: `svc.manager.<instanceId>`, the stage-pinned contract artifacts, `epgate.manager.<instanceId>`, and `epcred.manager.<instanceId>.<credentialId>`. `prepare` freezes/stages; `activate` creates the matching service record and releases host-signed material only after ledger + gate finalization; `renew` is bounded, rechecks the live ledger scope, and can replace material only inside that family. Descendant provisioning is a mediated same-owner request revalidated by the host. No row grants signer material, generic stream/KV/consumer authority, another instance, or a public/managed-agent exchange path | mediated, closed family; revocation/renewal failure denies new authority and unsafe restarts while retaining live agents only within their independently valid lifetimes |
 | Environment bootstrap request and recovery (§13.1/§13.6) | the ephemeral `environment-bootstrap` caller, issued only by the external hosting authority | the two literal instance command rows and own instance-confined reply/inbox rows above; `bootstrap` durably pins the one admitted caller and five public keys before preparation, `bootstrap-status` reads only that reservation; no other endpoint, command, store or manager profile | direct request, mediated preparation/recovery; expiry and terminal state never permit reuse |
 | Environment manager authority request (§13.1/§13.6) | the admitted manager's recorded executor identity | the one literal instance `authority` command and own reply/inbox rows above; the authenticated caller, proof, epoch, admission revision and finite expiry bind every closed inner operation to this environment and manager family, with at most the one admitted child lifecycle | direct request, host-mediated effects; no guest signing, ledger write or foreign family reach |
-| Environment admission, preparation and terminal cleanup (§13.1/§13.6) | the external hosting authority alone | its private admission/reservation and credential-custody store, first-wins/revision CAS and retained terminal records; the existing manager `svc`/`epgate`/`epcred` and lifecycle retirement families bound to the recorded owner, instance and manager/child UIDs; no guest store credential or caller-selected target | mediated; cleanup survives host restart and guest loss; retention, observed provider termination and authority retirement remain separate facts |
+| Environment admission, preparation and terminal cleanup (§13.1/§13.6) | the external hosting authority alone | auth-owned `stage.environment-manager.<instanceId>` family binding and `epgate.manager.<instanceId>` issuance fence before bootstrap mint; the bootstrap `cred.<managerUid>.<credentialId>` row, root source chain and activation revocation; the existing manager `svc`/`epcred` and lifecycle retirement families bound to the recorded owner, instance and manager/child UIDs; termination advances the auth gate before recording private admission ended; private admission/reservation and credential-custody records retain CAS outcomes and terminal state, with no guest store credential or caller-selected target | mediated; cleanup survives host restart and guest loss; retention, observed provider termination and authority retirement remain separate facts |
 | Auth-ledger enumeration (the SEALED scanner profile, the credential-ledger row's enumeration seam) | the trusted auth process's DEDICATED self-minted scanner principal; opened for the process itself, NEVER handed out (full rationale in the credential-ledger row above) | exactly `$JS.API.INFO` + `$JS.API.STREAM.INFO.KV_cotal_auth_<space>` + `$JS.API.CONSUMER.CREATE.KV_cotal_auth_<space>.cotal-ledger-scan.$KV.cotal_auth_<space>.>` + `$JS.API.CONSUMER.INFO.KV_cotal_auth_<space>.cotal-ledger-scan` + `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_auth_<space>.cotal-ledger-scan` + `$JS.API.CONSUMER.DELETE.KV_cotal_auth_<space>.cotal-ledger-scan` + its connection-scoped `_INBOX_<connId>.>` subscribe, and NOTHING else (no records-stream grant, no KV write, no `DIRECT.GET`, no `$JS.ACK`: an `AckPolicy.None` scan acks nothing); `cotal-ledger-scan` is the ONE pinned literal consumer name every auth-stream scan serializes on, and this profile plus the records scanner below are the ONLY DYNAMIC-ENUMERATION `CONSUMER.CREATE` holders on the two authority streams (the provisioning row's pre-created full-tail reader durables, CREATE+DELETE by the provisioner and INFO/MSG.NEXT/ACK bind by the read mediator, are the one other records-stream consumer authority, and the reader-config seam REFUSES an authority-control record kind so no reader durable can target the `oblig.` subtree the records scanner owns), re-audited mechanically per this section's closing clause | mediated |
 | Obligation enumeration (the SEALED records scanner profile, the acceptance-obligation row's enumeration seam, ONE instance per space) | the trusted process's DEDICATED self-minted records-scanner principal; opened for the process itself, NEVER handed out (full rationale in the acceptance-obligation row below; every scan over the literal name serializes process-wide per space, so a second instance can never interleave with a live scan and hand back a partial result, and the scanner handle is immutable once branded) | exactly `$JS.API.INFO` + `$JS.API.STREAM.INFO.KV_cotal_records_<space>` + `$JS.API.CONSUMER.CREATE.KV_cotal_records_<space>.cotal-records-scan.$KV.cotal_records_<space>.oblig.>` (the CREATE filter is confined to the `oblig.` subtree) + `$JS.API.CONSUMER.INFO.KV_cotal_records_<space>.cotal-records-scan` + `$JS.API.CONSUMER.MSG.NEXT.KV_cotal_records_<space>.cotal-records-scan` + `$JS.API.CONSUMER.DELETE.KV_cotal_records_<space>.cotal-records-scan` + its connection-scoped `_INBOX_<connId>.>` subscribe, and NOTHING else; `cotal-records-scan` is the ONE pinned literal consumer name, disjoint from the auth scanner's (one scanner instance, lock, and literal name PER STREAM) | mediated |
 | Work-pool enqueue | the endpoint's canonicalizer (from accepted decisions only) | `epw.<endpoint>.>` publish, create-per-subject (`Nats-Expected-Last-Subject-Sequence: 0`; the acceptance identity is the subject, §13.2) | mediated |
