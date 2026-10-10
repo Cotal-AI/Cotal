@@ -1023,7 +1023,9 @@ requires `--space` and applies only to a foreground persona spawn. If the mesh i
 the enrollment response must carry the stock user-bundle fields and the command needs
 `--config <persona-file>` because there is no local remote-mesh persona catalog to read. The client
 redeems the URL once, registers the returned mesh material, exchanges the returned actor token at the
-pinned auth service, and removes both enrollment variables before starting any child process.
+pinned auth service, and removes both enrollment variables before starting any child process. A
+registered mesh whose record pins no exchange URL is refused before the URL is redeemed, so the
+enrollment stays unspent; re-register the mesh with `cotal meshes add <space> --from <url> --mode user`.
 
 A cached login for the same IdP and an enrollment are conflicting proofs, so the command refuses
 rather than choosing one. An invalid enrollment never falls back to login provisioning. Unknown,
