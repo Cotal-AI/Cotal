@@ -96,8 +96,8 @@
     {
       "name": "the bridge flattens a cancellation on the way out, so a bridged loser settles failed",
       "file": "packages/lang/src/engine/bridge.ts",
-      "find": "  if (e instanceof Cancelled) {\n    return { domain: \"host\", name: e.name, message: e.message, cancelled: e.reason };\n  }",
-      "replace": "  if (false as boolean) {\n    return { domain: \"host\", name: (e as Error).name, message: (e as Error).message, cancelled: (e as Cancelled).reason };\n  }",
+      "find": "  if (e instanceof Cancelled) return { class: \"cancelled\", name: e.name, message: e.message, reason: e.reason };",
+      "replace": "  if (false as boolean) return { class: \"cancelled\", name: (e as Error).name, message: (e as Error).message, reason: (e as Cancelled).reason };",
       "command": "pnpm --filter @cotal-ai/lang build >/dev/null 2>&1 && pnpm smoke:runtime-mesh-wait",
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
@@ -108,13 +108,13 @@
     {
       "name": "PAIRED: the thread side never rebuilds the class, deletable separately from the host side",
       "file": "packages/lang/src/engine/bridge.ts",
-      "find": "  if (w.cancelled !== undefined) return new Cancelled(w.cancelled);",
-      "replace": "  if (false as boolean) return new Cancelled(w.cancelled as string);",
+      "find": "      return new Cancelled(w.reason);",
+      "replace": "      return Object.assign(new Error(w.message), { name: w.name });",
       "command": "pnpm --filter @cotal-ai/lang build >/dev/null 2>&1 && pnpm smoke:runtime-mesh-wait",
       "completionMarker": "mesh-wait.smoke:",
       "expectRed": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
       "cell": "the losing wait settled `cancelled` — the class crossed the engine bridge instead of flattening to a fault",
-      "note": "The crossing has two separately deletable halves — the marker written and the marker read — and a refactor that drops either reproduces the flattening whole. Measured 2026-09-02 independently of the flatten mutant: the same single red, same failed/L4000 record. After the full proof, rebuild lang dist once by hand: the tool restores source and verifies source, and dist keeps this mutant's bytes until rebuilt.",
+      "note": "The crossing has two separately deletable halves — the variant written and the variant read — and a refactor that drops either reproduces the flattening whole. Measured 2026-09-02 independently of the flatten mutant: the same single red, same failed/L4000 record. After the full proof, rebuild lang dist once by hand: the tool restores source and verifies source, and dist keeps this mutant's bytes until rebuilt.",
       "afterRestore": "pnpm --filter @cotal-ai/lang build"
     },
     {

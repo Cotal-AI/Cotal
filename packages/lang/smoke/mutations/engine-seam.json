@@ -965,17 +965,17 @@
       "expectRed": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
       "completionMarker": "ok and the host bind's own pending record is durable in the store, before the sim's bind replaced it",
       "cell": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
-      "note": "The domain discriminant is the one bit the two failure domains hang on. Flattened, a handler's EffectError crosses as a host fault, perform.ts wraps it L4000 handler-fault, and the run's failure loses the code and kind the walker raises in-process - a wrong-classed failure every downstream reader would accept as real."
+      "note": "The class discriminant is the one bit failure grading hangs on. Flattened, a handler's EffectError crosses as a host fault, perform.ts wraps it L4000 handler-fault, and the run's failure loses the code and kind the walker raises in-process - a wrong-classed failure every downstream reader would accept as real."
     },
     {
       "name": "the thread rehydrates an effect failure as a plain error",
       "file": "packages/lang/src/engine/bridge.ts",
-      "find": "  if (w.domain === \"effect\") return new EffectError(w.code ?? \"L4000\", w.kind ?? \"handler-fault\", w.message, w.detail);",
-      "replace": "  if ((false as boolean) && w.domain === \"effect\") return new EffectError(w.code ?? \"L4000\", w.kind ?? \"handler-fault\", w.message, w.detail);",
+      "find": "      return new EffectError(w.code, w.kind, w.message, w.detail);",
+      "replace": "      return Object.assign(new Error(w.message), { code: w.code });",
       "expectRed": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
       "completionMarker": "ok and the host bind's own pending record is durable in the store, before the sim's bind replaced it",
       "cell": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
-      "note": "The same discriminant one hop later: the flatten kept the domain and the rehydration ignored it. Graded on the same cell as the flatten deliberately - one proves the domain is written, this proves it is read."
+      "note": "The same discriminant one hop later: the flatten kept the class and the rehydration ignored it. Graded on the same cell as the flatten deliberately - one proves the class is written, this proves it is read."
     },
     {
       "name": "the thread's clock is its own rather than the handler's",
