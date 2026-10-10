@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
-import { agentColor, STATUS, ago } from "./theme.js";
+import { activityAge, presenceFacts } from "../../ui.js";
+import { agentColor, STATUS, ago, windowAround, wrapFacts, type FactRow } from "./theme.js";
 
 function progressText(p: Presence): string {
   if (p.card.kind !== "agent" || p.status !== "working") return ago(p.ts);
@@ -18,38 +19,71 @@ export function harnessTag(connector: string | undefined): string | undefined {
   return known[connector] ?? connector.slice(0, 2).toLowerCase();
 }
 
-function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean; wide: boolean; tag?: string }) {
+/** A {@link wrapFacts} row, indented under its seat's head row: the status and its condition in
+ *  `color` (dim without one) and the dated facts dim, or plain text for a selected seat's bar. */
+export function factRow(row: FactRow, color: string | undefined, selected = false): ReactNode {
+  if (selected) return "  " + row.map((f) => f.text).join("");
+  return (
+    <>
+      {"  "}
+      {row.map(({ text, dated }, i) => (
+        <Text key={i} color={dated ? undefined : color} dimColor={dated || !color}>
+          {text}
+        </Text>
+      ))}
+    </>
+  );
+}
+
+function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean; facts: FactRow[]; tag?: string }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
+  const act = p.activity ? "  " + p.activity + activityAge(p) : "";
+  let head: ReactNode, tail: ReactNode;
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {
-    const kind = wide ? (isAgent ? "  " + s.word : "  endpoint") : "";
-    const act = p.activity ? "  " + p.activity : "";
-    return (
-      <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "") + kind + act + "  " + age}
-      </Text>
+    head = (isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "");
+    tail = act + "  " + age;
+  } else {
+    head = (
+      <>
+        <Text color={isAgent ? s.color : "gray"}>{isAgent ? s.dot : "⚙"} </Text>
+        <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
+          {peerLabel(p.card)}
+        </Text>
+        {tag ? <Text dimColor>{" " + tag}</Text> : null}
+      </>
+    );
+    tail = (
+      <>
+        {act ? <Text dimColor>{act}</Text> : null}
+        <Text dimColor>{"  " + age}</Text>
+      </>
     );
   }
-  return (
-    <Text wrap="truncate-end">
-      <Text color={isAgent ? s.color : "gray"}>{isAgent ? s.dot : "⚙"} </Text>
-      <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
-        {peerLabel(p.card)}
+  const line = (parts: ReactNode, key?: number) =>
+    selected ? (
+      <Text key={key} inverse bold color="cyan" wrap="truncate-end">
+        {parts}
       </Text>
-      {tag ? <Text dimColor>{" " + tag}</Text> : null}
-      {wide ? (
-        isAgent ? (
-          <Text color={s.color}>{"  " + s.word}</Text>
-        ) : (
-          <Text dimColor>{"  endpoint"}</Text>
-        )
-      ) : null}
-      {p.activity ? <Text dimColor>{"  " + p.activity}</Text> : null}
-      <Text dimColor>{"  " + age}</Text>
-    </Text>
+    ) : (
+      <Text key={key} wrap="truncate-end">
+        {parts}
+      </Text>
+    );
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {line(<>{head}{tail}</>)}
+      {facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}
+    </Box>
   );
+}
+
+/** A seat's status word, or `endpoint`, then its condition and dated facts, for {@link wrapFacts}. */
+export function statusLine(p: Presence): string {
+  const { condition, ages } = presenceFacts(p);
+  return (p.card.kind === "agent" ? STATUS[p.status].word : "endpoint") + condition + ages;
 }
 
 function matches(p: Presence, q: string): boolean {
@@ -64,7 +98,6 @@ export function Roster({
   query,
   boxWidth,
   boxHeight,
-  wide,
   blocked,
   onFocus,
   onOpenDetail,
@@ -78,7 +111,6 @@ export function Roster({
   query: string;
   boxWidth: number;
   boxHeight: number;
-  wide: boolean;
   blocked: boolean;
   onFocus: (id: "roster" | "feed") => void;
   onOpenDetail: (p: Presence) => void;
@@ -103,7 +135,7 @@ export function Roster({
   useInput(
     (input, key) => {
       if (key.upArrow || input === "k") setSel((v) => Math.max(0, v - 1));
-      else if (key.downArrow || input === "j") setSel((v) => Math.min(list.length - 1, v + 1));
+      else if (key.downArrow || input === "j") setSel((v) => Math.min(Math.max(0, list.length - 1), v + 1));
       else if (input === "D" && onKill && list[selClamped]?.card.kind === "agent")
         onKill(list[selClamped]);
       else if (input === "a" && onAttach && list[selClamped]?.card.kind === "agent")
@@ -115,12 +147,15 @@ export function Roster({
     { isActive: isFocused && !blocked },
   );
 
-  const capacity = Math.max(1, boxHeight - 3); // border (2) + title (1)
-  let start = 0;
-  if (list.length > capacity) {
-    start = Math.min(Math.max(0, selClamped - Math.floor(capacity / 2)), list.length - capacity);
-  }
-  const visible = list.slice(start, start + capacity);
+  // A seat's status and dated facts wrap onto rows of their own under its head row, so no width
+  // cuts them, and the window counts those rows.
+  const facts = list.map((p) => wrapFacts(statusLine(p), boxWidth - 6)); // border (2) + padding (2) + indent (2)
+  const [start, end] = windowAround(
+    facts.map((f) => 1 + f.length),
+    selClamped,
+    boxHeight - 3, // border (2) + title (1)
+  );
+  const visible = list.slice(start, end);
 
   return (
     <Box
@@ -130,6 +165,10 @@ export function Roster({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
+      // A seat's rows never shrink, so one taller than the box (a short terminal, a hostile condition
+      // code) displaces the title and is then cut at the bottom, keeping its name row, rather than being
+      // squeezed or drawn over the panes below.
+      overflowY="hidden"
     >
       <Text wrap="truncate-end">
         <Text bold>roster</Text>
@@ -147,7 +186,7 @@ export function Roster({
             key={p.card.id}
             p={p}
             selected={isFocused && start + i === selClamped}
-            wide={wide}
+            facts={facts[start + i]}
             tag={harness?.get(p.card.id)}
           />
         ))

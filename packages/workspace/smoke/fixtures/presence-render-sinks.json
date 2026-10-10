@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 517,
-    "honest-text": 36,
+    "total": 510,
+    "honest-text": 35,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 412
+    "non-render/control": 406
   },
   "renderers": [
     {
@@ -481,7 +481,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status)",
+      "anchor": "c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.presence)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -492,7 +492,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": "ence.card)} joined `) + statusBadge(ev.presence.status));\n    else if (ev.type ",
+      "anchor": "ence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.pre",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -510,7 +510,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity) : \"\"}`",
+      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity + activityAge(ev.presence)) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -521,7 +521,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": "ho(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ",
+      "anchor": "ho(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.pre",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -532,7 +532,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "c.dim(\"Present: \") +\n          others.map((p) => who(p.card) + \" \" + statusBadge(p.status)).join(c.dim(\", \"))",
+      "anchor": "c.dim(\"Present: \") +\n          others.map((p) => who(p.card) + \" \" + statusBadge(p.status) + presenceDetail(p)).join(c.dim(\", \"))",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -543,7 +543,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "who(p.card) + \" \" + statusBadge(p.status)",
+      "anchor": "who(p.card) + \" \" + statusBadge(p.status) + presenceDetail(p)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -554,7 +554,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": " => who(p.card) + \" \" + statusBadge(p.status)).join(c.dim(\", \")),\n   ",
+      "anchor": " => who(p.card) + \" \" + statusBadge(p.status) + presenceDetail(p)).jo",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -579,7 +579,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              (p.activity ? c.dim(\" - \" + p.activity) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
+      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              presenceDetail(p) +\n              (p.activity ? c.dim(\" - \" + p.activity + activityAge(p)) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -590,7 +590,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": "    \" \" +\n              statusBadge(p.status) +\n              (p.acti",
+      "anchor": "    \" \" +\n              statusBadge(p.status) +\n              presenc",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -1281,7 +1281,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              wide={!narrow}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
+      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1657,32 +1657,14 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "indexed-map",
-      "anchor": "STATUS[p.status]",
+      "anchor": "== \"agent\";\n  const s = STATUS[p.status];\n  const age = progress",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "ind = wide ? (isAgent ? \"  \" + s.word : \"  endpoint\") : \"\";\n ",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/console/ui/Roster.tsx",
-        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
-      }
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age",
+      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\")",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1710,69 +1692,34 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "color={isAgent ? agentColor(p.card.name) : undefined}",
+      "anchor": "{line(<>{head}{tail}</>)}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{isAgent ? agentColor(p.card.name) : undefined}",
+      "anchor": "{head}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "dimColor={!isAgent}",
+      "anchor": "{facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{!isAgent}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{wide ? (\n        isAgent ? (\n          <Text color={s.color}>{\"  \" + s.word}</Text>\n        ) : (\n          <Text dimColor>{\"  endpoint\"}</Text>\n        )\n      ) : null}",
+      "kind": "indexed-map",
+      "anchor": "card.kind === \"agent\" ? STATUS[p.status].word : \"endpoint\") + co",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
         "path": "implementations/cli/src/console/ui/Roster.tsx",
         "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
       }
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "color={s.color}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{s.color}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{\"  \" + s.word}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": " <Text color={s.color}>{\"  \" + s.word}</Text>\n        ) : (\n ",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",
@@ -2106,7 +2053,7 @@
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "derived-output",
-      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${activity}`",
+      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activity}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {

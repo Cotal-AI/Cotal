@@ -586,7 +586,6 @@ export function App({
               query={search.query}
               boxWidth={roster.w}
               boxHeight={roster.h}
-              wide={!narrow}
               blocked={blocked}
               onFocus={onFocus}
               onOpenDetail={openAgent}

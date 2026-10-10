@@ -18,17 +18,26 @@ export function statusBadge(status: PresenceStatus): string {
   }
 }
 
+type DatedRow = PresenceStamps & { condition?: { code: string } };
+
 /** The facts a status word needs beside it (#618): the harness-reported condition and how long it has
- *  held, how long the status has stood (#578), then the age of the seat's last harness-reported work
- *  event (`activeAt`). A failure 3s old and one 40m old, or a turn that stopped advancing and one that
- *  is advancing, no longer render alike. The seat reports `activeAt` itself, so the status word keeps
- *  its own progress wording. */
-export function presenceDetail(p: PresenceStamps & { condition?: { code: string } }, now = Date.now()): string {
+ *  held, then how long the status has stood (#578) and the age of the seat's last harness-reported
+ *  work event (`activeAt`). A failure 3s old and one 40m old, or a turn that stopped advancing and one
+ *  that is advancing, no longer render alike. The seat reports `activeAt` itself, so the status word
+ *  keeps its own progress wording. Unstyled, because the console styles them with Ink, where an ANSI
+ *  reset inside the text would end a highlighted row's styling. */
+export function presenceFacts(p: DatedRow, now = Date.now()): { condition: string; ages: string } {
   const age = presenceAges(p, now);
   const condition = p.condition ? ` (${p.condition.code}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "";
-  const unchanged = age.statusSince === undefined ? "" : c.dim(` · unchanged for ${formatAge(age.statusSince)}`);
-  const active = age.activeAt === undefined ? "" : c.dim(` · active ${formatAge(age.activeAt)} ago`);
-  return condition + unchanged + active;
+  const unchanged = age.statusSince === undefined ? "" : ` · unchanged for ${formatAge(age.statusSince)}`;
+  const active = age.activeAt === undefined ? "" : ` · active ${formatAge(age.activeAt)} ago`;
+  return { condition, ages: unchanged + active };
+}
+
+/** {@link presenceFacts} for ANSI output, with the ages dimmed. */
+export function presenceDetail(p: DatedRow, now = Date.now()): string {
+  const { condition, ages } = presenceFacts(p, now);
+  return condition + (ages && c.dim(ages));
 }
 
 /** The age that follows an activity (#544): a hook flips the status every turn and leaves the
