@@ -789,9 +789,11 @@ try {
       mkdirSync(join(workspaceRoot, ".cotal", "run"), { recursive: true });
       writeFileSync(join(workspaceRoot, ".cotal", "run", `${m6Run}.json`), JSON.stringify({
         apiVersion: "cotal-launch/v1", space, runId: m6Run,
+        // The stub publishes no event plane, and that refusal runs before the name allocation, so
+        // without the opt-out it would answer first and the collision would never be graded.
         agents: [{
           name: "m6pin", agent: "e2e-stub", subscribe: ["general"],
-          allowSubscribe: ["general"], allowPublish: [], hash: "m6hash",
+          allowSubscribe: ["general"], allowPublish: [], events: false, hash: "m6hash",
         }],
       }));
       const rPinned = await A.call("launch", { runId: m6Run, name: "m6pin" });
