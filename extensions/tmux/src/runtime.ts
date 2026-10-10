@@ -13,7 +13,7 @@ import {
 } from "@cotal-ai/core";
 import * as tmux from "./driver.js";
 
-/** Grace window for a clean exit before a graceful stop force-closes the window. */
+/** Grace window for a clean exit before a graceful stop force-closes the seat's pane. */
 const GRACE_MS = 1_500;
 /** Bounds the startup-confirm watch's Enter and close, because the watch runs on the manager's event
  *  loop; the driver bounds its reads. */
@@ -23,8 +23,8 @@ const CONFIRM_CALL = { timeoutMs: 1_000 };
  * Spawns each agent into its own new tmux window in a shared per-space session, so
  * spawned teammates get room rather than crowding the spawner. Opened unfocused so the
  * human stays in their current window; switch to `session:name` to watch the worker.
- * Like cmux, you watch natively, so `attach()` throws — but teardown is real: the window
- * target is kept so it can be driven and closed.
+ * Like cmux, you watch natively, so `attach()` throws — but teardown is real: the seat's pane
+ * is kept so it can be driven and closed wherever tmux moves it.
  */
 export class TmuxRuntime implements Runtime {
   readonly kind = "tmux" as const;
@@ -54,8 +54,8 @@ export class TmuxRuntime implements Runtime {
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
-    // Key the whole lifecycle off the STABLE window ID (@N), not `session:name`. tmux can rename
-    // a window (automatic-rename / a title escape), which would desync a name-based status/stop.
+    // Drive the seat off its STABLE pane ID (%N), not `session:name` or the window ID (@N): tmux can
+    // rename a window, and swap-pane, join-pane or break-pane can move the pane to another window.
     const { windowId, paneId, serverPid } = tmux.openWindow(this.session, name, command, cwd, { focus: false });
 
     // A restarted tmux server reuses window and pane ids, so the watch acts only on the one that opened
@@ -87,29 +87,29 @@ export class TmuxRuntime implements Runtime {
         }
       },
       stop: (opts) => {
-        if (opts?.graceful === false) return tmux.closeWindow(windowId);
+        if (opts?.graceful === false) return tmux.closePane(paneId);
         // Graceful: type `/exit` so the Claude session shuts down cleanly (its SessionEnd
-        // hook leaves the mesh), then close the now-idle window regardless.
+        // hook leaves the mesh), then close the now-idle pane regardless.
         try {
-          tmux.send("/exit", windowId);
-          tmux.sendKey("Enter", windowId);
+          tmux.send("/exit", paneId);
+          tmux.sendKey("Enter", paneId);
         } catch {
-          /* window already gone — still ensure it's closed below */
+          /* pane already gone — still ensure it's closed below */
         }
         // Deferred, so a throw here is uncaught in a timer and would crash the manager.
-        // closeWindow already no-ops on an already-gone window; guard anyway and log a genuine
+        // closePane already no-ops on an already-gone pane; guard anyway and log a genuine
         // tmux failure rather than let teardown cleanup take the process down.
         setTimeout(() => {
           try {
-            tmux.closeWindow(windowId);
+            tmux.closePane(paneId);
           } catch (err) {
-            console.error(`tmux runtime: failed to close window for "${name}":`, err);
+            console.error(`tmux runtime: failed to close pane for "${name}":`, err);
           }
         }, GRACE_MS);
       },
       waitForExit: () => tmux.waitForPaneExit(paneId),
       interrupt: () => {
-        tmux.sendKey("C-c", windowId);
+        tmux.sendKey("C-c", paneId);
       },
       attach: () => {
         throw new Error(
