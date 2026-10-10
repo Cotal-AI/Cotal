@@ -19,7 +19,6 @@ import {
   type IssuedCaller,
   type ResolvedService,
 } from "@cotal-ai/core";
-import type { NatsConnection } from "@nats-io/transport-node";
 import { authDir, spaceSegment, userAuthStateDir } from "./auth-paths.js";
 import { CLI_USER_ACTOR, type ConnectFlags } from "./connect.js";
 import { resolveMeshTarget } from "./mesh-target.js";
@@ -111,7 +110,7 @@ export function loadEndpointDeploymentTrust(
 }
 
 export interface EndpointCallerTarget {
-  nc: NatsConnection;
+  nc: Awaited<ReturnType<ReturnType<typeof dialerFor>>>;
   space: string;
   server: string;
   root: string;
