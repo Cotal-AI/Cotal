@@ -10,7 +10,7 @@ import {
   loadExtensionsManifest,
   type InstalledExtension,
 } from "./extensions.js";
-import { claimExtensionMutationLock } from "./extension-mutation.js";
+import { claimExtensionMutationLockAsync } from "./extension-mutation.js";
 import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 
 /**
@@ -116,10 +116,16 @@ function enqueueLoad(load: () => Promise<void>): Promise<void> {
   return run;
 }
 
+/** How long a load queues behind another process's live extension locks before refusing, in total for
+ *  the pass and writer locks together. Another CLI process mid-install/load holds them for seconds, not
+ *  minutes; a bounded wait lets this load follow it instead of failing a command that would have
+ *  succeeded a moment later. The wait is asynchronous so the caller's event loop keeps running. */
+const EXTENSION_LOCK_WAIT_MS = 5_000;
+
 async function withExtensionLock(load: () => Promise<void>): Promise<void> {
-  const release = claimExtensionMutationLock({
+  const release = await claimExtensionMutationLockAsync({
     label: "extension materialization",
-    waitMs: 0,
+    waitMs: EXTENSION_LOCK_WAIT_MS,
     timeoutMessage: (pid) => `extension install/remove is in progress (pid ${pid}) - retry after the active \`cotal ext\` command finishes`,
   });
   try {

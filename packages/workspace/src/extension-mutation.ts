@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { acquireLock, inspectLock, processStartToken } from "./advisory-lock.js";
+import { acquireLock, acquireLockAsync, inspectLock, processStartToken, type AcquireOptions, type HeldLock } from "./advisory-lock.js";
 import { extensionMutationLockPath } from "./extensions.js";
 
 function extensionUpdatePassLockPath(): string {
@@ -46,25 +46,57 @@ export interface ExtensionMutationOptions {
   readonly timeoutMessage?: (pid: number) => string;
 }
 
+/** One lock acquisition the policy needs. The policy only says WHAT to acquire; the sync and async
+ *  claimers differ only in HOW they acquire it (and, for async, how the wait is budgeted). */
+interface LockRequest {
+  readonly path: string;
+  readonly opts: AcquireOptions;
+}
+
+type MutationPolicy = Generator<LockRequest, () => void, HeldLock>;
+
+/** Update pass: acquire it, then refuse while an extension npm child is still marked live. */
+function* updatePassPolicy(waitMs: number | undefined): MutationPolicy {
+  const held = yield {
+    path: extensionUpdatePassLockPath(),
+    opts: {
+      label: "a `cotal update` extension pass",
+      waitMs: waitMs ?? 0,
+      onTimeout: (owner) => new Error(`another extension update or mutation is in progress (pid ${owner.pid}) - retry once it finishes`),
+    },
+  };
+  try {
+    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    return () => held.release();
+  } catch (e) {
+    held.release();
+    throw e;
+  }
+}
+
 /** Shared pass -> writer order for every extension-prefix reader that can rewrite peer links and
  * every writer. An update child may borrow its live parent's pass, but always owns the writer. */
-export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}): () => void {
-  const releasePass = opts.borrowUpdateParent === undefined
-    ? claimExtensionUpdatePass({ waitMs: opts.waitMs })
-    : (() => {
-        if (!extensionUpdatePassOwnedBy(opts.borrowUpdateParent))
-          throw new Error("the extension update parent no longer owns its pass lock");
-        assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
-        return () => {};
-      })();
+function* mutationPolicy(opts: ExtensionMutationOptions): MutationPolicy {
+  let releasePass: () => void;
+  if (opts.borrowUpdateParent === undefined) {
+    releasePass = yield* updatePassPolicy(opts.waitMs);
+  } else {
+    if (!extensionUpdatePassOwnedBy(opts.borrowUpdateParent))
+      throw new Error("the extension update parent no longer owns its pass lock");
+    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
+    releasePass = () => {};
+  }
   try {
-    const held = acquireLock(extensionMutationLockPath(), {
-      label: opts.label ?? "an extension mutation",
-      waitMs: opts.waitMs ?? 0,
-      onTimeout: (owner) => new Error(
-        opts.timeoutMessage?.(owner.pid) ?? `another extension mutation is in progress (pid ${owner.pid}) - retry once it finishes`,
-      ),
-    });
+    const held = yield {
+      path: extensionMutationLockPath(),
+      opts: {
+        label: opts.label ?? "an extension mutation",
+        waitMs: opts.waitMs ?? 0,
+        onTimeout: (owner) => new Error(
+          opts.timeoutMessage?.(owner.pid) ?? `another extension mutation is in progress (pid ${owner.pid}) - retry once it finishes`,
+        ),
+      },
+    };
     return () => {
       held.release();
       releasePass();
@@ -75,19 +107,56 @@ export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}):
   }
 }
 
-export function claimExtensionUpdatePass(opts: { waitMs?: number } = {}): () => void {
-  const held = acquireLock(extensionUpdatePassLockPath(), {
-    label: "a `cotal update` extension pass",
-    waitMs: opts.waitMs ?? 0,
-    onTimeout: (owner) => new Error(`another extension update or mutation is in progress (pid ${owner.pid}) - retry once it finishes`),
-  });
-  try {
-    assertNoProcessMutation(extensionNpmMutationPath(), "extension npm mutation");
-    return () => held.release();
-  } catch (e) {
-    held.release();
-    throw e;
+/** Drive a policy with the blocking acquirer. */
+function runPolicy(policy: MutationPolicy): () => void {
+  let step = policy.next();
+  while (!step.done) {
+    let held: HeldLock;
+    try {
+      held = acquireLock(step.value.path, step.value.opts);
+    } catch (e) {
+      policy.throw(e); // lets the policy release what it already holds; it rethrows
+      throw e;
+    }
+    step = policy.next(held);
   }
+  return step.value;
+}
+
+/** Drive a policy with the awaited acquirer. `waitMs` is one deadline shared by every acquisition: each
+ *  request waits at most the time left, so the pass and the writer together never exceed it. */
+async function runPolicyAsync(policy: MutationPolicy, waitMs: number): Promise<() => void> {
+  const deadline = Date.now() + waitMs;
+  let step = policy.next();
+  while (!step.done) {
+    let held: HeldLock;
+    try {
+      held = await acquireLockAsync(step.value.path, {
+        ...step.value.opts,
+        waitMs: Math.min(step.value.opts.waitMs ?? 0, Math.max(0, deadline - Date.now())),
+      });
+    } catch (e) {
+      policy.throw(e);
+      throw e;
+    }
+    step = policy.next(held);
+  }
+  return step.value;
+}
+
+/** Blocking claim of the pass -> writer locks; see {@link mutationPolicy}. */
+export function claimExtensionMutationLock(opts: ExtensionMutationOptions = {}): () => void {
+  return runPolicy(mutationPolicy(opts));
+}
+
+/** {@link claimExtensionMutationLock} for async callers: the wait is an awaited timer, not a blocked
+ *  event loop, and `waitMs` is one deadline shared by the pass and the writer acquisition. */
+export function claimExtensionMutationLockAsync(opts: Omit<ExtensionMutationOptions, "borrowUpdateParent"> = {}): Promise<() => void> {
+  return runPolicyAsync(mutationPolicy(opts), opts.waitMs ?? 0);
+}
+
+export function claimExtensionUpdatePass(opts: { waitMs?: number } = {}): () => void {
+  return runPolicy(updatePassPolicy(opts.waitMs));
 }
 
 export function extensionUpdatePassOwnedBy(pid: number): boolean {

@@ -2362,6 +2362,16 @@ Removing an extension that owns a running local process is refused with the mesh
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process
 whose lifecycle provider is gone.
 
+Loading an installed extension takes the same locks as `add`, `remove` and `cotal update`. When another
+`cotal` process holds them, the load waits up to five seconds in total (one deadline for both locks)
+without blocking the waiting process, then refuses. A running `cotal update`, `cotal ext add` or
+`cotal ext remove` holds the update-pass lock as well as the install/remove lock, so the load refuses with
+"another extension update or mutation is in progress (pid N) - retry once it finishes". The install/remove
+text, "extension install/remove is in progress (pid N) - retry after the active `cotal ext` command
+finishes", appears only when the update-pass lock is free but a live process still holds the
+install/remove lock itself, for example an update child that outlived its `cotal update` parent. Re-run
+the command once the other one has finished.
+
 ### Built-in connectors are seeded extensions
 
 The first-party agent connectors (`claude`, `opencode`, `codex`, `hermes`, `jcode`, `pi`) are not compiled into

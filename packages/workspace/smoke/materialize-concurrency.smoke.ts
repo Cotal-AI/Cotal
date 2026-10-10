@@ -15,10 +15,14 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { registry, type ExtensionRef } from "@cotal-ai/core";
 import {
+  breakLock,
+  claimExtensionMutationLockAsync,
   claimExtensionUpdatePass,
+  extensionMutationLockPath,
   extensionsDir,
   importInstalledExtension,
   type InstalledExtension,
@@ -31,6 +35,42 @@ const cells = counted.cells;
 // (node walks up to packages/workspace/node_modules), sharing this process's registry singleton.
 const tmp = mkdtempSync(join(import.meta.dirname, ".mat-concurrency-"));
 process.env.XDG_CONFIG_HOME = tmp;
+
+/** Spawn a child that runs `body` (after `release` is bound) and print "held" once it holds the lock for `ms`. */
+function spawnHolder(lockExpr: string, ms: number) {
+  const child = spawn(
+    process.execPath,
+    [
+      "--import", "tsx", "--input-type=module", "-e",
+      `import { rmSync, writeFileSync } from "node:fs";
+       import { acquireLock, extensionMutationLockPath, processStartToken } from "@cotal-ai/workspace";
+       const held = ${lockExpr};
+       console.log("held");
+       setTimeout(() => { held.release(); process.exit(0); }, ${ms});`,
+    ],
+    { cwd: import.meta.dirname, env: process.env, stdio: ["ignore", "pipe", "inherit"] },
+  );
+  const ready = new Promise<void>((resolve, reject) => {
+    child.stdout.on("data", (d) => String(d).includes("held") && resolve());
+    child.on("error", reject);
+    child.on("exit", () => reject(new Error("holder exited before holding the lock")));
+  });
+  return { child, ready };
+}
+
+/** A writer-lock record whose owner is dead, so the next acquirer must reclaim it. */
+function writeStaleWriterRecord(lockPath: string): void {
+  const deadPid = spawnSync(process.execPath, ["-e", ""]).pid;
+  mkdirSync(join(lockPath, ".."), { recursive: true });
+  writeFileSync(lockPath, `${JSON.stringify({ pid: deadPid, nonce: "stale", ts: Date.now() })}\n`);
+}
+
+/** Holder body: publish a live `.reclaim` sentinel (a reclaimer mid-reclaim) and remove it on release. */
+const sentinelHolderExpr = `(() => {
+  const sentinel = extensionMutationLockPath() + ".reclaim";
+  writeFileSync(sentinel, JSON.stringify({ pid: process.pid, start: processStartToken(process.pid), nonce: "reclaimer", ts: Date.now() }) + "\\n");
+  return { release: () => rmSync(sentinel, { force: true }) };
+})()`;
 
 let seq = 0;
 /** Write a self-registering ESM package that registers `refs` on import; return its manifest row. */
@@ -86,7 +126,8 @@ try {
   }
 
   // 5. Materialization can rewrite shared-peer links, so it must obey the same pass -> writer order as
-  //    add/remove. A whole update pass excludes a direct materializer, not only CLI mutation helpers.
+  //    add/remove. A whole update pass excludes a direct materializer, not only CLI mutation helpers. This process
+  //    holds the pass, so the load waits out its lock bound before refusing.
   {
     const ref: ExtensionRef = { kind: "connector", name: "pass-excluded" };
     const ext = fakePackage([ref]);
@@ -98,6 +139,103 @@ try {
       );
     } finally {
       release();
+    }
+  }
+
+  // 6. A load that meets a LIVE short-held mutation lock (another CLI process mid-load) queues behind it
+  //    instead of refusing at once.
+  {
+    const ref: ExtensionRef = { kind: "connector", name: "queued" };
+    const ext = fakePackage([ref]);
+    const holder = spawnHolder(`acquireLock(extensionMutationLockPath(), { waitMs: 0 })`, 1500);
+    try {
+      await holder.ready;
+      // The wait must not block the event loop: a 50 ms timer keeps firing while the load is queued.
+      let ticks = 0;
+      const timer = setInterval(() => ticks++, 50);
+      try {
+        await assert.doesNotReject(importInstalledExtension(ext, ref), "load must wait for a briefly held lock");
+      } finally {
+        clearInterval(timer);
+      }
+      assert.ok(ticks >= 10, `event loop was blocked while waiting for the lock (${ticks} timer ticks)`);
+      assert.equal(registry.resolve("connector", "queued").name, "queued");
+    } finally {
+      holder.child.kill();
+    }
+  }
+
+  // 7. One deadline covers the pass AND writer acquisitions. The pass is free after ~0.6 s but the writer
+  //    stays held for 3 s, so a 1.5 s bound must refuse at ~1.5 s, not restart the clock for the writer.
+  {
+    const passHolder = spawnHolder(`acquireLock(extensionMutationLockPath() + ".update", { waitMs: 0 })`, 600);
+    const writerHolder = spawnHolder(`acquireLock(extensionMutationLockPath(), { waitMs: 0 })`, 3000);
+    try {
+      await Promise.all([passHolder.ready, writerHolder.ready]);
+      const started = Date.now();
+      await assert.rejects(
+        claimExtensionMutationLockAsync({ waitMs: 1500, label: "deadline test" }),
+        /another extension mutation is in progress/,
+      );
+      const took = Date.now() - started;
+      assert.ok(took >= 1400 && took < 2000, `refusal came after ${took} ms instead of the 1500 ms bound`);
+    } finally {
+      passHolder.child.kill();
+      writerHolder.child.kill();
+    }
+  }
+
+  // 8. A stale writer record behind a LIVE `.reclaim` sentinel (another process mid-reclaim) is contention
+  //    too: the load waits for the reclaimer with awaited timers instead of spinning inside the synchronous
+  //    acquire loop, so the event loop keeps running and the stale record is reclaimed afterwards.
+  {
+    const ref: ExtensionRef = { kind: "connector", name: "behind-reclaimer" };
+    const ext = fakePackage([ref]);
+    const lockPath = extensionMutationLockPath();
+    writeStaleWriterRecord(lockPath);
+    const reclaimer = spawnHolder(sentinelHolderExpr, 700);
+    try {
+      await reclaimer.ready;
+      let ticks = 0;
+      const timer = setInterval(() => ticks++, 50);
+      try {
+        await assert.doesNotReject(importInstalledExtension(ext, ref), "load must wait out a live reclaimer");
+      } finally {
+        clearInterval(timer);
+      }
+      assert.ok(ticks >= 8, `event loop was blocked behind the reclaimer (${ticks} timer ticks)`);
+      assert.equal(registry.resolve("connector", "behind-reclaimer").name, "behind-reclaimer");
+    } finally {
+      reclaimer.child.kill();
+      breakLock(lockPath);
+    }
+  }
+
+  // 9. The same contention honours the deadline: a reclaimer outlasting a 1 s bound is refused at ~1 s with
+  //    the timers still running, not after the reclaimer finishes.
+  {
+    const lockPath = extensionMutationLockPath();
+    writeStaleWriterRecord(lockPath);
+    const reclaimer = spawnHolder(sentinelHolderExpr, 4000);
+    try {
+      await reclaimer.ready;
+      let ticks = 0;
+      const timer = setInterval(() => ticks++, 50);
+      const started = Date.now();
+      try {
+        await assert.rejects(
+          claimExtensionMutationLockAsync({ waitMs: 1000, label: "reclaimer deadline test" }),
+          /another extension mutation is in progress/,
+        );
+      } finally {
+        clearInterval(timer);
+      }
+      const took = Date.now() - started;
+      assert.ok(took >= 900 && took < 1500, `refusal came after ${took} ms instead of the 1000 ms bound`);
+      assert.ok(ticks >= 10, `event loop was blocked behind the reclaimer (${ticks} timer ticks)`);
+    } finally {
+      reclaimer.child.kill();
+      breakLock(lockPath);
     }
   }
 

@@ -197,19 +197,21 @@ function publishAtomic(path: string, content: string): boolean {
 
 /** Serialized reclaim of a stale canonical lock at `path`, via a `.reclaim` sentinel that only one
  *  reclaimer can hold. Under the sentinel the exact stale generation is re-confirmed and removed. A
- *  live sentinel is waited on; a dead sentinel holder fails loud (never a recursive unsafe reclaim). */
-function reclaimStale(path: string, inspectedIno: number | undefined): void {
+ *  live sentinel is contention: its owner is returned so the caller can wait for it; a dead sentinel
+ *  holder fails loud (never a recursive unsafe reclaim). */
+function reclaimStale(path: string, inspectedIno: number | undefined): LockOwner | undefined {
   const sentinel = `${path}.reclaim`;
   const mine = JSON.stringify({ pid: process.pid, start: processStartToken(process.pid), nonce: randomBytes(8).toString("hex"), ts: Date.now() });
   if (!publishAtomic(sentinel, mine)) {
     // Lost the sentinel race. Only a STALE (dead-owner) sentinel is fail-loud — a live one is a
     // reclaim in progress and an absent one is a reclaim that just finished; both mean "let the acquire
     // loop retry", never "proceed to unlink" (an EEXIST loser must not fall through to remove G1).
-    if (inspectLock(sentinel).state === "stale")
+    const reclaimer = inspectLock(sentinel);
+    if (reclaimer.state === "stale")
       throw new Error(
         `a lock reclaim was interrupted and its sentinel remains (${sentinel}) - if no cotal process is running, remove it and retry`,
       );
-    return; // active or absent — retry acquisition
+    return reclaimer.state === "active" ? reclaimer.owner : undefined; // active: wait; absent: retry now
   }
   try {
     // Under the sentinel the canonical file is immutable (publish is blocked while it exists), so a
@@ -231,13 +233,13 @@ function reclaimStale(path: string, inspectedIno: number | undefined): void {
   }
 }
 
-/**
- * Acquire the lock at `path`. Returns a handle whose {@link HeldLock.release} removes it (idempotent,
- * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live one, then throws.
- */
-export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
-  const waitMs = opts.waitMs ?? 300000;
-  const pollMs = opts.pollMs ?? 200;
+interface Attempt {
+  readonly path: string;
+  readonly nonce: string;
+  readonly content: string;
+}
+
+function newAttempt(path: string, opts: AcquireOptions): Attempt {
   mkdirSync(dirname(path), { recursive: true });
   const nonce = randomBytes(12).toString("hex");
   const owner: LockOwner = {
@@ -247,13 +249,26 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
     ts: Date.now(),
     ...(opts.label ? { label: opts.label } : {}),
   };
-  const content = `${JSON.stringify(owner)}\n`;
-  const deadline = Date.now() + waitMs;
+  return { path, nonce, content: `${JSON.stringify(owner)}\n` };
+}
 
-  for (;;) {
-    if (publishAtomic(path, content)) {
-      let released = false;
-      return {
+/** What one non-blocking try-acquire/reclaim attempt found. `retry` means the state changed under us (a
+ *  lock was released, or this attempt reclaimed a stale one) and the next attempt needs no wait. `held`
+ *  is a live holder; `reclaiming` is a live reclaimer holding the `.reclaim` sentinel over a stale record. */
+type AttemptResult =
+  | { readonly kind: "acquired"; readonly held: HeldLock }
+  | { readonly kind: "retry" }
+  | { readonly kind: "held"; readonly owner: LockOwner }
+  | { readonly kind: "reclaiming"; readonly owner: LockOwner };
+
+/** One try-acquire (publish), and when that fails one inspect-and-reclaim step. Never waits. The sync and
+ *  async acquirers differ only in how they wait between attempts. */
+function tryAcquireOnce({ path, nonce, content }: Attempt): AttemptResult {
+  if (publishAtomic(path, content)) {
+    let released = false;
+    return {
+      kind: "acquired",
+      held: {
         nonce,
         release() {
           if (released) return;
@@ -267,24 +282,79 @@ export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
             }
           }
         },
-      };
+      },
+    };
+  }
+  // Held — inspect and either wait (live) or reclaim (dead).
+  const found = readOwner(path);
+  const inspection = inspectLock(path);
+  if (inspection.state === "absent") return { kind: "retry" }; // raced with a release
+  if (inspection.state === "stale") {
+    const reclaimer = reclaimStale(path, found?.ino);
+    return reclaimer ? { kind: "reclaiming", owner: reclaimer } : { kind: "retry" };
+  }
+  return { kind: "held", owner: inspection.owner };
+}
+
+/** Poll interval while a stale record is being reclaimed: short, because it ends as soon as the reclaimer is done. */
+function reclaimPollMs(pollMs: number): number {
+  return Math.min(pollMs, 50);
+}
+
+/**
+ * Acquire the lock at `path`. Returns a handle whose {@link HeldLock.release} removes it (idempotent,
+ * nonce-guarded). Reclaims a dead owner (serialized); waits up to `waitMs` on a live one, then throws.
+ */
+export function acquireLock(path: string, opts: AcquireOptions = {}): HeldLock {
+  const waitMs = opts.waitMs ?? 300000;
+  const pollMs = opts.pollMs ?? 200;
+  const attempt = newAttempt(path, opts);
+  const deadline = Date.now() + waitMs;
+
+  for (;;) {
+    const result = tryAcquireOnce(attempt);
+    switch (result.kind) {
+      case "acquired":
+        return result.held;
+      case "retry":
+        continue;
+      case "reclaiming":
+        sleepSync(reclaimPollMs(pollMs));
+        continue;
+      case "held":
+        if (Date.now() >= deadline) throw lockTimeoutError(path, opts, result.owner, waitMs);
+        sleepSync(pollMs);
     }
-    // Held — inspect and either wait (live) or reclaim (dead).
-    const found = readOwner(path);
-    const inspection = inspectLock(path);
-    if (inspection.state === "absent") continue; // raced with a release
-    if (inspection.state === "stale") {
-      reclaimStale(path, found?.ino);
-      sleepSync(Math.min(pollMs, 50));
-      continue;
-    }
-    if (Date.now() >= deadline) {
-      throw (opts.onTimeout?.(inspection.owner)) ??
-        new Error(
-          `${opts.label ?? "a lock"} is held by a live process (pid ${inspection.owner.pid}) and did not release within ${Math.round(waitMs / 1000)}s - retry, or if it is wedged, remove ${path}`,
-        );
-    }
-    sleepSync(pollMs);
+  }
+}
+
+function lockTimeoutError(path: string, opts: AcquireOptions, owner: LockOwner, waitMs: number): Error {
+  return opts.onTimeout?.(owner) ??
+    new Error(
+      `${opts.label ?? "a lock"} is held by a live process (pid ${owner.pid}) and did not release within ${Math.round(waitMs / 1000)}s - retry, or if it is wedged, remove ${path}`,
+    );
+}
+
+/**
+ * {@link acquireLock} for callers on a live event loop: every attempt is the same non-blocking
+ * try-acquire/reclaim step, and the wait between attempts is an awaited timer, so timers, RPCs and
+ * cancellation keep running while a live holder or a live reclaimer is outstanding. `opts.waitMs` is one
+ * deadline for the whole wait, whichever of the two is in the way.
+ */
+export async function acquireLockAsync(path: string, opts: AcquireOptions = {}): Promise<HeldLock> {
+  const waitMs = opts.waitMs ?? 300000;
+  const pollMs = opts.pollMs ?? 200;
+  const attempt = newAttempt(path, opts);
+  const deadline = Date.now() + waitMs;
+
+  for (;;) {
+    const result = tryAcquireOnce(attempt);
+    if (result.kind === "acquired") return result.held;
+    if (result.kind === "retry") continue;
+    const left = deadline - Date.now();
+    if (left <= 0) throw lockTimeoutError(path, opts, result.owner, waitMs);
+    const interval = result.kind === "reclaiming" ? reclaimPollMs(pollMs) : pollMs;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(interval, left)));
   }
 }
 
