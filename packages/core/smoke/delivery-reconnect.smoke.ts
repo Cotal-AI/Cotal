@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts, dlvDurable } from "../src/index.js";
+import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, principalKey, DEV_OWNER, membershipBucket, standaloneConnectOpts, dlvDurable, isPublishPermissionDenied } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -26,6 +26,10 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const awaitExit = (proc: ReturnType<typeof spawn>, t = 3000): Promise<void> =>
   new Promise((resolve) => { if (proc.exitCode !== null || proc.signalCode !== null) return resolve(); proc.once("exit", () => resolve()); setTimeout(resolve, t); });
+const reconnected = (ep: CotalEndpoint): Promise<void> => new Promise((resolve) => {
+  const onConnection = (state: { connected: boolean }) => { if (state.connected) { ep.off("connection", onConnection); resolve(); } };
+  ep.on("connection", onConnection);
+});
 let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pass++; console.log(`  ✓ ${name}`); } else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); } };
 
@@ -163,6 +167,8 @@ try {
   };
   (observer as unknown as { membershipFeedKv: unknown }).membershipFeedKv = raceFeed;
   const raceHandle = await observer.watchMembership(() => {});
+  // The broker marks the consumer push-bound only once it sees the subscribe, which can trail the watch.
+  for (let i = 0; i < 20 && (await membershipConsumers()).length !== 1; i++) await wait(50);
   const raceConsumers = await membershipConsumers();
   check("the public stop/close race starts with one membership consumer", raceConsumers.length === 1 && raceConsumer !== undefined, raceConsumers);
   if (!raceConsumer) throw new Error("public stop/close race did not capture broker consumer creation");
@@ -170,14 +176,31 @@ try {
   let releaseDelete!: () => void;
   const deleteGate = new Promise<void>((resolve) => { releaseDelete = resolve; });
   raceConsumer.delete = async () => { await deleteGate; return raceDelete(); };
-  const raceStop = raceHandle.stop();
+  // The admin cred's delete is refused, so the census reads the same whether the stop sent its fresh-epoch
+  // delete or skipped it. The refused request tells them apart. The endpoint binds each connection's
+  // request when it dials, so only the fresh connection sends through this prototype.
+  const raceDeleteSubject = `$JS.API.CONSUMER.DELETE.${membershipStream}.${(await raceConsumer.info(true)).name}`;
+  const ncPrototype = Object.getPrototypeOf(raceNc) as typeof raceNc;
+  const ncRequest = ncPrototype.request;
+  let raceFreshDeleteRefused = false;
+  ncPrototype.request = function (this: typeof raceNc, ...args: Parameters<typeof ncRequest>) {
+    const reply = ncRequest.apply(this, args);
+    if (args[0] === raceDeleteSubject) reply.catch((e) => { raceFreshDeleteRefused = isPublishPermissionDenied(e); });
+    return reply;
+  };
+  let raceStopAfterFreshDelete = false;
+  const raceStop = raceHandle.stop().then(() => { raceStopAfterFreshDelete = raceFreshDeleteRefused; });
   void raceStop.catch(() => {});
+  const raceHealed = reconnected(observer);
   void raceNc.close();
-  await wait(50);
+  await raceNc.closed();
   releaseDelete();
   const raceStopSettled = await Promise.race([raceStop.then(() => true, () => false), wait(5000).then(() => false)]);
+  ncPrototype.request = ncRequest;
   for (let i = 0; i < 40 && (await membershipConsumers()).length !== 0; i++) await wait(50);
-  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && (await membershipConsumers()).length === 0, { raceStopSettled, consumers: await membershipConsumers() });
+  check("public stop concurrent with terminal close resolves after fresh cleanup", raceStopSettled && raceStopAfterFreshDelete && (await membershipConsumers()).length === 0, { raceStopSettled, raceStopAfterFreshDelete, consumers: await membershipConsumers() });
+  // A stop that settles before the self-heal must not leave the next cell watching mid-rebuild.
+  await Promise.race([raceHealed, wait(5000)]);
 
   const shutdownWatch = await observer.watchMembership(() => {});
   await wait(200);
@@ -218,10 +241,7 @@ try {
   terminalChanges = 0;
   const terminalBefore = await membershipConsumers();
   check("the terminal-close control starts with one membership consumer", terminalBefore.length === 1, terminalBefore);
-  const healed = new Promise<void>((resolve) => {
-    const onConnection = (state: { connected: boolean }) => { if (state.connected) { observer!.off("connection", onConnection); resolve(); } };
-    observer!.on("connection", onConnection);
-  });
+  const healed = reconnected(observer);
   await (observer as unknown as { nc: import("@nats-io/transport-node").NatsConnection }).nc.close();
   await Promise.race([healed, wait(5000)]);
   await wait(200);
