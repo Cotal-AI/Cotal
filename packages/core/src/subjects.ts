@@ -741,10 +741,9 @@ export function controlServiceSubject(space: string, service: string, owner: str
  *  manager), carrying the runtime durable `join` / `leave` / `listMemberships` ops agents call. Agents
  *  publish a request to `ctl.delivery.<agentId>` and receive the reply on `ctl.delivery.<agentId>.…`,
  *  a subtree both sides scope tightly: the agent gets pub on `ctl.delivery.<id>` + sub on
- *  `ctl.delivery.<id>.>`, and the daemon gets sub on `ctl.delivery.*` (queue) + pub on `ctl.delivery.>`
- *  (replies). This keeps the daemon least-privilege — it never needs broad inbox-publish to answer an
- *  agent (only the allow-all manager could reply into the per-id `_INBOX_<id>` prefix). Lifecycle ops
- *  (spawn/stop/despawn) stay on the manager's tiers; durable membership is the daemon's. */
+ *  `ctl.delivery.<id>.>`, and the daemon gets sub on `ctl.delivery.*.*` (queue) + pub on
+ *  `ctl.delivery.*.*.reply.>` (replies). This keeps the daemon least-privilege — it never needs broad
+ *  inbox-publish to answer an agent. */
 export const CONTROL_DELIVERY = "delivery" as const;
 /** The delivery daemon's PRIVILEGED admin rail (the D5 rail-split): control-plane ops the daemon
  *  EXECUTES for the mesh's renewal/repair owner — credential reload (`reloadCreds`, the class-2
@@ -1072,9 +1071,9 @@ export function leaseKey(shardIndex: number): string {
 
 /** Name of the KV bucket holding the per-space MANAGER liveness leases — ONE KEY PER LOGICAL MANAGER
  *  INSTANCE ({@link managerLeaseKey}), each the live-liveness marker of one manager instance in the
- *  space (P2 item 3 demoted the old per-space singleton to per-instance liveness — two managers = two
- *  workspace roots = two instance ids = two keys, so they coexist). Bucket-level TTL (max_age =
- *  LEASE_TTL_MS) auto-expires a crashed instance's key so a replacement can re-acquire. */
+ *  space (two managers = two workspace roots = two instance ids = two keys, so they coexist).
+ *  Bucket-level TTL (max_age = LEASE_TTL_MS) auto-expires a crashed instance's key so a replacement
+ *  can re-acquire. */
 export function managerBucket(space: string): string {
   return `cotal_manager_${token(space)}`;
 }

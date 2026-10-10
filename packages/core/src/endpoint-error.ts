@@ -1,5 +1,5 @@
 /**
- * The §13.3 endpoint ERROR primitives, split out NODE-FREE (P2 item 6): the catalog codes + the
+ * The §13.3 endpoint ERROR primitives, split out NODE-FREE: the catalog codes + the
  * {@link EpEnvelopeError} a consuming boundary throws. The §13.6 session rail + terminal-frame codec
  * need ONLY these, and they run in the browser console bundle — so the error must not drag in the
  * envelope's schema/digest machinery (endpoint-envelope → schema-profile computes a digest at module

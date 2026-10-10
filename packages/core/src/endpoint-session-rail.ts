@@ -1,6 +1,6 @@
 /**
  * The §13.6 SESSION RAILS: the framed protocol + bounded credit window over the two epoch-pinned
- * eps subjects (cast-in / watch-out). SPLIT out of endpoint-session.ts (P2 item 6) so it carries
+ * eps subjects (cast-in / watch-out). SPLIT out of endpoint-session.ts so it carries
  * ZERO node-only dependencies (no node:crypto) and can be BUNDLED into the browser console session
  * client — the SAME core flow-control code runs in-browser. The grant mint/verify/redeem + the KV
  * ledger (node:crypto, KV) stay in endpoint-session.ts, which RE-EXPORTS this module so no

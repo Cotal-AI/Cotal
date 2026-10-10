@@ -353,7 +353,7 @@ export function epgateKey(endpoint: string, instanceId: string): string {
 
 /** Validate an endpoint gate row at the consuming boundary — CLOSED schema; a real owner-grammar
  *  serving principal; the per-kind STATE x KIND + successor invariants (§13.1). Byte-for-byte the
- *  parser the auth session ledger carried (fact H3 lift), now shared. */
+ *  parser the auth session ledger carried, now shared. */
 export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow {
   let o: unknown;
   try {
@@ -479,12 +479,12 @@ export interface StaticManagedSlotRow {
   credentialIds: string[];
   /** The minting/supervising authority (the manager's own per-PROCESS incarnation uid — audit only). */
   managerInstance: string;
-  /** The owning LOGICAL manager instance id (P2 item 3 slice 3b-2): stable across manager restart, so
+  /** The owning LOGICAL manager instance id: stable across manager restart, so
    *  the boot reconcile filters to rows THIS logical instance owns and never sweep-terminalizes a
    *  SIBLING manager's rows (multi-manager-per-space). Optional for backward-compat: a legacy row
-   *  (written before 3b-2, no owner recorded) predates multi-manager, so a reconciling manager treats
+   *  (no owner recorded) predates multi-manager, so a reconciling manager treats
    *  it as its own (the single-manager past). An orphaned sibling row is claimed only by an explicit
-   *  operator CAS takeover (ruling 1), never auto-adopted. */
+   *  operator CAS takeover, never auto-adopted. */
   ownerInstanceId?: string;
   /** Set true, on the `terminalizing` row, once the terminal's footprint cleanup has finished and
    *  BEFORE the final CAS to `retired`. It lets a resumed terminal tell "cleanup already completed"

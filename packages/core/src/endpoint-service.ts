@@ -762,7 +762,7 @@ async function recoverCommittedSpecWrite(
   return again.revision;
 }
 
-/** The `processEpoch` a completing registration reopen commits (P2 item 3, SPEC 13.6 item 7,
+/** The `processEpoch` a completing registration reopen commits (SPEC 13.6 item 7,
  *  13.7). A RE-registration is a restarted/superseded incarnation of the SAME instanceId, so it
  *  advances the epoch and the successor FENCES the predecessor's (old-epoch serve/settle is
  *  refused). A FIRST registration keeps the provisioned epoch (0), so a never-restarted instance

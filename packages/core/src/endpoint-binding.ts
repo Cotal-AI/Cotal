@@ -94,7 +94,7 @@ export function epAuthBucket(space: string): string {
   return `cotal_auth_${token(space)}`;
 }
 
-/** The per-space SESSION ledger store (P2 item 6, §13.6): the `session.<id>` rows the manager's
+/** The per-space SESSION ledger store (§13.6): the `session.<id>` rows the manager's
  *  session plane CASes over. DEDICATED — split out of the auth bucket deliberately. KV reads are
  *  subject-BLIND (a `STREAM.MSG.GET` on a bucket serves any key, the campaign's known vector class),
  *  so co-locating session rows with credentials + gates would let the standing session-ledger cred read
@@ -366,7 +366,7 @@ export async function createEndpointStreams(
   // create-or-verify with a fail-loud drift check of its own.
   await ensureIssuedStores(jsm, kvm, space);
   await ensureAdmissionStore(jsm, kvm, space);
-  // P2 item 6: the DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
+  // The DEDICATED §13.6 session ledger bucket. The eps byte SUBJECTS stay core-only and
   // uncaptured (above), but the `session.<id>` ledger rows are a captured authority KV — kept in
   // their own bucket so the manager's standing session-ledger cred's bucket-blind STREAM.MSG.GET reads
   // ONLY session rows (the §13.9 subject-blindness structural fix). Provisioned here so every mesh
@@ -513,7 +513,7 @@ export async function ensureAuthorityStores(jsm: JetStreamManager, kvm: Kvm, spa
   assertAuthorityStoreBinding(authCfg, authBucket);
 }
 
-/** Create (idempotently) the per-space SESSION ledger store (P2 item 6, §13.6): the DEDICATED
+/** Create (idempotently) the per-space SESSION ledger store (§13.6): the DEDICATED
  *  {@link sessionsBucket} the manager's session plane CASes `session.<id>` rows over. Kept OUT of
  *  {@link ensureAuthorityStores} deliberately — the auth path never touches session rows, and the
  *  manager provisions this store from its own boot — but it wears the SAME authority-store shape as
@@ -1283,9 +1283,9 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   return { publish, subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
 
-/** The SELF-MEDIATED GOAL-WRITER profile (P2 item 2 "spawn becomes an action"): a standing
+/** The SELF-MEDIATED GOAL-WRITER profile: a standing
  *  connection that both BINDS a goal at accept AND COMMITS its terminal, for an endpoint that
- *  accepts action goals INLINE on its ephemeral serve handler (Model B) rather than through a
+ *  accepts action goals INLINE on its ephemeral serve handler rather than through a
  *  separate canonicalizer + effects executor. It is exactly {@link commitPrincipalGrants} (the
  *  `goal.*.*.*.*.result` terminal + `$KV.<records>.goal.<e>.>` record write + the two leader-served
  *  `STREAM.MSG.GET` fencing reads the substrate uses) PLUS the ONE row commitPrincipalGrants
@@ -1293,7 +1293,7 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  (`epf.<e>.goal.*.*.*.*.bind`) — so this single principal owns the whole `accepted → terminal`
  *  goal-fact chain of its OWN endpoint. The endpoint's SERVE credential
  *  ({@link import("./endpoint-grants.js").epServePublishRows}) holds NONE of these: a serve
- *  connection is broker-DENIED every goal write, which is the item-2 privilege separation (the
+ *  connection is broker-DENIED every goal write, which is the privilege separation (the
  *  dedicated writer is minted on a distinct connection, the serve rails stay serve-only). All of
  *  commitPrincipalGrants' D32 residuals carry unchanged (payload-blind create-only publish; raw
  *  `$KV` cannot enforce the per-key CAS the substrate layers on). **THREE body-selected
@@ -1334,7 +1334,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
 }
 
-/** The manager's SESSION-LEDGER rows (P2 item 6): the standing connection that owns the §13.6
+/** The manager's SESSION-LEDGER rows: the standing connection that owns the §13.6
  *  session ledger and NOTHING else. It holds NO session rail — not the wildcard it used to hold,
  *  not an exact one. That is the whole point of the split.
  *

@@ -1,5 +1,5 @@
 /**
- * The GENERIC caller path (control-surface P2 item 1, item 5): describe an endpoint, fetch its
+ * The GENERIC caller path: describe an endpoint, fetch its
  * registered contracts from the §13.7 content store, recompile the digest-matching validators,
  * and invoke a named command — WITHOUT the caller compiling the endpoint's schemas ahead of time.
  * This is what a `cotal describe`/`cotal invoke` CLI and every migrated control consumer ride, so
@@ -85,7 +85,7 @@ export interface ResolvedService {
   caller: EpCaller;
   responder: { instanceId: string; epoch: number };
   commands: Map<string, ResolvedCommand>;
-  /** Set when the service was resolved PINNED to one instance's `inst` route (P2 item 3 `--on`):
+  /** Set when the service was resolved PINNED to one instance's `inst` route (`--on`):
    *  {@link invokeCommand} then routes commands to that exact instance, never the class `one` queue,
    *  so a multi-manager space can be addressed per-instance. Absent ⇒ class anycast (the default). */
   pinnedInstanceId?: string;
@@ -114,7 +114,7 @@ export async function describeEndpoint(
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const n = nonce();
   const requestId = nonce();
-  // P2 item 3 `--on <instance>`: PIN the describe to one instance's `inst` route so a multi-manager
+  // `--on <instance>`: PIN the describe to one instance's `inst` route so a multi-manager
   // space resolves the exact instance addressed, not whichever wins the class `one` queue. Default =
   // class anycast (mode "one"), unchanged for every existing caller.
   const route: EpRoute = opts.instanceId !== undefined ? { mode: "inst", instanceId: opts.instanceId } : { mode: "one" };
@@ -439,7 +439,7 @@ export async function invokeCommand(
     }
     return service.responder.epoch;
   };
-  // P2 item 3 `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
+  // `--on`: a PINNED service routes to its exact instance's `inst` rail (the same instance the
   // describe resolved to, at its resolved epoch), never the class `one` queue — so the command reaches
   // the addressed manager in a multi-manager space. Unpinned ⇒ class anycast `one` (unchanged). The
   // describeBound currency check still holds: an inst-routed reply carries that instance's id.

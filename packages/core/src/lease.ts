@@ -60,9 +60,9 @@ export interface DeliveryLeaseInfo {
 /** A manager per-instance LIVENESS-lease record: which logical instance is live + how it was launched.
  *  `runtime`/`root` let `spawn -f` fail LOUD on a mismatch instead of silently reusing a wrong-runtime /
  *  foreign-checkout manager (no fallbacks); `pid` is a diagnostics + targeted-stop hint. Keyed per
- *  {@link ManagerLeaseInfo.instanceId} ({@link import("./subjects.js").managerLeaseKey}) — P2 item 3
- *  demoted the per-space singleton to per-instance liveness, so a second manager's create no longer
- *  THROWS (distinct instance id ⇒ distinct key ⇒ both acquire). Losing the key stops THAT instance only. */
+ *  {@link ManagerLeaseInfo.instanceId} ({@link import("./subjects.js").managerLeaseKey}) — per-instance
+ *  liveness, so a second manager's create does not THROW (distinct instance id ⇒ distinct key ⇒ both
+ *  acquire). Losing the key stops THAT instance only. */
 export interface ManagerLeaseInfo {
   /** The manager endpoint id — `principalKey(owner, actor).key` dot-form (the endpoint card's
    *  id), so it is DIRECTLY comparable to a control subject's `<owner>.<actor>` attribution:
