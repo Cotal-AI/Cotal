@@ -93,7 +93,7 @@ async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
 
 function skipAutoReconcile(argv: string[]): boolean {
   const [name, sub] = argv;
-  if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete") return true;
+  if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete" || name === "completion") return true;
   if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command

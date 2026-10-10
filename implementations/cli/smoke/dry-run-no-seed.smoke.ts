@@ -180,4 +180,31 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   );
 }
 
+// ── 5. `completion` on a newer-generation stamp does not gate and writes NOTHING ───
+{
+  const cfg = mkdtempSync(join(tmpdir(), "cotal-dryrun-completion-cfg-"));
+  const sandboxRoot = mkdtempSync(join(tmpdir(), "cotal-dryrun-completion-root-"));
+  cleanup.push(cfg, sandboxRoot);
+  const seedDir = join(cfg, "cotal", "seed");
+  mkdirSync(seedDir, { recursive: true });
+  const stagedStamp = `${JSON.stringify({ generation: "99.0.0", writtenBy: "/usr/local/bin/cotal", writtenAt: "2026-09-01T00:00:00.000Z" })}\n`;
+  writeFileSync(join(seedDir, "stamp.json"), stagedStamp);
+  const r = spawnSync(
+    "node",
+    [BIN, "completion", "bash"],
+    { cwd: sandboxRoot, env: { ...HOST_ENV, COTAL_HOME: join(sandboxRoot, "home"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8" },
+  );
+  const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
+  check(
+    "a newer-generation stamp does not gate `completion bash`: completion stub emitted with exit 0",
+    r.status === 0 && /complete -F _cotal_complete cotal/.test(out) && !/older than the seed store/.test(out),
+    { status: r.status, out: out.slice(0, 400) },
+  );
+  check(
+    "the staged newer-generation stamp is untouched by `completion bash`",
+    readFileSync(join(seedDir, "stamp.json"), "utf8") === stagedStamp,
+    readFileSync(join(seedDir, "stamp.json"), "utf8").slice(0, 200),
+  );
+}
+
 finish(); // emits the cell-count sentinel and sets a non-zero exit code on any failed cell
