@@ -6,7 +6,7 @@ const profile: EnvironmentProvisionProfile = {
   name: "test", provider: "tenki", image: `workspace/agent@sha256:${"a".repeat(64)}`,
   resources: { cpus: 2, memoryMiB: 4096, diskGiB: 30 }, maxDurationMs: 300_000,
   providerOptions: { allowDomains: ["cloud.example.com"], pauseRetentionMs: 60_000, secretPolicies: ["model-requests"],
-    env: { MODEL_TOKEN: "secrets://MODEL_TOKEN" }, secretFiles: [{ path: "/home/tenki/agent/key", secret: "AGENT_KEY" }] },
+    env: { MODEL_TOKEN: "secrets://MODEL_TOKEN" }, secretFiles: [{ path: "/workspace/agent/key", secret: "AGENT_KEY" }] },
 };
 const options = tenkiCreateOptions(profile, "a".repeat(64));
 assert.equal(options.image, profile.image);
@@ -15,7 +15,7 @@ assert.equal(options.allowInbound, false);
 assert.equal(options.sticky, false);
 assert.equal(options.waitReady, false);
 assert.equal(options.env?.MODEL_TOKEN, "secrets://MODEL_TOKEN");
-assert.deepEqual(options.secretFiles, [{ path: "/home/tenki/agent/key", raw: { name: "AGENT_KEY" } }]);
+assert.deepEqual(options.secretFiles, [{ path: "/workspace/agent/key", raw: { name: "AGENT_KEY" } }]);
 assert.equal(registry.has("environment-provider", "tenki"), true);
 assert.equal(tenkiObservation("id", "PAUSED").state, "paused");
 assert.equal(tenkiObservation("id", "USER_SHUTDOWN").state, "unknown");
@@ -27,7 +27,7 @@ for (const patch of [
   { providerOptions: { allowDomains: [], pauseRetentionMs: 60_000, sticky: true } },
   { providerOptions: { allowDomains: [], pauseRetentionMs: 60_000, env: { TENKI_API_KEY: "forbidden" } } },
   { providerOptions: { allowDomains: ["*"], pauseRetentionMs: 60_000 } },
-  { providerOptions: { allowDomains: [], pauseRetentionMs: 60_000, secretFiles: [{ path: "/home/tenki/../escape", secret: "KEY" }] } },
+  { providerOptions: { allowDomains: [], pauseRetentionMs: 60_000, secretFiles: [{ path: "/workspace/../escape", secret: "KEY" }] } },
 ]) assert.throws(() => tenkiCreateOptions({ ...profile, ...patch }, "a".repeat(64)));
 assert.equal(tenkiCreateOptions({ ...profile, providerOptions: { allowDomains: [], pauseRetentionMs: 60_000 } }, "a".repeat(64)).allowOutbound, false);
 assert.throws(() => openTenki({ apiKey: "", timeoutMs: 1000 }));
