@@ -16,6 +16,7 @@
  * Run: pnpm smoke:runtime-mesh-sleep   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,12 +32,15 @@ import {
   timerWriterDurable,
   armCheckpointTimer,
   readCheckpointStatus,
+  readCheckpointSpec,
   readCheckpointSettle,
+  mintCheckpoint,
+  EpEnvelopeError,
   eptReqStreamName,
   eptStreamName,
   eptSubject,
 } from "@cotal-ai/core";
-import { MeshHandler, EpfSettleWatcher } from "../src/index.js";
+import { MeshHandler, EpfSettleWatcher, MeshHandler as ShippedMeshHandler } from "@cotal-ai/runtime";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -161,6 +165,71 @@ const ctx = (requestId: string) => {
   return { ctx: { requestId, attempt: 0, signal } as never, cancel };
 };
 const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
+
+// Delay the response to a real broker read, not its contents or the owner's clock.
+// A 1ms relative sleep has elapsed before the first mint can be considered.
+{
+  const binding = { space: SPACE, endpoint: EP, runId: "r-sleep", caller: CALLER,
+    instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" };
+  let reads = 0;
+  let afterRead: (() => void) | undefined;
+  const slowKv = new Proxy(kv, {
+    get(target, property) {
+      if (property === "get") return async (...args: Parameters<typeof kv.get>) => {
+        const result = await target.get(...args);
+        if (args[0].startsWith(`cp.${EP}.`)) {
+          reads++;
+          await wait(30);
+          afterRead?.();
+        }
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const live = new ShippedMeshHandler(nc, slowKv, js, jsm, binding,
+    new EpfSettleWatcher(jsm, SPACE, 3_000), Date.now);
+  const elapsedToken = "c3775_elapsed_sleep";
+  const elapsed = await live.sleep({ duration: "1ms" }, ctx(elapsedToken).ctx)
+    .then(value => ({ value }), error => ({ error }));
+  console.log(`• S3775 — first sleep returned after ${reads} real pre-mint reads`);
+  try {
+    assert.ok("value" in elapsed && elapsed.value === null,
+      "S3775 elapsed relative sleep completes after the real broker pre-mint read");
+  } finally {
+    // This first predicate finished. Later controls and the suite may still be unreached.
+    console.log("S3775 elapsed-sleep cell: predicate evaluated");
+  }
+  c("S3775 the shipped runtime reaches a real delayed checkpoint read", reads > 0, reads);
+  c("S3775 an elapsed unminted sleep creates no checkpoint",
+    await readCheckpointSpec(kv, { endpoint: EP, token: elapsedToken }) === undefined);
+  // The same token can be re-entered after an interrupted dispatch without inventing a pause.
+  const replay = await live.sleep({ duration: "1ms" }, ctx(elapsedToken).ctx)
+    .then(value => ({ value }), error => ({ error }));
+  c("S3775 an unminted elapsed sleep re-entry completes with the same token", "value" in replay && replay.value === null);
+
+  const cancelled = ctx("c3775_cancelled_sleep");
+  afterRead = () => cancelled.cancel("cancelled during the authorized arming read");
+  const cancellation = await live.sleep({ duration: "1ms" }, cancelled.ctx)
+    .then(() => undefined, error => error as Error);
+  c("S3775 cancellation during pre-mint work remains Cancelled", cancellation?.name === "Cancelled", cancellation);
+  afterRead = undefined;
+
+  const expiredContext = { ...ctx("c3775_expired_checkpoint").ctx as object, bind: async () => {} } as never;
+  const expiry = await live.checkpoint({ prompt: "keep checkpoint expiry", timeout: "1ms" }, expiredContext)
+    .then(() => undefined, error => error as Error);
+  c("S3775 checkpoint pre-mint expiry is not swallowed by relative sleep handling",
+    expiry?.constructor.name === "PauseOverdue", expiry);
+
+  const now = Date.now();
+  const futureOnly = await mintCheckpoint(kv, js, SPACE, {
+    ref: { endpoint: EP, token: "c3775_core_future_only" }, instanceId: IID, epoch: EPOCH,
+    holder: HOLDER, deadline: now - 1, now,
+  }).then(() => undefined, error => error);
+  c("S3775 core still refuses a non-future checkpoint mint", futureOnly instanceof EpEnvelopeError, futureOnly);
+  console.log("• S3775 — elapsed sleep, cancellation, checkpoint expiry and core future mint controls reached");
+}
 
 // ── 1) a sleep pauses durably before it waits ────────────────────────────────────────────────
 {

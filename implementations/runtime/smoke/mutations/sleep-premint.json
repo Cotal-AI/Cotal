@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+    "implementations/runtime/smoke/run-driver-auth.smoke.ts"
+  ],
+  "guard": "An authorized relative sleep whose duration elapses before its first checkpoint mint completes without a pause. Checkpoint expiry, journal authorization, cancellation and existing-pause replay keep their original rules.",
+  "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
+  "completionMarker": "mesh-sleep.smoke:",
+  "progressPattern": "• ",
+  "mutations": [
+    {
+      "name": "an elapsed relative sleep propagates its pre-mint expiry",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      if (!(error instanceof PauseOverdue)) throw error;",
+      "replace": "      throw error;",
+      "command": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep",
+      "afterRestore": "pnpm --filter @cotal-ai/runtime build && pnpm smoke:runtime-mesh-sleep && pnpm smoke:runtime-run-driver-auth && pnpm smoke:runtime-mesh-checkpoint",
+      "completionMarker": "S3775 elapsed-sleep cell: predicate evaluated",
+      "expectRed": "S3775 elapsed relative sleep completes after the real broker pre-mint read",
+      "cell": "S3775 elapsed relative sleep completes after the real broker pre-mint read"
+    }
+  ]
+}
