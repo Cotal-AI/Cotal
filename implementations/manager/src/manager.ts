@@ -2908,7 +2908,9 @@ export class Manager {
     const dependencies = [a.launch.source.configPath];
     if (a.launch.source.kind === "manifest" && a.launch.source.runId)
       dependencies.unshift(join(this.workspaceRoot, ".cotal", "run", `${a.launch.source.runId}.json`));
-    return {
+    // The plan goes to the caller while this seat keeps running, so a write to the plan must not
+    // reach the retained launch or issuance that a later cut or renewal reads.
+    return structuredClone({
       space: this.space,
       name: a.name,
       role: a.role,
@@ -2939,7 +2941,7 @@ export class Manager {
       authorityParent: a.authorityParent,
       startedAt: new Date(a.startedAt).toISOString(),
       ...(backfillFloor !== undefined ? { backfillFloor } : {}),
-    };
+    });
   }
 
   /** Tear down every managed agent's footprint on an explicit destructive {@link stop}, or only the
