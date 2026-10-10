@@ -543,7 +543,6 @@ try {
   await block("AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND NEITHER IT NOR A SHORT ONE REACHES THE WIRE", async () => {
     const CEILING = 1_048_576;
     const oversized = { message: "€".repeat(400_000), code: "APIError" };
-    const noticeNeedle = "omitted or shortened because it exceeded the frame bound";
 
     const terminalsOf = (ep: FakeEndpoint): { type?: string; message?: string; code?: string }[] =>
       ep.publishes.flatMap((call) => frameOf(call).events as { type?: string; message?: string; code?: string }[]);
@@ -570,7 +569,7 @@ try {
       const last = ep.publishes[ep.publishes.length - 1];
       const disk = await reopen(walPath);
       c(
-        "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+        "close:an-oversized-failure-detail-still-emits-exactly-one-RUN_ERROR",
         closed.err === undefined &&
           closed.value === "run-bound-e" &&
           terms.length === 1 &&
@@ -582,9 +581,9 @@ try {
         errEv?.message === RUN_ERROR_EGRESS_MESSAGE,
         errEv?.message?.slice(0, 200),
       );
-      c("close:the-bounded-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
+      c("close:the-oversized-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
       c(
-        "close:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
+        "close:the-oversized-RUN_ERROR-fits-the-live-payload-ceiling",
         errEv?.type === "RUN_ERROR" &&
           last !== undefined &&
           last.encodedSize <= CEILING &&
@@ -638,7 +637,7 @@ try {
       const last = ep.publishes[ep.publishes.length - 1];
       const disk = await reopen(walPath);
       c(
-        "holder:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+        "holder:an-oversized-failure-detail-still-emits-exactly-one-RUN_ERROR",
         errors.length === 0 &&
           holder.failure === undefined &&
           terms.length === 1 &&
@@ -651,9 +650,9 @@ try {
         errEv?.message === RUN_ERROR_EGRESS_MESSAGE,
         errEv?.message?.slice(0, 200),
       );
-      c("holder:the-bounded-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
+      c("holder:the-oversized-RUN_ERROR-publishes-no-failure-code", errEv !== undefined && !("code" in errEv), errEv?.code);
       c(
-        "holder:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
+        "holder:the-oversized-RUN_ERROR-fits-the-live-payload-ceiling",
         errEv?.type === "RUN_ERROR" &&
           last !== undefined &&
           last.encodedSize <= CEILING &&
@@ -716,11 +715,6 @@ try {
           !("code" in ev) &&
           (last?.encodedSize ?? Infinity) <= CEILING,
         { err: closed.err?.message, ev, encodedSize: last?.encodedSize },
-      );
-      c(
-        "close:CONTROL-a-short-failure-detail-does-NOT-carry-the-bound-notice",
-        typeof ev?.message === "string" && !ev.message.includes(noticeNeedle),
-        ev?.message,
       );
     }
   });

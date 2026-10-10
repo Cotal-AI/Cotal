@@ -34,6 +34,24 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## AG-UI `takeCodePoints` export in 0.79.0
+
+`@cotal-ai/connector-core` no longer exports `takeCodePoints`. The AG-UI preview splitter is its
+only user, and the package exported it only so the emitter could shorten a `RUN_ERROR` failure
+detail, a path that never ran and is now removed. Nothing about a running mesh changes, and no
+shipped connector or host imports it. Only code of your own that imports it from the package is
+affected.
+
+### What stops working
+
+An import of `takeCodePoints` from `@cotal-ai/connector-core` no longer compiles, and an ES module
+that names it fails to link with `does not provide an export named 'takeCodePoints'`.
+
+### Before the upgrade
+
+Take a string's first `n` code points with `Array.from(s).slice(0, n).join("")`, which is what the
+helper did.
+
 ## SecretStore create-only write in 0.78.0
 
 `SecretStore` from `@cotal-ai/core` has a fourth method, `create(key, value)`. It stores the value
