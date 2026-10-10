@@ -93,6 +93,7 @@ import { transferReaderGrants, transferWriterGrants } from "./transfer.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix, eprepairKey } from "./lifecycle-state.js";
 import { rawDigest } from "./canonical.js";
+import { environmentManagerPermissions, isEnvironmentManagerProfile, type EnvironmentManagerGrantPin } from "./environment-manager-grants.js";
 import { credsClaims, isUserNkey, type Identity } from "./identity.js";
 import {
   backupProfilePermissions,
@@ -186,7 +187,12 @@ export type Profile =
   | "transfer-reader"
   // Closed human-issued remote manager authority. Never exposed as a generic profile string: the
   // auth provider's typed manager-service protocol is the only mint door.
-  | "remote-manager";
+  | "remote-manager"
+  // Fixed host-issued environment profiles, never exchange views or raw caller-selected grants.
+  | "environment-bootstrap"
+  | "environment-manager-supervisor"
+  | "environment-manager-executor"
+  | "environment-manager-goal-writer";
 
 export type CredentialLifetimeClass =
   | "standing-renewable" // bounded exp + an ONLINE renewal owner (a seed-holder re-mints before expiry)
@@ -290,6 +296,10 @@ export const CREDENTIAL_LIFETIMES: Record<CredentialKind, CredentialLifetimePoli
   "transfer-reader": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one transcript-receive or sweep over the minting instance's own transfer bucket" },
   "endpoint-evictor": { class: "one-shot", defaultTtlSeconds: 60, note: "one re-registration's verify-evict window: a scoped delivery-admin caller that kicks+verifies the SUPERSEDED serve family before the epoch advances; 60s bounds a copied cred to a minute" },
   "remote-manager": { class: "standing-renewable", defaultTtlSeconds: STANDING_RENEWABLE_TTL_SEC, renewalOwner: "auth-service", note: "the scoped remote manager lifecycle: own lease/presence plus same-owner agent provisioning; issued only by the typed supervise protocol, never by cotal mint or a raw view/profile string" },
+  "environment-bootstrap": { class: "one-shot", defaultTtlSeconds: FIVE_MINUTES, note: "one admitted environment's bootstrap caller; explicit expiry capped by admission and five minutes" },
+  "environment-manager-supervisor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own lease/presence/liveness; explicit expiry capped by admission, no auth-store access" },
+  "environment-manager-executor": { class: "standing-renewable", renewalOwner: "environment-authority", note: "own admitted authority instance RPC; explicit expiry capped by admission, no direct store access" },
+  "environment-manager-goal-writer": { class: "standing-renewable", renewalOwner: "environment-authority", note: "manager goal rows without the auth-read belt; explicit expiry capped by admission" },
   "membership-observer": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account CONNZ observer; NOT online-renewable ($SYS seed dies at `up`) - bounded exp, renewed only by rotateSystemAccount + broker restart; doctor warns near expiry" },
   "connection-evictor": { class: "rotation-renewed", defaultTtlSeconds: ROTATION_RENEWED_TTL_SEC, renewalOwner: "system-account rotation", note: "$SYS-account KICK-only live-eviction cred; same rotation-renewed posture as the observer" },
 };
@@ -687,6 +697,9 @@ export interface MintOpts {
    * manager lease/presence and same-owner provisioning resources; no caller-supplied subject rows
    * or profile fallback are accepted. */
   remoteManager?: { instanceId: string; owner: string; actor: string };
+  /** Fixed environment profiles only. Host-derived pins confer no admission authority.
+   * These profiles require explicit expiresAt, no later than this admission's expiry. */
+  environmentManager?: EnvironmentManagerGrantPin;
   /** `deployer` profile only: which v0.4 ep instrument set its `launch`/`ps` rows carry. Defaults
    *  to `"admin"` (the static operator's ephemeral deploy cred). The user-mode `deployer` VIEW
    *  mints `"privileged"` instead, so a spawn-scoped deploy reaches the manager where its
@@ -733,6 +746,16 @@ export interface MintOpts {
  *  — `membership-observer` / `connection-evictor`, which are kinds, not profiles — thread the same
  *  bounded-lifetime policy instead of minting non-expiring $SYS creds. */
 function userValidDates(kind: CredentialKind, opts: MintOpts): { exp?: number } {
+  if (isEnvironmentManagerProfile(kind)) {
+    const now = Math.floor(Date.now() / 1000);
+    const admissionExpiry = opts.environmentManager?.expiresAt;
+    const expiry = opts.expiresAt;
+    if (typeof admissionExpiry !== "number" || !Number.isSafeInteger(admissionExpiry) || admissionExpiry <= now ||
+        typeof expiry !== "number" || !Number.isSafeInteger(expiry) || expiry <= now || expiry > admissionExpiry)
+      throw new Error(`mintCreds: ${kind} requires a current explicit expiresAt no later than admission expiry`);
+    if (kind === "environment-bootstrap" && expiry > now + FIVE_MINUTES)
+      throw new Error("mintCreds: environment-bootstrap expiry exceeds its five-minute lifetime");
+  }
   if (opts.expiresAt !== undefined && opts.expiresInSeconds !== undefined)
     throw new Error("mintCreds: pass only one of expiresAt or expiresInSeconds");
   if (opts.expiresAt !== undefined) {
@@ -1026,7 +1049,7 @@ export async function mintPublicUserJwt(
   opts: MintOpts,
 ): Promise<{ jwt: string; exp: number }> {
   if (!isUserNkey(publicId)) throw new Error("mintPublicUserJwt: publicId must be a user nkey");
-  if (!["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
+  if (!isEnvironmentManagerProfile(profile) && !["remote-manager", "endpoint-serve", "goal-writer", "session-ledger", "session-serving", "retirement-requester", "run-driver", "run-mediator", "run-operator", "transfer-reader"].includes(profile))
     throw new Error(`mintPublicUserJwt: profile "${profile}" is not part of the closed remote manager protocol`);
   const pr: MintPrincipal = {
     owner: opts.principal?.owner ?? DEV_OWNER,
@@ -1106,6 +1129,8 @@ export function permissionsFor(
   // the generation to, so `issued` on it is a misconfiguration refused here, never dropped.
   if (opts.issued && !ISSUABLE_PROFILES.has(profile))
     throw new Error(`permissionsFor: opts.issued binds caller rails and "${profile}" holds none; only ${[...ISSUABLE_PROFILES].join(", ")} mint issued authority (SPEC 13.15)`);
+  if (isEnvironmentManagerProfile(profile)) return environmentManagerPermissions(profile, space, pr, opts.environmentManager);
+  if (opts.environmentManager) throw new Error(`permissionsFor: environmentManager pins cannot ride ${profile}`);
   if (profile === "delivery") return deliveryPermissions(space, pr); // scoped server-side Plane-3 infra
   if (profile === "manager-caller") return managerCallerPermissions(space, pr, opts);
   if (profile === "membership-rw") return membershipRwPermissions(space, pr); // scoped graph-feed reader/writer

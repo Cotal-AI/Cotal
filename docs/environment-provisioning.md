@@ -85,6 +85,15 @@ not admit hosted workloads until the host durably binds their manager and child 
 and supports their retirement. Stock provider-local manager bootstrap and cross-uid seat
 isolation also remain upstream dependencies. Empty-workload probes issue no such authority.
 
+Core provides fixed `environment-bootstrap`, `environment-manager-supervisor`,
+`environment-manager-executor` and `environment-manager-goal-writer` grant builders. They
+require host-selected instance, owner, lifecycle and authority coordinates, and a current
+explicit credential expiry bounded by admission. They confer no guest auth-store access.
+The optional endpoint-gate `authorityFamily` marker survives native registration and mint
+CAS operations; raw write exclusion, not a field parser, protects it from guests. These
+primitives do not implement admission, the authority endpoint or stock manager bootstrap.
+Do not substitute them for those missing host policies or claim a runnable hosted manager.
+
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
 promise and its per-record reports. An unavailable store or a provider create whose reply

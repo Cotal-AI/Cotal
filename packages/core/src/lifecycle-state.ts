@@ -332,6 +332,9 @@ export function parseEndpointRepairCursor(raw: Uint8Array, key: string): Endpoin
  *  session ledger and the manager's endpoint-serve wiring; a second dialect is the dual-encoder
  *  drift this module bans). */
 export type EndpointGateRow = GateStateOp & {
+  /** Host-only admission discriminator, retained through every gate transition. Raw-row
+   * write permission cannot enforce its immutability; environment guests hold none. */
+  authorityFamily?: "environment-manager";
   generation: number;
   processEpoch: number;
   registrationRevision: number;
@@ -362,13 +365,15 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
-  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op"]);
+  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op", "authorityFamily"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (typeof o.state !== "string" || !ISSUANCE_GATE_STATES.has(o.state) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
   const principal = typeof o.principal === "string" ? parsePrincipalKey(o.principal) : null;
   if (principal === null || !isPrincipalOwnerToken(principal.owner, { allowLocal: true, allowPlatform: true }))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not carry a CONNZ-attributable serving principal (owner-grammar owner.actor, SPEC 13.1)`);
+  if (o.authorityFamily !== undefined && o.authorityFamily !== "environment-manager")
+    throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries an invalid authorityFamily (closed schema, SPEC 13.1)`);
   assertGateOp(o.op, o.state, `the endpoint gate ${key}`);
   return o as unknown as EndpointGateRow;
 }
