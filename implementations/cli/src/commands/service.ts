@@ -4,8 +4,8 @@ import { accessSync, constants, existsSync } from "node:fs";
 import { arch, cpus, homedir, totalmem, userInfo } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
-import { findMesh, spaceKey, spaceSegment } from "@cotal-ai/workspace";
-import { describeManagerRecord, MANAGER_PID_PATH, managerRecordState, type ManagerRecord } from "../lib/manager-proc.js";
+import { findMesh, spaceKey, spaceSegment, type ProcessRecord } from "@cotal-ai/workspace";
+import { describeManagerRecord, MANAGER_PID_PATH, managerRecordState } from "../lib/manager-proc.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -151,7 +151,7 @@ type ServiceStatus =
       mesh: string;
       root: string;
       unit: { name: string; state: string; enabled: boolean | "unknown" };
-      manager: ManagerRecord;
+      manager: ProcessRecord;
       linger?: boolean | { error: string };
     };
 
