@@ -322,8 +322,13 @@ export const MANAGER_PROCESS = {
  *  the delivery cutover preflight run it, so each holds the stop reservation, refuses a concurrent stop,
  *  and escalates a wedged manager to SIGKILL. A default stop signals only a manager that published the
  *  capability to spare its managed agents, and reports the agents it left; `withAgents` arms their reap
- *  instead. Throws, with the records kept, when the stop is refused or the death is not confirmed. */
-export async function stopManager(space: string = folderSpace(), { withAgents = false } = {}): Promise<boolean> {
+ *  instead. `pid` binds the stop to the manager the caller judged: a record a successor published since
+ *  is left whole and the stop returns false. Throws, with the records kept, when the stop is refused or
+ *  the death is not confirmed. */
+export async function stopManager(
+  space: string = folderSpace(),
+  { withAgents = false, pid }: { withAgents?: boolean; pid?: number } = {},
+): Promise<boolean> {
   const context = ctx(space);
   let spared: SpareSeatRow[] | undefined;
   let spareSeats: ManagerSpareSeats | undefined;
@@ -334,6 +339,7 @@ export async function stopManager(space: string = folderSpace(), { withAgents = 
     else if (pin.kind === "match") spared = await listManagerSeatsForSpare(context);
   }
   const found = await stopLocalProcess(MANAGER_PROCESS, context, {
+    pid,
     owns: commandIsCotalSupervisor,
     beforeSignal: (attempt) => {
       if (attempt.target.token === undefined) {
@@ -352,6 +358,9 @@ export async function stopManager(space: string = folderSpace(), { withAgents = 
     // never reaches this, so it cannot remove the intent of the stop that holds it.
     afterFailedSignal: withAgents ? () => disarmManagerShutdownIntent(context) : undefined,
   });
+  // A stop that found no record of its own leaves the artifacts: with `pid` they belong to the
+  // successor whose record it left.
+  if (!found) return false;
   for (const artifact of MANAGER_PROCESS.artifacts) rmSync(localProcessPath(artifact, context), { force: true });
   if (legacyManagerSpareUnverified) printLegacyManagerSpareUncertainty();
   else if (spared) printSparedAgents(spared, spareSeats);

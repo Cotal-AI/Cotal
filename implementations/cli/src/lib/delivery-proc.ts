@@ -147,10 +147,11 @@ export async function stopOldHostingManagerIfPresent(
   if (verdict === "stop-it") {
     console.error("• stopping an old Plane-3-hosting manager before starting the delivery daemon (cutover preflight)");
     // stopManager THROWS rather than reporting a stop it did not achieve (a refused stop, or a process
-    // whose death it could not confirm), so reaching the next line is the proof the old manager is gone.
-    // Letting that throw propagate is the point: the daemon must not start beside a manager still bound
-    // to Plane 3.
-    await stopManager(space);
+    // whose death it could not confirm). Letting that throw propagate is the point: the daemon must not
+    // start beside a manager still bound to Plane 3. The stop is bound to the judged pid because a record
+    // a successor published since names a process this verdict never judged; ensureDelivery's own
+    // verdict reads that record.
+    await stopManager(space, { pid: record.pid });
   }
 }
 

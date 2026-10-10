@@ -30,6 +30,9 @@ export interface StopLocalProcessOptions {
   /** Whether a live process's command line is this component's. Consulted only for a record with no
    *  identity pin, where the command line is the only evidence of what the pid now runs. */
   owns?: (command: string) => boolean;
+  /** The pid the caller decided to stop. A record naming another pid was published by a successor
+   *  after that decision, so the stop leaves it untouched and returns false. */
+  pid?: number;
 }
 
 /** Take a stop reservation at `marker` for this process, refusing while another live stop holds it.
@@ -99,6 +102,7 @@ export async function stopLocalProcess(
     );
   }
   const pid = parsePid(rawPid);
+  if (options.pid !== undefined && pid !== undefined && pid !== options.pid) return false;
   const marker = stopReservationPath(pidPath);
   reserveStop(component.name, marker);
 
