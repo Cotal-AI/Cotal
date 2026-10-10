@@ -828,6 +828,9 @@ export async function runCodexHost(): Promise<void> {
       // CAPTURED HERE, BEFORE THE ANNOUNCEMENT, and that placement is the fix. See
       // `BoundStartSource` for why the emitter cannot be left to position itself later.
       const startCursor = (await new JsonlFileSource<CodexRecord>(path).read(undefined)).cursor;
+      // Again after the last await: a shutdown that began during the drain or this read has already
+      // run its own drain, so the holder below would be one nothing closes.
+      if (shuttingDown) return;
       events = newEventHolder(startCursor);
       rollout = path;
       events.adopt(path);
