@@ -351,13 +351,12 @@ export function meshesForRoot(root: string): MeshEntry[] {
 /** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed. An empty
  *  batch touches nothing. */
 function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
-  if (spaces.length === 0) return;
-  const current = getCurrent();
   // Cleared right after its own entry, so a later entry's failure cannot leave it naming a removed record.
+  // Read per entry: a concurrent `cotal use` can move the pointer while the batch runs.
   function* releasing(): Generator<string> {
     for (const space of spaces) {
       yield space;
-      if (space === current) clearCurrent();
+      if (getCurrent() === space) clearCurrent();
     }
   }
   removeMeshes(releasing());
