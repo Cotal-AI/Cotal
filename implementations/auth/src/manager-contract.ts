@@ -1,10 +1,21 @@
 import {
   authorizeTrustedServeSnapshot,
   contractDigest,
+  EpEnvelopeError,
+  parseClusterDocument,
+  type ClusterDocument,
   type EpCommandAuthority,
   type EpGateState,
   type RemoteManagerAuthorityRequest,
 } from "@cotal-ai/core";
+
+/** A manager cluster document as core parsed it, with its root digest and the raw document a
+ * descriptor inlines. */
+export interface ManagerCluster {
+  digest: string;
+  document: ClusterDocument;
+  raw: unknown;
+}
 
 /** The activation entry: derives the serve grant from the `ai.cotal.manager` document among the
  * request's submitted contract artifacts, through remoteManagerServeGrantFromCluster. */
@@ -13,35 +24,22 @@ export function reconstructRemoteManagerServeGrant(
   owner: string,
   observed: EpGateState,
 ) {
-  const artifacts = request.contractArtifacts ?? [];
-  return remoteManagerServeGrantFromCluster(
-    request, owner,
-    artifacts.find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager"),
-    observed,
-  );
+  const raw = (request.contractArtifacts ?? []).find((value) => value && typeof value === "object" && (value as { urn?: unknown }).urn === "ai.cotal.manager");
+  if (raw === undefined) throw new EpEnvelopeError("bad-request", "the activation request submits no ai.cotal.manager cluster document");
+  return remoteManagerServeGrantFromCluster(request, owner, { document: parseClusterDocument(raw), digest: contractDigest(raw), raw }, observed);
 }
 
-/** The command declarations of the canonical manager cluster document, in the shape a serve grant
- * pins. */
-export function remoteManagerSurface(document: unknown): Record<string, EpCommandAuthority> {
-  const cluster = document as {
-    urn?: string;
-    revision?: number;
-    commands?: Array<{ name?: string; class?: string; targeted?: boolean; modes?: string[]; capability?: string; inputDigest?: string; outputDigest?: string; traits?: string[] }>;
-  } | undefined;
-  if (!cluster || !Number.isSafeInteger(cluster.revision) || !Array.isArray(cluster.commands) || cluster.commands.length === 0)
-    throw new Error("found no canonical manager cluster document");
+/** The command declarations of the manager cluster, in the shape a serve grant pins. */
+export function remoteManagerSurface({ digest, document }: ManagerCluster): Record<string, EpCommandAuthority> {
   const surface: Record<string, EpCommandAuthority> = Object.create(null);
-  for (const command of cluster.commands) {
-    if (typeof command.name !== "string" || command.class !== "ephemeral" || typeof command.targeted !== "boolean" ||
-        typeof command.capability !== "string" || typeof command.inputDigest !== "string" || typeof command.outputDigest !== "string")
-      throw new Error("the manager cluster document carries a malformed command declaration");
-    if (surface[command.name]) throw new Error(`the manager cluster document declares command ${command.name} twice`);
+  for (const command of document.commands) {
+    if (command.class !== "ephemeral")
+      throw new EpEnvelopeError("failed-precondition", `the manager cluster declares ${command.class}-class command ${command.name}; every manager command is ephemeral`);
     surface[command.name] = {
-      clusterDigest: contractDigest(cluster),
-      class: "ephemeral",
+      clusterDigest: digest,
+      class: command.class,
       targeted: command.targeted,
-      modes: (command.modes ?? []) as EpCommandAuthority["modes"],
+      modes: command.modes ?? [],
       capability: command.capability,
       inputDigest: command.inputDigest,
       outputDigest: command.outputDigest,
@@ -57,11 +55,10 @@ export function remoteManagerSurface(document: unknown): Record<string, EpComman
 export function remoteManagerServeGrantFromCluster(
   request: Pick<RemoteManagerAuthorityRequest, "space" | "instanceId">,
   owner: string,
-  document: unknown,
+  cluster: ManagerCluster,
   observed: EpGateState,
 ) {
-  const surface = remoteManagerSurface(document);
-  const cluster = document as Record<string, unknown>;
+  const surface = remoteManagerSurface(cluster);
   return authorizeTrustedServeSnapshot({
     space: request.space,
     endpoint: "manager",
@@ -75,7 +72,7 @@ export function remoteManagerServeGrantFromCluster(
     descriptor: {
       endpoint: "manager",
       owner,
-      clusters: [{ digest: contractDigest(cluster), commands: Object.keys(surface), document: cluster }],
+      clusters: [{ digest: cluster.digest, commands: Object.keys(surface), document: cluster.raw as Record<string, unknown> }],
       protocol: { v: 1 },
     },
   });

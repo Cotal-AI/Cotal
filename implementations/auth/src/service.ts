@@ -81,7 +81,7 @@ import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
 import { authorizeRemoteManagerMaintenance, completeRemoteManagerMaintenance } from "./manager-maintenance.js";
 import { validateRetainedManagedAgent } from "./continuity.js";
-import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface } from "./manager-contract.js";
+import { reconstructRemoteManagerServeGrant, remoteManagerServeGrantFromCluster, remoteManagerSurface, type ManagerCluster } from "./manager-contract.js";
 import { authorityBarrierGrants, authorityWriterGrants, openAuthorityClient, openSupervisedConnectReader, platformReadinessGrants, remoteManagerIssuerGrants, remoteManagerRegistrationProof, registrationExecutorGrants, servedRunRequestSubjects, type AuthorityClient } from "./authority-client.js";
 import { authorizeConnectCredential } from "./connect-reader.js";
 import { ensureRootCredential } from "./root-credential.js";
@@ -625,7 +625,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // Standing renewal and a served resume or answer read the manager surface from the REGISTERED
   // service spec at the gate's registration revision: spec (leader read) -> closure manifest -> root
   // document, each verified against its content digest. The request never selects the surface.
-  const registeredManagerCluster = async (owner: string, instanceId: string, observed: { registrationRevision: number }): Promise<unknown> => {
+  const registeredManagerCluster = async (owner: string, instanceId: string, observed: { registrationRevision: number }): Promise<ManagerCluster> => {
     const rec = await readSvcRecordLeader(recordsJsm, space, recordSpecKey(RECORD_KINDS.svc, ["manager", instanceId]));
     if (!rec || "deleted" in rec || rec.revision !== observed.registrationRevision)
       throw new EpEnvelopeError("failed-precondition", "found no manager service spec at the gate's registration revision");
@@ -640,8 +640,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     };
     for (const closure of spec.clusterDigests) {
       const { root } = verifyClusterManifest(closure, await read(closure));
-      const document = await read(root);
-      if (verifyClusterRoot(root, document).urn === "ai.cotal.manager") return document;
+      const raw = await read(root);
+      const document = verifyClusterRoot(root, raw);
+      if (document.urn === "ai.cotal.manager") return { digest: root, document, raw };
     }
     throw new EpEnvelopeError("failed-precondition", "the manager service spec registers no manager cluster");
   };
