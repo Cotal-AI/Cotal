@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/persona-root.mutations.json",
   "why": [
     "FIVE MUTATIONS cover the catalog, mint's shipped persona read, the B2 refusal, signing source,",
-    "and default credential storage. Making personasDir ignore its required root",
+    "and default credential storage. Making listPersonas ignore its required root",
     "sends every shared reader back to process.cwd(): personas list and the completers describe the",
     "folder the operator stands in while spawn still launches from the selected mesh's catalog.",
     "",
@@ -25,8 +25,8 @@
     {
       "name": "the persona catalog ignores the resolved root and reads from the cwd",
       "file": "implementations/cli/src/lib/personas.ts",
-      "find": "  return join(root, \".cotal\", \"agents\");",
-      "replace": "  return join(process.cwd(), \".cotal\", \"agents\");",
+      "find": "  const dir = personaDir(root);",
+      "replace": "  const dir = personaDir(process.cwd());",
       "expectRed": "catalog: personas list prints the MESH's personas",
       "cell": "catalog: personas list prints the MESH's personas",
       "note": "This exact substitution keeps TypeScript green while restoring the silent cwd fallback the required root argument removed."
