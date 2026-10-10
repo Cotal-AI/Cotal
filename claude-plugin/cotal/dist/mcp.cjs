@@ -72780,10 +72780,10 @@ registerAguiFramePartRenderer();
 var import_node_child_process3 = require("node:child_process");
 
 // ../connector-core/dist/docs-bundle.generated.js
-var DOCS_VERSION = "0.78.0";
+var DOCS_VERSION = "0.78.1";
 function loadDocsBundle() {
   return {
-    "version": "0.78.0",
+    "version": "0.78.1",
     "generatedFrom": "docs/*.md + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
     "pages": [
       {
