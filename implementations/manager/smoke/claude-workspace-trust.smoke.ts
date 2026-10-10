@@ -10,7 +10,14 @@ import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { TmuxRuntime } from "../../../extensions/tmux/src/runtime.js";
 
+// Keep Cotal values only for restoration, never in an environment object that could reach a child.
+const cotalOriginal = new Map<string, string>();
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith("COTAL_") && process.env[key] !== undefined) cotalOriginal.set(key, process.env[key]!);
+}
 const original = { ...process.env };
+for (const key of Object.keys(original)) if (key.startsWith("COTAL_")) delete original[key];
+assert.ok(!Object.keys(original).some((key) => key.startsWith("COTAL_")), "restoration environment objects exclude parent Cotal material");
 const tmuxSession = `trust-${process.pid}`;
 let ownsTmuxSession = false;
 const root = mkdtempSync(join(tmpdir(), "cotal-claude-trust-"));
@@ -63,7 +70,7 @@ try {
   console.log("PASS managed launch configuration, foreground preservation and core/seat choice-state parity");
 
   if (process.argv.includes("--live")) {
-    const binary = process.env.COTAL_TEST_CLAUDE_BINARY ?? original.COTAL_TEST_CLAUDE_BINARY;
+    const binary = cotalOriginal.get("COTAL_TEST_CLAUDE_BINARY");
     if (!binary || !existsSync(binary)) throw new Error("--live requires COTAL_TEST_CLAUDE_BINARY naming the installed Claude binary");
     const runtimes: [string, Runtime][] = [
       ["pty", new LegacyPtyRuntime()],
@@ -108,5 +115,6 @@ try {
   if (ownsTmuxSession) execFileSync("tmux", ["kill-session", "-t", tmuxSession], { stdio: "ignore" });
   for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key];
   Object.assign(process.env, original);
+  for (const [key, value] of cotalOriginal) process.env[key] = value;
   rmSync(root, { recursive: true, force: true });
 }
