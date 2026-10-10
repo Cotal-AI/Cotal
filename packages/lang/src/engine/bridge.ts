@@ -22,9 +22,9 @@
  * WHAT CROSSES, and why every crossing is already fenced: effect requests, effect results, journal
  * entries, a failure's `code`/`kind`/`message`/`detail`, and a bind's `external` — exactly the
  * values the journal records, which the crossing rule (values.ts) fences at their write sites.
- * Errors cross with their DOMAIN, because perform.ts grades the two domains differently: the host
- * side stamps `"effect"` for an `EffectError` and `"host"` for anything else, and the thread
- * rehydrates the real class so a bridged failure journals byte-for-byte as an in-process one.
+ * Errors cross with their CLASS, because perform.ts grades a failure by class: the host side
+ * names the class it caught and carries that class's own fields, and the thread rehydrates the
+ * real class from them so a bridged failure journals byte-for-byte as an in-process one.
  *
  * TWO CALLS RUN AGAINST THE ARROW, and both are part of the handler's contract rather than
  * optional extras: `ctx.bind(external)` (the handler declaring the resource it just created —
@@ -61,35 +61,30 @@ const METHODS = [
 ] as const;
 type Method = (typeof METHODS)[number];
 
-/** An error, flattened for the port with the fields both failure domains are graded on. */
-interface WireError {
-  readonly domain: "effect" | "host";
-  readonly name: string;
-  readonly message: string;
-  readonly code?: string;
-  readonly kind?: string;
-  readonly detail?: Readonly<Record<string, unknown>>;
-  /** Preserved for append failures: `JournalAppendRejected` reads it off the store's throw. */
-  readonly indeterminate?: boolean;
-  /** A capability refusal (`EffectRefused`): the thread must rebuild the class, not a plain Error. */
-  readonly refused?: true;
-  /** A branch cancellation (`Cancelled`): graded on class by perform.ts, which settles the entry
-   *  `cancelled` — flattened to a plain Error it would settle `failed` for a branch that lost a
-   *  race, which is the journal recording a failure the program never had. The reason crosses so
-   *  the rebuilt class says the same thing the thrown one did. */
-  readonly cancelled?: string;
-  /** A durability failure (`JournalAppendRejected`, or `EffectResultTooLarge` with `tooLarge`):
-   *  graded on class by perform.ts, which lets it leave uncatchable with nothing settled — flattened
-   *  to a plain Error, a host handler rethrowing its refused `ctx.bind` would settle the step
-   *  `failed`, recording an outcome for an append the store refused. The fields are the
-   *  constructors' own, so the rebuilt class says the same thing the thrown one did. */
-  readonly rejected?: {
-    readonly stepKey: string;
-    readonly state: EntryState;
-    readonly reason: string;
-    readonly tooLarge?: { readonly bytes: number; readonly bound: number };
-  };
-}
+/**
+ * An error, flattened for the port as the class the thread rebuilds.
+ *
+ * `flatten` picks the variant by `instanceof`, and each variant requires its class's own
+ * constructor fields, so the thread rebuilds the class with nothing to default.
+ */
+type WireError = { readonly name: string; readonly message: string } & (
+  | { readonly class: "effect"; readonly code: string; readonly kind: string; readonly detail?: Readonly<Record<string, unknown>> }
+  // A capability refusal: the thread must rebuild the class, not a plain Error.
+  | { readonly class: "refused"; readonly code: string }
+  // A branch cancellation: graded on class by perform.ts, which settles the entry `cancelled`.
+  // Flattened to a plain Error it would settle `failed` for a branch that lost a race, which is the
+  // journal recording a failure the program never had.
+  | { readonly class: "cancelled"; readonly reason: string }
+  // The durability failures: graded on class by perform.ts, which lets them leave uncatchable with
+  // nothing settled. Flattened to a plain Error, a host handler rethrowing its refused `ctx.bind`
+  // would settle the step `failed`, recording an outcome for an append the store refused.
+  | { readonly class: "too-large"; readonly stepKey: string; readonly bytes: number; readonly bound: number }
+  // `indeterminate` is read off the store's throw by `JournalAppendRejected`, so it crosses on the cause.
+  | { readonly class: "rejected"; readonly stepKey: string; readonly state: EntryState; readonly reason: string; readonly indeterminate?: true }
+  // Graded on shape, not class: the identifying fields cross, and `indeterminate` must survive for
+  // the journal's L5010 text to say the honest thing about an append nobody saw land.
+  | { readonly class: "error"; readonly code?: string; readonly indeterminate?: true }
+);
 
 /** The plain-data half of an {@link EffectContext}; `signal` and `bind` are rebuilt per side. */
 interface WireCtx {
@@ -116,7 +111,7 @@ type ToThread =
 function flatten(e: unknown): WireError {
   if (e instanceof EffectError) {
     return {
-      domain: "effect",
+      class: "effect",
       name: e.name,
       message: e.message,
       code: e.code,
@@ -125,33 +120,30 @@ function flatten(e: unknown): WireError {
     };
   }
   // A refusal is graded on CLASS by perform.ts (it settles the entry `refused` and holds the
-  // run), so it crosses with a marker the other side rebuilds the class from. The subclass name
-  // is carried for the message; the rebuilt class is the base, which is all the grading reads.
-  if (e instanceof EffectRefused) {
-    return { domain: "host", name: e.name, message: e.message, code: e.code, refused: true };
-  }
+  // run). The subclass name is carried for the message; the rebuilt class is the base, which is
+  // all the grading reads.
+  if (e instanceof EffectRefused) return { class: "refused", name: e.name, message: e.message, code: e.code };
   // A cancellation is graded on class the same way (perform.ts settles it `cancelled`), and a
   // handler that observes its signal throws one from the host side of this port (#532).
-  if (e instanceof Cancelled) {
-    return { domain: "host", name: e.name, message: e.message, cancelled: e.reason };
+  if (e instanceof Cancelled) return { class: "cancelled", name: e.name, message: e.message, reason: e.reason };
+  // Ahead of `JournalAppendRejected`, which it extends.
+  if (e instanceof EffectResultTooLarge) {
+    return { class: "too-large", name: e.name, message: e.message, stepKey: e.stepKey, bytes: e.bytes, bound: e.bound };
   }
   if (e instanceof JournalAppendRejected) {
     return {
-      domain: "host",
+      class: "rejected",
       name: e.name,
       message: e.message,
+      stepKey: e.stepKey,
+      state: e.state,
+      reason: e.reason.message,
       ...(e.indeterminate ? { indeterminate: true } : {}),
-      rejected: {
-        stepKey: e.stepKey,
-        state: e.state,
-        reason: e.reason.message,
-        ...(e instanceof EffectResultTooLarge ? { tooLarge: { bytes: e.bytes, bound: e.bound } } : {}),
-      },
     };
   }
   const err = e as { name?: unknown; message?: unknown; code?: unknown; indeterminate?: unknown };
   return {
-    domain: "host",
+    class: "error",
     name: typeof err?.name === "string" ? err.name : "Error",
     message: typeof err?.message === "string" ? err.message : String(e),
     ...(typeof err?.code === "string" ? { code: err.code } : {}),
@@ -159,30 +151,30 @@ function flatten(e: unknown): WireError {
   };
 }
 
-/**
- * The thread's side of a flattened error, as the class the grading site expects.
- *
- * An `"effect"` failure becomes the real `EffectError`, because perform.ts records it as the
- * step's outcome; a `"host"` failure becomes a plain Error carrying whatever identifying fields
- * crossed, because the host domain is graded on shape, not class, and `indeterminate` must survive
- * for the journal's L5010 text to say the honest thing about an append nobody saw land.
- */
+/** The thread's side of a flattened error, as the class the grading site expects. */
 function rehydrate(w: WireError): Error {
-  if (w.domain === "effect") return new EffectError(w.code ?? "L4000", w.kind ?? "handler-fault", w.message, w.detail);
-  if (w.refused === true) return new EffectRefused(w.code ?? "L5016", w.message);
-  if (w.cancelled !== undefined) return new Cancelled(w.cancelled);
-  if (w.rejected !== undefined) {
-    const { stepKey, state, reason, tooLarge } = w.rejected;
-    if (tooLarge !== undefined) return new EffectResultTooLarge(stepKey, tooLarge.bytes, tooLarge.bound);
-    const cause = new Error(reason);
-    if (w.indeterminate === true) (cause as Error & { indeterminate?: boolean }).indeterminate = true;
-    return new JournalAppendRejected(stepKey, state, cause);
+  switch (w.class) {
+    case "effect":
+      return new EffectError(w.code, w.kind, w.message, w.detail);
+    case "refused":
+      return new EffectRefused(w.code, w.message);
+    case "cancelled":
+      return new Cancelled(w.reason);
+    case "too-large":
+      return new EffectResultTooLarge(w.stepKey, w.bytes, w.bound);
+    case "rejected": {
+      const cause = new Error(w.reason);
+      if (w.indeterminate === true) (cause as Error & { indeterminate?: boolean }).indeterminate = true;
+      return new JournalAppendRejected(w.stepKey, w.state, cause);
+    }
+    case "error": {
+      const e = new Error(w.message);
+      e.name = w.name;
+      if (w.code !== undefined) (e as Error & { code?: string }).code = w.code;
+      if (w.indeterminate === true) (e as Error & { indeterminate?: boolean }).indeterminate = true;
+      return e;
+    }
   }
-  const e = new Error(w.message);
-  e.name = w.name;
-  if (w.code !== undefined) (e as Error & { code?: string }).code = w.code;
-  if (w.indeterminate === true) (e as Error & { indeterminate?: boolean }).indeterminate = true;
-  return e;
 }
 
 /**
@@ -233,7 +225,7 @@ export function bridgedSeam(port: MessagePort, clock: SharedArrayBuffer): { hand
       if (ctx === undefined) {
         // The effect settled between the handler's bind and this message arriving. The handler's
         // own await of `bind` is what carries the refusal; answering is all this side can do.
-        port.postMessage({ kind: "bind-answer", bseq: m.bseq, error: { domain: "host", name: "Error", message: `effect ${m.seq} is no longer in flight; its bind cannot reach the journal` } } satisfies ToHost);
+        port.postMessage({ kind: "bind-answer", bseq: m.bseq, error: { class: "error", name: "Error", message: `effect ${m.seq} is no longer in flight; its bind cannot reach the journal` } } satisfies ToHost);
         return;
       }
       void ctx.bind(m.external).then(
@@ -402,7 +394,7 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
       // The method set is this module's own constant, so an unknown name is the two sides
       // disagreeing about the protocol — refused as an answer, never dispatched dynamically.
       if (!METHODS.includes(m.method) || typeof method !== "function") {
-        toThread({ kind: "answer", seq: seqHere, ok: false, error: { domain: "host", name: "Error", message: `the effect bridge does not forward "${String(m.method)}"` } } satisfies ToThread);
+        toThread({ kind: "answer", seq: seqHere, ok: false, error: { class: "error", name: "Error", message: `the effect bridge does not forward "${String(m.method)}"` } } satisfies ToThread);
         cancels.delete(seqHere);
         return;
       }
