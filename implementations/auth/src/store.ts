@@ -30,7 +30,7 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
-import { mkSecretDir, writeSecretFileAtomic, type SecretStore } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic, type SecretStore, type SpaceAuth } from "@cotal-ai/core";
 import { identityOf, loadAuthInstanceIdentity, removeAuthInstanceIdentity, spaceSegment, type AuthInstanceIdentity } from "@cotal-ai/workspace";
 import { createCalloutAuth, type CalloutAuth, type CalloutProvisionInput } from "./callout.js";
 import { normalizeIdpUrl } from "./login.js";
@@ -323,6 +323,17 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
  *  enter the service process. */
 export interface ServiceKeys {
   dataAccount: { pub: string; signingSeed: string };
+}
+
+/** The data account's signing context as core's mint takes it. Everything but the space, the account
+ *  pub and the signing seed stays blank because the mint reads nothing else. */
+export function dataAccountAuth(space: string, dataAccount: ServiceKeys["dataAccount"]): SpaceAuth {
+  return {
+    space,
+    operator: { seed: "", jwt: "" },
+    account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
+    sys: { pub: "", jwt: "" },
+  };
 }
 
 interface ServiceKeysFile extends ServiceKeys {
