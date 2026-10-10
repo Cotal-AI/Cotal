@@ -42,6 +42,9 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
       one("manager-caller", { managerInstanceId: instance });
       one("manager-caller", { managerInstanceId: instance, capabilities: ["spawn", "run", "admin"] }, "spawn-run-admin");
     },
+    "endpoint-caller"() {
+      one("endpoint-caller", { endpointCaller: { endpoint: "test.example.census", instanceId: instance, capabilities: [{ endpoint: "test.example.census", command: "increment" }] }, issued: { generation: "a".repeat(32), acceptedToken: "a".repeat(32) } });
+    },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
     "retirement-requester": () => one("retirement-requester", { retirementRequester: { owner: "local", actor: "census", uid, target: { owner: "local", actor: "worker", lifecycleUid: uid } } }),
@@ -93,7 +96,8 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
   for (const view of USER_TOKEN_VIEWS) {
     const required = VIEW_REQUIRED_SCOPE[view];
     const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
+    const sessionClaim = { endpoint: "manager", sessionId: session, epoch: 1, exp: 2_000_000_000 };
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
     // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
     // ownership and registration validation are graded by the live exchange suites, not this census.
     const produce = calloutPermissions(
@@ -102,15 +106,24 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         assert.equal(selectedOwner, owner);
         assert.equal(selectedInstance, instance);
       },
+      async (selectedPrincipal, selectedSession) => {
+        assert.equal(selectedPrincipal.owner, owner);
+        assert.deepEqual(selectedSession, { endpoint: "manager", sessionId: session, epoch: 1 });
+        return sessionClaim;
+      },
     );
     if (view === "manager-service") {
       assert.throws(() => produce(token, principal.connId), /typed material exchange/);
       continue; // Explicit refused view, represented separately from Profile in the report.
     }
+    if (view === "endpoint-caller") {
+      assert.throws(() => produce(token, principal.connId), /endpoint-caller authority is unsupported/);
+      continue; // Requires the dedicated issuer hook, not generic view permission construction.
+    }
     rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId), producer: "calloutPermissions" });
   }
   assert.deepEqual(rows.filter((row) => row.producer === "calloutPermissions").map((row) => row.variant).sort(),
-    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service").map((view) => `callout-view:${view}`).sort(),
+    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service" && view !== "endpoint-caller").map((view) => `callout-view:${view}`).sort(),
     "every generic callout view must have a producer");
   return rows;
 }

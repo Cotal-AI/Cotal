@@ -512,10 +512,15 @@ export function epBaselineGrantRows(space: string, caller: EpCaller): { pub: str
  *   - scatter rail: `ep.all.<endpoint>.<command>.>` plain;
  *   - instance rail: `ep.inst.<endpoint>.<instanceId>.<command>.>` exact.
  *  The epoch is deliberately absent from serve subscriptions (§13.1's barrier is the fence). */
-export function epServeSubscribeRows(space: string, endpoint: string, instanceId: string, command: string): string[] {
+export function epServeSubscribeRows(space: string, endpoint: string, instanceId: string, command: string, routes?: { kind: "instance" }): string[] {
   const e = endpointToken(endpoint);
   const cmd = assertCommandToken(command);
   const iId = assertLifecycleToken(instanceId, "instanceId");
+  if (routes !== undefined) {
+    if (routes.kind !== "instance" || Object.keys(routes).some(key => key !== "kind"))
+      throw new Error("unsupported serve route ceiling; only exact instance narrowing is implemented");
+    return ["ep", `ep.${EP_RAIL_V1}`].map(p => `${spacePrefix(space)}.${p}.inst.${e}.${iId}.${cmd}.>`);
+  }
   // Both rails, the same three shapes each (SPEC 13.15): an endpoint serves the versioned rail
   // beside the legacy one, and the queue qualification on the class rail holds on both.
   return ["ep", `ep.${EP_RAIL_V1}`].flatMap((p) => [
@@ -554,12 +559,12 @@ export function epServePublishRows(space: string, endpoint: string, instanceId: 
  *  stays `.schedule`-only, no credential publishes `.armed`/`.fire`). */
 export function epServeGrantRows(
   space: string,
-  serve: { endpoint: string; instanceId: string; epoch: number; ephemeralCommands: string[] },
+  serve: { endpoint: string; instanceId: string; epoch: number; ephemeralCommands: string[]; routes?: { kind: "instance" } },
 ): { pub: string[]; sub: string[] } {
   if (serve.ephemeralCommands.includes("describe"))
     throw new Error(`"describe" is not a mintable serve command: it is reserved and derived here for every serve credential (SPEC 13.7/13.9)`);
   const sub: string[] = [];
-  for (const cmd of [...serve.ephemeralCommands, "describe"]) sub.push(...epServeSubscribeRows(space, serve.endpoint, serve.instanceId, cmd));
+  for (const cmd of [...serve.ephemeralCommands, "describe"]) sub.push(...epServeSubscribeRows(space, serve.endpoint, serve.instanceId, cmd, serve.routes));
   const pub = epServePublishRows(space, serve.endpoint, serve.instanceId, serve.epoch); // validates the tuple's tokens + epoch
   sub.push(`${spacePrefix(space)}.ept.${endpointToken(serve.endpoint)}.${assertLifecycleToken(serve.instanceId, "instanceId")}.${serve.epoch}.*.fire`);
   return { pub, sub };

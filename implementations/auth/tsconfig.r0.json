@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.smoke.json","include":["smoke/general-endpoint-r0.smoke.ts","smoke/general-endpoint-r0-worker.ts"]}

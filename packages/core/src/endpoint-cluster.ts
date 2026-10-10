@@ -24,6 +24,7 @@ import { parseClosureManifest } from "./contract-manifest.js";
 import { ContractInvalidError } from "./schema-profile.js";
 import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, type EpAuthzMode } from "./endpoint-subjects.js";
 import type { EpClass } from "./endpoint-envelope.js";
+import { parseEndpointServingAuthorityRef, parseEndpointServeCeiling, type EndpointServingAuthorityRef } from "./endpoint-authority-policy.js";
 
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const isDigest = (v: unknown): v is string => typeof v === "string" && /^sha256:[0-9a-f]{64}$/.test(v);
@@ -71,6 +72,7 @@ export interface EpAdmissionCeiling {
 export interface ClusterCommand {
   name: string;
   class: EpClass;
+  effect?: "read" | "write";
   targeted: boolean;
   modes?: EpAuthzMode[];
   capability: string;
@@ -125,6 +127,7 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
     if (seen.has(name)) invalid(`command "${name}" is declared twice`);
     seen.add(name);
     if (cmd.class !== "ephemeral" && cmd.class !== "journal") invalid(`command "${name}" class ${JSON.stringify(cmd.class)} is not "ephemeral" | "journal"`);
+    if (cmd.effect !== undefined && cmd.effect !== "read" && cmd.effect !== "write") invalid(`command "${name}" has invalid effect`);
     if (typeof cmd.targeted !== "boolean") invalid(`command "${name}" must declare targeted as a boolean (SPEC 13.7)`);
     let modes: EpAuthzMode[] | undefined;
     if (cmd.targeted) {
@@ -199,6 +202,7 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
     }
     return {
       name, class: cmd.class, targeted: cmd.targeted,
+      ...(cmd.effect !== undefined ? { effect: cmd.effect as "read" | "write" } : {}),
       ...(modes ? { modes } : {}),
       capability: cmd.capability, inputDigest: cmd.inputDigest, outputDigest: cmd.outputDigest,
       ...(traits ? { traits } : {}),
@@ -254,8 +258,35 @@ export interface DescribeDescriptor {
   endpoint: string;
   owner: string;
   endpointType?: string;
-  protocol: { v: 1 };
+  protocol: { v: 1 | 2 | 3 };
+  servingAuthority?: Readonly<EndpointServingAuthorityRef>;
+  registrationRevision?: number;
+  serveRoutes?: { kind: "instance" };
+  resources?: { kind: "ephemeral-only" };
   clusters: { digest: string; commands: string[]; document?: Record<string, unknown> }[];
+}
+
+/** Runtime consuming boundary used on native describe replies before resolving any contracts. */
+export function parseDescribeDescriptor(raw: unknown): DescribeDescriptor {
+  const o = isRec(raw) ? raw : invalid("descriptor is not an object");
+  if (typeof o.endpoint !== "string" || typeof o.owner !== "string") invalid("descriptor identity");
+  endpointToken(o.endpoint); assertBoundedOwner(o.owner, "descriptor owner");
+  if (!isRec(o.protocol) || Object.keys(o.protocol).length !== 1 || ![1, 2, 3].includes(o.protocol.v as number)) invalid("unsupported descriptor version");
+  if (o.protocol.v === 3) {
+    if (o.registrationRevision !== undefined && (typeof o.registrationRevision !== "number" || !Number.isSafeInteger(o.registrationRevision) || o.registrationRevision < 1)) invalid("descriptor registration revision");
+    parseEndpointServingAuthorityRef(o.servingAuthority);
+    parseEndpointServeCeiling({ routes: o.serveRoutes, resources: o.resources, expiresAt: 1 });
+  } else if (o.servingAuthority !== undefined || o.serveRoutes !== undefined || o.resources !== undefined) invalid("legacy descriptor carries delegated authority");
+  if (!Array.isArray(o.clusters)) invalid("descriptor clusters");
+  for (const entry of o.clusters) {
+    if (!isRec(entry) || !isDigest(entry.digest) || !Array.isArray(entry.commands) || entry.commands.length === 0 || entry.commands.some(c => typeof c !== "string")) invalid("descriptor cluster shape");
+    for (const command of entry.commands as string[]) assertCommandToken(command);
+    if (entry.document !== undefined) {
+      const document = parseClusterDocument(entry.document);
+      if (o.protocol.v !== 1 && document.commands.some(c => c.effect === undefined)) invalid("protocol2/3 requires command effect");
+    }
+  }
+  return o as unknown as DescribeDescriptor;
 }
 
 function deepFreeze<T>(v: T): T {
@@ -274,17 +305,27 @@ function deepFreeze<T>(v: T): T {
  *  frozen: discovery is a projection of registered bytes, and no later mutation can change what
  *  describe publishes. */
 export function deriveDescriptor(
-  identity: { endpoint: string; owner: string; endpointType?: string },
+  identity: { endpoint: string; owner: string; endpointType?: string; protocol?: { v: 1 | 2 | 3 }; servingAuthority?: Readonly<EndpointServingAuthorityRef>; serveRoutes?: { kind: "instance" }; resources?: { kind: "ephemeral-only" } },
   clusters: { digest: string; document: ClusterDocument; raw: Record<string, unknown> }[],
 ): DescribeDescriptor {
   endpointToken(identity.endpoint);
   assertBoundedOwner(identity.owner, "descriptor owner");
   if (clusters.length === 0) throw new ContractInvalidError("a descriptor needs at least one registered cluster");
+  const version = identity.protocol?.v ?? 1;
+  if (![1, 2, 3].includes(version)) throw new ContractInvalidError("unsupported descriptor version");
+  if (version !== 1 && clusters.some(c => c.document.commands.some(cmd => cmd.effect === undefined)))
+    throw new ContractInvalidError("protocol2/3 requires effect on every command");
+  if (version === 3) {
+    parseEndpointServingAuthorityRef(identity.servingAuthority);
+    parseEndpointServeCeiling({ routes: identity.serveRoutes, resources: identity.resources, expiresAt: 1 });
+  } else if (identity.servingAuthority !== undefined || identity.serveRoutes !== undefined || identity.resources !== undefined)
+    throw new ContractInvalidError("legacy descriptor cannot carry delegated authority");
   return deepFreeze({
     endpoint: identity.endpoint,
     owner: identity.owner,
     ...(identity.endpointType !== undefined ? { endpointType: identity.endpointType } : {}),
-    protocol: { v: 1 as const },
+    protocol: { v: version },
+    ...(version === 3 ? { servingAuthority: identity.servingAuthority!, serveRoutes: { kind: "instance" as const }, resources: { kind: "ephemeral-only" as const } } : {}),
     clusters: clusters.map((c) => ({
       digest: c.digest,
       commands: c.document.commands.map((cmd) => cmd.name),

@@ -100,6 +100,10 @@ belongs to another run, a pin that differs from the recorded ones, and a differe
 A failed journal entry replays its error, while a pending entry lets the handler recover the
 external work it bound before the interruption.
 
+A relative `sleep` completes if its duration elapses during authorized arming before a pause
+is minted. It creates no past-due checkpoint. An existing pause keeps its recorded deadline and
+settlement, and cancellation still rejects the sleep. Checkpoint and ask expiry rules are unchanged.
+
 A step that writes to a far side that honors no idempotency key (posting a comment, sending a mail)
 belongs in `once`. A resume that finds a step inside `once` begun and never settled does not
 dispatch it again: it opens a hold, a checkpoint under a token derived from the step's recorded

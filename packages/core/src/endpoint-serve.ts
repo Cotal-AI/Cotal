@@ -29,12 +29,13 @@ import {
 } from "./endpoint-envelope.js";
 import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
-import type { DescribeDescriptor } from "./endpoint-cluster.js";
+import { parseDescribeDescriptor, type DescribeDescriptor } from "./endpoint-cluster.js";
 import {
   GOVERNED_TRAIT_URNS, TRAIT_GUARDED, TRAIT_PRICED,
   assertGovernedSurfaceFor, assertGovernedPreEffect, type EpTraitEnforcement,
 } from "./endpoint-traits.js";
 import type { GuardObligation } from "./endpoint-guard.js";
+import { assertStockEndpointRequestAuthority, type EndpointRequestAuthority, type EndpointHeldAdmission, type EndpointTerminalOutcome } from "./endpoint-authority-admission.js";
 
 // ---- the serve table ---------------------------------------------------------------------------
 
@@ -53,6 +54,8 @@ export interface EpServeIdentity {
  *  before it reaches a handler: the endpoint MUST apply them (monotonic); the applying policy
  *  engine is an extension behind the seam. */
 export interface EpServeContext {
+  /** Fresh stock-held caller view, available only after delegated admission. */
+  issuedCommands?: readonly string[];
   identity: EpServeIdentity;
   subject: ParsedEpRequest;
   request: EndpointRequest;
@@ -315,9 +318,13 @@ export function serveEndpoint(
      *  The serve credential still grants the class rows; this only changes what this process
      *  consumes. `describe` is reserved and is never omitted. */
     omitClassCommands?: readonly string[];
+    requestAuthority?: EndpointRequestAuthority;
   } = {},
 ): EpServeHandle {
   assertServeGrantAuthorized(serve); // §13.9: the serve table consumes ONLY registry-authorized serve authority
+  const requestAuthority = opts.requestAuthority;
+  if (serve.descriptor.protocol.v === 3) assertStockEndpointRequestAuthority(requestAuthority);
+  else if (requestAuthority !== undefined) throw new Error("requestAuthority requires delegated protocol3");
   if (serve.space !== space)
     throw new Error(`the serve artifact was authorized for space "${serve.space}", not "${space}" (SPEC 13.9)`);
   const identity: EpServeIdentity = { endpoint: serve.endpoint, instanceId: serve.instanceId, epoch: serve.epoch };
@@ -427,7 +434,7 @@ export function serveEndpoint(
     targeted: false, // §13.7: describe is reserved UNTARGETED; every targeted form refuses
     targetModes: new Set(),
     governed: false, // §13.7: describe is the discovery bootstrap; it carries no traits
-    handler: describeHandler(serve.descriptor, describe),
+    handler: describeHandler(serve.descriptor.protocol.v === 3 ? { ...serve.descriptor, registrationRevision: serve.registrationRevision } : serve.descriptor, describe),
   });
 
   const omitClass = new Set(opts.omitClassCommands ?? []);
@@ -442,6 +449,7 @@ export function serveEndpoint(
   const subs: Subscription[] = [];
 
   const pending = new Set<Promise<void>>();
+  const admissionFailures: unknown[] = [];
   const enc = new TextEncoder();
   const dec = new TextDecoder();
 
@@ -451,6 +459,9 @@ export function serveEndpoint(
     let env: EndpointRequest | undefined;
     let dispatched = false;
     let reply: EndpointReply;
+    let held: EndpointHeldAdmission | undefined;
+    let terminal: EndpointTerminalOutcome = "not-executed";
+    try {
     try {
       env = parseEndpointRequest(JSON.parse(dec.decode(msg.data)));
       checkRequestSubjectAgreement(env, parsed);
@@ -506,12 +517,18 @@ export function serveEndpoint(
           await assertTargetCurrent(env, opts.resolveTarget);
       }
       const ctx: EpServeContext = { identity, subject: parsed, request: env, ...(obligations !== undefined ? { obligations } : {}) };
+      if (requestAuthority !== undefined)
+        held = await requestAuthority.admit({ serving: serve, subject: parsed, request: env, requestSubject: msg.subject });
+      if (held !== undefined) ctx.issuedCommands = held.commands;
       dispatched = true;
+      terminal = "unknown";
       if (!env.replyExpected) {
         await def.handler(ctx);
+        terminal = "executed";
         return; // cast: the responder MUST NOT reply (§13.5)
       }
       const data = await def.handler(ctx);
+      terminal = "executed";
       // §13.7: the reply validates against the output schema BEFORE it is published, under the
       // same fixed budget as args — an invalid reply is a server bug and fails loud, never
       // reaches the caller as success.
@@ -560,6 +577,12 @@ export function serveEndpoint(
       };
       nc.publish(replySubject, enc.encode(JSON.stringify(refused)));
     }
+    } finally {
+      if (held !== undefined) {
+        try { await held.release(terminal); }
+        catch (error) { admissionFailures.push(error); throw error; }
+      }
+    }
   };
 
   for (const def of defs) {
@@ -573,9 +596,10 @@ export function serveEndpoint(
     // same three shapes. The parsed subject carries which one a request rode; the handler reads
     // it off `ctx.subject.rail`, never off the body.
     for (const rail of ["ep", `ep.${EP_RAIL_V1}`]) {
-      if (!omitClass.has(cmd))
+      if (serve.routes === undefined && !omitClass.has(cmd))
         subs.push(nc.subscribe(`${p}.${rail}.one.${e}.${cmd}.>`, { queue: epClassQueueGroup(identity.endpoint), callback: cb }));
-      subs.push(nc.subscribe(`${p}.${rail}.all.${e}.${cmd}.>`, { callback: cb }));
+      if (serve.routes === undefined)
+        subs.push(nc.subscribe(`${p}.${rail}.all.${e}.${cmd}.>`, { callback: cb }));
       subs.push(nc.subscribe(`${p}.${rail}.inst.${e}.${iId}.${cmd}.>`, { callback: cb }));
     }
   }
@@ -584,6 +608,7 @@ export function serveEndpoint(
     async stop() {
       await Promise.all(subs.map((s) => s.drain())); // no new deliveries
       await Promise.allSettled([...pending]); // in-flight handlers finish before "stopped"
+      if (admissionFailures.length > 0) throw new AggregateError(admissionFailures, "endpoint admission release remains unresolved; stop cannot claim terminal drain");
     },
   };
 }
@@ -630,7 +655,7 @@ const DESCRIBE_ANSWER_SCHEMA = {
         endpoint: { type: "string", minLength: 1 },
         owner: { type: "string", minLength: 1 },
         endpointType: { type: "string" },
-        protocol: { type: "object", required: ["v"], properties: { v: { const: 1 } } },
+        protocol: { type: "object", required: ["v"], additionalProperties: false, properties: { v: { enum: [1, 2, 3] } } },
         clusters: {
           type: "array",
           items: {
@@ -677,12 +702,13 @@ function describeHandler(descriptor: DescribeDescriptor, authz: DescribeAuthoriz
   return async (ctx: EpServeContext): Promise<DescribeAnswer> => {
     if (endpointToken(descriptor.endpoint) !== endpointToken(ctx.identity.endpoint))
       throw new EpEnvelopeError("internal", "describe descriptor does not name the serving endpoint");
-    if (isPublic) return { public: true, descriptor };
+    parseDescribeDescriptor(descriptor);
+    if (isPublic && descriptor.protocol.v !== 3) return { public: true, descriptor };
     if (viewFn === undefined)
       throw new EpEnvelopeError("internal", "describe has no snapshotted authorization view but is not public");
     let view: DescribeView | undefined;
     try {
-      view = await viewFn!(ctx.subject.caller);
+      view = descriptor.protocol.v === 3 ? { commands: [...(ctx.issuedCommands ?? [])] } : await viewFn!(ctx.subject.caller);
     } catch (err) {
       throw new EpEnvelopeError("unavailable", `the trusted authorization view failed; describe fails closed, never answers from a weaker source (SPEC 13.7): ${(err as Error)?.message ?? String(err)}`);
     }
