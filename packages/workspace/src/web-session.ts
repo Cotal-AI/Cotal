@@ -6,6 +6,11 @@ import { readFileSync } from "node:fs";
  *  here so that a change reaches both packages or fails to compile in them. */
 export const WEB_SESSION_FILE = "web.session";
 
+/** `.cotal/web.pid` — the web dashboard's pidfile. The dashboard declares it, and `cotal status`, the
+ *  setup card and `cotal clean` read it from a package that cannot import the dashboard's, so the
+ *  name lives here where a rename reaches every reader. */
+export const WEB_PIDFILE = "web.pid";
+
 /** The header that presents {@link WebSession.readiness} to the dashboard. Lower-case because Node
  *  lower-cases incoming header names, so a capitalised name would never match and would look like a
  *  working check. */

@@ -1,5 +1,5 @@
 import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, installedExtensionVersion, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
+import { authDir, extensionConnectors, findCotalRoot, installedExtensionVersion, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_PIDFILE, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -34,7 +34,7 @@ export function webBoundAddress(path: string): { host: string; port: number; url
 export function recordedWebUrl(context: LocalProcessContext): string | undefined {
   let raw: string | undefined;
   try {
-    raw = readPidfile(localProcessPath("web.pid", context));
+    raw = readPidfile(localProcessPath(WEB_PIDFILE, context));
   } catch (e) {
     throw new Error(`pidfile unreadable · ${(e as Error).message}`);
   }
