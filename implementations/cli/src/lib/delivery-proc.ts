@@ -346,6 +346,11 @@ export const DELIVERY_PROCESS: LocalProcess = {
  *  daemon is proven gone, so the credential is never deleted from under a daemon still running. */
 export async function stopDelivery(space: string = folderSpace()): Promise<void> {
   await stopLocalProcess(DELIVERY_PROCESS, ctx(space));
+  await clearDeliveryCreds(space);
+}
+
+/** Drop the space's delivery creds from the store. The caller has confirmed the daemon stopped. */
+export async function clearDeliveryCreds(space: string): Promise<void> {
   for (const k of deliveryCredsKeysToClear(space)) await credsStore().delete(k);
 }
 
