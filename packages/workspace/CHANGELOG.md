@@ -1,5 +1,24 @@
 # @cotal-ai/workspace
 
+## 0.79.0
+
+### Patch Changes
+
+- 50747b1: A manager or delivery start that refuses a record it cannot attribute now names the pidfile it read. The cutover preflight, `spawn -f`, the delivery start and `service install` used to resolve the record's spelling a second time while formatting the refusal, so a record that moved between its space-keyed and pre-upgrade names in between was misnamed, and one that appeared beside the record that was read replaced the refusal and its `NEXT:` step with an ambiguous-record error. `readProcessRecord` in `@cotal-ai/workspace` now returns the path it read on every `ProcessRecord`, and `service status --json` reports that file as `manager.path`. The config and CLI pages describe both.
+- 36b03b0: The persona catalog directory is now built in one place, `personaDir` in `@cotal-ai/core`. `agentFilePath` and `listPersonaCatalog` build on it, `@cotal-ai/workspace` keeps exporting it under the same name, and `cotal status` and `cotal personas` use it in place of their own copies, so the directory spawn loads personas from and the directory those surfaces name cannot drift apart.
+- 5e9a618: An installed extension whose `package.json` is not JSON or has no `version` is no longer reported as not installed or with a bare JSON parse error. `installedExtensionVersion` throws `CorruptExtensionPackageError`, which names the package and its `package.json`, so loading the extension, `cotal status` and the `cotal setup` card report the damaged file. `cotal ext seed --repair` reinstalls a seeded built-in in that state, including after a corrupt extensions manifest was rebuilt.
+- db962ae: The manager and delivery daemon records are now read and attributed by one reader, `readProcessRecord` in `@cotal-ai/workspace`, which takes the record path and the component's attribution predicate and returns the state with the pid, content and command line behind it. The rule that a live pid is demoted to foreign only when its command line was read and is not the component's now lives in one place, and the delivery verdict keeps the command line it was decided on, as the manager's already did. No states or messages change.
+- 92590e8: The web dashboard's pidfile name is now one `WEB_PIDFILE` constant in `@cotal-ai/workspace`. The dashboard declares its record with it, and the `cotal status` `Web process` row, `cotal status --components`, the `cotal setup` card and the `cotal clean all` crash-residue sweep read it from there. They used to spell `web.pid` by hand, so renaming the dashboard's record would still typecheck while those readers reported a running dashboard as down or absent and `clean all` left its pidfile behind. The file is still `.cotal/web.pid`.
+- c03f2af: `cotal logout`, the account switch in `cotal login`, `cotal down` and `cotal clean all` now remove their registry entries as one batch that scans the registry for pre-hex records once. Before, each removed entry ran its own scan over the whole registry, so removing K entries from a registry of R records read about K × R record files. The removed entries and the pointer outcome are unchanged, also when a removal fails partway through the batch or a concurrent `cotal use` moves the pointer during it.
+- 79ace0f: A seat writer generation file is now keyed by `spaceKey` of the space and of the seat name, joined by `00`, and one builder names it for both the claim and the load. An empty space, a name with an unpaired surrogate and a space or seat name containing NUL are refused instead of written, so two different seats can no longer share one generation file and refuse each other's claim. Every key a valid seat already has is unchanged. The account record filename is also built in one place now, for both its file path and its store key.
+- Updated dependencies [fbc3e2d]
+- Updated dependencies [c535d98]
+- Updated dependencies [36b03b0]
+- Updated dependencies [2bd492c]
+- Updated dependencies [7cb89f9]
+- Updated dependencies [4aafb0d]
+  - @cotal-ai/core@0.79.0
+
 ## 0.78.1
 
 ### Patch Changes

@@ -26324,8 +26324,11 @@ var import_jetstream8 = __toESM(require_mod4(), 1);
 var import_transport_node10 = __toESM(require_transport_node(), 1);
 
 // ../../packages/core/dist/run-journal.js
-var import_jetstream9 = __toESM(require_mod4(), 1);
+var import_jetstream10 = __toESM(require_mod4(), 1);
 var import_transport_node11 = __toESM(require_transport_node(), 1);
+
+// ../../packages/core/dist/jetstream-missing.js
+var import_jetstream9 = __toESM(require_mod4(), 1);
 
 // ../../packages/core/dist/endpoint-goaleff.js
 var COMMON_FIELDS = ["v", "executor", "attemptId", "ts", "phase"];
@@ -26375,7 +26378,7 @@ var B64_INV = (() => {
 })();
 
 // ../../packages/core/dist/endpoint-virtual.js
-var import_jetstream10 = __toESM(require_mod4(), 1);
+var import_jetstream11 = __toESM(require_mod4(), 1);
 var td = new TextDecoder();
 
 // ../../packages/core/dist/signing-key-rotation.js
@@ -26383,7 +26386,7 @@ var RENEW_AT_FRACTION = 1 / 3;
 var OVERLAP_MS = 10 * 60 * 1e3;
 
 // ../../packages/core/dist/streams.js
-var import_jetstream15 = __toESM(require_mod4(), 1);
+var import_jetstream16 = __toESM(require_mod4(), 1);
 var import_transport_node16 = __toESM(require_transport_node(), 1);
 var import_kv7 = __toESM(require_mod6(), 1);
 var import_obj = __toESM(require_mod7(), 1);
@@ -26396,7 +26399,7 @@ var import_kv6 = __toESM(require_mod6(), 1);
 
 // ../../packages/core/dist/kv-scan.js
 var import_internal2 = __toESM(require_internal_mod3(), 1);
-var import_jetstream13 = __toESM(require_mod4(), 1);
+var import_jetstream14 = __toESM(require_mod4(), 1);
 
 // ../../packages/core/dist/endpoint.js
 var import_transport_node14 = __toESM(require_transport_node(), 1);
@@ -26406,8 +26409,8 @@ var import_nats_core = __toESM(require_mod3(), 1);
 var LIVENESS_PLANES = Object.freeze(["manager", "delivery"]);
 
 // ../../packages/core/dist/endpoint.js
-var import_jetstream11 = __toESM(require_mod4(), 1);
 var import_jetstream12 = __toESM(require_mod4(), 1);
+var import_jetstream13 = __toESM(require_mod4(), 1);
 var import_kv5 = __toESM(require_mod6(), 1);
 var import_internal = __toESM(require_internal_mod3(), 1);
 
@@ -26423,14 +26426,14 @@ var import_kv4 = __toESM(require_mod6(), 1);
 var import_transport_node13 = __toESM(require_transport_node(), 1);
 
 // ../../packages/core/dist/backup-config.js
-var import_jetstream14 = __toESM(require_mod4(), 1);
+var import_jetstream15 = __toESM(require_mod4(), 1);
 var import_transport_node15 = __toESM(require_transport_node(), 1);
 var DEFAULT_DUPLICATE_WINDOW = (0, import_transport_node15.nanos)(2 * 60 * 1e3);
 var BACKUP_PLANE3_DEDUP_WINDOW_MS = 2 * 60 * 60 * 1e3;
 var PLANE3_DUPLICATE_WINDOW = (0, import_transport_node15.nanos)(BACKUP_PLANE3_DEDUP_WINDOW_MS);
 
 // ../../packages/core/dist/streams.js
-var PRESENCE_STORAGE = import_jetstream15.StorageType.Memory;
+var PRESENCE_STORAGE = import_jetstream16.StorageType.Memory;
 var MANAGER_LEASE_TTL_MS = 1e4;
 var MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;
 var MEMBERSHIP_MAX_BYTES = 64 * 1024 * 1024;
@@ -26444,13 +26447,13 @@ var PLACEMENT_COMMANDS = Object.freeze(["describe", "resolve-cwd", "spawn"]);
 
 // ../../packages/core/dist/transfer.js
 var import_nats_core2 = __toESM(require_mod3(), 1);
-var import_jetstream16 = __toESM(require_mod4(), 1);
+var import_jetstream17 = __toESM(require_mod4(), 1);
 var import_obj2 = __toESM(require_mod7(), 1);
 var TRANSFER_CHUNK_MAX = 128 * 1024;
 var HEADER_ROOM = 4 * 1024;
 
 // ../../packages/core/dist/backup.js
-var import_jetstream17 = __toESM(require_mod4(), 1);
+var import_jetstream18 = __toESM(require_mod4(), 1);
 var import_transport_node17 = __toESM(require_transport_node(), 1);
 var DEFAULT_TRANSFER_TIMEOUT_MS = 5 * 60 * 1e3;
 
@@ -26531,7 +26534,7 @@ var import_yaml = __toESM(require_dist(), 1);
 
 // ../../packages/core/dist/spaces.js
 var import_transport_node19 = __toESM(require_transport_node(), 1);
-var import_jetstream18 = __toESM(require_mod4(), 1);
+var import_jetstream19 = __toESM(require_mod4(), 1);
 var import_kv9 = __toESM(require_mod6(), 1);
 
 // ../../packages/core/dist/loopback.js
@@ -26646,7 +26649,7 @@ var RUN_ACTIVATION_WAIT_MS = 15e3;
 var RUN_LAUNCH_DEADLINE_MS = RUN_ACTIVATION_WAIT_MS + 1e4;
 
 // ../../packages/core/dist/issuer-session.js
-var import_jetstream19 = __toESM(require_mod4(), 1);
+var import_jetstream20 = __toESM(require_mod4(), 1);
 var import_kv10 = __toESM(require_mod6(), 1);
 
 // ../connector-core/dist/control.js

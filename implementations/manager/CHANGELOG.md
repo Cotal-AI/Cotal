@@ -1,5 +1,27 @@
 # @cotal-ai/manager
 
+## 0.79.0
+
+### Patch Changes
+
+- 94c034b: A spawn rolled back as an orphan on a user-auth manager no longer logs `despawn <name>: retirement confirmed for a prior lifecycle of "<name>"; the current hold is left intact`. That lifecycle was never despawned and has neither a successor nor a hold on its name, so the manager now logs `retire <name>: lifecycle <uid> retired; the name had no hold to clear`. A late answer that arrives while a successor holds the name keeps the prior-lifecycle line, and a despawn that clears its own hold keeps the retirement-completed line.
+- 818fd97: The `cotal supervise --ws-port` help and the user-mode session redemption refusal no longer cite internal plan labels. The manager's service endpoint, spawn action, session plane and console comments drop the same labels and their slice, checklist, ruling, pin and milestone tags, keeping the mechanism text and the SPEC references. The console page and client served to the browser carry the same cleanup. Only text changes.
+- Updated dependencies [50747b1]
+- Updated dependencies [fbc3e2d]
+- Updated dependencies [c535d98]
+- Updated dependencies [36b03b0]
+- Updated dependencies [2bd492c]
+- Updated dependencies [5e9a618]
+- Updated dependencies [7cb89f9]
+- Updated dependencies [db962ae]
+- Updated dependencies [4aafb0d]
+- Updated dependencies [92590e8]
+- Updated dependencies [c03f2af]
+- Updated dependencies [79ace0f]
+  - @cotal-ai/workspace@0.79.0
+  - @cotal-ai/core@0.79.0
+  - @cotal-ai/seat@0.79.0
+
 ## 0.78.1
 
 ### Patch Changes
