@@ -37,7 +37,7 @@
       "name": "successful validation-only release replaces the original denial object",
       "file": "implementations/auth/src/endpoint-authority.ts",
       "find": "catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }\n        throw error;",
-      "replace": "catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }\n        throw new Error(\"prepare validation denial was replaced\");",
+      "replace": "catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }\n        throw new Error(error instanceof Error ? error.message : String(error));",
       "expectRed": "PREPARE05-serving-preserves-original-denial-object",
       "cell": "PREPARE05-serving-preserves-original-denial-object",
       "afterRestore": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving"
