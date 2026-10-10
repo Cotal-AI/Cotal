@@ -14,6 +14,7 @@
  * Run: pnpm smoke:runtime-run-driver-auth   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn, spawnSync } from "node:child_process";
+import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -869,6 +870,50 @@ const A = await driver(RUN_A, TK_A);
     .then(() => "allowed", (e) => e instanceof RunScopeDenied ? "denied" : short(e));
   c("copying a foreign token into the driver's own journal grants no host access", copiedRead === "denied", copiedRead);
 
+}
+
+// A relative sleep can elapse while its host authorizes the journal and reads the real pause.
+// Keep the normal narrow driver, mediated host and broker records. Delay only a read's response.
+{
+  const runId = "run-sleep-premint";
+  const takeover = newTakeoverId();
+  const H = await driver(runId, takeover);
+  let reads = 0;
+  const slowKv = new Proxy(H.hostPlanes.kv, {
+    get(target, property) {
+      if (property === "get") return async (...args: Parameters<typeof target.get>) => {
+        const result = await target.get(...args);
+        if (args[0].startsWith(`cp.${EP}.`)) { reads++; await wait(30); }
+        return result;
+      };
+      const value = Reflect.get(target, property);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const planes = { ...H.hostPlanes, kv: slowKv };
+  const authority = createRunScopeAuthority(planes, runId, lease(takeover, 1));
+  const binding = { space: S, endpoint: EP, runId, caller: runDriverCaller(runId), instanceId: IID,
+    epoch: EPOCH, holder: { id: "manager", lifecycleUid: "u_rdauth" }, defaultCheckpointTimeout: "1h" };
+  const effectHost = createRunEffectHost(planes, binding, authority, admissionOf(planes, runId));
+  let token: string | undefined;
+  const handler = { ...effectHost, sleep(req: Parameters<typeof effectHost.sleep>[0], ctx: Parameters<typeof effectHost.sleep>[1]) {
+    token = ctx.requestId;
+    return effectHost.sleep(req, ctx);
+  } };
+  const out = await withDeadline(startRun(H.js, H.jsm, { space: S, endpoint: EP, runId,
+    source: 'await sleep("1ms", { name: "elapsed" });', kv: H.kv, lease: lease(takeover, 1), handler }),
+    10_000, "the journal-authorized pre-mint elapsed sleep");
+  assert.ok(out?.status === "completed", "S3775 mediated relative sleep completes after its authorized pre-mint reads");
+  c("S3775 the mediated sleep used its real broker-backed pre-mint read", reads > 0, reads);
+  c("S3775 the elapsed mediated step settles its own journal identity",
+    out.result.journal.entries().some(entry => entry.kind === "sleep" && entry.state === "settled" && entry.requestId === token));
+  c("S3775 the elapsed mediated sleep does not invent a checkpoint", token !== undefined
+    && await readCheckpointSpec(H.hostPlanes.kv, { endpoint: EP, token }) === undefined);
+  const pauses = createRunPauseHost(planes, binding, authority);
+  const unauthorized = await pauses.arm("foreign-elapsed-sleep", Date.now() - 1)
+    .then(() => undefined, error => error);
+  c("S3775 an elapsed deadline still requires current journal authority", unauthorized instanceof RunScopeDenied, unauthorized);
+  console.log("• S3775 — genuine narrow driver and journal authorization controls reached");
 }
 
 // Exercise the executable's dispatcher and error renderer without running seed installation.

@@ -807,7 +807,15 @@ export class MeshHandler {
     // window without rolling a heartbeat-advanced deadline back to the one this caller computed.
     // A request emitted from here would carry the caller's coordinates and could arm a stale
     // generation the writer would then have to be trusted to ignore.
-    await this.arm(ref, deadline);
+    try {
+      await this.arm(ref, deadline);
+    } catch (error) {
+      // Only a relative sleep has finished when its authorized first arm finds no pause
+      // and its duration has already elapsed. Existing pauses still settle on their facts.
+      if (!(error instanceof PauseOverdue)) throw error;
+      if (ctx.signal.cancelled) throw new Cancelled(ctx.signal.reason ?? "cancelled");
+      return null;
+    }
 
     await this.settle(ref, ctx.signal);
     return null;
