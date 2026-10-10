@@ -10,6 +10,7 @@ import type { AgentHandle, Runtime } from "@cotal-ai/core";
 import { LegacyPtyRuntime } from "../src/runtime/pty.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
 import { TmuxRuntime } from "../../../extensions/tmux/src/runtime.js";
+import { available as tmuxAvailable } from "../../../extensions/tmux/src/driver.js";
 import { CLAUDE_WORKSPACE_TRUST_REPLIES } from "../../../extensions/connector-claude-code/src/trust.js";
 
 const root = mkdtempSync(join(tmpdir(), "cotal-startup-choices-"));
@@ -24,10 +25,11 @@ const rows = (path: string): { key: string; phase: string }[] => {
 };
 const failures: string[] = [];
 try {
-  const runtimes: [string, Runtime][] = [
-    ["pty", new LegacyPtyRuntime()], ["custody", new CustodialPtyRuntime(join(root, "seats"))],
-    ["tmux", new TmuxRuntime(session)],
-  ];
+  const runtimes: [string, Runtime][] = [["pty", new LegacyPtyRuntime()]];
+  if (process.platform === "linux") runtimes.push(["custody", new CustodialPtyRuntime(join(root, "seats"))]);
+  else console.log(`SKIP custody: Linux-only seat transport (host: ${process.platform})`);
+  if (tmuxAvailable()) runtimes.push(["tmux", new TmuxRuntime(session)]);
+  else console.log("SKIP tmux: tmux is not installed; pane startup is not exercised");
   const cases = runtimes.flatMap(([runtimeName, runtime]) => ["normal", "trusted", "missing"].map((mode) => {
     if (runtimeName === "tmux" && !ownsTmux) {
       assert.throws(() => execFileSync("tmux", ["has-session", "-t", session], { stdio: "ignore" }));
