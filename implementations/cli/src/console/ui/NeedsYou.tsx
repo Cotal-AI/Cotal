@@ -36,7 +36,7 @@ export function NeedsYou({
   useInput(
     (input, key) => {
       if (key.upArrow || input === "k") setSel((v) => Math.max(0, v - 1));
-      else if (key.downArrow || input === "j") setSel((v) => Math.min(waiting.length - 1, v + 1));
+      else if (key.downArrow || input === "j") setSel((v) => Math.min(Math.max(0, waiting.length - 1), v + 1));
       else if (key.return && waiting.length) onOpenDetail(waiting[selClamped]);
     },
     { isActive: isFocused && !blocked },

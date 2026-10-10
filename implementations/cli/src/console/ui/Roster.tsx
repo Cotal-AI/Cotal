@@ -135,7 +135,7 @@ export function Roster({
   useInput(
     (input, key) => {
       if (key.upArrow || input === "k") setSel((v) => Math.max(0, v - 1));
-      else if (key.downArrow || input === "j") setSel((v) => Math.min(list.length - 1, v + 1));
+      else if (key.downArrow || input === "j") setSel((v) => Math.min(Math.max(0, list.length - 1), v + 1));
       else if (input === "D" && onKill && list[selClamped]?.card.kind === "agent")
         onKill(list[selClamped]);
       else if (input === "a" && onAttach && list[selClamped]?.card.kind === "agent")
