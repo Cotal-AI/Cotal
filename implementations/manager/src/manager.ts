@@ -127,11 +127,11 @@ import {
   type StaticManagedSlotRow,
   type SignerAnchor,
 } from "@cotal-ai/core";
-// P2 item 6: the manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
+// The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
 // standup for `attach`, over a dedicated standing session-LEDGER connection (the byte rails ride
 // per-session credentials on their own short-lived connections).
 import { ManagerSessionPlane, openSessionLedgerKv, type SessionServing } from "./session/index.js";
-// P2 item 1 (1a-serve): the manager as an ordinary v0.4 `service` endpoint — the §13.1
+// The manager as an ordinary v0.4 `service` endpoint — the §13.1
 // endpoint-serve credential subsystem (gate provisioning, registration barrier, mint fence) plus
 // the register/authorize/serve seams, all driven over a scoped one-shot executor connection.
 import {
@@ -413,7 +413,7 @@ export interface ManagerOptions {
   eventsRequired?: boolean;
   /** Port for the console + attach HTTP/WS endpoint. 0 → ephemeral. */
   consolePort?: number;
-  /** P2 item 6: the broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
+  /** The broker's WebSocket listener port (loopback), allocated by `cotal up`. When set,
    *  the console page becomes a mesh §13.6 session client — `POST /session/<name>` returns the grant +
    *  a per-session cred + this ws URL. Absent ⇒ no console session client (the route 503s). */
   wsPort?: number;
@@ -448,7 +448,7 @@ export interface ManagerOptions {
    *  timeout) fails closed. An injected store declares its identity, or both processes set
    *  `COTAL_SECRET_STORE` to the same coordinate. */
   secretStore?: SecretStore;
-  /** P2 item 6: the global ceiling on concurrently live §13.6 sessions this manager will serve.
+  /** The global ceiling on concurrently live §13.6 sessions this manager will serve.
    *  Defaults to {@link MAX_LIVE_SESSIONS_DEFAULT}. Each session mints a credential and opens its
    *  own connection, and establishment is caller-triggered, so this is the process-level resource
    *  bound; exceeding it refuses `resource-exhausted` before either happens. Operator-set because
@@ -1017,7 +1017,7 @@ interface RetirementHold {
   lastResources?: DeprovisionResourceAccounting;
 }
 
-/** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
+/** Runtime hooks the spawn-as-action serve path injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
 export interface SpawnHooks {
   /** Fires synchronously AFTER the incarnation identity (nkey + lifecycleUid) is minted but BEFORE
@@ -1047,10 +1047,10 @@ export interface SpawnHooks {
   onTerminalDeferred?: () => void;
 }
 
-/** The spawn-as-action acceptance (P2 item 2 floor): the ALLOCATED agent identity (name + the
- *  addressing triple item-1 addresses by) plus the goal coordinates (goalId = the request id) and
+/** The spawn-as-action acceptance floor: the ALLOCATED agent identity (name + the
+ *  addressing triple) plus the goal coordinates (goalId = the request id) and
  *  the executor coordinate (the manager incarnation its terminal fences on). Carries NO secret
- *  material (pin 7); it names what was actually allocated, never a requested-but-unallocated name. */
+ *  material; it names what was actually allocated, never a requested-but-unallocated name. */
 export interface SpawnAcceptance {
   name: string;
   owner: string;
@@ -1203,13 +1203,13 @@ const STORE_CHALLENGE_TIMEOUT_MS = 5_000;
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
-  /** P2 item 6: the broker ws listener port (loopback) `cotal up` allocated, for the console session
+  /** The broker ws listener port (loopback) `cotal up` allocated, for the console session
    *  client's wsUrl. Undefined ⇒ no console session client (POST /session 503s). */
   private readonly wsPort?: number;
   private readonly name: string;
   private readonly workspaceRoot: string;
   private readonly eventsRequired: boolean;
-  /** P2 item 6: the operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
+  /** The operator-set global live-session ceiling (see {@link ManagerOptions.maxSessions}). */
   private readonly maxSessions?: number;
   /** The ONE secret store for every kind this manager touches (daemon-cred remint + agent kinds).
    *  See {@link ManagerOptions.secretStore}. */
@@ -1277,7 +1277,7 @@ export class Manager {
    *  never reused across restarts) — the endpoint's presence key AND the `managerInstance` audit
    *  coordinate every static activation records. */
   private readonly managerLifecycleUid = mintLifecycleUid();
-  /** The persisted LOGICAL instance id (SPEC 13.6 item 7, P2 item 3): STABLE across restart, so a
+  /** The persisted LOGICAL instance id (SPEC 13.6 item 7): STABLE across restart, so a
    *  restart re-registers the SAME id with an ADVANCED epoch through the §13.1 gate (the successor
    *  fences the predecessor's epoch — the (i) fence bites on a real restart). It is the registration
    *  instanceId, the served-status id, the goal spec's executor.instanceId, the epe route, and the
@@ -1288,19 +1288,19 @@ export class Manager {
    *  {@link provisionEndpointGateOpen} idempotent (no core barrier change) and gives verified
    *  eviction a stable target (the predecessor's connections under this principal). Set in start(). */
   private managerServeIdentity!: Identity;
-  /** P2 item 1 (1a-serve): the manager's v0.4 service-endpoint serve state — the serve handle +
+  /** The manager's v0.4 service-endpoint serve state — the serve handle +
    *  its dedicated connection, the STABLE serve identity (renewals re-mint the same nkey), the
    *  branded serve grant, and the CURRENT credential (the connection's authenticator reads it on
    *  every (re)connect, so a renewal is adopted without re-registration). Absent on open meshes,
-   *  in user mode (the named 1a follow-up), and before registration completes. */
+   *  in user mode, and before registration completes. */
   private serviceServe?: { handle: EpServeHandle; nc: NatsConnection; identity: Identity; grant: EpServeGrant; creds?: string };
   /** #1577: serve connections whose transport is down while the client reconnects them. Such a
    *  connection is open (`isClosed()` is false under unbounded reconnects) yet the broker holds
    *  none of its rails, so the liveness responder must not grade it `bound`. Keyed by the
    *  connection, so a re-dial that swaps in a fresh one starts from its own state. */
   private readonly serveTransportDown = new WeakSet<NatsConnection>();
-  /** P2 item 2 (spawn-as-action): the SELF-MEDIATED goal-writer connection + ActionContext — a
-   *  standing connection DISJOINT from the serve credential (Q2), scoped to exactly this endpoint's
+  /** The spawn-as-action SELF-MEDIATED goal-writer connection + ActionContext — a
+   *  standing connection DISJOINT from the serve credential, scoped to exactly this endpoint's
    *  goal bind/terminal facts + goal-record writes ({@link goalWriterGrants}). Auth mode mints the
    *  `goal-writer` cred; an open mesh uses a bare connection (no credential system to mint from).
    *  `gate` (auth mode) is the own-issuance-gate READER for the own-gate currency belt — the
@@ -1318,29 +1318,29 @@ export class Manager {
    *  live) and stashed here for {@link startGoalWriter} to build the standing connection from. */
   private goalWriterIdentity?: Identity;
   private goalWriterCreds?: string;
-  /** P2 item 6: the manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
+  /** The manager's ONE §13.6 session plane — offer mint + one-use redeem + PTY-bridge
    *  standup for `attach`. The face's establisher and the CLI attach handler both call THIS one
    *  plane; the manager never constructs a second. Undefined until {@link startSessionPlane}. */
   private sessionPlane?: ManagerSessionPlane;
-  /** P2 item 6: the standing session-LEDGER connection + its mutable creds holder (the authenticator
+  /** The standing session-LEDGER connection + its mutable creds holder (the authenticator
    *  presents the refreshed cred on the next reconnect after a half-TTL renewal — the goal-writer
    *  precedent). Auth mode only; an open mesh runs the plane over a bare connection. */
   private sessionLedgerConn?: { nc: NatsConnection; creds?: string };
   /** Renews the session signing key long before its window closes. A key that expires unattended
    *  takes the whole session plane down until the manager is restarted, which kills live sessions. */
   private sessionKeyRenewTimer?: ReturnType<typeof setInterval>;
-  /** P2 item 6: credentialId → the nkey that credential was minted for, for the live per-session
+  /** Maps credentialId → the nkey that credential was minted for, for the live per-session
    *  SERVING credentials. The §13.1 ledger row records the holder principal, and the row is written
    *  at stage time (after the mint), so the two steps need this one hop. Entries are dropped at
    *  revoke; a session that never staged drops its entry when the manager exits. */
   private readonly sessionServingKeys = new Map<string, string>();
-  /** P2 item 6: the STABLE session-LEDGER identity (auth mode) — minted once at registration
+  /** The STABLE session-LEDGER identity (auth mode) — minted once at registration
    *  alongside the serve + goal-writer identities; a renewal re-mints the SAME nkey with a fresh
    *  bounded exp and re-stages its distinct credId into the §13.1 revocation family. The current
    *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
   private sessionLedgerIdentity?: Identity;
   private sessionLedgerCreds?: string;
-  /** P2 item 2: the acceptance replied for each in-flight goalId this incarnation accepted, so an
+  /** The acceptance replied for each in-flight goalId this incarnation accepted, so an
    *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple) without
    *  a second spawn. Durable cross-incarnation reconstruction rides the goal index; here the
    *  live map covers same-incarnation retries, with the committed result fact as the fallback. */
@@ -1350,7 +1350,7 @@ export class Manager {
    *  Spawn-as-action REFUSES to accept until it completes, so the sweep never races a live goal's
    *  acceptance (settling one mid-flight would steal its real terminal). */
   private goalReconcileDone = false;
-  /** P2 item 2 (M4): the live spawn goal ref for each managed agent name, so a despawn MID-GOAL
+  /** The live spawn goal ref for each managed agent name, so a despawn MID-GOAL
    *  drives the cancel path (transition -> cancel terminal). Cleared when the goal terminalizes. */
   private agentGoals = new Map<string, GoalRef>();
   /**
@@ -1570,7 +1570,7 @@ export class Manager {
       // Initial /feed replay for a connecting console: the current peer roster.
       () => [{ event: "roster", data: this.ep?.getRoster() ?? [] }],
       opts.consolePort ?? 0,
-      // P2 item 6: the console's mesh §13.6 session establisher — injected ONLY when a broker ws
+      // The console's mesh §13.6 session establisher — injected ONLY when a broker ws
       // listener exists (cotal up allocated a wsPort). Never a second plane; it drives THE plane.
       opts.wsPort !== undefined ? (name) => this.establishConsoleSession(name) : undefined,
       // Loopback unless the OPERATOR said otherwise. A broker *dial* address is not a manager *bind*
@@ -1797,7 +1797,7 @@ export class Manager {
       throw new Error(
         `space "${this.space}" has user-auth state but no auth.json under ${authDir(this.workspaceRoot)} - the pre-flip manager still needs the space trust bundle; re-run \`cotal up --user-auth\` here`,
       );
-    // P2 item 3 (SPEC 13.6 item 7): the LOGICAL instance id + serve identity PERSIST across restart
+    // SPEC 13.6 item 7: the LOGICAL instance id + serve identity PERSIST across restart
     // (a space-scoped manager identity file under .cotal). A restart re-registers the SAME id with an
     // ADVANCED epoch (the successor fences the predecessor); a fresh mint over a malformed file is
     // refused loud (no-fallbacks - a restart never silently becomes a fresh instance). A second
@@ -1883,7 +1883,7 @@ export class Manager {
     this.ep.on("presence-view", () => this.logSeatMeshTransitions());
     await this.ep.start();
     await this.ep.setActivity(`supervisor (${this.runtimeKind})`);
-    // Per-instance liveness lease (P2 item 3 — the old per-space singleton is DEMOTED per D9). Acquire
+    // Per-instance liveness lease (the old per-space singleton is DEMOTED). Acquire
     // THIS logical instance's own key (atomic CAS create). A DIFFERENT instance (a second manager in a
     // second workspace root) has a distinct id ⇒ a distinct key ⇒ it coexists; the create THROWS only
     // when the SAME instance id is already live (a same-root double-start, or a restart racing the
@@ -1941,7 +1941,7 @@ export class Manager {
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
       void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
-    // P2 item 1 (1d): the manager serves NO ctl tiers - its whole control surface is the v0.4
+    // The manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
     // plane) are separate services and keep their rails.
@@ -1998,18 +1998,18 @@ export class Manager {
     // terminal drains, start() and stop() resume from the same await boundary; start must observe
     // the fence before it can publish a fresh service registration after shutdown.
     if (this.staticReconcileStopping) return;
-    // P2 item 1: register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
-    // and serve its typed command surface on the ep rails - since 1d the ONLY control door, in
+    // Register the manager as an ordinary v0.4 `service` endpoint (SPEC §13.7/§13.9)
+    // and serve its typed command surface on the ep rails - the ONLY control door, in
     // EVERY mesh mode. Static + user meshes mint the scoped executor + endpoint-serve credential;
     // an open mesh runs the same gate/registration ceremony over bare connections and never mints
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
     await this.registerManagerService();
     if (this.staticReconcileStopping) return;
-    // P2 item 2: stand up the standing goal-writer connection for spawn-as-action — AFTER
+    // Stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
-    // P2 item 6: stand up the ONE §13.6 session plane for `attach` — AFTER registration too (it
+    // Stand up the ONE §13.6 session plane for `attach` — AFTER registration too (it
     // rides the serve grant's epoch + the family-staged session-ledger cred), on its own standing
     // connection disjoint from both the serve and goal-writer creds.
     await this.startSessionPlane();
@@ -2383,7 +2383,7 @@ export class Manager {
           }
         }
       }
-      // P2 item 1 (checklist 7): the manager is the `endpoint-serve` renewal owner for its OWN
+      // The manager is the `endpoint-serve` renewal owner for its OWN
       // service credential — re-mint the SAME serve identity with a fresh bounded exp THROUGH the
       // §13.1 mint fence over a scoped one-shot executor (every renewal stages a distinct ledger
       // row and wins the gate CAS; never the standing connection). The serve connection's
@@ -2428,7 +2428,7 @@ export class Manager {
           console.error(`! goal-writer renewal: ${rejectionText(e)} - spawn-as-action stops accepting at this cred's expiry unless the manager restarts`);
         }
       }
-      // P2 item 6: the manager is also the session-ledger's renewal owner — re-mint the SAME nkey
+      // The manager is also the session-ledger's renewal owner — re-mint the SAME nkey
       // with a fresh bounded exp AND re-stage its new credId into the §13.1 family, through the
       // scoped executor. Without this the standing session-ledger connection dies at its TTL and
       // `attach` stops establishing sessions until a restart. The connection's authenticator presents
@@ -3479,7 +3479,7 @@ export class Manager {
     }
   }
 
-  /** The ONE shared control-admission chokepoint (P2 item 1, checklist 3/8) BOTH dispatch doors
+  /** The ONE shared control-admission chokepoint BOTH dispatch doors
    *  run — the v0.3 `ctl` door ({@link handle}) and the v0.4 `ep` service handlers
    *  ({@link serveGated}): the maintenance/resume fence (`beginLifecycle`: a resume-pending or
    *  non-active manager accepts no ordinary control work) and then the F5(a) membership gate
@@ -3516,7 +3516,7 @@ export class Manager {
     }
   }
 
-  /** The ep door's ADMIN flag for a caller (the 1c tier refinement). Static mesh: `true` — the
+  /** The ep door's ADMIN flag for a caller. Static mesh: `true` — the
    *  admin-grade rows (any-mode despawn/attach, the `manager.admin` family, `launch`) are minted
    *  only into operator instruments (§13.2: `any` is operator-policy-mintable; the agent/spawn
    *  rollups never carry them), so REACHING the handler is holding the admin tier, exactly as
@@ -3525,9 +3525,9 @@ export class Manager {
    *  subject-parsed caller tuple to its host-owned authorization callback, with no participant-ledger
    *  fallback. The same fresh authority drives {@link psOwnerFilter}, so a revoked scope demotes the
    *  very next call even on a still-valid bearer. Local ledger read failures authorize nothing;
-   *  remote host-state faults throw and fail the operation closed. NAMED RESIDUAL (critic,
-   *  1c.2b): the static `true` has no serve-time
-   *  re-check — a LEAKED static admin instrument keeps its reach until the credential's bounded
+   *  remote host-state faults throw and fail the operation closed.
+   *  NAMED RESIDUAL: the static `true` has no serve-time re-check — a LEAKED static admin
+   *  instrument keeps its reach until the credential's bounded
    *  TTL (the one-shot 5-minute profile), the same static-revoke≠reconnect-death class ruled
    *  across this campaign; static revocation is the TTL, not a ledger. */
   private async epAdminReach(caller: EpCaller): Promise<boolean> {
@@ -3630,15 +3630,15 @@ export class Manager {
       throw new EpEnvelopeError("permission-denied", `run-answer amend is allowed to ${agent.name} only for an answer recorded under its own name; this step's accepted answer is ${JSON.stringify(accepted.by)}'s`);
   }
 
-  /** The v0.4 typed command table (P2 item 1, slice 1b): every ordinary handler runs the SHARED
+  /** The v0.4 typed command table: every ordinary handler runs the SHARED
    *  admission chokepoint ({@link serveGated}) and then delegates to the SAME op core the ctl
-   *  door dispatches (checklist 8: one core, two thin doors). The resume/preservation family
+   *  door dispatches (one core, two thin doors). The resume/preservation family
    *  deliberately BYPASSES serveGated — exactly as it sits before {@link admitControl} on the ctl
    *  door (those ops must run while `resumeRequired` fences ordinary work) — riding its own state
-   *  fences; its ep gate is the admin-grade `manager.admin` capability grant (the 1b rule: static
+   *  fences; its ep gate is the admin-grade `manager.admin` capability grant (static
    *  admin-class commands are capability-gated + untargeted, never a fabricated ledger mode).
    *
-   *  TIER SEMANTICS on the ep door (the 1c grant-migration table): the tier lives in the CALLER'S
+   *  TIER SEMANTICS on the ep door: the tier lives in the CALLER'S
    *  GRANT, refined per-op exactly as the ctl doors refine their subject tier. Owner-mode
    *  `despawn`/`attach` keep the privileged semantics (`admin=false`, own-domain via
    *  {@link authorizeNamed}) — every spawn-capable agent holds those rows. ANY-mode requests are
@@ -3662,12 +3662,12 @@ export class Manager {
     const callerOf = (ctx: EpServeContext): string => principalKey(ctx.subject.caller.owner, ctx.subject.caller.actor).key;
     // A ctl-core failure reply becomes the §13.3 structured error the serve boundary publishes.
     // The data half of a failure reply (e.g. a degraded resume result) rides the error MESSAGE
-    // only — the item-2 action model gives failures a typed channel.
+    // only — the action model gives failures a typed channel.
     const unwrap = (r: ControlReply): unknown => {
       if (!r.ok) throw new EpEnvelopeError("failed-precondition", r.error ?? "the operation failed");
       return r.data;
     };
-    // The admin-family serve gate (1c.2c, security4's hardening): every `manager.admin`-class
+    // The admin-family serve gate: every `manager.admin`-class
     // command re-checks operator reach AT SERVE TIME - static: true (the mint boundary already
     // gates the rows to instruments); user mesh: the caller's CURRENT ledger scope must still
     // carry `admin` ({@link epAdminReach}'s fresh read), so a revoked scope demotes the very next
@@ -3770,8 +3770,8 @@ export class Manager {
         if ("error" in persona) throw new EpEnvelopeError(persona.error.startsWith("no persona") ? "not-found" : "failed-precondition", persona.error);
         return { agent: persona.agent };
       }),
-      // P2 item 2: `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
-      // progress + terminal off-handler (no ~30s block). The blocking reply path is gone (pin 8).
+      // `spawn` is an ACTION - accept a goal + reply the acceptance floor payload, drive
+      // progress + terminal off-handler (no ~30s block). The blocking reply path is gone.
       // #373: arming the event plane (events: true, or the omission that arms it by default)
       // follows owner-domain reach on a user mesh. Resolve the caller's admin tier once for
       // the residual cross-owner case; opStart decides before connector resolution or grant
@@ -3836,7 +3836,7 @@ export class Manager {
       // deployer bearer would then bypass owner-equality (operator launch) despite the view holding
       // no admin rows. Uniform owner-equality removes that divergence in the least-privilege
       // direction.
-      // P2 item 2 (ruling 3): manifest `launch` is an ACTION through the SAME chokepoint as spawn -
+      // Manifest `launch` is an ACTION through the SAME chokepoint as spawn -
       // the manifest resolve + owner-equality authz run in opLaunch's accept path, then the goal
       // drives progress + terminal. The acceptance floor is the allocated identity + goal coords.
       launch: (ctx) => this.serveGated(ctx, () => this.serveSpawnGoal(ctx, (h) => this.opLaunch(args(ctx), callerOf(ctx), false, h, ctx.subject.route))),
@@ -4449,7 +4449,7 @@ export class Manager {
     this.recordContinuityAtStop(a, "stop");
     if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
     if (a.seatHome) rmSync(a.seatHome, { recursive: true, force: true });
-    // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
+    // End any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
     // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
     this.sessionPlane?.endForTarget(a.name, a.lifecycleUid, "target-despawn");
@@ -5183,7 +5183,7 @@ export class Manager {
     return live;
   }
 
-  /** THE single name-liveness predicate both the hard-pinned collision refuse (M6, P2 item 2) and
+  /** THE single name-liveness predicate both the hard-pinned collision refuse and
    *  uniqueName's numbering consult, so they can never drift: a name is taken if this manager
    *  reserves/manages/retires it OR a roster-live occupant already holds it. Pass a pre-built
    *  {@link liveRosterNames} set when checking many names in one allocation. */
@@ -5999,9 +5999,9 @@ export class Manager {
     // unconditional: a half-wired endpoint without the seam must fail loud here, not silently
     // allocate off a pre-snapshot roster.
     await this.ep.waitForPresenceSnapshot();
-    // M6 (P2 item 2 spawn-as-action): a HARD-PINNED name — an imperative `--name`/identity override
+    // Spawn-as-action: a HARD-PINNED name — an imperative `--name`/identity override
     // or a manifest-declared name (opts.resolved) — that collides with a LIVE/provisioning/reserved
-    // incarnation REFUSES loud at accept, BEFORE any reserve/mint/bind (pin 1), never a silent `_2`
+    // incarnation REFUSES loud at accept, BEFORE any reserve/mint/bind, never a silent `_2`
     // suffix (so an address-by-triple caller's pinned name can't be re-pointed). A PERSONA-DERIVED
     // base name (no pin) keeps uniqueName's collision numbering, so multi-peer `spawn reviewer` twice
     // still yields reviewer + reviewer_2. The alias-reuse gate above is orthogonal and already fired.
@@ -6012,7 +6012,7 @@ export class Manager {
       // this manager's agents/reserved/retiring PLUS the roster-live set) - a hard-pinned name
       // colliding with ANY live incarnation (managed, unmanaged foreground/connector, or another
       // manager's agent) refuses cleanly at accept, rather than minting the collision and black-
-      // holing on the broker/auth refusal (item 3: a pinned name live under another manager MUST refuse).
+      // holing on the broker/auth refusal (a pinned name live under another manager MUST refuse).
       if (this.nameInUse(identityName))
         return { ok: false, error: `the name "${identityName}" is hard-pinned (${opts.resolved ? "manifest-declared" : "--name/identity override"}) but is already held by a live incarnation (managed here, an unmanaged foreground/connector session, or another manager's agent); a pinned same-name collision refuses at accept - pick another name or despawn the existing one` };
       name = identityName;
@@ -6053,11 +6053,11 @@ export class Manager {
       // before anything recorded how to address them, so a crash in that window left a live seat
       // outside every manager and the successor retired the slot over it.
       const custody = this.reserveCustody();
-      // ACCEPT SEAM (P2 item 2 spawn-as-action): the incarnation identity is minted and NOTHING has
+      // ACCEPT SEAM (spawn-as-action): the incarnation identity is minted and NOTHING has
       // been provisioned yet — the action serve path binds the goal + replies the acceptance HERE. A
       // throw (bind conflict / duplicate goalId) aborts the spawn before provisioning: the catch below
       // returns the failure and the finally releases the reserve, so a refused accept leaves zero
-      // footprint (pin 1). The hosted enrollment arm is the exception, below. Blocking callers
+      // footprint. The hosted enrollment arm is the exception, below. Blocking callers
       // (roster boot) pass no hooks and this is a no-op.
       // The ALLOCATED agent's addressing triple (the acceptance floor names what was actually
       // allocated, never the requested-but-unallocated name). Static/open key on DEV_OWNER + the
@@ -6292,7 +6292,7 @@ export class Manager {
         spec.env = { ...spec.env, COTAL_MANAGER_INSTANCE: this.managerInstanceId };
         handle = await this.spawnCustodied(name, spec, cwd, custody);
       }
-      hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
+      hooks?.onLaunched?.(); // The "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
         name,
         role,
@@ -6451,7 +6451,7 @@ export class Manager {
       // OMIT an absent role: the goal terminal commits this data through the strict
       // canonicalJson (undefined never coerces to null, SPEC 13.6), so a role-less spawn would
       // otherwise fail its succeeded terminal. The CLI/connector already render an absent role as
-      // "no role", so dropping the key preserves the reply (P2 item 2, surfaced by readiness:live).
+      // "no role", so dropping the key preserves the reply (surfaced by readiness:live).
       const okData = { name, agent, id: managed.id, mode: handle.kind, lifecycleUid, ...(role !== undefined ? { role } : {}), ...(opts.eventsNotice !== undefined ? { eventsNotice: opts.eventsNotice } : {}) };
       await hooks?.onOutcome?.({ kind: "succeeded", data: okData });
       return { ok: true, data: okData };
@@ -7376,7 +7376,7 @@ export class Manager {
     return this.despawnCore(a, caller, admin, args.graceful !== false);
   }
 
-  /** The ONE named-terminal core both doors share (P2 item 1, checklist 8): the ctl named `stop`
+  /** The ONE named-terminal core both doors share: the ctl named `stop`
    *  and the v0.4 targeted `despawn` are the same terminal — authorize by the shared policy
    *  ({@link authorizeNamed}: own-child / owner-domain on privileged, any on admin), stop, track.
    *  The ep door runs the SAME two pieces separately so a policy denial surfaces as the §13.3
@@ -7394,7 +7394,7 @@ export class Manager {
   private despawnAuthorized(a: ManagedAgent, graceful: boolean, trackNonAdmin: boolean, caller: string): ControlReply {
     this.stopHandle(a, graceful);
     this.trackStoppedHandle(a, trackNonAdmin, { kind: "stopped-requested", requester: caller });
-    void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // M4: cancel a live spawn goal
+    void this.cancelAgentGoal(a.name, graceful ? "graceful" : "terminate"); // Cancel a live spawn goal
     return { ok: true, data: { name: a.name, stopped: true, graceful } };
   }
 
@@ -7543,7 +7543,7 @@ export class Manager {
     }
   }
 
-  /** 1d open-mesh counterpart of {@link withEndpointServeExecutor}: an OPEN mesh has no
+  /** The open-mesh counterpart of {@link withEndpointServeExecutor}: an OPEN mesh has no
    *  credential system, so there is no scoped executor to mint - the same §13.1 gate/records
    *  writes ride a bare one-shot connection (the broker enforces nothing on an open mesh; the
    *  ceremony still produces the real gate, epoch, and registration the serve rails run on). */
@@ -7564,7 +7564,7 @@ export class Manager {
     }
   }
 
-  /** The served manager-level health summary (1a's one read-only command). */
+  /** The served manager-level health summary. */
   private managerStatusData(): ManagerStatus {
     return {
       instanceId: this.managerInstanceId,
@@ -7675,7 +7675,7 @@ export class Manager {
     })().catch(() => this.serveTransportDown.add(nc));
     let handle: EpServeHandle;
     try {
-      // The 1b typed surface + the derived `describe`. The descriptor stays PUBLIC in static
+      // The typed surface + the derived `describe`. The descriptor stays PUBLIC in static
       // mode: the broker grant (who holds each command's request-publish row) is the
       // load-bearing authority tier, and a static single-operator mesh leaks nothing by listing
       // command names; the trusted per-caller `view(caller)` scoping joins the user-mode
@@ -7763,8 +7763,8 @@ export class Manager {
     process.exit(1);
   }
 
-  /** P2 item 1: register the manager as an ordinary v0.4 `service` endpoint and serve its typed
-   *  command surface on the ep rails - since 1d the manager's ONLY control door. On an AUTH mesh
+  /** Register the manager as an ordinary v0.4 `service` endpoint and serve its typed
+   *  command surface on the ep rails - the manager's ONLY control door. On an AUTH mesh
    *  the whole credential path is the SAME one an ordinary endpoint traverses (the enforcement
    *  test that keeps "ordinary" honest): provision the §13.1 issuance gate, drive the
    *  registration BARRIER's gate CAS, then release the serve credential only on the mint FENCE's
@@ -7799,7 +7799,7 @@ export class Manager {
       console.error(`remote manager service endpoint activated: ${MANAGER_ENDPOINT}/${this.managerInstanceId} (epoch ${state.grant.epoch})`);
       return;
     }
-    // The §13.7 contract store is REGISTRATION's dependency, ensured here MODE-NEUTRALLY (1c.2c):
+    // The §13.7 contract store is REGISTRATION's dependency, ensured here MODE-NEUTRALLY:
     // it used to ride the static-only lifecycle reconcile, so a USER-mode manager registered
     // against an absent stream and its artifact publish died no-responders (live-repro'd). A
     // provisioner one-shot creates-or-verifies it (config-B immutability incl. the shadowed-legacy
@@ -7809,7 +7809,7 @@ export class Manager {
       const provCreds = auth ? await mintCreds(auth, newIdentity(), "provisioner") : undefined;
       const provNc = await this.dial({ ...standaloneConnectOpts({ creds: provCreds, /* not yet wired to a recorded transport */ tls: false }), maxReconnectAttempts: 0 });
       try {
-        // P2 item 2: the manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
+        // The manager now WRITES goal facts (EPF) + progress events (EPE), so the §13.12
         // endpoint streams must exist. Nothing provisioned them before spawn-as-action (no endpoint
         // wrote to EPF/EPE), so the manager ensures the full set here over the provisioner (whose
         // STREAM.CREATE now covers them), idempotently - createEndpointStreams is a superset of
@@ -7836,7 +7836,7 @@ export class Manager {
     const authority: ServiceNameAuthority = {
       authorize: (name, owner) => ({ authorized: name === MANAGER_ENDPOINT && owner === DEV_OWNER, revision: 0 }),
     };
-    // The STABLE serve identity (P2 item 3): the PERSISTED serve nkey, reused across restart so the
+    // The STABLE serve identity: the PERSISTED serve nkey, reused across restart so the
     // gate binds the SAME principal (§13.1 serving-principal binding) - provisionEndpointGateOpen
     // stays idempotent and verified eviction has a stable target. Renewals re-mint the same nkey
     // with a fresh bounded exp; a restart re-provisions the same (idempotent) gate + re-registers.
@@ -7847,7 +7847,7 @@ export class Manager {
     // The STABLE goal-writer identity — a SIBLING credential in the same §13.1 family
     // (not the gate's bound serving principal), so the run block can family-stage it.
     this.goalWriterIdentity = siblings.goalWriter;
-    // P2 item 6: the STABLE session-LEDGER identity — another SIBLING in the SAME §13.1 family, so
+    // The STABLE session-LEDGER identity — another SIBLING in the SAME §13.1 family, so
     // the takeover barrier revokes a deposed manager's ledger cred alongside its goal-writer. The
     // per-session serving creds join the same family, each with its own fresh identity.
     this.sessionLedgerIdentity = siblings.sessionLedger;
@@ -7868,17 +7868,17 @@ export class Manager {
     const publishAndProvision = async (
       { authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection },
     ) => {
-      // §13.7 contract-artifact publication (1c): every schema root + its closure manifest, plus
+      // §13.7 contract-artifact publication: every schema root + its closure manifest, plus
       // the cluster document + ITS manifest, land in the EPC store BEFORE the registration that
       // advertises their digests — so a caller can always fetch-verify-compile a registered
-      // digest (the item-5 generic-invoke read path). Create-only + content-addressed: a retry
+      // digest (the generic-invoke read path). Create-only + content-addressed: a retry
       // or a same-artifact republish is an idempotent lost-CAS. The registration itself still
       // verifies against the in-memory copies (the manager is the author).
       const storeCtx = await contractStoreContext(execNc, this.space);
       for (const value of [...managerContractArtifactValues(), artifacts.document, artifacts.manifest])
         await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-      // §13.1 pre-registration (checklist 1): the issuance gate, born open@gen0 bound to the serve
-      // principal — provisioned ONCE, on the FIRST registration. On a RESTART (P2 item 3) the gate
+      // §13.1 pre-registration: the issuance gate, born open@gen0 bound to the serve
+      // principal — provisioned ONCE, on the FIRST registration. On a RESTART the gate
       // already EXISTS (advanced past gen0 by the prior registration), so re-provisioning the gen0
       // row would conflict "foreign content"; the persisted instanceId makes this a TAKEOVER, and
       // registerServiceInstance below freezes + re-registers the EXISTING gate (advancing the epoch
@@ -7891,7 +7891,7 @@ export class Manager {
       { recordsKv, authKv, nc: execNc }: { recordsKv: KV; authKv: KV; nc: NatsConnection },
     ) => {
       await publishAndProvision({ recordsKv, authKv, nc: execNc });
-      // P2 item 3 (slice 3a): on an AUTH mesh a RE-registration (restart of the persisted instanceId)
+      // On an AUTH mesh a RE-registration (restart of the persisted instanceId)
       // must VERIFY-EVICT the superseded serve family BEFORE the epoch advances (§13.1 "old authority
       // dies before new authority is visible"). Inject the SCOPED delivery-admin evictor; the OPEN
       // mesh mints no serve family, so no evictor (the empty-family path never consults it and a
@@ -7922,7 +7922,7 @@ export class Manager {
       // authKv (the fence is live), so its credId lands in `epcred.<e>.<iid>` and the takeover
       // barrier revokes it. Open mesh: no mint (no credential system; the goal-writer conn is bare).
       const goalWriterCreds = auth ? await this.mintAndStageGoalWriter(authKv) : undefined;
-      // P2 item 6: mint + family-stage the session-LEDGER credential HERE too (same executor, same
+      // Mint + family-stage the session-LEDGER credential HERE too (same executor, same
       // fence, same §13.1 family), so takeover revokes a deposed manager's ledger connection. The
       // per-session SERVING credentials are minted later, one per redemption, into the SAME family.
       // Open mesh: no mint (no credential system; the ledger connection stays bare).
@@ -7983,7 +7983,7 @@ export class Manager {
     const auth = this.auth!;
     const identity = this.goalWriterIdentity!;
     // The issuance gate + §13.1 revocation family are keyed by the REGISTRATION instanceId
-    // (the persisted logical id, item 3's split), NOT the per-process lifecycleUid — the barrier
+    // (the persisted logical id), NOT the per-process lifecycleUid — the barrier
     // enumerates `epcred.<e>.<managerInstanceId>`, so the goal-writer must stage into that family.
     const iid = this.managerInstanceId;
     const creds = await mintCreds(auth, identity, "goal-writer", { goalWriter: { endpoint: MANAGER_ENDPOINT } });
@@ -8024,8 +8024,8 @@ export class Manager {
     });
     nc.closed().then((err) => { void this.onGoalWriterConnectionClosed(err ?? undefined); });
     gw.nc = nc;
-    // The (i) fence resolver (SPEC 13.6 P2 item 3): resolve an executing instance's CURRENT gate
-    // epoch. This manager reconciles only ITS OWN goals (security pin 4), so it resolves its own
+    // The (i) fence resolver (SPEC 13.6): resolve an executing instance's CURRENT gate
+    // epoch. This manager reconciles only ITS OWN goals, so it resolves its own
     // registration instanceId to this incarnation's serve-grant epoch; a foreign/retired instance
     // is `null` (no current terminal to surface). A successor incarnation carries an ADVANCED epoch
     // here, so its reads pick the current-epoch subject and the predecessor's terminal is fenced out.
@@ -8076,7 +8076,7 @@ export class Manager {
     console.error("! manager goal-writer could not be re-dialed; leaving the credential to the next renewal pass");
   }
 
-  /** P2 item 2 (spawn-as-action): stand up the standing self-mediated goal-writer connection +
+  /** Spawn-as-action: stand up the standing self-mediated goal-writer connection +
    *  ActionContext. Mode-dual, mirroring {@link registerManagerService}: an AUTH mesh uses the
    *  scoped `goal-writer` credential already minted + family-STAGED inside registration's run block
    *  ({@link mintAndStageGoalWriter} — DISJOINT grant from the serve cred, SHARED §13.1 revocation
@@ -8104,7 +8104,7 @@ export class Manager {
     try { await gw.nc.drain(); } catch { try { gw.nc.close(); } catch { /* best effort */ } }
   }
 
-  /** P2 item 6: mint the standing `session-ledger` credential and STAGE it into this instance's
+  /** Mint the standing `session-ledger` credential and STAGE it into this instance's
    *  §13.1 revocation family (`epcred.<e>.<iid>`), over the passed executor's `authKv` — EXACTLY the
    *  {@link mintAndStageGoalWriter} pattern, under the same open-and-commit fence.
    *
@@ -8117,7 +8117,7 @@ export class Manager {
   private async mintAndStageSessionLedger(authKv: KV): Promise<string> {
     const auth = this.auth!;
     const identity = this.sessionLedgerIdentity!;
-    // Registration instanceId (item 3's persisted logical id), not the per-process lifecycleUid:
+    // Registration instanceId (the persisted logical id), not the per-process lifecycleUid:
     // the barrier enumerates `epcred.<e>.<managerInstanceId>`, so the ledger cred joins that family.
     const iid = this.managerInstanceId;
     const fence = serveIssuanceGateKv(authKv, this.space, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
@@ -8185,7 +8185,7 @@ export class Manager {
     console.error("! manager session-ledger could not be re-dialed; leaving the credential to the next renewal pass");
   }
 
-  /** P2 item 6: stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
+  /** Stand up the ONE §13.6 session plane on its own standing connection. Mode-dual,
    *  mirroring {@link startGoalWriter}: an AUTH mesh presents the scoped `session-ledger` cred
    *  already minted + family-staged inside registration's run block ({@link mintAndStageSessionLedger});
    *  an OPEN mesh uses a bare connection (no credential system to mint from). The connection presents
@@ -8237,10 +8237,10 @@ export class Manager {
     const keyId = rotating.current().keyId;
     this.sessionPlane = new ManagerSessionPlane({
       space: this.space,
-      // The session's serving identity is the persisted REGISTRATION instanceId (item 3), not the
+      // The session's serving identity is the persisted REGISTRATION instanceId, not the
       // per-process lifecycleUid: a restarted manager re-registers the SAME logical instanceId with
       // an ADVANCED epoch, so a client re-attaches by the same instance while the epoch fences the
-      // old incarnation's sessions (item 6's restart-refusal composed with item 3's addressing).
+      // old incarnation's sessions.
       serving: { instanceId: this.managerInstanceId, epoch: serveEpoch },
       // Read through the rotator on EVERY use rather than capturing a key: signing takes the newest
       // generation, and resolution accepts any generation still inside its overlap so an artifact
@@ -8272,7 +8272,7 @@ export class Manager {
   }
 
   /**
-   * The per-session SERVING credential seam (P2 item 6, SPEC 13.6): the manager mints, gate-stages,
+   * The per-session SERVING credential seam (SPEC 13.6): the manager mints, gate-stages,
    * connects and revokes ONE credential per live session, replacing a standing credential that held
    * `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch.
    *
@@ -8428,8 +8428,8 @@ export class Manager {
           await nc.drain().catch(() => nc.close());
         }
       }
-      // Single-manager item 2: EVERY inherited entry belongs to a DEAD predecessor (only one manager
-      // at a time), so all are reconciled. The `iid` field is the hook item-3's multi-instance sweep
+      // Single-manager: EVERY inherited entry belongs to a DEAD predecessor (only one manager
+      // at a time), so all are reconciled. The `iid` field is the hook the multi-instance sweep
       // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
       for (const entry of entries) {
         if (this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(turnKey(entry.ref))) continue; // never settle a goal THIS incarnation drives
@@ -8488,9 +8488,9 @@ export class Manager {
     t.unref?.();
   }
 
-  /** P2 item 2: publish a goal PROGRESS event on the caller-scoped epe subtree, over the SERVE
+  /** Publish a goal PROGRESS event on the caller-scoped epe subtree, over the SERVE
    *  connection (which holds the `epe.<e>.<iid>.<epoch>.>` egress grant; the goal-writer deliberately
-   *  does not). The terminal rides a final event `phase:"terminal"` (Q1 — the caller follows epe to
+   *  does not). The terminal rides a final event `phase:"terminal"` (the caller follows epe to
    *  the terminal; the durable result fact + inspect/ps are the reconcile authority). A dropped event
    *  is non-fatal (the terminal is authoritative in the journal). */
   private emitGoalProgress(ref: GoalRef, epoch: number, event: Record<string, unknown>): void {
@@ -8540,13 +8540,13 @@ export class Manager {
       throw new EpEnvelopeError("expired", `the manager's issuance gate epoch is ${observed.processEpoch} but this goal was accepted under epoch ${epoch}; a superseded incarnation never commits a goal terminal (SPEC 13.6)`);
   }
 
-  /** Serve `spawn`/`launch` as an ACTION (P2 item 2). Authz already ran in {@link serveGated}. The
+  /** Serve `spawn`/`launch` as an ACTION. Authz already ran in {@link serveGated}. The
    *  accept path runs INLINE on the handler ({@link startAgent} with hooks): the goal binds + the
-   *  acceptance replies the moment the identity is minted, BEFORE any provision (pin 1), or on the
+   *  acceptance replies the moment the identity is minted, BEFORE any provision, or on the
    *  hosted enrollment arm once the host has enrolled the agent; progress and the terminal are driven
    *  OFF-handler, so the ~30s readiness wait no longer blocks the reply.
    *  Returns the acceptance floor payload {name, owner, actor, uid, goalId, fingerprint, executor}
-   *  (the ALLOCATED identity). goalId = the request id (env.id, Q3). */
+   *  (the ALLOCATED identity). goalId = the request id (env.id). */
   private async serveSpawnGoal(ctx: EpServeContext, run: (hooks: SpawnHooks) => Promise<ControlReply>): Promise<SpawnAcceptance> {
     if (this.execution === "none") throw new EpEnvelopeError("unimplemented", this.executionRefusal());
     const gw = this.goalWriter;
@@ -8563,7 +8563,7 @@ export class Manager {
     const acceptedAt = Date.now();
 
     // Idempotent same-goalId retry (a client re-send): serve the IDENTICAL acceptance without
-    // re-running the accept path — so a HARD-PINNED retry does not trip the M6 same-name refuse and no
+    // re-running the accept path — so a HARD-PINNED retry does not trip the same-name refuse and no
     // name is re-allocated. Same-incarnation rides the live map; the create-only bindGoal in onAccepted
     // still fences a CONCURRENT same-goalId race (the loser aborts and serves the winner's acceptance).
     const prior = this.goalAcceptances.get(goalId);
@@ -8668,8 +8668,8 @@ export class Manager {
           // No claim needed here: `ownsGoal` is still false, so the commit path refuses this attempt.
           throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted by instance "${idx.existing.iid}"; that instance's acceptance is served and this attempt provisions nothing (SPEC 13.6)`);
         }
-        // Bind AFTER the accept-path checks (M6/capacity/persona) + identity mint, BEFORE any provision:
-        // a create-only CAS per goalId (pin 1 — a refused accept above left zero bind, zero reserve).
+        // Bind AFTER the accept-path checks (name/capacity/persona) + identity mint, BEFORE any provision:
+        // a create-only CAS per goalId (a refused accept above left zero bind, zero reserve).
         const b = await bindGoal(gw.ctx, ref, fingerprint);
         if (!b.bound) {
           if (b.existing.fingerprint !== fingerprint)
@@ -8701,7 +8701,7 @@ export class Manager {
         });
         acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, readinessDeadlineMs: readinessTimeoutMs, executor };
         this.goalAcceptances.set(goalId, acceptance);
-        this.agentGoals.set(name, ref); // M4: a despawn of this name mid-goal drives the cancel path
+        this.agentGoals.set(name, ref); // A despawn of this name mid-goal drives the cancel path
         resolveAccept(acceptance);
         this.emitGoalProgress(ref, epoch, { phase: "handoff" });
       },
@@ -8714,7 +8714,7 @@ export class Manager {
       onTerminalDeferred: () => { terminalEntered = true; },
     });
     bg.then((reply) => {
-      // Refused BEFORE onAccepted (M6 hard-pin collision, capacity, persona-not-found) — no goal bound.
+      // Refused BEFORE onAccepted (hard-pin collision, capacity, persona-not-found) — no goal bound.
       if (acceptance === undefined) {
         const details = reply.details;
         rejectAccept(new EpEnvelopeError("failed-precondition", reply.error ?? "spawn refused at accept", details));
@@ -9280,12 +9280,12 @@ export class Manager {
     this.ensureTurnSweep();
   }
 
-  /** M4 (settle race): a despawn MID-GOAL drives the goal's cancel terminal - transition to
+  /** Settle race: a despawn MID-GOAL drives the goal's cancel terminal - transition to
    *  `cancelling`, then commit the `cancel` cause on the goal-writer connection. First-terminal-fact
    *  wins: if the readiness outcome already committed (succeeded/failed/uncertain) the transition or
    *  the create-only commit loses gracefully and the readiness terminal stands. Fire-and-forget from
    *  despawn (the process teardown is authoritative for the agent; this settles the GOAL honestly).
-   *  Cancel rides the despawn's own authorizeNamed reach (pin 5) - there is no cancel-by-goalId. */
+   *  Cancel rides the despawn's own authorizeNamed reach - there is no cancel-by-goalId. */
   private async cancelAgentGoal(name: string, mode: "graceful" | "terminate"): Promise<void> {
     const gw = this.goalWriter;
     const ref = this.agentGoals.get(name);
@@ -9803,12 +9803,12 @@ export class Manager {
           retiredSlots++;
           continue;
         }
-        // 3b-2 RECONCILE OWNERSHIP (multi-manager-per-space): a manager adjudicates ONLY the non-retired
+        // RECONCILE OWNERSHIP (multi-manager-per-space): a manager adjudicates ONLY the non-retired
         // rows THIS logical instance owns. A SIBLING manager's active/provisioning row is LEFT UNTOUCHED —
         // sweep-terminalizing it would destroy the sibling's live agent (the historical all-agents-kill
-        // hazard, now cross-instance). A legacy row (pre-3b-2, no owner recorded) predates multi-manager,
+        // hazard, now cross-instance). A legacy row (no owner recorded) predates multi-manager,
         // so this manager is its legitimate single-manager-past successor and reconciles it. An orphaned
-        // sibling row is reclaimed only by an explicit operator CAS takeover (ruling 1), never here.
+        // sibling row is reclaimed only by an explicit operator CAS takeover, never here.
         if (ownedBySibling(row, this.managerInstanceId)) {
           preservedForeign++;
           continue;
@@ -10232,7 +10232,7 @@ export class Manager {
     return { name: a.name, bytes };
   }
 
-  /** The post-authorization attach effect (P2 item 6): mint the holder-bound §13.6 offer, redeem it
+  /** The post-authorization attach effect: mint the holder-bound §13.6 offer, redeem it
    *  through the ONE session plane (one-use CAS + presenter-equality), and stand up the PTY bridge —
    *  atomically. The reply is the SIGNED grant (no ws:// URL, non-bearer, never logged); the caller
    *  redeems it over the mesh with a per-session rails-only cred it mints itself. Only streamable
@@ -10272,7 +10272,7 @@ export class Manager {
     return { ok: true, data: { grant, ...(carried ? { resumedFrom: { host: carried, source: a.launch.resumed!.source } } : {}) } };
   }
 
-  /** P2 item 6: the console's mesh §13.6 session establisher (backing `POST /session/<name>` on the
+  /** The console's mesh §13.6 session establisher (backing `POST /session/<name>` on the
    *  loopback face). Drives THE ONE plane — same establishAttach as the ep `attach` command — with
    *  the loopback OPERATOR as holder (same-host trust boundary), then hands the browser everything it
    *  needs to open the caller rail over the broker ws listener: the holder-bound grant, a per-session

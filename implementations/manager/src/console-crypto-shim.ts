@@ -1,5 +1,5 @@
 /**
- * A build-time `node:crypto` shim for the console session bundle (P2 item 6). The core §13.6 rail
+ * A build-time `node:crypto` shim for the console session bundle. The core §13.6 rail
  * (endpoint-session-rail) + terminal-frame codec (session-terminal-frames) transitively import
  * `node:crypto` at MODULE level — via endpoint-envelope → canonical.js (`createHash`) and
  * endpoint-subjects → subjects.js (`randomBytes`) — but they NEVER invoke hashing or uid-minting at

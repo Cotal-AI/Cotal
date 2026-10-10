@@ -459,7 +459,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
     process.exit(1);
   }
   const consolePort = v["console-port"] ? Number(v["console-port"]) : undefined;
-  // P2 item 6: the broker ws listener port (loopback) `cotal up` allocated — the console's mesh
+  // The broker ws listener port (loopback) `cotal up` allocated — the console's mesh
   // session client builds its wsUrl from it. Absent ⇒ no console session client (POST /session 503s).
   const wsPort = v["ws-port"] ? Number(v["ws-port"]) : undefined;
   // Where the console face binds. Absent → loopback, so a bare `cotal supervise` keeps a
@@ -782,7 +782,7 @@ const managerCommands: Command[] = [
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },
-      { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client (P2 item 6)" },
+      { name: "ws-port", type: "string", value: "<n>", description: "broker ws listener port for the console session client" },
       { name: "max-sessions", type: "string", value: "<n>", description: "live-session ceiling (default 64; one session per console pane, so size for agents × panes)" },
       { name: "roster", type: "string", value: "<file>", description: "declarative roster to boot at startup" },
       { name: "launch", type: "string", value: "<spec>", description: "resolved mesh-manifest launch spec (cotal up -f / spawn -f)" },

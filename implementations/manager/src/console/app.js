@@ -1,4 +1,4 @@
-// Cotal console client (P2 item 6): one xterm pane per managed agent, each wired to the manager
+// Cotal console client: one xterm pane per managed agent, each wired to the manager
 // over a mesh §13.6 SESSION — never a 127.0.0.1 terminal socket. Per pane we POST /session/<name>
 // (the loopback face mints a holder-bound offer + a per-session, rails-only caller credential),
 // connect to the broker's WebSocket listener with that credential, open the caller rail with the

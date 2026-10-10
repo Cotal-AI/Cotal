@@ -1,5 +1,5 @@
 /**
- * The serving-side PTY ↔ session-rail bridge (P2 item 6). Given an authenticated §13.6 session
+ * The serving-side PTY ↔ session-rail bridge. Given an authenticated §13.6 session
  * (its verified grant + a connection scoped to the two eps rails) and a live pty {@link
  * AttachSession}, it speaks the {@link TerminalFrame} framing over `openSessionRail(role:"serving")`:
  *
@@ -10,11 +10,11 @@
  *    after the snapshot boundary is buffered within a hard cap and flushed after it, in order;
  *  - duplex byte flow: pty output → bounded, coalesced `b` frames (serving → caller); caller `b`
  *    frames → pty keystrokes; `resize` frames → pty geometry;
- *  - BACKPRESSURE (item-6 pin: never silent loss): the core rail's window is bounded and refuses
+ *  - BACKPRESSURE (never silent loss): the core rail's window is bounded and refuses
  *    (`resource-exhausted`) rather than buffer; on refusal the bridge DROPS the chunk, accumulates
  *    the dropped-byte count, retries an explicit `drop` notice when credit reopens, and the caller
  *    automatically requests a fresh canonical snapshot so a full-screen TUI cannot stay corrupt;
- *  - TERMINATION (item-6 pin 4): every teardown surfaces a DISTINCT end reason (`process-exit` /
+ *  - TERMINATION: every teardown surfaces a DISTINCT end reason (`process-exit` /
  *    `closed` / `expired` / `target-despawn` / `manager-restart`) as an `end` frame before the rail
  *    closes, so the client can tell "the agent exited" from "you were detached" from "the manager
  *    restarted".
@@ -251,7 +251,7 @@ export function serveSessionBridge(opts: ServeSessionBridgeOpts): SessionBridge 
     // A caller frame must NEVER wedge the serving rail. A GARBLED or DEGENERATE frame — e.g. a console
     // fitting before its pane is laid out sends a 0-dim resize, which the §13.6 codec rejects — is
     // dropped, and each pty side effect is best-effort. One bad frame crashing this handler is exactly
-    // the live-e2e "zombie session" class (rail open, no echo, no honest end) that violates pin 4.
+    // the live-e2e "zombie session" class (rail open, no echo, no honest end).
     // But a drop is NEVER a black hole: it is COUNTED + LOGGED so a silent inbound failure (a caller
     // whose frames all decode-reject) is diagnosable, not invisible.
     let p: TerminalFrame;
