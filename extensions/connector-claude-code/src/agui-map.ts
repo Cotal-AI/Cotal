@@ -44,12 +44,12 @@
  * messages; a spawned lane seat has **0 and 67**.
  *
  * **THE RULE: run-opening and attribution are two predicates, not one doing both jobs.** A run
- * opens on `origin.kind ∈ { human, channel }`, ENUMERATED and never inferred; `task-notification`
- * is named as known-and-not-a-turn; absent `origin` gets its own enumeration over `promptSource`.
- * Attribution rides as `cotal.turnSource` — **a field on the run, never a gate on it**. The privacy
- * argument holds: a `RUN_STARTED` attributed to a peer republishes no message body, so a
- * peer-initiated turn can be a turn without re-emitting the peer's content. See
- * {@link ORIGIN_RULE} and {@link ABSENT_ORIGIN_RULE}, which are where this lives.
+ * opens only on an `origin.kind` that {@link ORIGIN_RULE} ENUMERATES as a turn, never on an
+ * inferred one; the same table names the kinds that are known and not a turn, and absent `origin`
+ * gets its own enumeration over `promptSource` in {@link ABSENT_ORIGIN_RULE}. Attribution rides as
+ * `cotal.turnSource` — **a field on the run, never a gate on it**. The privacy argument holds: a
+ * `RUN_STARTED` attributed to a peer republishes no message body, so a peer-initiated turn can be a
+ * turn without re-emitting the peer's content. The values live only in those two tables.
  *
  * On the 5938-record session the real mapper opens **67 runs** and emits **5217 events**.
  *
@@ -113,8 +113,8 @@ export interface ClaudeEntry {
   origin?: { kind?: string };
   /**
    * Present on every submitted prompt and absent on tool results. **Not the run-opening gate** —
-   * it is `"system"` on task-notifications and caveats too. Read ONLY where `origin` is absent, and
-   * only for the value `"sdk"`. See `ABSENT_ORIGIN_RULE`.
+   * it is `"system"` on task-notifications and caveats too. Read ONLY where `origin` is absent,
+   * against the values `ABSENT_ORIGIN_RULE` enumerates.
    */
   promptSource?: string;
   /** The harness's own compaction record. A string-content `user` entry that is not a turn. */
@@ -381,9 +381,8 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       //
       // A turn-initiating input opens a run whatever authored it: an external observer asks what
       // work this agent did and what triggered it, not whether a person typed it. So `"channel"` —
-      // a peer/mesh delivery — opens a run exactly as `"human"` does. That is the only change from
-      // §3.1, whose table sent every non-human origin to nothing and therefore emitted NOTHING on an
-      // agent-driven session.
+      // a peer/mesh delivery — opens a run exactly as `"human"` does, where §3.1's table sent every
+      // non-human origin to nothing and therefore emitted NOTHING on an agent-driven session.
       //
       // **KEYED ON `origin.kind`, NOT ON `promptSource`, and keying on `promptSource` is a category
       // error.** `promptSource` is present on every submitted prompt in the captures available,
