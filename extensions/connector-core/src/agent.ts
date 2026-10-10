@@ -209,14 +209,27 @@ export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
   return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
 }
 
+/** How many pending messages one session buffers before the overflow valve in
+ *  {@link MeshAgent.buffer} evicts. */
 const MAX_INBOX = 200;
+/** How many receive keys {@link MeshAgent.holdInFlight} protects at once. The overflow valve never
+ *  evicts a held entry, so this ceiling also bounds the inbox while holds are open, which is why it
+ *  is derived from {@link MAX_INBOX}. It sits above the inbox because a frame keeps its holds until
+ *  its own verdict, even on entries an overlapping frame has already committed. */
+const MAX_IN_FLIGHT = MAX_INBOX * 2;
 /** How many future-stamped recall ids one session will remember having handed over. See
  *  {@link MeshAgent.recallAheadRoom}. */
 const MAX_AHEAD = 256;
+/** How many overflow-evicted ambient messages {@link MeshAgent.evictedClassifications} remembers
+ *  the class of. */
 const CLASSIFICATION_CAP = 4096;
+/** How many ids one focus episode keeps out of recall in {@link MeshAgent.focusExcludedIds}, and,
+ *  bounded separately, how many id-less copies it counts in {@link MeshAgent.focusIdlessEntries}. */
 const FOCUS_EXCLUSION_CAP = 4096;
 /** #662: history reads one channel's recall makes while an id-less copy keeps arriving mid-read. */
 const IDLESS_READS = 3;
+/** How many ids each of {@link MeshAgent.protectedPullOnlyIds} and
+ *  {@link MeshAgent.protectedDropIds} holds. */
 const PROTECTED_DISPOSITION_CAP = 4096;
 /** How many unanswered directed messages, asked questions, and DM or anycast senders one session
  *  remembers for reply correlation. */
@@ -224,6 +237,10 @@ const MAX_CORRELATIONS = 1024;
 /** Repeated async NATS status errors can arrive once per ordered-consumer retry. They describe one
  * fault, not one hundred useful facts; keep the first visible and summarize at most twice a minute. */
 const ENDPOINT_ERROR_LOG_WINDOW_MS = 30_000;
+/** How many distinct endpoint notices {@link MeshAgent.logEndpointNotice} remembers for repeat
+ *  suppression, oldest forgotten first, so a server producing novel error text on every request
+ *  cannot grow the map. */
+const MAX_ENDPOINT_NOTICES = 16;
 /** Cadence of the turn-pending pull while connected. The relay is PULL-shaped by design (the
  *  manager holds no DM machinery and a pushed relay could not authenticate its sender), so this
  *  poll is the intake's whole latency: a fresh turn waits at most one interval plus one wake.
@@ -485,7 +502,8 @@ export class MeshAgent extends EventEmitter {
    *  to a stream sequence and hands back only the copies no settled copy is bound to. Replaced, never
    *  cleared, per episode, so a hold from an earlier episode cannot un-count a later one. */
   private focusIdless = new Map<string, IdlessTally>();
-  /** Unbound copies plus bound sequences in {@link focusIdless}, bounded like the exclusion list. */
+  /** Unbound copies plus bound sequences in {@link focusIdless}, bounded by
+   *  {@link FOCUS_EXCLUSION_CAP}. */
   private focusIdlessEntries = 0;
   /** Bumped as each channel's recall read starts: a copy settled before a read that the read could
    *  not bind is behind the focus frontier or out of retention, and no later read will see it. */
@@ -1118,8 +1136,8 @@ export class MeshAgent extends EventEmitter {
         // A held entry is never sacrificed: the host's verdict commits through its ack handle, and its
         // renewal is what keeps the broker from redelivering it meanwhile. Evicting one would drop
         // both, handing a long turn's role request to a second worker while the first still runs it
-        // and leaving the first one's completion nothing to ack. Holds are capped at twice this bound
-        // ({@link holdInFlight}), so the buffer stays bounded.
+        // and leaving the first one's completion nothing to ack. Holds are capped at
+        // {@link MAX_IN_FLIGHT}, so the buffer stays bounded.
         const evictable = (p: Pending) => !this.inFlightIds.has(p.item.recvKey);
         let index = this.inbox.findIndex((p) => p.pullOnly && evictable(p));
         // Channel traffic before anything addressed to us specifically, forged mentions included.
@@ -1341,12 +1359,12 @@ export class MeshAgent extends EventEmitter {
    *  still delivering, and an arrival between the two verdicts would ack one — the very loss this
    *  guard exists to stop, reached through the concurrency the per-frame keying deliberately allows.
    *
-   *  **All or nothing, and it says which.** At the ceiling this refuses the whole batch and returns
-   *  `false`; the caller must then NOT surface it. Protecting only part of a batch, or protecting
-   *  none while the caller surfaces anyway, silently reopens exactly the loss this guard exists to
-   *  close — the unprotected ids sit in the inbox for the whole handoff window with the overflow
-   *  valve free to ack them. Declining to surface costs a deferral: the messages stay buffered and go
-   *  out on a later frame, once a verdict releases capacity. */
+   *  **All or nothing, and it says which.** At the {@link MAX_IN_FLIGHT} ceiling this refuses the
+   *  whole batch and returns `false`; the caller must then NOT surface it. Protecting only part of a
+   *  batch, or protecting none while the caller surfaces anyway, silently reopens exactly the loss
+   *  this guard exists to close — the unprotected ids sit in the inbox for the whole handoff window
+   *  with the overflow valve free to ack them. Declining to surface costs a deferral: the messages
+   *  stay buffered and go out on a later frame, once a verdict releases capacity. */
   holdInFlight(ids: readonly string[]): boolean {
     // #624: the keys here are RECEIVE keys. An id-less delivery's wire id is "", so raw-id keying
     // merged the counts of DISTINCT empty-id deliveries, and the eviction valve's in-flight check
@@ -1355,7 +1373,7 @@ export class MeshAgent extends EventEmitter {
     // per delivery, so each is protected exactly for the frames holding it.
     let fresh = 0;
     for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
-    if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;
+    if (this.inFlightIds.size + fresh > MAX_IN_FLIGHT) return false;
     for (const id of ids) {
       this.inFlightIds.set(id, (this.inFlightIds.get(id) ?? 0) + 1);
       this.keepOwned(id);
@@ -2912,8 +2930,7 @@ export class MeshAgent extends EventEmitter {
     }
     const suffix = prior?.suppressed ? ` (${prior.suppressed} repeats suppressed)` : "";
     this.endpointNoticeLog.set(fingerprint, { lastLoggedAt: now, suppressed: 0 });
-    // Bound the map even for a server producing novel error text on every request.
-    if (this.endpointNoticeLog.size > 16) this.endpointNoticeLog.delete(this.endpointNoticeLog.keys().next().value!);
+    if (this.endpointNoticeLog.size > MAX_ENDPOINT_NOTICES) this.endpointNoticeLog.delete(this.endpointNoticeLog.keys().next().value!);
     this.log(`endpoint ${kind}: ${error.message}${suffix}`);
   }
 
