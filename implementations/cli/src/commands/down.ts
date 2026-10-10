@@ -29,6 +29,7 @@ import {
   DELIVERY_PIDFILE,
   MANAGER_DELIVERY_AWARE_MARKER,
   MANAGER_PIDFILE,
+  WEB_PIDFILE,
   type LocalProcess,
   type LocalProcessContext,
   MAINTENANCE_RESUME_DOCUMENT_VERSION,
@@ -847,7 +848,7 @@ export function pidfileTargets(space: string, root: string): Array<[file: string
     ...every(MANAGER_DELIVERY_AWARE_MARKER, "manager delivery-aware marker"),
     ...every(DELIVERY_PIDFILE, "delivery daemon"),
     ...every("auth-service.{space}.pid", "user-auth service"),
-    ...every("web.pid", "web dashboard"),
+    ...every(WEB_PIDFILE, "web dashboard"),
     ...every("nats.pid", "nats-server"),
   ];
 }

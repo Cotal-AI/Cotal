@@ -31,6 +31,7 @@ import {
   removePidPair,
   userViewAuth,
   userViewAuthOrExit,
+  WEB_PIDFILE,
   WEB_READINESS_HEADER,
   WEB_SESSION_FILE,
   writeIdentityPin,
@@ -213,7 +214,7 @@ export const webProcess: LocalProcess = {
   name: "web",
   label: "web dashboard",
   order: 40,
-  pidFile: "web.pid",
+  pidFile: WEB_PIDFILE,
   // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.

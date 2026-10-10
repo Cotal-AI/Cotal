@@ -23,7 +23,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, preflightTarget, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, type LocalProcess, type LocalProcessContext, type MeshTarget } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, extensionVersions } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -1118,7 +1118,7 @@ async function deliveryHealth(target: MeshTarget, context: LocalProcessContext, 
 /** The web dashboard owns the HTTP listener and identifies itself through `/api/meta`, including
  * the serving PID.  A raw TCP success is insufficient: another program could own its port. */
 async function webHealth(context: LocalProcessContext): Promise<ComponentHealth> {
-  const record = processRecord("web.pid", context);
+  const record = processRecord(WEB_PIDFILE, context);
   const facts = pidFacts(record);
   const stopped = processVerdict(record);
   if (stopped) {
