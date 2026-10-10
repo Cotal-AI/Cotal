@@ -7,7 +7,8 @@ import type { FocusId } from "../mesh.js";
 
 /** NEEDS-YOU rail: agents that are waiting / blocked, oldest-first (already sorted by the model).
  *  Mirrors the web's amber WAITING cards. A selection cursor (↑/↓) highlights one; `Enter` drills
- *  into the agent's existing detail overlay. Each card is two rows: header + activity. */
+ *  into the agent's existing detail overlay. Each card is three rows: header, status, activity. The
+ *  status and its dated facts get a row of their own so a long name never truncates them away. */
 export function NeedsYou({
   waiting,
   boxWidth,
@@ -39,7 +40,7 @@ export function NeedsYou({
     { isActive: isFocused && !blocked },
   );
 
-  const capacity = Math.max(1, Math.floor((boxHeight - 3) / 2)); // border (2) + title (1), 2 rows/card
+  const capacity = Math.max(1, Math.floor((boxHeight - 3) / 3)); // border (2) + title (1), 3 rows/card
   let start = 0;
   if (waiting.length > capacity)
     start = Math.min(Math.max(0, selClamped - Math.floor(capacity / 2)), waiting.length - capacity);
@@ -71,16 +72,20 @@ export function NeedsYou({
             <Box key={p.card.id} flexDirection="column">
               {selected ? (
                 <Text inverse bold color="cyan" wrap="truncate-end">
-                  {STATUS.waiting.dot + " " + label + condition + ages + "  seen " + ago(p.ts)}
+                  {STATUS.waiting.dot + " " + label + "  seen " + ago(p.ts)}
                 </Text>
               ) : (
                 <Text wrap="truncate-end">
                   <Text color={STATUS.waiting.color}>{STATUS.waiting.dot + " "}</Text>
                   <Text color={agentColor(p.card.name)}>{label}</Text>
-                  {condition ? <Text>{condition}</Text> : null}
-                  <Text dimColor>{ages + "  seen " + ago(p.ts)}</Text>
+                  <Text dimColor>{"  seen " + ago(p.ts)}</Text>
                 </Text>
               )}
+              <Text wrap="truncate-end">
+                <Text color={STATUS.waiting.color}>{"  " + STATUS.waiting.word}</Text>
+                {condition ? <Text>{condition}</Text> : null}
+                {ages ? <Text dimColor>{ages}</Text> : null}
+              </Text>
               <Text dimColor wrap="truncate-end">
                 {"  " + (p.activity ?? "waiting for input") + activityAge(p)}
               </Text>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
@@ -25,34 +25,59 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
   const age = progressText(p);
   const { condition, ages } = presenceFacts(p);
   const act = p.activity ? "  " + p.activity + activityAge(p) : "";
+  let head: ReactNode, status: ReactNode, tail: ReactNode;
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {
     const kind = wide ? (isAgent ? "  " + s.word : "  endpoint") : "";
-    return (
-      <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "") + kind + condition + ages + act + "  " + age}
-      </Text>
+    head = (isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "");
+    status = kind + condition + ages;
+    tail = act + "  " + age;
+  } else {
+    head = (
+      <>
+        <Text color={isAgent ? s.color : "gray"}>{isAgent ? s.dot : "⚙"} </Text>
+        <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
+          {peerLabel(p.card)}
+        </Text>
+        {tag ? <Text dimColor>{" " + tag}</Text> : null}
+      </>
+    );
+    status = (
+      <>
+        {wide ? (
+          isAgent ? (
+            <Text color={s.color}>{"  " + s.word}</Text>
+          ) : (
+            <Text dimColor>{"  endpoint"}</Text>
+          )
+        ) : null}
+        {condition ? <Text>{condition}</Text> : null}
+        {ages ? <Text dimColor>{ages}</Text> : null}
+      </>
+    );
+    tail = (
+      <>
+        {act ? <Text dimColor>{act}</Text> : null}
+        <Text dimColor>{"  " + age}</Text>
+      </>
     );
   }
-  return (
-    <Text wrap="truncate-end">
-      <Text color={isAgent ? s.color : "gray"}>{isAgent ? s.dot : "⚙"} </Text>
-      <Text color={isAgent ? agentColor(p.card.name) : undefined} dimColor={!isAgent}>
-        {peerLabel(p.card)}
+  const line = (parts: ReactNode) =>
+    selected ? (
+      <Text inverse bold color="cyan" wrap="truncate-end">
+        {parts}
       </Text>
-      {tag ? <Text dimColor>{" " + tag}</Text> : null}
-      {wide ? (
-        isAgent ? (
-          <Text color={s.color}>{"  " + s.word}</Text>
-        ) : (
-          <Text dimColor>{"  endpoint"}</Text>
-        )
-      ) : null}
-      {condition ? <Text>{condition}</Text> : null}
-      {ages ? <Text dimColor>{ages}</Text> : null}
-      {act ? <Text dimColor>{act}</Text> : null}
-      <Text dimColor>{"  " + age}</Text>
-    </Text>
+    ) : (
+      <Text wrap="truncate-end">{parts}</Text>
+    );
+  // Wide, the roster is a capped side column, so the status and its dated facts take a second row
+  // rather than pushing the activity off the first.
+  if (!wide) return line(<>{head}{status}{tail}</>);
+  return (
+    <Box flexDirection="column">
+      {line(<>{head}{tail}</>)}
+      {line(status)}
+    </Box>
   );
 }
 
@@ -119,7 +144,7 @@ export function Roster({
     { isActive: isFocused && !blocked },
   );
 
-  const capacity = Math.max(1, boxHeight - 3); // border (2) + title (1)
+  const capacity = Math.max(1, Math.floor((boxHeight - 3) / (wide ? 2 : 1))); // border (2) + title (1), 2 rows/seat when wide
   let start = 0;
   if (list.length > capacity) {
     start = Math.min(Math.max(0, selClamped - Math.floor(capacity / 2)), list.length - capacity);
