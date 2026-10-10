@@ -54,6 +54,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  requestGoalCancel,
   mintCheckpoint,
   expireCheckpoint,
   goalRefOf,
@@ -194,11 +195,21 @@ const DESPAWN_OUTPUT = {
 // it runs no seat process, so every seat whose presence lapsed is one it no longer holds.
 const INSPECT_INPUT = { type: "object", additionalProperties: false, required: ["name"], properties: { name: { type: "string", minLength: 1 } } } as const;
 const INSPECT_OUTPUT = { type: "object" } as const;
+// A cancelled turn withdraws its relay through the manager's reserved cancel (SPEC 13.6 item 4).
+const CANCEL_INPUT = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
+} as const;
+const CANCEL_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
   inspect: { input: cc(INSPECT_INPUT), output: cc(INSPECT_OUTPUT) },
+  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
 const DOCUMENT = {
   urn: "ai.cotal.test.turnmgr", revision: 1, attributes: [], events: [],
@@ -207,6 +218,7 @@ const DOCUMENT = {
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
     { name: "inspect", class: "ephemeral" as const, targeted: false, capability: "manager.read", inputDigest: COMPILED.inspect.input.closureDigest, outputDigest: COMPILED.inspect.output.closureDigest },
+    { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest },
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -218,7 +230,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, INSPECT_INPUT, INSPECT_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -395,6 +407,13 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   return acceptance;
 };
 
+const cancelHandler = async (ctx: EpServeContext): Promise<unknown> => {
+  const { goalId, mode = "graceful" } = (ctx.request.args ?? {}) as { goalId: string; mode?: "graceful" | "terminate" };
+  await requestGoalCancel(goalCtx, { request: ctx.subject, goalId, mode });
+  const { fact } = await commitGoalResult(goalCtx, { ref: goalRefOf(ctx.subject, goalId), now: Date.now(), cause: "cancel", committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH } });
+  return { goalId, state: fact.state };
+};
+
 const defs: EpCommandDef[] = [
   { command: "spawn", contract: COMPILED.spawn, handler: spawnHandler },
   { command: "turn", contract: COMPILED.turn, handler: turnHandler },
@@ -405,6 +424,7 @@ const defs: EpCommandDef[] = [
   { command: "inspect", contract: COMPILED.inspect, handler: (ctx: EpServeContext) => {
     throw new EpEnvelopeError("not-found", `no agent "${String((ctx.request.args as { name?: unknown }).name)}"`);
   } },
+  { command: "cancel", contract: COMPILED.cancel, handler: cancelHandler },
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   resolveTarget: (t) => mappings.get(`${t.owner}.${t.actor}`),
