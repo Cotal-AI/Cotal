@@ -923,9 +923,10 @@ while the PID in its `web.pid` is alive. A `web.pid` or `web.session` that exist
 is named on the row with the error. Otherwise it reads `down`, or `not installed` without the web
 extension. Status and the `cotal setup` card count the web extension as installed only when a
 package in the extensions manifest provides `web` and that package is on disk. A web package record
-that cannot be read is named on the `Web extension` row and on the card's web row, after the
-dashboard's address when it is listening and beside an unreadable `web.pid` or `web.session`. The
-`Web process` row still prints, and reads `down` unless the dashboard is listening.
+that cannot be read, is not JSON or has no `version` is named on the `Web extension` row and on the
+card's web row, after the dashboard's address when it is listening and beside an unreadable
+`web.pid` or `web.session`. The `Web process` row still prints, and reads `down` unless the
+dashboard is listening.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
@@ -2358,6 +2359,9 @@ installed) and `provides` (the `kind:name` refs the table shows). No header or f
 and an empty prefix prints nothing and exits 0. The table is presentation and is not a stable parsing
 target. The other `ext` subcommands refuse `--json`.
 
+An installed package whose directory is gone is reported as not installed. One whose `package.json`
+is not JSON or has no `version` is reported as corrupt, naming the package and its `package.json`.
+
 Removing an extension that owns a running local process is refused with the mesh root and its
 `cotal down <component>` command; stop it first so uninstalling the package never strands a process
 whose lifecycle provider is gone.
@@ -2388,7 +2392,7 @@ so the command that triggered the seed keeps stdout to itself:
 | Flag | Meaning |
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
-| `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). |
+| `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). Also reinstalls a seeded built-in whose entry file is gone or whose `package.json` is not JSON or has no `version`. |
 | `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 

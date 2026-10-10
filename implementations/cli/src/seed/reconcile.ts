@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
+  CorruptExtensionPackageError,
   SEEDED_EXTENSIONS,
   connectorMetadataStale,
   extensionPackageDir,
@@ -349,7 +350,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
       // survive while a required file is gone). An operator-managed official entry (no seeded marker)
       // is never auto-refreshed on upgrade — only --force may replace it.
       const isSeeded = entry.source === "seeded";
-      const torn = mode === "repair" && isSeeded && (repairAllSeeded || !isIntact(name));
+      const torn = mode === "repair" && isSeeded && (repairAllSeeded || installState(name) !== "intact");
       const metadataStale = isSeeded && connectorMetadataStale(entry);
       const refresh = mode === "force" || torn || metadataStale || (isSeeded && isStrictlyNewer(generation, stampGen));
       if (refresh) {
@@ -357,7 +358,7 @@ async function runUnderLocks(mode: Mode, generation: string, nonce: string): Pro
         verifyInstalled(name, generation);
         refreshed.push(name);
       }
-    } else if (manifestRebuilt && installedExtensionVersion(SEEDED_EXTENSIONS[name].pkg)) {
+    } else if (manifestRebuilt && installState(name) !== "absent") {
       // The manifest was corrupt and quarantined, but this connector is STILL on disk: its entry was
       // lost with the manifest, not removed. Re-seed it to rebuild the record (a quarantined manifest
       // carries no reliable "removed" fact — only on-disk presence can distinguish the two).
@@ -579,11 +580,18 @@ function mainEntryPresent(pkg: string): boolean {
   return existsSync(join(dir, main));
 }
 
-/** A seeded built-in is fully intact: recorded on disk (package.json + version) AND its main entry
- *  file present. A partial tear (main gone, package.json kept) is NOT intact. */
-function isIntact(name: string): boolean {
+/** A seeded built-in's install on disk. It is intact only with a package.json carrying a version AND
+ *  its main entry file present; a partial tear (main gone, package.json kept) or a corrupt package.json
+ *  is torn, which a maintenance run reinstalls rather than stopping on. */
+function installState(name: string): "absent" | "torn" | "intact" {
   const pkg = SEEDED_EXTENSIONS[name].pkg;
-  return installedExtensionVersion(pkg) !== undefined && mainEntryPresent(pkg);
+  try {
+    if (installedExtensionVersion(pkg) === undefined) return "absent";
+  } catch (e) {
+    if (e instanceof CorruptExtensionPackageError) return "torn";
+    throw e;
+  }
+  return mainEntryPresent(pkg) ? "intact" : "torn";
 }
 
 function installedEntry(name: string): InstalledExtension | undefined {
