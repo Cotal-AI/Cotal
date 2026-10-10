@@ -212,7 +212,7 @@ export const Caption: React.FC<{
 // --- layout + loop helpers -----------------------------------------------------
 
 // Scale a fixed (w x h) design group to fit the composition and center it.
-// Used by HeaderModesReel to drop the 860x620 Mode scenes into a square frame.
+// Used by HeaderModesReel to drop the Mode scenes into a square frame.
 export const ScaleToFit: React.FC<{
   w: number;
   h: number;
