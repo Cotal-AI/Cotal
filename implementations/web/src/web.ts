@@ -1321,6 +1321,30 @@ export function detachedArgs(raw: readonly string[], space: string, server: stri
   return [...kept, "--space", space, "--server", server, "--no-open"];
 }
 
+const PROBE_TEXT_MAX_BYTES = 300;
+
+// Whatever answers the bound port controls these fields, so a mismatched /api/meta body is summarized,
+// never echoed whole: a string is cut to `max` characters, a number or boolean is shown only when short,
+// and anything else (object, array, null, undefined) is named by its type.
+function summarizeProbeField(value: unknown, max: number): string {
+  if (typeof value === "string") {
+    return JSON.stringify(value.length > max ? `${value.slice(0, max)}...` : value);
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    const text = String(value);
+    return text.length <= max ? text : `<${typeof value}>`;
+  }
+  return value === undefined ? "<missing>" : value === null ? "null" : `<${Array.isArray(value) ? "array" : typeof value}>`;
+}
+
+// Bounds the whole last-probe text, whatever its parts, to a few hundred bytes of UTF-8. The cut
+// leaves room for the three-byte marker, because the documented cap counts the marker too.
+function capProbeText(text: string): string {
+  const buf = Buffer.from(text, "utf8");
+  if (buf.length <= PROBE_TEXT_MAX_BYTES) return text;
+  return `${buf.subarray(0, PROBE_TEXT_MAX_BYTES - 3).toString("utf8").replace(/\uFFFD+$/, "")}...`;
+}
+
 export async function waitForDetachedWeb(
   child: ChildProcess,
   opts: { pidPath: string; sessionPath: string; url: string; space: string; timeoutMs: number },
@@ -1336,6 +1360,7 @@ export async function waitForDetachedWeb(
     throw new Error(`web dashboard failed to start${error ? `: ${error.message}` : " (no process id)"}`);
   }
   const deadline = Date.now() + opts.timeoutMs;
+  let lastProbe: string | undefined;
   while (Date.now() < deadline) {
     if (spawnError) throw new Error(`web dashboard failed to start: ${spawnError.message}`);
     if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
@@ -1346,12 +1371,23 @@ export async function waitForDetachedWeb(
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
-      const meta = await fetch(`${opts.url}api/meta`, {
-        signal: AbortSignal.timeout(500),
-        headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
-      })
-        .then(async (res) => res.ok ? await res.json() as { space?: unknown; pid?: unknown } : undefined)
-        .catch(() => undefined);
+      const probeUrl = `${opts.url}api/meta`;
+      let meta: { space?: unknown; pid?: unknown } | undefined;
+      try {
+        const res = await fetch(probeUrl, {
+          signal: AbortSignal.timeout(500),
+          headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
+        });
+        if (res.ok) {
+          meta = await res.json() as { space?: unknown; pid?: unknown };
+          lastProbe = `${probeUrl}: answered space ${summarizeProbeField(meta?.space, 40)}, pid ${summarizeProbeField(meta?.pid, 20)}`;
+        } else {
+          lastProbe = `${probeUrl}: HTTP ${res.status}`;
+        }
+      } catch (e) {
+        const cause = e instanceof Error ? (e.cause as { code?: unknown } | undefined)?.code : undefined;
+        lastProbe = `${probeUrl}: ${typeof cause === "string" ? `${cause}: ` : ""}${e instanceof Error ? e.message : String(e)}`;
+      }
       if (session && meta?.space === opts.space && meta.pid === pid) {
         if (child.exitCode !== null || child.signalCode !== null || probeLiveness(pid) === "dead")
           throw new Error(`web dashboard exited during readiness (pid ${pid})`);
@@ -1360,7 +1396,7 @@ export async function waitForDetachedWeb(
     }
     await sleep(100);
   }
-  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})`);
+  throw new Error(`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : ""}`);
 }
 
 export async function terminateDetachedWeb(child: ChildProcess, pidPath: string): Promise<void> {
