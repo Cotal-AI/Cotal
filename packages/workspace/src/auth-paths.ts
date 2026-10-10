@@ -350,7 +350,7 @@ export function divergentCwdAnchor(resolvedRoot: string, space: string, cwd?: st
 //
 // A nats-server trusts exactly one operator and one system account, so broker trust is per-BROKER
 // and has exactly one owner on disk (`auth/broker.json`). Each space owns only its own data account
-// (`auth/account.<key>.json`, a flat file beside `broker.json`, keyed by {@link accountFileKey})
+// (`auth/account.<key>.json`, a flat file beside `broker.json`, named by {@link spaceAccountFile})
 // and REFERENCES broker trust rather than embedding it. Embedding it per space is the bug this split
 // exists to prevent: a rotation done through space A would update A's embedded copy while space B
 // kept loading a stale one and resurrected dead broker trust.
@@ -573,11 +573,10 @@ export function retireManagerInstanceIdentity(
   return { outcome: "removed" };
 }
 
-/** The account file's key IS {@link spaceKey} — one injective, case-safe encoder for every
- *  tenant-keyed namespace. The space's real name rides in the document, never inferred from the
- *  key alone. */
-function accountFileKey(space: string): string {
-  return spaceKey(space);
+/** One space's account record filename. The FS path and the store key are both built on it,
+ *  because the local store resolves a key to that path byte for byte. */
+function spaceAccountFile(space: string): string {
+  return `${SPACE_ACCOUNT_PREFIX}${spaceKey(space)}${SPACE_ACCOUNT_SUFFIX}`;
 }
 
 /**
@@ -605,12 +604,16 @@ export interface SeatWriterGeneration {
  *  earlier claim and a fresh host would win a create that proves nothing. `<seat>.<generation>`
  *  makes "claim generation N" the atomic act. */
 function seatGenerationFile(root: string, space: string, name: string, generation: number): string {
-  const key = Buffer.from(`${space}\u0000${name}`, "utf8").toString("hex");
-  return join(authDir(root), `seat-generation.${key}.${generation}.json`);
+  return join(authDir(root), `${seatGenerationPrefix(space, name)}${generation}.json`);
 }
 
+/** Both parts are {@link spaceKey}, so the seat key inherits every rule the space key has. They are
+ *  joined by a NUL byte, so a NUL inside either part would let two different (space, seat) pairs
+ *  spell one key and one seat's claim refuse the other's. */
 function seatGenerationPrefix(space: string, name: string): string {
-  return `seat-generation.${Buffer.from(`${space}\u0000${name}`, "utf8").toString("hex")}.`;
+  if (space.includes("\u0000") || name.includes("\u0000"))
+    throw new Error(`seat ${JSON.stringify(name)} in space ${JSON.stringify(space)} cannot hold a writer generation: NUL separates the space from the seat in its key`);
+  return `seat-generation.${spaceKey(space)}00${spaceKey(name)}.`;
 }
 
 /**
@@ -662,9 +665,9 @@ export function claimSeatWriterGenerations(
  *  A present-but-malformed record fails LOUD, for the reason {@link loadManagerInstanceIdentity}
  *  gives: replacing it is how custody silently returns to a host that lost it. */
 export function loadSeatWriterGeneration(root: string, space: string, name: string): SeatWriterGeneration | undefined {
+  const prefix = seatGenerationPrefix(space, name);
   const dir = authDir(root);
   if (!existsSync(dir)) return undefined;
-  const prefix = seatGenerationPrefix(space, name);
   let held: SeatWriterGeneration | undefined;
   for (const entry of readdirSync(dir)) {
     if (!entry.startsWith(prefix) || !entry.endsWith(".json")) continue;
@@ -698,9 +701,9 @@ export function advanceSeatWriterGeneration(
 ): SeatWriterGeneration {
   if (!Number.isInteger(claim.generation) || claim.generation < 0)
     throw new Error(`a seat writer generation must be a non-negative integer; got ${JSON.stringify(claim.generation)}`);
+  const path = seatGenerationFile(root, claim.space, claim.name, claim.generation);
   const dir = authDir(root);
   mkSecretDir(dir);
-  const path = seatGenerationFile(root, claim.space, claim.name, claim.generation);
   try {
     writeSecretFileCreateOnly(path, JSON.stringify(claim, null, 2));
     return claim;
@@ -786,7 +789,7 @@ function spaceFromAccountFile(name: string): string | undefined {
   const key = name.slice(SPACE_ACCOUNT_PREFIX.length, name.length - SPACE_ACCOUNT_SUFFIX.length);
   if (key.length === 0 || key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
   const space = Buffer.from(key, "hex").toString("utf8");
-  return space.length > 0 && accountFileKey(space) === key ? space : undefined;
+  return space.length > 0 && spaceKey(space) === key ? space : undefined;
 }
 
 /** Whether `v` carries the {@link SpaceAccountAuth} account material a reader will dereference. A
@@ -800,13 +803,13 @@ function isAccountShape(v: unknown): boolean {
   return (["pub", "jwt", "signingSeed", "signingPub"] as const).every((k) => typeof a[k] === "string" && (a[k] as string).length > 0);
 }
 
-/** Where one space's own account record lives: a FLAT file beside `broker.json`, keyed by
- *  {@link accountFileKey}. Flat (not `<space>/account.json`) because `<authDir>/<space>/` is
+/** Where one space's own account record lives: a FLAT file beside `broker.json`, named by
+ *  {@link spaceAccountFile}. Flat (not `<space>/account.json`) because `<authDir>/<space>/` is
  *  {@link userAuthStateDir}; hex-keyed because a raw space name in the filename both aliased that
  *  user-auth marker and case-folded on macOS/Windows. The name of a space is authoritative in the
  *  document, so enumeration never has to trust the filename beyond finding the record. */
 export function spaceAccountPath(dir: string, space: string): string {
-  return join(dir, `${SPACE_ACCOUNT_PREFIX}${accountFileKey(space)}${SPACE_ACCOUNT_SUFFIX}`);
+  return join(dir, spaceAccountFile(space));
 }
 
 /** Runtime-validate a system-account generation. `readAuthRecord` is only a type CAST over JSON,
@@ -1174,10 +1177,10 @@ export const BROKER_AUTH_KEY = `auth/${BROKER_FILE}`;
  *  mount only; nothing writes this shape now (see the layout note above). */
 export const SPACE_AUTH_KEY = `auth/${AUTH_FILE}`;
 
-/** THE store key of one space's account record - `auth/account.<key>.json`, the same injective
- *  {@link spaceKey} filename the FS layout uses. */
+/** THE store key of one space's account record - `auth/account.<key>.json`, the same
+ *  {@link spaceAccountFile} the FS layout uses. */
 export function spaceAccountKey(space: string): string {
-  return `auth/${SPACE_ACCOUNT_PREFIX}${accountFileKey(space)}${SPACE_ACCOUNT_SUFFIX}`;
+  return `auth/${spaceAccountFile(space)}`;
 }
 
 /** Parse one store record. Errors name ONLY the key, never the stored bytes: unlike the FS reader
