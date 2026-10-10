@@ -1,5 +1,5 @@
 import type { KV, KvEntry } from "@nats-io/kv";
-import { compileContract } from "@cotal-ai/core";
+import { compileContract, isCasLoss } from "@cotal-ai/core";
 import type { EnvironmentRecord, EnvironmentStore } from "./service.js";
 
 const TEXT = { type: "string", minLength: 1, maxLength: 256 } as const;
@@ -60,16 +60,26 @@ export async function environmentKvStore(kv: KV): Promise<EnvironmentStore> {
         await kv.put(key(record.id), JSON.stringify(record), { previousSeq: expectedRevision });
         return true;
       } catch (error) {
-        const code = (error as { api_error?: { err_code?: number } }).api_error?.err_code;
-        if (code === 10071) return false;
+        if (isCasLoss(error)) return false;
         throw error;
       }
     },
-    async *records() {
+    async *records(onCorrupt) {
       // keys() hides deletion markers. history-1 gives a marker-preserving current-row scan.
       const entries = await kv.history({ key: "environment.*" });
-      try { for await (const entry of entries) yield decode(entry); }
-      finally { entries.stop(); }
+      try {
+        for await (const entry of entries) {
+          let record: EnvironmentRecord;
+          try { record = decode(entry); }
+          catch (error) {
+            if (!onCorrupt) throw error;
+            const id = entry.key.slice("environment.".length);
+            onCorrupt(/^[a-f0-9]{64}$/.test(id) ? id : "invalid-record-key");
+            continue;
+          }
+          yield record;
+        }
+      } finally { entries.stop(); }
     },
   };
 }

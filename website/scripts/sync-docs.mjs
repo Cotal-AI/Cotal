@@ -71,6 +71,7 @@ const groups = [
       'docs/authoring-a-connector.md',
       'docs/build-a-client.md',
       'docs/embedding.md',
+      'docs/environment-provisioning.md',
     ],
   },
   {

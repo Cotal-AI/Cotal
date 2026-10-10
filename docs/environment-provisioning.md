@@ -61,7 +61,10 @@ Profile authorization is a required host callback; quotas and billing policy bel
 Lifecycle records live in a dedicated private JetStream KV. It must use file storage,
 history one, limits retention, discard-new, no TTL, no rollups, and no mirrors or sources.
 Do not give callers or guests read, write, delete, purge or stream-management access to it.
-Deletion markers are corruption. Records are retained indefinitely in this first slice.
+Deletion markers are corruption. Cleanup reports `record-corruption` for each undecodable row
+and continues with healthy records. Direct reads and unreported scans still refuse corrupt
+rows; none may be recreated. A failed bucket scan stops the worker and requires supervision.
+Records are retained indefinitely in this first slice.
 
 The host's `retainAndRetire` callback is idempotent by record ID. During graceful shutdown it
 retains results and retires authority before returning a non-secret receipt. The service

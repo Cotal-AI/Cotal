@@ -179,6 +179,30 @@ try {
   const recoveredId = environmentOperationId(caller, uncertainArgs.operationId);
   assert.equal((await service().inspect(caller, recoveredId)).problem, "create-unconfirmed", "lost create response is inspectable by the persisted caller operation key");
 
+  const synchronizedReads = (target: string) => {
+    let waiting = 0;
+    let releaseReads!: () => void;
+    const ready = new Promise<void>((resolve) => { releaseReads = resolve; });
+    return { ...store, async get(key: string) {
+      const entry = await store.get(key);
+      if (key === target && waiting < 2) {
+        if (++waiting === 2) releaseReads();
+        await ready;
+      }
+      return entry;
+    } };
+  };
+  const concurrentArgs = { ...args, operationId: "simultaneous-reservation" };
+  const concurrentId = environmentOperationId(caller, concurrentArgs.operationId);
+  const concurrentService = new EnvironmentService(synchronizedReads(concurrentId), [profile], [driver], host);
+  const concurrent = await Promise.allSettled([concurrentService.create(caller, concurrentArgs), concurrentService.create(caller, concurrentArgs)]);
+  assert.ok(concurrent.every((r) => r.status === "fulfilled"), "simultaneous creation reservations classify broker CAS loss as replay");
+  assert.equal((await service().inspect(caller, concurrentId)).record.id, concurrentId);
+  const conflictingChanges = new EnvironmentService(synchronizedReads(id), [profile], [driver], host);
+  const changes = await Promise.allSettled([conflictingChanges.destroy(caller, id), conflictingChanges.destroy(caller, id, true)]);
+  assert.ok(changes.every((r) => r.status === "fulfilled"), "concurrent lifecycle writes retry real broker CAS loss");
+  assert.equal((await service().inspect(caller, id)).record.forceRequested, true);
+
   const defs = environmentCommandDefs(service());
   const create = defs.find((d) => d.command === "create")!;
   assert.equal(create.contract.input.validate({ ...args, owner: "forged" }), false);
@@ -187,7 +211,16 @@ try {
   await kv.delete(`environment.${uncertain.record.id}`);
   await assert.rejects(() => service().create(caller, uncertainArgs), /deletion is corruption/);
   await assert.rejects(async () => { for await (const _ of store.records()) { /* exhaust marker-preserving scan */ } }, /deletion is corruption/);
-  assert.equal(creates, 7);
+  assert.equal(creates, 8, "concurrent reservation losers never call the provider");
+  state = "running";
+  const healthy = await shortService.create(caller, { operationId: "healthy-after-corruption", profile: shortProfile.name, profileDigest: contractDigest(shortProfile) });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const reports: { id: string; problem: string }[] = [];
+  const closesBeforeScan = destroys;
+  await assert.doesNotReject(() => service().reconcile((id, problem) => reports.push({ id, problem })), "corrupt rows do not stop cleanup of healthy expired records");
+  assert.ok(reports.some((r) => r.id === uncertain.record.id && r.problem === "record-corruption"));
+  assert.ok(destroys > closesBeforeScan, "healthy expired record is destroyed after a corrupt row");
+  assert.equal((await service().inspect(caller, healthy.record.id)).record.destroyRequested, true);
   console.log("PASS environment lifecycle over real JetStream; provider is a deterministic stand-in");
 } finally {
   await nc?.close();

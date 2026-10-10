@@ -4,6 +4,22 @@
   "command": "pnpm exec tsx implementations/environments/smoke/service.smoke.ts",
   "mutations": [
     {
+      "name": "stop classifying real broker CAS losses",
+      "file": "implementations/environments/src/store.ts",
+      "find": "if (isCasLoss(error)) return false;",
+      "replace": "if (false && isCasLoss(error)) return false;",
+      "expectRed": "simultaneous creation reservations classify broker CAS loss as replay",
+      "cell": "simultaneous creation reservations classify broker CAS loss as replay"
+    },
+    {
+      "name": "abort cleanup on a corrupt private row",
+      "file": "implementations/environments/src/store.ts",
+      "find": "if (!onCorrupt) throw error;",
+      "replace": "if (true) throw error;",
+      "expectRed": "corrupt rows do not stop cleanup of healthy expired records",
+      "cell": "corrupt rows do not stop cleanup of healthy expired records"
+    },
+    {
       "name": "require the graceful receipt even after expiry",
       "file": "implementations/environments/src/service.ts",
       "find": "if (!record.retentionReceipt && !record.forceRequested && Date.now() < deadline)\n        return {",

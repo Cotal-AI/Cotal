@@ -28,7 +28,8 @@ export interface EnvironmentStore {
   get(id: string): Promise<{ record: EnvironmentRecord; revision: number } | undefined>;
   /** Expected revision zero is a first-wins reservation; never resurrect a deleted row. */
   put(record: EnvironmentRecord, expectedRevision: number): Promise<boolean>;
-  records(): AsyncIterable<EnvironmentRecord>;
+  /** A cleanup scan reports corrupt rows and continues; a scan without a reporter refuses them. */
+  records(onCorrupt?: (id: string) => void): AsyncIterable<EnvironmentRecord>;
 }
 
 export interface EnvironmentView {
@@ -159,7 +160,7 @@ export class EnvironmentService {
   /** Called by a supervised host even when no callers are connected. A failed row does not prevent
    * the remaining rows from being cleaned; every failure reaches the required reporter. */
   async reconcile(report: (id: string, problem: string) => void): Promise<void> {
-    for await (const record of this.store.records()) {
+    for await (const record of this.store.records((id) => report(id, "record-corruption"))) {
       if (record.terminatedAt !== undefined && record.retirementReceipt) continue;
       if (!record.environment) { report(record.id, "create-unconfirmed"); continue; }
       if (!record.destroyRequested && record.expiresAt > Date.now()) continue;
