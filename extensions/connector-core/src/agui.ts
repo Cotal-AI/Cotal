@@ -1080,9 +1080,6 @@ const EGRESS_FORBIDDEN_TYPES: ReadonlySet<string> = new Set([
   AGUI_EVENT_TYPE.TOOL_CALL_RESULT,
 ]);
 
-/** Every `type` the vocabulary defines. An element outside it cannot be classified, only refused. */
-const KNOWN_AGUI_EVENT_TYPES: ReadonlySet<string> = new Set(Object.values(AGUI_EVENT_TYPE));
-
 // ---------------------------------------------------------------------------
 // Closed-schema tables.
 //

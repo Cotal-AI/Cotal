@@ -1100,7 +1100,7 @@ try {
   ok("ORIGINAL_AXES is the committed 15", ORIGINAL_AXES.length === 15, ORIGINAL_AXES.length);
   ok("APPENDED_AXES is append-only (6)", APPENDED_AXES.length === 6, APPENDED_AXES.length);
   ok(
-    "KNOWN_AGUI_EVENT_TYPES from this sha is 14",
+    "AGUI_EVENT_TYPE from this sha defines 14 event types",
     knownTypes.length === 14,
     knownTypes,
   );
