@@ -12,7 +12,7 @@ import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canon
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, managerRecordState, stopManager } from "./manager-proc.js";
+import { ensureManager, managerHasDeliveryMarker, managerLiveness, managerRecordState, stopManager } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
@@ -126,7 +126,7 @@ export async function stopOldHostingManagerIfPresent(
   const verdict = oldHostingManagerVerdict(record.state, space);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate") {
-    const p = MANAGER_PID_PATH(space);
+    const p = record.path;
     const consequence = `Refusing before the daemon starts. If that manager is an old Plane-3-hosting one it is still bound to fanout/reader, and starting the daemon anyway would double-bind them; the daemon's own lease cannot detect that.\n`;
     if (record.state === "unattributable")
       throw new Error(
@@ -230,16 +230,16 @@ export async function ensureDelivery(
   // reported running that is not there) nor silently replaced (two daemons on one fanout).
   if (delivery.state === "unattributable")
     throw new Error(
-      `the delivery daemon pidfile at ${PID_PATH(space)} holds content that is not a pid (${JSON.stringify(delivery.content)}).\n` +
+      `the delivery daemon pidfile at ${delivery.path} holds content that is not a pid (${JSON.stringify(delivery.content)}).\n` +
         `Refusing to start a daemon over it: that record may front a live daemon nobody can identify, and starting a second would put two daemons on one fanout.\n` +
-        `NEXT: find and stop that process, then remove \`${PID_PATH(space)}\` by hand.`,
+        `NEXT: find and stop that process, then remove \`${delivery.path}\` by hand.`,
     );
   if (delivery.state === "unknown")
     throw new Error(
       `the recorded delivery daemon pid (${delivery.pid}) cannot be attributed: the kernel answered neither "running" nor "no such process".\n` +
         `A seccomp filter or LSM policy that intercepts \`kill(pid, 0)\` does this, so it is expected inside some sandboxes and containers.\n` +
         `Cotal will not guess: reusing it would report a daemon that is not there, and starting a second would put two daemons on one fanout.\n` +
-        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${PID_PATH(space)}\` and re-run. If it is running, use it or stop it.`,
+        `NEXT: verify the process yourself (\`ps -p <pid>\`). If it is gone, remove \`${delivery.path}\` and re-run. If it is running, use it or stop it.`,
     );
   let launched: number | undefined;
   if (delivery.state !== "alive") {
