@@ -2,6 +2,7 @@ import { Fragment } from "react";
 import { Box, Text } from "ink";
 import { peerLabel, type Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../mesh.js";
+import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago, fmtTime, wrapText } from "./theme.js";
 
 /** What the user drilled into — a feed row or a roster entry. */
@@ -73,6 +74,7 @@ export interface ManagedInfo {
 function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: FeedEntry[]; width: number; managed?: ManagedInfo }) {
   const { card, status, activity, ts } = agent;
   const s = STATUS[status];
+  const { condition, ages } = presenceFacts(agent);
   const mine = feed.filter(
     (e) => e.from.name === card.name || (e.toNames ?? []).includes(card.name),
   );
@@ -99,11 +101,13 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
       </Field>
       <Field label="status">
         <Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>
-        <Text dimColor>{"  (heartbeat " + ago(ts) + " ago)"}</Text>
+        {condition ? <Text>{condition}</Text> : null}
+        <Text dimColor>{ages + "  (heartbeat " + ago(ts) + " ago)"}</Text>
       </Field>
       {activity ? (
         <Field label="activity">
           <Text>{activity}</Text>
+          <Text dimColor>{activityAge(agent)}</Text>
         </Field>
       ) : null}
       {card.description ? (

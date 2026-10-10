@@ -481,7 +481,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status)",
+      "anchor": "c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.presence)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -492,7 +492,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": "ence.card)} joined `) + statusBadge(ev.presence.status));\n    else if (ev.type ",
+      "anchor": "ence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.pre",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -510,7 +510,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity) : \"\"}`",
+      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity + activityAge(ev.presence)) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -521,7 +521,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": "ho(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ",
+      "anchor": "ho(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.pre",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -532,7 +532,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "c.dim(\"Present: \") +\n          others.map((p) => who(p.card) + \" \" + statusBadge(p.status)).join(c.dim(\", \"))",
+      "anchor": "c.dim(\"Present: \") +\n          others.map((p) => who(p.card) + \" \" + statusBadge(p.status) + presenceDetail(p)).join(c.dim(\", \"))",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -543,7 +543,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "who(p.card) + \" \" + statusBadge(p.status)",
+      "anchor": "who(p.card) + \" \" + statusBadge(p.status) + presenceDetail(p)",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -554,7 +554,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": " => who(p.card) + \" \" + statusBadge(p.status)).join(c.dim(\", \")),\n   ",
+      "anchor": " => who(p.card) + \" \" + statusBadge(p.status) + presenceDetail(p)).jo",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -579,7 +579,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              (p.activity ? c.dim(\" - \" + p.activity) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
+      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              presenceDetail(p) +\n              (p.activity ? c.dim(\" - \" + p.activity + activityAge(p)) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -590,7 +590,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "renderer-call",
-      "anchor": "    \" \" +\n              statusBadge(p.status) +\n              (p.acti",
+      "anchor": "    \" \" +\n              statusBadge(p.status) +\n              presenc",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -1675,14 +1675,14 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age}",
+      "anchor": "{(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\") + kind + condition + ages + act + \"  \" + age}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\") + kind + act + \"  \" + age",
+      "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\") + kind + condition + ages + act + \"  \" + age",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -2106,7 +2106,7 @@
     {
       "path": "implementations/cli/src/render.ts",
       "kind": "derived-output",
-      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${activity}`",
+      "anchor": "`${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activity}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {

@@ -166,8 +166,9 @@ function renderStale() {
 }
 
 // ── Header: golden-signal tiles ───────────────────────────────────────────────
-// Fifth tile is last-heartbeat freshness (Presence.ts), NOT blocked-duration — we cannot know
-// how long someone has been waiting (no statusSince on the wire). Label it honestly.
+// Fifth tile is last-heartbeat freshness (Presence.ts), NOT blocked-duration: statusSince dates the
+// last change of status or activity, and a seat can change its activity while it stays blocked.
+// Label it honestly.
 function renderTiles(counts, stalest) {
   const tiles = [
     ["working", counts.working],

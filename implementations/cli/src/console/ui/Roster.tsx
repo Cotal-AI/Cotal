@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
+import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago } from "./theme.js";
 
 function progressText(p: Presence): string {
@@ -22,13 +23,14 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
+  const { condition, ages } = presenceFacts(p);
+  const act = p.activity ? "  " + p.activity + activityAge(p) : "";
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {
     const kind = wide ? (isAgent ? "  " + s.word : "  endpoint") : "";
-    const act = p.activity ? "  " + p.activity : "";
     return (
       <Text inverse bold color="cyan" wrap="truncate-end">
-        {(isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "") + kind + act + "  " + age}
+        {(isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "") + kind + condition + ages + act + "  " + age}
       </Text>
     );
   }
@@ -46,7 +48,9 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
           <Text dimColor>{"  endpoint"}</Text>
         )
       ) : null}
-      {p.activity ? <Text dimColor>{"  " + p.activity}</Text> : null}
+      {condition ? <Text>{condition}</Text> : null}
+      {ages ? <Text dimColor>{ages}</Text> : null}
+      {act ? <Text dimColor>{act}</Text> : null}
       <Text dimColor>{"  " + age}</Text>
     </Text>
   );

@@ -1,4 +1,4 @@
-import type { PresenceStatus } from "@cotal-ai/core";
+import { formatAge, type PresenceStatus } from "@cotal-ai/core";
 
 // Per-agent color: a stable name→hex hash. These are render.ts's 256-color palette
 // indices converted to hex, so names read the same as the classic dashboard — and they
@@ -27,9 +27,9 @@ export const STATUS: Record<PresenceStatus, { dot: string; color: string; word: 
   offline: { dot: "⨯", color: "gray", word: "offline" },
 };
 
+/** A peer stamps on its own clock, so a stamp ahead of this one is skew, not a negative age. */
 export function ago(epochMs: number): string {
-  const s = Math.max(0, Math.round((Date.now() - epochMs) / 1000));
-  return s < 60 ? `${s}s` : `${Math.round(s / 60)}m`;
+  return formatAge(Math.max(0, Date.now() - epochMs));
 }
 
 export function fmtTime(epochMs: number): string {

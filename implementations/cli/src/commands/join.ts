@@ -23,7 +23,7 @@ import {
 import { findMesh, refreshRegistrationPolicy, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
-import { c, statusBadge } from "../ui.js";
+import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
 // The plan's stale-cred fail-fast gate: render an unprovisioned / auth-rejected join as ONE human
 // sentence instead of a raw NATS stack. Shared by the self-mint provisioning step (which runs
@@ -273,12 +273,12 @@ export async function join(args: ParsedArgs): Promise<void> {
   ep.on("presence", (ev) => {
     if (ev.presence.card.id === me) return; // ignore self
     if (ev.type === "join")
-      print(c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status));
+      print(c.green(`→ ${who(ev.presence.card)} joined `) + statusBadge(ev.presence.status) + presenceDetail(ev.presence));
     else if (ev.type === "offline")
       print(c.dim(`← ${who(ev.presence.card)} went offline`));
     else
       print(
-        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${ev.presence.activity ? c.dim(" - " + ev.presence.activity) : ""}`,
+        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(" - " + ev.presence.activity + activityAge(ev.presence)) : ""}`,
       );
   });
 
@@ -324,7 +324,7 @@ export async function join(args: ParsedArgs): Promise<void> {
     if (others.length)
       print(
         c.dim("Present: ") +
-          others.map((p) => who(p.card) + " " + statusBadge(p.status)).join(c.dim(", ")),
+          others.map((p) => who(p.card) + " " + statusBadge(p.status) + presenceDetail(p)).join(c.dim(", ")),
       );
   }, 400);
   rl.prompt();
@@ -352,7 +352,8 @@ export async function join(args: ParsedArgs): Promise<void> {
               who(p.card) +
               " " +
               statusBadge(p.status) +
-              (p.activity ? c.dim(" - " + p.activity) : "") +
+              presenceDetail(p) +
+              (p.activity ? c.dim(" - " + p.activity + activityAge(p)) : "") +
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
