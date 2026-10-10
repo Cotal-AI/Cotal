@@ -289,16 +289,32 @@ export function bindExtensionPeers(
   return bound;
 }
 
+/** An installed extension's package.json is present but is not JSON or names no version: the package
+ *  is installed and damaged, so it must never read as not installed. */
+export class CorruptExtensionPackageError extends Error {
+  constructor(pkg: string, path: string, reason: string) {
+    super(`extension ${pkg} has a corrupt package.json ${path}: ${reason} - re-add it with \`cotal ext add\`, or \`cotal ext seed --repair\` for a built-in`);
+  }
+}
+
 /** The installed package's CURRENT version, read from disk (undefined when not installed). Only a
- *  missing package.json means not installed; one that cannot be reached or read throws. */
+ *  missing package.json means not installed; one that cannot be reached or read throws, and one
+ *  that is not JSON or has no version throws {@link CorruptExtensionPackageError}. */
 export function installedExtensionVersion(pkg: string): string | undefined {
+  const path = join(extensionPackageDir(pkg), "package.json");
   let raw: string;
   try {
-    raw = readFileSync(join(extensionPackageDir(pkg), "package.json"), "utf8");
+    raw = readFileSync(path, "utf8");
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw e;
   }
-  const v = (JSON.parse(raw) as { version?: string }).version;
-  return typeof v === "string" ? v : undefined;
+  let version: unknown;
+  try {
+    version = (JSON.parse(raw) as { version?: unknown }).version;
+  } catch (e) {
+    throw new CorruptExtensionPackageError(pkg, path, (e as Error).message);
+  }
+  if (typeof version !== "string" || !version) throw new CorruptExtensionPackageError(pkg, path, 'no "version" string');
+  return version;
 }
