@@ -16,7 +16,10 @@ export interface EnvironmentRecord {
   expiresAt: number;
   environment?: HostedEnvironmentReference;
   destroyRequested: boolean;
-  /** Durable host receipt: results retained and workload authority retired before provider close. */
+  destroyDeadline?: number;
+  forceRequested?: boolean;
+  retentionReceipt?: string;
+  /** Host receipt for authority retirement, independent of provider termination or result retention. */
   retirementReceipt?: string;
   terminatedAt?: number;
 }
@@ -31,15 +34,32 @@ export interface EnvironmentStore {
 export interface EnvironmentView {
   record: EnvironmentRecord;
   observation?: EnvironmentObservation;
-  problem?: "create-unconfirmed" | "observation-unavailable";
+  problem?: "create-unconfirmed" | "observation-unavailable" | "retention-unconfirmed" | "retirement-pending";
+  cleanup?: {
+    retention: "pending" | "retained" | "unknown";
+    retirement: "pending" | "retired";
+  };
 }
 
 export interface EnvironmentHost {
   /** Checked for each new request. The caller comes from the authenticated request subject. */
   authorize(caller: EpCaller, profile: EnvironmentProvisionProfile): Promise<boolean>;
-  /** Idempotent by record.id, including after crashes. Retain results and revoke/retire workload
-   * authority before returning an opaque, non-secret durable receipt. Failure blocks destruction. */
-  retainAndRetire(record: Readonly<EnvironmentRecord>): Promise<string>;
+  /** Idempotent by record.id. Retain results and retire authority during the bounded graceful phase.
+   * Honor cancellation; an unavailable receipt cannot extend the recorded destruction deadline. */
+  retainAndRetire(record: Readonly<EnvironmentRecord>, signal: AbortSignal): Promise<string>;
+  /** External host only: retire the lifecycles durably bound to record.id after provider termination.
+   * Never depend on a guest callback or accept arbitrary UIDs. Failure leaves retirement pending. */
+  retireTerminated(record: Readonly<EnvironmentRecord>, signal: AbortSignal): Promise<string>;
+}
+
+/** A caller can persist the operation key and derive its inspection ID before create is sent. */
+export function environmentOperationId(caller: EpCaller, operationId: string): string {
+  if (!/^[A-Za-z0-9_-]{16,64}$/.test(operationId)) refuse("bad-request", "operationId must be a stable 16-64 character identifier");
+  return digestId({ caller, operationId });
+}
+
+function validReceipt(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(value);
 }
 
 const digestId = (value: unknown): string => createHash("sha256").update(contractDigest(value)).digest("hex");
@@ -58,7 +78,12 @@ export class EnvironmentService {
     profiles: readonly EnvironmentProvisionProfile[],
     drivers: readonly EnvironmentProvisionDriver[],
     private readonly host: EnvironmentHost,
+    private readonly cleanupOptions: { graceMs: number; retirementTimeoutMs: number } = { graceMs: 15_000, retirementTimeoutMs: 5_000 },
   ) {
+    if (!Number.isSafeInteger(cleanupOptions.graceMs) || cleanupOptions.graceMs < 1 || cleanupOptions.graceMs > 60_000 ||
+      !Number.isSafeInteger(cleanupOptions.retirementTimeoutMs) || cleanupOptions.retirementTimeoutMs < 1 || cleanupOptions.retirementTimeoutMs > 60_000)
+      throw new Error("environment cleanup time bounds must be 1-60000 milliseconds");
+    this.cleanupOptions = { ...cleanupOptions };
     for (const driver of drivers) {
       if (this.#drivers.has(driver.name)) throw new Error("duplicate environment provider");
       this.#drivers.set(driver.name, driver);
@@ -77,12 +102,11 @@ export class EnvironmentService {
   }
 
   async create(caller: EpCaller, args: { operationId: string; profile: string; profileDigest: string }): Promise<EnvironmentView> {
-    if (!/^[A-Za-z0-9_-]{16,64}$/.test(args.operationId)) refuse("bad-request", "operationId must be a stable 16-64 character identifier");
+    const id = environmentOperationId(caller, args.operationId);
     const profile = this.#profiles.get(args.profile);
     if (!profile || !await this.host.authorize(structuredClone(caller), structuredClone(profile))) refuse("permission-denied", "environment profile is not authorized");
     const pin = contractDigest(profile);
     if (pin !== args.profileDigest) refuse("conflict", "environment profile digest changed");
-    const id = digestId({ caller, operationId: args.operationId });
     const existing = await this.store.get(id);
     if (existing) return this.#repeat(existing.record, caller, profile.name, pin);
     const now = Date.now();
@@ -118,21 +142,29 @@ export class EnvironmentService {
     return this.#view(await this.#owned(caller, id));
   }
 
-  async destroy(caller: EpCaller, id: string): Promise<EnvironmentView> {
+  async destroy(caller: EpCaller, id: string, force = false): Promise<EnvironmentView> {
+    if (typeof force !== "boolean") refuse("bad-request", "force must be a boolean");
     await this.#owned(caller, id);
-    await this.#change(id, (r) => ({ ...r, destroyRequested: true }));
+    await this.#requestDestroy(id, force);
     return this.#destroy(id);
+  }
+
+  #requestDestroy(id: string, force: boolean): Promise<EnvironmentRecord> {
+    return this.#change(id, (r) => ({ ...r, destroyRequested: true,
+      destroyDeadline: r.destroyDeadline ?? Math.min(r.expiresAt, Date.now() + this.cleanupOptions.graceMs),
+      forceRequested: r.forceRequested || force,
+    }));
   }
 
   /** Called by a supervised host even when no callers are connected. A failed row does not prevent
    * the remaining rows from being cleaned; every failure reaches the required reporter. */
   async reconcile(report: (id: string, problem: string) => void): Promise<void> {
     for await (const record of this.store.records()) {
-      if (record.terminatedAt !== undefined) continue;
+      if (record.terminatedAt !== undefined && record.retirementReceipt) continue;
       if (!record.environment) { report(record.id, "create-unconfirmed"); continue; }
       if (!record.destroyRequested && record.expiresAt > Date.now()) continue;
       try {
-        await this.#change(record.id, (r) => ({ ...r, destroyRequested: true }));
+        await this.#requestDestroy(record.id, record.expiresAt <= Date.now());
         const view = await this.#destroy(record.id);
         if (view.problem) report(record.id, view.problem);
       } catch { report(record.id, "cleanup-unconfirmed"); }
@@ -162,6 +194,8 @@ export class EnvironmentService {
     if (!record.environment) return { record, problem: "create-unconfirmed" };
     if (record.terminatedAt !== undefined) return {
       record, observation: { environment: record.environment, state: "terminated", observedAt: record.terminatedAt },
+      cleanup: { retention: record.retentionReceipt ? "retained" : "unknown", retirement: record.retirementReceipt ? "retired" : "pending" },
+      ...(!record.retirementReceipt ? { problem: "retirement-pending" as const } : {}),
     };
     try {
       const observation = await this.#driver(record).inspect(record.environment);
@@ -180,21 +214,54 @@ export class EnvironmentService {
     throw new Error("environment record contention");
   }
 
+  async #hostReceipt(operation: (signal: AbortSignal) => Promise<string>, timeoutMs: number): Promise<string | undefined> {
+    if (timeoutMs <= 0) return undefined;
+    const controller = new AbortController();
+    let timer!: ReturnType<typeof setTimeout>;
+    try {
+      const receipt = await Promise.race([
+        Promise.resolve().then(() => operation(controller.signal)),
+        new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+      ]);
+      return validReceipt(receipt) ? receipt : undefined;
+    } catch { return undefined; }
+    finally { clearTimeout(timer); controller.abort(); }
+  }
+
   async #destroy(id: string): Promise<EnvironmentView> {
     let record = (await this.store.get(id))?.record;
     if (!record) throw new Error("environment record missing");
-    if (!record.environment || record.terminatedAt !== undefined) return this.#view(record);
-    if (!record.retirementReceipt) {
-      const receipt = await this.host.retainAndRetire(structuredClone(record));
-      if (typeof receipt !== "string" || !/^[A-Za-z0-9_.:-]{1,256}$/.test(receipt)) throw new Error("invalid retention/retirement receipt");
-      record = await this.#change(id, (r) => ({ ...r, retirementReceipt: r.retirementReceipt ?? receipt }));
+    if (!record.environment) return this.#view(record);
+    let view = await this.#view(record);
+    if (view.observation?.state !== "terminated") {
+      const deadline = Math.min(record.expiresAt, record.destroyDeadline ?? record.expiresAt);
+      if (!record.retentionReceipt && !record.forceRequested && Date.now() < deadline) {
+        const receipt = await this.#hostReceipt((signal) => this.host.retainAndRetire(structuredClone(record!), signal), deadline - Date.now());
+        if (receipt) record = await this.#change(id, (r) => ({ ...r,
+          retentionReceipt: r.retentionReceipt ?? receipt, retirementReceipt: r.retirementReceipt ?? receipt,
+        }));
+      }
+      // Re-read concurrent force intent; reconstruction never restarts the graceful clock.
+      record = (await this.store.get(id))!.record;
+      if (!record.retentionReceipt && !record.forceRequested && Date.now() < deadline)
+        return { ...await this.#view(record), problem: "retention-unconfirmed", cleanup: { retention: "pending", retirement: "pending" } };
+      await this.#driver(record).destroy(record.environment!);
+      view = await this.#view(record);
     }
-    await this.#driver(record).destroy(record.environment!);
-    const view = await this.#view(record);
     if (view.observation?.state === "terminated") {
       const observedAt = view.observation.observedAt;
-      view.record = await this.#change(id, (r) => ({ ...r, terminatedAt: r.terminatedAt ?? observedAt }));
+      record = await this.#change(id, (r) => ({ ...r, terminatedAt: r.terminatedAt ?? observedAt }));
+      if (!record.retirementReceipt) {
+        const receipt = await this.#hostReceipt((signal) => this.host.retireTerminated(structuredClone(record!), signal), this.cleanupOptions.retirementTimeoutMs);
+        if (receipt) record = await this.#change(id, (r) => ({ ...r, retirementReceipt: r.retirementReceipt ?? receipt }));
+      }
+      view.record = record;
+      if (!record.retirementReceipt) view.problem = "retirement-pending";
     }
+    view.cleanup = {
+      retention: record.retentionReceipt ? "retained" : record.terminatedAt !== undefined || record.forceRequested || Date.now() >= (record.destroyDeadline ?? record.expiresAt) ? "unknown" : "pending",
+      retirement: record.retirementReceipt ? "retired" : "pending",
+    };
     return view;
   }
 }

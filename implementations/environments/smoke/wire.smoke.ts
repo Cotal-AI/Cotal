@@ -77,6 +77,7 @@ try {
   };
   const service = new EnvironmentService(await environmentKvStore(privateKv), [profile], [driver], {
     async authorize() { return true; }, async retainAndRetire() { throw new Error("private-host-diagnostic-must-not-escape"); },
+    async retireTerminated() { throw new Error("private-retirement-diagnostic-must-not-escape"); },
   });
   const defs = environmentCommandDefs(service);
   serving = serveEnvironmentEndpoint({ connection: host, space, grant, service, cleanupIntervalMs: 60_000, report: () => {} });
@@ -103,8 +104,10 @@ try {
   await assert.rejects(() => call(o, caller, "create", args), /permission|authorization/i);
   assert.equal(creates, 1, "forged subject is refused by the broker before provider effect");
   const failedCleanup = await call(c, caller, "destroy", { id: view.record.id });
-  assert.equal(failedCleanup.reply.error?.code, "unavailable");
-  assert.equal(failedCleanup.reply.error?.outcome, "unknown");
+  assert.equal(failedCleanup.reply.ok, true);
+  assert.equal((failedCleanup.reply.data as EnvironmentView).problem, "retention-unconfirmed");
+  assert.equal((await call(o, other, "destroy", { id: view.record.id, force: true })).reply.error?.code, "not-found");
+  await assert.rejects(() => call(c, caller, "destroy", { id: view.record.id, force: "yes" }), /args|schema/i);
   assert.ok(!JSON.stringify(failedCleanup).includes("private-host-diagnostic"), "private callback diagnostics never cross the endpoint");
   await serving.stop();
   serving = undefined;

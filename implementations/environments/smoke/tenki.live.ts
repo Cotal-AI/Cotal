@@ -15,8 +15,10 @@ import { openTenki } from "../../../extensions/tenki/src/index.js";
 import { EnvironmentService, environmentKvStore, type EnvironmentView } from "../src/index.js";
 
 if (process.env.COTAL_TENKI_LIVE !== "empty-workload") throw new Error("set COTAL_TENKI_LIVE=empty-workload to authorize a billable empty-workload probe");
-const [keyPath, profilePath, evidencePath] = process.argv.slice(2);
-if (!keyPath || !profilePath || !evidencePath) throw new Error("expected key-file profile-file evidence-file");
+const [keyPath, profilePath, evidencePath, mode, ...extra] = process.argv.slice(2);
+if (!keyPath || !profilePath || !evidencePath || (mode !== undefined && mode !== "--force-close") || extra.length)
+  throw new Error("expected key-file profile-file evidence-file [--force-close]");
+const forceClose = mode === "--force-close";
 const keyInfo = await lstat(keyPath);
 if (!keyInfo.isFile() || (keyInfo.mode & 0o777) !== 0o600 || keyInfo.uid !== process.getuid?.()) throw new Error("unsafe key file");
 const profile = JSON.parse(await readFile(profilePath, "utf8")) as EnvironmentProvisionProfile;
@@ -44,7 +46,11 @@ try {
   const store = await environmentKvStore(kv);
   const host = {
     async authorize(c: typeof caller) { return c.owner === "local"; },
-    async retainAndRetire() { await save(); return "empty-workload:no-authority-issued"; },
+    async retainAndRetire() {
+      if (forceClose) throw new Error("probe retention host unavailable");
+      await save(); return "empty-workload:no-authority-issued";
+    },
+    async retireTerminated() { await save(); return "empty-workload:no-authority-issued"; },
   };
   service = new EnvironmentService(store, [profile], [driver], host);
   const args = { operationId: `live-${Date.now()}-single`, profile: profile.name, profileDigest: contractDigest(profile) };
@@ -66,6 +72,11 @@ try {
   }
   assert.equal(view.observation?.state, "running", "real provider must reach RUNNING within the observation bound");
   evidence.running = view;
+  if (forceClose) {
+    const pending = await service.destroy(caller, view.record.id);
+    assert.equal(pending.problem, "retention-unconfirmed", "failed graceful retention must remain explicit before forced close");
+    evidence.gracefulPending = pending;
+  }
   evidence.checks = ["provider-issued binding persisted", "same-operation retry retained one reference", "service reconstruction retained ownership", "foreign lifecycle destruction rejected", "provider observed RUNNING"];
   await save();
 } finally {
@@ -74,13 +85,15 @@ try {
       const id = view.record.id;
       const deadline = Date.now() + 120_000;
       do {
-        view = await service.destroy(caller, id);
+        view = await service.destroy(caller, id, forceClose);
         evidence.cleanup = view;
         await save();
         if (view.record.terminatedAt !== undefined) break;
         await wait();
       } while (Date.now() < deadline);
       assert.ok(view.record.terminatedAt, "provider termination remains unconfirmed; inspect the retained evidence and store");
+      assert.equal(view.cleanup?.retirement, "retired", "empty workload retirement must be recorded independently");
+      if (forceClose) assert.equal(view.cleanup?.retention, "unknown", "forced termination must not fabricate result retention");
       evidence.finishedAt = new Date().toISOString();
       await save();
       console.log(`Cleanup observed TERMINATED: ${view.record.environment?.id}`);

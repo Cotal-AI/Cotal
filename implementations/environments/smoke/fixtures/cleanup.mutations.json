@@ -1,0 +1,23 @@
+{
+  "suite": ["implementations/environments/smoke/service.smoke.ts"],
+  "guard": "expiry termination and terminal provider evidence do not depend on a graceful or retirement receipt",
+  "command": "pnpm exec tsx implementations/environments/smoke/service.smoke.ts",
+  "mutations": [
+    {
+      "name": "require the graceful receipt even after expiry",
+      "file": "implementations/environments/src/service.ts",
+      "find": "if (!record.retentionReceipt && !record.forceRequested && Date.now() < deadline)\n        return {",
+      "replace": "if (!record.retentionReceipt)\n        return {",
+      "expectRed": "expiry requests provider termination despite an unavailable retention host",
+      "cell": "expiry requests provider termination despite an unavailable retention host"
+    },
+    {
+      "name": "hide provider termination while authority retirement is pending",
+      "file": "implementations/environments/src/service.ts",
+      "find": "if (!record.retirementReceipt) view.problem = \"retirement-pending\";",
+      "replace": "if (!record.retirementReceipt) {\n        record = await this.#change(id, (r) => { const { terminatedAt, ...pending } = r; return pending; });\n        view.record = record; view.problem = \"retirement-pending\";\n      }",
+      "expectRed": "observed provider termination persists without a graceful receipt",
+      "cell": "observed provider termination persists without a graceful receipt"
+    }
+  ]
+}

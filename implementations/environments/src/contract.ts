@@ -8,7 +8,11 @@ const VIEW = {
   type: "object", additionalProperties: false, required: ["record"],
   properties: {
     record: ENVIRONMENT_RECORD_SCHEMA,
-    problem: { enum: ["create-unconfirmed", "observation-unavailable"] },
+    problem: { enum: ["create-unconfirmed", "observation-unavailable", "retention-unconfirmed", "retirement-pending"] },
+    cleanup: {
+      type: "object", additionalProperties: false, required: ["retention", "retirement"],
+      properties: { retention: { enum: ["pending", "retained", "unknown"] }, retirement: { enum: ["pending", "retired"] } },
+    },
     observation: {
       type: "object", additionalProperties: false, required: ["environment", "state", "observedAt"],
       properties: {
@@ -33,7 +37,9 @@ const ROWS = [
     output: VIEW,
   },
   { name: "inspect", capability: "environment.read", input: SELECT, output: VIEW },
-  { name: "destroy", capability: "environment.write", input: SELECT, output: VIEW },
+  { name: "destroy", capability: "environment.write", input: {
+    ...SELECT, properties: { ...SELECT.properties, force: { type: "boolean" } },
+  }, output: VIEW },
 ];
 const TABLE = serviceContractTable(ROWS);
 const closure = (value: unknown): string => contractDigest({ v: 1, root: contractDigest(value), members: [] });
@@ -58,12 +64,12 @@ export function environmentCommandDefs(service: EnvironmentService): EpCommandDe
     contract: TABLE.contracts[row.name],
     handler: async (ctx) => {
       const caller = ctx.subject.caller;
-      const args = ctx.request.args as { id: string; operationId: string; profile: string; profileDigest: string };
+      const args = ctx.request.args as { id: string; operationId: string; profile: string; profileDigest: string; force?: boolean };
       try {
         switch (row.name) {
           case "create": return await service.create(caller, args);
           case "inspect": return await service.inspect(caller, args.id);
-          case "destroy": return await service.destroy(caller, args.id);
+          case "destroy": return await service.destroy(caller, args.id, args.force);
           default: throw new Error("unknown environment command");
         }
       } catch (error) {

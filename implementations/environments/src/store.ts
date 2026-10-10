@@ -15,7 +15,8 @@ export const ENVIRONMENT_RECORD_SCHEMA = {
     caller: { type: "object", additionalProperties: false, required: ["owner", "actor", "uid"], properties: { owner: TEXT, actor: TEXT, uid: TEXT } },
     profile: TEXT, profileDigest: { type: "string", pattern: "^sha256:[a-f0-9]{64}$" }, provider: TEXT,
     createdAt: TIME, expiresAt: TIME, environment: ENVIRONMENT_REFERENCE_SCHEMA,
-    destroyRequested: { type: "boolean" }, retirementReceipt: TEXT, terminatedAt: TIME,
+    destroyRequested: { type: "boolean" }, destroyDeadline: TIME, forceRequested: { type: "boolean" },
+    retentionReceipt: TEXT, retirementReceipt: TEXT, terminatedAt: TIME,
   },
 } as const;
 const contract = compileContract({ root: ENVIRONMENT_RECORD_SCHEMA });
@@ -23,7 +24,10 @@ function validate(value: unknown, id: string): EnvironmentRecord {
   if (!contract.validate(value)) throw new Error("invalid environment record");
   const row = value as EnvironmentRecord;
   if (row.id !== id || row.expiresAt <= row.createdAt || (row.environment && row.environment.kind !== row.provider) ||
-    (row.terminatedAt !== undefined && (!row.environment || !row.destroyRequested || !row.retirementReceipt)))
+    (row.destroyDeadline !== undefined && (!row.destroyRequested || row.destroyDeadline > row.expiresAt)) ||
+    (row.forceRequested && !row.destroyRequested) ||
+    (row.retentionReceipt && !row.retirementReceipt) ||
+    (row.terminatedAt !== undefined && (!row.environment || !row.destroyRequested)))
     throw new Error("inconsistent environment record");
   return row;
 }

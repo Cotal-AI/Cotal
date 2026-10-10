@@ -8,7 +8,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { awaitBrokerReady, freePort, teardownOnSignal, killAndAwaitExit, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
 import { contractDigest, isReachable, type EnvironmentProvisionDriver, type EnvironmentProvisionProfile, type EnvironmentObservation } from "@cotal-ai/core";
-import { EnvironmentService, environmentKvStore, environmentCommandDefs, type EnvironmentHost } from "../src/index.js";
+import { EnvironmentService, environmentKvStore, environmentCommandDefs, environmentOperationId, type EnvironmentHost } from "../src/index.js";
 
 const directory = await mkdtemp(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const port = await freePort();
@@ -30,7 +30,8 @@ try {
     maxDurationMs: 60_000, providerOptions: {},
   };
   let creates = 0, destroys = 0, retires = 0;
-  let failCreate = false, failInspect = false, failRetire = false;
+  let failCreate = false, failInspect = false, failRetire = false, failTerminalRetire = false;
+  let hangRetain = false, terminalRetires = 0;
   let state: EnvironmentObservation["state"] = "running";
   let holdCreate: Promise<void> = Promise.resolve();
   const driver: EnvironmentProvisionDriver = {
@@ -41,7 +42,17 @@ try {
   };
   const host: EnvironmentHost = {
     async authorize(c) { return c.owner === caller.owner; },
-    async retainAndRetire(record) { retires++; assert.ok(record.environment); if (failRetire) throw new Error("retain unavailable"); return `receipt:${record.id}`; },
+    async retainAndRetire(record, signal) {
+      retires++; assert.ok(record.environment);
+      if (hangRetain) return new Promise<string>((_, reject) => signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true }));
+      if (failRetire) throw new Error("retain unavailable");
+      return `receipt:${record.id}`;
+    },
+    async retireTerminated(record) {
+      terminalRetires++; assert.ok(record.terminatedAt);
+      if (failTerminalRetire) throw new Error("private retirement failure");
+      return `retired:${record.id}`;
+    },
   };
   const service = () => new EnvironmentService(store, [profile], [driver], host);
   const args = { operationId: "create-positive-0001", profile: profile.name, profileDigest: contractDigest(profile) };
@@ -57,7 +68,7 @@ try {
   await assert.rejects(() => service().create(caller, { ...args, profileDigest: `sha256:${"a".repeat(64)}` }), /digest changed/);
   assert.equal(destroys, 0);
   failRetire = true;
-  await assert.rejects(() => service().destroy(caller, id), /retain unavailable/);
+  assert.equal((await service().destroy(caller, id)).problem, "retention-unconfirmed");
   assert.equal(destroys, 0, "failed result retention/authority retirement prevents provider close");
   failRetire = false;
   state = "paused";
@@ -115,6 +126,59 @@ try {
   await service().reconcile(() => {});
   assert.ok((await service().inspect(caller, expiring.record.id)).record.terminatedAt, "expiry cleanup completes without a caller or original profile");
 
+  state = "running";
+  failRetire = true;
+  const stuck = await shortService.create(caller, { operationId: "expiry-retention-failure", profile: shortProfile.name, profileDigest: contractDigest(shortProfile) });
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const closesBeforeExpiry = destroys;
+  await service().reconcile(() => {});
+  assert.ok(destroys > closesBeforeExpiry, "expiry requests provider termination despite an unavailable retention host");
+  state = "terminated";
+  failTerminalRetire = true;
+  await service().reconcile(() => {});
+  const terminalPending = await service().inspect(caller, stuck.record.id);
+  assert.ok(terminalPending.record.terminatedAt, "observed provider termination persists without a graceful receipt");
+  assert.deepEqual(terminalPending.cleanup, { retention: "unknown", retirement: "pending" });
+  assert.equal(terminalPending.problem, "retirement-pending");
+  assert.ok(!JSON.stringify(terminalPending).includes("private retirement failure"));
+  const closesBeforeRetirement = destroys;
+  failTerminalRetire = false;
+  await service().reconcile(() => {});
+  const recovered = await service().inspect(caller, stuck.record.id);
+  assert.deepEqual(recovered.cleanup, { retention: "unknown", retirement: "retired" });
+  assert.equal(destroys, closesBeforeRetirement, "retirement retry does not destroy terminated infrastructure again");
+  failRetire = false;
+
+  state = "running";
+  hangRetain = true;
+  const bounded = new EnvironmentService(store, [profile], [driver], host, { graceMs: 30, retirementTimeoutMs: 30 });
+  const hung = await bounded.create(caller, { ...args, operationId: "hung-retention-host" });
+  const started = Date.now();
+  const forcedByDeadline = await bounded.destroy(caller, hung.record.id);
+  assert.ok(Date.now() - started < 1000, "hung host cannot extend the graceful destruction deadline");
+  assert.equal(forcedByDeadline.cleanup?.retention, "unknown");
+  const savedDeadline = forcedByDeadline.record.destroyDeadline;
+  hangRetain = false;
+  state = "terminated";
+  await service().reconcile(() => {});
+  assert.equal((await service().inspect(caller, hung.record.id)).record.destroyDeadline, savedDeadline, "host reconstruction does not restart the grace period");
+
+  state = "running";
+  failRetire = true;
+  const forced = await service().create(caller, { ...args, operationId: "owner-forced-close" });
+  const beforeForcedRetain = retires;
+  await assert.rejects(() => service().destroy({ ...caller, uid: "b".repeat(26) }, forced.record.id, true), /not found/);
+  const forcedView = await service().destroy(caller, forced.record.id, true);
+  assert.equal(retires, beforeForcedRetain, "owner-forced close does not wait for the retention host");
+  assert.equal(forcedView.record.forceRequested, true);
+  state = "terminated";
+  await service().reconcile(() => {});
+  assert.ok(terminalRetires > 0);
+  assert.equal((await service().inspect(caller, forced.record.id)).cleanup?.retention, "unknown");
+  failRetire = false;
+  const recoveredId = environmentOperationId(caller, uncertainArgs.operationId);
+  assert.equal((await service().inspect(caller, recoveredId)).problem, "create-unconfirmed", "lost create response is inspectable by the persisted caller operation key");
+
   const defs = environmentCommandDefs(service());
   const create = defs.find((d) => d.command === "create")!;
   assert.equal(create.contract.input.validate({ ...args, owner: "forged" }), false);
@@ -123,7 +187,7 @@ try {
   await kv.delete(`environment.${uncertain.record.id}`);
   await assert.rejects(() => service().create(caller, uncertainArgs), /deletion is corruption/);
   await assert.rejects(async () => { for await (const _ of store.records()) { /* exhaust marker-preserving scan */ } }, /deletion is corruption/);
-  assert.equal(creates, 4);
+  assert.equal(creates, 7);
   console.log("PASS environment lifecycle over real JetStream; provider is a deterministic stand-in");
 } finally {
   await nc?.close();

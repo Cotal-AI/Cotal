@@ -18,12 +18,14 @@ The host configures profiles and supplies their names and canonical digests to a
 callers. A profile pins its image, resource limits, lifetime and provider options. Callers
 cannot override those fields or send credentials through the command arguments.
 
-- `create` takes `operationId`, `profile` and `profileDigest`. Use one stable operation ID
-  for one intended environment. The service reserves it before contacting the provider.
-- `inspect` takes the returned environment record `id`. It observes the stored provider
-  reference without creating or adopting a VM.
-- `destroy` takes `id`. It records the destruction intent, obtains the host's durable
-  retention and retirement receipt, requests provider deletion, and observes its result.
+- `create` takes `operationId`, `profile` and `profileDigest`. Persist one stable operation
+  key before sending the request. The service reserves it before contacting the provider.
+- `inspect` takes the environment record `id`. The client can derive it before creation with
+  `environmentOperationId(caller, operationId)` using its authenticated lifecycle. This also
+  resolves a lost creation reply without calling create again or adopting a VM.
+- `destroy` takes `id` and optional `force`. It records a bounded graceful deadline before
+  obtaining the host's retention and retirement receipt. Expiry or an owner-forced close
+  bypasses an unavailable receipt and requests provider termination.
 
 `create` and `destroy` require the `environment.write` capability; `inspect` requires
 `environment.read`. The caller's owner, actor and lifecycle come from the authenticated
@@ -45,7 +47,10 @@ the VM is running, not that a manager, connector or agent has joined. `paused`,
 
 A destruction acknowledgement alone does not set `terminatedAt`. The service records it
 only after observing `terminated` for the recorded provider reference. This timestamp
-means infrastructure termination, not successful completion of the workload.
+means infrastructure termination, not successful completion of the workload. `cleanup.retention`
+reports retained, pending or unknown results separately from `cleanup.retirement`. Terminated
+infrastructure can have `retirement-pending`; a failed authority callback does not erase terminal
+provider evidence or invent retained results.
 
 ## Host responsibilities
 
@@ -58,12 +63,24 @@ history one, limits retention, discard-new, no TTL, no rollups, and no mirrors o
 Do not give callers or guests read, write, delete, purge or stream-management access to it.
 Deletion markers are corruption. Records are retained indefinitely in this first slice.
 
-The host's `retainAndRetire` callback must be idempotent by record ID. It retains results
-and retires workload authority before returning a non-secret durable receipt. The service
-persists that receipt before asking the provider to destroy the VM. A failed callback
-blocks destruction and is surfaced for operator attention. Provider-imposed expiry may
-still stop a workload; applications must save results continuously if they need to survive
-that event.
+The host's `retainAndRetire` callback is idempotent by record ID. During graceful shutdown it
+retains results and retires authority before returning a non-secret receipt. The service
+persists separate retention and retirement facts. Its default grace period is 15 seconds,
+bounded by the recorded expiry. A reconstructed service uses the original deadline. A failed
+callback returns `retention-unconfirmed`; a hung callback cannot extend that deadline.
+
+At the deadline, expiry or an owner-forced close, provider termination proceeds without a
+graceful receipt. After observing termination the external host's `retireTerminated` callback
+retires only the lifecycle UIDs durably bound to that record, never arbitrary caller-supplied
+UIDs. It must not rely on the guest or its manager. Its default time bound is five seconds;
+failure leaves `retirement-pending` for a later reconciliation pass. Both callbacks receive an
+AbortSignal and must honor cancellation. A host without this authority policy must refuse the
+callback and expose the pending obligation and bound UIDs to its operator.
+
+This library does not implement that authorization policy or the UID enrollment ledger. Do
+not admit hosted workloads until the host durably binds their manager and child lifecycles
+and supports their retirement. Stock provider-local manager bootstrap and cross-uid seat
+isolation also remain upstream dependencies. Empty-workload probes issue no such authority.
 
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
