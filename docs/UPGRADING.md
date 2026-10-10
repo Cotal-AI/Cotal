@@ -38,8 +38,11 @@ is down. The sections below give that window's shape so it can be scheduled rath
 
 Before upgrading, snapshot the manager's private Cotal state and Claude configuration home.
 Pause new managed spawns while upgrading the connector, core, manager and chosen terminal
-runtime together, then reload the manager through its supported custody-preserving path.
-Existing seats remain running; the pause affects new launches, not broker availability.
+runtime together. For tmux, cmux, Herdr, Orca and custodial Linux PTY seats, use that runtime's
+supported manager-reload path and observe its custody/release bounds. Default `auto` selects
+in-process `pty`, whose seats cannot survive a manager restart. Drain those seats at an approved
+idle window, or use the documented preserve-state cut and `up` recovery, which resumes them
+rather than keeping their processes running. This upgrade does not require a broker restart.
 
 Managed launches now accept the authorized workspace through Claude's native startup dialog. They
 no longer require a prior interactive visit to that directory. Claude retains its normal
@@ -50,8 +53,9 @@ permission mode unless a launch flag overrides it. Authorize only reviewed works
 
 The launch recipe includes optional startup choices before its final confirmation. A custom
 runtime must implement `LaunchSpec.confirmBefore`, or refuse a recipe carrying it. Ignoring
-it leaves an untrusted launch at the native dialog until startup times out. Existing running
-seats need no restart for this change; adopt the new runtime before launching new seats.
+it leaves an untrusted launch at the native dialog until startup times out. The new launch
+recipe does not require restarting an existing seat; manager reload continuity remains
+runtime-dependent as described above. Adopt the new runtime before launching new seats.
 No credentials, mesh records or operator configuration files need manual migration.
 
 ## AG-UI `takeCodePoints` export in 0.79.0
