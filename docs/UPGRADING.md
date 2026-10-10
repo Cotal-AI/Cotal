@@ -34,10 +34,14 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
-## Managed Claude workspace trust
+## Managed Claude workspace trust in 0.80.0
 
-Upgrade the Claude connector, core, manager and chosen terminal runtime together. Managed
-launches now accept the authorized workspace through Claude's native startup dialog. They
+Before upgrading, snapshot the manager's private Cotal state and Claude configuration home.
+Pause new managed spawns while upgrading the connector, core, manager and chosen terminal
+runtime together, then reload the manager through its supported custody-preserving path.
+Existing seats remain running; the pause affects new launches, not broker availability.
+
+Managed launches now accept the authorized workspace through Claude's native startup dialog. They
 no longer require a prior interactive visit to that directory. Claude retains its normal
 repository and linked-worktree trust semantics, including any trust it persists for later
 sessions. Foreground launches still prompt. No tool-permission bypass flag is added, but
