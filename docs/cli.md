@@ -25,8 +25,10 @@ packages from their built `dist/`. Run `pnpm build` after `pnpm install`, and ag
 package, or the command fails with `ERR_MODULE_NOT_FOUND` for `@cotal-ai/cli/dist/index.js` or runs
 the old code.
 
-Most commands then refuse to touch the operator-global seed store from a source checkout, with an
-error that includes `this would migrate the machine-wide store and can take an installed cotal down`. A
+Commands that run the automatic connector seed, such as `status`, then stop when the
+operator-global seed store is not current for the checkout's version, which includes a fresh config
+and a store another version wrote. The error includes
+`this would migrate the machine-wide store and can take an installed cotal down`. A
 checkout never writes the connector store an installed `cotal` uses. For day-to-day
 work, set `COTAL_SKIP_CONNECTOR_SEED=1` to skip that seed step:
 
@@ -36,8 +38,8 @@ pnpm build
 COTAL_SKIP_CONNECTOR_SEED=1 pnpm cotal status
 ```
 
-Pointing `XDG_CONFIG_HOME` at a scratch dir is not enough by itself. A test
-that needs the seed from a checkout also sets `COTAL_ALLOW_CHECKOUT_SEED=1`, as described under
+Pointing `XDG_CONFIG_HOME` at a scratch dir is not enough by itself. Isolated release tests
+that must seed from a checkout also set `COTAL_ALLOW_CHECKOUT_SEED=1`, as described under
 [Built-in connectors are seeded extensions](#built-in-connectors-are-seeded-extensions).
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
