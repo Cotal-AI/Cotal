@@ -82,6 +82,25 @@ store that refuses a put of the new key fails the start.
 Let the store accept a put of `authInstanceKey(space)`. A copy of `stateDir` taken before the upgrade
 still holds the serve seed, so delete it or protect it as secret material.
 
+## Per-seat `COTAL_` references in a shared MCP server in 0.77.0
+
+A shared MCP server under `connectors.claude.mcpServers` no longer forwards a `COTAL_` name the
+launcher sets for each seat, such as `COTAL_ROLE` or `COTAL_MODEL`, when it references one as
+`${VAR}`. Before, a seat launched with no role or model of its own took the spawning process's
+value and ran under that role or model pin. A reference to a machine-wide knob such as
+`${COTAL_HOME}` still forwards.
+
+### What stops working
+
+Every spawn and resume under a config whose shared server references such a name is refused before
+launch, and the refusal names the reference. Code that calls `launchEnv` from
+`@cotal-ai/connector-core` with such a name in `mcpKeys` gets the same error.
+
+### Before the upgrade
+
+Remove those references from the shared server. Give each seat its role and model with `--role` and
+`--model`, or in its persona's `role:` and `model:`.
+
 ## Injected SecretStore naming in 0.76.0
 
 The manager and the delivery daemon name an injected `SecretStore` through

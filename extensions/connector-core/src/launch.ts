@@ -140,17 +140,21 @@ export const OPERATOR_ENV_KEEP = [
  *  BOTH `Path` and `PATH` - a case-duplicate Windows process creation chokes on. Keying off the
  *  source env's actual casing (one entry per lowercased name) forwards each var exactly once.
  *
- *  An `envAllow` name in the `COTAL_` namespace outside {@link OPERATOR_ENV_KEEP} throws. A connector
- *  sets those names per seat and only when the launch has a value, so a forwarded one would stand in
- *  for a role, model or read set this launch never had. */
+ *  An `envAllow` or `mcpKeys` name in the `COTAL_` namespace outside {@link OPERATOR_ENV_KEEP} throws.
+ *  A connector sets those names per seat and only when the launch has a value, so a forwarded one
+ *  would stand in for a role, model or read set this launch never had. */
 export function launchEnv(
   opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
 ): Record<string, string> {
-  for (const k of opts.envAllow ?? []) {
+  const perSeat = (k: string): boolean => {
     const name = k.toUpperCase();
-    if (name.startsWith("COTAL_") && !OPERATOR_ENV_KEEP.some((keep) => keep === name))
-      throw new Error(`spawn.env cannot list "${k}": the launcher sets COTAL_ names for each seat, and only the machine-wide ones such as COTAL_HOME cross from the spawning process`);
-  }
+    return name.startsWith("COTAL_") && !OPERATOR_ENV_KEEP.some((keep) => keep === name);
+  };
+  const why = "the launcher sets COTAL_ names for each seat, and only the machine-wide ones such as COTAL_HOME cross from the spawning process";
+  const listed = opts.envAllow?.find(perSeat);
+  if (listed !== undefined) throw new Error(`spawn.env cannot list "${listed}": ${why}`);
+  const referenced = opts.mcpKeys?.find(perSeat);
+  if (referenced !== undefined) throw new Error(`a shared MCP server cannot reference "\${${referenced}}": ${why}`);
   const env: Record<string, string> = {};
   const sourceKey = new Map<string, string>();
   for (const k of Object.keys(process.env)) sourceKey.set(k.toLowerCase(), k);

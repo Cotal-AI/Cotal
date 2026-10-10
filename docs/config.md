@@ -55,6 +55,9 @@ your own Claude / VS Code / Cursor config. Secrets ride as **`${VAR}` references
 `${VAR:-default}`), resolved from your environment at launch and forwarded to the child **by name**
 (never as literals) so the file stays safe to keep in `~/.config` or a gitignored `.cotal/`. Only
 `command`, `args`, `env`, `url`, and `headers` are expanded; any other key passes through verbatim.
+A reference to a `COTAL_` name other than the machine-wide knobs in
+[Launcher variables](#launcher-variables) is refused and the seat is not launched, by the same rule
+as `spawn.env`.
 
 A server that cannot launch as written is refused when the file is read, with its path in the file
 (`connectors.<name>.mcpServers.<server>.<field>`). `command`, `type` and `url` must be strings, `args`
