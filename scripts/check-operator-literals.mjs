@@ -15,6 +15,8 @@
 // measurement prose in PR text uses placeholders. The self-test prints a planted positive and a
 // near-negative for every class before the real subject is scanned.
 // Workflow files are excluded from host-name matching because CI configuration must name its pool.
+// A runtime host name of `localhost` is not a token: macOS can report it when no HostName is set,
+// and it names no machine. Configured tokens are kept as given.
 // Shared-address and public-address network notation is excluded because it names a range, not a
 // host. Finding rows never print the matched token.
 // An IPv6 literal is a finding only inside global unicast space, which leaves most of the
@@ -226,10 +228,12 @@ function normalizeHostTokens(values, source, allowEmpty = false) {
 }
 
 function hostTokenConfiguration(runtimeHostname, repositoryValues, argumentValues) {
+  // macOS can report `localhost` when no HostName is set. As a token it turned every localhost URL
+  // in the tree into a finding, so the scan could never pass on such a host.
   const machineHostTokens = normalizeHostTokens(
     [runtimeHostname],
     'machine-hostname',
-  );
+  ).filter((token) => token.toLowerCase() !== 'localhost');
   const configuredHostTokens = [
     ...normalizeHostTokens(repositoryValues, 'repository-variable', true).map((token) => ({
       token,
@@ -666,7 +670,7 @@ const SELFTEST_UNIQUE_LOCAL_IPV6 = ['fd00', '', '1'].join(':');
 const SELFTEST_UNIQUE_LOCAL_IPV6_PREFIX = ['fd00', '', ''].join(':');
 
 // When adding a self-test cell, add its registration and increment this total deliberately.
-const EXPECTED_SELFTEST_CELL_TOTAL = 65;
+const EXPECTED_SELFTEST_CELL_TOTAL = 66;
 const CELL_EXPECTATIONS = new Map([
   ['host-planted', 'primary=1/1 secondary=1/1'],
   ['host-substring', 'primary=0/1 secondary=1/1'],
@@ -723,6 +727,7 @@ const CELL_EXPECTATIONS = new Map([
   ['mac-home-planted', 'primary=1/1 secondary=1/1'],
   ['mac-home-relative', 'primary=0/1 secondary=1/1'],
   ['short-host-token', `scanner=broken runtime_scanned=1/1 runtime_guard_errors=0/2 source=argument token_length=5/${MIN_HOST_TOKEN_LENGTH}_minimum configured_errors=1/1`],
+  ['loopback-machine-host', 'loopback=0/2 named=1/1 configured=1/1'],
   ['host-token-ceiling', `scanner=broken source=repository-variable matching_files=26/${HOST_TOKEN_FILE_CEILING}_ceiling token_length=${SELFTEST_HOST.length}/${MIN_HOST_TOKEN_LENGTH}_minimum errors=1/1`],
   ['binary-skip', 'files_scanned=1/1 binary_skipped=1/1'],
   ['production-main-wiring', 'exit=0/0 configuration_errors=0/0 machine_source_errors=0/0 skip_accounting_errors=0/0 skip_rows=1/1 unique_skip_paths=1/1 binary_skipped=1/1'],
@@ -1201,6 +1206,28 @@ const SELFTEST_CELLS = [
     },
   },
   // SELFTEST_CELL short-host-token END
+  // SELFTEST_CELL loopback-machine-host START
+  {
+    id: 'loopback-machine-host',
+    measure: () => {
+      // A runtime name of `localhost`, in any case, yields no token. A named host keeps its token,
+      // and `configured` shows the same text is still matched once `localhost` is configured.
+      const loopbackText = 'open http://localhost:3000 now';
+      const hostNames = (text, tokens) =>
+        findings(text, 'fixture', tokens).filter((finding) => finding.rule === 'host-name').length;
+      const loopback = ['localhost', 'LocalHost'].reduce(
+        (sum, name) => sum + hostNames(loopbackText, hostTokenConfiguration(name, [], []).hostTokens),
+        0,
+      );
+      const named = hostNames(`connect ${SELFTEST_HOST} now`, hostTokenConfiguration(SELFTEST_HOST, [], []).hostTokens);
+      const configured = hostNames(loopbackText, hostTokenConfiguration('localhost', [], ['localhost']).hostTokens);
+      return {
+        actual: `loopback=${loopback}/2 named=${named}/1 configured=${configured}/1`,
+        pass: loopback === 0 && named === 1 && configured === 1,
+      };
+    },
+  },
+  // SELFTEST_CELL loopback-machine-host END
   // SELFTEST_CELL host-token-ceiling START
   {
     id: 'host-token-ceiling',
