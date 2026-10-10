@@ -795,6 +795,10 @@ export async function runCodexHost(): Promise<void> {
     binding = true;
     try {
       const path = await waitForRollout(codexHome, threadId, { attempts, intervalMs: attempts > 1 ? 250 : 0 });
+      // A holder adopted on the way out is one nothing closes, and its start races `agent.stop()`.
+      // Shutdown's own drain and the boundary its interrupt delivers both call in here, and a
+      // launch's look can still be waiting when the shutdown begins.
+      if (shuttingDown) return;
       if (eventsThread !== threadId) return; // a newer thread arrived while this one waited
       if (path === undefined) {
         // THE PREDECESSOR IS STILL ENDED. Giving up on the new thread's file says nothing about the
@@ -824,6 +828,9 @@ export async function runCodexHost(): Promise<void> {
       // CAPTURED HERE, BEFORE THE ANNOUNCEMENT, and that placement is the fix. See
       // `BoundStartSource` for why the emitter cannot be left to position itself later.
       const startCursor = (await new JsonlFileSource<CodexRecord>(path).read(undefined)).cursor;
+      // Again after the last await: a shutdown that began during the drain or this read has already
+      // run its own drain, so the holder below would be one nothing closes.
+      if (shuttingDown) return;
       events = newEventHolder(startCursor);
       rollout = path;
       events.adopt(path);
