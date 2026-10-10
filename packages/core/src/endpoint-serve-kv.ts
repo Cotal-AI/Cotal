@@ -2,9 +2,8 @@
  * The §13.1 endpoint-serve CREDENTIAL LIFECYCLE over a plain KV — the shared core home for the
  * endpoint credential family (`epgate.<endpoint>.<instanceId>` + `epcred.<endpoint>.<instanceId>.
  * <credentialId>`) so BOTH the auth session ledger and the manager's endpoint-serve wiring drive
- * ONE implementation (fact H3 / P2 item 1 "1a-gate"; the manager cannot import
- * implementations/auth, AGENTS.md one-way deps, so the KV binding lives in core — the same
- * guarded-core lift as the Unit B lifecycle-saga).
+ * ONE implementation (the manager cannot import implementations/auth, AGENTS.md one-way deps, so
+ * the KV binding lives in core — the same guarded-core lift as `lifecycle-saga.ts`).
  *
  * This module is the raw-KV credential-ledger primitives + the endpoint-serve mint fence + the
  * production issuance barrier. It carries NO auth-store branding: a caller supplies the bound KV +
@@ -111,7 +110,7 @@ export async function readEndpointGateGeneration(
  *  (`mintCreds`, profile `endpoint-serve`) fences its release on: it stages the per-JWT `epcred.
  *  <endpoint>.<instanceId>.<credentialId>` row, then a revision-pinned identical-bytes TOUCH of the
  *  `epgate.<endpoint>.<instanceId>` key (a barrier that moved the gate since observation makes the
- *  mint LOSE). Lifted from the auth session ledger (fact H3) so both the auth session redemption
+ *  mint LOSE). Lifted from the auth session ledger so both the auth session redemption
  *  and the manager's endpoint-serve wiring drive ONE fence; the auth `kvServeIssuanceGate` wraps
  *  this by unwrapping its branded `SessionAuthStore` to `(kv, space)`. `space` is carried on the
  *  observed gate for the core mint's space-bond defense (the KV IS the space bucket). */
@@ -360,7 +359,7 @@ export async function provisionEndpointGateOpen(
  *  eviction cannot be VERIFIED ⇒ report not-verified" — so the saga's own guard leaves the
  *  gate FROZEN for reconciliation on a takeover with no real evictor, never silently reopening into
  *  split-brain. It is ONLY consulted on a NON-EMPTY family (a takeover); a fresh registration's
- *  empty family never invokes it, so this default never touches the 1a-gate path — it enforces the
+ *  empty family never invokes it, so this default never touches a first registration — it enforces the
  *  guard the moment a live predecessor exists. A caller with the real $SYS evictor injects it. The
  *  freeze/reopen CAS is the real fence: a barrier that moved the gate makes a racing mint LOSE. */
 export function endpointRegistrationBarrier(
@@ -398,7 +397,7 @@ export function endpointRegistrationBarrier(
         const led = parseLedgerRow(entry.value, rowKey);
         // Reconstruct the EpServeLedgerRow the barrier consumers need: revoke keys by credentialId,
         // evict by holderPrincipal, the revoke loop reads state. The gate-coordinate fields and the
-        // holder nkey (`credentialKey`) are NOT persisted on the ledger row (fact H3) — the
+        // holder nkey (`credentialKey`) are NOT persisted on the ledger row — the
         // coordinates are pinned by the gate key, and revoke/evict never need the nkey; carried as
         // the observed gate's coordinates + empty credentialKey, documented, not consumed here.
         rows.push({

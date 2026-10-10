@@ -2326,14 +2326,11 @@ export class CotalEndpoint extends EventEmitter {
   /** Serve control requests for a service. Returns the subscription so a caller that re-registers on
    *  reconnect (the delivery daemon) can drop the stale one. `boundReply` is REQUIRED for any service
    *  whose responder holds a wildcard publish grant over the service subtree (the delivery daemon's
-   *  `ctl.delivery.*.reply.>`): without it, an authenticated caller could set its reply target to a
+   *  `ctl.delivery.*.*.reply.>`): without it, an authenticated caller could set its reply target to a
    *  PEER's reply lane (`ctl.delivery.<victim>.reply.<n>`) and turn the responder into a confused
    *  deputy — the broker does NOT permission-check the requester's embedded reply subject. With it, a
    *  reply is published only when `m.reply` is under the AUTHENTICATED request subject
-   *  (`${m.subject}.reply.…`), binding the reply to the broker-policed sender token. The manager's three
-   *  lifecycle tiers ALSO require it as of closure (i): they reply on bounded `ctl.<tier>.<caller>.reply.…`
-   *  (the manager cred holds the wildcard `ctl.<tier>.*.reply.>` pub — exactly the confused-deputy
-   *  condition above), so do NOT drop `boundReply` on them. */
+   *  (`${m.subject}.reply.…`), binding the reply to the broker-policed sender token. */
   serveControl(
     service: string,
     handler: (req: ControlRequest) => Promise<ControlReply> | ControlReply,
@@ -2397,16 +2394,10 @@ export class CotalEndpoint extends EventEmitter {
 
   /** Send a control request to a service and await its reply (client side). Like {@link requestDelivery},
    *  the reply rides a BOUNDED subject UNDER the request subject (`ctl.<service>.<id>.reply.<uuid>`), not
-   *  the per-id `_INBOX` — closure (i): this frees the manager's permission set from needing a position-1
-   *  inbox wildcard, so its publish surface can be an exact self-scoped allow-list (no message forging).
+   *  the per-id `_INBOX`.
    *  `noMux` lets us name the reply subject while keeping NoResponders detection. The random suffix is
    *  defense-in-depth (a predictable suffix would let a peer target an in-flight named reply sub). The
-   *  reply sits under the sender's OWN request subject, so the responder's `boundReply` guard accepts it.
-   *
-   *  CUTOVER (not backward-compatible): an agent cred minted BEFORE closure (i) lacks the
-   *  `ctl.<tier>.<id>.reply.>` sub grant — it can still publish the request but cannot subscribe the
-   *  reply, so its control calls (spawn/despawn/purge/definePersona, self-stop) hang. The per-user-auth
-   *  atomic cutover re-mints every agent; if this change ships ahead of that, agents must be RESPAWNED. */
+   *  reply sits under the sender's OWN request subject, so the responder's `boundReply` guard accepts it. */
   async requestControl(
     service: string,
     req: ControlRequestInit,
@@ -2495,7 +2486,7 @@ export class CotalEndpoint extends EventEmitter {
     return svc;
   }
 
-  /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
+  /** GENERIC v0.4 service invoke over this endpoint's own connection: resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
    *  resolve is describe-bound currency, and a call that reaches the wrong incarnation is recovered
@@ -2675,7 +2666,7 @@ export class CotalEndpoint extends EventEmitter {
         throw e;
       }
     };
-    // P2 item 2 (2b): a goal-bearing command (spawn/launch) follows its acceptance to the terminal so
+    // A goal-bearing command (spawn/launch) follows its acceptance to the terminal so
     // the caller still returns on the real outcome (UX unchanged); every other command replies directly.
     if (!opts.follow) return doInvoke(await resolveFirst());
     // Resolved before the submission starts: the follow reports an unmarked failure inside the
@@ -2688,8 +2679,8 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Send a durable-membership request to the SERVER-SIDE delivery daemon (`ctl.delivery`) and await its
-   *  reply. Unlike {@link requestControl}, the reply rides a subject UNDER `ctl.delivery.<id>.>` (not the
-   *  per-id `_INBOX`), so the scoped delivery cred can answer without broad inbox-publish — see
+   *  reply. The reply rides a subject UNDER `ctl.delivery.<id>.>` (not the per-id `_INBOX`), so the
+   *  scoped delivery cred can answer without broad inbox-publish — see
    *  CONTROL_DELIVERY. `noMux` lets us name the reply subject while keeping NoResponders detection (so a
    *  caller can fail-closed vs. degrade to live-only when no daemon is present). */
   private async requestDelivery(op: string, args: Record<string, unknown>, timeoutMs = 5000): Promise<ControlReply> {
@@ -4311,7 +4302,7 @@ export class CotalEndpoint extends EventEmitter {
    *  ({@link managerLeaseKey}). THROWS only if that SAME instance id already holds a live key (a same-root
    *  concurrent double-start, or a restart racing the crashed predecessor's not-yet-expired key) — a loud
    *  refusal, never a retry. A DIFFERENT instance (second workspace root ⇒ different id) creates its OWN
-   *  key and coexists (P2 item 3 demotion). A crashed holder's key auto-expires (bucket TTL). Returns the
+   *  key and coexists. A crashed holder's key auto-expires (bucket TTL). Returns the
    *  lease revision (for renew). */
   async acquireManagerLease(info: Omit<ManagerLeaseInfo, "since">): Promise<number> {
     return (await this.managerLeaseRegistry()).create(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }));

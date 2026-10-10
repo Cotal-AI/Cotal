@@ -122,7 +122,7 @@ export function epGoalProgressGrantRow(space: string, endpoint: string, caller: 
  *  it), so a `handle`-mode capability is refused here: handle rows are redemption-minted only
  *  (§13.2/§13.6), built by the redemption path through {@link epRequestGrantRows} directly.
  *  A goal-bearing capability ({@link GOAL_BEARING_COMMANDS}: spawn/launch) adds ONE per-endpoint
- *  {@link epGoalProgressGrantRow} — the caller may follow its OWN goal to terminal (P2 item 2, Q1);
+ *  {@link epGoalProgressGrantRow} — the caller may follow its OWN goal to terminal;
  *  it is the one read an invoke implies, because the subject pins the caller's own triple. Still
  *  NOT included: any OTHER `epe` subtree — those are minted per read capability by the granting
  *  authority (Appendix B), not implied by an invoke. */
@@ -251,8 +251,8 @@ export const MANAGER_ADMIN_COMMANDS = Object.freeze([
 ] as const);
 
 /** The ACTION commands (§13.6): submitting one accepts a GOAL, so the caller may follow its OWN
- *  goal progress (P2 item 2). `spawn` (create) and `launch` (manifest) both serve as actions on
- *  the manager endpoint since 2a; a caller holding one of these capabilities is granted the
+ *  goal progress. `spawn` (create) and `launch` (manifest) both serve as actions on
+ *  the manager endpoint; a caller holding one of these capabilities is granted the
  *  per-goal live-progress read for that endpoint ({@link epGoalProgressGrantRow}), the one read an
  *  invoke DOES imply because it is bounded to the caller's OWN goal subtree. */
 export const GOAL_BEARING_COMMANDS = Object.freeze(["spawn", "launch"] as const);
@@ -392,7 +392,7 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin", cal
   const caps: EpCapability[] = [
     ...MANAGER_READ_SNAP.map((command) => ({
       endpoint: BASELINE_LIFECYCLE_ENDPOINT, command,
-      // `ps` is the CLASS-SCATTER read (P2 item 3, `cotal ps` default): the instrument publishes it
+      // `ps` is the CLASS-SCATTER read (the `cotal ps` default): the instrument publishes it
       // on the `all` scatter rail to gather every instance's rows in a multi-manager space. `slots`
       // (`cotal ps --slots`, #1274) scatters the same way, one durable-row list per manager. The
       // other reads stay `one`-only (anycast, or `inst` when a resolve pins `--on`).
