@@ -1,6 +1,6 @@
 /** Real broker and registered endpoint with two separately scoped caller credentials.
  * Provider effects are counted by a stand-in; tenki.live.ts covers the real provider separately. */
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { freePort, teardownOnSignal, killAndAwaitExit, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { freePort, teardownOnSignal, killAndAwaitExit, SMOKE_BROKER_TOKEN, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import {
   contractDigest, createEndpointStreams, recordsBucket, epAuthBucket, mintLifecycleUid,
   provisionEndpointGateOpen, endpointRegistrationBarrier, registerServiceInstance, authorizeServeGrant,
@@ -17,6 +17,9 @@ import {
 } from "@cotal-ai/core";
 import { EnvironmentService, environmentKvStore, environmentClusterArtifacts, environmentCommandDefs, serveEnvironmentEndpoint, type EnvironmentView } from "../src/index.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 const space = "environmentwire";
 const endpoint = "test.example.environments";
 const caller: EpCaller = { owner: "local", actor: "caller", uid: mintLifecycleUid() };
@@ -120,3 +123,4 @@ try {
   release();
   await rm(directory, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

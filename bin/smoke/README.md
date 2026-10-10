@@ -93,8 +93,14 @@ the declared package builds. Build a fresh checkout before running `pnpm test`;
 some package tests also rebuild their own outputs.
 
 `pnpm test` includes deterministic unit checks and integration checks using files,
-sockets, processes, PTYs, native modules and bundles. It does not replace the full
-smoke gate's broker, manager and agent scenarios.
+sockets, processes, PTYs, native modules and bundles. It needs no `nats-server` on
+PATH. Broker-backed suites belong in `smoke:ci`, with root scripts and CI fragments.
+Both Linux and Windows smoke jobs install the broker before running those shards.
+
+The environment package's contract checks run in `pnpm test`. Its lifecycle and
+registered-endpoint checks run as `smoke:environment-service` and
+`smoke:environment-wire` in `smoke:ci`. Each starts a real private broker. The package's
+`smoke` command runs both directly and requires `nats-server` on PATH.
 
 ## Packing seat from a checkout
 
