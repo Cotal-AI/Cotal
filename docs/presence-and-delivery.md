@@ -168,7 +168,9 @@ ids) ride the wire, so the match survives reconnects.
 **Deriving the mode.** A receiver derives how a message was addressed (channel / dm /
 anycast) from the *delivering subject*, never from payload fields: the payload is
 advisory and forgeable, while the subject is broker-policed
-([SPEC §4](../SPEC.md#4-delivery-modes), [identity & auth](identity-and-auth.md)).
+([SPEC §4](../SPEC.md#4-delivery-modes), [identity & auth](identity-and-auth.md)). The
+reference endpoint also hands a delivered message to its listeners with the one routing field
+its subject names (`channel`, `to` or `toService`) set from that subject and the other two removed.
 
 **How the block is framed.** Delivered messages arrive as one block: a header, the items,
 and a tail. The tail names the *order of operations* - do what was asked with your own

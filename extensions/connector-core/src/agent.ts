@@ -1300,9 +1300,8 @@ export class MeshAgent extends EventEmitter {
 
   /** Normalize a wire message into an {@link InboxItem}. `kind` is the **authenticated** class
    *  from {@link MessageMeta} (subject-derived), never the forgeable payload `to`/`toService`;
-   *  core has already normalized `channel` from the authenticated chat subject, while `service`
-   *  remains a payload display label. Shared by live ingest and
-   *  focus recall ({@link recallAmbient}). */
+   *  core has already normalized `channel` and `toService` from the authenticated chat and svc
+   *  subjects. Shared by live ingest and focus recall ({@link recallAmbient}). */
   private toInboxItem(m: CotalMessage, kind: InboxItem["kind"], historical: boolean): InboxItem {
     const text = partsToText(m.parts);
     return {

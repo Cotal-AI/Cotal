@@ -67,9 +67,8 @@ export function fmtBody(text: string): string {
 /**
  * One message as one line: the attribution in brackets, then the body.
  *
- * The sender is not the only peer-controlled field inside these brackets. `toService` is written by
- * the publisher and is not checked against the subject it arrived on, and a channel label is
- * rewritten by the subject token on the official paths but not on every path that can reach a
+ * The sender is not the only peer-controlled field inside these brackets. A role or channel label
+ * is rewritten by the subject token on the official paths but not on every path that can reach a
  * renderer. Both are neutralized HERE so the rule holds without depending on which upstream path
  * validated what.
  */

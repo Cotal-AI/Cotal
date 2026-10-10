@@ -6735,6 +6735,7 @@ function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
 function authenticatedMessage<M extends CotalMessage>(msg: M, parsed: ParsedSubject): CotalMessage & M {
   if (parsed.kind === "chat") return authenticatedChannelMessage(msg, parsed.rest);
   if (parsed.kind === "inst") return authenticatedDmMessage(msg, parsed.rest);
+  if (parsed.kind === "svc") return authenticatedAnycastMessage(msg, parsed.rest);
   return msg;
 }
 
@@ -6748,6 +6749,12 @@ function authenticatedDmMessage<M extends CotalMessage>(msg: M, to: string): Cot
   if (msg.to === to && (msg as CotalMessage).channel === undefined && msg.toService === undefined) return msg;
   const { channel: _channel, toService: _toService, ...base } = msg;
   return { ...base, to } as CotalMessage & M;
+}
+
+function authenticatedAnycastMessage<M extends CotalMessage>(msg: M, toService: string): CotalMessage & M {
+  if (msg.toService === toService && msg.to === undefined && (msg as CotalMessage).channel === undefined) return msg;
+  const { to: _to, channel: _channel, ...base } = msg;
+  return { ...base, toService } as CotalMessage & M;
 }
 
 /** The ack wait the broker reports for a bound consumer: how long a copy it delivers stays with
