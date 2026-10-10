@@ -125,6 +125,8 @@ const AJV_PROFILE_OPTIONS = Object.freeze({
   // a caller starts reading `errors.length`, or a verdict diverges between the settings — this
   // pin must be re-measured before it stays.
   allErrors: true,
+  // JSON members are own properties. Host prototype names never satisfy required/properties.
+  ownProperties: true,
   validateFormats: false,
   loadSchema: undefined,
   // PINNED, never inherited from Ajv's default: the safe-pattern analyzer models `/u`
