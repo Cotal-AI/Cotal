@@ -17,6 +17,7 @@ import {
   unansweredRequest,
   resolveAuthProvider,
   peerLabel,
+  personaDir,
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
@@ -628,7 +629,7 @@ function personaSummary(root: string): string {
  *  as an unknown spawn root, matching the unreadable-auth / multi-space / corrupt-record paths
  *  above, which all describe the failure and continue. */
 function printPersonas(root: string, cmd: string, selected: Selected, values: FlagValues<typeof statusFlags>): void {
-  const folder = personasDirOf(root);
+  const folder = personaDir(root);
   if (!selected.ok) {
     // No single mesh resolves, so there is no root a bare spawn would use, and this catalog cannot
     // be claimed to be it. Report the folder as the folder, and refuse to imply launchability.
@@ -654,13 +655,6 @@ function printPersonas(root: string, cmd: string, selected: Selected, values: Fl
   );
   row("→ launches", `${personaSummary(selected.target.root)} ${c.dim(`· space ${selected.target.space} · via ${selected.target.source}`)}`);
   row("hint", `a bare \`${cmd} spawn\` uses the mesh above, NOT this folder - personas in ${folder} will not launch until you run it from that mesh's root or select it (\`${cmd} use <space>\`${values.space ? "" : ", or pass `--space`"})`);
-}
-
-/** `<root>/.cotal/agents` — the persona catalog of a root. Spelled here to match the
- *  `personaRoot` the resolver puts on every target, so the two sides of the comparison below are
- *  the same construction and cannot drift apart. */
-function personasDirOf(root: string): string {
-  return join(root, ".cotal", "agents");
 }
 
 /** Do two catalog paths denote the SAME directory? `canonicalRoot` (realpath, `resolve` fallback

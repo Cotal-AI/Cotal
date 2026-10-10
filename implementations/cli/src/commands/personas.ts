@@ -5,6 +5,7 @@ import {
   agentFilePath,
   assertValidName,
   loadAgentFile,
+  personaDir,
   saveAgentFile,
   type AgentDef,
   type CompletionResult,
@@ -12,7 +13,7 @@ import {
 } from "@cotal-ai/core";
 import { isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
-import { listPersonas, listPersonaNames, personasDir } from "../lib/personas.js";
+import { listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { c } from "../ui.js";
 
@@ -139,7 +140,7 @@ async function list(verbose: boolean, running: boolean, values: ConnectValues): 
   const entries = listPersonas(root);
   if (!entries.length) {
     console.log(
-      c.dim(`no personas in ${personasDir(root)}\n`) +
+      c.dim(`no personas in ${personaDir(root)}\n`) +
         c.dim('create one:  cotal personas new <name> --prompt "<who they are>"'),
     );
     return;

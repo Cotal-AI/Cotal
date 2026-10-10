@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { DEFAULT_SERVER, DEFAULT_SPACE, type SpaceAuth } from "@cotal-ai/core";
+import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
 import {
   canonicalRoot,
@@ -154,11 +154,8 @@ export function isWorkspaceTargetError(e: unknown): e is MeshTargetError {
   );
 }
 
-/** `<root>/.cotal/agents` — a mesh's persona catalog. Exported because registration
- *  (`cotal meshes add`) builds a target by hand and must resolve it to the same path this does. */
-export function personaDir(root: string): string {
-  return join(root, ".cotal", "agents");
-}
+// Core owns the catalog location; re-exported so workspace consumers keep it beside `personaRoot`.
+export { personaDir };
 
 /** Load a space's composed trust, converting a COMPOSITION failure into a typed target error. The
  *  record can pass the on-disk shape gate yet fail to compose - a malformed account JWT, or a

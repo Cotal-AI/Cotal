@@ -1,6 +1,6 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { loadAgentFile, type AgentDef } from "@cotal-ai/core";
+import { loadAgentFile, personaDir, type AgentDef } from "@cotal-ai/core";
 
 /**
  * The persona catalog: the local `.cotal/agents/*.md` files an operator manages with
@@ -35,15 +35,10 @@ export interface PersonaEntry {
   error?: string;
 }
 
-/** The directory persona files live in: `<root>/.cotal/agents`. */
-export function personasDir(root: string): string {
-  return join(root, ".cotal", "agents");
-}
-
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
  *  throw). Returns `[]` when the directory is absent. Filesystem-only — no mesh, no network. */
 export function listPersonas(root: string): PersonaEntry[] {
-  const dir = personasDir(root);
+  const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
