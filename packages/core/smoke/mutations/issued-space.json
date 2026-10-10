@@ -1,0 +1,44 @@
+{
+  "suite": [
+    "packages/core/smoke/issued-space.smoke.ts"
+  ],
+  "guard": "Issued-authority space coordinates use the canonical routing-token grammar without rewriting input. Endpoint names retain their DNS grammar.",
+  "command": "pnpm smoke:issued-space",
+  "completionMarker": "ISSUED SPACE SMOKE",
+  "progressPattern": "  \u2713 ",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/issued-space.json",
+  "mutations": [
+    {
+      "name": "reference regresses to the DNS endpoint grammar",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "function refSnapshot(value: IssuedAuthorityRef): IssuedAuthorityRef {\n  closed(value, [\"space\", \"owner\", \"actor\", \"uid\", \"generation\"], \"issued reference\");\n  assertIssuedSpace(value.space);",
+      "replace": "import { endpointToken } from \"./endpoint-subjects.js\";\nfunction refSnapshot(value: IssuedAuthorityRef): IssuedAuthorityRef {\n  closed(value, [\"space\", \"owner\", \"actor\", \"uid\", \"generation\"], \"issued reference\");\n  endpointToken(value.space);",
+      "expectRed": "issued reference accepts a canonical underscore space unchanged",
+      "cell": "issued reference accepts a canonical underscore space unchanged"
+    },
+    {
+      "name": "source regresses to the DNS endpoint grammar",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "function sourceSnapshot(value: IssuedSourceRef): IssuedSourceRef {\n  closed(value, [\"space\", \"bucket\", \"key\"], \"issued source\");\n  assertIssuedSpace(value.space);",
+      "replace": "import { endpointToken } from \"./endpoint-subjects.js\";\nfunction sourceSnapshot(value: IssuedSourceRef): IssuedSourceRef {\n  closed(value, [\"space\", \"bucket\", \"key\"], \"issued source\");\n  endpointToken(value.space);",
+      "expectRed": "issued source accepts a canonical underscore space unchanged",
+      "cell": "issued source accepts a canonical underscore space unchanged"
+    },
+    {
+      "name": "store regresses to the DNS endpoint grammar",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): IssuedStore {\n  assertIssuedSpace(space);",
+      "replace": "import { endpointToken } from \"./endpoint-subjects.js\";\nexport function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): IssuedStore {\n  endpointToken(space);",
+      "expectRed": "issued store accepts a canonical underscore space unchanged",
+      "cell": "issued store accepts a canonical underscore space unchanged"
+    },
+    {
+      "name": "malformed space is silently sanitized instead of refused",
+      "file": "packages/core/src/issued-authority.ts",
+      "find": "  if (typeof space !== \"string\" || space.length === 0 || token(space) !== space)",
+      "replace": "  if (typeof space !== \"string\" || space.length === 0)",
+      "expectRed": "issued reference rejects wildcard separator whitespace and malformed spaces",
+      "cell": "issued reference rejects wildcard separator whitespace and malformed spaces"
+    }
+  ]
+}

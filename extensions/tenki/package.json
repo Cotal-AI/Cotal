@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/tenki",
   "description": "Tenki environment provisioning adapter for Cotal.",
-  "version": "0.78.1",
+  "version": "0.79.0",
   "license": "Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/Cotal-AI/Cotal.git", "directory": "extensions/tenki" },
   "type": "module",

@@ -790,7 +790,7 @@ try {
       writeFileSync(join(workspaceRoot, ".cotal", "run", `${m6Run}.json`), JSON.stringify({
         apiVersion: "cotal-launch/v1", space, runId: m6Run,
         agents: [{
-          name: "m6pin", agent: "e2e-stub", subscribe: ["general"],
+          name: "m6pin", agent: "e2e-stub", events: false, subscribe: ["general"],
           allowSubscribe: ["general"], allowPublish: [], hash: "m6hash",
         }],
       }));

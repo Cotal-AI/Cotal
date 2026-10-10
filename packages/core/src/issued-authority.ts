@@ -33,10 +33,16 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { isCasLoss } from "./endpoint-records.js";
-import { assertGeneration, callerTokens, endpointToken, type EpCaller } from "./endpoint-subjects.js";
+import { assertGeneration, callerTokens, type EpCaller } from "./endpoint-subjects.js";
 export { assertGeneration, isIssuedCaller, EP_RAIL_V1, type IssuedCaller } from "./endpoint-subjects.js";
 import type { IssuedCaller } from "./endpoint-subjects.js";
 import { subjectMatches, token } from "./subjects.js";
+
+/** Issued coordinates carry a canonical space token, never a lossy display-name rewrite. */
+function assertIssuedSpace(space: string): void {
+  if (typeof space !== "string" || space.length === 0 || token(space) !== space)
+    throw new Error("issued space must be a nonempty canonical subject token ([A-Za-z0-9_-])");
+}
 
 // ---- the reference -------------------------------------------------------------------------------
 
@@ -59,7 +65,7 @@ export function mintAcceptedToken(): string {
 
 function refSnapshot(value: IssuedAuthorityRef): IssuedAuthorityRef {
   closed(value, ["space", "owner", "actor", "uid", "generation"], "issued reference");
-  endpointToken(value.space);
+  assertIssuedSpace(value.space);
   callerTokens(value);
   assertGeneration(value.generation);
   return Object.freeze({ space: value.space, owner: value.owner, actor: value.actor, uid: value.uid, generation: value.generation });
@@ -261,7 +267,7 @@ export function issuedAttemptKey(ref: IssuedAuthorityRef): string {
 
 function sourceSnapshot(value: IssuedSourceRef): IssuedSourceRef {
   closed(value, ["space", "bucket", "key"], "issued source");
-  endpointToken(value.space);
+  assertIssuedSpace(value.space);
   if (typeof value.bucket !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(value.bucket)
     || typeof value.key !== "string" || value.key.length > 1024
     || !/^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)*$/.test(value.key))
@@ -392,7 +398,7 @@ const dec = new TextDecoder("utf-8", { fatal: true });
 const bytes = (value: unknown): Uint8Array => enc.encode(canonicalJson(value));
 
 export function openIssuedStore(kv: KV, jsm: JetStreamManager, space: string): IssuedStore {
-  endpointToken(space);
+  assertIssuedSpace(space);
   const bucket = issuedBucket(space);
   const stream = `KV_${bucket}`;
   const staged = new WeakMap<PreparedIssuance, { evidence: IssuedEvidence; revision: number; digest: string; consumed: boolean }>();

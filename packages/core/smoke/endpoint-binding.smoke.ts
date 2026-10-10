@@ -222,10 +222,13 @@ throws("AFTER the attempted mutations the exact lifecycle head STILL refuses (th
 // consumers read private module-load snapshots.
 c("the baseline/spawn command vocabularies are frozen",
   [BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS].every((a) => Object.isFrozen(a)));
+const baselineBeforePush = JSON.stringify(baselineCallerCapabilities());
+const spawnBeforePush = JSON.stringify(spawnCallerCapabilities("u_abc"));
 throws("pushing a command into the baseline vocabulary throws (no post-import grant widening)",
   () => (BASELINE_SELF_LIFECYCLE_COMMANDS as unknown as string[]).push("attach"));
 c("the minted baseline/spawn surfaces are unchanged after the attempted push (private snapshots)",
-  baselineCallerCapabilities().length === 7 && spawnCallerCapabilities("u_abc").length === 8);
+  JSON.stringify(baselineCallerCapabilities()) === baselineBeforePush
+  && JSON.stringify(spawnCallerCapabilities("u_abc")) === spawnBeforePush);
 c("CREDENTIAL_LIFETIMES and every policy are frozen",
   Object.isFrozen(CREDENTIAL_LIFETIMES) && Object.values(CREDENTIAL_LIFETIMES).every((p) => Object.isFrozen(p)));
 throws("nulling a one-shot TTL throws (a non-expiring provisioner credential cannot be minted in)",
