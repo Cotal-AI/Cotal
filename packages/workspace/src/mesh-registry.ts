@@ -287,12 +287,20 @@ export function removeMesh(space: string): void {
   removeMeshes([space]);
 }
 
-/** {@link removeMesh} for several meshes, with one pre-hex sweep for the whole batch. An empty batch
- *  touches nothing. */
-export function removeMeshes(spaces: readonly string[]): void {
-  if (spaces.length === 0) return;
-  for (const space of spaces) rmSync(meshFile(space), { force: true });
-  removeLegacyMeshFiles(new Set(spaces)); // else a pre-hex record would resurrect the mesh in every listing
+/** {@link removeMesh} for several meshes, with one pre-hex sweep for the whole batch. Each record is
+ *  removed as `spaces` yields it, before the next is pulled, so a generator can act on each removal
+ *  before the next one. An empty batch touches nothing. */
+export function removeMeshes(spaces: Iterable<string>): void {
+  const removed = new Set<string>();
+  try {
+    for (const space of spaces) {
+      rmSync(meshFile(space), { force: true });
+      removed.add(space);
+    }
+  } finally {
+    // Also when a removal fails partway: a pre-hex record would resurrect a removed mesh in every listing.
+    if (removed.size > 0) removeLegacyMeshFiles(removed);
+  }
 }
 
 /**
@@ -340,13 +348,19 @@ export function meshesForRoot(root: string): MeshEntry[] {
   return loadMeshes().filter((m) => canonicalRoot(m.root) === rootKey);
 }
 
-/** {@link removeMeshes}, then clear the `current` pointer if it names one of `spaces`. An empty batch
- *  touches nothing. */
+/** {@link removeMeshes}, clearing the `current` pointer once the entry it names is removed. An empty
+ *  batch touches nothing. */
 function removeMeshesReleasingCurrent(spaces: readonly string[]): void {
   if (spaces.length === 0) return;
-  removeMeshes(spaces);
   const current = getCurrent();
-  if (current && spaces.includes(current)) clearCurrent();
+  // Cleared right after its own entry, so a later entry's failure cannot leave it naming a removed record.
+  function* releasing(): Generator<string> {
+    for (const space of spaces) {
+      yield space;
+      if (space === current) clearCurrent();
+    }
+  }
+  removeMeshes(releasing());
 }
 
 /**
