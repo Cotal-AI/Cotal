@@ -1,5 +1,20 @@
 # @cotal-ai/connector-core
 
+## 0.79.0
+
+### Minor Changes
+
+- a09253b: The AG-UI emitter builds an error close's `RUN_ERROR` directly from the fixed `run failed` message, and `packUnits` bounds the closing frame as it does every other. The helper that could shorten an upstream failure detail behind a notice is gone: the close has passed only the fixed message since upstream detail stopped reaching the wire, so its truncation search never ran, and its notice-only fallback was larger than the event it replaced. A close whose envelope cannot fit still fails loud, now with `packUnits`' refusal. `takeCodePoints` is no longer exported, since the preview splitter is its only user. Code that imported it takes a string's first `n` code points with `Array.from(s).slice(0, n).join("")`.
+
+### Patch Changes
+
+- e8d37a4: Remove the unused `KNOWN_AGUI_EVENT_TYPES` set from the AG-UI module. Its doc comment described a classification role that `parseAguiFrame` already plays without it. The egress-guard differential cell that carried its name now says it counts the event types `AGUI_EVENT_TYPE` defines.
+- fdab89a: The `completion` section of the CLI page, which ships in the bundled docs, now shows how to enable completion in the current bash, zsh, fish or PowerShell session, lists the files `cotal completion install` writes for each shell along with the `XDG_CONFIG_HOME` and `ZDOTDIR` overrides it honors, and explains that the installed stub resolves candidates through the local `cotal __complete` dispatcher. No behavior changes.
+- 5500c71: The CLI reference now says what running `pnpm cotal` from a dev clone needs: a `pnpm build` first, because `bin/` loads the other packages from their built `dist/`, and `COTAL_SKIP_CONNECTOR_SEED=1` for everyday commands, which otherwise refuse the operator-global seed store from a checkout. It also notes that pointing `XDG_CONFIG_HOME` at a scratch dir is not enough on its own. Docs only.
+- 50747b1: A manager or delivery start that refuses a record it cannot attribute now names the pidfile it read. The cutover preflight, `spawn -f`, the delivery start and `service install` used to resolve the record's spelling a second time while formatting the refusal, so a record that moved between its space-keyed and pre-upgrade names in between was misnamed, and one that appeared beside the record that was read replaced the refusal and its `NEXT:` step with an ambiguous-record error. `readProcessRecord` in `@cotal-ai/workspace` now returns the path it read on every `ProcessRecord`, and `service status --json` reports that file as `manager.path`. The config and CLI pages describe both.
+- c9983e0: The connector's capacity limits now say what they bound. The inbox size, the overflow-evicted classification memory, the focus exclusion limit and the protected-disposition limit carry doc comments naming the structures each one caps, including that the focus limit bounds the exclusion list and the id-less copy tally separately. The in-flight hold ceiling, which was an unnamed twice-the-inbox expression, is now its own constant derived from the inbox size, and the endpoint notice log's cap of 16 is a named constant. No values or behavior change.
+- 4aafb0d: A manager call that fails with a thrown envelope error now returns the error's code and details, the same as a refusal that arrives as a reply. The CLI's control calls, `cotal spawn -f` and the connector's manager tools each converted the thrown error by hand and dropped the code, and two of them also dropped the details and the lifecycle-blocked suffix. A `cotal attach` reconnect therefore kept retrying a `permission-denied` or `not-found` raised on the caller side, such as a broker refusal, instead of stopping on it. Core now exports `controlReplyFromThrown`, and each caller keeps its own message.
+
 ## 0.78.1
 
 ## 0.78.0
