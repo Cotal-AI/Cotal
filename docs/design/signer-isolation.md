@@ -149,7 +149,7 @@ signer allowlist after §6, never as `cotal-agent`.
 | `delivery` | `runDelivery` `--dev-mint` (`implementations/delivery/src/delivery.ts`); production delivery reads a pre-minted cred and does not load the signer |
 | `run-mediator` / `run-admitter` | local `cotal run` (`implementations/runtime/src/run-command.ts`) from `conn.auth` |
 | `channel-purger` | `connectWithoutSeed` (`implementations/web/src/web.ts`), which returns the dashboard connection without `auth`, so no binding in `web()` holds the seed |
-| `session-serving` / `retirement-requester` / `endpoint-serve` / `remote-manager` / `goal-writer` / `session-ledger` | `mintPublicUserJwt` in `openAuthAuthorityPlane` (`implementations/auth/src/service.ts`): the `credential` helper at the `issueManagerServiceAuthority` arm, and the later session / retire / activate arms, each pass `{ space, account: { pub, signingSeed } }` |
+| `session-serving` / `retirement-requester` / `endpoint-serve` / `remote-manager` / `goal-writer` / `session-ledger` | `mintPublicUserJwt` in `openAuthAuthorityPlane` (`implementations/auth/src/service.ts`): the `credential` helper at the `issueManagerServiceAuthority` arm, and the later session / retire / activate arms, each pass `issuerAuth()`, the stripped `SpaceAuth` from `dataAccountAuth` (`store.ts`) |
 
 **Auth-service process.** It does not load the seed through `getSpaceAuth`. `runAuthService`
 (`implementations/auth/src/service.ts`) calls `loadServiceKeys` (`store.ts`), which requires
@@ -161,7 +161,7 @@ are not only JWT minting:
 |---|---|---|
 | JWT `encodeUser` | `startAuthCallout` (`callout.ts`) `fromSeed(opts.dataAccount.signingSeed)` as `userSigner` | connect-time user JWTs |
 | JWT `encodeUser` | `openAuthorityClient` (`authority-client.ts`) `fromSeed(opts.dataAccount.signingSeed)` | self-minted infra connections |
-| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) builds a stripped `SpaceAuth` and mints `supervisor` or `endpoint-evictor` | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`) |
+| JWT `mintCreds` | `withDeliveryAdminEndpoint` (`delivery-admin.ts`) mints `supervisor` or `endpoint-evictor` from `dataAccountAuth` (`store.ts`), the same stripped `SpaceAuth` the plane signs with | per-call delivery-admin evictors and liveness oracles (`barrier-evict.ts`, `plane-claim.ts`) |
 | JWT `openAuthorityClient` | `makeDrainRepairers` (`drain-repair.ts`) | per-repair applier credential |
 | JWT `mintPublicUserJwt` | `openAuthAuthorityPlane` (`service.ts`) `issueManagerServiceAuthority` | remote-manager user JWTs |
 | HMAC-SHA256 | `remoteManagerCurrentRegistrationProof` (`retained-manager-validation.ts`) `createHmac("sha256", secret)` | registration proof over a domain-separated payload |
@@ -279,7 +279,7 @@ manager start with a named error rather than signing in-process.
 ### 3.1 Smallest interface
 
 `mintCreds`, `mintPublicUserJwt`, `encodeUser` in `openAuthorityClient` / `startAuthCallout`,
-and the stripped `SpaceAuth` mint in `delivery-admin.ts` need the seed for
+and the stripped `SpaceAuth` from `dataAccountAuth` in `store.ts` need the seed for
 one call: `encodeUser`. `remoteManagerCurrentRegistrationProof` needs it for a different call:
 `createHmac("sha256", secret)` over a domain-separated prefix plus a JSON payload
 (`retained-manager-validation.ts`). Permission rows, lifetimes, issuance fences, and creds

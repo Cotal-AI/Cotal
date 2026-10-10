@@ -117,6 +117,7 @@ import {
   AUTH_PROVIDER_NAME,
   claimAuthInstanceIdentity,
   clearAuthServiceInfo,
+  dataAccountAuth,
   loadCalloutAuth,
   loadIssuer,
   loadOwnerSecret,
@@ -708,14 +709,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       throw new EpEnvelopeError("unavailable",
         `the auth service for space "${space}" is momentarily unavailable (it detected a fault and is restarting); retry shortly`);
   };
-  // The plane holds only the data account's signing key. The operator and system halves stay blank
-  // because core's mint reads only the space, the account pub and the signing seed.
-  const issuerAuth = (): SpaceAuth => ({
-    space,
-    operator: { seed: "", jwt: "" },
-    account: { pub: dataAccount.pub, seed: "", jwt: "", signingSeed: dataAccount.signingSeed, signingPub: "" },
-    sys: { pub: "", jwt: "" },
-  });
+  const issuerAuth = (): SpaceAuth => dataAccountAuth(space, dataAccount);
   // The source check the issuing host resolves with: an actor-ledger row is attested here, from the
   // ledger this service owns; every other coordinate goes to core's check (SPEC 13.15).
   const composedSourceIsLive = (session: IssuerSession) => (source: IssuedSourceRef): Promise<boolean> =>
@@ -917,7 +911,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           observeRun: (runId) => observeManagerRun(r, runId),
         }),
         issue: async ({ actors, request: r }) => {
-          const signer = { space, account: dataAccount };
           const bounded = (opts: Parameters<typeof mintPublicUserJwt>[3]) => {
             if (holder.supervisorExpiresAt === undefined) return opts;
             const now = Math.floor(Date.now() / 1000);
@@ -933,7 +926,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             actor: string,
             opts: Parameters<typeof mintPublicUserJwt>[3],
           ) => mintPublicUserJwt(
-            signer,
+            issuerAuth(),
             r.identities[key].id,
             profile,
             bounded({ ...opts, principal: { owner, actor }, lifecycleUid: r.managerLifecycleUid }),
@@ -989,7 +982,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const session = r.session!;
             const exp = Math.min(session.exp, Math.floor(Date.now() / 1000) + 24 * 60 * 60);
             credentials.sessionServing = await mintPublicUserJwt(
-              signer,
+              issuerAuth(),
               session.id,
               "session-serving",
               {
@@ -1006,7 +999,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             if (r.registrationProof !== expectedProof)
               throw new EpEnvelopeError("permission-denied", "manager-service transfer reader proof does not match this owner/lifecycle");
             credentials.transferReader = await mintPublicUserJwt(
-              signer,
+              issuerAuth(),
               r.transferReader!.id,
               "transfer-reader",
               { principal: { owner, actor: actors.serve }, lifecycleUid: r.managerLifecycleUid, transferReader: { instanceId: r.instanceId } },
@@ -1025,7 +1018,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               targetOwner: retirement.target.owner, serveEpoch: retirement.serveEpoch, gate: observed,
             });
             credentials.retirementRequester = await mintPublicUserJwt(
-              signer,
+              issuerAuth(),
               retirement.id,
               "retirement-requester",
               {
@@ -1057,7 +1050,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               expiresInSeconds: 5 * 60,
             });
             credentials.serve = await mintPublicUserJwt(
-              signer,
+              issuerAuth(),
               r.identities.serve.id,
               "endpoint-serve",
               bounded({
@@ -1091,13 +1084,13 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
               epoch: r.run!.epoch,
               owner,
             };
-            credentials.runDriver = await mintPublicUserJwt(signer, r.run!.driverId, "run-driver", bounded({
+            credentials.runDriver = await mintPublicUserJwt(issuerAuth(), r.run!.driverId, "run-driver", bounded({
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
               runDriver: binding,
               expiresInSeconds: standingTtl,
             }));
-            credentials.runMediator = await mintPublicUserJwt(signer, r.run!.mediatorId, "run-mediator", bounded({
+            credentials.runMediator = await mintPublicUserJwt(issuerAuth(), r.run!.mediatorId, "run-mediator", bounded({
               principal: { owner, actor: caller.actor },
               lifecycleUid: r.managerLifecycleUid,
               // Renewed with the placement the attempt was issued with (authorizeRemoteRunAttempt).
@@ -1119,7 +1112,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
             const observed = await gate.observe();
             if (!observed) throw new EpEnvelopeError("failed-precondition", "manager-service activation found no issuance gate");
             credentials.serve = await mintPublicUserJwt(
-              signer,
+              issuerAuth(),
               r.identities.serve.id,
               "endpoint-serve",
               bounded({
