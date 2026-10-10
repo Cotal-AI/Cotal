@@ -413,6 +413,8 @@
     "smoke:run-migration": "tsx packages/core/smoke/run-migration.smoke.ts",
     "smoke:ep-journal": "tsx packages/core/smoke/endpoint-journal.smoke.ts",
     "smoke:ep-binding": "tsx packages/core/smoke/endpoint-binding.smoke.ts",
+    "smoke:issued-space": "tsx packages/core/smoke/issued-space.smoke.ts",
+    "smoke:issued-space:live": "tsx packages/core/smoke/issued-space-live.smoke.ts",
     "smoke:failed-bind-cleanup": "tsx packages/core/smoke/failed-bind-cleanup.smoke.ts",
     "smoke:cas-publish": "tsx packages/core/smoke/cas-publish.smoke.ts",
     "smoke:cas-preflight-cluster": "tsx packages/core/smoke/cas-preflight-cluster.smoke.ts",
