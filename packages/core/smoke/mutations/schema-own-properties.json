@@ -1,0 +1,64 @@
+{
+  "suite": [
+    "packages/core/smoke/schema-own-properties.public.mjs"
+  ],
+  "guard": "JSON object validation does not treat inherited prototype names as JSON members",
+  "command": "pnpm --filter @cotal-ai/core build && node packages/core/smoke/schema-own-properties.public.mjs --gate partial",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/schema-own-properties.json",
+  "why": [
+    "The ownProperties option repairs M04-M08 in the twenty-case Node conformance corpus.",
+    "Each mutation removes the same shipped option and must redden its named public-API verdict.",
+    "The other fifteen verdicts remain outside the passing partial gate and are reported by the full gate."
+  ],
+  "completionMarker": "schema-own-properties completed",
+  "mutations": [
+    {
+      "name": "remove ownProperties so M04 notices inherited members again",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "  ownProperties: true,\n",
+      "replace": "",
+      "expectRed": "M04 normative verdict",
+      "cell": "M04 normative verdict",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && node packages/core/smoke/schema-own-properties.public.mjs --gate partial && node packages/core/smoke/schema-own-properties.public.mjs --gate controls"
+    },
+    {
+      "name": "remove ownProperties so M05 notices inherited members again",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "  ownProperties: true,\n",
+      "replace": "",
+      "expectRed": "M05 normative verdict",
+      "cell": "M05 normative verdict",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && node packages/core/smoke/schema-own-properties.public.mjs --gate partial && node packages/core/smoke/schema-own-properties.public.mjs --gate controls"
+    },
+    {
+      "name": "remove ownProperties so M06 notices inherited members again",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "  ownProperties: true,\n",
+      "replace": "",
+      "expectRed": "M06 normative verdict",
+      "cell": "M06 normative verdict",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && node packages/core/smoke/schema-own-properties.public.mjs --gate partial && node packages/core/smoke/schema-own-properties.public.mjs --gate controls"
+    },
+    {
+      "name": "remove ownProperties so M07 notices inherited members again",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "  ownProperties: true,\n",
+      "replace": "",
+      "expectRed": "M07 normative verdict",
+      "cell": "M07 normative verdict",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && node packages/core/smoke/schema-own-properties.public.mjs --gate partial && node packages/core/smoke/schema-own-properties.public.mjs --gate controls"
+    },
+    {
+      "name": "remove ownProperties so M08 notices inherited members again",
+      "file": "packages/core/src/schema-profile.ts",
+      "find": "  ownProperties: true,\n",
+      "replace": "",
+      "expectRed": "M08 normative verdict",
+      "cell": "M08 normative verdict",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && node packages/core/smoke/schema-own-properties.public.mjs --gate partial && node packages/core/smoke/schema-own-properties.public.mjs --gate controls"
+    }
+  ],
+  "grades": "tool",
+  "progressPattern": "^[ \\t]*[\u2713\u2717]",
+  "minTicks": 40
+}

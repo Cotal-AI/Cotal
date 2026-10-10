@@ -1,4 +1,4 @@
-import assert from "node:assert/strict";
+import nodeAssert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -6,10 +6,13 @@ import { tmpdir } from "node:os";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { awaitBrokerReady, freePort, teardownOnSignal, killAndAwaitExit, SMOKE_BROKER_TOKEN } from "@cotal-ai/smoke-kit";
+import { awaitBrokerReady, freePort, teardownOnSignal, killAndAwaitExit, SMOKE_BROKER_TOKEN, countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { contractDigest, isReachable, type EnvironmentProvisionDriver, type EnvironmentProvisionProfile, type EnvironmentObservation } from "@cotal-ai/core";
 import { EnvironmentService, environmentKvStore, environmentCommandDefs, environmentOperationId, type EnvironmentHost } from "../src/index.js";
 
+const counted = countedAssert(nodeAssert);
+const assert: typeof nodeAssert = counted.assert;
+const cells = counted.cells;
 const directory = await mkdtemp(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const port = await freePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -228,3 +231,4 @@ try {
   release();
   await rm(directory, { recursive: true, force: true });
 }
+emitSentinel({ passed: cells(), failed: 0 });

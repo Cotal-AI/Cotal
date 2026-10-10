@@ -11,7 +11,8 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/service.smoke.ts && tsx smoke/wire.smoke.ts",
+    "test": "tsx smoke/contract.smoke.ts",
+    "smoke": "tsx smoke/service.smoke.ts && tsx smoke/wire.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": { "@nats-io/kv": "^3.4.0", "@nats-io/transport-node": "^3.4.0" },

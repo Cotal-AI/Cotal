@@ -44,10 +44,13 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts",
+    "test": "tsx smoke/resolve.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/space-auth.smoke.ts && pnpm smoke:schema-own-properties && pnpm smoke:schema-own-properties-controls",
     "smoke:backup": "tsx smoke/backup.smoke.ts",
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "pnpm run build",
+    "smoke:schema-own-properties": "node smoke/schema-own-properties.public.mjs --gate partial",
+    "smoke:schema-own-properties-controls": "node smoke/schema-own-properties.public.mjs --gate controls",
+    "smoke:schema-conformance-20": "node smoke/schema-own-properties.public.mjs --gate full"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*"
