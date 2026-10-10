@@ -59,7 +59,9 @@ export function NeedsYou({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
-      // A card whose facts wrap past the box (a hostile condition code) is clipped, not drawn over the panes below.
+      // A card's rows never shrink, so one taller than the box (a short terminal, a hostile condition
+      // code) displaces the title and is then cut at the bottom, keeping its name row, rather than being
+      // squeezed or drawn over the panes below.
       overflowY="hidden"
     >
       <Text wrap="truncate-end">
@@ -74,7 +76,7 @@ export function NeedsYou({
           const selected = isFocused && start + i === selClamped;
           const label = peerLabel(p.card);
           return (
-            <Box key={p.card.id} flexDirection="column">
+            <Box key={p.card.id} flexDirection="column" flexShrink={0}>
               {selected ? (
                 <Text inverse bold color="cyan" wrap="truncate-end">
                   {STATUS.waiting.dot + " " + label + "  seen " + ago(p.ts)}

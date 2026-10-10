@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 512,
+    "total": 510,
     "honest-text": 35,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 408
+    "non-render/control": 406
   },
   "renderers": [
     {
@@ -1281,7 +1281,7 @@
     {
       "path": "implementations/cli/src/console/app.tsx",
       "kind": "derived-output",
-      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              wide={!narrow}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
+      "anchor": "{mode === \"dm\" ? (\n        <Dm\n          dms={mesh.signals.dms}\n          dmVisible={mesh.status.dmVisible}\n          width={size.cols}\n          height={bodyH}\n          narrow={narrow}\n          blocked={blocked}\n          onFocus={onFocus}\n        />\n      ) : mode === \"topo\" ? (\n        <Topo\n          feed={mesh.feed}\n          agents={mesh.agents}\n          membership={mesh.membership}\n          channels={mesh.channels}\n          nameOf={mesh.nameOf}\n          variant={topoVariant}\n          width={size.cols}\n          height={bodyH}\n          blocked={blocked}\n          onFocus={onFocus}\n          onOpenAgent={openAgent}\n          onOpenMessage={openMessage}\n        />\n      ) : (\n        <Box flexDirection={narrow ? \"column\" : \"row\"} height={bodyH}>\n          <Box flexDirection={narrow ? \"column\" : \"row\"} width={bodyW} height={bodyH}>\n            <Roster\n              agents={mesh.agents}\n              endpoints={mesh.endpoints}\n              query={search.query}\n              boxWidth={roster.w}\n              boxHeight={roster.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n              onKill={canControl ? handleKill : undefined}\n              onAttach={canControl ? (p) => handleAttach(p.card.name) : undefined}\n              harness={harness}\n              onCompose={canWrite ? rosterCompose : undefined}\n            />\n            <Feed\n              entries={mesh.feed}\n              activeChannel={activeChannel}\n              query={search.query}\n              boxWidth={feed.w}\n              boxHeight={feed.h}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openMessage}\n              onCompose={canWrite ? feedCompose : undefined}\n              onReply={canWrite ? feedReply : undefined}\n            />\n          </Box>\n          {railAsColumn ? (\n            <NeedsYou\n              waiting={mesh.signals.waiting}\n              boxWidth={railW}\n              boxHeight={bodyH}\n              blocked={blocked}\n              onFocus={onFocus}\n              onOpenDetail={openAgent}\n            />\n          ) : null}\n        </Box>\n      )}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1699,7 +1699,7 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "olumn\">\n        {line(<>{head}{tail}</>)}\n        {fac",
+      "anchor": "{head}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1707,20 +1707,6 @@
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
       "anchor": "{facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "/>\n  );\n  return line(<>{head}{status}{tail}</>);\n}\n\n/",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{status}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

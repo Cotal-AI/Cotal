@@ -35,7 +35,7 @@ export function factRow(row: FactRow, color: string | undefined, selected = fals
   );
 }
 
-function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean; facts?: FactRow[]; tag?: string }) {
+function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean; facts: FactRow[]; tag?: string }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
@@ -72,23 +72,12 @@ function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean
         {parts}
       </Text>
     );
-  if (facts)
-    return (
-      <Box flexDirection="column">
-        {line(<>{head}{tail}</>)}
-        {facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}
-      </Box>
-    );
-  const { condition, ages } = presenceFacts(p);
-  const status = selected ? (
-    condition + ages
-  ) : (
-    <>
-      {condition ? <Text>{condition}</Text> : null}
-      {ages ? <Text dimColor>{ages}</Text> : null}
-    </>
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {line(<>{head}{tail}</>)}
+      {facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}
+    </Box>
   );
-  return line(<>{head}{status}{tail}</>);
 }
 
 /** A seat's status word, or `endpoint`, then its condition and dated facts, for {@link wrapFacts}. */
@@ -109,7 +98,6 @@ export function Roster({
   query,
   boxWidth,
   boxHeight,
-  wide,
   blocked,
   onFocus,
   onOpenDetail,
@@ -123,7 +111,6 @@ export function Roster({
   query: string;
   boxWidth: number;
   boxHeight: number;
-  wide: boolean;
   blocked: boolean;
   onFocus: (id: "roster" | "feed") => void;
   onOpenDetail: (p: Presence) => void;
@@ -160,11 +147,11 @@ export function Roster({
     { isActive: isFocused && !blocked },
   );
 
-  // Wide, the roster is a capped side column, so a seat's status and dated facts wrap onto rows of
-  // their own under its head row rather than being cut, and the window counts those rows.
-  const facts = wide ? list.map((p) => wrapFacts(statusLine(p), boxWidth - 6)) : undefined; // border (2) + padding (2) + indent (2)
+  // A seat's status and dated facts wrap onto rows of their own under its head row, so no width
+  // cuts them, and the window counts those rows.
+  const facts = list.map((p) => wrapFacts(statusLine(p), boxWidth - 6)); // border (2) + padding (2) + indent (2)
   const [start, end] = windowAround(
-    list.map((_, i) => 1 + (facts?.[i].length ?? 0)),
+    facts.map((f) => 1 + f.length),
     selClamped,
     boxHeight - 3, // border (2) + title (1)
   );
@@ -178,7 +165,9 @@ export function Roster({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
-      // A seat whose facts wrap past the box (a hostile condition code) is clipped, not drawn over the panes below.
+      // A seat's rows never shrink, so one taller than the box (a short terminal, a hostile condition
+      // code) displaces the title and is then cut at the bottom, keeping its name row, rather than being
+      // squeezed or drawn over the panes below.
       overflowY="hidden"
     >
       <Text wrap="truncate-end">
@@ -197,7 +186,7 @@ export function Roster({
             key={p.card.id}
             p={p}
             selected={isFocused && start + i === selClamped}
-            facts={facts?.[start + i]}
+            facts={facts[start + i]}
             tag={harness?.get(p.card.id)}
           />
         ))
