@@ -256,38 +256,31 @@ export async function reconcileEndpointGate(opts: {
 
   // ---- 4. Token-pinned reopen. If the dead op's spec write committed, finish THAT op
   // (promote + reopen at the committed registrationRevision, advancing processEpoch for a
-  // re-registration). Only a definite no-commit abort-reopens at the unchanged coordinate.
+  // re-registration). Only a definite no-commit abort-reopens at the unchanged coordinate. A lost
+  // CAS on either reopen wrote nothing and refuses `raced`; a reopen that throws may have committed,
+  // so its error propagates.
   const reopenedAtGeneration = row.generation + 1;
   let processEpochAfter = row.processEpoch;
   let registrationRevisionAfter = row.registrationRevision;
-  let finished: Awaited<ReturnType<typeof completeFrozenRegistrationFromSpec>>;
-  try {
-    finished = await completeFrozenRegistrationFromSpec(recordsKv, {
-      endpoint, instanceId, barrier, freezeToken,
-      gate: {
-        generation: row.generation, processEpoch: row.processEpoch,
-        registrationRevision: row.registrationRevision, nameAuthorityRevision: row.nameAuthorityRevision,
-      },
-    });
-  } catch (e) {
-    const msg = (e as Error)?.message ?? String(e);
-    if (/reopen did not complete|lost its freeze token/.test(msg))
-      throw new GateReconcileRefused("raced", `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`);
-    throw e;
-  }
+  const finished = await completeFrozenRegistrationFromSpec(recordsKv, {
+    endpoint, instanceId, barrier, freezeToken,
+    gate: {
+      generation: row.generation, processEpoch: row.processEpoch,
+      registrationRevision: row.registrationRevision, nameAuthorityRevision: row.nameAuthorityRevision,
+    },
+  });
   if (finished.completed) {
     processEpochAfter = finished.processEpoch;
     registrationRevisionAfter = finished.registrationRevision;
     log(`same-op spec recovery: committed registrationRevision=${registrationRevisionAfter} processEpoch=${processEpochAfter}`);
-  }
-  if (processEpochAfter === row.processEpoch && registrationRevisionAfter === row.registrationRevision) {
-    const ok = await barrier.reopen(freezeToken, {
+  } else {
+    const reopened = !finished.raced && await barrier.reopen(freezeToken, {
       generation: reopenedAtGeneration,
       processEpoch: row.processEpoch,
       registrationRevision: row.registrationRevision,
       nameAuthorityRevision: row.nameAuthorityRevision,
     });
-    if (!ok)
+    if (!reopened)
       throw new GateReconcileRefused(
         "raced",
         `the token-pinned reopen of ${key} lost its CAS — a newer barrier moved the gate while this repair ran. Nothing was reopened; re-observe before retrying.`,

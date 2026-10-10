@@ -1806,6 +1806,11 @@ written by a daemon that predates the acquisition time reports it as unknown. Th
 change the outcome: the gate stays frozen and the command exits 2. A manager's boot self-heal uses
 the same check and reports the same line.
 
+`raced` means the repair's own reopen lost its compare-and-set and wrote nothing. A reopen whose
+outcome is unknown, such as one whose acknowledgement was lost, fails with an `unavailable` error
+that says it may have committed. Re-run the command: it refuses `not-frozen` if that reopen landed and
+finishes the repair if it did not.
+
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.
 

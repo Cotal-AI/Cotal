@@ -479,6 +479,8 @@ export async function registerServiceInstance(
       } catch { /* the gate is open; stale progress is freeze-bound and safe to retain */ }
       return { registrationRevision: finished.registrationRevision, processEpoch: finished.processEpoch };
     }
+    if (finished.raced)
+      throw new EpEnvelopeError("unavailable", `the reopen of the issuance gate for "${args.instanceId}" lost its freeze token (a reconciler or newer barrier superseded this one); re-read and re-decide (SPEC 13.1)`);
   }
 
   // PHASE 1 — authorize UNDER the frozen gate, then ownership stability. Both are authority /
@@ -778,7 +780,9 @@ function successorProcessEpoch(gate: { processEpoch: number; registrationRevisio
 
 /** After holder-gone eviction, complete a frozen registration whose Phase-3 spec write committed
  *  (gate.registrationRevision still names the pre-write spec). Returns `completed: false` when the
- *  spec has not advanced, so the caller may abort-reopen. A failed spec/governance read stays frozen. */
+ *  spec has not advanced, so the caller may abort-reopen, or when the token-pinned reopen lost its
+ *  CAS (`raced`), so nothing was reopened. A failed spec/governance read stays frozen; a reopen that
+ *  throws may have committed. */
 export async function completeFrozenRegistrationFromSpec(
   recordsKv: KV,
   args: {
@@ -788,7 +792,7 @@ export async function completeFrozenRegistrationFromSpec(
     freezeToken: number;
     gate: { generation: number; processEpoch: number; registrationRevision: number; nameAuthorityRevision: number };
   },
-): Promise<{ completed: false } | { completed: true; registrationRevision: number; processEpoch: number }> {
+): Promise<{ completed: false; raced: boolean } | { completed: true; registrationRevision: number; processEpoch: number }> {
   const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, assertLifecycleToken(args.instanceId, "instanceId")]);
   let specEntry: Awaited<ReturnType<KV["get"]>>;
   try {
@@ -797,7 +801,7 @@ export async function completeFrozenRegistrationFromSpec(
     throw new EpEnvelopeError("unavailable", `the frozen registration's spec read-back failed; the gate stays frozen (SPEC 13.1): ${(e as Error)?.message ?? String(e)}`);
   }
   if (!specEntry || specEntry.operation !== "PUT" || specEntry.revision <= args.gate.registrationRevision)
-    return { completed: false };
+    return { completed: false, raced: false };
   try {
     parseServiceSpec(decodeJson(specEntry.value, specKey), { endpoint: args.endpoint });
   } catch (e) {
@@ -811,12 +815,13 @@ export async function completeFrozenRegistrationFromSpec(
     registrationRevision: specEntry.revision,
     nameAuthorityRevision: args.gate.nameAuthorityRevision,
   };
+  let reopened: boolean;
   try {
-    if (!(await args.barrier.reopen(args.freezeToken, successor)))
-      throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
+    reopened = await args.barrier.reopen(args.freezeToken, successor);
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${specEntry.revision} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    throw new EpEnvelopeError("unavailable", `the spec for "${args.instanceId}" is published at revision ${specEntry.revision} but the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
+  if (!reopened) return { completed: false, raced: true };
   await releaseHeldGovernance(recordsKv, args.endpoint, args.instanceId, args.gate.generation);
   return { completed: true, registrationRevision: specEntry.revision, processEpoch };
 }
