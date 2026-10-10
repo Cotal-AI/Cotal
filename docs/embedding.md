@@ -122,6 +122,10 @@ current credentials in place and records the refusal as cleanup debt until a lat
 On shutdown, after the standing context is drained, an expired maintenance executor is renewed
 through the existing scoped host operation so deregistration can finish without restarting duties.
 
+Issued-authority references, source coordinates and stores accept nonempty space tokens in
+`[A-Za-z0-9_-]`, including underscores. These boundaries reject input that would be rewritten by
+the subject-token sanitizer. Endpoint names still use the separate DNS-label grammar.
+
 **Provisioning and minting** (all `@cotal-ai/core`)
 
 | symbol | purpose |
