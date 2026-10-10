@@ -144,8 +144,10 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   confirms only after seeing Yes selected. It sends each response once and stops watching after
   the development-channel confirmation. A changed or unsupported dialog receives no guessed input
   and still fails within the startup bound. Claude saves trust with its own repository and linked
-  worktree rules; Cotal does not rewrite the manager's configuration. This does not change tool
-  permissions. A foreground `cotal spawn` keeps the trust dialog in your terminal.
+  worktree rules; Cotal does not rewrite the manager's configuration. Accepting trust enables the
+  workspace's hooks and settings, which can select a tool permission mode when no launch flag
+  overrides it. Cotal adds no tool-permission bypass flag. Review the checkout before authorizing
+  a spawn there. A foreground `cotal spawn` keeps the trust dialog in your terminal.
 
 Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag

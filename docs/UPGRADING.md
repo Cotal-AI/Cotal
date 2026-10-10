@@ -40,7 +40,9 @@ Upgrade the Claude connector, core, manager and chosen terminal runtime together
 launches now accept the authorized workspace through Claude's native startup dialog. They
 no longer require a prior interactive visit to that directory. Claude retains its normal
 repository and linked-worktree trust semantics, including any trust it persists for later
-sessions. Foreground launches and tool permission modes do not change.
+sessions. Foreground launches still prompt. No tool-permission bypass flag is added, but
+accepting workspace trust enables that checkout's hooks and settings, including its default
+permission mode unless a launch flag overrides it. Authorize only reviewed workspaces.
 
 The launch recipe includes optional startup choices before its final confirmation. A custom
 runtime must implement `LaunchSpec.confirmBefore`, or refuse a recipe carrying it. Ignoring

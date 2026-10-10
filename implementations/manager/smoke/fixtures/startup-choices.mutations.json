@@ -1,0 +1,26 @@
+{
+  "suite": ["implementations/manager/smoke/startup-choices.smoke.ts"],
+  "guard": "screen-based startup choices finish once and disarm their startup deadlines",
+  "command": "pnpm --filter @cotal-ai/core --filter @cotal-ai/seat --filter @cotal-ai/manager build && pnpm exec tsx implementations/manager/smoke/startup-choices.smoke.ts",
+  "completionMarker": "STARTUP CHOICES COMPLETE",
+  "mutations": [
+    {
+      "name": "leave the seat timeout armed after final confirmation",
+      "file": "packages/seat/src/startup-confirm.ts",
+      "find": "if (action?.done) { this.disarm(); return; }",
+      "replace": "if (action?.done) { return; }",
+      "expectRed": "pty-normal: final confirmation disarms the deadline",
+      "cell": "pty-normal: final confirmation disarms the deadline",
+      "afterRestore": "pnpm --filter @cotal-ai/seat build"
+    },
+    {
+      "name": "keep pane polling after final confirmation",
+      "file": "packages/core/src/startup-confirm.ts",
+      "find": "if (action?.done) return;",
+      "replace": "if (false && action?.done) return;",
+      "expectRed": "tmux-normal: final confirmation disarms the deadline",
+      "cell": "tmux-normal: final confirmation disarms the deadline",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}

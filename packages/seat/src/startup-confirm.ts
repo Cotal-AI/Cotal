@@ -54,20 +54,26 @@ export class StartupConfirmSequence {
     if (!Array.isArray(before) || before.length > 8) throw new Error("invalid startup choices");
     this.#before = before.map((reply) => {
       if (!reply || typeof reply.prompt !== "string" || reply.prompt.length > 1024 || !["Down", "Enter"].includes(reply.key)) throw new Error("invalid startup choice");
-      const normalized = normalizeConfirmText(reply.prompt);
+      const normalized = reply.prompt.split(/\r?\n/).map(normalizeConfirmText).filter(Boolean).join("\n");
       if (!normalized) throw new Error("startup choice prompt is empty after normalization");
       return { prompt: normalized, key: reply.key };
     });
   }
   observe(screen: string): { key: "Down" | "Enter"; done: boolean } | undefined {
     if (this.#done) return undefined;
-    const text = normalizeConfirmText(screen);
-    if (text.includes(this.#final)) {
+    const lines = screen.split(/\r?\n/).map(normalizeConfirmText).filter(Boolean);
+    const matches = (prompt: string): boolean => {
+      const expected = prompt.split("\n");
+      return lines.some((_, start) => expected.every((line, offset) => lines[start + offset] === line));
+    };
+    const step = this.#before[this.#step];
+    if (!step || !matches(step.prompt)) {
+      this.#stable = false;
+      const final = this.#before.length ? matches(this.#final) : normalizeConfirmText(screen).includes(this.#final);
+      if (!final) return undefined;
       this.#done = true;
       return { key: "Enter", done: true };
     }
-    const step = this.#before[this.#step];
-    if (!step || !text.includes(step.prompt)) { this.#stable = false; return undefined; }
     if (!this.#stable) { this.#stable = true; return undefined; }
     this.#step++;
     this.#stable = false;

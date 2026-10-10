@@ -386,7 +386,9 @@ shared one, and the launch already scopes MCP servers to the mesh for the same r
 A fresh config home starts Claude's first-run setup and asks to trust the working directory. The
 connector writes `<home>/.claude.json` with two facts: onboarding is complete, and the authorized
 launch `cwd` is trusted. It does not change the manager's shared home. An ordinary managed seat
-accepts trust through Claude's native startup dialog instead. Neither path changes tool permissions.
+accepts trust through Claude's native startup dialog instead. Neither path adds a tool-permission
+bypass flag. Trust enables the checkout's hooks and settings, including any default permission mode
+that the launch does not override.
 The private-home keys are internal to Claude, so the connector pins them to its supported Claude
 range. Hand test H6 covers a carried seat reaching its first turn with no prompt.
 

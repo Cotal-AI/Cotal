@@ -28,19 +28,21 @@ Object.assign(process.env, { HOME: home, CLAUDE_CONFIG_DIR: config,
   ANTHROPIC_AUTH_TOKEN: "startup-test-no-network-key", ANTHROPIC_BASE_URL: "http://127.0.0.1:9",
   CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" });
 const opts = { name: "trust-smoke", space: "trust-smoke", servers: "nats://127.0.0.1:1", events: false, workspaceRoot: root,
-  launchOptions: { "permission-mode": "default" } };
+  launchOptions: { "permission-mode": "default" }, envAllow: ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] };
 try {
   const spec = claudeConnector.buildLaunch({ ...opts, cwd });
   assert.equal(readFileSync(state, "utf8"), initial, "connector construction never rewrites host trust state");
   assert.ok(spec.confirmBefore?.length, "managed untrusted cwd declares native startup choices");
   const foreground = claudeConnector.buildLaunch(opts);
   assert.equal(foreground.confirmBefore, undefined, "foreground workspace trust stays interactive");
+  assert.equal(spec.env?.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, "1", "native test traffic suppression reaches the actual child");
   assert.ok(!spec.args.includes("--dangerously-skip-permissions"));
   assert.equal(spec.args[spec.args.indexOf("--permission-mode") + 1], "default");
   const no = "❯ No, exit\nYes, I trust this folder";
   const yes = "No, exit\n❯ Yes, I trust this folder";
   for (const Sequence of [CoreSequence, SeatSequence]) {
     const sequence: CoreSequence | SeatSequence = new Sequence(spec.confirm!, spec.confirmBefore);
+    assert.equal(sequence.observe(`Accessing workspace:\n/tmp/${spec.confirm}\n${no}`), undefined, "a directory containing the final prompt is not a confirmation dialog");
     assert.equal(sequence.observe("Allow Bash? Enter to confirm"), undefined);
     assert.equal(sequence.observe(yes), undefined, "an out-of-order selected row cannot authorize Enter");
     assert.equal(sequence.observe(no), undefined);
@@ -70,7 +72,7 @@ try {
     ];
     const failures: string[] = [];
     for (const [name, runtime] of runtimes) {
-      const work = join(root, name); mkdirSync(work);
+      const work = join(root, name, "WARNING: Loading development channels"); mkdirSync(work, { recursive: true });
       const native = claudeConnector.buildLaunch({ ...opts, cwd: work, resolvedBinaries: { claude: binary } });
       // Dummy auth cannot enable development channels. This native-only probe stops after trust;
       // no initial prompt/model request is sent, and it never claims a mesh join or channel approval.

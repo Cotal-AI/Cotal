@@ -31,20 +31,28 @@ export class StartupConfirmSequence {
     if (!Array.isArray(before) || before.length > 8) throw new Error("invalid startup choices");
     this.#before = before.map((reply) => {
       if (!reply || typeof reply.prompt !== "string" || reply.prompt.length > 1024 || !["Down", "Enter"].includes(reply.key)) throw new Error("invalid startup choice");
-      const normalized = normalizeConfirmText(reply.prompt);
+      const normalized = reply.prompt.split(/\r?\n/).map(normalizeConfirmText).filter(Boolean).join("\n");
       if (!normalized) throw new Error("startup choice prompt is empty after normalization");
       return { prompt: normalized, key: reply.key };
     });
   }
   observe(screen: string): { key: "Down" | "Enter"; done: boolean } | undefined {
     if (this.#done) return undefined;
-    const text = normalizeConfirmText(screen);
-    if (text.includes(this.#final)) {
+    const lines = screen.split(/\r?\n/).map(normalizeConfirmText).filter(Boolean);
+    const matches = (prompt: string): boolean => {
+      const expected = prompt.split("\n");
+      return lines.some((_, start) => expected.every((line, offset) => lines[start + offset] === line));
+    };
+    const step = this.#before[this.#step];
+    // Workspace paths can contain the warning text. Prefer a real menu over that text and match
+    // whole visible lines, rather than a substring in the displayed path.
+    if (!step || !matches(step.prompt)) {
+      this.#stable = false;
+      const final = this.#before.length ? matches(this.#final) : normalizeConfirmText(screen).includes(this.#final);
+      if (!final) return undefined;
       this.#done = true;
       return { key: "Enter", done: true };
     }
-    const step = this.#before[this.#step];
-    if (!step || !text.includes(step.prompt)) { this.#stable = false; return undefined; }
     // A partial first paint is not an interactive menu yet. Require the same choice on two
     // consecutive snapshots; a changed screen clears the observation instead of receiving a key.
     if (!this.#stable) { this.#stable = true; return undefined; }
@@ -56,10 +64,14 @@ export class StartupConfirmSequence {
 
 /** A seat's current pane. All operations must be bounded. */
 export interface ConfirmPane {
+  /** Return only the current screen, not scrollback. Undefined means the child exited.
+   * A blocked read prevents the watch from stopping the child, so it must be bounded. */
   read(): string | undefined;
+  /** Press Enter in the pane. */
   enter(): void;
   /** Required when the connector declares a Down choice. */
   down?(): void;
+  /** Stop the child and report the failure. Must not throw from the watch's timer. */
   fail(message: string): void;
 }
 
