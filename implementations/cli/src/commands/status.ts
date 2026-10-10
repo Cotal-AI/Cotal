@@ -704,7 +704,7 @@ async function managerRowState(target: MeshTarget | undefined, state: Proc, spac
   let deliveryAware = false;
   let markerUnreadable = "";
   try {
-    deliveryAware = managerHasDeliveryMarker(space);
+    deliveryAware = managerHasDeliveryMarker(state.pid!, space);
   } catch (e) {
     // The marker reader throws so `up` and the delivery preflight refuse to act on a marker they
     // cannot read. Status is the recovery command: name the failed read on this row and report the rest.

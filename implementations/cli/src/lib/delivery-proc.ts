@@ -12,7 +12,7 @@ import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canon
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { ensureManager, managerHasDeliveryMarker, managerLiveness, managerRecordState, stopManager } from "./manager-proc.js";
+import { ensureManager, managerHasDeliveryMarker, managerRecordState, stopManager } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
@@ -105,12 +105,16 @@ function hasAuth(): boolean {
  *  A guard that runs after the work is not a guard, so this one takes the tri-state directly and the
  *  caller refuses BEFORE anything is minted, written or started. */
 function oldHostingManagerVerdict(
-  state: ProcessRecordState,
+  record: ProcessRecord,
   space: string,
+  probe: LivenessProbe,
 ): "stop-it" | "proceed" | "indeterminate" {
-  if (state === "unknown" || state === "unattributable") return "indeterminate";
-  if (state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
-  return managerHasDeliveryMarker(space) ? "proceed" : "stop-it"; // alive: the marker decides
+  if (record.state === "unknown" || record.state === "unattributable") return "indeterminate";
+  if (record.state !== "alive") return "proceed"; // dead or absent: nothing is hosting Plane 3
+  // Alive: the marker decides, for the pid this record attributed. A delivery-aware manager removes its
+  // marker just before it exits, so a missing marker on a pid that has died since was that exit.
+  const pid = record.pid!;
+  return managerHasDeliveryMarker(pid, space) || probe(pid) === "dead" ? "proceed" : "stop-it";
 }
 
 /** Cutover preflight — the FIRST action, BEFORE the daemon can bind: stop any old Plane-3-hosting
@@ -123,7 +127,7 @@ export async function stopOldHostingManagerIfPresent(
   // The refusal quotes this record and never reads the file again: the manager removes its record on
   // exit and a start replaces it, so a second read can find it gone or holding other content.
   const record = managerRecordState(probe, undefined, space);
-  const verdict = oldHostingManagerVerdict(record.state, space);
+  const verdict = oldHostingManagerVerdict(record, space, probe);
   // FIRST action, before any mint/write/start, so the refusal actually fences the daemon.
   if (verdict === "indeterminate") {
     const p = record.path;
@@ -211,7 +215,7 @@ export async function ensureDelivery(
   if (!hasAuth()) return { running: false }; // open dev mode — no daemon, agents are live-only
 
   const space = o.space ?? folderSpace();
-  if (oldHostingManagerVerdict(managerLiveness(probe, undefined, space), space) === "stop-it") {
+  if (oldHostingManagerVerdict(managerRecordState(probe, undefined, space), space, probe) === "stop-it") {
     console.error(
       "✗ delivery: an old Plane-3-hosting manager is still live (no delivery-aware marker). Refusing to start the daemon - run `cotal down` first, then retry.",
     );

@@ -1030,10 +1030,13 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
         // delivery marker) is stopped and REPLACED by the ensure below carrying the requested runtime,
         // so that's not a reuse - don't claim the runtime is fixed. A dead/absent manager is (re)started
         // with it.
-        if (values.runtime && managerUp(held.space) && managerHasDeliveryMarker(held.space))
-          console.error(
-            c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
-          );
+        if (values.runtime) {
+          const live = managerRecordState(undefined, undefined, held.space);
+          if (live.state === "alive" && managerHasDeliveryMarker(live.pid!, held.space))
+            console.error(
+              c.dim(`! manager already running for "${held.space}" - its runtime is fixed at start; \`cotal down\` then \`cotal up --runtime ${values.runtime}\` to change it`),
+            );
+        }
         // A repair replaces the manager, so it must carry the mesh's recorded exposure forward — a
         // bare `cotal up` here has no `--host` of its own, and dropping it silently moves the attach
         // face back to loopback while everything else keeps working.

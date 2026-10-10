@@ -34,7 +34,7 @@ try {
   const m1 = fakeManager(); children.push(m1);
   writeFileSync(pidPath, String(m1.pid));
   await wait(100);
-  check("live manager.pid with NO marker → not delivery-aware", managerUp() === true && managerHasDeliveryMarker() === false);
+  check("live manager.pid with NO marker → not delivery-aware", managerUp() === true && managerHasDeliveryMarker(m1.pid!) === false);
   await stopOldHostingManagerIfPresent();
   await wait(400);
   check("preflight STOPS an unmarked (old hosting) manager + clears its pid", !alive(m1.pid!) && !existsSync(pidPath));
@@ -44,14 +44,14 @@ try {
   writeFileSync(pidPath, String(m2.pid));
   writeFileSync(markerPath, String(m2.pid));
   await wait(100);
-  check("live manager.pid WITH a matching marker → delivery-aware", managerHasDeliveryMarker() === true);
+  check("live manager.pid WITH a matching marker → delivery-aware", managerHasDeliveryMarker(m2.pid!) === true);
   await stopOldHostingManagerIfPresent();
   await wait(300);
   check("preflight LEAVES a delivery-aware manager running", alive(m2.pid!) === true && existsSync(pidPath));
 
   // 3. Marker pid MISMATCH (stale marker from a crashed older process) → fail-closed (not aware).
   writeFileSync(markerPath, String((m2.pid ?? 0) + 1));
-  check("marker pid mismatch → NOT delivery-aware (fail-closed)", managerHasDeliveryMarker() === false);
+  check("marker pid mismatch → NOT delivery-aware (fail-closed)", managerHasDeliveryMarker(m2.pid!) === false);
 
   console.log(`\nDELIVERY-OLD-MANAGER-PREFLIGHT SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
