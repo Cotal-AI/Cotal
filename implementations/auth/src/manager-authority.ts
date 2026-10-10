@@ -148,12 +148,14 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
       requestError("renewRunDriver requires valid runId, holder, takeoverId, epoch, fencingToken, and distinct driverId/mediatorId");
     run = r as unknown as NonNullable<RemoteManagerAuthorityRequest["run"]>;
   } else if (o.run !== undefined) requestError(`${o.operation} must not carry run`);
+  let session: RemoteManagerAuthorityRequest["session"];
   if (o.operation === "session") {
     const s = o.session as Record<string, unknown> | undefined;
-    if (!s || !isUserNkey(s.id) || s.endpoint !== "manager" ||
+    if (!s || Object.keys(s).sort().join(",") !== "endpoint,epoch,exp,id,sessionId" || !isUserNkey(s.id) || s.endpoint !== "manager" ||
         typeof s.sessionId !== "string" || s.sessionId.length === 0 || typeof s.epoch !== "number" || !Number.isSafeInteger(s.epoch) || s.epoch < 0 ||
         typeof s.exp !== "number" || !Number.isSafeInteger(s.exp) || s.exp <= 0)
       requestError("session requires { id, endpoint:\"manager\", sessionId, epoch, exp }");
+    session = { id: s.id, endpoint: s.endpoint, sessionId: s.sessionId, epoch: s.epoch, exp: s.exp };
   } else if (o.session !== undefined) requestError(`${o.operation} must not carry session`);
   let retirement: RemoteManagerAuthorityRequest["retirement"];
   if (o.operation === "retire") {
@@ -193,7 +195,7 @@ export function parseRemoteManagerAuthorityRequest(raw: unknown, opts: { allowPl
     ...envelope,
     ...(renewal ? { accountPublicKey: o.accountPublicKey as string, processEpoch: o.processEpoch as number } : {}),
     ...(run ? { run } : {}),
-    ...(o.session && typeof o.session === "object" ? { session: o.session as RemoteManagerAuthorityRequest["session"] } : {}),
+    ...(session ? { session } : {}),
     ...(retirement ? { retirement } : {}),
     ...(o.operation === "transferReader" ? { transferReader: { id: (o.transferReader as { id: string }).id } } : {}),
     ...(Array.isArray(o.contractArtifacts) ? { contractArtifacts: o.contractArtifacts } : {}),
@@ -268,25 +270,34 @@ export async function issueRemoteManagerAuthority(args: IssueRemoteManagerAuthor
 
 type ManagerGate = NonNullable<Awaited<ReturnType<ObserveManagerGate>>>;
 
-function admissionError(what: string): never {
-  throw new EpEnvelopeError("bad-request", `manager run admission request ${what}`);
+function runRequestError(what: string, detail: string): never {
+  throw new EpEnvelopeError("bad-request", `${what} request ${detail}`);
+}
+
+/** Closed parser for what every run request from a registered manager carries: the envelope, the
+ *  assigned account and the process epoch. A field outside those and the request's own `fields` is
+ *  refused, and `what` names the request in every refusal. */
+function parseRegisteredRunRequest(raw: unknown, kind: string, what: string, fields: readonly string[]) {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) runRequestError(what, "must be an object");
+  const o = raw as Record<string, unknown>;
+  const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", ...fields];
+  for (const k of Object.keys(o)) if (!allowed.includes(k)) runRequestError(what, `has unknown field ${k}`);
+  const envelope = parseRemoteManagerEnvelope(o, kind, what);
+  if (!isAccountNkey(o.accountPublicKey)) runRequestError(what, "requires an account public key");
+  if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) runRequestError(what, "requires a non-negative processEpoch");
+  return { ...envelope, accountPublicKey: o.accountPublicKey, processEpoch: o.processEpoch as number };
 }
 
 /** Closed parser for {@link RemoteRunAdmissionRequest}: unknown fields refuse, never ignored. */
 export function parseRemoteRunAdmissionRequest(raw: unknown): RemoteRunAdmissionRequest {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) admissionError("must be an object");
-  const o = raw as Record<string, unknown>;
-  const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "run"];
-  for (const k of Object.keys(o)) if (!allowed.includes(k)) admissionError(`has unknown field ${k}`);
-  const envelope = parseRemoteManagerEnvelope(o, "manager-run-admission", "manager run admission");
-  if (!isAccountNkey(o.accountPublicKey)) admissionError("requires an account public key");
-  if (!Number.isSafeInteger(o.processEpoch) || (o.processEpoch as number) < 0) admissionError("requires a non-negative processEpoch");
-  const run = o.run as Record<string, unknown> | null;
+  const what = "manager run admission";
+  const registered = parseRegisteredRunRequest(raw, "manager-run-admission", what, ["run"]);
+  const run = (raw as Record<string, unknown>).run as Record<string, unknown> | null;
   if (run === null || typeof run !== "object" || Object.keys(run).sort().join(",") !== "runId,subject" ||
       typeof run.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(run.runId) || typeof run.subject !== "string")
-    admissionError("requires exactly run.runId (host-minted) and run.subject");
+    runRequestError(what, "requires exactly run.runId (host-minted) and run.subject");
   return {
-    v: 1, kind: "manager-run-admission", ...envelope, accountPublicKey: o.accountPublicKey, processEpoch: o.processEpoch as number,
+    v: 1, kind: "manager-run-admission", ...registered,
     run: { runId: run.runId as string, subject: run.subject as string },
   };
 }
@@ -383,19 +394,14 @@ const ID_TOKEN = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** Closed parser for the issuing-host revoke. It carries no asserted owner or attribution. */
 export function parseRemoteRunRevokeRequest(raw: unknown): RemoteRunRevokeRequest {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) admissionError("must be an object");
-  const o = raw as Record<string, unknown>;
-  if (o.kind !== "manager-run-revoke") admissionError("must be v1 manager-run-revoke");
-  const allowed = ["v", "kind", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "accountPublicKey", "processEpoch", "identities", "revoke"];
-  for (const key of Object.keys(o)) if (!allowed.includes(key)) admissionError(`has unknown field ${key}`);
-  const { revoke, ...rest } = o;
-  const base = parseRemoteRunAdmissionRequest({ ...rest, kind: "manager-run-admission", run: { runId: `run-${"0".repeat(32)}`, subject: "" } });
-  if (revoke === null || typeof revoke !== "object" || Array.isArray(revoke)) admissionError("requires revoke");
+  const what = "manager run revoke";
+  const registered = parseRegisteredRunRequest(raw, "manager-run-revoke", what, ["revoke"]);
+  const { revoke } = raw as Record<string, unknown>;
+  if (revoke === null || typeof revoke !== "object" || Array.isArray(revoke)) runRequestError(what, "requires revoke");
   const r = revoke as Record<string, unknown>;
   if (Object.keys(r).sort().join(",") !== "reason,runId" || typeof r.runId !== "string" || !/^run-[0-9a-f]{32}$/.test(r.runId) ||
-      typeof r.reason !== "string" || r.reason.length === 0) admissionError("requires exactly revoke.runId and a non-empty revoke.reason");
-  const { run: _run, ...registered } = base;
-  return { ...registered, kind: "manager-run-revoke", revoke: { runId: r.runId, reason: r.reason } };
+      typeof r.reason !== "string" || r.reason.length === 0) runRequestError(what, "requires exactly revoke.runId and a non-empty revoke.reason");
+  return { v: 1, kind: "manager-run-revoke", ...registered, revoke: { runId: r.runId, reason: r.reason } };
 }
 
 /** The door has authenticated the holder and read its current scope. The run's owner comes only
@@ -435,17 +441,14 @@ export async function revokeRemoteRun(args: ManagerAuthorityHolder & {
 
 /** Closed parser for {@link RemoteRunAttemptRequest}. */
 export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequest {
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) admissionError("must be an object");
-  const o = raw as Record<string, unknown>;
-  if (o.kind !== "manager-run-attempt") admissionError("must be v1 manager-run-attempt");
-  const { attempt, operator, ...rest } = o;
-  if ((attempt === undefined) === (operator === undefined)) admissionError("carries exactly one of attempt or operator");
-  const base = parseRemoteRunAdmissionRequest({ ...rest, kind: "manager-run-admission", run: { runId: `run-${"0".repeat(32)}`, subject: "" } });
-  const { run: _run, kind: _kind, ...registered } = base;
+  const what = "manager run attempt";
+  const registered = parseRegisteredRunRequest(raw, "manager-run-attempt", what, ["attempt", "operator"]);
+  const { attempt, operator } = raw as Record<string, unknown>;
+  if ((attempt === undefined) === (operator === undefined)) runRequestError(what, "carries exactly one of attempt or operator");
   const plain = (v: unknown, keys: string[], optional: string[] = []) => {
-    if (v === null || typeof v !== "object" || Array.isArray(v)) admissionError("attempt/operator must be an object");
+    if (v === null || typeof v !== "object" || Array.isArray(v)) runRequestError(what, "attempt/operator must be an object");
     const k = Object.keys(v as object);
-    if (k.some((x) => !keys.includes(x) && !optional.includes(x)) || keys.some((x) => !k.includes(x))) admissionError(`attempt/operator must carry exactly ${keys.join(", ")}`);
+    if (k.some((x) => !keys.includes(x) && !optional.includes(x)) || keys.some((x) => !k.includes(x))) runRequestError(what, `attempt/operator must carry exactly ${keys.join(", ")}`);
     return v as Record<string, unknown>;
   };
   const runIdOk = (v: unknown) => typeof v === "string" && /^run-[0-9a-f]{32}$/.test(v);
@@ -455,25 +458,25 @@ export function parseRemoteRunAttemptRequest(raw: unknown): RemoteRunAttemptRequ
     if (!runIdOk(a.runId) || typeof a.takeoverId !== "string" || !ID_TOKEN.test(a.takeoverId) ||
         !Number.isSafeInteger(a.epoch) || (a.epoch as number) < 1 || !Number.isSafeInteger(a.fencingToken) || (a.fencingToken as number) < 1 ||
         !isUserNkey(a.driverId) || !isUserNkey(a.mediatorId) || a.driverId === a.mediatorId)
-      admissionError("attempt requires a run id, takeover id, positive epoch/fencingToken and distinct driver/mediator nkeys");
-    if (!servedOk(a.served)) admissionError("attempt served must be a request subject");
-    return { ...registered, kind: "manager-run-attempt", attempt: { runId: a.runId as string, takeoverId: a.takeoverId, epoch: a.epoch as number, fencingToken: a.fencingToken as number, driverId: a.driverId, mediatorId: a.mediatorId, ...(a.served !== undefined ? { served: a.served as string } : {}) } };
+      runRequestError(what, "attempt requires a run id, takeover id, positive epoch/fencingToken and distinct driver/mediator nkeys");
+    if (!servedOk(a.served)) runRequestError(what, "attempt served must be a request subject");
+    return { v: 1, kind: "manager-run-attempt", ...registered, attempt: { runId: a.runId as string, takeoverId: a.takeoverId, epoch: a.epoch as number, fencingToken: a.fencingToken as number, driverId: a.driverId, mediatorId: a.mediatorId, ...(a.served !== undefined ? { served: a.served as string } : {}) } };
   }
   const op = plain(operator, ["id", "takeoverId"], ["runId", "answers", "served"]);
   if (!isUserNkey(op.id) || typeof op.takeoverId !== "string" || !ID_TOKEN.test(op.takeoverId) ||
       (op.runId !== undefined && !runIdOk(op.runId)))
-    admissionError("operator requires an nkey id, a takeover id and an optional run id");
+    runRequestError(what, "operator requires an nkey id, a takeover id and an optional run id");
   let answers: { runId: string; stepKey: string; amend?: true } | undefined;
   if (op.answers !== undefined) {
     const t = plain(op.answers, ["runId", "stepKey"], ["amend"]);
     if (!runIdOk(t.runId) || typeof t.stepKey !== "string" || t.stepKey.length === 0 || t.stepKey.length > 1024 || op.runId !== undefined ||
         (t.amend !== undefined && t.amend !== true))
-      admissionError("operator answers carries the run id and step key of one pause, an optional amend: true and no outer run id");
+      runRequestError(what, "operator answers carries the run id and step key of one pause, an optional amend: true and no outer run id");
     answers = { runId: t.runId as string, stepKey: t.stepKey, ...(t.amend === true ? { amend: true as const } : {}) };
   }
   if (!servedOk(op.served) || (op.served !== undefined && answers === undefined))
-    admissionError("operator served is the run-answer subject, and only an answering operator carries one");
-  return { ...registered, kind: "manager-run-attempt", operator: { id: op.id, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId as string } : {}), ...(answers ? { answers } : {}), ...(op.served !== undefined ? { served: op.served as string } : {}) } };
+    runRequestError(what, "operator served is the run-answer subject, and only an answering operator carries one");
+  return { v: 1, kind: "manager-run-attempt", ...registered, operator: { id: op.id, takeoverId: op.takeoverId, ...(op.runId !== undefined ? { runId: op.runId as string } : {}), ...(answers ? { answers } : {}), ...(op.served !== undefined ? { served: op.served as string } : {}) } };
 }
 
 /** What a served resume or answer asks the host to issue for: a resume names its run, an answer
