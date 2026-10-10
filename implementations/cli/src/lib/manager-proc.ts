@@ -8,9 +8,10 @@ import { cotalRoot } from "./paths.js";
 import {
   assertManagerCanSpare, armManagerShutdownIntent, assertRecordIdentity, disarmManagerShutdownIntent,
   canonicalLocalProcessPath, commandIsCotalSupervisor, identityRecord, localProcessPath, parsePid, probeLiveness,
-  readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord,
+  readPidfile, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_LOGFILE, MANAGER_PIDFILE, MANAGER_SHUTDOWN_INTENT, MANAGER_SPARE_CAPABILITY,
   type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ManagerSpareSeats, type ProcessIdentityRecord,
+  type ProcessRecord, type ProcessRecordState,
   parsePositiveIntegerFlag, verifyIdentityPin, writePidPair,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -81,60 +82,14 @@ const PID_PATH = MANAGER_PID_PATH;
 const DELIVERY_AWARE_MARKER = (space: string = folderSpace()): string =>
   localProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx(space));
 
-/** The recorded manager's state. THREE-VALUED liveness plus absent, because collapsing it to a
- *  boolean is what made this dangerous. Both collapses are silent and both are wrong:
- *    `!== "dead"`  -> an `unknown` reports UP forever; no retry clears it and nothing starts.
- *    `=== "alive"` -> an `unknown` reports DOWN and a second manager launches onto a possibly-live one.
- *  `unknown` is REACHABLE on a real kernel, not just under a test shim: a Linux seccomp filter
- *  (`SECCOMP_RET_ERRNO`) or an LSM policy can return an arbitrary errno for `kill(pid, 0)` without
- *  executing it at all, and libuv preserves it. Proven with a live seccomp BPF filter, not by
- *  interposition. So the caller has to SEE the third state and refuse.
- *
- *  `foreign` is the fifth: the recorded pid is ALIVE and is provably NOT a manager. A record
- *  outliving its process is the same class of defect one layer down from a service registration
- *  outliving its host, and it resolves the same way — the number is eventually reused by an
- *  unrelated process, and from `kill(pid, 0)` alone that reads as a healthy manager forever. */
-export type ManagerRecordState = "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
-
-/** The recorded manager, with the evidence behind the verdict — callers that must EXPLAIN a refusal
- *  need the pid and the command line that earned it, and a bare state cannot carry them. */
-export interface ManagerRecord {
-  state: ManagerRecordState;
-  /** The recorded pid, when the file held one. */
-  pid?: number;
-  /** The record's content, when it is not a pid (present on `unattributable`). */
-  content?: string;
-  /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
-  command?: string;
-}
-
-/** Read + attribute the manager record in one place, so every caller decides on the same evidence.
- *
- *  ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF. A live pid is demoted to `foreign` when its command line
- *  was READ and does not name the manager daemon — never when the read failed, never on a platform
- *  that cannot look, never on a process that died during the read. The asymmetry is the safety
- *  argument, and it is the same one the liveness probe makes: absence of evidence must fail toward
- *  the old behaviour (trust the record), because the opposite error starts a second manager on top
- *  of a live one. */
+/** The recorded manager, attributed by {@link readProcessRecord} to a `cotal supervise` process. */
 export function managerRecordState(
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
   root: string = cotalRoot(),
-): ManagerRecord {
-  const raw = readPidfile(PID_PATH(space, root));
-  if (!raw) return { state: "absent" }; // no record, or a pre-protocol husk: nothing is behind it
-  const pid = parsePid(raw);
-  // NOT `absent`. Folding non-empty corrupt content into "no manager recorded" is what let the
-  // ensure paths OVERWRITE it and launch a replacement, which is the same defect as deleting it:
-  // that record may front a live process nobody can identify. `absent` means no pidfile (or an
-  // empty husk); corrupt content is its own state and every action path must refuse on it.
-  if (pid === undefined) return { state: "unattributable", content: raw };
-  const liveness = probe(pid);
-  if (liveness !== "alive") return { state: liveness, pid };
-  const cmd = readCommand(pid);
-  if (cmd.kind !== "command") return { state: "alive", pid }; // gone/unreadable: established nothing
-  return { state: commandIsCotalSupervisor(cmd.command) ? "alive" : "foreign", pid, command: cmd.command };
+): ProcessRecord {
+  return readProcessRecord(PID_PATH(space, root), commandIsCotalSupervisor, probe, readCommand);
 }
 
 /** {@link managerRecordState}'s verdict alone, for the callers that only branch on it. */
@@ -142,12 +97,12 @@ export function managerLiveness(
   probe: LivenessProbe = probeLiveness,
   readCommand: CommandReader = readProcessCommand,
   space: string = folderSpace(),
-): ManagerRecordState {
+): ProcessRecordState {
   return managerRecordState(probe, readCommand, space).state;
 }
 
 /** One line describing what was found behind the record, for a caller that has to explain itself. */
-export function describeManagerRecord(r: ManagerRecord): string {
+export function describeManagerRecord(r: ProcessRecord): string {
   if (r.state === "absent") return "no manager pid recorded";
   if (r.state === "unattributable") return `the manager pidfile holds content that is not a pid`;
   const who = r.command !== undefined ? ` running \`${r.command}\`` : "";

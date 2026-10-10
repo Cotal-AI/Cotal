@@ -170,6 +170,59 @@ export function commandIsCotalDelivery(command: string): boolean {
   return /(^|\s)deliver(\s|$)/.test(command);
 }
 
+/** A process record's state. THREE-VALUED liveness plus absent, because both ways of collapsing it
+ *  to a boolean are silent and both are wrong:
+ *    `!== "dead"`  -> an `unknown` reports UP forever; no retry clears it and nothing starts.
+ *    `=== "alive"` -> an `unknown` reports DOWN and a second process launches onto a possibly-live one.
+ *  `unknown` is REACHABLE on a real kernel (see {@link LivenessProbe}), so the caller has to SEE it
+ *  and refuse.
+ *
+ *  `foreign` is the fifth: the recorded pid is ALIVE and is provably NOT the recorded component. A
+ *  record outliving its process is eventually re-pointed at an unrelated process by pid reuse, and
+ *  from `kill(pid, 0)` alone that reads as a healthy component forever. */
+export type ProcessRecordState = "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
+
+/** A process record with the evidence behind its verdict — callers that must EXPLAIN a refusal
+ *  need the pid and the command line that earned it, and a bare state cannot carry them. */
+export interface ProcessRecord {
+  state: ProcessRecordState;
+  /** The recorded pid, when the file held one. */
+  pid?: number;
+  /** The record's content, when it is not a pid (present on `unattributable`). */
+  content?: string;
+  /** The live process's command line, when it was readable (present on `alive` and `foreign`). */
+  command?: string;
+}
+
+/** Read + attribute one process record, so every component decides on the same evidence by the
+ *  same rule; only `isOwnCommand` differs between them.
+ *
+ *  ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF. A live pid is demoted to `foreign` when its command line
+ *  was READ and `isOwnCommand` rejects it — never when the read failed, never on a platform that
+ *  cannot look, never on a process that died during the read. The asymmetry is the safety argument,
+ *  and it is the same one the liveness probe makes: absence of evidence must fail toward the old
+ *  behaviour (trust the record), because the opposite error starts a second process on top of a
+ *  live one. */
+export function readProcessRecord(
+  path: string,
+  isOwnCommand: (command: string) => boolean,
+  probe: LivenessProbe = probeLiveness,
+  readCommand: CommandReader = readProcessCommand,
+): ProcessRecord {
+  const raw = readPidfile(path);
+  if (!raw) return { state: "absent" }; // no record, or a pre-protocol husk: nothing is behind it
+  const pid = parsePid(raw);
+  // NOT `absent`. Folding non-empty corrupt content into "nothing recorded" is what let the ensure
+  // paths OVERWRITE it and launch a replacement, which is the same defect as deleting it: that
+  // record may front a live process nobody can identify. Every action path must refuse on it.
+  if (pid === undefined) return { state: "unattributable", content: raw };
+  const liveness = probe(pid);
+  if (liveness !== "alive") return { state: liveness, pid };
+  const cmd = readCommand(pid);
+  if (cmd.kind !== "command") return { state: "alive", pid }; // gone/unreadable: established nothing
+  return { state: isOwnCommand(cmd.command) ? "alive" : "foreign", pid, command: cmd.command };
+}
+
 // ---- CREATION IDENTITY: one stable scheme across launch, record, status and teardown (#969) ----
 
 /**

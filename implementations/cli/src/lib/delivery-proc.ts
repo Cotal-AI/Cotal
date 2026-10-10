@@ -8,11 +8,11 @@ import {
   waitForDeliveryLease,
   deliveryLeaseHolderFor,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readPidfile, readProcessCommand, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canonicalLocalProcessPath, commandIsCotalDelivery, deliveryCredsKey, findCotalRoot, getSpaceAuth, listSpaceAccounts, localProcessPath, parsePid, probeLiveness, readProcessCommand, readProcessRecord, reclaimDeadPreUpgradeRecord, segmentedKey, stopReservationPath, type CommandReader, type LivenessProbe, type LocalProcess, type LocalProcessContext, type ProcessRecord, type ProcessRecordState, workspaceSecretStore, writePidPair } from "@cotal-ai/workspace";
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, managerRecordState, stopManager, type ManagerRecordState } from "./manager-proc.js";
+import { MANAGER_PID_PATH, ensureManager, managerHasDeliveryMarker, managerLiveness, managerRecordState, stopManager } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
@@ -44,41 +44,13 @@ const deliveryCredsKeysToClear = (space: string) => [segmentedKey(DELIVERY_CREDS
  *  the launch (foreground `up`) can act on it. */
 type Opts = { space?: string; server?: string; tls?: boolean; spawn?: string[]; runtime?: string; launch?: string; attachHost?: string; resumeAttempt?: string; resumeCommitToken?: string; wsPort?: number; maxSessions?: number; noManager?: boolean; onDeliveryExit?: (code: number | null, signal: NodeJS.Signals | null) => void };
 
-/** The recorded daemon, with the evidence a refusal has to name. */
-interface DeliveryRecord {
-  state: "alive" | "dead" | "unknown" | "absent" | "unattributable" | "foreign";
-  /** The recorded pid, when the file held one. */
-  pid?: number;
-  /** The record's content, when it is not a pid (present on `unattributable`). */
-  content?: string;
-}
-
-/** The recorded daemon's liveness, THREE-VALUED plus absent. See {@link managerLiveness} for why the
- *  boolean collapse is the defect: `unknown` is reachable on a real kernel (a seccomp
- *  `SECCOMP_RET_ERRNO` filter or an LSM policy answers `kill(pid, 0)` with an arbitrary errno and
- *  libuv preserves it), and both ways of folding it into a boolean fail silently.
- *
- *  `foreign` is the same fifth state {@link managerLiveness} already carries, for the same reason and
- *  under the same rule (#1528): a live pid is believed only once the process behind it has been READ
- *  and names the delivery daemon. A record outliving its daemon is eventually re-pointed at an
- *  unrelated process by pid reuse, and from `kill(pid, 0)` alone that reads as a healthy daemon
- *  forever. ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF: a read that failed, a platform with no argv
- *  source, and a process that died during the read all leave the record trusted, which is exactly
- *  how every caller behaved before this existed. */
+/** The recorded daemon, attributed by {@link readProcessRecord} to a `cotal deliver` process. */
 function deliveryRecordState(
   probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
   readCommand: CommandReader = readProcessCommand,
-): DeliveryRecord {
-  const raw = readPidfile(PID_PATH(space));
-  if (!raw) return { state: "absent" };
-  const pid = parsePid(raw);
-  if (pid === undefined) return { state: "unattributable", content: raw }; // see managerLiveness: never fold this into absent
-  const liveness = probe(pid);
-  if (liveness !== "alive") return { state: liveness, pid };
-  const cmd = readCommand(pid);
-  if (cmd.kind !== "command") return { state: "alive", pid }; // gone/unreadable: nothing was established about it
-  return { state: commandIsCotalDelivery(cmd.command) ? "alive" : "foreign", pid };
+): ProcessRecord {
+  return readProcessRecord(PID_PATH(space), commandIsCotalDelivery, probe, readCommand);
 }
 
 /** {@link deliveryRecordState}'s verdict alone, for the callers that only branch on it. */
@@ -86,7 +58,7 @@ export function deliveryLiveness(
   probe: LivenessProbe = probeLiveness,
   space: string = folderSpace(),
   readCommand: CommandReader = readProcessCommand,
-): DeliveryRecord["state"] {
+): ProcessRecordState {
   return deliveryRecordState(probe, space, readCommand).state;
 }
 
@@ -133,7 +105,7 @@ function hasAuth(): boolean {
  *  A guard that runs after the work is not a guard, so this one takes the tri-state directly and the
  *  caller refuses BEFORE anything is minted, written or started. */
 function oldHostingManagerVerdict(
-  state: ManagerRecordState,
+  state: ProcessRecordState,
   space: string,
 ): "stop-it" | "proceed" | "indeterminate" {
   if (state === "unknown" || state === "unattributable") return "indeterminate";
