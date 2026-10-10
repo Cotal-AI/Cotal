@@ -34,8 +34,8 @@
     "",
     "K8 is the confidentiality bound on that same close (#1431). The upstream failure detail is",
     "untrusted free text, so the close publishes the fixed message in its place. Handing the upstream",
-    "message to the close instead restores the leak. The size bound it used to grade can no longer",
-    "fail: the fixed message always fits, and the oversized cells still check that the close succeeds.",
+    "message to the close instead restores the leak. The fixed message always fits, and the oversized",
+    "cells check that the close succeeds whatever the detail's size.",
     "",
     "K9 is the never-both-terminal property. Deleting this.run = undefined from the shared terminal",
     "arm of AguiBrackets.accept leaves the machine open, so a second close publishes a finish. The",
@@ -108,8 +108,8 @@
     {
       "name": "K8 the close publishes the upstream failure detail instead of the fixed message",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "      ? boundRunErrorForFrame({\n          message: RUN_ERROR_EGRESS_MESSAGE,",
-      "replace": "      ? boundRunErrorForFrame({\n          message: o.error.message,",
+      "find": "      ? runError({\n          message: RUN_ERROR_EGRESS_MESSAGE,",
+      "replace": "      ? runError({\n          message: o.error.message,",
       "expectRed": "close:a-short-failure-detail-is-replaced-by-the-fixed-message",
       "cell": "close:a-short-failure-detail-is-replaced-by-the-fixed-message",
       "note": "Restores #1431 on the out-of-band close: a short upstream detail fits the frame, so it would reach events.<owner>.<actor> verbatim."

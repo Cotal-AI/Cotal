@@ -891,7 +891,7 @@ const TRUNCATABLE_FIELDS: ReadonlyArray<{ readonly type: string; readonly field:
  *  surrogate pair in half and produce a lone surrogate, which is not well-formed UTF-16 — the exact
  *  defect `fix(core)!: refuse names that are not well-formed UTF-16` landed on this branch for. A
  *  splitter that reintroduced it here would emit a frame the wire layer is now obliged to refuse. */
-export const takeCodePoints = (s: string, codePoints: number): string =>
+const takeCodePoints = (s: string, codePoints: number): string =>
   Array.from(s).slice(0, codePoints).join("");
 
 /**
