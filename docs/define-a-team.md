@@ -113,7 +113,7 @@ declared item against the live mesh:
 |---|---|---|
 | Channel, brand-new | created + owned | Seeded and recorded in the ledger. |
 | Channel, already present | `exists-unmanaged` | Left untouched: card not mutated; the desired card is shown against the live one. |
-| Agent, not yet created | will-create | Booted and recorded. |
+| Agent, not yet created | will-create | Booted and recorded. A launch that settles uncertain (neither joined nor exited within the readiness window) is recorded too and listed as pending, because the manager keeps managing it and `down -f` must stop it. |
 | Agent, already created, unchanged | already-owned | No-op. |
 | Agent, already created, policy changed | `stale` | Exits non-zero unless `--allow-stale <names>` (then it restarts). |
 
