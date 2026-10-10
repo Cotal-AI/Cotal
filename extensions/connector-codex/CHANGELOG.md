@@ -1,5 +1,7 @@
 # @cotal-ai/connector-codex
 
+## 0.78.1
+
 ## 0.78.0
 
 ## 0.77.1
