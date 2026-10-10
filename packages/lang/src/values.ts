@@ -34,6 +34,19 @@ function freezeThrough<T>(value: T, seen: WeakSet<object>): T {
 }
 
 /**
+ * The deep-frozen copy of a value a scope records, which the live run and a replay both hand the
+ * program. A COPY: freezing the value itself would freeze a record the program built outside the
+ * scope for the rest of the live run, where a resume, which never runs the scope, leaves it writable.
+ * And a copy in the journal's own encoding, JSON: one record held at two places in the value comes
+ * back from a durable store as two records, and a branch slot that answered nothing as no field or
+ * `null`, so a copy that kept either as it was would hand the live run a value its resume cannot. A
+ * body that produced no value has no JSON spelling, and its absence is its own copy.
+ */
+export function recordedCopy(value: unknown): unknown {
+  return value === undefined ? value : deepFreeze(JSON.parse(JSON.stringify(value)));
+}
+
+/**
  * The depth a container was born at: L2032's runtime half for VALUES.
  *
  * A binding carries the concurrent depth it was declared at ({@link Env.depth}), which is what

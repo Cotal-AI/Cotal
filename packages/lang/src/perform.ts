@@ -11,7 +11,7 @@
 import { InterpreterDefect, RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, isStackExhaustion, messageOf, stackOf } from "./errors.js";
 import { atMostOnce, digest, holdRequestId, requestId, scopePathString, scopeTraits, stepKeyString, type KeyScope, type PathKind, type ScopeFrame, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError, type JournalEntry, type LookupVerdict } from "./journal.js";
-import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
+import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze, recordedCopy } from "./values.js";
 import { HOLDABLE_KINDS, PRIMITIVES, type EffectKind } from "./primitives.js";
 import { parseDuration } from "./duration.js";
 import { notifyFactViolation } from "./notify-fact.js";
@@ -1305,12 +1305,7 @@ function thrownError(value: unknown): EntryError {
     // The refusal alone: a thrown function's text is the host's own source, and differs by engine.
     return { ...fault, message: cause.message };
   }
-  // A COPY: freezing the value itself would freeze a record the branch threw from outside it for
-  // the rest of the live run, where a resume, which never runs the branch, leaves it writable. And a
-  // copy in the journal's own encoding, JSON: one record held at two places in the value comes back
-  // from a durable store as two records, so a copy that kept them one would hand the live `catch` a
-  // fact its resume cannot.
-  return { ...fault, thrown: { value: deepFreeze(JSON.parse(JSON.stringify(value))) } };
+  return { ...fault, thrown: { value: recordedCopy(value) } };
 }
 
 /**
@@ -1636,15 +1631,16 @@ export async function performScope(
     throw e;
   }
 
+  const value = recordedCopy(outcome.value);
   await host.journal.settle(
     scopeKey,
-    { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+    { status: "ok", result: { branches: outcome.branches, value } },
     // The joined branch clock, for the same reason as the failure path above: this is the value
     // `now()` answers after the scope, and the stamp replay hands back must be that value.
     frame.clock.now(),
     settledFacts,
   );
-  return outcome.value;
+  return value;
 }
 
 /**

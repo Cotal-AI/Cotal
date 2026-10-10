@@ -223,8 +223,9 @@ including `xs.length` — writing at `length` appends — and a write past the e
 Two writes are refused:
 
 - **L2031, a frozen value.** Every value that crosses an effect boundary in either direction is
-  deep-frozen: an effect's arguments, its result, the result of a concurrency scope, and the copy of
-  a value the program throws out of one (§9.1). What crossed is what the journal recorded, so it
+  deep-frozen: an effect's arguments, its result, and the copy a concurrency scope records of its
+  result (§10.6) or of a value the program throws out of it (§9.1). The value the program built is
+  not frozen by crossing a scope. What crossed is what the journal recorded, so it
   cannot change afterwards — through a store too: a journal seeded from serialized entries freezes
   each recorded value on the way in, so a result replayed on resume is as frozen as it was live.
   Build a new value instead (`{ ...record, field: value }`, `[...list, item]`).
@@ -1011,11 +1012,15 @@ entry from another run is refused (L5011).
 A scope writes one entry of its own kind, keyed in the namespace that opened it, beside the effects
 of that namespace; its branches live under it. On success `result` is `{ branches: [keys], value }`
 where `value` is the scope's result (`{ index, value }` for a `race`); on failure `branches` is
-carried as a fact. The settled `value` MUST have a canonical form (§4.4), exactly as an effect's
-result must: a value the record cannot carry is refused AT THE SETTLE, and the scope is recorded as
-a fault under `L4000` with kind `scope-fault` rather than settled `ok`. A failure the program
-itself caused (§9) keeps its own catalog code with kind `runtime`, and a failure the handler
-raised keeps its code and kind (§10.1); `L4000` `scope-fault` is for everything else. A value the
+carried as a fact. `value` is a deep-frozen copy, and the live run and a replay both hand the program
+that copy. It is the value as the journal's JSON reads it back, so a record held at two places in it
+arrives as two, and a branch slot that answered nothing arrives as no field in a record and `null`
+in an array, live as on a resume from a durable store. The settled `value` MUST have a canonical
+form (§4.4), exactly as an effect's result must: a value the record cannot carry is refused AT THE
+SETTLE, and the scope is recorded as a fault under `L4000` with kind `scope-fault` rather than
+settled `ok`. A failure the program itself caused (§9) keeps its own catalog code with kind
+`runtime`, and a failure the handler raised keeps its code and kind (§10.1); `L4000` `scope-fault`
+is for everything else. A value the
 program threw is recorded under that fault as a copy, `thrown: { value }`, `{}` for `undefined`,
 and the live run and a replay both hand `catch` that copy (§9.1). The copy is the value as the
 journal's JSON reads it back, so a record the value holds at two places arrives as two records, live
@@ -1299,3 +1304,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-10-06 | The scopes and the three traits in which they differ are one table (§7): what a scope settles, its verdict when a migration orphans it, and whether a fork re-enters it when the cut lies inside it. §2.3, §6.5, §10.1, §10.6, §11.2 and §11.3 cite that table or §6.1 instead of listing or counting kinds, so a new scope is a row in §6.1 and a row in §7. §11.3 refused a cut inside "a scope whose outcome was already decided" without naming those scopes; it now re-enters `parallel`, `fanOut` and `once` and refuses `race` and `conclave` (L5020), as the reference already did, and refuses a cut inside a scope with no row. No behavior changes. |
 | 2026-10-06 | A `conclave` counts toward `effectCeiling` (§8.3): opening one is a dispatch, so it is counted once before its entry begins, and a resume's tally counts its recorded key. Before this a program whose only effect was `conclave` could open any number of them, live or across a resume, without reaching L4009. A resume that re-enters a pending or refused step no longer counts it a second time: its key is already in the tally, and counting it again faulted the resumed run at a step where a fresh run went on. |
 | 2026-10-07 | A value the program throws out of a concurrency scope reaches `catch` as itself on resume, as it does live (§9.1, §10.6): the scope's `L4000` `scope-fault` record carries it as `error.thrown` (§10.1), the live run, a replay and a migration's dry walk (§11.2) all deliver that recorded copy, deep-frozen like a scope's result (§4.3). The copy is the value as JSON reads it back, so a record held at two places in it arrives as two on the live run as on a resume from a durable store, and a resume refuses a loaded `error.thrown` that is not `{ value }` or `{}` (L5024). Measured before it: a `conclave` body that threw `"failure"` was caught as `"failure"` live and as `{ code: "L4000", kind: "scope-fault", message: "failure" }` on resume, on both engines, and a `notify` branching on the caught value diverged (L5001) on the resume of unchanged source. A thrown value with no canonical form is delivered as the record live as well. |
+| 2026-10-09 | A concurrency scope's result reaches the program as the deep-frozen copy its record carries, live as on resume (§4.3, §10.6), and the value the program built is not frozen by crossing the scope. The copy is the value as the journal's JSON reads it back. Measured before it: a `parallel` branch that returned a record built outside the scope left that record frozen for the rest of the live run while a resume left it writable, so a write after the scope raised L2031 live and succeeded on resume, and a `notify` depending on it diverged (L5001) on the resume of unchanged source, on both engines. A `fanOut` slot whose branch answered nothing read `undefined` live and `null` on a resume from a durable store, and diverged the same way. |

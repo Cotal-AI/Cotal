@@ -77,7 +77,9 @@ bounded decision record, not prose.
 - **Time and randomness are tamed.** `now()` is the branch's run clock, the end of the last effect
   it awaited; `random()` is a seeded stream derived per scope. Both replay identically.
 - **Values freeze at the boundary.** What crossed into or out of an effect is what the journal
-  recorded, and it cannot change afterwards; build a new value.
+  recorded, and it cannot change afterwards; build a new value. A concurrency scope hands the
+  program a frozen copy of its result, the one a resume reads back, and the value the program built
+  stays writable.
 - **The journal is the debugger.** Every entry carries its key, its inputs' hash, its outcome and
   its timing, and every error is in the program's own coordinates. A run can be **simulated** with a
   scripted handler and **dry-run** to a plan before it touches an agent. The simulator is
