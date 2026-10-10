@@ -188,7 +188,8 @@ Eight things are specific to Codex and worth knowing before you read a stream:
 - **The stream starts where the seat binds to the file.** `thread/start` writes nothing to disk; the
   file appears when the thread is primed. The seat binds to it then, and publishes from that point
   forward. If the file is slow to appear the seat says so in its log and looks again at each turn
-  boundary, and whatever the thread wrote before the bind is not republished.
+  boundary, and whatever the thread wrote before the bind is not republished. A seat stopped before
+  it binds leaves without binding.
 - **Codex's built-in tools remain private to the host.** Web search, tool search and image generation
   record an end with no start, and nothing joins the two halves: the start-shaped record carries no
   call id and the end carries one. Rather than guess a pairing, the seat drops them, so those tool
