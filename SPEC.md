@@ -2707,8 +2707,11 @@ run-attempt requests, plus the closed `environment-manager-deregister` request b
 Per-session attach and shared MCP sessions are unsupported in this first family: their
 entry points MUST refuse `unimplemented` before issuing, staging or redeeming any session
 material. The authority MUST refuse `session` and `session-revoke` requests rather than
-minting a JWT whose guest-side stage would need the forbidden auth-store write. There is no generic signing, mint, profile,
-permission, administrative control or cross-environment operation. An unknown field or
+minting a JWT whose guest-side stage would need the forbidden auth-store write. The stock
+manager does not construct the session plane for this family. Its attach/shared-MCP entry
+refuses before `mintSessionServing`; the host's session refusal is a second fence.
+There is no generic signing, mint, profile, permission, administrative control or
+cross-environment operation. An unknown field or
 kind refuses `bad-request` before any effect. Missing host policy refuses `unimplemented`;
 an adapter MUST NOT substitute a human or platform holder.
 
@@ -2721,8 +2724,10 @@ manager identity for that phase and checks
 the current host-issued proof, admission revision and process epoch. Activation rechecks
 the same preparation's frozen gate; later operations require the current open registration.
 The host uses its embedded canonical manager contract closure for the admitted stock
-release, pinned by the immutable workload profile digest. The guest cannot select another
-closure or submit an unbounded artifact set. The existing two-document activation envelope
+release, pinned by the immutable workload profile digest. A host with no closure for that
+release MUST refuse admission `unimplemented` before bootstrap issuance. A guest whose
+embedded closure differs from the returned serving snapshot MUST refuse to serve.
+The guest cannot select another closure or submit an unbounded artifact set. The existing two-document activation envelope
 and 64-artifact cap are unchanged; the full schema closure is available to the host without
 a guest contract-store grant.
 
@@ -3715,8 +3720,12 @@ an authority-family write or auth-store scan through this addition. The goal-wri
 identity uses fixed `environment-manager-goal-writer`: native goal/coordination rows for
 this manager, but no auth-store `STREAM.MSG.GET` or consumer access. Its optional own-gate
 fast-fail read is omitted; the native barrier revoke and verified connection eviction
-remain the durable supersession fence. Removing that belt MUST NOT add a fallback or
-permit writes after the credential's barrier revocation.
+remain the durable supersession fence. The stock manager skips installing the optional
+goal-writer gate belt for this family; it MUST NOT open the auth bucket and tolerate a
+denial. The accepted residual is a deposed incarnation's ability to initiate terminal
+publishes from barrier start until its eviction is verified, the existing §13.1 class for
+other endpoints on an auth mesh. Removing the belt MUST NOT add a fallback or permit
+writes after verified barrier revocation/eviction.
 
 The environment supervisor holds its exact
 `$KV.cotal_manager_<space>.lease.<instanceId>` create/CAS row, manager-bucket
