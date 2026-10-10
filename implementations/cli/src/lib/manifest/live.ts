@@ -6,7 +6,7 @@
  * owner-equality `launch` row, the manager's ledger-derived admin flag governs). (Channel-registry
  * reads use `readChannelRegistry`, which connects itself.)
  */
-import { CotalEndpoint, EpEnvelopeError, controlReplyFrom, type ControlReply, type MeshLaunchSpec, type Presence } from "@cotal-ai/core";
+import { CotalEndpoint, EpEnvelopeError, controlReplyFrom, controlReplyFromThrown, type ControlReply, type MeshLaunchSpec, type Presence } from "@cotal-ai/core";
 import { START_TIMEOUT_MS } from "../control.js";
 
 export interface MeshConn {
@@ -110,6 +110,6 @@ export async function launchAgent(ep: CotalEndpoint, runId: string, name: string
     const r = await ep.invokeService("manager", "launch", { runId, name, ...(spec ? { spec } : {}) }, { deadlineMs: START_TIMEOUT_MS, follow: true });
     return controlReplyFrom(r.reply);
   } catch (e) {
-    return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message };
+    return e instanceof EpEnvelopeError ? controlReplyFromThrown(e, `${e.code}: ${e.message}`) : { ok: false, error: (e as Error).message };
   }
 }

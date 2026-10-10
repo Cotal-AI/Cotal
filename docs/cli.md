@@ -1391,6 +1391,7 @@ down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there
 (despawned, or its agent exited while the link was down) exits cleanly with `seat <name> is gone`.
+It stops the same way on a refusal the CLI raises itself, such as a broker that denies the request.
 A local connect refusal that retrying cannot fix, such as a static-auth mesh whose seed is now
 missing, also exits non-zero with the refusal's own sentence. A broker that is still unreachable
 keeps the loop trying in silence.

@@ -151,6 +151,18 @@ export function controlReplyFrom(reply: EndpointReply): ControlReply {
   };
 }
 
+/** The {@link ControlReply} a caller hands on for an envelope error thrown instead of a reply. The
+ *  caller keeps its own `message`; the code and details come from here, so a refusal that arrives
+ *  as a throw is keyed on the same way as one that arrives as a reply. */
+export function controlReplyFromThrown(e: EpEnvelopeError, message: string): ControlReply {
+  return {
+    ok: false,
+    error: renderLifecycleBlocked(message, e),
+    code: e.code,
+    ...(e.details ? { details: e.details } : {}),
+  };
+}
+
 /** An event (incl. per-goal progress) on the `epe` plane. The publishing instance and epoch are
  *  read from the SUBJECT (§13.2), never from payload fields. */
 export interface EndpointEvent {

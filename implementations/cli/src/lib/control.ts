@@ -16,6 +16,7 @@ import {
   registryReadFailed,
   undeclaredArg,
   controlReplyFrom,
+  controlReplyFromThrown,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -256,8 +257,12 @@ export function onInstanceOrExit(on: string | undefined, verb: string): string |
  *  A failure that is not an {@link EpEnvelopeError} carries no answer provenance at all, so no verdict
  *  is stated for it either: its message stands alone. */
 export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
-  const instanceId = pin?.instanceId;
   if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
+  return { ...controlReplyFromThrown(e, epRailMessage(e, pin)), unanswered: unansweredRequest(e) };
+}
+
+function epRailMessage(e: EpEnvelopeError, pin?: ManagerPin): string {
+  const instanceId = pin?.instanceId;
   const detail = `${e.code}: ${e.message}`;
   if (unansweredRequest(e)) {
     // The verdict is SCOPED TO THE RAIL the request rode (SPEC 13.15). The legacy and versioned rails are
@@ -274,22 +279,19 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
     // was simply down to go and check a version.
     const skew = versioned === undefined ? "" :
       ` The ${versioned} and legacy ep rails are disjoint at the broker (SPEC 13.15) and an endpoint must serve both, so this does not tell no manager running apart from one older than ${versioned}, which serves ep only and cannot answer here. Check whether a manager is running, and if it is, its version.`;
-    return {
-      ok: false, unanswered: true,
-      error: instanceId !== undefined
-        ? `manager instance ${instanceId} did not answer${versioned === undefined ? "" : ` on the ${versioned} rail`} (${detail})${skew}`
-        : versioned === undefined
-          ? `no manager reachable on the ep rails (${detail})`
-          : `no manager answered on the ${versioned} rail (${detail})${skew}`,
-    };
+    return instanceId !== undefined
+      ? `manager instance ${instanceId} did not answer${versioned === undefined ? "" : ` on the ${versioned} rail`} (${detail})${skew}`
+      : versioned === undefined
+        ? `no manager reachable on the ep rails (${detail})`
+        : `no manager answered on the ${versioned} rail (${detail})${skew}`;
   }
   if (registryReadFailed(e))
-    return { ok: false, unanswered: false, error: `the manager registry could not be read: a broker read on this side, not the managers' silence, and they may all be up. Retry; if it persists, look at the broker's JetStream (${detail})` };
+    return `the manager registry could not be read: a broker read on this side, not the managers' silence, and they may all be up. Retry; if it persists, look at the broker's JetStream (${detail})`;
   // This CLI built the args for a manager of its own release, and the two release in lockstep, so a
   // key the manager's contract does not declare means the manager runs a different release.
   const undeclared = undeclaredArg(e);
   if (undeclared !== undefined)
-    return { ok: false, unanswered: false, error: `${detail}. That is version skew: this CLI runs Cotal ${cliVersion()} and sends "${undeclared}", which the manager's contract does not declare. Run the manager at Cotal ${cliVersion()}, or use a CLI at the manager's version` };
+    return `${detail}. That is version skew: this CLI runs Cotal ${cliVersion()} and sends "${undeclared}", which the manager's contract does not declare. Run the manager at Cotal ${cliVersion()}, or use a CLI at the manager's version`;
   // The unpinned class-queue split. Core says a call that addresses one instance does not split
   // and stops there (a CLI flag name does not belong in a core error). The flag is named here only
   // when the CALLER declared it has one (`pin` present) and did not pass it: an absent `pin` is a
@@ -297,7 +299,7 @@ export function epRailFailure(e: unknown, pin?: ManagerPin): ManagerReply {
   // A marked `expired` is the other producer (a stale-epoch bind) and its remedy is re-resolving,
   // so the flag is offered only for the split.
   const unpinnedSplit = e.code === "failed-precondition" && respondedButUnbound(e) && pin !== undefined && instanceId === undefined;
-  return { ok: false, unanswered: false, error: `${detail}${unpinnedSplit ? " Pin one manager instance with --on <instance> (the whole id, as `ps` prints it) to avoid the split." : ""}` };
+  return `${detail}${unpinnedSplit ? " Pin one manager instance with --on <instance> (the whole id, as `ps` prints it) to avoid the split." : ""}`;
 }
 
 /** Send one control command to the manager over the v0.4 service-endpoint rails and disconnect —
