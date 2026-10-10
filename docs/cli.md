@@ -2027,8 +2027,8 @@ cotal completion powershell | Out-String | Invoke-Expression # powershell
 `cotal completion install` wires completion persistently. It detects the active shell from `$SHELL`
 or takes a shell name positionally:
 
-- **bash**: writes `~/.config/cotal/completion.bash` and appends a source line to `~/.bashrc`.
-- **zsh**: writes `~/.config/cotal/completion.zsh` and appends a source line to `~/.zshrc`.
+- **bash**: writes `~/.config/cotal/completion.bash` (or under `$XDG_CONFIG_HOME`) and appends a source line to `~/.bashrc`.
+- **zsh**: writes `~/.config/cotal/completion.zsh` (or under `$XDG_CONFIG_HOME`) and appends a source line to `~/.zshrc` (or `$ZDOTDIR/.zshrc`).
 - **fish**: writes `~/.config/fish/completions/cotal.fish` (or under `$XDG_CONFIG_HOME`), which fish loads automatically.
 - **powershell**: prints the snippet to add to `$PROFILE`.
 
