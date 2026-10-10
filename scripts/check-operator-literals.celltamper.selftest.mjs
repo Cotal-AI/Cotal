@@ -9,14 +9,14 @@
  * independent instruments. A `primary` (the scanner's real `findings()`) and a `secondary` (a
  * small reader asserting the subject genuinely carries what the cell claims to plant). Hollow a
  * secondary out to a constant, `() => 1`, and the cell still reports `status=PASS`, the summary
- * still reports `cells=65/65 status=PASS`, and the process still exits 0.
+ * still reports `cells=66/66 status=PASS`, and the process still exits 0.
  *
  * Measured by hollowing three different secondaries one at a time, each inside its own cell block:
- *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=65/65 status=PASS   SURVIVED
- *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=65/65 status=PASS   SURVIVED
- *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=65/65 status=PASS   SURVIVED
+ *   host-planted  (host-token arrow)  -> () => 1 : exit 0, cells=66/66 status=PASS   SURVIVED
+ *   ip-loopback   (shapeIPv4Count)    -> () => 1 : exit 0, cells=66/66 status=PASS   SURVIVED
+ *   home-relative (homeFragmentCount) -> () => 1 : exit 0, cells=66/66 status=PASS   SURVIVED
  * against a same-session behaviour control proving the scanner is not simply blind: dropping the
- * trailing `(?![A-Za-z0-9_/])` from the real CIDR_SUFFIX pattern gave exit 2, cells=61/65
+ * trailing `(?![A-Za-z0-9_/])` from the real CIDR_SUFFIX pattern gave exit 2, cells=62/66
  * status=FAIL, reddening exactly the four cells that grade that lookahead (public-cidr-alpha-tail,
  * public-cidr-slash-tail, shared-cidr-alpha-tail, shared-cidr-slash-tail). The weakening is spelled
  * out because "weakening the pattern" is not reproducible and the cell count depends on which
@@ -34,7 +34,8 @@
  *
  * #1614 added four cells while this branch sat in review, moving the scanner from 61 to 65 cells
  * and this suite from 149 to 173 checks; the inline-registry check added in this revision takes
- * the suite to 175. The pinned-total regression check added later takes it to 176. That is why the
+ * the suite to 175. The pinned-total regression check added later takes it to 176, and the
+ * loopback-machine-host cell takes the scanner to 66 cells and the suite to 182. That is why the
  * labelled figures below read 61 and 149.
  *
  * THE MEASUREMENT. A discriminator is alive only if it can still say NO. For each subject cell we
@@ -290,10 +291,10 @@ const tamperHelper = (source, id, helper, find, replace) => {
  * Each case names a cell, and an edit that destroys the property the cell's SECONDARY reader
  * asserts while leaving the scanner's matching rules untouched.
  *
- * COVERAGE IS BY CONSTRUCTOR FAMILY, NOT BY CELL. The scanner builds its 65 cells from a small
+ * COVERAGE IS BY CONSTRUCTOR FAMILY, NOT BY CELL. The scanner builds its 66 cells from a small
  * number of shared factories, and hollowing a factory's discriminator kills every cell it built at
  * once. One case per family therefore grades every cell in that family, while one case per cell
- * would be 65 cases mostly re-proving the same function. The families are enumerated from the
+ * would be 66 cases mostly re-proving the same function. The families are enumerated from the
  * SOURCE by the census below, so a family added later without a case fails loudly instead of being
  * silently ungraded. That enumeration is what an earlier version of this file lacked: two separate
  * survivors were found in review, both in families the case list did not name.
@@ -414,7 +415,7 @@ const CASES = [
   // nothing whatever about these four, and review measured the consequence: hollowing two of these
   // readers to a constant that satisfies its own expectation left `scanEntries` uncalled, the
   // scanner reporting `cells=61/61 status=PASS` (DATED: measured at the then-current 61-cell head,
-  // before #1614; the scanner builds 65 cells now), and this suite fully green. Two cells graded by
+  // before #1614; the scanner builds 66 cells now), and this suite fully green. Two cells graded by
   // nothing, reported as graded by their family. The coverage rule now groups by reader, which put
   // all four here as uncovered singletons, and this is that debt paid rather than renamed.
   //
@@ -622,7 +623,7 @@ const CASES = [
  *
  * COVERAGE IS OVER CELLS, AND THE FACTORY IS ONLY A GROUPING. An earlier version enumerated cell
  * FACTORIES and treated a case per factory as covering everything that factory built. That is true
- * as far as it goes, and it is not far enough: 14 of the scanner's 65 cells are INLINE object
+ * as far as it goes, and it is not far enough: 15 of the scanner's 66 cells are INLINE object
  * literals with a `measure` of their own and no factory at all, so a census over factories cannot
  * see them by construction. Two reviewers found that independently, and it is the same defect as
  * #1580 itself a third time: an enumeration whose denominator silently excludes the thing being
@@ -868,7 +869,7 @@ const FACTORIES = [
  * array, so this list is written out. It is held to the source rather than trusted: the registry
  * check below requires it to match the inline cells the AST inventory finds, IN BOTH DIRECTIONS.
  *
- * THAT CHECK IS NEW, AND IT IS WHY THIS ARRAY NOW READS 14 RATHER THAN 10. This comment already
+ * THAT CHECK IS NEW, AND IT IS WHY THIS ARRAY GREW FROM 10 TO 14. This comment already
  * claimed bidirectionality and the code did not provide it: the only enforced direction was
  * claimed -> source (`census: every cell this suite names is actually declared in the scanner`,
  * which filters these names against the scanner's markers). Nothing checked source -> claimed, so
@@ -1093,8 +1094,8 @@ try {
   //
   // This was pointed at factories for two rounds and it was the wrong denominator. A case list
   // grades what it names and stays silent about what it forgot, so the census exists to make that
-  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 14 of the
-  // scanner's 65 cells are inline object literals built by no factory at all, so no factory
+  // silence loud; but a census over FACTORIES inherits the same blindness one level up. 15 of the
+  // scanner's 66 cells are inline object literals built by no factory at all, so no factory
   // enumeration, however perfect, can see them. A reviewer proved the cost rather than arguing it:
   // hollowing `workflow-host-exclusion`'s inline discriminator to a constant left the scanner at
   // cells=61/61 exit 0 AND this suite at a full green (DATED: measured at the then-current 61-cell
@@ -1561,7 +1562,7 @@ try {
   // still refused, by measurement, on the strength of the cell's own baseline row.
   //
   // NO ENTRY IN THIS CONTROL IS VALID, and that is the measured state rather than an oversight: all
-  // 65 cells emit a gradable field in the baseline, so no cell can honestly claim it has none, and
+  // 66 cells emit a gradable field in the baseline, so no cell can honestly claim it has none, and
   // the honest arm of this control is currently UNSATISFIABLE. That is reported here rather than
   // papered over with a fabricated passing entry, because a control whose positive case cannot be
   // constructed is exactly the shape of the delete-the-cell proof this suite already rejects.
@@ -1769,7 +1770,7 @@ try {
 
   // WHAT THIS SUITE DOES NOT PROVE, AND WHY THE GUARDS THAT CLAIMED IT ARE GONE.
   //
-  // Everything above grades THE SCANNER: 65 cells from a derived census, tampered one at a time,
+  // Everything above grades THE SCANNER: 66 cells from a derived census, tampered one at a time,
   // each required to go red BY NAME. That part held under eleven rounds of review without a single
   // finding against it, and it is what this file is for.
   //
