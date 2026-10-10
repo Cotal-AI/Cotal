@@ -5,7 +5,7 @@ import { arch, cpus, homedir, totalmem, userInfo } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 import type { CompletionResult, ParsedArgs } from "@cotal-ai/core";
 import { findMesh, spaceKey, spaceSegment, type ProcessRecord } from "@cotal-ai/workspace";
-import { describeManagerRecord, MANAGER_PID_PATH, managerRecordState } from "../lib/manager-proc.js";
+import { describeManagerRecord, managerRecordState } from "../lib/manager-proc.js";
 import { selfArgv } from "../lib/self-exec.js";
 import { resolveRuntimeSpace } from "../lib/status.js";
 import { c } from "../ui.js";
@@ -357,7 +357,7 @@ function install(values: { mesh?: string; linger?: boolean }): void {
   if (incumbent.state === "alive")
     throw new Error(`a manager for mesh "${mesh}" is already running (pid ${incumbent.pid}, started by \`cotal up\` or by hand) - stop it first: \`cotal down manager\``);
   if (incumbent.state === "unknown" || incumbent.state === "unattributable")
-    throw new Error(`the recorded manager for mesh "${mesh}" cannot be attributed (${incumbent.state}) - resolve \`${MANAGER_PID_PATH(mesh, root)}\` before installing the service`);
+    throw new Error(`the recorded manager for mesh "${mesh}" cannot be attributed (${incumbent.state}) - resolve \`${incumbent.path}\` before installing the service`);
   // BEFORE anything is written: a re-exec that silently does not happen would report a
   // healthy service over nothing, so the argv is proven here, not at unit start. The mesh
   // facts do NOT ride this argv (see unitEnv).

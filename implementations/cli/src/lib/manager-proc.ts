@@ -67,12 +67,9 @@ export const managerLogPath = (space: string, root: string = cotalRoot()): strin
 export const managerLogDisplayPath = (space: string, root: string = cotalRoot()): string =>
   relative(root, managerLogPath(space, root));
 
-/** Exported so the delivery cutover preflight can NAME the pid it refused on: an error that says
- *  "cannot be attributed" without saying which pid is not actionable. READ-resolving, so it also
- *  names a pre-segmentation `manager.pid` when that is the record actually on disk. */
-export const MANAGER_PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): string =>
+/** READ-resolving: also names a pre-segmentation `manager.pid` when that is what is on disk. */
+const PID_PATH = (space: string = folderSpace(), root: string = cotalRoot()): string =>
   localProcessPath(MANAGER_PIDFILE, { root, space });
-const PID_PATH = MANAGER_PID_PATH;
 /** Sibling marker of `manager.pid`: written by THIS build's manager (which no longer hosts Plane-3 —
  *  the server-side delivery daemon does). Its presence beside a live `manager.pid` proves the manager is
  *  "delivery-aware" / non-hosting. A live `manager.pid` WITHOUT this marker is an OLD (pre-delivery-daemon)
@@ -242,7 +239,7 @@ export function assertManagerRecordReplaceable(
   const state = record.state;
   // The record this is about, named in full: on a root that hosts two spaces "the manager pidfile"
   // is not a location an operator can act on, and on an un-upgraded one it is not even this name.
-  const p = PID_PATH(space);
+  const p = record.path;
   // A FOREIGN record is replaceable, and saying what was found is the point of allowing it. The pid
   // is alive, so `probeLiveness` alone would have called this a healthy manager and every start
   // path would have skipped forever; it is provably not a manager, so nothing is orphaned by

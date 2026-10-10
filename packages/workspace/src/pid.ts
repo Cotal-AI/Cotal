@@ -186,6 +186,9 @@ export type ProcessRecordState = "alive" | "dead" | "unknown" | "absent" | "unat
  *  need the pid and the command line that earned it, and a bare state cannot carry them. */
 export interface ProcessRecord {
   state: ProcessRecordState;
+  /** The file this verdict read. A refusal names it rather than resolving the record again: a second
+   *  resolution can pick a record migrated since the read, or throw on one that appeared beside it. */
+  path: string;
   /** The recorded pid, when the file held one. */
   pid?: number;
   /** The record's content, when it is not a pid (present on `unattributable`). */
@@ -210,17 +213,17 @@ export function readProcessRecord(
   readCommand: CommandReader = readProcessCommand,
 ): ProcessRecord {
   const raw = readPidfile(path);
-  if (!raw) return { state: "absent" }; // no record, or a pre-protocol husk: nothing is behind it
+  if (!raw) return { state: "absent", path }; // no record, or a pre-protocol husk: nothing is behind it
   const pid = parsePid(raw);
   // NOT `absent`. Folding non-empty corrupt content into "nothing recorded" is what let the ensure
   // paths OVERWRITE it and launch a replacement, which is the same defect as deleting it: that
   // record may front a live process nobody can identify. Every action path must refuse on it.
-  if (pid === undefined) return { state: "unattributable", content: raw };
+  if (pid === undefined) return { state: "unattributable", path, content: raw };
   const liveness = probe(pid);
-  if (liveness !== "alive") return { state: liveness, pid };
+  if (liveness !== "alive") return { state: liveness, path, pid };
   const cmd = readCommand(pid);
-  if (cmd.kind !== "command") return { state: "alive", pid }; // gone/unreadable: established nothing
-  return { state: isOwnCommand(cmd.command) ? "alive" : "foreign", pid, command: cmd.command };
+  if (cmd.kind !== "command") return { state: "alive", path, pid }; // gone/unreadable: established nothing
+  return { state: isOwnCommand(cmd.command) ? "alive" : "foreign", path, pid, command: cmd.command };
 }
 
 // ---- CREATION IDENTITY: one stable scheme across launch, record, status and teardown (#969) ----
