@@ -384,12 +384,13 @@ carried conversation. Carrying operator configuration would make each seat home 
 shared one, and the launch already scopes MCP servers to the mesh for the same reason.
 
 A fresh config home starts Claude's first-run setup and asks to trust the working directory. The
-connector writes `<home>/.claude.json` with two facts: onboarding is complete, and the launch `cwd` is
-trusted when, and only when, the Claude home the manager's environment names already trusts it. An untrusted `cwd` is
-refused with the remedy of opening `claude` in that directory on the manager host once. A seat
-launched in the shared home is refused the same way, so the rule keeps parity and grants nothing
-new. The keys are internal to Claude, so the connector pins them to its supported Claude
-range, and hand test H6 proves a carried seat reaches its first turn with no prompt.
+connector writes `<home>/.claude.json` with two facts: onboarding is complete, and the authorized
+launch `cwd` is trusted. It does not change the manager's shared home. An ordinary managed seat
+accepts trust through Claude's native startup dialog instead. Neither path adds a tool-permission
+bypass flag. Trust enables the checkout's hooks and settings, including any default permission mode
+that the launch does not override.
+The private-home keys are internal to Claude, so the connector pins them to its supported Claude
+range. Hand test H6 covers a carried seat reaching its first turn with no prompt.
 
 ### 7.5 What this boundary is
 
@@ -482,7 +483,7 @@ seat's "source context" is checked by asking it a question only the source conve
 | H3, interrupted transfer resumes | Repeat H1 with a new session; kill the CLI after at least 10 acknowledged chunks; run the command again | The second run sends `<size> - <offset>` bytes, where `<offset>` is the last chunk's `Cotal-Offset`; the commit verifies; the seat forks the source |
 | H4, a seat cannot read another seat's transcript | With H1's seat S1 live, launch S2 on B without a claim | From S2's environment, `claude --resume <source id>` and `claude --resume <S1 fork id>` report no conversation found; S2's credential is refused `CONSUMER.CREATE` and direct get on B's transfer stream; a raw `spawn` from S2's credential with S1's `resumeClaim` or a fabricated one is refused; a second manager instance's reader is refused on B's stream |
 | H5, title-only resume | On A, two sessions carry one name. `cotal spawn --resume <name> --detach --on <B instance>` | The CLI refuses and lists both with host, id, SHA-256 and modification time; after carrying both by id, `ps` on B lists two seats with distinct fork ids and provenance |
-| H6, the seat home starts clean | H1's seat, then a launch with no environment credential, then one with only `ANTHROPIC_API_KEY`, then one whose `cwd` the manager's Claude home does not trust | H1's seat reached its first turn with no login, onboarding or trust prompt; each of the three is refused before the claim is consumed, naming its remedy |
+| H6, the seat home starts clean | H1's seat, then a launch with no environment credential, then one with only `ANTHROPIC_API_KEY`, then an authorized launch whose `cwd` the manager's Claude home does not trust | The credential cases must refuse before consuming the claim. The authorized directory must start with trust scoped to the private home, leaving the manager's home unchanged. |
 | H7, unsupported connector | `--agent jcode` (and each other connector without the locator), then a raw `spawn` naming that agent with a valid `resumeClaim` | The CLI moves no byte and the id resolves on B as it does today; the raw `spawn` is refused |
 | H8, retention follows the transfer | Repeat H3's interruption with a new session and run the command again within ten minutes. Then interrupt a carry of another new session the same way, wait more than ten minutes, and run that command again | The first resumed run sends `<size> - <offset>` bytes. Before the second rerun, B's transfer stream holds no message on that chain's chunk subject; the rerun sends all `<size>` bytes and the commit verifies |
 | H9, concurrent carries and a leftover object | From two terminals on A, run H1's command for one new session at the same moment. Then, for another new session, run the command in one terminal, stop it with `SIGSTOP` after at least 10 acknowledged chunks, run the same command to completion in the other terminal, and resume the stopped one with `SIGCONT`. Then put H1's transcript bytes into B's bucket under the name `sha256:<hex>` with an admin credential (`nats object put`), the state a manager crash between staging and removal leaves, and repeat H1's command | All four carries launch a seat, with distinct fork ids; the resumed run reports fewer than `<size>` bytes sent; B's staging directory holds one `<hex>` per session and no temporary file; the repeated run reports `0 of <size> bytes sent` and B's bucket then holds no live object |

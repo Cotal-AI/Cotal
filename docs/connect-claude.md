@@ -139,13 +139,15 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   silently or answering another dialog. The PTY runtime writes that error to the seat's output and
   stops the child as a graceful stop does, so a child that ignores SIGTERM is killed 3 seconds
   later. The other runtimes write the error to the manager's log.
-- **Trusted directory.** Claude opens a directory it has not trusted on its workspace-trust dialog,
-  and the dialog's default answer exits. No one is at a supervised seat to answer it, so a launch
-  whose directory the manager host's own Claude does not trust is refused before it starts, naming
-  the directory and the dialog. Trust is read as Claude reads it: trust given to a parent directory
-  counts up to the root of the directory's own Git repository, and a linked worktree shares the trust
-  of its repository's main checkout. Open `claude` in that directory on the manager host once and
-  trust it, then spawn again. A foreground `cotal spawn` shows the dialog in your own terminal instead.
+- **Trusted directory.** An authorized supervised spawn accepts the selected workspace through
+  Claude's native trust dialog. The runtime observes the default No choice, selects Yes, then
+  confirms only after seeing Yes selected. It sends each response once and stops watching after
+  the development-channel confirmation. A changed or unsupported dialog receives no guessed input
+  and still fails within the startup bound. Claude saves trust with its own repository and linked
+  worktree rules; Cotal does not rewrite the manager's configuration. Accepting trust enables the
+  workspace's hooks and settings, which can select a tool permission mode when no launch flag
+  overrides it. Cotal adds no tool-permission bypass flag. Review the checkout before authorizing
+  a spawn there. A foreground `cotal spawn` keeps the trust dialog in your terminal.
 
 Inbound mesh messages arrive in context as
 `<channel source="cotal" from="bob" kind="dm" …>…</channel>`: each meta key a tag
@@ -550,8 +552,8 @@ original is untouched.
   against the **manager host's** `~/.claude`, as before.
 - A seat-private home holds no login. The manager host needs `CLAUDE_CODE_OAUTH_TOKEN` (from
   `claude setup-token`), `ANTHROPIC_AUTH_TOKEN`, or a cloud provider selection in its
-  environment; `ANTHROPIC_API_KEY` alone is refused. The launch directory must already be
-  trusted by the manager host's own Claude, and Claude must be 2.1.234 or later.
+  environment; `ANTHROPIC_API_KEY` alone is refused. The private home trusts the authorized
+  launch directory without changing the manager's home. Claude must be 2.1.234 or later.
 - The manager waits for a real outcome: `✓ started` means the agent *joined the mesh*,
   `✗ exited on launch` carries Claude's last output and the seat's exit diagnostic, such as a
   startup confirmation that never appeared, and an uncertain launch (~30 s) is reported without

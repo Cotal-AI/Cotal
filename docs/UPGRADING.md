@@ -34,6 +34,30 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Managed Claude workspace trust in 0.80.0
+
+Before upgrading, snapshot the manager's private Cotal state and Claude configuration home.
+Pause new managed spawns while upgrading the connector, core, manager and chosen terminal
+runtime together. For tmux, cmux, Herdr, Orca and custodial Linux PTY seats, use that runtime's
+supported manager-reload path and observe its custody/release bounds. Default `auto` selects
+in-process `pty`, whose seats cannot survive a manager restart. Drain those seats at an approved
+idle window, or use the documented preserve-state cut and `up` recovery, which resumes them
+rather than keeping their processes running. This upgrade does not require a broker restart.
+
+Managed launches now accept the authorized workspace through Claude's native startup dialog. They
+no longer require a prior interactive visit to that directory. Claude retains its normal
+repository and linked-worktree trust semantics, including any trust it persists for later
+sessions. Foreground launches still prompt. No tool-permission bypass flag is added, but
+accepting workspace trust enables that checkout's hooks and settings, including its default
+permission mode unless a launch flag overrides it. Authorize only reviewed workspaces.
+
+The launch recipe includes optional startup choices before its final confirmation. A custom
+runtime must implement `LaunchSpec.confirmBefore`, or refuse a recipe carrying it. Ignoring
+it leaves an untrusted launch at the native dialog until startup times out. The new launch
+recipe does not require restarting an existing seat; manager reload continuity remains
+runtime-dependent as described above. Adopt the new runtime before launching new seats.
+No credentials, mesh records or operator configuration files need manual migration.
+
 ## AG-UI `takeCodePoints` export in 0.79.0
 
 `@cotal-ai/connector-core` no longer exports `takeCodePoints`. The AG-UI preview splitter is its

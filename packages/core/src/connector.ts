@@ -1,5 +1,6 @@
 import type { Extension, ExtensionRef } from "./registry.js";
 import type { McpServerSpec } from "./connector-config.js";
+import type { StartupReply } from "./startup-confirm.js";
 
 /** Identity + mesh coordinates the manager hands a connector to launch an agent. */
 export interface LaunchOpts {
@@ -135,10 +136,9 @@ export interface LaunchOpts {
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory ({@link cwd})
    *  — which can point at any repo — doesn't scatter that state into the target tree. */
   workspaceRoot?: string;
-  /** The directory a supervised seat runs in, set by the manager beside the runtime spawn. A
-   *  connector whose harness stops an untrusted directory at a startup question refuses it here,
-   *  since no one is at a supervised seat to answer. A foreground launch runs in the operator's
-   *  terminal and omits it. */
+  /** The authorized directory a supervised seat runs in, set by the manager beside runtime spawn.
+   *  A connector can declare native startup choices for that directory. A foreground launch runs
+   *  in the operator's terminal and omits it. */
   cwd?: string;
 }
 
@@ -153,6 +153,9 @@ export interface LaunchSpec {
    *  text with cursor moves, not spaces); a text with nothing left after stripping, `""` included,
    *  is refused before the seat starts. */
   confirm?: string;
+  /** Optional native startup choices, answered in order before confirm. Only the startup watch
+   * may answer them; ordinary tool permissions remain the harness's responsibility. */
+  confirmBefore?: readonly StartupReply[];
   /** This agent's local control endpoint — the OS path its lifecycle hooks connect to (passed in
    *  the child env as `COTAL_CONTROL_SOCKET`/`COTAL_CONTROL_TOKEN`), plus the first-frame `token`
    *  that authenticates it. The connector mints it in `buildLaunch`; the manager keeps it IN MEMORY

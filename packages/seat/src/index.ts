@@ -8,4 +8,4 @@ export { peerCredentials, type PeerCredentials } from "./peercred.js";
 export { runCustodian, type CustodianLaunch } from "./custodian.js";
 export { SEAT_OOM_SCORE_ADJ, preferSeatForOomKill, type OomPreference } from "./oom.js";
 export { ConnectorDiagnosticReader } from "./diagnostic.js";
-export { StartupConfirmGate, StartupConfirmMatcher, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";
+export { StartupConfirmGate, StartupConfirmMatcher, StartupConfirmSequence, type StartupReply, normalizeConfirmText, unmatchedConfirmMessage } from "./startup-confirm.js";

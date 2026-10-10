@@ -95,7 +95,8 @@ export class OrcaRuntime implements Runtime {
     let cachedWorktree: boolean;
     let launcher: PrivateLauncher;
     try {
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
+      if (spec.confirmBefore?.length && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore);
       cwdKey = realpathSync(cwd);
       const cached = this.#worktrees.get(cwdKey);
       cachedWorktree = !!cached;
@@ -138,6 +139,7 @@ export class OrcaRuntime implements Runtime {
       },
       // Enter follows the read at once, so it uses the handle the read resolved.
       enter: () => orca.sendTerminal(terminal.handle, { enter: true, ...CONFIRM_CALL }),
+      down: () => orca.sendTerminal(terminal.handle, { text: "\x1b[B", ...CONFIRM_CALL }),
       fail: (message) => {
         console.error(`orca runtime: "${name}": ${message}`);
         try {

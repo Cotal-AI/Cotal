@@ -126,7 +126,8 @@ export class HerdrRuntime implements Runtime {
     let tabsBefore: string[];
     let launcher: PrivateLauncher;
     try {
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
+      if (spec.confirmBefore?.length && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore);
       herdr.ensureServer(this.session);
       // `split` shares a tab, so the tab set has to be sampled BEFORE this agent adds its own.
       tabsBefore = layout === "split" ? herdr.tabIds(this.session) : [];
@@ -179,6 +180,7 @@ export class HerdrRuntime implements Runtime {
         return info && herdr.readPane(session, info.paneId, CONFIRM_CALL);
       },
       enter: () => herdr.sendKeys(session, currentPane(CONFIRM_CALL), "enter", CONFIRM_CALL),
+      down: () => herdr.sendKeys(session, currentPane(CONFIRM_CALL), "down", CONFIRM_CALL),
       fail: (message) => {
         console.error(`herdr runtime: "${name}": ${message}`);
         try {

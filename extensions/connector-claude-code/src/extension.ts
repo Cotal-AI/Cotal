@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, writeLaunchArtifact, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchArmsEvents, launchEnv, materialEnv, mcpServerEnvKeys } from "@cotal-ai/connector-core";
 import { carriedForkRecord, claudeResumeTranscript, placeCarried, refuseCarriedLaunch } from "./carried.js";
-import { refuseUntrustedCwd } from "./trust.js";
+import { CLAUDE_WORKSPACE_TRUST_REPLIES } from "./trust.js";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -220,14 +220,10 @@ export const claudeConnector: Connector = {
         );
       env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
     }
-    // A carried resume (#1499) runs in the seat-private home the manager made for it, and every
-    // supervised seat needs a directory Claude already trusts. These refusals run here, before any
-    // private file is written and before the manager spends the claim.
+    // A carried resume needs credentials its private home can use. Managed workspace trust is
+    // accepted through the native startup dialog below, without rewriting the manager's config.
     const binary = opts.resolvedBinaries?.claude ?? "claude";
     if (opts.carried) refuseCarriedLaunch(binary, env);
-    if (opts.cwd) refuseUntrustedCwd(opts.cwd);
-    // placeCarried trusts the carried directory in the seat's home, whatever cwd came beside it.
-    if (opts.carried && opts.carried.cwd !== opts.cwd) refuseUntrustedCwd(opts.carried.cwd);
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
@@ -344,6 +340,7 @@ export const claudeConnector: Connector = {
       // "Enter to confirm" footer, which the workspace-trust dialog also renders with a different
       // default action. The runtime presses Enter once when this connector-owned text appears.
       confirm: "WARNING: Loading development channels",
+      ...(opts.cwd ? { confirmBefore: CLAUDE_WORKSPACE_TRUST_REPLIES } : {}),
       control,
       ...(opts.carried ? { resumeRecordPath: carriedForkRecord(opts.carried.home) } : {}),
       ...(artifacts.length > 0 ? { artifacts } : {}),

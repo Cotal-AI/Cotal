@@ -93,7 +93,8 @@ export class CmuxRuntime implements Runtime {
     let launch: { command: string; dir: string };
     let watch: ((pane: ConfirmPane) => void) | undefined;
     try {
-      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm);
+      if (spec.confirmBefore?.length && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      watch = spec.confirm === undefined ? undefined : confirmWatch(spec.confirm, spec.confirmBefore);
       launch = paneCommand(
         { command: spec.command, args: spec.args, env: spec.env, cwd },
         false,
@@ -115,6 +116,7 @@ export class CmuxRuntime implements Runtime {
     watch?.({
       read: () => (cmux.workspaceState(workspace) === "exited" ? undefined : cmux.readScreen({ workspace })),
       enter: () => cmux.sendKey("enter", { workspace }, CONFIRM_CALL),
+      down: () => cmux.sendKey("down", { workspace }, CONFIRM_CALL),
       fail: (message) => {
         console.error(`cmux runtime: "${name}": ${message}`);
         try {

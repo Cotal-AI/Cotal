@@ -33,7 +33,8 @@ export class LegacyPtyRuntime implements Runtime {
     // Built before the child exists, so a prompt that cannot match is a refusal.
     let confirmGate: StartupConfirmGate | undefined;
     try {
-      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm);
+      if (spec.confirmBefore?.length && spec.confirm === undefined) throw new Error("startup choices require a final confirmation prompt");
+      confirmGate = spec.confirm === undefined ? undefined : new StartupConfirmGate(spec.confirm, spec.confirmBefore);
     } catch (err) {
       throw new SpawnRefused((err as Error).message);
     }
@@ -210,6 +211,9 @@ export class LegacyPtyRuntime implements Runtime {
         for (const fn of dataSubs) fn(b);
       },
       stop: () => handle.stop(),
+    }, {
+      read: () => alive ? Array.from({ length: term.rows }, (_, row) => term.buffer.active.getLine(term.buffer.active.baseY + row)?.translateToString(true) ?? "").join("\n") : undefined,
+      key: (key) => proc.write(key === "Down" ? "\x1b[B" : "\r"),
     });
     return handle;
   }
