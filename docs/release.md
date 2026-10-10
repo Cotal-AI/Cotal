@@ -166,12 +166,15 @@ The window in which npm's `latest` tag points at a version whose pinned siblings
 installable opens at publish time, so neither gate can close it. They only keep the announcement
 out of it.
 
-When both gates pass, the job cuts the GitHub Release and tag for that version. The Release
-targets the oldest commit on `main` whose `bin/package.json` carries the version, which is the
-tree the packages were built from. A version that was reverted and carried again keeps that first
-commit. A publishing run whose closure gate ends `UNSETTLED` skips the Release, and the next push
-that passes both gates cuts it with that same target. The step fails if it cannot read that history
-or cannot find that commit.
+Both gates and the Release run in the `release` job. It runs after the `version` job on every push
+to `main`, and on its own once an hour. A run whose version already has its GitHub Release stops
+before either gate. When both gates pass, the job cuts the GitHub Release and tag for that version.
+The Release targets the oldest commit on `main` whose `bin/package.json` carries the version, which
+is the tree the packages were built from. A version that was reverted and carried again keeps that
+first commit. The registry can start serving a published package after the closure gate's deadline,
+so a publishing run whose closure gate ends `UNSETTLED` skips the Release. The next hourly run or
+push that passes both gates cuts it with that same target. The step fails if it cannot read that
+history or cannot find that commit.
 
 After the `version` job, the `install-probe` job packs `cotal-ai` and each runtime sibling (every
 `workspace:` dependency of `cotal-ai`) and checks that each tarball contains its declared `main` and

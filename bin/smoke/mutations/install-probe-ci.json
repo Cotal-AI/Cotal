@@ -37,12 +37,12 @@
       "cell": "install-probe runs the post-publish-install-probe script"
     },
     {
-      "name": "the closure gate is removed from the version job",
+      "name": "the closure gate is removed from the release job",
       "file": ".github/workflows/changesets.yml",
       "find": "          node scripts/verify-publish-closure.mjs \"$version\"",
       "replace": "          echo 'closure gate disabled'",
-      "expectRed": "the version job verifies publish closure before the Release",
-      "cell": "the version job verifies publish closure before the Release"
+      "expectRed": "the release job verifies publish closure before the Release",
+      "cell": "the release job verifies publish closure before the Release"
     }
   ]
 }

@@ -4,6 +4,11 @@ on:
   push:
     branches:
       - main
+  # The registry has served a published package later than the closure gate's deadline, and that
+  # publishing run skipped the Release with nothing but the next push to main to retry it (#3285).
+  # Each scheduled run retries the gates and the Release for the version on main.
+  schedule:
+    - cron: "41 * * * *"
   workflow_dispatch:
     inputs:
       snapshot:
@@ -26,6 +31,7 @@ concurrency:
 jobs:
   seat-native-linux-x64:
     name: seat native (linux-x64)
+    if: github.event_name != 'schedule'
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
@@ -47,6 +53,7 @@ jobs:
 
   seat-native-linux-arm64:
     name: seat native (linux-arm64)
+    if: github.event_name != 'schedule'
     timeout-minutes: 15
     runs-on: ubuntu-24.04-arm
     steps:
@@ -124,6 +131,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
 
+  # The gates and the Release are their own job so a scheduled run reaches them without building or
+  # publishing anything.
+  release:
+    needs: [version]
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'push' && needs.version.result == 'success') }}
+    timeout-minutes: 25
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
       # Gate: verify that EVERY package in the lockstep group reached the registry before cutting
       # a Release. The old check asked only about `cotal-ai`; if that single package published and
       # a sibling did not, the Release was cut and the announcement went out for a version a consumer
@@ -131,12 +156,17 @@ jobs:
       # propagation lag from a genuine partial publish (#1286).
       - name: Verify publish closure
         id: closure-gate
-        if: success() && github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           version=$(git show "$GITHUB_SHA:bin/package.json" | jq -r .version)
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Every later push and every scheduled run reads a version whose Release usually exists,
+          # and the install gate would install it from npm again each time.
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "Release v$version already exists — nothing to do."
+            exit 0
+          fi
           set +e
           node scripts/verify-publish-closure.mjs "$version"
           rc=$?
@@ -169,7 +199,7 @@ jobs:
       # anything is announced. A version that never installs reds the job and cuts no Release.
       - name: Verify the release installs
         id: install-gate
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'
+        if: steps.closure-gate.outputs.closure_ok == 'true'
         run: |
           node scripts/verify-release-installable.mjs "${{ steps.closure-gate.outputs.version }}"
           echo "install_ok=true" >> "$GITHUB_OUTPUT"
@@ -179,23 +209,19 @@ jobs:
       # registry, or a version nothing serves; the install gate fails when `cotal-ai@<version>` does
       # not install and run before its deadline.
       # Neither gate can tell which push published that version: a publishing run that ends UNSETTLED,
-      # or whose install gate fails, leaves the Release to a later push that published nothing. So the
+      # or whose install gate fails, leaves the Release to a later run that published nothing. So the
       # Release never targets $GITHUB_SHA. It targets the oldest commit on main's first-parent line
       # whose bin/package.json carries the version, which is the tree the packages were built from,
       # even when the version was reverted and carried again later. It refuses when that commit cannot
       # be found or when any part of the history cannot be read (#1820).
       - name: Tag and cut the GitHub Release on publish
         id: release-step
-        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
+        if: steps.closure-gate.outputs.closure_ok == 'true' && steps.install-gate.outputs.install_ok == 'true'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           version="${{ steps.closure-gate.outputs.version }}"
           tag="v$version"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            echo "Release $tag already exists — nothing to do."
-            exit 0
-          fi
           # Each read is its own assignment so `bash -e` fails the step on a failed traversal or
           # manifest read. Inside `git show | jq` a failed read gives jq empty input and passes as a
           # different version.
@@ -236,7 +262,7 @@ jobs:
   # Post-publish installability probe (#1412). Pack the workspace cotal-ai package, extract the
   # tarball, verify the bin entry exists, and run the binary (`--version`, `--help`). A broken
   # tarball or a version mismatch reds this job. The probe is a LEAF job: it runs after `version`
-  # completes, so `gh release create` has already run, and nothing depends on this job. It reds the
+  # completes, alongside the `release` job, and nothing depends on this job. It reds the
   # overall workflow but does NOT gate the GitHub Release (which is gated by the closure gate from
   # #1502 and the registry install gate). It validates the SHAPE of cotal-ai's packed artifact
   # (structure, binary presence, startup) and each runtime sibling's own tarball entry points. The

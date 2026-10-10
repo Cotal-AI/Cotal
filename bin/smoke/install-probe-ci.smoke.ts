@@ -1,6 +1,6 @@
 /**
  * The install-probe job must exist in changesets.yml and must depend on the version job.
- * The version job must contain the closure gate and the GitHub Release step. This file reads
+ * The release job must contain the closure gate and the GitHub Release step. This file reads
  * the workflow text and checks structural invariants.
  *
  * Run: pnpm smoke:install-probe-ci
@@ -84,19 +84,19 @@ check(
   "build must come before probe",
 );
 
-// E. The version job cuts the GitHub Release
-const versionBody = csJobs.get("version") ?? "";
+// E. The release job cuts the GitHub Release
+const releaseBody = csJobs.get("release") ?? "";
 check(
-  "the version job cuts the GitHub Release",
-  /gh release create/.test(versionBody),
-  versionBody.slice(0, 200),
+  "the release job cuts the GitHub Release",
+  /gh release create/.test(releaseBody),
+  releaseBody.slice(0, 200),
 );
 
-// F. The version job has a closure gate that invokes verify-publish-closure.mjs
+// F. The release job has a closure gate that invokes verify-publish-closure.mjs
 check(
-  "the version job verifies publish closure before the Release",
-  /node scripts\/verify-publish-closure\.mjs/.test(versionBody) &&
-    versionBody.indexOf("node scripts/verify-publish-closure") < versionBody.indexOf("gh release create"),
+  "the release job verifies publish closure before the Release",
+  /node scripts\/verify-publish-closure\.mjs/.test(releaseBody) &&
+    releaseBody.indexOf("node scripts/verify-publish-closure") < releaseBody.indexOf("gh release create"),
   "closure gate must come before release",
 );
 

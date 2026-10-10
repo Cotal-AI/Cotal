@@ -48,17 +48,17 @@ function check(name: string, condition: unknown, detail?: unknown): void {
 const workflowText = readFileSync(join(ROOT, ".github/workflows/changesets.yml"), "utf8");
 const workflow = parseYaml(workflowText);
 
-// Find the version job (the one with the publish and release steps)
-const versionJob = workflow?.jobs?.version;
-check("the changesets workflow has a 'version' job", !!versionJob);
+// Find the release job (the one with the gate and release steps)
+const releaseJob = workflow?.jobs?.release;
+check("the changesets workflow has a 'release' job", !!releaseJob);
 
 // Find steps by id
-const steps = versionJob?.steps ?? [];
+const steps = releaseJob?.steps ?? [];
 const closureGateStep = steps.find((s: Record<string, unknown>) => s.id === "closure-gate");
 const releaseStep = steps.find((s: Record<string, unknown>) => s.id === "release-step");
 
 check(
-  "the version job has a step with id 'closure-gate'",
+  "the release job has a step with id 'closure-gate'",
   !!closureGateStep,
 );
 check(
@@ -67,7 +67,7 @@ check(
   closureGateStep?.run,
 );
 check(
-  "the version job has a step with id 'release-step'",
+  "the release job has a step with id 'release-step'",
   !!releaseStep,
 );
 
@@ -313,14 +313,16 @@ check(
 // the status the step leaves, whether `closure_ok` was published, and whether the quiet arms end
 // the script themselves rather than delegating their outcome to whatever follows them.
 
-/** `node`, `git` and `jq` as the gate's prologue calls them, so the run script reaches its branch
- *  chain without a network, a repo object or the real verifier. `node` is the one under control:
- *  it exits with `$STUB_RC`, which is how each rc below is induced. Bash scripts with a shebang,
- *  so nothing here resolves through a package.json and TMPDIR cannot change their meaning. */
+/** `node`, `git`, `jq` and `gh` as the gate's prologue calls them, so the run script reaches its
+ *  branch chain without a network, a repo object, an existing Release or the real verifier. `node`
+ *  is the one under control: it exits with `$STUB_RC`, which is how each rc below is induced. Bash
+ *  scripts with a shebang, so nothing here resolves through a package.json and TMPDIR cannot change
+ *  their meaning. */
 const STUB_BIN = mkdtempSync(join(tmpdir(), "closure-gate-stub-"));
 writeFileSync(join(STUB_BIN, "node"), '#!/usr/bin/env bash\nexit "${STUB_RC:-0}"\n', { mode: 0o755 });
 writeFileSync(join(STUB_BIN, "git"), '#!/usr/bin/env bash\necho \'{"version":"9.9.9"}\'\n', { mode: 0o755 });
 writeFileSync(join(STUB_BIN, "jq"), '#!/usr/bin/env bash\necho 9.9.9\n', { mode: 0o755 });
+writeFileSync(join(STUB_BIN, "gh"), '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 });
 
 interface StepRun {
   /** The status the step leaves behind, which is what reds or passes the job. */
@@ -426,7 +428,7 @@ check(
 const closureGateIndex = steps.indexOf(closureGateStep);
 const releaseIndex = steps.indexOf(releaseStep);
 check(
-  "the closure-gate step appears before the release step in the version job",
+  "the closure-gate step appears before the release step in the release job",
   closureGateIndex >= 0 && releaseIndex >= 0 && closureGateIndex < releaseIndex,
   { closureGateIndex, releaseIndex },
 );
@@ -442,7 +444,7 @@ const fixtureWorkflowText = workflowText
   .replace(/- name: Verify publish closure[\s\S]*?fi\n\n/m, "")
   .replace(/steps\.closure-gate\.outputs\.closure_ok\s*==\s*'true'\s*&&?\s*/g, "");
 const fixtureWorkflow = parseYaml(fixtureWorkflowText);
-const fixtureSteps = fixtureWorkflow?.jobs?.version?.steps ?? [];
+const fixtureSteps = fixtureWorkflow?.jobs?.release?.steps ?? [];
 const fixtureGate = fixtureSteps.find((s: Record<string, unknown>) => s.id === "closure-gate");
 check(
   "positive control: a workflow with the closure gate removed has no closure-gate step",

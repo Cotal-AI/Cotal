@@ -22,14 +22,14 @@
       "file": ".github/workflows/changesets.yml",
       "find": "        id: closure-gate\n",
       "replace": "        id: old-check\n",
-      "expectRed": "the version job has a step with id 'closure-gate'",
-      "cell": "the version job has a step with id 'closure-gate'"
+      "expectRed": "the release job has a step with id 'closure-gate'",
+      "cell": "the release job has a step with id 'closure-gate'"
     },
     {
       "name": "the release step stops referencing the closure-gate output",
       "file": ".github/workflows/changesets.yml",
-      "find": "        id: release-step\n        if: success() && github.event_name == 'push' && steps.closure-gate.outputs.closure_ok == 'true'",
-      "replace": "        id: release-step\n        if: success() && github.event_name == 'push' && true",
+      "find": "        id: release-step\n        if: steps.closure-gate.outputs.closure_ok == 'true'",
+      "replace": "        id: release-step\n        if: true",
       "expectRed": "the release step's 'if' references the closure-gate step output",
       "cell": "the release step's 'if' references the closure-gate step output"
     },
