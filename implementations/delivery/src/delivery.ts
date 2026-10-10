@@ -614,8 +614,18 @@ async function runStartedDelivery(
     BROKER_GONE_MS,
     BROKER_GONE_BACKSTOP_MS,
   );
+  // close() reads these to tell a lease read lost with a dropped socket from one the broker did not
+  // answer, and a reconnect inside the broker-gone window from one a serving daemon would have stopped for.
+  let transportDownSince: number | undefined;
+  let transportGeneration = 0;
+  let transportLateGeneration = 0;
   ep.on("transport", ({ connected }: { connected: boolean }) => {
     health.transport(connected);
+    if (connected) {
+      transportGeneration++;
+      if (transportDownSince !== undefined && Date.now() - transportDownSince > BROKER_GONE_MS) transportLateGeneration = transportGeneration;
+      transportDownSince = undefined;
+    } else transportDownSince ??= Date.now();
   });
   ep.on("error", (e: Error) => {
     if (e.name === "UserAuthenticationExpiredError" || (e as { cause?: { name?: string } }).cause?.name === "UserAuthenticationExpiredError") {
@@ -761,11 +771,35 @@ async function runStartedDelivery(
       try { await ep.quiescePlane3(); } catch { /* stop still releases the connection */ }
       // `releaseDeliveryLease` swallows a delete that did not commit, so the row the broker holds
       // afterwards is the verdict: while one is there, a successor is refused.
-      let left: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
-      try {
+      const release = async () => {
         const own = await ep.readDeliveryLeaseEntry(shard);
         if (own !== undefined && ep.ownsDeliveryLease(own.info)) await ep.releaseDeliveryLease(shard, own.revision);
-        left = await ep.readDeliveryLeaseEntry(shard);
+        return ep.readDeliveryLeaseEntry(shard);
+      };
+      let left: Awaited<ReturnType<typeof ep.readDeliveryLeaseEntry>>;
+      try {
+        // nats.js never answers a request written to a socket that dropped, nor one buffered while it
+        // was down (each dial discards the buffer), even once the same connection reconnects. Such a
+        // timeout says nothing about the broker, so one attempt on the reconnected transport decides.
+        // A lost read rejects the attempt, and a lost delete leaves this instance's row.
+        // A transport still down is waited for as long as a serving daemon waits for its broker, so
+        // the window counts from the drop, and a reconnect past it earns no repeat even when it lands
+        // before the lost request times out.
+        const generation = transportGeneration;
+        const reconnected = async () => {
+          const downSince = transportDownSince;
+          if (downSince !== undefined) await new Promise<void>((resolve) => {
+            const done = () => { clearTimeout(timer); ep.off("transport", onTransport); resolve(); };
+            const onTransport = ({ connected }: { connected: boolean }) => { if (connected) done(); };
+            const timer = setTimeout(done, downSince + BROKER_GONE_MS - Date.now());
+            ep.on("transport", onTransport);
+          });
+          return transportDownSince === undefined && transportGeneration !== generation && transportLateGeneration <= generation;
+        };
+        left = await release().then(
+          async (row) => row !== undefined && ep.ownsDeliveryLease(row.info) && await reconnected() ? release() : row,
+          async (e) => { if (!await reconnected()) throw e; return release(); },
+        );
       } catch (e) {
         throw new Error(`delivery: the lease release for shard ${shard} could not be confirmed (${(e as Error).message}); the bucket TTL expires a row left behind`, { cause: e });
       } finally {
