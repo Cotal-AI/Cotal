@@ -1,5 +1,30 @@
 # @cotal-ai/runtime
 
+## 0.78.0
+
+### Patch Changes
+
+- 6db45e5: The mesh-ask smoke's manager stand-in now serves the reserved `cancel`, committing the relay's goal `cancelled` as the manager does, so a cancelled ask and the discharge withdraw their relay instead of failing on a command the stand-in never described. Cell 7 passes again and the suite runs cells 8 to 11 and its summary. Cell 11's resumed escalation now records its attempt index on its binding, as every checkpoint binding has since each attempt began binding its own deadline.
+- 87fa2c3: A `wait`'s outer timeout token and a `waitUntil` observation's pause token are now each derived in one named function, which both the arm site and the pause-ownership table call. Before, the purpose strings were spelled by hand at every arm site and again in the ownership table, so renaming one side still typechecked and the run authority then refused the pause at run time with L4000. Behavior is unchanged.
+- c164c80: A manager-hosted or `--local` run's `wait(down(agent), { timeout })` and `wait(replied(agent), { timeout })` now wait, and resolve `null` when the timeout passes. They used to fail with L4000 before waiting: both armed their timeout without recording it on the step, and the run refuses to mint a wait timer the step did not record. `wait` now records the timers for every event before it branches to the agent-addressed waits.
+- Updated dependencies [a7f39aa]
+- Updated dependencies [981b567]
+- Updated dependencies [8b92413]
+- Updated dependencies [a74b832]
+- Updated dependencies [d04629a]
+- Updated dependencies [905a78b]
+- Updated dependencies [8344353]
+- Updated dependencies [f9a71ce]
+- Updated dependencies [b9499b3]
+- Updated dependencies [c2d8362]
+- Updated dependencies [70fb24e]
+- Updated dependencies [de3c0f7]
+- Updated dependencies [a32e955]
+- Updated dependencies [7d13389]
+  - @cotal-ai/workspace@0.78.0
+  - @cotal-ai/core@0.78.0
+  - @cotal-ai/lang@0.78.0
+
 ## 0.77.1
 
 ### Patch Changes

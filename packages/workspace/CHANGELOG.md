@@ -1,5 +1,26 @@
 # @cotal-ai/workspace
 
+## 0.78.0
+
+### Minor Changes
+
+- 70fb24e: `SecretStore` gains `create(key, value)`, a write that stores the value only while the key is absent and resolves whether it did. `FsSecretStore` implements it with an exclusive create. `ensureCalloutAuth`, `ensureIssuer`, `ensureOwnerSecret` and the hosted auth plane's instance identity now write their first value through it and adopt the stored value when another caller created it first. Before, two concurrent first calls on one space each minted a value, the later `put` replaced the earlier one, and the earlier caller kept a value the store no longer held: one IdP subject could derive two owners, a bearer could be signed by a key the stored issuer does not publish, and a prepared broker could preload a callout account the auth service never loads. A store of your own must now implement `create` as one atomic step; see the upgrade guide.
+
+### Patch Changes
+
+- a7f39aa: `cotal meshes add --from` and the manual-registration policy refresh now refuse a fetched discovery document that is not JSON with the URL and the content type that answered, for example a catch-all route serving `/.well-known/cotal-mesh` as `200 text/html`. They used to print the `--user-auth-file` sentence, which named neither and told the operator to re-export a file. JSON served under any content type is still accepted, and `--user-auth-file` keeps its sentence.
+- f9a71ce: Loading an installed extension now waits up to five seconds in total for another `cotal` process that is installing, removing or updating extensions, instead of failing at once. Before, a command that started a moment before the other process finished its work was refused, though a retry would have succeeded. The wait does not block the process: timers, requests and cancellation keep running while the load is queued. If the other process is still running when the five seconds are up, the load fails with "another extension update or mutation is in progress (pid ...) - retry once it finishes" when the update pass is held, or with "extension install/remove is in progress (pid ...) - retry after the active `cotal ext` command finishes" when only the install/remove lock is held.
+- c2d8362: The pid contract smoke now writes its malformed auth-pidfile fixture at the path the auth stop reads, derived from the stop's own record descriptor. It used to read `PID_PATH`, which the CLI's auth module does not export, so every run fell back to a hand-spelled name, and moving the auth record would have failed the cell for the wrong reason.
+- 7d13389: A mesh registry directory that exists but cannot be read, such as one without read permission or a regular file in its place, now makes `cotal meshes` and every other command that reads the registry exit 1 with its path and the read error. Before, the registry read returned no meshes for any read error, so `cotal meshes` exited 0 with "no meshes registered" and printed no rows under `--json`. An absent registry directory is still an empty registry.
+- Updated dependencies [981b567]
+- Updated dependencies [8344353]
+- Updated dependencies [f9a71ce]
+- Updated dependencies [b9499b3]
+- Updated dependencies [70fb24e]
+- Updated dependencies [de3c0f7]
+- Updated dependencies [a32e955]
+  - @cotal-ai/core@0.78.0
+
 ## 0.77.1
 
 ### Patch Changes

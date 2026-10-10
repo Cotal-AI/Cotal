@@ -1,5 +1,31 @@
 # @cotal-ai/cli
 
+## 0.78.0
+
+### Patch Changes
+
+- a7f39aa: `cotal meshes add --from` and the manual-registration policy refresh now refuse a fetched discovery document that is not JSON with the URL and the content type that answered, for example a catch-all route serving `/.well-known/cotal-mesh` as `200 text/html`. They used to print the `--user-auth-file` sentence, which named neither and told the operator to re-export a file. JSON served under any content type is still accepted, and `--user-auth-file` keeps its sentence.
+- 56f1d7f: `cotal meshes add --from` now fetches the discovery document through the same pinned fetch the registration policy refresh uses for that document. The fetch gives up after 5 s instead of 10 s, and a refused redirect prints the pinned-fetch refusal, so registration and the later refresh judge one URL alike.
+- f26e86f: `cotal meshes add --from` checks for a terminal once, before it asks to fetch the discovery document. A second copy of the same check ran before the fetched pins were shown and could never refuse, because the first had already passed in the same process. Both copies loaded the prompt module with a dynamic import although the command already imports it. Behavior is unchanged.
+- 1d8a7d4: `cotal clean store|all`, `cotal backup create` and `cotal meshes rm` now treat a process record as stopped only when it is absent, empty, or names a pid the kernel reports gone. Before, they read any record not proven alive as stopped, so a garbled record, an extension removal reservation, or a pid whose liveness the kernel would not report let `clean` delete the JetStream store and space identity, `backup` snapshot a store that could still be written, and `meshes rm` drop the record of a running broker, while `cotal down` refused the same records. `cotal status` now shows such a pid as `liveness unknown (<pid>)` instead of `stale pidfile`.
+- 05b7166: `cotal down --preserve-state` now checks each presence row once, where it is read, for a card with a non-empty string `id` and a string `name`, and refuses the cut as malformed when one fails. A deleted key is still the only row it reads as absent. Before, a participant that wrote `null`, `false`, `0` or `""` under its own presence key was skipped as if its key were deleted, so the cut preserved state while that participant was live, and a card with no `name` was named `undefined (<id>)` in the unmanaged-endpoints refusal.
+- 40283af: The `cotal up` root pin no longer takes an auth-mode argument. It already pinned the same way for auth and `--open` meshes and never read the argument, but every caller still worked out the mesh's auth mode to pass it, and the `-f` path parsed `broker.auth` only for that. Behavior is unchanged.
+- bea10f9: `cotal up -f <manifest> --idp <url>` now applies the flag to the effective manifest, so the `--dry-run` plan names the IdP the launch pins. Before, the plan named the manifest's `broker.idp` while the launch used the flag. The flag and `broker.idp` now get the URL rules the launch applies to the IdP: a value that is not https (or http on a loopback IP literal), or that carries credentials, a query or a fragment, is refused before the plan prints. Before, such a value passed the dry run and the launch refused it.
+- e98c2ae: `cotal up` now waits for a manager it starts to come up before it reports it. A refresh used to print `✓ restored in the background: manager (pid N)` and exit 0 the moment it had spawned the process, so a manager that refused at boot and exited seconds later, for example while a crashed predecessor's lease had not expired, read as restored. A manager that exits before it comes up, or whose pidfile another `cotal supervise` takes over first, is now reported as a degraded control plane naming its log, and a refresh exits nonzero.
+- 196a575: A static reconciliation sweep that stops before it plans any alias (its provisioner credential or connection fails, or a slot row cannot be read) now reports `state: failed` in the manager `status` response with the reason in `lastSweep.error`, and `cotal status --components` prints it. Before, it read as an idle sweep that found nothing, and the reason was only in the manager log. The manager cluster document moves to revision 27 for the changed `status` output. Each `cotal status --components` row now stays on one line: a control character in a reported reason, such as a newline in a stored row's field name, prints as a `\uXXXX` escape.
+- Updated dependencies [a7f39aa]
+- Updated dependencies [981b567]
+- Updated dependencies [8344353]
+- Updated dependencies [f9a71ce]
+- Updated dependencies [b9499b3]
+- Updated dependencies [c2d8362]
+- Updated dependencies [70fb24e]
+- Updated dependencies [de3c0f7]
+- Updated dependencies [a32e955]
+- Updated dependencies [7d13389]
+  - @cotal-ai/workspace@0.78.0
+  - @cotal-ai/core@0.78.0
+
 ## 0.77.1
 
 ### Patch Changes

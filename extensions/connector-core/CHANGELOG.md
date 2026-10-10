@@ -1,5 +1,14 @@
 # @cotal-ai/connector-core
 
+## 0.78.0
+
+### Patch Changes
+
+- 1bda7c1: A Claude Code session driven by hand without a control endpoint is now refused with a message that names `COTAL_CONTROL_SOCKET` and `COTAL_CONTROL_TOKEN`, and the configuration reference says a hand-driven Claude Code or jcode session sets both. The reference used to say `COTAL_CREDS` and `COTAL_SERVERS` were enough, and the refusal named neither variable.
+- 799fd8d: `COTAL_TLS` now takes the same spellings as the other connector on/off flags. It was read as on only for the exact value `1`, so `true`, `yes` or `on` started the session without demanding TLS and, against a broker that accepts plaintext, connected unencrypted with no warning. `1`, `true`, `yes` and `on` in any case now turn TLS on, `0`, `false`, `no` and `off` keep the join link's choice, and any other value is refused at startup naming the variable.
+- 69de981: A seat no longer shows its session a run turn whose deadline has passed. The seat pulls pending turns every 15 seconds, and a turn it had pulled before its deadline was injected on any frame until the next pull dropped it, even though the run had already failed the step and the manager refuses its yield. Expired turns are now left out of the injected context while the next pull settles them.
+- a32e955: A followed manager call from a user-mode seat, such as `cotal_spawn`, now runs its bearer command, opens its control connection and resolves the manager as preparation before the submission starts. A failure in any of those steps used to be reported as a submission whose outcome was unknown and that "may have been accepted or executed", although nothing had been published, and the error's details were dropped. It now surfaces as its own error, and a stop or the call's deadline during those steps reports that the request was not run. The describe spends what is left of the deadline, so a manager that never answers it is still reported as unanswered. Only the command publish runs as the submission. A goal follow's `prepare` now receives the follow's deadline. At that deadline its signal aborts with a `TimeoutError`, and a prepare that has not settled reports that the request was not run, while a describe it started after other steps still reports its own silence. A describe whose signal aborts with a `TimeoutError` now ends as its own deadline would. A call's resolve repair after a `failed-precondition` now spends what is left of the call's deadline instead of starting a fresh one.
+
 ## 0.77.1
 
 ### Patch Changes

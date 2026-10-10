@@ -1,5 +1,32 @@
 # @cotal-ai/manager
 
+## 0.78.0
+
+### Patch Changes
+
+- ae36bb5: The manager no longer carries a static-spawn refusal for `endpointCapabilities`. The check read the field through a cast because no spawn request type declares it: launch specs and roster files reject the key, the served `spawn` contract does not accept it, and the control-plane `start` op does not copy it, so no spawn could reach the refusal. A change that lets a spawn carry endpoint capabilities declares the field on the spawn options and adds the static refusal against it in the same change.
+- bd84363: `remoteManagerClient` now exports `remoteManagerGoalIndexScanRequest(state, actor, registrationProof, serveEpoch)`, which builds the goal-index scan request the stock manager sends. An embedding that supplies `scanGoalIndex` no longer has to spell the request envelope itself, and the stock manager builds its scan request with the same helper.
+- 005b47a: A launch on a runtime that cannot stream its terminal (tmux, cmux, orca, herdr) whose process dies before it joins the mesh is now reported as exited on launch and its seat is freed. Before, the readiness wait had no exit signal on those runtimes, so it reported the launch as uncertain after the full readiness window and kept the dead seat managed. While a launch waits, the manager asks the runtime for the seat's status every second and once more when the readiness window closes, so a window shorter than a second is covered too. It confirms an exit with the runtime's `waitForExit`, the same proof the exit watch uses, and reports the launch as uncertain when that proof has not arrived a second after the window closes. The failure carries no last output, because these runtimes stream none.
+- f7a0484: A remote `cotal supervise` now resolves the workspace root once and hands every auth provider call the same store and state directory. Before, most of its provider calls resolved the root again when they ran, so a `.cotal/` directory created or removed nearer the working directory while the manager was up could send later calls to a different store than the one its identity was loaded from. The state directory is now the space's own `.cotal/auth/space.<hex>`, the one every other provider caller passes, in place of a path built from the raw space name. A remote supervise only runs when that directory holds no user-auth state, so the provider still reaches the host through the registry entry and behavior is otherwise unchanged.
+- 8344353: A spawn acceptance replayed to a resubmission now names the owner the manager allocated. On a user-auth mesh, a sibling instance, a restarted instance or a bind race rebuilt the acceptance from the goal index or the goal terminal with the static mesh's `local` owner, and the terminal rebuild also used the composite `owner.actor` id as the actor, so a caller that addressed the agent by it reached a principal that was never allocated. The goal-index acceptance floor now records the owner beside the actor and uid, and the terminal rebuild splits the user-mode principal. A floor written by an older manager names no owner, so a resubmission served from it is refused `unavailable`.
+- 1f2b07c: The manager's comments on the `launch` owner-equality tier, the endpoint door's narrowings, the presence-snapshot await before name allocation and the user-mode spawn rollback no longer cite internal review labels. Each keeps the reason it gives. There is no behavior change.
+- 196a575: A static reconciliation sweep that stops before it plans any alias (its provisioner credential or connection fails, or a slot row cannot be read) now reports `state: failed` in the manager `status` response with the reason in `lastSweep.error`, and `cotal status --components` prints it. Before, it read as an idle sweep that found nothing, and the reason was only in the manager log. The manager cluster document moves to revision 27 for the changed `status` output. Each `cotal status --components` row now stays on one line: a control character in a reported reason, such as a newline in a stored row's field name, prints as a `\uXXXX` escape.
+- fdb35c4: A pty seat whose declared startup confirmation never appears is now stopped the way a graceful stop ends it, so a child that ignores SIGTERM is killed 3 seconds later. The in-process pty runtime, which `createRuntime("pty")` uses for every launch, sent SIGTERM once and never escalated, so such a child kept running behind a failed gate and the launch resolved as uncertain instead of failing. Both pty runtimes now share one `StartupConfirmGate` from `@cotal-ai/seat`, which owns the prompt match, the 15-second window, the failure message and the exit diagnostic.
+- Updated dependencies [a7f39aa]
+- Updated dependencies [981b567]
+- Updated dependencies [8344353]
+- Updated dependencies [f9a71ce]
+- Updated dependencies [b9499b3]
+- Updated dependencies [c2d8362]
+- Updated dependencies [fdb35c4]
+- Updated dependencies [70fb24e]
+- Updated dependencies [de3c0f7]
+- Updated dependencies [a32e955]
+- Updated dependencies [7d13389]
+  - @cotal-ai/workspace@0.78.0
+  - @cotal-ai/core@0.78.0
+  - @cotal-ai/seat@0.78.0
+
 ## 0.77.1
 
 ### Patch Changes
