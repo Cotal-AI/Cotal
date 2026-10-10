@@ -205,8 +205,11 @@ export async function waitForPaneExit(
   }
 }
 
+/** True when a close failed because its window or session is already gone. tmux reports that as
+ *  `can't find window: <target>` or `can't find session: <name>`, and the socket path or the target
+ *  may itself hold those words, so only the start of stderr counts. */
 function isWindowGone(err: unknown): boolean {
-  return /can't find window|can't find session|no current window|session not found/i.test(failureText(err));
+  return /^can't find (window|session): /.test(String((err as { stderr?: unknown }).stderr ?? ""));
 }
 
 /** The stable refs for a freshly-opened window: its window ID (`@N`) and the ID of its initial
@@ -298,7 +301,8 @@ export function closePane(paneId: string, opts: { timeoutMs?: number; server?: s
       killSignal: "SIGKILL",
     });
   } catch (err) {
-    if (/can't find pane/.test(String((err as { stderr?: unknown }).stderr ?? ""))) return;
+    // The socket path may hold these words too, so only the start of stderr counts.
+    if (/^can't find pane: /.test(String((err as { stderr?: unknown }).stderr ?? ""))) return;
     throw err;
   }
 }

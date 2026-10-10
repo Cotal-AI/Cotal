@@ -16,7 +16,9 @@ import.
   owner-only launch script, which keeps it off tmux's command line, and the script removes its
   directory before it starts the agent. When it cannot remove the directory, the agent does not start.
   Graceful stop types `/exit`
-  then kills the window; hard stop kills immediately. Exit waits poll the stable pane id and honor
+  then kills the window; hard stop kills immediately. A close reads a window as already closed only
+  from tmux's own `can't find window` or `can't find session` report and throws on any other
+  failure, such as a missing socket. Exit waits poll the stable pane id and honor
   tmux's `pane_dead` state, including `remain-on-exit`; provider errors fail the wait closed.
   Each handle carries a reference to its tmux server, window and pane, so a later manager can reap
   the seat after the one that spawned it is gone. The reap closes the window while the session
