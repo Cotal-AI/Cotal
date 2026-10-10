@@ -3,7 +3,7 @@ import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../../ui.js";
-import { agentColor, STATUS, ago } from "./theme.js";
+import { agentColor, STATUS, ago, windowAround, wrapFacts, type FactRow } from "./theme.js";
 
 function progressText(p: Presence): string {
   if (p.card.kind !== "agent" || p.status !== "working") return ago(p.ts);
@@ -19,18 +19,31 @@ export function harnessTag(connector: string | undefined): string | undefined {
   return known[connector] ?? connector.slice(0, 2).toLowerCase();
 }
 
-function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean; wide: boolean; tag?: string }) {
+/** A {@link wrapFacts} row, indented under its seat's head row: the status and its condition in
+ *  `color` (dim without one) and the dated facts dim, or plain text for a selected seat's bar. */
+export function factRow(row: FactRow, color: string | undefined, selected = false): ReactNode {
+  if (selected) return "  " + row.map((f) => f.text).join("");
+  return (
+    <>
+      {"  "}
+      {row.map(({ text, dated }, i) => (
+        <Text key={i} color={dated ? undefined : color} dimColor={dated || !color}>
+          {text}
+        </Text>
+      ))}
+    </>
+  );
+}
+
+function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean; facts?: FactRow[]; tag?: string }) {
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
-  const { condition, ages } = presenceFacts(p);
   const act = p.activity ? "  " + p.activity + activityAge(p) : "";
-  let head: ReactNode, status: ReactNode, tail: ReactNode;
+  let head: ReactNode, tail: ReactNode;
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {
-    const kind = wide ? (isAgent ? "  " + s.word : "  endpoint") : "";
     head = (isAgent ? s.dot : "⚙") + " " + peerLabel(p.card) + (tag ? " " + tag : "");
-    status = kind + condition + ages;
     tail = act + "  " + age;
   } else {
     head = (
@@ -42,19 +55,6 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
         {tag ? <Text dimColor>{" " + tag}</Text> : null}
       </>
     );
-    status = (
-      <>
-        {wide ? (
-          isAgent ? (
-            <Text color={s.color}>{"  " + s.word}</Text>
-          ) : (
-            <Text dimColor>{"  endpoint"}</Text>
-          )
-        ) : null}
-        {condition ? <Text>{condition}</Text> : null}
-        {ages ? <Text dimColor>{ages}</Text> : null}
-      </>
-    );
     tail = (
       <>
         {act ? <Text dimColor>{act}</Text> : null}
@@ -62,23 +62,39 @@ function RosterRow({ p, selected, wide, tag }: { p: Presence; selected: boolean;
       </>
     );
   }
-  const line = (parts: ReactNode) =>
+  const line = (parts: ReactNode, key?: number) =>
     selected ? (
-      <Text inverse bold color="cyan" wrap="truncate-end">
+      <Text key={key} inverse bold color="cyan" wrap="truncate-end">
         {parts}
       </Text>
     ) : (
-      <Text wrap="truncate-end">{parts}</Text>
+      <Text key={key} wrap="truncate-end">
+        {parts}
+      </Text>
     );
-  // Wide, the roster is a capped side column, so the status and its dated facts take a second row
-  // rather than pushing the activity off the first.
-  if (!wide) return line(<>{head}{status}{tail}</>);
-  return (
-    <Box flexDirection="column">
-      {line(<>{head}{tail}</>)}
-      {line(status)}
-    </Box>
+  if (facts)
+    return (
+      <Box flexDirection="column">
+        {line(<>{head}{tail}</>)}
+        {facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}
+      </Box>
+    );
+  const { condition, ages } = presenceFacts(p);
+  const status = selected ? (
+    condition + ages
+  ) : (
+    <>
+      {condition ? <Text>{condition}</Text> : null}
+      {ages ? <Text dimColor>{ages}</Text> : null}
+    </>
   );
+  return line(<>{head}{status}{tail}</>);
+}
+
+/** A seat's status word, or `endpoint`, then its condition and dated facts, for {@link wrapFacts}. */
+export function statusLine(p: Presence): string {
+  const { condition, ages } = presenceFacts(p);
+  return (p.card.kind === "agent" ? STATUS[p.status].word : "endpoint") + condition + ages;
 }
 
 function matches(p: Presence, q: string): boolean {
@@ -144,12 +160,15 @@ export function Roster({
     { isActive: isFocused && !blocked },
   );
 
-  const capacity = Math.max(1, Math.floor((boxHeight - 3) / (wide ? 2 : 1))); // border (2) + title (1), 2 rows/seat when wide
-  let start = 0;
-  if (list.length > capacity) {
-    start = Math.min(Math.max(0, selClamped - Math.floor(capacity / 2)), list.length - capacity);
-  }
-  const visible = list.slice(start, start + capacity);
+  // Wide, the roster is a capped side column, so a seat's status and dated facts wrap onto rows of
+  // their own under its head row rather than being cut, and the window counts those rows.
+  const facts = wide ? list.map((p) => wrapFacts(statusLine(p), boxWidth - 6)) : undefined; // border (2) + padding (2) + indent (2)
+  const [start, end] = windowAround(
+    list.map((_, i) => 1 + (facts?.[i].length ?? 0)),
+    selClamped,
+    boxHeight - 3, // border (2) + title (1)
+  );
+  const visible = list.slice(start, end);
 
   return (
     <Box
@@ -159,6 +178,8 @@ export function Roster({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
+      // A seat whose facts wrap past the box (a hostile condition code) is clipped, not drawn over the panes below.
+      overflowY="hidden"
     >
       <Text wrap="truncate-end">
         <Text bold>roster</Text>
@@ -176,7 +197,7 @@ export function Roster({
             key={p.card.id}
             p={p}
             selected={isFocused && start + i === selClamped}
-            wide={wide}
+            facts={facts?.[start + i]}
             tag={harness?.get(p.card.id)}
           />
         ))

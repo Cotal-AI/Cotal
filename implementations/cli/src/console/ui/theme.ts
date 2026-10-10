@@ -64,3 +64,41 @@ export function wrapText(s: string, width: number): string[] {
   }
   return out.length ? out : [""];
 }
+
+/** A row of {@link wrapFacts}: its pieces, each marked when it is a dated fact. */
+export type FactRow = { text: string; dated: boolean }[];
+
+// Wraps a status line to a column width at its fact boundaries, the " (" before a condition and the
+// " · " before each dated fact: facts share a row while they fit, a fact that starts a row drops its
+// separator (a condition its parentheses, which only tie it to the status word on a shared row), and
+// only a fact wider than the column word-wraps, so no fact is ever cut.
+export function wrapFacts(s: string, width: number): FactRow[] {
+  const rows: FactRow[] = [];
+  let used = 0;
+  for (const piece of s.split(/(?= · | \()/)) {
+    const dated = piece.startsWith(" · ");
+    if (rows.length && used + piece.length <= width) {
+      rows[rows.length - 1].push({ text: piece, dated });
+      used += piece.length;
+    } else
+      for (const text of wrapText(piece.replace(/^ · |^ \((.*)\)$/, "$1"), width)) {
+        rows.push([{ text, dated }]);
+        used = text.length;
+      }
+  }
+  return rows;
+}
+
+// The run of whole items, `heights` rows each, that fits `room` rows around `sel`: the items above
+// it take up to half the rows it leaves, the items below the rest, and rows left free at the end
+// of the list go back to the items above.
+export function windowAround(heights: number[], sel: number, room: number): [start: number, end: number] {
+  let start = sel;
+  let end = sel + 1;
+  let used = heights[sel] ?? 0;
+  const above = used + Math.floor((room - used) / 2);
+  while (start > 0 && used + heights[start - 1] <= above) used += heights[--start];
+  while (end < heights.length && used + heights[end] <= room) used += heights[end++];
+  while (start > 0 && used + heights[start - 1] <= room) used += heights[--start];
+  return [start, end];
+}

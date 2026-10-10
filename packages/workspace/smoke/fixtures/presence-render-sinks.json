@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 523,
-    "honest-text": 36,
+    "total": 512,
+    "honest-text": 35,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 418
+    "non-render/control": 408
   },
   "renderers": [
     {
@@ -1657,32 +1657,14 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "indexed-map",
-      "anchor": "STATUS[p.status]",
+      "anchor": "== \"agent\";\n  const s = STATUS[p.status];\n  const age = progress",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "ind = wide ? (isAgent ? \"  \" + s.word : \"  endpoint\") : \"\";\n ",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/console/ui/Roster.tsx",
-        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
-      }
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
       "anchor": "(isAgent ? s.dot : \"⚙\") + \" \" + peerLabel(p.card) + (tag ? \" \" + tag : \"\")",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "kind + condition + ages",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1710,74 +1692,28 @@
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "color={isAgent ? agentColor(p.card.name) : undefined}",
+      "anchor": "{line(<>{head}{tail}</>)}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{isAgent ? agentColor(p.card.name) : undefined}",
+      "anchor": "olumn\">\n        {line(<>{head}{tail}</>)}\n        {fac",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "dimColor={!isAgent}",
+      "anchor": "{facts.map((row, r) => line(factRow(row, isAgent ? s.color : undefined, selected), r))}",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
       "kind": "derived-output",
-      "anchor": "{!isAgent}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{wide ? (\n          isAgent ? (\n            <Text color={s.color}>{\"  \" + s.word}</Text>\n          ) : (\n            <Text dimColor>{\"  endpoint\"}</Text>\n          )\n        ) : null}",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/console/ui/Roster.tsx",
-        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
-      }
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "color={s.color}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{s.color}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{\"  \" + s.word}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": " <Text color={s.color}>{\"  \" + s.word}</Text>\n          ) : (",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "f (!wide) return line(<>{head}{status}{tail}</>);\n  re",
+      "anchor": "/>\n  );\n  return line(<>{head}{status}{tail}</>);\n}\n\n/",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
@@ -1790,31 +1726,14 @@
     },
     {
       "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{line(<>{head}{tail}</>)}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "\"column\">\n      {line(<>{head}{tail}</>)}\n      {line(",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "{line(status)}",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
-    },
-    {
-      "path": "implementations/cli/src/console/ui/Roster.tsx",
-      "kind": "derived-output",
-      "anchor": "line(status)",
-      "class": "non-render/control",
-      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+      "kind": "indexed-map",
+      "anchor": "card.kind === \"agent\" ? STATUS[p.status].word : \"endpoint\") + co",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/cli/src/console/ui/Roster.tsx",
+        "anchor": "return progressSignal(undefined, Date.now()).kind === \"unknown\" ? \"progress unknown\" : \"progress observed\";"
+      }
     },
     {
       "path": "implementations/cli/src/console/ui/StatusBar.tsx",

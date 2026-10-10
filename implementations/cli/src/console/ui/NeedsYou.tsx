@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
 import { peerLabel, type Presence } from "@cotal-ai/core";
-import { activityAge, presenceFacts } from "../../ui.js";
-import { agentColor, STATUS, ago } from "./theme.js";
+import { activityAge } from "../../ui.js";
+import { factRow, statusLine } from "./Roster.js";
+import { agentColor, STATUS, ago, windowAround, wrapFacts } from "./theme.js";
 import type { FocusId } from "../mesh.js";
 
 /** NEEDS-YOU rail: agents that are waiting / blocked, oldest-first (already sorted by the model).
  *  Mirrors the web's amber WAITING cards. A selection cursor (↑/↓) highlights one; `Enter` drills
- *  into the agent's existing detail overlay. Each card is three rows: header, status, activity. The
- *  status and its dated facts get a row of their own so a long name never truncates them away. */
+ *  into the agent's existing detail overlay. Each card is its header row, the status and its dated
+ *  facts wrapped onto as many rows as the column needs (so neither a long name nor a narrow column
+ *  cuts them), and the activity row. */
 export function NeedsYou({
   waiting,
   boxWidth,
@@ -40,12 +42,14 @@ export function NeedsYou({
     { isActive: isFocused && !blocked },
   );
 
-  const capacity = Math.max(1, Math.floor((boxHeight - 3) / 3)); // border (2) + title (1), 3 rows/card
-  let start = 0;
-  if (waiting.length > capacity)
-    start = Math.min(Math.max(0, selClamped - Math.floor(capacity / 2)), waiting.length - capacity);
-  const visible = waiting.slice(start, start + capacity);
-  const below = waiting.length - (start + visible.length);
+  const facts = waiting.map((p) => wrapFacts(statusLine(p), boxWidth - 6)); // border (2) + padding (2) + indent (2)
+  const [start, end] = windowAround(
+    facts.map((f) => 2 + f.length),
+    selClamped,
+    boxHeight - 3, // border (2) + title (1)
+  );
+  const visible = waiting.slice(start, end);
+  const below = waiting.length - end;
 
   return (
     <Box
@@ -55,6 +59,8 @@ export function NeedsYou({
       borderStyle="round"
       borderColor={isFocused ? "cyan" : "gray"}
       paddingX={1}
+      // A card whose facts wrap past the box (a hostile condition code) is clipped, not drawn over the panes below.
+      overflowY="hidden"
     >
       <Text wrap="truncate-end">
         <Text bold color="yellow">NEEDS YOU</Text>
@@ -67,7 +73,6 @@ export function NeedsYou({
         visible.map((p, i) => {
           const selected = isFocused && start + i === selClamped;
           const label = peerLabel(p.card);
-          const { condition, ages } = presenceFacts(p);
           return (
             <Box key={p.card.id} flexDirection="column">
               {selected ? (
@@ -81,11 +86,11 @@ export function NeedsYou({
                   <Text dimColor>{"  seen " + ago(p.ts)}</Text>
                 </Text>
               )}
-              <Text wrap="truncate-end">
-                <Text color={STATUS.waiting.color}>{"  " + STATUS.waiting.word}</Text>
-                {condition ? <Text>{condition}</Text> : null}
-                {ages ? <Text dimColor>{ages}</Text> : null}
-              </Text>
+              {facts[start + i].map((row, r) => (
+                <Text key={r} wrap="truncate-end">
+                  {factRow(row, STATUS.waiting.color)}
+                </Text>
+              ))}
               <Text dimColor wrap="truncate-end">
                 {"  " + (p.activity ?? "waiting for input") + activityAge(p)}
               </Text>
