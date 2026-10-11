@@ -1,0 +1,71 @@
+{
+  "suite": ["implementations/auth/smoke/environment-manager-bootstrap-mint.smoke.ts"],
+  "guard": "Fixed bootstrap signing releases only after both native fences, binds actual expiry and never repeats a reserved signing attempt",
+  "command": "pnpm smoke:environment-manager-bootstrap-mint",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-bootstrap-mint.json",
+  "why": ["The unexported issuer runs through real private JWT-broker admission, activation, ledger and gate CAS paths. Two timing seams move native fences; no full admission endpoint, file delivery, redemption or hosted execution is claimed."],
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 25,
+  "mutations": [
+    {
+      "name": "bootstrap omits registration fence finalization",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "gateRevision = await authKv.update(key, entry.value, entry.revision);",
+      "replace": "gateRevision = entry.revision;",
+      "expectRed": "a racing registration fence revokes the staged row and releases nothing",
+      "cell": "a racing registration fence revokes the staged row and releases nothing",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
+    {
+      "name": "bootstrap omits native lifecycle finalization",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "    await finalizeAgentMint(reg, ledger);\n",
+      "replace": "",
+      "expectRed": "a racing lifecycle fence revokes the staged row and releases nothing",
+      "cell": "a racing lifecycle fence revokes the staged row and releases nothing",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
+    {
+      "name": "bootstrap ledger lifetime exceeds the actual JWT",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "sourceChain: [\"root\"], exp: signed.exp });",
+      "replace": "sourceChain: [\"root\"], exp: signed.exp + 1 });",
+      "expectRed": "bootstrap ledger binds the reserved principal root lineage and actual JWT expiry",
+      "cell": "bootstrap ledger binds the reserved principal root lineage and actual JWT expiry",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
+    {
+      "name": "bootstrap resurrects a deleted signing reservation",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "await authKv.put(reservationKey, reservation, { previousSeq: 0 });",
+      "replace": "await authKv.create(reservationKey, reservation);",
+      "expectRed": "a deleted signing reservation cannot be resurrected",
+      "cell": "a deleted signing reservation cannot be resurrected",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
+    {
+      "name": "bootstrap loses create-only signing custody",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "await authKv.put(reservationKey, reservation, { previousSeq: 0 });",
+      "replace": "await authKv.put(reservationKey, reservation);",
+      "expectRed": "same-input signing replay stays held without advancing its reservation",
+      "cell": "same-input signing replay stays held without advancing its reservation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
+    {
+      "name": "bootstrap accepts a changed native admission binding",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "  if (contractDigest(staged) !== contractDigest(expected))\n    throw new EpEnvelopeError(\"permission-denied\", \"environment bootstrap does not match the staged admission\");\n",
+      "replace": "",
+      "expectRed": "changed admission revision refuses before signing",
+      "cell": "changed admission revision refuses before signing",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    }
+  ]
+}

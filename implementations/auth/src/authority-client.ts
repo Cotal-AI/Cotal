@@ -29,6 +29,7 @@ import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
+import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
 
 /** Self-minted infra-credential TTL (fact-3 pin: SHORT expiry + in-process renewal, a bounded
  *  in-memory credential that closes with the service — never an unbounded persisted one). */
@@ -91,9 +92,18 @@ export function environmentManagerAdmissionWriterGrants(space: string, connId: s
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.stage.*.environment-manager`,
       `$KV.${epAuthBucket(space)}.stage.*.environment-manager-gate`,
+      `$KV.${epAuthBucket(space)}.stage.*.environment-bootstrap-mint`,
     ],
     subscribe: base.subscribe,
   };
+}
+
+/** Dedicated private-index custody and creation. No auth-store, lifecycle or workload authority. */
+export function environmentManagerAdmissionIndexGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const bucket = environmentManagerAdmissionIndexBucket(space);
+  return { publish: ["$JS.API.INFO", `$JS.API.STREAM.CREATE.KV_${bucket}`, `$JS.API.STREAM.INFO.KV_${bucket}`,
+    `$JS.API.STREAM.MSG.GET.KV_${bucket}`, `$KV.${bucket}.manager.*`],
+  subscribe: [`_INBOX_${assertInboxConnId(connId)}.>`] };
 }
 
 /** The host-side REMOTE MANAGER ISSUER adds only the endpoint-instance gate/credential family

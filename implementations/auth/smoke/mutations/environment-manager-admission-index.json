@@ -1,0 +1,101 @@
+{
+  "suite": ["implementations/auth/smoke/environment-manager-admission-index.smoke.ts"],
+  "guard": "Private index chooses one immutable host manager binding and never revives a deleted environment admission",
+  "command": "pnpm smoke:environment-manager-admission-index",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission-index.json",
+  "why": ["The scoped private-index writer runs against a real JWT broker. An injected native tombstone interleaving tests the race after a genuinely absent read. This is internal index and reservation composition, not guest admission or credential issuance."],
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 27,
+  "mutations": [
+    {
+      "name": "index admits stores without per-subject immutability",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "config.discard_new_per_subject !== true || ",
+      "replace": "",
+      "expectRed": "native index store missing discard_new_per_subject refuses at admission",
+      "cell": "native index store missing discard_new_per_subject refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index admits stores without message deletion protection",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "config.deny_delete !== true || ",
+      "replace": "",
+      "expectRed": "native index store missing deny_delete refuses at admission",
+      "cell": "native index store missing deny_delete refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index admits stores without purge protection",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": " || config.deny_purge !== true",
+      "replace": "",
+      "expectRed": "native index store missing deny_purge refuses at admission",
+      "cell": "native index store missing deny_purge refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index admits private metadata republishing",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": " || config.republish",
+      "replace": "",
+      "expectRed": "native index store republishing private coordinates refuses at admission",
+      "cell": "native index store republishing private coordinates refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index accepts plausible binding bytes on a deletion marker",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "    if (entry.operation !== \"PUT\") throw new EpEnvelopeError(\"failed-precondition\", \"environment admission index deletion is corruption\");\n",
+      "replace": "",
+      "expectRed": "a deletion marker with plausible row bytes cannot become a binding",
+      "cell": "a deletion marker with plausible row bytes cannot become a binding",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index accepts a changed source on replay",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "        if (contractDigest(existing.row.source) !== contractDigest(source))\n          throw new EpEnvelopeError(\"conflict\", \"environment already has another immutable manager admission binding\");\n",
+      "replace": "",
+      "expectRed": "changed provider cannot rebind an environment",
+      "cell": "changed provider cannot rebind an environment",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index reuses the creator lifecycle for its manager",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "instanceId: mintLifecycleUid(), lifecycleUid: mintLifecycleUid(), operationId: mintLifecycleUid()",
+      "replace": "instanceId: mintLifecycleUid(), lifecycleUid: source.caller.uid, operationId: mintLifecycleUid()",
+      "expectRed": "private index selects one manager instance lifecycle and operation",
+      "cell": "private index selects one manager instance lifecycle and operation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index resurrects a tombstone that races its first read",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "await kv.put(key(source.environmentId), JSON.stringify(row), { previousSeq: 0 });",
+      "replace": "await kv.create(key(source.environmentId), JSON.stringify(row));",
+      "expectRed": "a tombstone racing the initial read cannot resurrect an admission binding",
+      "cell": "a tombstone racing the initial read cannot resurrect an admission binding",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index ignores caller-selected manager fields",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "  Object.keys(value).length === fields.length && Object.keys(value).every(key => fields.includes(key));",
+      "replace": "  fields.every(key => Object.hasOwn(value, key));",
+      "expectRed": "caller-selected manager coordinates are not admitted as source fields",
+      "cell": "caller-selected manager coordinates are not admitted as source fields",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    }
+  ]
+}
