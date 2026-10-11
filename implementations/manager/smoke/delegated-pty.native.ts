@@ -77,7 +77,9 @@ try {
   handle = runtime.spawnDelegated!({ agent: "native-fixture", persona: "fixture persona", events: false }, handoff);
   let output = "";
   handle.attach().onData(bytes => { output += bytes.toString("utf8"); });
-  await until(() => /DELEGATED_NATIVE_OBSERVATION=(\{[^\r\n]+\})/.test(output), "native child observation");
+  try {
+    await until(() => /DELEGATED_NATIVE_OBSERVATION=(\{[^\r\n]+\})/.test(output), "native child observation");
+  } catch (error) { console.error(output); throw error; }
   observed = JSON.parse(/DELEGATED_NATIVE_OBSERVATION=(\{[^\r\n]+\})/.exec(output)![1]!);
   const o = observed!;
   check("child has the selected UID and GID", () => { assert.equal(o.uid, options.uid); assert.equal(o.gid, options.gid); });
@@ -101,6 +103,10 @@ try {
   check("child storage and cgroup go only after full exit", () => { assert.equal(existsSync(resource), false); assert.equal(existsSync(group), false); });
   check("one-shot marker is retained after close", () => assert.equal(existsSync(join(children, ".delegated-child")), true));
   console.log("DELEGATED_NATIVE_SENTINEL=" + JSON.stringify({ checks, failed: 0, observed: o, exit: handle.exitInfo?.(), scope: "source-runtime/OS proof with dummy fixture, not stock CLI, auth or Lang acceptance" }));
+} catch (error) {
+  // Teardown can fail too. Retain the original assertion before its error is replaced by cleanup.
+  console.error("NATIVE_TEST_FAILURE", error);
+  throw error;
 } finally {
   if (observed && !String(observed.membership).endsWith("/" + managedRuntimeKey(handoff)))
     throw new Error("native proof retains an unconfined child for external provider termination");
