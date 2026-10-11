@@ -4,7 +4,7 @@
   "suite": ["implementations/auth/smoke/environment-manager-pending-retirement.smoke.ts"],
   "command": "pnpm smoke:environment-manager-pending-retirement",
   "progressPattern": "^  [✓✗]",
-  "minTicks": 23,
+  "minTicks": 26,
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "why": "The internal source helper runs against an owned native broker with existing grant builders, separately scoped fixture scanners, a real issuer-produced bootstrap connection, a controlled endpoint ledger/holder and a foreign-owner positive control. Native gate/head/ledger state, KICK and registration CAS are observed. This is helper and broker execution, not external admission, a production plane claim, prepared-manager issuance or hosted execution. Source imports build no mutant package dist.",
   "mutations": [
@@ -79,6 +79,14 @@
       "replace": "",
       "expectRed": "invalid initial gate stamp refuses before native retirement",
       "cell": "invalid initial gate stamp refuses before native retirement"
+    },
+    {
+      "name": "malformed account binding authorizes native retirement",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "!/^A[A-Z2-7]{55}$/.test(pin.accountPublicKey) || ",
+      "replace": "",
+      "expectRed": "malformed matching account pin refuses before native retirement",
+      "cell": "malformed matching account pin refuses before native retirement"
     }
   ]
 }

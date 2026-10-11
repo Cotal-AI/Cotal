@@ -20,9 +20,10 @@ export async function retirePendingEnvironmentManager(
 ): Promise<{ lifecycleUid: string; operationId: string }> {
   const pin = structuredClone(input);
   const fields = ["owner", "instanceId", "lifecycleUid", "authorityEndpoint", "authorityInstanceId",
-    "expiresAt", "environmentId", "admissionRevision", "operationId"];
+    "expiresAt", "environmentId", "accountPublicKey", "admissionRevision", "operationId"];
   if (Object.keys(pin).length !== fields.length || Object.keys(pin).some(key => !fields.includes(key)) ||
-      !/^[0-9a-f]{64}$/.test(pin.environmentId) || !Number.isSafeInteger(pin.admissionRevision) || pin.admissionRevision < 1 ||
+      !/^A[A-Z2-7]{55}$/.test(pin.accountPublicKey) || !/^[0-9a-f]{64}$/.test(pin.environmentId) ||
+      !Number.isSafeInteger(pin.admissionRevision) || pin.admissionRevision < 1 ||
       !Number.isSafeInteger(pin.expiresAt) || pin.expiresAt < 1)
     throw new EpEnvelopeError("failed-precondition", "pending environment retirement coordinates are invalid");
   assertDerivedOwnerToken(pin.owner);

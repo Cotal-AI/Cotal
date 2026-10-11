@@ -143,15 +143,17 @@ lifecycle CAS fences must both win before material returns; a lost fence revokes
 The issuer records public signing coordinates under `stage.<opId>.environment-bootstrap-mint`.
 A repeated or ambiguous attempt stays held, including after reconstruction. This helper does
 not deliver a private file or redeem bootstrap requests and is not exported from the package.
-The internal pending-retirement helper matches the retained original admission and gate stamp,
-then runs native lifecycle retirement before revoking and verified-evicting the pending endpoint
+The internal pending-retirement helper matches the retained original account-pinned admission
+and gate stamp. Changed, malformed or missing account pins refuse without rewriting staging.
+It then runs native lifecycle retirement before revoking and verified-evicting the pending endpoint
 family and aborting its registration. Same-operation reconstruction resumes those fences. Cleanup
 accepts expired original admission; changed coordinates, ordinary or completed registrations and
 missing native mechanics refuse. A failed retirement, eviction or abort CAS returns no completed
 result. Before calling it, the host must bar preparation and activation under its current admission;
 a retained coordinate or gate snapshot is not that phase fence. The host must retain the original
-operation without TTL writes and record admission ended only after these native fences finish. This helper neither terminates provider compute nor cleans
-up an activated manager or authenticates external policy. It is not exported from the package.
+operation without TTL writes and record admission ended only after these native fences finish.
+This helper neither terminates provider compute nor cleans up an activated manager or authenticates
+external policy. It is not exported from the package.
 External admission, required host policies, issuance recovery, file custody and cleanup service
 wiring still need their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.

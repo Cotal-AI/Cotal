@@ -19,7 +19,7 @@ import { authorityScannerGrants, makeLedgerScannerOverConnection } from "../src/
 import { recordsScannerGrants, makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
-const fx = await startHostedAuthFixture("pending-environment-retirement", 1);
+const fx = await startHostedAuthFixture("pending-environment-retirement", 2);
 const account = fx.accounts[0]!;
 const clients: Array<{ close(): Promise<void> }> = [];
 let passed = 0, failed = 0;
@@ -138,10 +138,27 @@ try {
     await assert.rejects(() => stageEnvironmentManagerAdmission(s.reg, s.pin));
     await assert.rejects(() => stageAgentMint(s.reg, { lifecycleUid: s.pin.lifecycleUid, credentialId: mintLifecycleUid(), holderPrincipal: s.bootstrap, sourceChain: ["root"], exp: s.pin.expiresAt }));
   });
-  for (const field of ["environmentId", "admissionRevision", "expiresAt"] as const) await cell(`changed ${field} refuses before native movement`, async () => {
+  for (const field of ["environmentId", "accountPublicKey", "admissionRevision", "expiresAt"] as const) await cell(`changed ${field} refuses before native movement`, async () => {
     const a = await fresh(); const before = await frozen(a);
-    await assert.rejects(() => retire(a.reg, { ...a.pin, [field]: field === "environmentId" ? "b".repeat(64) : a.pin[field] as number + 1 }, a.deps));
+    const changed = field === "environmentId" ? "b".repeat(64) : field === "accountPublicKey" ? fx.accounts[1]!.accountPublicKey : a.pin[field] as number + 1;
+    await assert.rejects(() => retire(a.reg, { ...a.pin, [field]: changed }, a.deps));
     assert.deepEqual(await frozen(a), before); assert.equal((await observeGate(a.reg, a.pin.lifecycleUid))?.row.state, "open");
+  });
+  await cell("accountless original staging refuses without native retirement", async () => {
+    const a = await fresh(), key = `stage.${a.pin.operationId}.environment-manager`, entry = (await a.stores.authKv.get(key))!;
+    const staged = entry.json<Record<string, unknown>>(); delete staged.accountPublicKey;
+    await a.stores.authKv.update(key, new TextEncoder().encode(JSON.stringify(staged)), entry.revision);
+    const { accountPublicKey: _account, ...legacy } = a.pin;
+    await assert.rejects(() => retire(a.reg, legacy as EnvironmentManagerAdmissionCoordinates, a.deps));
+    await assert.rejects(() => retire(a.reg, a.pin, a.deps));
+    assert.equal((await observeGate(a.reg, a.pin.lifecycleUid))?.row.state, "open");
+    assert.deepEqual((await a.stores.authKv.get(key))!.json(), staged);
+  });
+  await cell("malformed matching account pin refuses before native retirement", async () => {
+    const a = await fresh(), key = `stage.${a.pin.operationId}.environment-manager`, entry = (await a.stores.authKv.get(key))!;
+    await a.stores.authKv.update(key, new TextEncoder().encode(JSON.stringify({ ...entry.json<object>(), accountPublicKey: "invalid" })), entry.revision);
+    await assert.rejects(() => retire(a.reg, { ...a.pin, accountPublicKey: "invalid" }, a.deps));
+    assert.equal((await observeGate(a.reg, a.pin.lifecycleUid))?.row.state, "open");
   });
   await cell("unknown selectors and replacement operation refuse without retirement", async () => {
     const a = await fresh();
