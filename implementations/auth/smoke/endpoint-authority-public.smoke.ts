@@ -26,13 +26,15 @@ import { openAuthorityClient, type AuthorityClient } from "../src/authority-clie
 import { runEndpointCallerCLI, type EndpointCallerCLIResult } from "../../cli/smoke/endpoint-caller-child.js";
 
 const twoUserPublic = process.argv.includes("--two-user-public-acceptance");
-if (twoUserPublic) {
-  if (process.argv.slice(2).length !== 1 || ["ENDPOINT_PUBLIC_CLI", "ENDPOINT_U12_REPORT", "ENDPOINT_PREPARE_REFUSAL", "COTAL_HOME"].some(name => process.env[name] !== undefined)) throw new Error("two-user public entry requires only --two-user-public-acceptance without fixture overrides");
+// The diagnostic reuses the 37 public controls and adds 11 boundary observations, not retry acceptance.
+const protocol3Diagnostic = process.argv.includes("--protocol3-public-entry-diagnostic");
+if (twoUserPublic || protocol3Diagnostic) {
+  if (process.argv.slice(2).length !== 1 || ["ENDPOINT_PUBLIC_CLI", "ENDPOINT_U12_REPORT", "ENDPOINT_PREPARE_REFUSAL", "COTAL_HOME"].some(name => process.env[name] !== undefined)) throw new Error(protocol3Diagnostic ? "protocol3 diagnostic requires only --protocol3-public-entry-diagnostic without fixture overrides" : "two-user public entry requires only --two-user-public-acceptance without fixture overrides");
   const terminalLog = console.log.bind(console);
   try { await runTwoUserPublicAcceptance(); }
   catch {
     process.exitCode = 1;
-    terminalLog(JSON.stringify({ scope: "two-real-user-public-component", terminalFailure: true, cleanupConfirmed: false, reportRetained: false, fullEndpointAcceptance: false }));
+    terminalLog(JSON.stringify({ scope: protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component", terminalFailure: true, cleanupConfirmed: false, reportRetained: false, fullEndpointAcceptance: false }));
     terminalLog("COTAL_SMOKE_SENTINEL cells=1 passed=0 failed=1");
   }
 } else {
@@ -578,6 +580,12 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     "TUP29-all-known-source-CLI-children-close-observed", "TUP30-final-effects-A3-B2-no-negative-effects",
     "TUP31-A-serving-worker-stopped-ack-and-exit-zero", "TUP32-B-serving-worker-stopped-ack-and-exit-zero",
     "TUP33-two-auth-handles-and-idp-listener-closed", "TUP34-parent-owned-connections-and-broker-closed",
+    ...(protocol3Diagnostic ? ["P3D01-genuine-receipt-bound-write-read-descriptor", "P3D02-low-level-write-before",
+      "P3D03-declared-read-before-no-state-change", "P3D04-public-constructor-stage-observed",
+      "P3D05-public-start-stage-observed", "P3D06-public-write-entry-stage-observed",
+      "P3D07-public-read-entry-stage-observed", "P3D08-low-level-write-after",
+      "P3D09-declared-read-after-no-state-change", "P3D10-observed-entry-effects-reconciled",
+      "P3D11-public-client-and-known-acquisitions-settled"] as const : []),
   ] as const;
   type Cell = typeof ids[number];
   const reportDir = mkdtempSync(join(tmpdir(), "endpoint-two-user-report-"));
@@ -597,6 +605,14 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   const statusWatches: Promise<void>[] = [];
   const workers: { child: ChildProcess; messages: Record<string, unknown>[]; exit: Promise<number | null>; error?: string; stopped: boolean }[] = [];
   const authHandles: authApi.AuthServiceHandle[] = [], hostClients: AuthorityClient[] = [];
+  const diagnosticClients: core.CotalEndpoint[] = [];
+  const diagnosticConnections: NatsConnection[] = [];
+  const diagnosticAcquisitions = new Set<Promise<unknown>>();
+  const diagnosticCounters: { applicationRequests: number; readVisits: number }[] = [];
+  let diagnosticWriteEffects = 0;
+  let diagnosticStagesObserved = 0;
+  const diagnosticStageErrors: { stage: string; code: string }[] = [];
+  let diagnosticStageInFlight: string | null = null;
   let broker: ReturnType<typeof spawn> | undefined, releaseBroker: (() => void) | undefined;
   let observer: AuthorityClient | undefined, observerCreated = 0, observerClosed = 0;
   let failure: unknown, failedCell: Cell | null = null, phase = "setup", custodyOutstanding = false;
@@ -626,11 +642,11 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     if (phase !== "cleanup") phase = name;
     assert.ok(!attempted.has(name), "duplicate two-user cell"); attempted.add(name); failedCell = name;
     await action(); passed.add(name); failedCell = null;
-    log(JSON.stringify({ cell: name, passed: true, scope: "two-real-user-public-component" }));
+    log(JSON.stringify({ cell: name, passed: true, scope: protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component" }));
   }
   async function snapshot(): Promise<number[]> {
     assert.equal(workers.length, 2, "two actual workers required for effect fencing");
-    return await Promise.all(workers.map(async worker => {
+    return await Promise.all(workers.map(async (worker, workerIndex) => {
       assert.ok(worker.child.connected && !worker.error, "worker snapshot custody unavailable");
       const id = core.mintLifecycleUid(); worker.child.send({ kind: "effects-snapshot", id });
       await waitFor(() => !!worker.error || worker.messages.some(m => m.kind === "effects-snapshot" && m.id === id));
@@ -640,6 +656,13 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       const effects = worker.messages.filter(m => m.kind === "effect");
       assert.equal(response.effects, effects.length, "snapshot differs from actual effect IPC sequence");
       assert.ok(effects.every((m, index) => m.command === "increment" && m.effects === index + 1), "unexpected worker command or effect sequence");
+      if (protocol3Diagnostic) {
+        assert.ok(typeof response.applicationRequests === "number" && Number.isSafeInteger(response.applicationRequests) && response.applicationRequests >= 0);
+        assert.ok(typeof response.readVisits === "number" && Number.isSafeInteger(response.readVisits) && response.readVisits >= 0);
+        assert.equal(response.applicationRequests, response.effects + response.readVisits);
+        assert.equal(response.readVisits, worker.messages.filter(message => message.kind === "read-visit").length);
+        diagnosticCounters[workerIndex] = { applicationRequests: response.applicationRequests, readVisits: response.readVisits };
+      }
       return response.effects;
     }));
   }
@@ -719,7 +742,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     for (const a of accounts) await core.setupSpaceStreams({ servers, space: a.space, creds: await core.mintCreds(a.auth, core.newIdentity(), "provisioner") });
     const input = { type: "null" }, output = { type: "object", properties: { effects: { type: "integer" }, owner: { type: "string" } }, required: ["effects", "owner"], additionalProperties: false };
     const contract = { input: core.compileContract({ root: input }), output: core.compileContract({ root: output }) };
-    const cluster = { urn: endpoint, revision: 1, attributes: [], events: [], commands: ["increment", "other"].map(name => ({ name, class: "ephemeral", effect: "write", targeted: false, capability: "testcall", inputDigest: contract.input.closureDigest, outputDigest: contract.output.closureDigest })) };
+    const cluster = { urn: endpoint, revision: 1, attributes: [], events: [], commands: ["increment", "other", ...(protocol3Diagnostic ? ["read-state"] : [])].map(name => ({ name, class: "ephemeral", effect: name === "read-state" ? "read" : "write", targeted: false, capability: "testcall", inputDigest: contract.input.closureDigest, outputDigest: contract.output.closureDigest })) };
     const manifest = core.singleDocumentClosure(cluster).manifest, closures = [core.contractDigest(manifest)];
     const artifacts = [input, output, { ...core.singleDocumentClosure(input).manifest }, { ...core.singleDocumentClosure(output).manifest }, cluster, { ...manifest }].map(value => ({ digest: core.contractDigest(value), value }));
     const account = { space: primary.space, accountPublicKey: primary.auth.account.pub, assignmentRevision: 1 };
@@ -740,7 +763,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         const decision = decisions.get(request.instanceId), key = shareKey(p, request.instanceId);
         const own = decision?.holder.owner === p.owner && decision.holder.actor === p.actor && decision.holder.lifecycleUid === p.uid;
         const shared = shares.has(key);
-        if (!decision || request.endpoint !== endpoint || !principals.some(known => core.canonicalJson(known) === core.canonicalJson(p)) || request.commands.some(command => command !== "increment") || (!own && (!shared || request.commands.length !== 1))) throw new Error("caller policy denied");
+        if (!decision || request.endpoint !== endpoint || !principals.some(known => core.canonicalJson(known) === core.canonicalJson(p)) || request.commands.some(command => command !== "increment" && !(protocol3Diagnostic && command === "read-state" && own)) || (!own && (!shared || request.commands.length !== 1))) throw new Error("caller policy denied");
         if (shared) shareDecisions.push(key);
         return { capabilities: request.commands.map(command => ({ endpoint, command })), expiresAt: ceiling.expiresAt };
       },
@@ -795,6 +818,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       const control = await withHome(clients[index].home, () => authApi.cotalAuthProvider.endpointServingControlAuthority!({ store: clients[index].store, dir: clients[index].state, space: primary.space, actor: "cli", trust, selection, credentialDigest: active[index].credentialDigest, holder: { publicKey: active[index].holder.id, sign: async bytes => fromSeed(enc.encode(active[index].holder.seed)).sign(bytes) } }));
       assert.equal(control.receipt.kind, "cotal.endpoint-control"); assert.deepEqual(control.receipt.principal, principals[index]); controlPrincipals.push(control.receipt.principal);
       const material = { publicControl: true, servers, authority: { space: primary.space, instanceId: trust.authority.instanceId, epoch: trust.authority.epoch }, expectedControlPrincipal: control.receipt.principal, trust: { issuer: trust.issuer, accountPublicKey: trust.account.accountPublicKey, assignmentRevision: trust.account.assignmentRevision, keys: trust.keys, accountSigningKey: trust.accountSigningKey }, controlBearer: control.bearer, sentinelCreds: control.sentinelCreds, serveJwt: active[index].serveJwt, attestation: active[index].attestation, artifacts, holder: active[index].holder, serveCreds: new TextDecoder().decode(fmtCreds(active[index].serveJwt, fromSeed(enc.encode(active[index].holder.seed)))), input, output };
+      if (protocol3Diagnostic) Object.assign(material, { publicEntryDiagnostic: true });
       const materialSafe = !["controlCreds", "signingSeed", "executorCreds", "store", "operatorSeed", "authCap", "hostStore"].some(key => Object.hasOwn(material, key));
       assert.ok(materialSafe); participantMaterialChecks.push(materialSafe);
       const path = join(dir, `worker-${index}.json`); core.writeSecretFile(path, JSON.stringify(material));
@@ -810,8 +834,8 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     async function acquire(index: number, instanceId: string, commands = ["describe", "increment"]) {
       return await withHome(clients[index].home, () => authApi.cotalAuthProvider.endpointCallerAuthority!({ store: clients[index].store, dir: clients[index].state, space: primary.space, actor: "cli", trust, selection: { endpoint, instanceId, commands } }));
     }
-    async function connected(index: number, instanceId: string) {
-      const material = await acquire(index, instanceId), options = core.standaloneConnectOpts({ tls: false, bearer: material.bearer, sentinelCreds: material.sentinelCreds });
+    async function connected(index: number, instanceId: string, commands?: string[]) {
+      const material = await acquire(index, instanceId, commands), options = core.standaloneConnectOpts({ tls: false, bearer: material.bearer, sentinelCreds: material.sentinelCreds });
       const nc = track(await connect({ servers, ...options, maxReconnectAttempts: 0 }));
       const caller = await core.issuedUserCaller(nc, primary.space, String(options.name), material.receipt.principal);
       assert.deepEqual(material.receipt.principal, principals[index]); assert.equal(material.receipt.selection.instanceId, instanceId);
@@ -934,10 +958,125 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     });
     await check(ids[31], async () => { assert.equal(cliResults.length, 2); assert.ok(cliResults.every(r => r.closeObserved && !r.closeWaitExpired)); });
     await check(ids[32], async () => { assert.deepEqual(await snapshot(), [3, 2]); });
+    if (protocol3Diagnostic) {
+      const diagnosticIds = ids.slice(37);
+      let low: Awaited<ReturnType<typeof connected>> | undefined, client: core.CotalEndpoint | undefined;
+      const outcomes: { stage: string; outcome: "succeeded" | "refused" | "not-reached"; code: string; before: number[]; after: number[];
+        requestsBefore: number; requestsAfter: number; readsBefore: number; readsAfter: number; replyOk: boolean | null; attributedUnbound: boolean }[] = [];
+      const stageErrors = diagnosticStageErrors;
+      let startSucceeded = false;
+      const safeCode = (error: unknown): string => error instanceof core.EpEnvelopeError ? error.code
+        : error instanceof PermissionViolationError ? "broker-permission-violation" : error instanceof Error ? "error" : "non-error";
+      const observe = async (stage: string, action?: () => Promise<unknown> | unknown) => {
+        const before = await snapshot();
+        const { applicationRequests: requestsBefore, readVisits: readsBefore } = diagnosticCounters[0];
+        let outcome: "succeeded" | "refused" | "not-reached" = "not-reached", code = "not-reached";
+        let replyOk: boolean | null = null, attributedUnbound = false;
+        if (action) {
+          diagnosticStageInFlight = stage;
+          // The wrapper resolves on an actual API refusal. A phase timeout escapes and is RED,
+          // rather than being mislabeled an unsupported public composition.
+          const acquisition = Promise.resolve().then(action).then(
+            value => {
+              const reply = value !== null && typeof value === "object" && "reply" in value
+                ? (value as core.EpAttributedReply).reply : undefined;
+              return { outcome: reply?.ok === false ? "refused" as const : "succeeded" as const,
+                code: reply?.error?.code ?? "none", replyOk: reply?.ok ?? null, attributedUnbound: false };
+            },
+            error => ({ outcome: "refused" as const, code: safeCode(error), replyOk: null, attributedUnbound: core.respondedButUnbound(error) }))
+            .finally(() => { diagnosticStageInFlight = null; });
+          diagnosticAcquisitions.add(acquisition);
+          void acquisition.then(() => diagnosticAcquisitions.delete(acquisition));
+          const result = await bounded(acquisition);
+          outcome = result.outcome; code = result.code; replyOk = result.replyOk; attributedUnbound = result.attributedUnbound;
+        }
+        const after = await snapshot();
+        const { applicationRequests: requestsAfter, readVisits: readsAfter } = diagnosticCounters[0];
+        const record = { stage, outcome, code, before, after, requestsBefore, requestsAfter, readsBefore, readsAfter, replyOk, attributedUnbound }; outcomes.push(record);
+        diagnosticStagesObserved++;
+        phaseEvidence.push({ kind: "protocol3-public-entry-stage", ...record }); log(JSON.stringify({ scope: "protocol3-public-entry-diagnostic", ...record }));
+        return outcome === "succeeded";
+      };
+      const lowCall = async (command: "increment" | "read-state") => {
+        assert.ok(low); core.assertEndpointCallerResolvedService(low.service, low.material.receipt);
+        const before = await snapshot();
+        const countsBefore = { ...diagnosticCounters[0] };
+        const response = await bounded(core.invokeCommand(low.nc, primary.space, low.service, command, undefined, { deadlineMs: budget() }));
+        assert.equal(response.reply.ok, true); assert.equal(response.responder.instanceId, active[0].instanceId);
+        const after = await snapshot(); const expected = [...before]; if (command === "increment") expected[0]++;
+        assert.deepEqual(after, expected); assert.deepEqual(response.reply.data, { effects: after[0], owner: principals[0].owner });
+        assert.equal(diagnosticCounters[0].applicationRequests, countsBefore.applicationRequests + 1);
+        assert.equal(diagnosticCounters[0].readVisits, countsBefore.readVisits + Number(command === "read-state"));
+        phaseEvidence.push({ kind: "protocol3-low-level-bracket", command, before, after, countsBefore,
+          countsAfter: { ...diagnosticCounters[0] }, protocol: low.service.descriptor?.protocol.v });
+      };
+      await check(diagnosticIds[0], async () => {
+        const acquisition = connected(0, active[0].instanceId, ["describe", "increment", "read-state"]);
+        diagnosticAcquisitions.add(acquisition);
+        void acquisition.then(() => diagnosticAcquisitions.delete(acquisition), () => diagnosticAcquisitions.delete(acquisition));
+        low = await bounded(acquisition);
+        assert.equal(low.service.descriptor?.protocol.v, 3); assert.equal(low.service.commands.get("increment")?.effect, "write");
+        assert.equal(low.service.commands.get("read-state")?.effect, "read"); core.assertEndpointCallerResolvedService(low.service, low.material.receipt);
+      });
+      await check(diagnosticIds[1], () => lowCall("increment"));
+      await check(diagnosticIds[2], () => lowCall("read-state"));
+      await check(diagnosticIds[3], async () => { await observe("constructor", () => {
+        assert.ok(low);
+        client = new core.CotalEndpoint({ space: primary.space, servers, bearer: low.material.bearer,
+          sentinelCreds: low.material.sentinelCreds, lifecycleUid: low.material.receipt.principal.uid,
+          card: { name: "protocol3-public-entry", kind: "endpoint" }, tls: false,
+          consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+          onConnection: nc => { diagnosticConnections.push(nc); track(nc); } });
+        diagnosticClients.push(client); client.on("error", error => {
+          stageErrors.push({ stage: diagnosticStageInFlight ?? "outside-stage", code: safeCode(error) });
+          if (diagnosticStageInFlight === null) cleanupErrors.push("unexpected public diagnostic error outside an observed stage");
+        });
+      }); });
+      await check(diagnosticIds[4], async () => { startSucceeded = await observe("start", client ? () => client!.start() : undefined); });
+      await check(diagnosticIds[5], async () => { await observe("invoke-write", startSucceeded ? () => client!.invokeService(endpoint, "increment", undefined,
+        { instanceId: active[0].instanceId, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }) : undefined); });
+      await check(diagnosticIds[6], async () => { await observe("invoke-read", startSucceeded ? () => client!.invokeService(endpoint, "read-state", undefined,
+        { instanceId: active[0].instanceId, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }) : undefined); });
+      await check(diagnosticIds[7], () => lowCall("increment"));
+      await check(diagnosticIds[8], () => lowCall("read-state"));
+      await check(diagnosticIds[9], async () => {
+        assert.equal(outcomes.length, 4);
+        for (const record of outcomes) {
+          assert.equal(record.after[1], record.before[1]);
+          const delta = record.after[0] - record.before[0];
+          if (record.stage === "invoke-write") { assert.ok(delta === 0 || delta === 1); diagnosticWriteEffects = delta; }
+          else assert.equal(delta, 0);
+          assert.ok(record.requestsAfter >= record.requestsBefore && record.readsAfter >= record.readsBefore);
+          const requestDelta = record.requestsAfter - record.requestsBefore;
+          const readDelta = record.readsAfter - record.readsBefore;
+          if (record.stage === "invoke-read") { assert.ok(readDelta === 0 || readDelta === 1); assert.equal(requestDelta, readDelta); }
+          else if (record.stage === "invoke-write") { assert.equal(requestDelta, delta); assert.equal(readDelta, 0); }
+          else { assert.equal(requestDelta, 0); assert.equal(readDelta, 0); }
+        }
+        assert.deepEqual(await snapshot(), [5 + diagnosticWriteEffects, 2]);
+        phaseEvidence.push({ kind: "protocol3-public-entry-classification", outcomes, stageErrors,
+          classification: "observed-boundary-only", attributedUnboundObserved: outcomes.some(record => record.attributedUnbound),
+          requestsCountedAt: "stock-admitted-application-handler", protocol3RetryAcceptance: false });
+      });
+      await check(diagnosticIds[10], async () => {
+        for (const endpointClient of diagnosticClients) await bounded(endpointClient.stop());
+        assert.equal(diagnosticAcquisitions.size, 0);
+        for (const nc of diagnosticConnections) { const error = await bounded(nc.closed()); assert.ok(!error && nc.isClosed()); }
+        assert.ok(low); await bounded(low.nc.close()); const lowError = await bounded(low.nc.closed()); assert.ok(!lowError && low.nc.isClosed());
+        phaseEvidence.push({ kind: "protocol3-public-client-lifetime", stageErrors: [...stageErrors],
+          clients: diagnosticClients.length, knownConnections: diagnosticConnections.length, acquisitionsOutstanding: diagnosticAcquisitions.size });
+        // Parent finally awaits every known connection's actual closed signal, including any
+        // opened before a failed start. stop() also awaits a concurrently settling start.
+      });
+    }
     phase = "cleanup";
   } catch (error) { failure = error; failurePhase = phase; }
   finally {
     phase = "cleanup";
+    for (const client of diagnosticClients) try { await bounded(client.stop()); }
+    catch { cleanupErrors.push("public diagnostic client stop or late start unconfirmed"); custodyOutstanding = true; }
+    if (diagnosticAcquisitions.size > 0) try { await bounded(Promise.allSettled([...diagnosticAcquisitions])); assert.equal(diagnosticAcquisitions.size, 0); }
+    catch { cleanupErrors.push("public diagnostic acquisition remains outstanding"); custodyOutstanding = true; }
     for (let index = 0; index < workers.length; index++) {
       const worker = workers[index];
       try {
@@ -946,7 +1085,14 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           await waitFor(() => worker.messages.some(m => m.kind === "stopped") || !!worker.error); assert.ok(!worker.error);
           const code = await bounded(worker.exit); assert.equal(code, 0); worker.stopped = true;
           const stopped = worker.messages.find(m => m.kind === "stopped"); assert.equal(stopped?.knownConnectionsClosed, 2);
-          if (!failure) assert.equal(stopped?.effects, index === 0 ? 3 : 2);
+          if (!failure) assert.equal(stopped?.effects, index === 0 ? 3 + (protocol3Diagnostic ? 2 + diagnosticWriteEffects : 0) : 2);
+          if (protocol3Diagnostic && !failure) {
+            assert.equal(stopped?.applicationRequests, diagnosticCounters[index].applicationRequests);
+            assert.equal(stopped?.readVisits, diagnosticCounters[index].readVisits);
+            assert.equal(stopped?.applicationRequests, Number(stopped?.effects) + Number(stopped?.readVisits));
+            assert.equal(worker.messages.filter(message => message.kind === "effect").length, stopped?.effects);
+            assert.equal(worker.messages.filter(message => message.kind === "read-visit").length, stopped?.readVisits);
+          }
         };
         if (!failure && workers.length === 2) await check(ids[index === 0 ? 33 : 34], stop);
         else await stop();
@@ -967,7 +1113,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: "two-real-user-public-component", plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component", plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
