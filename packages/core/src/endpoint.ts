@@ -19,6 +19,8 @@ import {
   type Subscription,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
+import { DiagnosticAuthJournal, unarmedDiagnosticAuthSnapshot, type DiagnosticAuthSnapshot } from "./diagnostic-auth-journal.js";
+export type { DiagnosticAuthSnapshot } from "./diagnostic-auth-journal.js";
 import {
   parseLivenessAnswer,
   responderFromLease,
@@ -699,6 +701,17 @@ export class CotalEndpoint extends EventEmitter {
    *  broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
    *  equality check. The principal (owner+actor) is what the WIRE grammar and every per-agent key use. */
   private readonly connId: string;
+  private diagnosticAuthJournal?: DiagnosticAuthJournal;
+
+  /** Arm one temporary local diagnostic epoch. Repeated arming never clears saturation. */
+  armDiagnosticAuthJournal(): void {
+    this.diagnosticAuthJournal ??= new DiagnosticAuthJournal();
+  }
+
+  /** Private correlation data only. Never serialize this snapshot or its retained references. */
+  readDiagnosticAuthJournal(): DiagnosticAuthSnapshot {
+    return this.diagnosticAuthJournal?.read() ?? unarmedDiagnosticAuthSnapshot();
+  }
   /** This endpoint's owner token (principal half 1) — `"local"` in the dev default. */
   private readonly owner: string;
   /** This endpoint's actor token (principal half 2) — the connection id in the dev default. */
@@ -1381,34 +1394,41 @@ export class CotalEndpoint extends EventEmitter {
     // The refusal still surfaces on this path: the authenticator throws during the CONNECT, the
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
-    this.nc = await dialerFor(this.servers)({
-      servers: this.servers,
-      // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
-      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
-      name: this.userMode ? this.connId : `cotal:${this.card.name}`,
-      // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
-      // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
-      // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
-      // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
-      // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
-      // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
-      // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
-      inboxPrefix: `_INBOX_${this.connId}`,
-      ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
-      ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
-      // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
-      // attempt, so internal reconnects present whatever refreshBearer last fetched.
-      // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
-      // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
-      // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
-      // just been proven unexpired rather than whatever the cache happens to hold.
-      // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
-      // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
-      // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
-      // (an empty credential) was never named. Routing it into the checked getter fails it loud
-      // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
-    });
+    const diagnosticFlight = this.diagnosticAuthJournal?.begin(this.userMode ? this.connId : `cotal:${this.card.name}`);
+    try {
+      this.nc = await dialerFor(this.servers)({
+        servers: this.servers,
+        // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
+        // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
+        name: this.userMode ? this.connId : `cotal:${this.card.name}`,
+        // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
+        // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
+        // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
+        // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
+        // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
+        // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
+        // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
+        inboxPrefix: `_INBOX_${this.connId}`,
+        ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
+        ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
+        // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
+        // attempt, so internal reconnects present whatever refreshBearer last fetched.
+        // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
+        // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
+        // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
+        // just been proven unexpired rather than whatever the cache happens to hold.
+        // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
+        // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
+        // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
+        // (an empty credential) was never named. Routing it into the checked getter fails it loud
+        // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
+        ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }, this.diagnosticAuthJournal, diagnosticFlight),
+      });
+      this.diagnosticAuthJournal?.settle(diagnosticFlight, "fulfilled", this.nc);
+    } catch (error) {
+      this.diagnosticAuthJournal?.settle(diagnosticFlight, "rejected", error);
+      throw error;
+    }
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
     this.ownedConnections.add(this.nc);
@@ -1783,7 +1803,10 @@ export class CotalEndpoint extends EventEmitter {
    *  retry loop) coalesce onto ONE in-flight rebuild instead of racing two connectAndBinds and
    *  leaking a connection. Returns the shared promise; a second caller gets the in-flight one. */
   private rebuild(): Promise<void> {
-    if (this.rebuildPromise) return this.rebuildPromise;
+    if (this.rebuildPromise) {
+      this.diagnosticAuthJournal?.sharedRebuild();
+      return this.rebuildPromise;
+    }
     const p = this.doRebuild().finally(() => {
       if (this.rebuildPromise === p) this.rebuildPromise = undefined;
     });
@@ -7010,7 +7033,7 @@ interface AuthOpts {
   tls?: boolean;
 }
 
-function authOpts(a: AuthOpts) {
+function authOpts(a: AuthOpts, diagnostic?: DiagnosticAuthJournal, flight?: ReturnType<DiagnosticAuthJournal["begin"]>) {
   const tls = a.tls ? {} : undefined;
   // USER MODE: present the shared auth-account sentinel creds AND the user bearer as `auth_token` (an
   // authenticator ARRAY — nats.js merges them into one CONNECT). The connect lands in the callout
@@ -7020,8 +7043,9 @@ function authOpts(a: AuthOpts) {
       throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
     if (!a.sentinelCreds)
       throw new Error("user-mode bearer requires sentinelCreds");
+    const sentinel = credsAuthenticator(new TextEncoder().encode(a.sentinelCreds));
     return {
-      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      authenticator: [diagnostic ? diagnostic.authentication(flight, sentinel) : sentinel, tokenAuthenticator(a.bearer)],
       tls,
     };
   }
@@ -7036,7 +7060,7 @@ function authOpts(a: AuthOpts) {
     const authenticator = typeof creds === "function"
       ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
       : credsAuthenticator(new TextEncoder().encode(creds));
-    return { authenticator, tls };
+    return { authenticator: diagnostic ? diagnostic.authentication(flight, authenticator) : authenticator, tls };
   }
   return { token: a.token, user: a.user, pass: a.pass, tls };
 }

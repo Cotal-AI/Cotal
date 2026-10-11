@@ -774,6 +774,16 @@ low-level operator primitives. Handle them as account-authority material:
   see the manager's isolation note). Segregate per tenant; rotate on compromise
   (`rotateDataAccountSigningKey`).
 
+## Temporary local auth diagnostics
+
+This isolated diagnostic candidate exposes `CotalEndpoint.armDiagnosticAuthJournal()` and
+`readDiagnosticAuthJournal()`, plus `AuthServiceHandle.armDiagnosticCalloutJournal()` and
+`readDiagnosticCalloutJournal()`. They arm one default-off local epoch and return private pull
+snapshots. They add no network calls or authorization decisions. Do not serialize the snapshots.
+The [diagnostic candidate notes](../implementations/auth/smoke/diagnostic-auth-journal.md) describe
+the fixed bounds, safe fixture projection and unmeasured execution checks. These temporary methods
+are not approved for permanent release inclusion.
+
 ## Hosted composition gaps
 
 The primitives above are present as exports, but three capabilities are **not** cleanly composable

@@ -1867,6 +1867,10 @@ export interface AuthServiceHandle extends HostedServiceHandle {
   readonly closed: Promise<AuthServiceClosed>;
   /** Snapshot of all connections acquired by this context, including replaced readers. */
   connections(): AuthConnectionState[];
+  /** Arm one temporary private callout diagnostic epoch. It cannot be reset or filtered. */
+  armDiagnosticCalloutJournal(): void;
+  /** Trusted local correlation only. Never serialize the private strings in this snapshot. */
+  readDiagnosticCalloutJournal(): import("./diagnostic-callout-journal.js").DiagnosticCalloutSnapshot;
   readonly url: string;
   readonly publicUrl?: string;
   /** The per-start loopback capability. It alone authorizes the loopback host actions (lifecycle
@@ -2100,7 +2104,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       name: `cotal:auth-service:${space}`,
     });
     onConnection(nc, `cotal:auth-service:${space}`);
-    startAuthCallout(nc as never, {
+    const calloutHandle = startAuthCallout(nc as never, {
       xkeySeed: callout.xkey.seed,
       authAccount: { pub: callout.account.pub, signingSeed: callout.account.signingSeed },
       dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
@@ -2314,6 +2318,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       cap,
       closed: owned.closed,
       connections: () => owned.connections(),
+      armDiagnosticCalloutJournal: () => { calloutHandle.armDiagnosticJournal(); },
+      readDiagnosticCalloutJournal: () => calloutHandle.readDiagnosticJournal(),
       ...(o.platformSupervisor !== undefined ? {
         platformSupervisorAuthority: async (owner: string) => {
           refuseUnlessReady();
