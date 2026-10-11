@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { AssertionError } from "node:assert";
 import { spawn, fork, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
@@ -626,6 +627,68 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   type DiagnosticErrorBoundary = "none" | "not-reached" | "other" | "attributed-reply-refusal"
     | "broker-permission-violation" | "describe-reply-subscription" | "describe-permission-watch-unreleasable"
     | "describe-retry-publish" | "contract-store-read" | "describe-publish-denied" | "describe-answered-refusal";
+  // Acceptance observations are closed labels. Never serialize caught errors or cleanup text.
+  type PublicReconnectStage = "not-reached" | "snapshot-before" | "reconnect" | "connection-count"
+    | "old-connection-closed" | "describe" | "receipt-binding" | "read" | "snapshot-after" | "completed";
+  type PublicReconnectBoundary = "none" | "other" | "assertion" | "phase-deadline" | "phase-budget"
+    | "event-deadline" | "endpoint-stopped" | "connection-closure-unproved" | "broker-permission-violation"
+    | "envelope-permission-denied" | "envelope-unavailable" | "envelope-deadline-exceeded"
+    | "envelope-failed-precondition" | "envelope-expired" | "envelope-not-found";
+  let publicReconnectStage: PublicReconnectStage = "not-reached";
+  let publicReconnectBoundary: PublicReconnectBoundary = "none";
+  const reconnectBoundary = (error: unknown): PublicReconnectBoundary => {
+    if (error instanceof PermissionViolationError || (error instanceof Error && error.cause instanceof PermissionViolationError))
+      return "broker-permission-violation";
+    if (error instanceof core.EpEnvelopeError) {
+      switch (error.code) {
+        case "permission-denied": return "envelope-permission-denied";
+        case "unavailable": return "envelope-unavailable";
+        case "deadline-exceeded": return "envelope-deadline-exceeded";
+        case "failed-precondition": return "envelope-failed-precondition";
+        case "expired": return "envelope-expired";
+        case "not-found": return "envelope-not-found";
+        default: return "other";
+      }
+    }
+    if (error instanceof Error) {
+      switch (error.message) {
+        case "two-user phase deadline": return "phase-deadline";
+        case "two-user entry budget exhausted": return "phase-budget";
+        case "two-user event deadline": return "event-deadline";
+        case "endpoint stopped - cannot reconnect": return "endpoint-stopped";
+        case "endpoint connection closure is unproved; consumer custody must be retained": return "connection-closure-unproved";
+      }
+    }
+    if (error instanceof AssertionError) return "assertion";
+    return "other";
+  };
+  const cleanupDebt = (message: string) => {
+    switch (message) {
+      case "AUX witness status failure": return "aux-witness-status";
+      case "AUX witness subscription failed": return "aux-witness-subscription";
+      case "AUX received PRIMARY witness traffic": return "aux-received-primary";
+      case "PRIMARY observer status failure": return "primary-observer-status";
+      case "PRIMARY witness subscription failed": return "primary-witness-subscription";
+      case "PRIMARY received AUX witness traffic": return "primary-received-aux";
+      case "witness subscription removal unconfirmed": return "witness-subscription-removal";
+      case "PRIMARY observer close failed": return "primary-observer-close";
+      case "witness lifetime validation failed": return "witness-lifetime-validation";
+      case "unexpected public diagnostic error outside an observed stage": return "diagnostic-error-outside-stage";
+      case "issued public acceptance asynchronous error": return "issued-public-asynchronous-error";
+      case "unexpected legacy issued-discovery error": return "legacy-issued-discovery-error";
+      case "public diagnostic client stop or late start unconfirmed": return "public-client-stop-or-late-start";
+      case "public diagnostic acquisition remains outstanding": return "public-acquisition-outstanding";
+      case "owned worker stop or exit unconfirmed": return "worker-stop-or-exit";
+      case "trusted fixture host connection close failed": return "host-connection-close";
+      case "participant connection close failed": return "participant-connection-close";
+      case "owned status observer retirement unconfirmed": return "status-observer-retirement";
+      case "retained witness lifetime debt at final cleanup": return "retained-witness-lifetime";
+      case "public auth service close failed": return "auth-service-close";
+      case "IdP listener close failed": return "idp-listener-close";
+      case "known broker exit unconfirmed": return "broker-exit";
+      default: return "other";
+    }
+  };
   const diagnosticStageErrors: { stage: string; code: string; eventBoundary: DiagnosticErrorBoundary }[] = [];
   let diagnosticStageInFlight: string | null = null;
   let broker: ReturnType<typeof spawn> | undefined, releaseBroker: (() => void) | undefined;
@@ -1176,14 +1239,29 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       });
       await negative(acceptanceIds[7], async () => { await expectPublicDenial(() => acquired(() => acquire(0, active[1].instanceId)), /caller policy denied/); });
       await check(acceptanceIds[8], async () => {
-        const before = await snapshot();
-        await acquired(() => client!.reconnect());
-        assert.equal(diagnosticConnections.length, 2);
-        const closedError = await bounded(diagnosticConnections[0].closed()); assert.ok(!closedError && diagnosticConnections[0].isClosed());
-        service = await acquired(() => client!.describeService(endpoint,
-          { ...{ instanceId: active[0].instanceId }, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }));
-        assert.ok(low); core.assertEndpointCallerResolvedService(service, low.material.receipt);
-        await publicCall("read-state"); assert.deepEqual(await snapshot(), before);
+        try {
+          publicReconnectStage = "snapshot-before";
+          const before = await snapshot();
+          publicReconnectStage = "reconnect";
+          await acquired(() => client!.reconnect());
+          publicReconnectStage = "connection-count";
+          assert.equal(diagnosticConnections.length, 2);
+          publicReconnectStage = "old-connection-closed";
+          const closedError = await bounded(diagnosticConnections[0].closed()); assert.ok(!closedError && diagnosticConnections[0].isClosed());
+          publicReconnectStage = "describe";
+          service = await acquired(() => client!.describeService(endpoint,
+            { ...{ instanceId: active[0].instanceId }, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }));
+          publicReconnectStage = "receipt-binding";
+          assert.ok(low); core.assertEndpointCallerResolvedService(service, low.material.receipt);
+          publicReconnectStage = "read";
+          await publicCall("read-state");
+          publicReconnectStage = "snapshot-after";
+          assert.deepEqual(await snapshot(), before);
+          publicReconnectStage = "completed";
+        } catch (error) {
+          publicReconnectBoundary = reconnectBoundary(error);
+          throw error;
+        }
       });
       await negative(acceptanceIds[9], async () => {
         assert.throws(() => new core.CotalEndpoint({ space: primary.space, servers, ...{ issuedCaller: true },
@@ -1265,7 +1343,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
