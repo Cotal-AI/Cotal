@@ -176,16 +176,24 @@ try {
     assert.ok(result.stderrBytes > limit && result.stderrBytes <= 4096, "actual observed byte count retained");
     terminated(result, "stderr-limit");
   });
-  await cell("CH08-real-signal-exit-retains-null-code-and-true-signal", async retain => {
+  const windows = process.platform === "win32";
+  await cell(windows
+    ? "CH08-real-windows-self-termination-retains-code-one-and-null-signal"
+    : "CH08-real-signal-exit-retains-null-code-and-true-signal", async retain => {
     const result = await invoke(input(child("signal", 'process.kill(process.pid, "SIGTERM");')));
     retain(result);
-    assert.equal(result.code, null);
-    assert.equal(result.signal, "SIGTERM");
+    // Windows self-termination reports exit 1 without a POSIX signal. Keep the observed result.
+    assert.equal(result.code, windows ? 1 : null);
+    assert.equal(result.signal, windows ? null : "SIGTERM");
     assert.equal(result.timedOut, false);
     assert.equal(result.closeObserved, true);
+    assert.equal(result.closeWaitExpired, false);
     assert.equal(result.killAttempted, false);
     assert.equal(result.killAccepted, null);
+    assert.equal(result.killError, null);
     assert.equal(result.terminationReason, null);
+    assert.equal(result.spawnError, null);
+    assert.equal(result.childError, null);
   });
   await cell("CH09-exact-stream-byte-budgets-do-not-trigger-overflow", async retain => {
     const result = await invoke(input(child("boundary", 'process.stdout.write("O".repeat(1024)); process.stderr.write("E".repeat(1024));')));
