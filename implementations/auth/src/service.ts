@@ -622,6 +622,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   const authKv = await new Kvm(remoteIssuer.nc).open(epAuthBucket(space));
   const managerIssuanceGate = (instanceId: string) => serveIssuanceGateKv(authKv, space, { endpoint: "manager", instanceId });
   const observeManagerGate = async (instanceId: string) => managerIssuanceGate(instanceId).observe();
+  const observeLegacyManagerGate = async (instanceId: string) => {
+    const gate = await observeManagerGate(instanceId);
+    if (gate?.authorityFamily === "environment-manager")
+      throw new EpEnvelopeError("permission-denied", `manager instance ${instanceId} belongs to the environment-manager authority family`);
+    return gate;
+  };
   const loadLocalManager = opts.localManager ?? (() => undefined);
   // Standing renewal and a served resume or answer read the manager surface from the REGISTERED
   // service spec at the gate's registration revision: spec (leader read) -> closure manifest -> root
@@ -808,7 +814,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         space,
         managerGate: async (owner, instanceId) => {
           const verdict = await managerGate(owner, assertLifecycleToken(instanceId, "serving.instanceId"));
-          const gate = await observeManagerGate(instanceId);
+          const gate = await observeLegacyManagerGate(instanceId);
           return { verdict, ...(gate ? { processEpoch: gate.processEpoch } : {}) };
         },
       }, principal, claim);
@@ -886,7 +892,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       // The ended-assignment fence (SPEC 13.16): read on every call, before anything is signed. The
       // retired gate and the retired generations are terminal rows, so no host view reopens them.
       if (holder.supervisorExpiresAt !== undefined) {
-        const gate = await observeManagerGate(holder.request.instanceId);
+        const gate = await observeLegacyManagerGate(holder.request.instanceId);
         if (gate?.state === "retired") throw platformSupervisorEnded(owner);
         await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
           for (const duty of ["supervisor", "executor"] as const) {
@@ -908,10 +914,18 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         ...holder,
         authorizeRenewal: ({ owner: o, request: r }) => authorizeRemoteManagerRenewal({
           request: r, owner: o, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed,
-          observeManagerGate,
+          observeManagerGate: observeLegacyManagerGate,
           observeRun: (runId) => observeManagerRun(r, runId),
         }),
         issue: async ({ actors, request: r }) => {
+          const existing = await observeLegacyManagerGate(r.instanceId);
+          if (r.operation === "prepare" && existing === null) {
+            // Reserve the family before releasing direct-store credentials. Environment admission
+            // uses this create-only gate, so a racing family cannot win behind an absent read.
+            await provisionEndpointGateOpen(authKv, {
+              endpoint: "manager", instanceId: r.instanceId, principal: `${owner}.${actors.serve}`,
+            });
+          }
           const bounded = (opts: Parameters<typeof mintPublicUserJwt>[3]) => {
             if (holder.supervisorExpiresAt === undefined) return opts;
             const now = Math.floor(Date.now() / 1000);
@@ -1166,6 +1180,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     },
     endPlatformSupervisor: async ({ owner, instanceId, lifecycleUid }) => {
       refuseIfFenced();
+      await observeLegacyManagerGate(instanceId);
       // Retire the issued generations first, then the gate. Each step is idempotent, so a retry after
       // a partial end completes it. The retired gate alone refuses a lifecycle that issued nothing.
       await withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
@@ -1188,6 +1203,8 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         if (entry.operation !== "PUT")
           throw new EpEnvelopeError("failed-precondition", `the manager gate ${key} carries a ${entry.operation} marker; a gate is never deleted (SPEC 13.12)`);
         const row = parseEndpointGate(entry.value, key);
+        if (row.authorityFamily === "environment-manager")
+          throw new EpEnvelopeError("permission-denied", `manager instance ${instanceId} belongs to the environment-manager authority family`);
         if (row.principal !== `${owner}.${remoteManagerActors(instanceId).serve}`)
           throw new EpEnvelopeError("permission-denied", `the manager gate ${key} belongs to ${row.principal}, not owner ${owner}`);
         if (row.state === "retired") return;
@@ -1205,11 +1222,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     maintainRemoteManager: async (holder) => {
       refuseIfFenced();
       const { owner } = holder;
+      await observeLegacyManagerGate(holder.request.instanceId);
       const authorized = await authorizeRemoteManagerMaintenance({
         ...holder,
         space,
         scanner,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       });
       const evictHolders = makeDeliveryAdminHolderEvictor({ onConnection, space, server, dataAccount, log });
       if (authorized.operation === "evict-family-principal") {
@@ -1255,7 +1273,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         ...holder,
         proofSecret: dataAccount.signingSeed,
         space,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       });
     },
     verifyManagedAgentEnrollment: async ({ owner, scope, request }) => {
@@ -1266,7 +1284,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         proofSecret: dataAccount.signingSeed,
         space,
         request,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       });
     },
     verifyManagedAgentPrepareRetirement: async ({ owner, scope, request }) => {
@@ -1277,12 +1295,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         proofSecret: dataAccount.signingSeed,
         space,
         request,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       });
     },
     enrollManagedAgent: async ({ owner, scope, request, sentinelCreds, agentBearerExchangeUrl }) => {
       refuseIfFenced();
-      const r = await authorizeRemoteManagedAgentEnrollment({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate });
+      const r = await authorizeRemoteManagedAgentEnrollment({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate: observeLegacyManagerGate });
       const t = r.target;
       const subscribe = t.subscribe ?? [];
       const { lifecycleUid, row } = await serializedForAlias(opts.dir, owner, t.actor, async () => {
@@ -1368,7 +1386,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     },
     prepareManagedAgentRetirement: async ({ owner, scope, request }) => {
       refuseIfFenced();
-      const r = await authorizeRemoteManagedAgentPrepareRetirement({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate });
+      const r = await authorizeRemoteManagedAgentPrepareRetirement({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate: observeLegacyManagerGate });
       const { actor, lifecycleUid } = r.target;
       await serializedForAlias(opts.dir, owner, actor, async () => {
         // Only a grant still at the target uid is this lifecycle's. A row at another uid belongs to a
@@ -1401,7 +1419,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         dir: opts.dir,
         proofSecret: dataAccount.signingSeed,
         space,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       };
       return request.kind === "manager-managed-agent-runtime-status"
         ? authorizeRemoteManagedAgentRuntimeStatus({ ...args, request })
@@ -1412,7 +1430,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const { owner } = holder;
       const authorized = await authorizeRemoteManagerGoalIndexScan({
         ...holder, proofSecret: dataAccount.signingSeed, space,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       });
       return completeRemoteManagerGoalIndexScan(authorized, owner, await recordsScanner.scanManagerGoalIndex(owner));
     },
@@ -1425,14 +1443,16 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         space,
         dir: opts.dir,
         request,
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
       });
     },
     admitManagerRun: async ({ request, ...holder }) => {
       refuseIfFenced();
       const { owner } = holder;
       requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run admission needs scope "supervise"; spawn/admin do not imply it');
-      const runId = parseRemoteRunAdmissionRequest(request).run.runId;
+      const parsed = parseRemoteRunAdmissionRequest(request);
+      await observeLegacyManagerGate(parsed.instanceId);
+      const runId = parsed.run.runId;
       return withIssuerSession({ servers: server, space, auth: issuerAuth(), tls: false }, async (session) => {
         const admitterNc = await connect({
           servers: server,
@@ -1446,7 +1466,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         try {
           return await admitRemoteRun({
             request, owner, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
-            observeManagerGate,
+            observeManagerGate: observeLegacyManagerGate,
             issued: session.store,
             sourceIsLive: composedSourceIsLive(session),
             takeObserved: takeObservedRunRequest,
@@ -1460,6 +1480,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     revokeManagerRun: async ({ request, ...holder }) => {
       refuseIfFenced();
       const req = parseRemoteRunRevokeRequest(request);
+      await observeLegacyManagerGate(req.instanceId);
       const admitterNc = await connect({
         servers: server,
         ...standaloneConnectOpts({
@@ -1472,7 +1493,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       try {
         return await revokeRemoteRun({
           ...holder, request: req, space, accountPublicKey: dataAccount.pub, proofSecret: dataAccount.signingSeed, endpoint: "manager",
-          observeManagerGate,
+          observeManagerGate: observeLegacyManagerGate,
           readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
           readRevocation: (runId) => readRunRevocation(recordsJsm, space, "manager", runId),
           admissions: await new Kvm(admitterNc).open(admissionBucket(space)),
@@ -1486,6 +1507,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       const { owner } = holder;
       requireManagerAuthorityHolder(holder, String((request as { instanceId?: unknown })?.instanceId), 'manager run attempt needs scope "supervise"; spawn/admin do not imply it');
       const req = parseRemoteRunAttemptRequest(request);
+      await observeLegacyManagerGate(req.instanceId);
       const recordsKv = await openRecordsBucket(remoteIssuer.nc, space);
       const authorize = (session?: IssuerSession) => authorizeRemoteRunAttempt({
         ...(session ? { issued: session.store, sourceIsLive: composedSourceIsLive(session) } : {}),
@@ -1505,7 +1527,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         accountPublicKey: dataAccount.pub,
         proofSecret: dataAccount.signingSeed,
         endpoint: "manager",
-        observeManagerGate,
+        observeManagerGate: observeLegacyManagerGate,
         readAdmission: (runId) => readRunAdmission(recordsJsm, space, "manager", runId),
         readRunStatus: async (runId) => (await readRunRecord(recordsKv, "manager", runId))?.status?.value,
         // Replayed under a read operator minted for that one run, the rows the manager's own read rides.
