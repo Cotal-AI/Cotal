@@ -72,7 +72,7 @@ import { waitForEndpointUnreachable } from "../lib/endpoint-cut.js";
 import { captureSeatCheckpoint } from "../lib/seat-capture.js";
 import { processRecorded, stopLocalProcess } from "../lib/local-process-stop.js";
 import { stopManager } from "../lib/manager-proc.js";
-import { stopDelivery } from "../lib/delivery-proc.js";
+import { removeDeliveryCredentials, stopDelivery } from "../lib/delivery-proc.js";
 
 /** The fields a checkpoint reads off one retained inventory entry. The manager owns
  *  `ManagerResumeAgent`; the CLI never imports it, because implementations do not depend on each
@@ -205,7 +205,7 @@ export async function down(args: ParsedArgs): Promise<void> {
     try {
       const context = contextFor(component);
       if (component.name === "manager") await stopManager(context.space, { withAgents: values["with-agents"] });
-      else if (component.name === "delivery") await stopDelivery(context.space);
+      else if (component.name === "delivery") await stopDelivery(context.space, { preserveCredentials: !requested.length });
       else await stopLocalProcess(component, context);
     } catch (e) {
       allStopped = false;
@@ -217,6 +217,9 @@ export async function down(args: ParsedArgs): Promise<void> {
     process.exitCode = 1;
     return;
   }
+
+  if (!requested.length && selected.some((component) => component.name === "delivery"))
+    await removeDeliveryCredentials(folderCtx().space);
 
   for (const component of selected) {
     for (const artifact of component.artifacts ?? []) rmSync(localProcessPath(artifact, contextFor(component)), { force: true });

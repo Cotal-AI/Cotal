@@ -400,6 +400,10 @@ is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
 
 `down` reads each process record once. A component that exits and removes its own record while
 `down` runs counts as having no record, so the stop goes on. Any other failed read is an error.
+Whole-stack shutdown keeps delivery credentials until every required component has stopped.
+A refused stop preserves both the space-scoped credential and its legacy copy. A selective
+delivery stop still removes its credentials after that daemon stops. Credential removal errors
+remain failures.
 
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` and `cotal web` record each

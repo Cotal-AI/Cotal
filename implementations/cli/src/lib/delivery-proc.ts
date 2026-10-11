@@ -319,11 +319,16 @@ export const DELIVERY_PROCESS: LocalProcess = {
   isOwnCommand: commandIsCotalDelivery,
 };
 
-/** Stop the space's delivery daemon, then drop its creds from the store. The stop throws unless the
- *  daemon is proven gone, so the credential is never deleted from under a daemon still running. */
-export async function stopDelivery(space: string = folderSpace()): Promise<void> {
-  await stopLocalProcess(DELIVERY_PROCESS, ctx(space));
+/** Remove this space's delivery credentials after its required process stops have succeeded. */
+export async function removeDeliveryCredentials(space: string): Promise<void> {
   for (const k of deliveryCredsKeysToClear(space)) await credsStore().delete(k);
+}
+
+/** Stop the space's delivery daemon, then drop its creds from the store. Whole-stack down defers
+ *  credential removal until the broker and every other required component have stopped. */
+export async function stopDelivery(space: string = folderSpace(), options: { preserveCredentials?: boolean } = {}): Promise<void> {
+  await stopLocalProcess(DELIVERY_PROCESS, ctx(space));
+  if (!options.preserveCredentials) await removeDeliveryCredentials(space);
 }
 
 /** Bring up the control plane in the correct cutover order: OLD-manager preflight → delivery daemon

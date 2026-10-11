@@ -1,0 +1,37 @@
+{
+  "suite": ["implementations/cli/smoke/down-delivery-retention.smoke.ts"],
+  "guard": "Whole-stack shutdown retains both delivery credential keys until every required process stop succeeds.",
+  "command": "pnpm build && pnpm smoke:down-delivery-retention",
+  "progressPattern": "^\\{\"cell\":\"DR(?:0[1-9]|1[0-4])-[^\"\\r\\n]+\",\"passed\":true\\}$",
+  "completionMarker": "COTAL_DOWN_RETENTION_TERMINAL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/down-delivery-retention.json",
+  "why": [
+    "Drive the unchanged shipped down and stopDelivery composition with real temporary filesystem credentials. Only the process-stop boundary is mocked. No process is started, signalled or probed.",
+    "The normal build precedes each run. Each afterRestore repeats the build and full fourteen-cell suite, so restored source and loaded artifacts must pass rather than leaving a compiled mutant behind.",
+    "Restoring early credential cleanup must fail DR01. DR03 independently observes credentials before the broker stop, but the suite stops at DR01 first; this fixture does not claim a separately executed DR03 kill.",
+    "Omitting successful whole-stack credential cleanup must fail DR07. Compiler, import or module-mock failures without the exact named assertion are wrong reds, not mutation kills.",
+    "This is source metadata only. Maintained admission, a green fourteen-cell baseline, both named kills and rebuilt restored green are unexecuted. No safety policy, test assertion or live suite is changed or concealed."
+  ],
+  "mutations": [
+    {
+      "name": "DRM01-restore-early-delivery-credential-cleanup",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "      else if (component.name === \"delivery\") await stopDelivery(context.space, { preserveCredentials: !requested.length });",
+      "replace": "      else if (component.name === \"delivery\") await stopDelivery(context.space);",
+      "cell": "DR01-broker-refusal-retains-both-delivery-credentials",
+      "expectRed": "DR01-broker-refusal-retains-both-delivery-credentials",
+      "command": "pnpm build && pnpm smoke:down-delivery-retention",
+      "afterRestore": "pnpm build && pnpm smoke:down-delivery-retention"
+    },
+    {
+      "name": "DRM02-omit-successful-whole-stack-credential-cleanup",
+      "file": "implementations/cli/src/commands/down.ts",
+      "find": "  if (!requested.length && selected.some((component) => component.name === \"delivery\"))\n    await removeDeliveryCredentials(folderCtx().space);\n",
+      "replace": "",
+      "cell": "DR07-whole-stack-cleans-only-after-broker-stop",
+      "expectRed": "DR07-whole-stack-cleans-only-after-broker-stop",
+      "command": "pnpm build && pnpm smoke:down-delivery-retention",
+      "afterRestore": "pnpm build && pnpm smoke:down-delivery-retention"
+    }
+  ]
+}
