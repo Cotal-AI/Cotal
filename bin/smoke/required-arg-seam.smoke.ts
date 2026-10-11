@@ -445,7 +445,13 @@ const SEAMS: Seam[] = [
   // The two workspace calls already use the resolved TLS requirement. Scalar captures preserve
   // that decision without asking this file's local-shape reader to model the imported resolver.
   // The real built-tree scan measured 267/212. A later fixture addition needs a new census.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 267, untypecheckedSites: 212 },
+  // 267/212 -> 270/215: source delta from 8f95 to the reviewed 941e integration.
+  // implementations/auth/smoke/endpoint-authority-native-worker adds one public-control call;
+  // endpoint-authority-public adds two calls for the new caller and ordinary AUX connection.
+  // Both files match b0ca. All three calls state tls: false for the owned plaintext broker.
+  // The public a644 carry and Windows fixture add no sites. Separate f2874 adds none either.
+  // These pins follow the named source delta, not a new measured scan. The built-tree gate remains.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 270, untypecheckedSites: 215 },
 ];
 
 /**
