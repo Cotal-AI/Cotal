@@ -27,6 +27,8 @@ import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervi
 import { EVICT_PRINCIPALS_MAX } from "./evict.js";
 import type { EpRegistrationState } from "./endpoint-verbs.js"; // type-only: the runtime graph stays verbs → service
 import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor, type GateStateOp } from "./lifecycle-state.js";
+import { assertEndpointInstanceAuthority, parseEndpointServingAuthorityRef, parseEndpointServeCeiling, type EndpointAccountPin, type EndpointServingAuthorityRef, type EndpointServingHolder, type EndpointServeCeiling, parseEndpointDelegatedBinding, type EndpointDelegatedBinding, type EndpointInstanceAuthority } from "./endpoint-authority-policy.js";
+import { assertEndpointPolicyHold, type EndpointPolicyHold } from "./endpoint-authority-gate.js";
 
 // ---- value shapes (§13.7 "Descriptor and describe") ------------------------------------------
 
@@ -36,13 +38,16 @@ import { ISSUANCE_GATE_OP_KINDS, type EndpointRepairCursor, type GateStateOp } f
  *  re-registration. */
 export interface ServiceSpec {
   endpoint: string;
-  /** The serving owner — determined by the NAME (§13.2 single-owner names), recorded here. */
+  /** Actual serving owner, distinct from namespace governor under protocol3. */
   owner: string;
   endpointType?: string;
   /** Complete-closure digests of the served cluster documents (§13.7). */
   clusterDigests: string[];
   /** The discovery protocol version — additive evolution only (§13.7). */
-  protocol: { v: 1 };
+  protocol: { v: 1 | 2 | 3 };
+  servingAuthority?: Readonly<EndpointServingAuthorityRef>;
+  serveRoutes?: { kind: "instance" };
+  resources?: { kind: "ephemeral-only" };
   /** Virtual-endpoint activation policy (§13.6), opaque to the registry. */
   activation?: Record<string, unknown>;
 }
@@ -129,7 +134,12 @@ export function parseServiceSpec(raw: unknown, key: { endpoint: string }): Servi
   if (o.endpointType !== undefined && typeof o.endpointType !== "string") svcFail("endpointType");
   if (!Array.isArray(o.clusterDigests) || o.clusterDigests.length === 0 || !o.clusterDigests.every(isDigest))
     svcFail("clusterDigests must be a non-empty array of sha256 digests");
-  if (!isRec(o.protocol) || o.protocol.v !== 1) svcFail("protocol.v");
+  if (!isRec(o.protocol) || ![1, 2, 3].includes(o.protocol.v as number) || Object.keys(o.protocol).length !== 1) svcFail("protocol.v");
+  if (o.protocol.v === 3) {
+    parseEndpointServingAuthorityRef(o.servingAuthority);
+    parseEndpointServeCeiling({ routes: o.serveRoutes, resources: o.resources, expiresAt: 1 });
+    if (o.activation !== undefined) svcFail("delegated activation resources are unsupported");
+  } else if (o.servingAuthority !== undefined || o.serveRoutes !== undefined || o.resources !== undefined) svcFail("legacy descriptor cannot carry delegated authority");
   if (o.activation !== undefined) parseActivationPolicy(o.activation); // closed schema, capacity REQUIRED (§13.6)
   return o as unknown as ServiceSpec;
 }
@@ -176,6 +186,19 @@ export interface ServiceNameAuthority {
    *  domain owner (an unregistered name is never authorized, fail-closed). `revision` advances
    *  whenever the name transfers or its operator-authority grant changes. */
   authorize(name: string, owner: string): Promise<{ authorized: boolean; revision: number }> | { authorized: boolean; revision: number };
+  authorizeInstance?: EndpointInstanceAuthority["authorizeInstance"];
+}
+
+export interface DelegatedRegistrationContext { account: EndpointAccountPin; holder: EndpointServingHolder; ceiling: EndpointServeCeiling }
+async function registrationAuthority(spec: ServiceSpec, instanceId: string, space: string, authority: ServiceNameAuthority, delegated?: DelegatedRegistrationContext): Promise<number> {
+  if (spec.protocol.v !== 3) {
+    if (delegated !== undefined) throw new EpEnvelopeError("failed-precondition", "delegated context requires protocol3");
+    return assertServiceNameAuthority(spec.endpoint, spec.owner, authority);
+  }
+  if (!delegated || !authority.authorizeInstance || delegated.account.space !== space || delegated.holder.owner !== spec.owner)
+    throw new EpEnvelopeError("permission-denied", "protocol3 requires the complete account/holder/delegation decision");
+  await assertEndpointInstanceAuthority({ account: delegated.account, endpoint: spec.endpoint, instanceId, holder: delegated.holder, clusterDigests: spec.clusterDigests, expected: spec.servingAuthority!, ceiling: delegated.ceiling }, { authorizeInstance: authority.authorizeInstance });
+  return spec.servingAuthority!.namespaceRevision;
 }
 
 /** Enforce §13.9 name authority before a registration/serve grant is minted, from ONE atomic
@@ -209,6 +232,7 @@ export async function assertServiceNameAuthority(endpoint: string, owner: string
 async function readGovernedDeclarations(
   readArtifact: (digest: string) => Promise<unknown> | unknown,
   clusterDigests: readonly string[],
+  protocol: 1 | 2 | 3 = 1,
 ): Promise<{ governed: Map<string, Set<string>>; classes: Map<string, string> }> {
   const out = new Map<string, Set<string>>();
   const classes = new Map<string, string>();
@@ -221,6 +245,10 @@ async function readGovernedDeclarations(
   for (const closureDigest of clusterDigests) {
     const { root } = verifyClusterManifest(closureDigest, await read(closureDigest));
     const document = verifyClusterRoot(root, await read(root));
+    if (protocol !== 1 && document.commands.some(cmd => cmd.effect === undefined))
+      throw new EpEnvelopeError("failed-precondition", "protocol2/3 requires command effect before registration");
+    if (protocol === 3 && (document.attributes.length > 0 || document.events.length > 0 || document.commands.some(cmd => cmd.class !== "ephemeral" || cmd.action)))
+      throw new EpEnvelopeError("failed-precondition", "delegated first slice refuses journal/action/reader/event resources before registration");
     for (const cmd of document.commands) {
       const set = out.get(cmd.name) ?? new Set<string>();
       for (const t of (cmd.traits ?? [])) if (GOVERNED_TRAIT_URNS.includes(t)) set.add(t);
@@ -385,6 +413,8 @@ export async function registerServiceInstance(
   kv: KV,
   args: {
     space: string; spec: ServiceSpec; instanceId: string; registrant: { owner: string }; authority: ServiceNameAuthority; barrier: EpIssuanceBarrier;
+    delegated?: DelegatedRegistrationContext;
+    policyHold?: EndpointPolicyHold;
     /** Content-store reader for the spec's cluster digests, REQUIRED (§13.7): governed
      *  continuity is not an optional seam. It is the ONLY policy input - the governed set
      *  itself is pinned internally to the canonical {@link GOVERNED_TRAIT_URNS} (the same
@@ -406,6 +436,7 @@ export async function registerServiceInstance(
     throw new EpEnvelopeError("failed-precondition", "registerServiceInstance requires a content-store reader (readClusterArtifact); governed-continuity is not an optional seam (SPEC 13.7)");
   spacePrefix(args.space); // up-front boundary guard on the space arg (mirrors authorizeServeGrant): usable as a subject token, throws on an absent/non-string space at an untyped caller. This is NOT the cross-space authority fence - that is the observed-gate `(space, endpoint, instanceId)` identity check below (trusted-context equality against the per-space KV bucket).
   const spec = parseServiceSpec(args.spec, { endpoint: args.spec.endpoint });
+  if (spec.protocol.v === 3) assertEndpointPolicyHold(args.policyHold, spec.endpoint, spec.servingAuthority!.policyRevision);
   assertBoundedOwner(args.registrant.owner, "registrant owner");
   if (args.registrant.owner !== spec.owner)
     throw new EpEnvelopeError("permission-denied", `the registration's authenticated caller "${args.registrant.owner}" is not the descriptor owner "${spec.owner}" (SPEC 13.9: authenticated caller binding, never a payload claim)`);
@@ -494,7 +525,10 @@ export async function registerServiceInstance(
   let current: Awaited<ReturnType<KV["get"]>>;
   const govKey = recordAtomicKey(GOVERN_HEAD, [spec.endpoint]);
   try {
-    const authorizedNameRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
+    const authorizedNameRevision = await registrationAuthority(spec, args.instanceId, args.space, args.authority, args.delegated);
+    if (spec.protocol.v === 3 && (!obs.delegated || JSON.stringify(parseEndpointDelegatedBinding(obs.delegated)) !== JSON.stringify(parseEndpointDelegatedBinding({ account: args.delegated!.account, holder: args.delegated!.holder, authority: spec.servingAuthority, ceiling: args.delegated!.ceiling }))))
+      throw new EpEnvelopeError("permission-denied", "registration delegation tuple disagrees with the instance gate");
+    if (spec.protocol.v !== 3 && obs.delegated) throw new EpEnvelopeError("permission-denied", "legacy registration cannot replace a delegated instance");
     if (authorizedNameRevision !== obs.nameAuthorityRevision)
       throw new EpEnvelopeError("conflict", `a name-authority transfer raced this registration: owner "${spec.owner}" is authorized at nameAuthorityRevision ${authorizedNameRevision} but the frozen gate is at ${obs.nameAuthorityRevision}; re-read and re-decide (SPEC 13.9)`);
     current = await kv.get(key);
@@ -540,7 +574,7 @@ export async function registerServiceInstance(
       // else: this instance's OWN orphan from an aborted earlier attempt (the gate has reopened
       // past its stamp since) — the slot-take below replaces it.
     }
-    const { governed: next, classes } = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests);
+    const { governed: next, classes } = await readGovernedDeclarations(args.readClusterArtifact, spec.clusterDigests, spec.protocol.v);
     // §13.6: a VIRTUAL endpoint's commands MUST be journal-class — an ephemeral call to an
     // endpoint with no live instance is an honest `unavailable`, so registering an on-demand
     // activation policy over an ephemeral command would advertise a surface that cannot exist.
@@ -719,7 +753,7 @@ export async function registerServingInstance(
   };
   const grant = await authorizeServeGrant(kv, {
     space: args.space, endpoint, instanceId: args.instanceId, epoch: processEpoch, holder: args.registrant,
-    authority: args.authority, readClusterArtifact: args.readClusterArtifact, readProcessEpoch,
+    authority: args.authority, delegated: args.delegated, readClusterArtifact: args.readClusterArtifact, readProcessEpoch,
   });
   await writeServiceStatus(kv, {
     endpoint, instanceId: args.instanceId, epoch: processEpoch,
@@ -1413,6 +1447,7 @@ export interface EpCommandAuthority {
  *  list again. The registry stays discovery (§13.9); this seam is what turns a REGISTRATION
  *  into serve authority. */
 export interface EpServeGrant {
+  delegated?: Readonly<EndpointDelegatedBinding>;
   space: string;
   endpoint: string;
   instanceId: string;
@@ -1426,6 +1461,8 @@ export interface EpServeGrant {
   /** The name-authority binding revision the serving owner was verified against (§13.9); the
    *  mint's issuance fence refuses if it has advanced (a name transfer supersedes the owner). */
   nameAuthorityRevision: number;
+  /** Explicit narrowing only. Delegated policy uses this exact-instance ceiling. */
+  routes?: Readonly<{ kind: "instance" }>;
   commands: readonly string[];
   /** Command → its verified registered declaration. */
   surface: Readonly<Record<string, EpCommandAuthority>>;
@@ -1449,6 +1486,7 @@ export interface EpServeGrant {
  *  consumer-config family bond, the brand (not structure) is what the consuming seams check,
  *  so a structural copy or post-authorization mutation can never carry serve authority. */
 interface AuthorizedServe {
+  delegated?: Readonly<EndpointDelegatedBinding>;
   space: string;
   endpoint: string;
   instanceId: string;
@@ -1456,6 +1494,7 @@ interface AuthorizedServe {
   owner: string;
   registrationRevision: number;
   nameAuthorityRevision: number;
+  routes?: Readonly<{ kind: "instance" }>;
   commands: string[];
   journalClass: boolean;
   pools: string[];
@@ -1479,6 +1518,8 @@ export function authorizeTrustedServeSnapshot(args: {
   registrationRevision: number;
   nameAuthorityRevision: number;
   commands: string[];
+  routes?: { kind: "instance" };
+  delegated?: EndpointDelegatedBinding;
   surface: Record<string, EpCommandAuthority>;
   descriptor: DescribeDescriptor;
   journalClass?: boolean;
@@ -1501,8 +1542,14 @@ export function authorizeTrustedServeSnapshot(args: {
   for (const n of [args.epoch, args.registrationRevision, args.nameAuthorityRevision])
     if (!Number.isSafeInteger(n) || n < 0) throw new EpEnvelopeError("internal", "trusted serve snapshot coordinates must be unsigned integers");
   const pools = [...(args.pools ?? [])].map(assertPoolToken).sort();
+  if (args.routes !== undefined && (args.routes.kind !== "instance" || Object.keys(args.routes).some(key => key !== "kind")))
+    throw new EpEnvelopeError("failed-precondition", "unsupported serving route ceiling");
   const surface = Object.freeze(Object.fromEntries(Object.entries(args.surface).map(([name, value]) => [name, Object.freeze({ ...value, modes: Object.freeze([...value.modes]), traits: Object.freeze([...value.traits]) })]))) as Readonly<Record<string, EpCommandAuthority>>;
   const journalClass = args.journalClass ?? commands.some((name) => surface[name].class === "journal");
+  if (args.routes && (journalClass || pools.length > 0))
+    throw new EpEnvelopeError("failed-precondition", "instance-only serving supports ephemeral resources only");
+  const routes = args.routes ? Object.freeze({ kind: "instance" as const }) : undefined;
+  const delegated = args.delegated ? parseEndpointDelegatedBinding(args.delegated) : undefined;
   const grant: EpServeGrant = Object.freeze({
     space: args.space,
     endpoint: args.endpoint,
@@ -1511,6 +1558,8 @@ export function authorizeTrustedServeSnapshot(args: {
     owner: args.owner,
     registrationRevision: args.registrationRevision,
     nameAuthorityRevision: args.nameAuthorityRevision,
+    ...(routes ? { routes } : {}),
+    ...(delegated ? { delegated } : {}),
     commands: Object.freeze(commands),
     surface,
     journalClass,
@@ -1520,6 +1569,8 @@ export function authorizeTrustedServeSnapshot(args: {
   AUTHORIZED_SERVE.set(grant, {
     space: args.space, endpoint: args.endpoint, instanceId, epoch: args.epoch, owner: args.owner,
     registrationRevision: args.registrationRevision, nameAuthorityRevision: args.nameAuthorityRevision,
+    ...(routes ? { routes } : {}),
+    ...(delegated ? { delegated } : {}),
     commands, journalClass, pools,
   });
   return grant;
@@ -1555,6 +1606,7 @@ export async function authorizeServeGrant(
     epoch: number;
     holder: { owner: string };
     authority: ServiceNameAuthority;
+    delegated?: DelegatedRegistrationContext;
     readProcessEpoch: () => Promise<number> | number;
     /** The contract-store read seam (§13.7 digest subjects; the D8 tooling provides the
      *  production reader): the ARTIFACT stored at a digest subject (`epc.<digest>`) — a
@@ -1585,7 +1637,7 @@ export async function authorizeServeGrant(
   // RECORDED (not fenced here — a read is never a fence, §13.1); the issuance gate carries it and
   // the mint refuses on drift, so a name transfer after this authorization can never release an
   // old-owner credential.
-  const nameAuthorityRevision = await assertServiceNameAuthority(spec.endpoint, spec.owner, args.authority);
+  const nameAuthorityRevision = await registrationAuthority(spec, iId, args.space, args.authority, args.delegated);
 
   // §13.7 two-stage content-address read: the registered digest is a CLOSURE digest naming a
   // MANIFEST; the manifest's `root` names the cluster DOCUMENT. Both fetched, both verified —
@@ -1624,6 +1676,10 @@ export async function authorizeServeGrant(
       throw new EpEnvelopeError("internal", `registered cluster document ${root} (closure ${closureDigest}) fails verification; mediated registered state that does not verify is never authority (SPEC 13.7): ${(err as Error).message}`);
     }
     for (const cmd of document.commands) {
+      if (spec.protocol.v !== 1 && cmd.effect === undefined)
+        throw new EpEnvelopeError("failed-precondition", "protocol2/3 requires command effect");
+      if (spec.protocol.v === 3 && (cmd.class !== "ephemeral" || cmd.action || document.attributes.length > 0 || document.events.length > 0))
+        throw new EpEnvelopeError("failed-precondition", "delegated first slice refuses journal/action/reader/event resources");
       if (surface[cmd.name] !== undefined)
         throw new EpEnvelopeError("internal", `the registered clusters of "${args.endpoint}" declare command "${cmd.name}" twice; an ambiguous registered surface never authorizes (SPEC 13.7)`);
       surface[cmd.name] = Object.freeze({
@@ -1666,6 +1722,7 @@ export async function authorizeServeGrant(
   if (args.epoch !== current)
     throw new EpEnvelopeError("expired", `serve grant for epoch ${args.epoch} but the authoritative mapping's current processEpoch is ${current}; a serve credential binds the CURRENT incarnation only (SPEC 13.1/13.9)`);
 
+  const delegatedBinding = args.delegated ? parseEndpointDelegatedBinding({ account: args.delegated.account, holder: args.delegated.holder, authority: spec.servingAuthority, ceiling: args.delegated.ceiling }) : undefined;
   const grant: EpServeGrant = Object.freeze({
     space: args.space,
     endpoint: spec.endpoint,
@@ -1674,19 +1731,20 @@ export async function authorizeServeGrant(
     owner: spec.owner,
     registrationRevision: specEntry.revision,
     nameAuthorityRevision,
+    ...(spec.protocol.v === 3 ? { routes: Object.freeze({ kind: "instance" as const }), delegated: delegatedBinding! } : {}),
     commands: Object.freeze([...commands]) as readonly string[],
     surface: Object.freeze(surface),
     journalClass,
     pools: Object.freeze([...pools]) as readonly string[],
     descriptor: deriveDescriptor(
-      { endpoint: spec.endpoint, owner: spec.owner, ...(spec.endpointType !== undefined ? { endpointType: spec.endpointType } : {}) },
+      { endpoint: spec.endpoint, owner: spec.owner, protocol: spec.protocol, ...(spec.protocol.v === 3 ? { servingAuthority: spec.servingAuthority, serveRoutes: spec.serveRoutes, resources: spec.resources } : {}), ...(spec.endpointType !== undefined ? { endpointType: spec.endpointType } : {}) },
       clusters,
     ),
   });
   AUTHORIZED_SERVE.set(grant, {
     space: args.space, endpoint: spec.endpoint, instanceId: iId, epoch: args.epoch,
     owner: spec.owner, registrationRevision: specEntry.revision, nameAuthorityRevision, commands: [...commands],
-    journalClass, pools: [...pools],
+    journalClass, pools: [...pools], ...(grant.routes ? { routes: grant.routes, delegated: grant.delegated } : {}),
   });
   return grant;
 }
@@ -1703,6 +1761,7 @@ export function assertServeGrantAuthorized(serve: EpServeGrant): AuthorizedServe
   if (snap.space !== serve.space || snap.endpoint !== serve.endpoint || snap.instanceId !== serve.instanceId
     || snap.epoch !== serve.epoch || snap.owner !== serve.owner || snap.registrationRevision !== serve.registrationRevision
     || snap.nameAuthorityRevision !== serve.nameAuthorityRevision
+    || snap.routes !== serve.routes || snap.delegated !== serve.delegated
     || snap.commands.length !== serve.commands.length || snap.commands.some((cmd, i) => serve.commands[i] !== cmd)
     || snap.journalClass !== serve.journalClass
     || snap.pools.length !== serve.pools.length || snap.pools.some((p, i) => serve.pools[i] !== p))
@@ -1735,6 +1794,7 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  barrier bumps it, so a superseded mint's rebuilt CAS loses even if two coordinates coincide).
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export type EpGateState = GateStateOp & {
+  delegated?: Readonly<EndpointDelegatedBinding>;
   /** The host-only family discriminator from the persisted endpoint gate. */
   authorityFamily?: "environment-manager";
   /** The gate's space. In production the gate physically lives in the per-space
@@ -1799,6 +1859,7 @@ export interface EpGateSuccessor {
  *   - `exp` is the credential's expiry (for ledger audit/GC);
  *   - the three currency coordinates + `generation` pin the incarnation the surface covered. */
 export interface EpServeLedgerRow {
+  delegated?: Readonly<EndpointDelegatedBinding>;
   credentialId: string;
   credentialKey: string;
   holderPrincipal: string;
@@ -1823,6 +1884,7 @@ export interface EpServeLedgerRow {
  *  key to `frozen` before proceeding and reopens it at the successor coordinate, so mint-finalize
  *  and every barrier serialize on one key — never a pseudo-transaction across two. */
 export interface EpIssuanceGate {
+  readonly policyHold?: EndpointPolicyHold;
   /** Leader-served read of the gate; `null` when there is no gate for this instance (fail
    *  closed — a serve credential never mints against a missing gate). */
   observe: () => Promise<EpGateState | null> | EpGateState | null;
@@ -1938,6 +2000,7 @@ const SOURCE_CHAIN_ELEMENT = new RegExp(`^(root|handle\\.${SOURCE_CHAIN_ID}\\.${
  */
 export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServeGrant, credential: EpServeCredential): Promise<void> {
   const snap = assertServeGrantAuthorized(serve);
+  if (snap.delegated) assertEndpointPolicyHold(gate.policyHold, snap.endpoint, snap.delegated.authority.policyRevision);
   const boundedId = (v: unknown): v is string => typeof v === "string" && v.length > 0 && v.length <= 128;
   if (!boundedId(credential.credentialId))
     throw new EpEnvelopeError("internal", "credentialId must be a bounded non-empty per-JWT identifier");
@@ -1979,6 +2042,14 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
   const mintedPrincipal = principalKey(snap.owner, credential.holderActor).key;
   if (mintedPrincipal !== obs.principal)
     throw new EpEnvelopeError("permission-denied", `the serve mint's principal "${mintedPrincipal}" is not the gate's registered serving principal "${obs.principal}" for "${snap.endpoint}/${snap.instanceId}"; a sibling actor under the registered owner cannot win the endpoint gate (SPEC 13.1)`);
+  if (snap.delegated !== undefined) {
+    if (!obs.delegated || JSON.stringify(obs.delegated) !== JSON.stringify(snap.delegated)
+      || credential.credentialKey !== snap.delegated.holder.publicKey
+      || credential.holderActor !== snap.delegated.holder.actor
+      || credential.exp === undefined || credential.exp > snap.delegated.ceiling.expiresAt
+      || snap.delegated.ceiling.expiresAt <= Math.floor(Date.now() / 1000))
+      throw new EpEnvelopeError("permission-denied", "delegated serve currency/holder/key/expiry disagrees with the current instance gate");
+  } else if (obs.delegated !== undefined) throw new EpEnvelopeError("permission-denied", "legacy serve artifact cannot mint against a delegated gate");
   const row: EpServeLedgerRow = {
     credentialId: credential.credentialId,
     credentialKey: credential.credentialKey,
@@ -1996,8 +2067,10 @@ export async function finalizeServeIssuance(gate: EpIssuanceGate, serve: EpServe
     processEpoch: obs.processEpoch,
     registrationRevision: obs.registrationRevision,
     nameAuthorityRevision: obs.nameAuthorityRevision,
+    ...(snap.delegated ? { delegated: snap.delegated } : {}),
   };
   await gate.stage(row);
+  if (snap.delegated) assertEndpointPolicyHold(gate.policyHold, snap.endpoint, snap.delegated.authority.policyRevision);
   // Best-effort revoke of the staged row on any non-win, ALWAYS surfacing a revoke failure (never
   // swallowed) so the reconciliation debt is visible — the credential is released only on a win.
   const revokeStaged = async (): Promise<string | undefined> => {
