@@ -17,6 +17,7 @@ import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import * as core from "@cotal-ai/core";
 import * as authApi from "@cotal-ai/auth";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
+import { MemoryStore } from "./_hosted-auth-fixture.js";
 
 const observations: Array<Record<string, unknown>> = [];
 const checks: string[] = [];
@@ -32,13 +33,6 @@ async function rejected(cell: string, action: () => Promise<unknown>, expected: 
   try { await action(); throw new Error(cell + " unexpectedly succeeded"); }
   catch (e) { const code = (e as { code?: unknown }).code; const message = e instanceof Error ? e.message : String(e); observations.push({ cell, code, message }); check(cell, expected.test(String(code) + " " + message)); }
 }
-class MemoryStore implements core.SecretStore {
-  readonly values = new Map<string, string>();
-  constructor(readonly identity: { kind: "injected"; coordinate: string }) {}
-  async get(key: string) { return this.values.get(key); }
-  async put(key: string, value: string) { this.values.set(key, value); }
-  async delete(key: string) { this.values.delete(key); }
-}
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN + "-endpoint-r0-"));
 const releasePath = teardownPathOnSignal(dir);
 const connections: NatsConnection[] = [];
@@ -52,6 +46,14 @@ const reportPath = process.env.ENDPOINT_R0_REPORT;
 if (!reportPath) throw new Error("owned report path required");
 const deadline = setTimeout(() => { console.error("R0 absolute work deadline"); process.kill(process.pid, "SIGTERM"); }, 150_000);
 try {
+  // Exercise the same store used below, without touching any account's secret keys.
+  const storeProbe = new MemoryStore({ kind: "injected", coordinate: "r0:create-contract" });
+  check("R0STORE01-create-absent-key-stores-complete-value", await storeProbe.create("empty", "") === true && await storeProbe.get("empty") === "");
+  check("R0STORE02-duplicate-create-refuses-without-overwrite", await storeProbe.create("empty", "replacement") === false && await storeProbe.get("empty") === "");
+  const candidates = ["first-complete-value", "second-complete-value"];
+  const created = await Promise.all(candidates.map(value => storeProbe.create("concurrent", value)));
+  const winner = created.indexOf(true);
+  check("R0STORE03-concurrent-create-has-one-winner-and-retains-its-value", created.filter(value => value === true).length === 1 && created.filter(value => value === false).length === 1 && await storeProbe.get("concurrent") === candidates[winner]);
   await new Promise<void>(resolve => idpServer.listen(0, "127.0.0.1", resolve));
   const origin = `http://127.0.0.1:${(idpServer.address() as AddressInfo).port}`;
   const idp = betterAuth({ baseURL: origin, secret: randomBytes(32).toString("hex"), database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [] }), emailAndPassword: { enabled: true }, plugins: [jwt({ jwt: { issuer: origin, audience: origin } })] });
