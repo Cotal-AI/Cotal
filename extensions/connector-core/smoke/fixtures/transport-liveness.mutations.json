@@ -108,8 +108,8 @@
     {
       "name": "clean stop destroys the last connection issue",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    await this.ep.stop();\n  }",
-      "replace": "    this.lastConnectionError = undefined;\n    await this.ep.stop();\n  }",
+      "find": "    await this.ep.stop();\n    await departure;",
+      "replace": "    this.lastConnectionError = undefined;\n    await this.ep.stop();\n    await departure;",
       "expectRed": "stop preserves the last connection issue for post-mortem diagnosis",
       "cell": "stop preserves the last connection issue for post-mortem diagnosis",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -180,8 +180,8 @@
     {
       "name": "a reconnect-disabled teardown drains instead of closing",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.close();\n",
-      "replace": "    this.disableLibraryReconnect(nc);\n    try {\n      await nc.drain();\n",
+      "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
+      "replace": "    this.disableLibraryReconnect(nc);\n    await nc.drain();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "cell": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
