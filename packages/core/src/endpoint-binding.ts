@@ -1307,6 +1307,23 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  base are inert for a goal-only endpoint (the manager writes none) but are the commit-principal
  *  profile's standard ceiling; a tighter goal-only ceiling is a follow-up if the panel prefers it. */
 export function goalWriterGrants(space: string, endpoint: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const { bindLeaf, indexRow, base } = selfMediatedGoalWriterRows(space, endpoint, connId);
+  // The own-gate currency belt is a body-selected leader read on the auth store. It is
+  // a fast-fail read; barrier revocation is the durable fence.
+  const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
+  return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
+}
+
+/** Fixed manager goal rows without an auth-store read. The stock environment manager must
+ * skip the optional gate belt; barrier revocation and verified eviction remain the fence. */
+export function environmentManagerGoalWriterGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const { bindLeaf, indexRow, base } = selfMediatedGoalWriterRows(space, "manager", connId);
+  return { publish: [bindLeaf, indexRow, ...base.publish], subscribe: base.subscribe };
+}
+
+function selfMediatedGoalWriterRows(space: string, endpoint: string, connId: string): {
+  bindLeaf: string; indexRow: string; base: { publish: string[]; subscribe: string[] };
+} {
   const base = commitPrincipalGrants(space, endpoint, connId);
   const e = endpointToken(endpoint);
   const bindLeaf = `${spacePrefix(space)}.epf.${e}.goal.*.*.*.*.bind`;
@@ -1323,15 +1340,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // overlay inherits them. They were duplicated here while the commit builder listed only three of
   // the six, which made the overlay look like their source — a grant the SPEC gives every commit
   // principal reading as a privilege of this one profile.
-  // The own-gate currency belt: the manager reads its OWN issuance gate
-  // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
-  // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
-  // leader `STREAM.MSG.GET` that cannot be key-pinned to the single gate key — the SAME residual
-  // class the `endpoint-serve-executor` carries (reads any auth-bucket row = gate + ledger
-  // metadata, never bearer bytes), here on a standing rather than one-shot connection. The manager
-  // reads ONLY `epgate.<e>.<iid>`. This read is the fast-fail belt; the barrier revoke is the durable fence.
-  const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
-  return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
+  return { bindLeaf, indexRow, base };
 }
 
 /** The manager's SESSION-LEDGER rows: the standing connection that owns the §13.6

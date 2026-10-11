@@ -1,0 +1,35 @@
+{
+  "suite": ["packages/core/smoke/environment-manager-grants.smoke.ts"],
+  "command": "pnpm smoke:environment-manager-grants",
+  "completionMarker": "ENVIRONMENT MANAGER GRANTS FINISHED",
+  "mutations": [
+    {
+      "file": "packages/core/src/endpoint-serve-kv.ts",
+      "find": "...(args.authorityFamily === undefined ? {} : { authorityFamily: args.authorityFamily })",
+      "replace": "...{}",
+      "expectRed": "admission gate retains its family at birth",
+      "cell": "admission gate retains its family at birth"
+    },
+    {
+      "file": "packages/core/src/environment-manager-grants.ts",
+      "find": "\"$JS.API.INFO\",",
+      "replace": "\"$JS.API.INFO\", `$KV.cotal_auth_${space}.epgate.manager.${iid}`,",
+      "expectRed": "environment-manager-supervisor raw gate write denied",
+      "cell": "environment-manager-supervisor raw gate write denied"
+    },
+    {
+      "file": "packages/core/src/endpoint-binding.ts",
+      "find": "return { publish: [bindLeaf, indexRow, ...base.publish], subscribe: base.subscribe };",
+      "replace": "return { publish: [bindLeaf, indexRow, `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`, ...base.publish], subscribe: base.subscribe };",
+      "expectRed": "environment-manager-goal-writer auth leader read denied",
+      "cell": "environment-manager-goal-writer auth leader read denied"
+    },
+    {
+      "file": "packages/core/src/provision.ts",
+      "find": "expiry <= now || expiry > admissionExpiry",
+      "replace": "expiry <= now || false",
+      "expectRed": "environment-bootstrap mint expiry cannot exceed admission",
+      "cell": "environment-bootstrap mint expiry cannot exceed admission"
+    }
+  ]
+}

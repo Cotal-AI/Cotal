@@ -339,12 +339,14 @@ export function repairCursorMatches(
  *  token is never re-bound). */
 export async function provisionEndpointGateOpen(
   kv: KV,
-  args: { endpoint: string; instanceId: string; principal: string; delegated?: import("./endpoint-authority-policy.js").EndpointDelegatedBinding },
+  args: { endpoint: string; instanceId: string; principal: string; delegated?: import("./endpoint-authority-policy.js").EndpointDelegatedBinding; authorityFamily?: EndpointGateRow["authorityFamily"] },
 ): Promise<void> {
   const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
-  const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: args.delegated?.authority.namespaceRevision ?? 0, principal: args.principal, ...(args.delegated ? { delegated: args.delegated } : {}) };
+  const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: args.delegated?.authority.namespaceRevision ?? 0, principal: args.principal,
+    ...(args.delegated ? { delegated: args.delegated } : {}),
+    ...(args.authorityFamily === undefined ? {} : { authorityFamily: args.authorityFamily }) };
   // Round-trip through the boundary parser BEFORE the create (a gate this path would refuse to read
   // never lands durably — e.g. a non-owner-grammar principal).
   parseEndpointGate(enc.encode(JSON.stringify(row)), key);
