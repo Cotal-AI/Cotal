@@ -68,6 +68,10 @@ import { deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
 import { makePlatformControlAuthority, makePlatformControlReadiness, requireManagerAuthorityHolder, type ManagerAuthorityHolder } from "./platform-control.js";
 import { OwnedConnections, type AuthConnectionState, type AuthServiceClosed } from "./owned-connections.js";
 import { makePlatformSupervisorAuthority, makePlatformSupervisorEnd, platformSupervisorEnded, requirePlatformSupervisorAdmin, type PlatformSupervisorInput, type PlatformSupervisorAuthorityRequest } from "./platform-supervisor.js";
+import { openHostedEndpointAuthority } from "./endpoint-authority-hosted.js";
+import type { EndpointAuthorityPolicy } from "./endpoint-authority.js";
+import type { EndpointAuthorityDeployment, EndpointDeploymentTrust } from "@cotal-ai/core";
+import { validateUserToken } from "./token.js";
 import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
@@ -176,6 +180,7 @@ type Values = Record<string, string | undefined>;
  *  arm through the supervised, shape-proved reader — and (b) the exchange-time root-credential
  *  ensure both exchange arms stamp `act.credentialId` from. */
 export interface AuthAuthorityPlane {
+  endpointAuthority?: Awaited<ReturnType<typeof openHostedEndpointAuthority>>;
   authorizeConnect: (t: ValidatedUserToken) => Promise<void>;
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: (owner: string, requested?: string) => Promise<string>;
@@ -380,6 +385,7 @@ async function supervisorGeneration(session: IssuerSession, space: string, owner
 
 /** Inputs to the sealed authority-plane composition. */
 export interface OpenAuthAuthorityPlaneOptions {
+  endpointAuthority?: { policy: EndpointAuthorityPolicy; deployment: EndpointAuthorityDeployment; issuer: UserTokenIssuer };
   server: string;
   space: string;
   /** The provider state dir — the file-ledger connect arm reads it fresh per connect. */
@@ -615,7 +621,10 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   // stays with the plane's own registry + retirement deps (the drain rides the ONE sealed records
   // scanner exactly like the boot resume); the listener only authorizes (subject attribution +
   // the FRESH space-manager-lease holder check) and dispatches.
-  const authAdmin = await openAuthAdminListener({ onConnection, server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, log });
+  const genericEndpoint = opts.endpointAuthority ? await openHostedEndpointAuthority({ server, space, dataAccount, deployment: opts.endpointAuthority.deployment, issuer: opts.endpointAuthority.issuer, policy: opts.endpointAuthority.policy, authInstanceId: authServeInstanceId, authEpoch: authServeGrant.epoch, onConnection, log }) : undefined;
+  if (genericEndpoint) unwind.push(() => genericEndpoint.close());
+  const endpointCommandDefs = genericEndpoint?.commandDefs();
+  const authAdmin = await openAuthAdminListener({ onConnection, server, space, dataAccount, reg: barrierReg, retirement, barrierFlight: retirementFlights, instanceId: authServeInstanceId, epoch: authServeGrant.epoch, grant: authServeGrant, endpointAuthority: async ctx => { const def = endpointCommandDefs?.find(def => def.command === ctx.subject.command); if (!def) throw new EpEnvelopeError("unimplemented", "endpoint authority is unsupported"); return def.handler(ctx); }, log });
   unwind.push(() => authAdmin.close());
   const fileArm = ledgerAuthorizeConnect(opts.dir);
   const recordsJsm = await jetstreamManager(remoteIssuer.nc);
@@ -759,6 +768,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
     await deprovisionAgent({ servers: server, space, targetId, lifecycleUid, memberChannels, creds });
   };
   return {
+    ...(genericEndpoint ? { endpointAuthority: genericEndpoint } : {}),
     authorizeConnect: async (t) => {
       refuseIfFenced();
       fileArm(t);
@@ -1649,6 +1659,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
       closing = true;
       const scannerFlight = closeScanners ??= (async () => {
         await authAdmin?.close();
+        await genericEndpoint?.close();
         const results = await Promise.allSettled([reader.close(), recordsScanner.close(), scanner.close()]);
         const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r) => r.reason);
         if (errors.length) throw new AggregateError(errors, "auth scan-capable clients failed to close");
@@ -1862,6 +1873,8 @@ export interface AuthServiceHandle extends HostedServiceHandle {
    *  retirement, managed-agent enrollment verification), so it stays in the authority process and
    *  never reaches a control worker. */
   readonly cap: string;
+  /** Public-only projection for the authenticated deployment configuration root. */
+  endpointDeploymentTrust?(): Promise<Readonly<EndpointDeploymentTrust>>;
   /** The platform control door (SPEC 13.1). Present only when `platformControl` was supplied to
    *  {@link startAuthService}. In-process and typed: no route, no capability, and no signer or
    *  capability in the result. */
@@ -1947,6 +1960,7 @@ export interface PlatformControlInput {
  *  no longer its own, or the release write failed. A retryable release refusal keeps the barrier
  *  open so `close()` can be retried after reconnection; the context stays draining. */
 export async function startAuthService(inputs: HostedContextInputs & {
+  endpointAuthority?: { policy: EndpointAuthorityPolicy; deployment: EndpointAuthorityDeployment };
   port?: number;
   /** Absent: the handle has no `publicUrl` and nothing serves the discovery bundle. */
   publicFace?: PublicFaceInput;
@@ -1987,6 +2001,7 @@ export async function startAuthService(inputs: HostedContextInputs & {
     hostedStore: true,
     localManager: () => undefined,
     context: inputs.context,
+    ...(inputs.endpointAuthority ? { endpointAuthority: inputs.endpointAuthority } : {}),
     ...(inputs.publicFace !== undefined ? { publicFace: inputs.publicFace } : {}),
     ...(inputs.platformControl !== undefined ? { platformControl: inputs.platformControl } : {}),
     ...(inputs.platformSupervisor !== undefined ? { platformSupervisor: inputs.platformSupervisor } : {}),
@@ -2002,6 +2017,7 @@ type AuthContextEnd = { kind: "fenced"; cause: string } | { kind: "broker"; caus
 type AuthContextStatus = { state: "ready" | "draining" } | { state: "unavailable"; cause: string };
 
 interface AuthContextOptions {
+  endpointAuthority?: { policy: EndpointAuthorityPolicy; deployment: EndpointAuthorityDeployment };
   space: string;
   server: string;
   port: number;
@@ -2056,6 +2072,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     dir,
     identityRoot: o.identityRoot,
     ...(o.context !== undefined ? { identityStore: secrets } : {}),
+    ...(o.endpointAuthority ? { endpointAuthority: { ...o.endpointAuthority, issuer } } : {}),
     dataAccount: { pub: keys.dataAccount.pub, signingSeed: keys.dataAccount.signingSeed },
     log: (l) => console.error(l),
     localManager: o.localManager,
@@ -2090,7 +2107,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       space,
       token: { key: issuer.localKeySet(), issuer: issuer.issuer },
       authorizeActor: plane.authorizeConnect,
-      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller),
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller, async (t, connId) => { if (!plane.endpointAuthority) throw new Error("endpoint authority is unsupported"); return plane.endpointAuthority.issueCallerConnection(t, connId); }),
       log: (l) => console.error(l),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -2114,6 +2131,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     const failures: number[] = []; // rolling-window timestamps of REFUSED exchanges
     const badCaps: number[] = []; // rolling-window timestamps of invalid-capability attempts
     const ctx: HandlerCtx = {
+      authorizeEndpointUser: plane.authorizeConnect,
+      ...(plane.endpointAuthority ? { endpointAuthority: plane.endpointAuthority } : {}),
       issuer,
       bridge,
       bridgeIdp,
@@ -2289,6 +2308,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       return await invokeCommand(readerNc, space, await resolveService(readerNc, space, "manager", caller, { instanceId }), "status", undefined, {});
     };
     const service: Omit<AuthServiceHandle, "readiness"> = {
+      ...(plane.endpointAuthority ? { endpointDeploymentTrust: () => { refuseUnlessReady(); return plane.endpointAuthority!.trust(); } } : {}),
       url,
       ...(publicUrl !== undefined ? { publicUrl } : {}),
       cap,
@@ -2381,6 +2401,8 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
 type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 
 interface HandlerCtx {
+  endpointAuthority?: Awaited<ReturnType<typeof openHostedEndpointAuthority>>;
+  authorizeEndpointUser(token: ValidatedUserToken): Promise<void>;
   issuer: UserTokenIssuer;
   bridge: IdpBridge;
   bridgeIdp: { issuer: string; audience: string; key: ReturnType<typeof pinnedJwksResolver> };
@@ -2588,6 +2610,8 @@ const ROUTES = new Map<string, RouteHandler>([
   ],
   ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
   ["/manager-service-authority", (req, res, ctx) => handleManagerServiceAuthority(req, res, ctx, LOOPBACK_POLICY)],
+  ["/endpoint-service-authority", handleEndpointServiceAuthority],
+  ["/endpoint-caller-authority", handleEndpointCallerAuthority],
   [INTERACTIVE_RETIRE_PATH, handleInteractiveLifecycleRetirement],
   [MANAGED_RETIRE_PATH, handleManagedLifecycleRetirement],
   [VERIFY_ENROLLMENT_PATH, handleVerifyManagedAgentEnrollment],
@@ -2602,6 +2626,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx
   } catch (e) {
     sendRequestError(res, e);
   }
+}
+
+/** Dedicated generic authority doors. Identity is the verified user bearer and fresh actor
+ * ledger, never a body owner. These do not transport application calls/results. */
+async function endpointAuthorityBody(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<{ token: ValidatedUserToken; request: Record<string, unknown> } | undefined> {
+  if (req.method !== "POST") { send(res, 405, { error: "POST only" }); return; }
+  if (req.headers.origin !== undefined) { send(res, 403, { error: "browser-origin requests are not served here" }); return; }
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? "")) { send(res, 415, { error: "application/json required" }); return; }
+  if (!ctx.endpointAuthority) { send(res, 501, { error: "endpoint authority is unsupported" }); return; }
+  const authorization = req.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) { send(res, 401, { error: "verified user bearer required" }); return; }
+  const token = await validateUserToken(authorization.slice(7), { key: ctx.issuer.localKeySet(), issuer: ctx.issuer.issuer, audience: ctx.space });
+  await ctx.authorizeEndpointUser(token);
+  const row = ledgerAuthorizeGrant(ctx.dir)(token.owner, token.act.actor);
+  if (!token.act.lifecycleUid || row.lifecycleUid !== token.act.lifecycleUid) throw new Error("endpoint authority actor lifecycle is stale");
+  const body = await readJsonBody(req);
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("endpoint authority request must be an object");
+  return { token, request: body as Record<string, unknown> };
+}
+async function handleEndpointServiceAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
+  const body = await endpointAuthorityBody(req, res, ctx); if (!body) return;
+  if (body.request.operation === "control") {
+    const credentialId = await ctx.mintConnectCredential({ owner: body.token.owner, actor: body.token.act.actor, lifecycleUid: body.token.act.lifecycleUid! });
+    return send(res, 200, await ctx.endpointAuthority!.service(body.token, { ...body.request, credentialId }));
+  }
+  send(res, 200, await ctx.endpointAuthority!.service(body.token, body.request));
+}
+async function handleEndpointCallerAuthority(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
+  const body = await endpointAuthorityBody(req, res, ctx); if (!body) return;
+  const credentialId = await ctx.mintConnectCredential({ owner: body.token.owner, actor: body.token.act.actor, lifecycleUid: body.token.act.lifecycleUid! });
+  const result = await ctx.endpointAuthority!.caller(body.token, body.request, credentialId);
+  send(res, 200, result);
 }
 
 const INTERACTIVE_RETIRE_KEYS = new Set(["owner", "actor", "lifecycleUid"]);
@@ -3095,6 +3151,8 @@ function makePublicHandler(
     ],
     ["/exchange", (req, res, c) => handleExchange(req, res, c, policy)],
     ["/manager-service-authority", (req, res, c) => handleManagerServiceAuthority(req, res, c, policy)],
+    ["/endpoint-service-authority", handleEndpointServiceAuthority],
+    ["/endpoint-caller-authority", handleEndpointCallerAuthority],
     [
       "/.well-known/cotal-mesh",
       (req, res) => {

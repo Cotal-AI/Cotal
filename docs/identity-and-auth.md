@@ -126,6 +126,19 @@ missing either `run` input keeps ordinary legacy commands. Without signed `run`,
 `run-start`; with signed `run` but no eligible parent, the manager refuses with
 `ai.cotal.ep.unbound-caller-authority`. A failed issuance never retries on that rail.
 
+For a user bearer acquired as issued caller material, construct `CotalEndpoint` with
+`issuedCaller: true`, `bearer`, `sentinelCreds` and the acquired `lifecycleUid`. Before the
+bind becomes ready, the endpoint reads its own connection's accepted row using its inbox
+nonce. The row must name the same space, owner, actor and lifecycle. A missing or refused
+read fails the bind without using legacy caller rows. Connection replacement clears the
+learned generation and resolved services before discovery on the new connection.
+
+Leave `issuedCaller` unset for a bearer whose supported view uses legacy rows. Static
+issuances still use `acceptedToken` with `creds`. Neither option widens the credential's
+authority. An instance-scoped caller passes `instanceId` to `describeService` and
+`invokeService`. A pinned describe bypasses the endpoint-name cache, so it can be checked
+against the verified acquisition receipt without changing a later unpinned call.
+
 ## Declared capabilities
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying
@@ -587,6 +600,40 @@ as its card id. A seat the manager spawned reaches that file through its **launc
 material** rather than through `COTAL_CREDS` in an environment every descendant process
 inherits (see [Configuration](config.md#launch-material)); a session you drive by hand
 still sets `COTAL_CREDS` itself.
+
+## Hosted endpoint authority
+
+The experimental `startAuthService` endpoint-authority composition receives a deployment
+assignment transaction and serves dedicated `/endpoint-service-authority` and
+`/endpoint-caller-authority` HTTP doors. Its `endpointDeploymentTrust` handle projects public
+pins from the authenticated host store and assigned account. The deployment root distributes
+those pins through its authenticated configuration channel. Responses and catalogs never
+install trust. `parseEndpointDeploymentTrustRecord` validates the closed public record but
+does not authenticate arbitrary JSON.
+
+The optional provider methods `endpointCallerAuthority` and `endpointServingControlAuthority`
+use the real signed-in session, explicit deployment pins and an exact instance selection.
+Caller receipts bind the bearer digest, principal, commands and serving currency. Control
+requires the activated holder proof. Application commands still go directly to the serving
+endpoint. A caller reads its native issued generation with `issuedUserCaller` using
+`connectionAcceptedToken` for its connection nonce. `assertEndpointCallerResolvedService`
+checks the native describe against the verified caller receipt before invocation.
+
+Version3 caller receipts bind the full registered closure set and the exact permitted private
+projection separately. Native version3 describe carries a commitment derived from the full
+registered set before visibility filtering. The caller checks that commitment against the signed
+full set, then checks visible closures and selected commands by equality. Describe-only callers
+have an empty private projection but still verify full registration and serving currency.
+Holder-control receipts forbid the application projection field. Older receipt payloads and
+missing version3 commitments refuse without a fallback.
+
+Caller acquisition rechecks bearer and receipt expiry after its final authority read.
+An ordinary caller source also requires the serving gate to remain open at its recorded
+registration and process currency. These checks do not establish drain or eviction.
+
+The embedded host publishes its listener with `saveAuthServiceInfo` when using the local
+registered session provider. Installed CLI acquisition, independent serving workers,
+clock-race and uncertain-write proofs, drain and eviction remain gated.
 
 ## Honest limitations (v0)
 
