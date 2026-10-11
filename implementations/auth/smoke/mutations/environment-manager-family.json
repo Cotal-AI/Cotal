@@ -1,0 +1,27 @@
+{
+  "suite": ["implementations/auth/smoke/environment-manager-family.smoke.ts"],
+  "guard": "Existing manager issuance refuses environment-family gates and its plain preparation claims a native create-only gate before releasing direct-store credentials",
+  "command": "pnpm smoke:environment-manager-family",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-family.json",
+  "why": ["The suite drives the actual hosted auth service and a JWT-auth private NATS broker. It checks terminal family refusals, unchanged gates, ordinary preparation and competing native family reservations. Its finally block closes the service and fixture before a named assertion failure exits."],
+  "mutations": [
+    {
+      "name": "existing manager authority ignores the environment family",
+      "file": "implementations/auth/src/service.ts",
+      "find": "    if (gate?.authorityFamily === \"environment-manager\")",
+      "replace": "    if (false)",
+      "expectRed": "human-family prepare refuses an environment gate in open before releasing direct-store credentials",
+      "cell": "human-family prepare refuses an environment gate in open before releasing direct-store credentials",
+      "afterRestore": "pnpm smoke:environment-manager-family"
+    },
+    {
+      "name": "plain preparation releases before its native family reservation",
+      "file": "implementations/auth/src/service.ts",
+      "find": "          if (r.operation === \"prepare\" && existing === null) {",
+      "replace": "          if (false) {",
+      "expectRed": "plain preparation reserves its native family before credential release",
+      "cell": "plain preparation reserves its native family before credential release",
+      "afterRestore": "pnpm smoke:environment-manager-family"
+    }
+  ]
+}

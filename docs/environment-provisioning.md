@@ -92,7 +92,15 @@ explicit credential expiry bounded by admission. They confer no guest auth-store
 The optional endpoint-gate `authorityFamily` marker survives native registration and mint
 CAS operations; raw write exclusion, not a field parser, protects it from guests. These
 primitives do not implement admission, the authority endpoint or stock manager bootstrap.
-Do not substitute them for those missing host policies or claim a runnable hosted manager.
+The existing auth-service manager authority path refuses gates marked `environment-manager`.
+An explicit ordinary manager-caller selection also refuses that family. Automatic selection
+excludes its gates, including unregistered ones, so they do not count as ordinary candidates
+or prevent selection of an ordinary manager.
+Ordinary preparation reserves an unmarked native gate before releasing direct-store manager
+credentials. A racing environment admission must win that same create-only reservation; it
+cannot adopt an instance already prepared by the ordinary path. This family reservation is
+separate from the registration and credential-issuance fences.
+Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
 
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
