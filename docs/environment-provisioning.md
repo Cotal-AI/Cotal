@@ -140,6 +140,18 @@ External admission, required host policies, issuance recovery, file custody and 
 retirement still need their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
 
+`parseEnvironmentManagerBootstrapDocument` decodes the private version-one carrier defined in
+SPEC §13.6. The host writes it with `canonicalJson`. The decoder refuses other versions before
+credential inspection, extra fields, noncanonical or oversized JSON, unsafe WSS URLs, mismatched
+keys, account or expiry, and credentials outside the fixed bootstrap profile and permission rows.
+The connection seed stays inside one canonical NATS credential envelope. The document pins the
+cluster, input and output digests for both bootstrap commands; the later client must verify those
+against the live registered endpoint. Local decoding does not verify a JWT signature, admission,
+TLS peer or contract contents. A structurally consistent token with an invalid signature can
+parse and will still be refused by the broker. File custody, private coupled recovery persistence,
+stock startup, host-mediated registration and terminal cleanup remain separate dependencies.
+This helper neither takes a file nor connects, generates manager keys or issues authority.
+
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
 promise and its per-record reports. An unavailable store or a provider create whose reply
