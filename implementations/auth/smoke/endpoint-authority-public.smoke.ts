@@ -719,14 +719,54 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   type PublicModulePin = { module: PublicLocationModule; state: "known" | "unsupported";
     sha256?: string; bytes?: number; lines?: number;
     map?: { state: "bound" | "unsupported"; sha256?: string; bytes?: number } };
+  type PublicIdentityRelation = { shape: "file-url" | "absolute-posix" | "relative" | "other";
+    relation: "known-file-url-query-or-fragment" | "known-file-url-spelling" | "within-known-root-not-catalogued" | "outside-or-unsupported" };
   type PublicLocationFrame = { module: PublicLocationModule | "other"; format: "plain" | "async" | "anonymous" | "other";
     reason: "frame-oversize" | "syntax-miss" | "identity-miss" | "line-refused" | "column-refused" | "known";
-    line?: number; column?: number };
+    identity?: PublicIdentityRelation; line?: number; column?: number };
   type PublicLocationObservation = { state: "available" | "unavailable" | "unreadable" | "oversize"; frames: PublicLocationFrame[] };
   let publicObserverCalibration: { control: "fixture-error"; state: "pending" | "observed" | "unreadable";
     result?: PublicLocationObservation } | undefined;
   const publicModulePins: PublicModulePin[] = [];
   const publicKnownLocations = new Map<string, { module: PublicLocationModule; widths: number[] }>();
+  const publicIdentityPaths = new Set<string>();
+  const publicIdentityRoots = new Set<string>();
+  // Internal diagnostic inputs only. Roots are directories of qualified catalogue assets,
+  // not arbitrary parents, package searches, or a grant to read a captured stack path.
+  const retainPublicIdentity = (url: URL) => {
+    publicIdentityPaths.add(fileURLToPath(url));
+    publicIdentityRoots.add(fileURLToPath(new URL("./", url)));
+  };
+  const publicIdentityRelation = (text: string): PublicIdentityRelation => {
+    const result: PublicIdentityRelation = { shape: "other", relation: "outside-or-unsupported" };
+    try {
+      // The caller already applies the unchanged 4096-unit text-slot bound.
+      if (text.length > 4096) return result;
+      let path: string;
+      if (text.startsWith("file:")) {
+        result.shape = "file-url";
+        const url = new URL(text);
+        if (url.protocol !== "file:" || url.host) return result;
+        const decorated = !!url.search || !!url.hash;
+        url.search = ""; url.hash = "";
+        path = fileURLToPath(url);
+        if (publicIdentityPaths.has(path)) {
+          result.relation = decorated ? "known-file-url-query-or-fragment" : "known-file-url-spelling";
+          return result;
+        }
+      } else if (text.startsWith("/")) {
+        result.shape = "absolute-posix";
+        path = text; // No resolution, case folding, separator or dot-segment normalization.
+      } else {
+        if (text.startsWith("./") || text.startsWith("../")) result.shape = "relative";
+        return result;
+      }
+      // Roots end in the platform separator, so a sibling prefix is never inside a root.
+      // URL/path parsing is a lexical diagnostic only, not a physical referent assertion.
+      if ([...publicIdentityRoots].some(root => path.startsWith(root))) result.relation = "within-known-root-not-catalogued";
+      return result;
+    } catch { return result; }
+  };
   let publicLocationCatalogueReady = false;
   const preparePublicLocationCatalogue = () => {
     if (publicLocationCatalogueReady) return;
@@ -771,6 +811,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       if (admit) {
         publicKnownLocations.set(url.href, location);
         publicKnownLocations.set(fileURLToPath(url), location);
+        retainPublicIdentity(url);
       }
       return pin;
     };
@@ -803,6 +844,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           const location = { module: sourceModule, widths: sourceBytes.toString("utf8").split(/\r?\n/).map(line => line.length) };
           publicKnownLocations.set(sourceURL.href, location);
           publicKnownLocations.set(fileURLToPath(sourceURL), location);
+          retainPublicIdentity(sourceURL);
         }
         // This binds file identities only. It never decodes mappings or translates a coordinate.
       } catch { unsupported(sourceModule); }
@@ -886,7 +928,11 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         const match = /^\s*at (async )?(?:(?:[^\r\n]+) \(([^\r\n]+):(\d{1,6}):(\d{1,7})\)|([^\r\n]+):(\d{1,6}):(\d{1,7}))$/.exec(text);
         if (!match) continue;
         const known = publicKnownLocations.get(match[2] ?? match[5]!);
-        if (!known) { frame.reason = "identity-miss"; continue; }
+        if (!known) {
+          frame.reason = "identity-miss";
+          frame.identity = publicIdentityRelation(match[2] ?? match[5]!);
+          continue;
+        }
         const line = Number(match[3] ?? match[6]), column = Number(match[4] ?? match[7]);
         if (!Number.isSafeInteger(line) || line < 1 || line > known.widths.length) { frame.reason = "line-refused"; continue; }
         if (!Number.isSafeInteger(column) || column < 1 || column > known.widths[line - 1]! + 1) { frame.reason = "column-refused"; continue; }
