@@ -160,7 +160,7 @@ function writeBindingDiagnostic(root: string, space: string, service: ResolvedSe
     comparisonCompleted: true,
     diagnosticOnlyNoPolicyChange: true,
   };
-  const bytes = Buffer.from(JSON.stringify(record) + "\n");
+  const bytes = Buffer.from(canonicalJson(record) + "\n");
   if (bytes.length > 4096) throw new Error("diagnostic record unavailable");
   if (process.platform !== "linux" || typeof process.getuid !== "function" || !constants.O_NOFOLLOW || !constants.O_DIRECTORY)
     throw new Error("diagnostic path unsupported");
