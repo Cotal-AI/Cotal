@@ -675,6 +675,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     api: PublicSettlement; wrapper: PublicSettlement; apiAtWrapper: PublicSettlement;
     apiErrorClass: PublicErrorClass; wrapperErrorClass: PublicErrorClass; apiShippedFrame: PublicShippedFrame;
     apiOrigin?: PublicErrorOrigin; immediateCause?: { state: "absent" | "present" | "unreadable"; origin?: PublicErrorOrigin };
+    authCategory?: { phrase: "authorization-violation" | "account-authentication-expired" | "authentication-timeout" | "multiple-or-other" | "unreadable-or-unsupported"; classAgreement: "unverified" };
     sameAsReconnectError?: boolean | null;
   };
   const publicCallSettlements: Record<"reconnect" | "stop", PublicCallObservation[]> = { reconnect: [], stop: [] };
@@ -1117,6 +1118,38 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   const publicErrorOrigin = (error: unknown): PublicErrorOrigin => ({ errorClass: publicErrorClass(error),
     code: publicOriginCode(error), message: publicOriginMessage(error), stack: publicFrameObservation(error),
     ...(issuedPublicAcceptance ? { locations: publicLocationObservation(error) } : {}) });
+  const publicAuthCategory = (error: unknown): NonNullable<PublicCallObservation["authCategory"]> => {
+    const result: NonNullable<PublicCallObservation["authCategory"]> = { phrase: "unreadable-or-unsupported", classAgreement: "unverified" };
+    try {
+      if (!(error instanceof Error)) return result;
+      const message = error.message;
+      if (typeof message !== "string" || message.length > 4096) return result;
+      const text = message.toLowerCase();
+      const matches = ([
+        ["authorization violation", "authorization-violation"],
+        ["account authentication expired", "account-authentication-expired"],
+        ["authentication timeout", "authentication-timeout"],
+      ] as const).filter(([phrase]) => text.includes(phrase));
+      result.phrase = matches.length === 1 ? matches[0]![1] : "multiple-or-other";
+      // Phrase agreement is lexical only. Pinned artifacts do not attest a loaded class instance.
+      return result;
+    } catch { return result; }
+  };
+  const publicClosureErrors = new Map<NatsConnection, unknown>();
+  let stopRejectedObject: unknown, stopRejectedObjectKnown = false;
+  const retainPublicClosure = (nc: NatsConnection, error: unknown) => {
+    if (!issuedPublicAcceptance || !diagnosticConnections.slice(0, 8).includes(nc)) return;
+    // Reuse only a value returned by an existing awaited public closed() call. No new listener/await.
+    publicClosureErrors.set(nc, error);
+  };
+  const publicClosureObservations = () => diagnosticConnections.slice(0, 8).map((nc, index) => {
+    const observed = publicClosureErrors.has(nc), error = publicClosureErrors.get(nc);
+    const objectKnown = error !== null && (typeof error === "object" || typeof error === "function");
+    return { ordinal: index + 1,
+      state: !observed ? "pending-or-unobserved" : error === undefined ? "closed-without-error" : "closed-with-error",
+      sameAsReconnectError: observed && objectKnown && reconnectRejectedObjectKnown ? error === reconnectRejectedObject : null,
+      sameAsStopError: observed && objectKnown && stopRejectedObjectKnown ? error === stopRejectedObject : null };
+  });
   const publicImmediateCause = (error: unknown): NonNullable<PublicCallObservation["immediateCause"]> => {
     try {
       if (!(error instanceof Error)) return { state: "absent" };
@@ -1130,6 +1163,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     const rejected = (error: unknown) => {
       observation.api = "rejected";
       observation.apiErrorClass = publicErrorClass(error);
+      observation.authCategory = publicAuthCategory(error);
       const origin = publicErrorOrigin(error);
       observation.apiOrigin = origin;
       observation.apiShippedFrame = origin.stack.frame;
@@ -1139,6 +1173,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         reconnectRejectedObject = error;
         reconnectRejectedObjectKnown = objectKnown;
       } else {
+        stopRejectedObject = error; stopRejectedObjectKnown = objectKnown;
         observation.sameAsReconnectError = reconnectRejectedObjectKnown && objectKnown ? error === reconnectRejectedObject : null;
       }
     };
@@ -1643,7 +1678,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       await check(diagnosticIds[10], async () => {
         for (const endpointClient of diagnosticClients) await bounded(endpointClient.stop());
         assert.equal(diagnosticAcquisitions.size, 0);
-        for (const nc of diagnosticConnections) { const error = await bounded(nc.closed()); assert.ok(!error && nc.isClosed()); }
+        for (const nc of diagnosticConnections) { const error = await bounded(nc.closed()); retainPublicClosure(nc, error); assert.ok(!error && nc.isClosed()); }
         assert.ok(low); await bounded(low.nc.close()); const lowError = await bounded(low.nc.closed()); assert.ok(!lowError && low.nc.isClosed());
         phaseEvidence.push({ kind: "protocol3-public-client-lifetime", stageErrors: [...stageErrors],
           clients: diagnosticClients.length, knownConnections: diagnosticConnections.length, acquisitionsOutstanding: diagnosticAcquisitions.size });
@@ -1736,7 +1771,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           publicReconnectStage = "connection-count";
           assert.equal(diagnosticConnections.length, 2);
           publicReconnectStage = "old-connection-closed";
-          const closedError = await bounded(diagnosticConnections[0].closed()); assert.ok(!closedError && diagnosticConnections[0].isClosed());
+          const closedError = await bounded(diagnosticConnections[0].closed()); retainPublicClosure(diagnosticConnections[0], closedError); assert.ok(!closedError && diagnosticConnections[0].isClosed());
           publicReconnectStage = "describe";
           service = await acquired(() => client!.describeService(endpoint,
             { ...{ instanceId: active[0].instanceId }, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }));
@@ -1789,7 +1824,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       });
       await check(acceptanceIds[15], async () => {
         await bounded(client!.stop()); assert.equal(diagnosticAcquisitions.size, 0);
-        for (const nc of diagnosticConnections) { const error = await bounded(nc.closed()); assert.ok(!error && nc.isClosed()); }
+        for (const nc of diagnosticConnections) { const error = await bounded(nc.closed()); retainPublicClosure(nc, error); assert.ok(!error && nc.isClosed()); }
         assert.ok(low); await bounded(low.nc.close()); const error = await bounded(low.nc.closed()); assert.ok(!error && low.nc.isClosed());
         assert.equal(publicErrors.length, 0);
       });
@@ -1836,7 +1871,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     }
     if (observer && observerClosed === 0) try { await bounded(observer.close()); const closeError = await bounded(observer.nc.closed()); assert.ok(!closeError && observer.nc.isClosed()); observerClosed++; } catch { cleanupErrors.push("PRIMARY observer close failed"); custodyOutstanding = true; }
     for (const client of hostClients.reverse()) try { await bounded(client.close()); const error = await bounded(client.nc.closed()); assert.ok(!error && client.nc.isClosed()); hostClosed++; } catch { cleanupErrors.push("trusted fixture host connection close failed"); }
-    for (const connection of connections.reverse()) try { await bounded(connection.nc.close()); const error = await bounded(connection.nc.closed()); assert.ok(!error); connection.closed = connection.nc.isClosed(); assert.ok(connection.closed); } catch { cleanupErrors.push("participant connection close failed"); }
+    for (const connection of connections.reverse()) try { await bounded(connection.nc.close()); const error = await bounded(connection.nc.closed()); retainPublicClosure(connection.nc, error); assert.ok(!error); connection.closed = connection.nc.isClosed(); assert.ok(connection.closed); } catch { cleanupErrors.push("participant connection close failed"); }
     for (const watch of statusWatches) try { await bounded(watch); } catch { cleanupErrors.push("owned status observer retirement unconfirmed"); }
     if (witnessErrors.length > 0) cleanupErrors.push("retained witness lifetime debt at final cleanup");
     for (const handle of authHandles.reverse()) try { await bounded(handle.close()); const closed = await bounded(handle.closed); assert.ok(closed.connections.length > 0 && closed.connections.every(c => c.ended)); authClosed++; } catch { cleanupErrors.push("public auth service close failed"); }
@@ -1849,7 +1884,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicModulePins, publicDeclaredMaps, publicObserverCalibration, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicConnectionClosures: publicClosureObservations(), publicModulePins, publicDeclaredMaps, publicObserverCalibration, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
