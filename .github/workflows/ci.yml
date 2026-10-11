@@ -206,6 +206,8 @@ jobs:
           herdr --version
       - name: Build
         run: pnpm build
+      - name: Endpoint two-user public acceptance
+        run: pnpm smoke:endpoint-two-user-public
       - name: Endpoint CLI describe causal regression
         run: pnpm smoke:endpoint-cli-describe-causal
       - name: Endpoint serving PREPARE refusal regression
