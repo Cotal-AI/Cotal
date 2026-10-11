@@ -47,7 +47,7 @@ let passed = 0;
 async function cell(name: string, run: () => void | Promise<void>): Promise<void> {
   try { await run(); }
   catch (error) {
-    if (error instanceof assert.AssertionError) error.message = `${name}: ${error.message}`;
+    if (error instanceof assert.AssertionError) console.error(`endpoint-caller-controls.smoke: FAIL ${name}`);
     throw error;
   }
   passed++; console.log(`PASS ${name}`);
