@@ -655,7 +655,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
   };
   const managerGate = async (owner: string, instanceId: string): Promise<"candidate" | "unknown" | "not open" | "not this owner's" | "not registered"> => {
     const localManager = loadLocalManager();
-    const gate = await observeManagerGate(instanceId);
+    const gate = await observeLegacyManagerGate(instanceId);
     if (!gate) return "unknown";
     if (gate.state !== "open") return "not open";
     const remotePrincipal = `${owner}.${remoteManagerActors(instanceId).serve}`;
@@ -691,6 +691,7 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         throw new EpEnvelopeError("internal", `the manager gate scan returned the malformed key ${raw.key}`);
       const instanceId = assertLifecycleToken(parts[2], "managerInstanceId");
       const row = parseEndpointGate(raw.data, raw.key);
+      if (row.authorityFamily === "environment-manager") continue;
       if (row.principal === `${owner}.${remoteManagerActors(instanceId).serve}`) {
         remoteInstances.push(instanceId);
         if (await managerGate(owner, instanceId) === "candidate") remoteLive.push(instanceId);

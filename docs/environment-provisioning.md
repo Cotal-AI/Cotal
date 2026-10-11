@@ -93,6 +93,9 @@ The optional endpoint-gate `authorityFamily` marker survives native registration
 CAS operations; raw write exclusion, not a field parser, protects it from guests. These
 primitives do not implement admission, the authority endpoint or stock manager bootstrap.
 The existing auth-service manager authority path refuses gates marked `environment-manager`.
+An explicit ordinary manager-caller selection also refuses that family. Automatic selection
+excludes its gates, including unregistered ones, so they do not count as ordinary candidates
+or prevent selection of an ordinary manager.
 Ordinary preparation reserves an unmarked native gate before releasing direct-store manager
 credentials. A racing environment admission must win that same create-only reservation; it
 cannot adopt an instance already prepared by the ordinary path. This family reservation is
