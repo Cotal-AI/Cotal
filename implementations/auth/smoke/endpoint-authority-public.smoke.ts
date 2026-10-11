@@ -589,6 +589,9 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   const timer = setTimeout(() => process.kill(process.pid, "SIGTERM"), 150000);
   const passed = new Set<Cell>(), attempted = new Set<Cell>();
   const cleanupErrors: string[] = [], phaseEvidence: Record<string, unknown>[] = [];
+  const witnessErrors: string[] = [];
+  const expectedPermissionSubjects = new WeakMap<NatsConnection, string>();
+  const witnessDebt = (message: string) => { witnessErrors.push(message); cleanupErrors.push(message); };
   const cliResults: EndpointCallerCLIResult[] = [];
   const connections: { nc: NatsConnection; closed: boolean }[] = [];
   const statusWatches: Promise<void>[] = [];
@@ -835,6 +838,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     await negative(ids[18], async () => { await expectPublicDenial(() => acquire(0, active[0].instanceId, ["describe", "other"]), /caller policy denied/); });
     async function brokerDenied(nc: NatsConnection, space: string, instanceId: string, command: string, caller: core.EpCaller, mode: "inst" | "one" | "all" = "inst") {
       const nonce = core.mintLifecycleUid(), subject = core.epRequestSubject(space, { route: mode === "inst" ? { mode, instanceId } : { mode }, endpoint, command, caller, nonce });
+      expectedPermissionSubjects.set(nc, subject);
       const status = nc.status(); let violation: PermissionViolationError | undefined;
       const watch = (async () => { for await (const event of status) if (event.type === "error" && event.error instanceof PermissionViolationError && event.error.subject === subject) { violation = event.error; break; } })();
       try {
@@ -857,39 +861,62 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     const auxOrdinary = await withHome(auxClient.home, () => authApi.cotalAuthProvider.userCredentials({ store: auxClient.store, dir: auxClient.state, space: aux.space, actor: "cli" }));
     const auxClaims = decodeJwt(auxOrdinary.bearer) as { sub?: string; act?: { owner?: string; actor?: string; lifecycleUid?: string } }; assert.equal(auxClaims.sub, auxPrincipal.owner); assert.equal(auxClaims.act?.owner, auxPrincipal.owner); assert.equal(auxClaims.act?.actor, auxPrincipal.actor); assert.equal(auxClaims.act?.lifecycleUid, auxPrincipal.uid);
     const auxNc = track(await connect({ servers, ...core.standaloneConnectOpts({ tls: false, bearer: auxOrdinary.bearer, sentinelCreds: auxOrdinary.sentinelCreds }), maxReconnectAttempts: 0 }));
-    const subject = core.chatSubject(aux.space, auxPrincipal.owner, auxPrincipal.actor, channel), auxMessages: string[] = [], primaryMessages: string[] = [], witnessErrors: string[] = [];
+    const subject = core.chatSubject(aux.space, auxPrincipal.owner, auxPrincipal.actor, channel), auxMessages: string[] = [], primaryMessages: string[] = [];
+    let auxWitnessEnded = false;
+    let a0: string | undefined, p0: string | undefined, p1: string | undefined, x: string | undefined;
+    let finalWitnessCheck: (() => void) | undefined;
     const auxStatus = auxNc.status();
-    const auxStatusWatch = (async () => { for await (const event of auxStatus) if (event.type === "error" || event.type === "disconnect" || event.type === "reconnect") witnessErrors.push("AUX witness status failure"); })();
+    const auxStatusWatch = (async () => { for await (const event of auxStatus) {
+      if (auxWitnessEnded && event.type === "error" && event.error instanceof PermissionViolationError && event.error.subject === expectedPermissionSubjects.get(auxNc)) continue;
+      if (event.type === "error" || event.type === "disconnect" || event.type === "reconnect") witnessDebt("AUX witness status failure");
+    } })();
     statusWatches.push(auxStatusWatch);
-    const auxSub = auxNc.subscribe(subject, { callback: (error, message) => { if (error) witnessErrors.push("AUX witness subscription failed"); else auxMessages.push(new TextDecoder().decode(message.data)); } });
+    const auxSub = auxNc.subscribe(subject, { callback: (error, message) => { if (error) witnessDebt("AUX witness subscription failed"); else { const value = new TextDecoder().decode(message.data); auxMessages.push(value); if (value === p0 || value === p1) witnessDebt("AUX received PRIMARY witness traffic"); } } });
     let observerStatusWatch: Promise<void> | undefined;
     let primarySub: ReturnType<NatsConnection["subscribe"]> | undefined;
     try {
-      await auxNc.flush(); const a0 = core.mintLifecycleUid();
-      await check(ids[25], async () => { auxNc.publish(subject, enc.encode(a0)); await auxNc.flush(); await waitFor(() => auxMessages.includes(a0)); assert.equal(auxMessages.filter(x => x === a0).length, 1); assert.equal(witnessErrors.length, 0); verifyAccountProvenance(); });
+      await auxNc.flush(); a0 = core.mintLifecycleUid();
+      await check(ids[25], async () => { auxNc.publish(subject, enc.encode(a0)); await auxNc.flush(); await waitFor(() => auxMessages.includes(a0!)); assert.equal(auxMessages.filter(x => x === a0).length, 1); assert.equal(witnessErrors.length, 0); verifyAccountProvenance(); });
       observer = await openAuthorityClient({ server: servers, space: primary.space, dataAccount: { pub: primary.auth.account.pub, signingSeed: primary.auth.account.signingSeed! }, label: "two-user-primary-wire-observer", noReconnect: true, grants: () => ({ publish: [subject], subscribe: [subject] }), log: () => {} }); observerCreated++;
       const status = observer.nc.status();
-      observerStatusWatch = (async () => { for await (const event of status) if (event.type === "error" || event.type === "disconnect" || event.type === "reconnect") witnessErrors.push("PRIMARY observer status failure"); })();
+      observerStatusWatch = (async () => { for await (const event of status) if (event.type === "error" || event.type === "disconnect" || event.type === "reconnect") witnessDebt("PRIMARY observer status failure"); })();
       statusWatches.push(observerStatusWatch);
-      primarySub = observer.nc.subscribe(subject, { callback: (error, message) => { if (error) witnessErrors.push("PRIMARY witness subscription failed"); else primaryMessages.push(new TextDecoder().decode(message.data)); } });
-      await observer.nc.flush(); const p0 = core.mintLifecycleUid(), p1 = core.mintLifecycleUid(), x = core.mintLifecycleUid();
-      const before = await snapshot(); observer.nc.publish(subject, enc.encode(p0)); await observer.nc.flush(); await waitFor(() => primaryMessages.includes(p0));
+      primarySub = observer.nc.subscribe(subject, { callback: (error, message) => { if (error) witnessDebt("PRIMARY witness subscription failed"); else { const value = new TextDecoder().decode(message.data); primaryMessages.push(value); if (value === x) witnessDebt("PRIMARY received AUX witness traffic"); } } });
+      await observer.nc.flush(); p0 = core.mintLifecycleUid(); p1 = core.mintLifecycleUid(); x = core.mintLifecycleUid();
+      finalWitnessCheck = () => {
+        assert.equal(auxMessages.filter(value => value === a0).length, 1);
+        assert.equal(auxMessages.filter(value => value === x).length, 1);
+        assert.equal(primaryMessages.filter(value => value === p0).length, 1);
+        assert.equal(primaryMessages.filter(value => value === p1).length, 1);
+        assert.equal(primaryMessages.filter(value => value === x).length, 0);
+        assert.ok(!auxMessages.includes(p0!) && !auxMessages.includes(p1!));
+        assert.equal(witnessErrors.length, 0); verifyAccountProvenance();
+      };
+      const before = await snapshot(); observer.nc.publish(subject, enc.encode(p0)); await observer.nc.flush(); await waitFor(() => primaryMessages.includes(p0!));
       await check(ids[27], async () => {
         const witnessDeadline = Date.now() + budget();
         verifyAccountProvenance(); assert.equal(primaryMessages.filter(value => value === p0).length, 1);
-        auxNc.publish(subject, enc.encode(x)); await auxNc.flush(); await waitFor(() => auxMessages.includes(x));
+        auxNc.publish(subject, enc.encode(x)); await auxNc.flush(); await waitFor(() => auxMessages.includes(x!));
         assert.ok(deadline - Date.now() >= 250, "account observation exceeds remaining entry budget"); await new Promise(resolve => setTimeout(resolve, 250));
-        observer!.nc.publish(subject, enc.encode(p1)); await observer!.nc.flush(); await waitFor(() => primaryMessages.includes(p1));
+        observer!.nc.publish(subject, enc.encode(p1)); await observer!.nc.flush(); await waitFor(() => primaryMessages.includes(p1!));
         assert.equal(auxMessages.filter(value => value === x).length, 1); assert.equal(primaryMessages.filter(value => value === x).length, 0);
-        assert.ok(!auxMessages.includes(p0) && !auxMessages.includes(p1)); assert.equal(witnessErrors.length, 0); verifyAccountProvenance(); assert.deepEqual(await snapshot(), before);
+        assert.ok(!auxMessages.includes(p0!) && !auxMessages.includes(p1!)); assert.equal(witnessErrors.length, 0); verifyAccountProvenance(); assert.deepEqual(await snapshot(), before);
         assert.ok(Date.now() <= witnessDeadline, "same-wire witness phase deadline");
         phaseEvidence.push({ kind: "same-wire-account-partition", wireDigest: core.rawDigest(subject), auxDelivery: 1, primaryDelivery: 0, windowMs: 250, configDigest, ordinaryAuxPositive: true, primaryPositiveIsTrustedHost: true });
       });
       await check(ids[26], async () => { assert.equal(primaryMessages.filter(value => value === p0).length, 1); assert.equal(primaryMessages.filter(value => value === p1).length, 1); assert.equal(witnessErrors.length, 0); });
     } finally {
       auxSub.unsubscribe(); primarySub?.unsubscribe();
-      if (observer) try { await bounded(observer.close()); const closeError = await bounded(observer.nc.closed()); if (observerStatusWatch) await bounded(observerStatusWatch); assert.ok(!closeError && observer.nc.isClosed()); observerClosed++; } catch { cleanupErrors.push("PRIMARY observer close failed"); custodyOutstanding = true; throw new Error("PRIMARY observer close unconfirmed"); }
+      try {
+        const auxError = await bounded(auxSub.closed); assert.ok(!auxError && auxSub.isClosed());
+        if (primarySub) { const primaryError = await bounded(primarySub.closed); assert.ok(!primaryError && primarySub.isClosed()); }
+        auxWitnessEnded = true;
+      } catch { witnessDebt("witness subscription removal unconfirmed"); custodyOutstanding = true; }
+      if (observer) try { await bounded(observer.close()); const closeError = await bounded(observer.nc.closed()); if (observerStatusWatch) await bounded(observerStatusWatch); assert.ok(!closeError && observer.nc.isClosed()); observerClosed++; } catch { witnessDebt("PRIMARY observer close failed"); custodyOutstanding = true; }
+      try { assert.equal(witnessErrors.length, 0); if (passed.has(ids[26]) && passed.has(ids[27])) { assert.ok(finalWitnessCheck, "completed witness requires lifetime verifier"); finalWitnessCheck(); } }
+      catch { witnessDebt("witness lifetime validation failed"); }
     }
+    assert.equal(witnessErrors.length, 0, "witness lifetime debt remains after retirement");
     await negative(ids[28], async () => { await brokerDenied(auxNc, primary.space, active[0].instanceId, "increment", auxPrincipal); });
     await bounded(auxStatusWatch);
     for (let index = 0; index < 2; index++) await check(ids[index === 0 ? 29 : 30], async () => {
@@ -929,6 +956,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     for (const client of hostClients.reverse()) try { await bounded(client.close()); const error = await bounded(client.nc.closed()); assert.ok(!error && client.nc.isClosed()); hostClosed++; } catch { cleanupErrors.push("trusted fixture host connection close failed"); }
     for (const connection of connections.reverse()) try { await bounded(connection.nc.close()); const error = await bounded(connection.nc.closed()); assert.ok(!error); connection.closed = connection.nc.isClosed(); assert.ok(connection.closed); } catch { cleanupErrors.push("participant connection close failed"); }
     for (const watch of statusWatches) try { await bounded(watch); } catch { cleanupErrors.push("owned status observer retirement unconfirmed"); }
+    if (witnessErrors.length > 0) cleanupErrors.push("retained witness lifetime debt at final cleanup");
     for (const handle of authHandles.reverse()) try { await bounded(handle.close()); const closed = await bounded(handle.closed); assert.ok(closed.connections.length > 0 && closed.connections.every(c => c.ended)); authClosed++; } catch { cleanupErrors.push("public auth service close failed"); }
     try { if (idpHttp.listening) { idpHttp.closeAllConnections(); await bounded(new Promise<void>((resolve, reject) => idpHttp.close(error => error ? reject(error) : resolve()))); } idpClosed = !idpHttp.listening; } catch { cleanupErrors.push("IdP listener close failed"); }
     if (!failure && cleanupErrors.length === 0) try { await check(ids[35], async () => { assert.equal(authClosed, 2); assert.ok(idpClosed); }); } catch (error) { failure = error; }
@@ -939,7 +967,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: "two-real-user-public-component", plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: "two-real-user-public-component", plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
