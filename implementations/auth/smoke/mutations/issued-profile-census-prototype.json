@@ -133,8 +133,8 @@
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
       "find": "    [`KV_cotal_accepted_${space}`]: kv(`cotal_accepted_${space}`),",
       "replace": "",
-      "expectRed": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap",
-      "cell": "a ceiling carrying the contract's own grants adds no write-plus-raw-read overlap"
+      "expectRed": "the write-plus-raw-read detector finds the known trusted overlaps",
+      "cell": "the write-plus-raw-read detector finds the known trusted overlaps"
     },
     {
       "name": "a stream-configuring verb folds into an envelope class",
