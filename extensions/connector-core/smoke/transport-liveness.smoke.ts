@@ -177,6 +177,7 @@ class FakeNc {
   readonly queue = new StatusQueue();
   closedFlag = false;
   constructor(readonly server: string) {}
+  async request(): Promise<never> { throw new Error("transport-liveness fixture must not issue requests"); }
   status(): AsyncIterable<Status> { return this.queue; }
   getServer(): string { return this.server; }
   isClosed(): boolean { return this.closedFlag; }
