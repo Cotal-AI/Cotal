@@ -51,7 +51,7 @@ import {
   runDriverGrants, runMediatorGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
-import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, environmentManagerAdmissionWriterGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
+import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, environmentManagerAdmissionIndexGrants, environmentManagerAdmissionWriterGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
 import { authAdminListenerGrants } from "../src/auth-admin.js";
@@ -283,6 +283,12 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  "environment-admission-index": { publish: [
+    "$JS.API.INFO", "$JS.API.STREAM.CREATE.KV_cotal_environment_managers_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_environment_managers_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_environment_managers_d32m",
+    "$KV.cotal_environment_managers_d32m.manager.*",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   "environment-admission-writer": { publish: [
     "$JS.API.INFO",
     "$JS.API.STREAM.CREATE.KV_cotal_auth_d32m", "$JS.API.STREAM.CREATE.KV_cotal_records_d32m",
@@ -505,6 +511,7 @@ put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: U
 put("serve-rows", epServeGrantRows(S, { endpoint: EP, instanceId: "i".repeat(26), epoch: 3, ephemeralCommands: ["status"] }));
 put("auth-writer", authorityWriterGrants(S, CONN));
 put("environment-admission-writer", environmentManagerAdmissionWriterGrants(S, CONN));
+put("environment-admission-index", environmentManagerAdmissionIndexGrants(S, CONN));
 put("remote-manager-issuer", remoteManagerIssuerGrants(S, CONN));
 put("auth-barrier", authorityBarrierGrants(S, CONN));
 put("auth-scanner", authorityScannerGrants(S, CONN));
@@ -629,6 +636,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
     "environment-admission-writer:KV_cotal_auth_d32m", "environment-admission-writer:KV_cotal_records_d32m",
+    "environment-admission-index:KV_cotal_environment_managers_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
     // The host issuer: the authority writer's two reads, the run-admission read, and (#2312) the

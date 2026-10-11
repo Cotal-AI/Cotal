@@ -106,8 +106,18 @@ creates the marked manager gate open, and freezes it under the original registra
 Same-input retries preserve those reservations. Changed input, ordinary or foreign gates,
 completed registrations and deletion markers refuse. Its host-private writer grants only that
 staging suffix in addition to the lifecycle writer and manager gate rows. It is not exported as
-an admission API and issues no credential. The external admission index, required host policies,
-bootstrap mint and terminal retirement still need their composition.
+an admission API and issues no credential.
+The internal immutable admission index binds a host-confirmed provider reference, creator,
+profile digest, expiry, account and authority context before selecting a manager instance,
+lifecycle and operation. Same-source retries return the stored coordinates and native revision;
+changed sources and deletion markers refuse. Its dedicated private KV must use file storage,
+history one, no expiry, leader reads and no rollups, mirrors or sources. The private custody
+grant creates that store and reads or writes its binding keys, with no lifecycle or auth-store
+access. Native subject permissions cannot enforce create-only writes or confine metadata read
+payloads, so this remains trusted host authority, never a guest credential.
+The index does not authenticate a guest, verify provider confirmation or authorize a workload.
+External admission, required host policies, bootstrap mint and terminal retirement still need
+their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
 
 Supervise the cleanup task independently of any operator session. It resumes recorded

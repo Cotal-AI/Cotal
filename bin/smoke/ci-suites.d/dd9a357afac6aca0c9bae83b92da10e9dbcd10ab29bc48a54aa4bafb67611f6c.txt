@@ -1,0 +1,1 @@
+smoke:environment-manager-admission-index
