@@ -613,4 +613,5 @@ try {
 }
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
+if (pass + fail === EXPECTED_CELLS) console.log(`UNFENCED RESPONDER COMPLETE: ${EXPECTED_CELLS} cells`);
 process.exitCode = fail === 0 ? 0 : 1;

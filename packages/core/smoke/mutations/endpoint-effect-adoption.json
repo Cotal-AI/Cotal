@@ -4,7 +4,7 @@
   ],
   "guard": "Only the failed invocation verified read effect authorizes an answered-but-unbound repeat; writes cannot borrow metadata from another hop or later resolution.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:unfenced-responder",
-  "completionMarker": "passed, 0 failed",
+  "completionMarker": "UNFENCED RESPONDER COMPLETE: 64 cells",
   "progressPattern": "  \u2713 ",
   "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/endpoint-effect-adoption.json",
   "why": [
