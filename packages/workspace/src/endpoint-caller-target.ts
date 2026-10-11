@@ -168,6 +168,7 @@ function writeBindingDiagnostic(root: string, space: string, service: ResolvedSe
   const resolvedRoot = resolve(root);
   const handles: number[] = [];
   const directories: { path: string; fd: number; identity: Stats }[] = [];
+  let diagnosticFailed = false;
   try {
     let path = "/";
     let fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
@@ -215,8 +216,19 @@ function writeBindingDiagnostic(root: string, space: string, service: ResolvedSe
     if (!sameFile(opened, after) || after.nlink !== 1 || after.size !== bytes.length || !sameFile(after, lstatSync(anchored)))
       throw new Error("diagnostic file changed");
     assertDirectoriesCurrent();
+  } catch (error) {
+    diagnosticFailed = true;
+    throw error;
   } finally {
-    for (const fd of handles.reverse()) closeSync(fd);
+    let closeFailed = false;
+    let closeError: unknown;
+    for (const fd of handles.splice(0).reverse()) {
+      try { closeSync(fd); } catch (error) {
+        if (!closeFailed) closeError = error;
+        closeFailed = true;
+      }
+    }
+    if (!diagnosticFailed && closeFailed) throw closeError;
   }
 }
 

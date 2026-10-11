@@ -245,7 +245,7 @@ try {
     const sameBindingIdentity = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;
     const prepareBindingObservation = () => {
       const handles: number[] = [], directories: { path: string; absolutePath: string; fd: number; info: Stats }[] = [];
-      const unknown = () => ({ state: "unknown" });
+      const unknown = () => ({ state: "unknown", writerFinalization: "unknown" });
       const close = () => { let closed = true; for (const fd of handles.splice(0).reverse()) { try { closeSync(fd); } catch { closed = false; } } return closed; };
       try {
         if (process.platform !== "linux" || typeof process.getuid !== "function" || !constants.O_NOFOLLOW || !constants.O_DIRECTORY) throw new Error("unsupported binding observation");
@@ -301,7 +301,7 @@ try {
               const comparison: Record<string, boolean | number> = {};
               for (const key of bindingFlags) { const value = raw[key]; if (typeof value !== "boolean") return unknown(); comparison[key] = value; }
               for (const [key, max] of Object.entries(bindingCounts)) { const value = raw[key]; if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max) return unknown(); comparison[key] = value; }
-              return { state: "observed", comparison, comparisonCompleted: true, diagnosticOnlyNoPolicyChange: true };
+              return { state: "comparison-observed", writerFinalization: "unknown", comparison, comparisonCompleted: true, diagnosticOnlyNoPolicyChange: true };
             } catch { return unknown(); }
           },
         };
@@ -323,12 +323,12 @@ try {
       try {
         result = await runEndpointCallerCLI(bindingInput, args);
         if (bindingObservation) {
-          const observation = result.closeObserved && !result.closeWaitExpired ? bindingObservation.read() : { state: "unknown" };
+          const observation = result.closeObserved && !result.closeWaitExpired ? bindingObservation.read() : { state: "unknown", writerFinalization: "unknown" };
           const observationClosed = bindingObservation.close();
-          try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", ...(observationClosed ? observation : { state: "unknown" }) })); } catch { /* Do not replace the original child result or predicate. */ }
+          try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", ...(observationClosed ? observation : { state: "unknown", writerFinalization: "unknown" }) })); } catch { /* Do not replace the original child result or predicate. */ }
         }
       } catch (error) {
-        if (bindingObservation) { try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", state: "unknown" })); } catch { /* Preserve the original helper rejection. */ } }
+        if (bindingObservation) { try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", state: "unknown", writerFinalization: "unknown" })); } catch { /* Preserve the original helper rejection. */ } }
         cliCustodyOutstanding = true;
         cliOutcomes.push({ cell: name, result: { returnedResult: false, errorName: error instanceof Error ? error.name : "unknown", error: diagnostic(String(error)), reportedBoundary: "child-helper-rejected-before-result", terminalCustodyEstablished: false } });
         throw error;
