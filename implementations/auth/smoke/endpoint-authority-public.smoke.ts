@@ -160,6 +160,53 @@ try {
   servingHandle = core.serveEndpoint(serveNc, space, adoption.grant, [{ command: "increment", contract, handler: () => ({ effects: ++effects }) }], { view: () => { throw new Error("delegated describe must use authenticated stock admission"); } }, { requestAuthority: adoption.requestAuthority });
   await serveNc.flush();
   const runCLIChecks = async (handle: authApi.AuthServiceHandle) => {
+    // Template matches are source-stage hints, not observed reach or trusted error provenance.
+    // Root dispatch prints a plain message. A remote reason can imitate a local template.
+    const classifyChildError = (result: EndpointCallerCLIResult) => {
+      const templates: { id: string; sourceStageHint: string; pattern: RegExp }[] = [
+        { id: "bootstrap-module", sourceStageHint: "bootstrap", pattern: /^Error \[ERR_MODULE_NOT_FOUND\]: Cannot find (?:package|module) .+$/ },
+        { id: "dispatch-unknown-command", sourceStageHint: "dispatch", pattern: /^unknown command: .+$/ },
+        { id: "catalog-preparation", sourceStageHint: "pre-command-catalog", pattern: /^space catalog for .+ failed: .+$/ },
+        { id: "intent-instance-required", sourceStageHint: "intent", pattern: /^generic endpoint describe\/invoke requires explicit --on <instance>$/ },
+        { id: "intent-unsupported", sourceStageHint: "intent", pattern: /^generic endpoint callers do not support raw credentials, admin, targeted or session intentions$/ },
+        { id: "registry-no-mesh", sourceStageHint: "registry", pattern: /^no mesh running - run `cotal up` in a project, or pass `--server`$/ },
+        { id: "registry-unknown-space", sourceStageHint: "registry", pattern: /^no mesh named "[^"]+" is running - see `cotal meshes`$/ },
+        { id: "registry-trust-unreadable", sourceStageHint: "registry", pattern: /^space "[^"]+"'s trust material under .+ will not load \(.+\) - repair or remove the account record, then re-run `cotal up`$/ },
+        { id: "trust-file-permissions", sourceStageHint: "protected-trust", pattern: /^endpoint deployment trust requires an owned (?:0700 directory|0600 regular file): .+$/ },
+        { id: "trust-currentness", sourceStageHint: "protected-trust", pattern: /^(?:protected endpoint deployment trust is unsupported on this platform|endpoint deployment root must be a real directory|endpoint deployment trust directory changed while opening|endpoint deployment trust file changed or exceeds its byte bound|endpoint deployment trust changed while reading|endpoint deployment trust directory was replaced|endpoint deployment root was replaced|endpoint deployment trust was replaced; acquire a new caller before connecting)$/ },
+        { id: "mesh-caller-selection", sourceStageHint: "caller-selection", pattern: /^(?:generic endpoint callers do not accept raw --creds|manager calls use the existing manager authority path|endpoint reply deadline must be positive|generic endpoint callers require a registered user-auth mesh|generic endpoint callers require the selected registry broker and root without a raw server override|generic endpoint callers require a configured account exchange URL)$/ },
+        { id: "provider-selection", sourceStageHint: "provider", pattern: /^(?:registered endpoint auth provider differs from the selected mesh|the registered auth provider does not support dedicated endpoint caller acquisition)$/ },
+        { id: "session-login-required", sourceStageHint: "login-session", pattern: /^not logged in to .+ - this space requires a user identity and there is no anonymous fallback; run `cotal login --idp .+`$/ },
+        { id: "session-idp-refusal", sourceStageHint: "login-session", pattern: /^idp session: .+ (?:rejected the cached session \(expired or revoked\) - run `cotal login --idp .+` to sign in again|failed \(HTTP [1-5][0-9]{2}\)|returned no token)$/ },
+        { id: "remote-material-missing", sourceStageHint: "ordinary-provider", pattern: /^space "[^"]+" has no user-auth material on this machine - run `cotal up --user-auth` where the mesh runs, or register a remote user mesh with `cotal meshes add .+ --from <url>` and sign in with `cotal login --idp <idp-url>`$/ },
+        { id: "sentinel-unreadable", sourceStageHint: "ordinary-provider", pattern: /^space "[^"]+" is registered as a remote user mesh but its sentinel credential at .+ cannot be read \(.+\) - re-register with `cotal meshes add .+ --from <url>`$/ },
+        { id: "ordinary-exchange-refused", sourceStageHint: "ordinary-exchange", pattern: /^signed in, but the exchange for actor "[^"]+"(?: \(view "[^"]+"\))? was refused(?:: .+|, and the exchange face withheld the reason \(HTTP [1-5][0-9]{2}\))$/ },
+        { id: "ordinary-exchange-unavailable", sourceStageHint: "ordinary-exchange", pattern: /^the exchange for space "[^"]+" did not answer at .+ \(.+\) - check the network, or re-register with `cotal meshes add .+ --from <url>` if the mesh moved$/ },
+        { id: "ordinary-exchange-no-token", sourceStageHint: "ordinary-exchange", pattern: /^the exchange at .+ returned no token - the mesh's auth service build may be stale$/ },
+        { id: "authority-acquisition", sourceStageHint: "dedicated-authority", pattern: /^(?:endpoint deployment trust belongs to another space|endpoint acquisition requires a current ordinary signed-in user bearer|endpoint authority local listener is unavailable|endpoint authority has no pinned user exchange|closed endpoint caller response required|endpoint control requires a holder key and exact credential digest)$/ },
+        { id: "authority-http-refusal", sourceStageHint: "dedicated-authority", pattern: /^endpoint authority refused [1-5][0-9]{2}: .+$/ },
+        { id: "trust-record-binding", sourceStageHint: "trust-verification", pattern: /^(?:endpoint trust record kind\/space mismatch|endpoint trust record exchange origin mismatch|endpoint trust record account\/time mismatch|endpoint deployment assignment is not active|endpoint deployment assignment expired|endpoint deployment trust expired)$/ },
+        { id: "receipt-verification", sourceStageHint: "receipt-verification", pattern: /^(?:endpoint caller material exceeds byte bound|unsupported endpoint receipt header|unknown endpoint receipt key|endpoint receipt issuer\/audience\/request\/time mismatch|endpoint receipt account\/assignment\/authority\/principal\/selection\/bearer mismatch|invalid endpoint receipt contract closures|endpoint bearer and verified receipt principal\/expiry disagree|dedicated endpoint caller receipt differs from the deployment and requested selection)$/ },
+        { id: "accepted-connection", sourceStageHint: "accepted-connection", pattern: /^(?:dedicated endpoint caller connection has no issued nonce|unsupported accepted-row version|the accepted row names a foreign space|no accepted row for this token \(.+\); the connection holds no issued authority \(SPEC 13\.15\)|this connection's accepted row names .+, not the caller .+; refused \(SPEC 13\.15\))$/ },
+        { id: "native-describe-refusal", sourceStageHint: "native-describe", pattern: /^describe\([^)]+\) failed: .+$/ },
+        { id: "contract-resolution", sourceStageHint: "contract-resolution", pattern: /^(?:the cluster manifest .+ names root .+ but the root artifact is absent from the fetched closure \(SPEC 13\.7\)|schema closure .+ is missing its root .+ \(SPEC 13\.7\)|the recompiled schema closure hashes to .+, not the fetched .+; a store that served the wrong bytes never authorizes \(SPEC 13\.7\))$/ },
+        { id: "descriptor-currency", sourceStageHint: "descriptor-binding", pattern: /^native endpoint descriptor and verified caller receipt currency disagree$/ },
+        { id: "descriptor-principal", sourceStageHint: "descriptor-binding", pattern: /^native endpoint caller is not the verified issued principal$/ },
+        { id: "descriptor-command-selection", sourceStageHint: "descriptor-binding", pattern: /^native endpoint descriptor widened the verified command selection$/ },
+      ];
+      const lines = result.stderr.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const matched = new Map<string, string>();
+      let unmatchedLines = 0;
+      for (const line of lines) {
+        const message = line.replace(/^(?:✗\s*){1,2}/u, "").replace(/^(?:permission-denied|failed-precondition|unavailable|internal|expired|conflict): /, "");
+        const hits = templates.filter(template => template.pattern.test(message));
+        if (!hits.length) unmatchedLines++;
+        for (const hit of hits) matched.set(hit.id, hit.sourceStageHint);
+      }
+      const completeText = Buffer.byteLength(result.stderr) === result.stderrBytes;
+      const state = matched.size > 1 ? "ambiguous" : matched.size === 1 && unmatchedLines === 0 && completeText ? "matched-template" : "unknown";
+      return { state, templateHints: [...matched].map(([id, sourceStageHint]) => ({ id, sourceStageHint })), nonemptyLines: lines.length, unmatchedLines, completeText, observedStage: false, causalReasonEstablished: false };
+    };
     // The host installs public trust. The child receives only its own remote registration,
     // genuine device-login session and public sentinel, never the injected store or signing seeds.
     assert.ok(handle.publicUrl, "CCLI-public-face-bound");
@@ -210,6 +257,7 @@ try {
       cliOutcomes.push({ cell: name, result: { code: result.code, signal: result.signal, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, killAttempted: result.killAttempted, killAccepted: result.killAccepted, killError: result.killError === null ? null : diagnostic(result.killError), terminationReason: result.terminationReason, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, spawnError: result.spawnError === null ? null : { code: result.spawnError.code, message: diagnostic(result.spawnError.message) }, childError: result.childError === null ? null : { code: result.childError.code, message: diagnostic(result.childError.message) }, stdout: diagnostic(result.stdout), stderr: diagnostic(result.stderr), custody: cliCustodyOutstanding ? "unknown" : "known-child-close-observed", reportedBoundary: result.stderr.includes("native endpoint descriptor and verified caller receipt currency disagree") ? "receipt-currency-refusal" : "unclassified-child-result" } });
       assert.ok(!cliCustodyOutstanding, name + "-known-child-close-required-custody-unknown");
       assert.ok(!result.timedOut && result.terminationReason === null && result.spawnError === null && result.childError === null && !result.killAttempted && result.killAccepted === null && result.killError === null, name + "-ordinary-child-result-required");
+      if (hostedCLI) publicLog(JSON.stringify({ scope: "hosted-source-cli-error-template-hints", cell: name, classification: classifyChildError(result) }));
       if (hostedCLI) publicLog(JSON.stringify({ scope: "hosted-source-cli-child-result", cell: name, code: result.code, signalObserved: result.signal !== null, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, receiptCurrencyRefusalObserved: result.stderr.includes("native endpoint descriptor and verified caller receipt currency disagree"), stdoutHasEndpoint: result.stdout.includes(endpoint), stdoutHasOwner: result.stdout.includes(`owner ${owner}`), stdoutHasInstance: result.stdout.includes(`instance ${instanceId}`), effects }));
       return result;
     };
