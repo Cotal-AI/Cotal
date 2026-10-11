@@ -3,12 +3,13 @@ import { spawn } from "node:child_process";
 import fs, { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { takeEnvironmentManagerBootstrapFile } from "../src/index.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 
 if (process.argv[2] === "entry") {
+  console.log(`ENTRY_PID=${process.pid}`);
   const barrier = process.argv[4];
   if (barrier) {
     const original = fs.openSync;
@@ -51,13 +52,19 @@ if (process.argv[2] === "entry") {
   };
   const descriptors = () => readdirSync("/proc/self/fd").length;
   const runTake = (path: string, deadline = 15_000, barrier?: string) => new Promise<{ code: number | null; output: string }>((yes, no) => {
-    const self = fileURLToPath(import.meta.url), tsx = resolve(dirname(self), "../../../node_modules/tsx/dist/cli.mjs");
-    const child = spawn(process.execPath, [tsx, self, "entry", path, ...(barrier ? [barrier] : [])], { env: { PATH: process.env.PATH }, stdio: ["ignore", "pipe", "pipe"] });
+    const self = fileURLToPath(import.meta.url);
+    const child = spawn(process.execPath, ["--import", import.meta.resolve("tsx"), self, "entry", path, ...(barrier ? [barrier] : [])], {
+      env: { PATH: process.env.PATH, MUTATION_PROOF_RUN: process.env.MUTATION_PROOF_RUN }, stdio: ["ignore", "pipe", "pipe"],
+    });
     let output = "";
     const timeout = setTimeout(() => child.kill("SIGKILL"), deadline);
     child.stdout.on("data", bytes => { output += bytes.toString(); });
     child.once("error", error => { clearTimeout(timeout); no(error); });
-    child.once("close", code => { clearTimeout(timeout); yes({ code, output }); });
+    child.once("close", code => {
+      clearTimeout(timeout);
+      if (!output.includes(`ENTRY_PID=${child.pid}\n`)) { no(new Error("owned child PID is not the actual bootstrap reader")); return; }
+      yes({ code, output });
+    });
   });
   try {
     await cell("private regular file returns bytes only after its name is removed", () => {
