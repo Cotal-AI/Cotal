@@ -50,6 +50,7 @@
     "smoke:endpoint-cli-describe-causal": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --cli-describe-causal",
     "smoke:endpoint-prepare-refusal": "node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving",
     "smoke:endpoint-two-user-public": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --two-user-public-acceptance",
+    "smoke:endpoint-protocol3-public-entry-diagnostic": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --protocol3-public-entry-diagnostic",
     "smoke:ci:offline": "pnpm build && node bin/smoke/shard.mjs 0 1 --offline",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
     "clean": "git clean -fdX -- node_modules .pnpm-store packages extensions implementations examples remotion",
