@@ -30,13 +30,22 @@ try {
     owner: `u_${"a".repeat(26)}`, instanceId: mintLifecycleUid(), lifecycleUid: mintLifecycleUid(),
     authorityEndpoint: "ai.cotal.environment-authority", authorityInstanceId: mintLifecycleUid(),
     expiresAt: Math.floor(Date.now() / 1000) + 300, environmentId: "a".repeat(64),
-    admissionRevision: 1, operationId: mintLifecycleUid(),
+    accountPublicKey: account.accountPublicKey, admissionRevision: 1, operationId: mintLifecycleUid(),
+  });
+  await cell("missing admission account refuses before staging or lifecycle activation", async () => {
+    const fresh = coordinates(), { accountPublicKey: _account, ...missing } = fresh;
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, missing as EnvironmentManagerAdmissionCoordinates), /coordinates are invalid/);
+    assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-manager`), null);
+    assert.equal(await observeGate(reg, fresh.lifecycleUid), undefined);
   });
   const pin = coordinates();
   let result: { gateRevision: number } | undefined;
   await cell("native reservation staging completes", async () => { result = await stageEnvironmentManagerAdmission(reg, pin); });
   const stageKey = `stage.${pin.operationId}.environment-manager`;
   const stage = (await authKv.get(stageKey))!;
+  await cell("native staging binds its immutable admission account", async () => {
+    assert.equal(stage.json<{ accountPublicKey: string }>().accountPublicKey, pin.accountPublicKey);
+  });
   await cell("native activation creates the reserved bootstrap head and open lifecycle gate", async () => {
     const head = await readLifecycleHeadForOperation(reg, pin.owner, environmentBootstrapActor(pin.instanceId));
     assert.equal(head?.mapping.state, "active");

@@ -114,7 +114,8 @@ Its host-private writer grants explicit staging suffixes in addition to lifecycl
 gate rows. This reservation step is not exported as an admission API and issues no credential.
 The internal immutable admission index binds a host-confirmed provider reference, creator,
 profile digest, expiry, account and authority context before selecting a manager instance,
-lifecycle and operation. Same-source retries return the stored coordinates and native revision;
+lifecycle and operation. Its coordinates carry the host-selected data-account public key into
+native staging. Same-source retries return the stored coordinates and native revision;
 changed sources and deletion markers refuse. Its dedicated private KV must use file storage,
 history one, no expiry, leader reads and no rollups, mirrors, sources or republishing.
 Per-subject discard-new makes each binding key write-once. Native deny-delete and deny-purge
@@ -129,8 +130,14 @@ streams in that account can source their data. Subject permissions cannot confin
 payloads, so custody remains trusted host authority, never a guest credential.
 The index does not authenticate a guest, verify provider confirmation or authorize a workload.
 An internal one-shot bootstrap issuer requires the staged admission, initial-gate stamp and
-original frozen registration. It signs only the fixed bootstrap profile for a supplied public
-nkey, with expiry bounded by five minutes and admission. The native credential ledger binds
+original frozen registration. It requires the signing account's public key to match the staged
+admission account before reserving or signing. A changed account pin or an older staged row
+without that pin refuses. The staging helper does not rewrite that row. The host must not
+substitute another operation to work around it. The account context is trusted host
+configuration, not broker-derived proof.
+Delegated account signing keys remain supported; their key is not compared to the account
+identity key. It signs only the fixed bootstrap profile for a supplied public nkey, with expiry
+bounded by five minutes and admission. The native credential ledger binds
 that JWT's expiry and bootstrap principal to the reserved lifecycle. Separate registration and
 lifecycle CAS fences must both win before material returns; a lost fence revokes its staged row.
 The issuer records public signing coordinates under `stage.<opId>.environment-bootstrap-mint`.

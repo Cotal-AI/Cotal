@@ -93,7 +93,7 @@ export async function environmentManagerAdmissionIndex(kv: KV, input: IndexConte
     }
     const row = { ...raw, source } as unknown as IndexRecord;
     return { row, coordinates: { owner: source.caller.owner, environmentId: source.environmentId,
-      admissionRevision: entry.revision, instanceId: row.instanceId, lifecycleUid: row.lifecycleUid,
+      accountPublicKey: context.accountPublicKey, admissionRevision: entry.revision, instanceId: row.instanceId, lifecycleUid: row.lifecycleUid,
       operationId: row.operationId, authorityEndpoint: context.authorityEndpoint,
       authorityInstanceId: context.authorityInstanceId, expiresAt: Math.floor(source.expiresAt / 1000) } };
   };

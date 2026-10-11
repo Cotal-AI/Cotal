@@ -5,8 +5,28 @@
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-bootstrap-mint.json",
   "why": ["The unexported issuer runs through real private JWT-broker admission, activation, ledger and gate CAS paths. Two timing seams move native fences; no full admission endpoint, file delivery, redemption or hosted execution is claimed."],
   "progressPattern": "^  [✓✗]",
-  "minTicks": 25,
+  "minTicks": 30,
   "mutations": [
+    {
+      "name": "bootstrap signs under a different account from its native admission",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "  if (args.account.pub !== pin.accountPublicKey)\n    throw new EpEnvelopeError(\"permission-denied\", \"environment bootstrap signing account does not match its admitted account\");\n",
+      "replace": "",
+      "expectRed": "foreign data-account signing refuses before any bootstrap reservation",
+      "cell": "foreign data-account signing refuses before any bootstrap reservation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
+    {
+      "name": "bootstrap relies on a later core cap after reserving an overlong attempt",
+      "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",
+      "find": "args.expiresAt > now + 300 || args.expiresAt > pin.expiresAt",
+      "replace": "args.expiresAt > pin.expiresAt",
+      "expectRed": "over five minutes bootstrap expiry refuses before reservation",
+      "cell": "over five minutes bootstrap expiry refuses before reservation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-bootstrap-mint"
+    },
     {
       "name": "bootstrap omits registration fence finalization",
       "file": "implementations/auth/src/environment-manager-bootstrap-mint.ts",

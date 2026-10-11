@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { DiscardPolicy, jetstream, jetstreamManager, RetentionPolicy, StorageType } from "@nats-io/jetstream";
 import { headers } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { AUTHORITY_STORE_IMMUTABLE_FLAGS, ensureAuthorityStores, environmentBootstrapActor, mintLifecycleUid, WRITE_ONCE_PER_KEY } from "@cotal-ai/core";
+import { AUTHORITY_STORE_IMMUTABLE_FLAGS, credsClaims, credsFromJwt, ensureAuthorityStores, environmentBootstrapActor, mintLifecycleUid, newIdentity, WRITE_ONCE_PER_KEY } from "@cotal-ai/core";
 import { stageEnvironmentManagerAdmission } from "../src/environment-manager-admission.js";
+import { mintEnvironmentManagerBootstrap } from "../src/environment-manager-bootstrap-mint.js";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
 import { environmentManagerAdmissionIndexGrants, environmentManagerAdmissionWriterGrants, openAuthorityClient } from "../src/authority-client.js";
@@ -42,6 +43,7 @@ try {
     assert.ok(first.admissionRevision > 0);
     assert.equal(first.expiresAt, Math.floor(source.expiresAt / 1000));
     assert.equal(first.authorityInstanceId, context.authorityInstanceId);
+    assert.equal(first.accountPublicKey, context.accountPublicKey);
     assert.notEqual(first.lifecycleUid, source.caller.uid);
     assert.deepEqual(await index.get(source.environmentId), first);
   });
@@ -61,6 +63,11 @@ try {
       await stageEnvironmentManagerAdmission(reg, coordinates);
       const head = await readLifecycleHeadForOperation(reg, coordinates.owner, environmentBootstrapActor(coordinates.instanceId));
       assert.equal(head?.mapping.lifecycleUid, coordinates.lifecycleUid);
+      const peer = newIdentity();
+      const material = await mintEnvironmentManagerBootstrap(reg, coordinates, { publicId: peer.id,
+        credentialId: mintLifecycleUid(), expiresAt: Math.floor(Date.now() / 1000) + 120,
+        account: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! } });
+      assert.equal(credsClaims(credsFromJwt(material.jwt, peer)).nats?.issuer_account, context.accountPublicKey);
       assert.deepEqual(await index.reserve(source), coordinates);
     } finally { await authority.close(); }
   });

@@ -13,7 +13,7 @@ import { mintEnvironmentManagerBootstrap } from "../src/environment-manager-boot
 import { freezeGate, observeGate, openLifecycleRegistry, registryStores } from "../src/lifecycle-registry.js";
 import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
 
-const fx = await startHostedAuthFixture("environment-bootstrap-mint", 1);
+const fx = await startHostedAuthFixture("environment-bootstrap-mint", 2);
 const account = fx.accounts[0]!;
 const signer = { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! };
 const writer = await openAuthorityClient({ server: fx.servers, space: account.space,
@@ -31,7 +31,7 @@ try {
     owner: `u_${"a".repeat(26)}`, instanceId: mintLifecycleUid(), lifecycleUid: mintLifecycleUid(),
     authorityEndpoint: "ai.cotal.environment-authority", authorityInstanceId: mintLifecycleUid(),
     expiresAt: Math.floor(Date.now() / 1000) + 240, environmentId: "a".repeat(64),
-    admissionRevision: 1, operationId: mintLifecycleUid(),
+    accountPublicKey: account.accountPublicKey, admissionRevision: 1, operationId: mintLifecycleUid(),
   });
   const mintInput = () => ({ publicId: newIdentity().id, credentialId: mintLifecycleUid(),
     expiresAt: Math.floor(Date.now() / 1000) + 120, account: signer });
@@ -49,6 +49,57 @@ try {
     try {
       await assert.rejects(() => nc.request(`$KV.${epAuthBucket(account.space)}.gate.${pin.lifecycleUid}`, new Uint8Array(), { timeout: 1000 }), /Permissions Violation/);
     } finally { await nc.close(); }
+  });
+  await cell("foreign data-account signing refuses before any bootstrap reservation", async () => {
+    const fresh = coordinates(), other = fx.accounts[1]!, otherPeer = newIdentity();
+    const input = { ...mintInput(), publicId: otherPeer.id,
+      account: { pub: other.accountPublicKey, signingSeed: other.auth.account.signingSeed! } };
+    await stageEnvironmentManagerAdmission(reg, fresh);
+    await assert.rejects(async () => {
+      const released = await mintEnvironmentManagerBootstrap(reg, fresh, input);
+      const nc = await connect({ servers: fx.servers, authenticator: jwtAuthenticator(released.jwt, new TextEncoder().encode(otherPeer.seed)),
+        inboxPrefix: `_INBOX_${otherPeer.id}`, reconnect: false });
+      try {
+        await nc.flush();
+        const claims = credsClaims(credsFromJwt(released.jwt, otherPeer));
+        assert.equal((claims.nats as { issuer_account?: string }).issuer_account, other.accountPublicKey);
+        const ledger = (await authKv.get(`cred.${fresh.lifecycleUid}.${input.credentialId}`))!.json<{ state: string }>();
+        assert.equal(ledger.state, "active");
+        console.error("FOREIGN_ACCOUNT_ACCEPTED: JWT connects in account B while account A ledger is active");
+      } finally { await nc.close(); }
+    }, /signing account does not match/);
+    assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-bootstrap-mint`), null);
+    assert.equal(await authKv.get(`cred.${fresh.lifecycleUid}.${input.credentialId}`), null);
+  });
+  await cell("a changed account pin and matching foreign signer cannot rebind native admission", async () => {
+    const fresh = coordinates(), other = fx.accounts[1]!;
+    const input = { ...mintInput(), account: { pub: other.accountPublicKey, signingSeed: other.auth.account.signingSeed! } };
+    await stageEnvironmentManagerAdmission(reg, fresh);
+    await assert.rejects(() => mintEnvironmentManagerBootstrap(reg, { ...fresh, accountPublicKey: other.accountPublicKey }, input), /staged admission/);
+    assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-bootstrap-mint`), null);
+    assert.equal(await authKv.get(`cred.${fresh.lifecycleUid}.${input.credentialId}`), null);
+  });
+  await cell("reconstructed issuer preserves account refusal and the original unreserved attempt", async () => {
+    const fresh = coordinates(), other = fx.accounts[1]!;
+    await stageEnvironmentManagerAdmission(reg, fresh);
+    const input = { ...mintInput(), account: { pub: other.accountPublicKey, signingSeed: other.auth.account.signingSeed! } };
+    const again = await openLifecycleRegistry(writer.nc, account.space);
+    await assert.rejects(() => mintEnvironmentManagerBootstrap(again, fresh, input), /signing account does not match/);
+    assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-bootstrap-mint`), null);
+    const positive = await mintEnvironmentManagerBootstrap(again, fresh, { ...input, account: signer });
+    assert.equal(positive.credentialId, input.credentialId);
+  });
+  await cell("an old staged admission without its account pin cannot mint or be rewritten", async () => {
+    const fresh = coordinates();
+    await stageEnvironmentManagerAdmission(reg, fresh);
+    const key = `stage.${fresh.operationId}.environment-manager`, before = (await authKv.get(key))!;
+    const legacy = before.json<Record<string, unknown>>(); delete legacy.accountPublicKey;
+    await authKv.update(key, JSON.stringify(legacy), before.revision);
+    const revision = (await authKv.get(key))!.revision;
+    await assert.rejects(() => mintEnvironmentManagerBootstrap(reg, fresh, mintInput()), /staged admission/);
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, fresh), /foreign content/);
+    assert.equal((await authKv.get(key))!.revision, revision);
+    assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-bootstrap-mint`), null);
   });
   await cell("bootstrap ledger binds the reserved principal root lineage and actual JWT expiry", async () => {
     const row = (await authKv.get(`cred.${pin.lifecycleUid}.${args.credentialId}`))!.json<Record<string, unknown>>();
@@ -106,9 +157,10 @@ try {
   for (const name of ["expired", "over five minutes", "over admission"] as const)
     await cell(`${name} bootstrap expiry refuses before reservation`, async () => {
       const fresh = coordinates();
+      if (name === "over five minutes") fresh.expiresAt = Math.floor(Date.now() / 1000) + 900;
       await stageEnvironmentManagerAdmission(reg, fresh);
       const now = Math.floor(Date.now() / 1000);
-      const expiresAt = name === "expired" ? now : name === "over five minutes" ? now + 301 : fresh.expiresAt + 1;
+      const expiresAt = name === "expired" ? now : name === "over five minutes" ? now + 600 : fresh.expiresAt + 1;
       await assert.rejects(() => mintEnvironmentManagerBootstrap(reg, fresh, { ...mintInput(), expiresAt }), /expiry are invalid/);
       assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-bootstrap-mint`), null);
     });
@@ -117,6 +169,13 @@ try {
     await stageEnvironmentManagerAdmission(reg, fresh);
     const material = await mintEnvironmentManagerBootstrap(reg, fresh, { ...mintInput(), expiresAt: fresh.expiresAt });
     assert.equal(material.exp, fresh.expiresAt);
+  });
+  await cell("the issuer's five-minute ceiling remains a same-account positive control", async () => {
+    const fresh = { ...coordinates(), expiresAt: Math.floor(Date.now() / 1000) + 900 };
+    await stageEnvironmentManagerAdmission(reg, fresh);
+    const expiresAt = Math.floor(Date.now() / 1000) + 300;
+    const issued = await mintEnvironmentManagerBootstrap(reg, fresh, { ...mintInput(), expiresAt });
+    assert.equal(issued.exp, expiresAt);
   });
   await cell("an abort-reopened registration refuses bootstrap before signing", async () => {
     const aborted = coordinates();

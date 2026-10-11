@@ -3,10 +3,20 @@
   "guard": "Private index chooses one immutable host manager binding and never revives a deleted environment admission",
   "command": "pnpm smoke:environment-manager-admission-index",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission-index.json",
-  "why": ["The scoped private-index writer runs against a real JWT broker. An injected native tombstone interleaving tests the race after a genuinely absent read. This is internal index and reservation composition, not guest admission or credential issuance."],
+  "why": ["The scoped private-index writer runs against a real JWT broker. An injected native tombstone interleaving tests the race after a genuinely absent read. This is internal index, reservation and bounded bootstrap signing composition, not guest admission or hosted execution."],
   "progressPattern": "^  [✓✗]",
   "minTicks": 27,
   "mutations": [
+    {
+      "name": "index coordinates lose their immutable account context",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "accountPublicKey: context.accountPublicKey, ",
+      "replace": "",
+      "expectRed": "private index selects one manager instance lifecycle and operation",
+      "cell": "private index selects one manager instance lifecycle and operation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
     {
       "name": "index admits stores without per-subject immutability",
       "file": "implementations/auth/src/environment-manager-admission-index.ts",

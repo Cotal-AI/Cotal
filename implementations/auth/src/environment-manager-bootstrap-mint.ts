@@ -27,9 +27,12 @@ export async function mintEnvironmentManagerBootstrap(
   const args = structuredClone(mint);
   const now = Math.floor(Date.now() / 1000);
   const fields = ["owner", "instanceId", "lifecycleUid", "authorityEndpoint", "authorityInstanceId",
-    "expiresAt", "environmentId", "admissionRevision", "operationId"];
+    "expiresAt", "environmentId", "accountPublicKey", "admissionRevision", "operationId"];
   if (Object.keys(pin).length !== fields.length || Object.keys(pin).some(key => !fields.includes(key)) ||
+    !/^A[A-Z2-7]{55}$/.test(pin.accountPublicKey) ||
     Object.keys(args).sort().join(",") !== "account,credentialId,expiresAt,publicId" ||
+    !args.account || Object.keys(args.account).sort().join(",") !== "pub,signingSeed" ||
+    typeof args.account.pub !== "string" || typeof args.account.signingSeed !== "string" ||
     !isUserNkey(args.publicId) || !Number.isSafeInteger(args.expiresAt) || args.expiresAt <= now ||
     args.expiresAt > now + 300 || args.expiresAt > pin.expiresAt)
     throw new EpEnvelopeError("failed-precondition", "environment bootstrap mint inputs or expiry are invalid");
@@ -47,6 +50,8 @@ export async function mintEnvironmentManagerBootstrap(
   const expected = { v: 1, kind: "environment-manager-admission", space, ...pin };
   if (contractDigest(staged) !== contractDigest(expected))
     throw new EpEnvelopeError("permission-denied", "environment bootstrap does not match the staged admission");
+  if (args.account.pub !== pin.accountPublicKey)
+    throw new EpEnvelopeError("permission-denied", "environment bootstrap signing account does not match its admitted account");
   const birth = await authKv.get(`stage.${pin.operationId}.environment-manager-gate`);
   if (!birth || birth.operation !== "PUT")
     throw new EpEnvelopeError("permission-denied", "environment bootstrap has no native initial-gate stamp");

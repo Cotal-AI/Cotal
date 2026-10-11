@@ -5,8 +5,18 @@
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission.json",
   "why": ["The private JWT broker runs the host-private reservation helper with its scoped writer. No bootstrap signing, complete external admission, terminal retirement or hosted agent execution is claimed."],
   "progressPattern": "^  [✓✗]",
-  "minTicks": 22,
+  "minTicks": 24,
   "mutations": [
+    {
+      "name": "native staging drops the account binding",
+      "file": "implementations/auth/src/environment-manager-admission.ts",
+      "find": "environmentId: pin.environmentId, accountPublicKey: pin.accountPublicKey,",
+      "replace": "environmentId: pin.environmentId,",
+      "expectRed": "native staging binds its immutable admission account",
+      "cell": "native staging binds its immutable admission account",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission"
+    },
     {
       "name": "registration retry skips the abort fence after a lost CAS",
       "file": "implementations/auth/src/environment-manager-admission.ts",

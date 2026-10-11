@@ -9,6 +9,8 @@ import { activateLifecycleAtUid, registryStores, type LifecycleRegistry } from "
  * pre-issuance step creates no credential and is not the environment admission or bootstrap door. */
 export interface EnvironmentManagerAdmissionCoordinates extends EnvironmentManagerGrantPin {
   environmentId: string;
+  /** Immutable host-selected data account, not a guest signing choice. */
+  accountPublicKey: string;
   admissionRevision: number;
   operationId: string;
 }
@@ -25,8 +27,9 @@ export async function stageEnvironmentManagerAdmission(
     assertLifecycleToken(pin[field], field);
   endpointToken(pin.authorityEndpoint);
   const fields = ["owner", "instanceId", "lifecycleUid", "authorityEndpoint", "authorityInstanceId",
-    "expiresAt", "environmentId", "admissionRevision", "operationId"];
-  if (Object.keys(pin).some(key => !fields.includes(key)) || !/^[0-9a-f]{64}$/.test(pin.environmentId) ||
+    "expiresAt", "environmentId", "accountPublicKey", "admissionRevision", "operationId"];
+  if (Object.keys(pin).length !== fields.length || Object.keys(pin).some(key => !fields.includes(key)) ||
+    !/^A[A-Z2-7]{55}$/.test(pin.accountPublicKey) || !/^[0-9a-f]{64}$/.test(pin.environmentId) ||
     !Number.isSafeInteger(pin.admissionRevision) || pin.admissionRevision < 1 ||
     !Number.isSafeInteger(pin.expiresAt) || pin.expiresAt <= Math.floor(Date.now() / 1000))
     throw new EpEnvelopeError("failed-precondition", "environment manager admission coordinates are invalid or expired");
@@ -47,8 +50,8 @@ export async function stageEnvironmentManagerAdmission(
   // Explicit ordering makes a same-input retry byte-identical regardless of input property order.
   const bytes = new TextEncoder().encode(JSON.stringify({
     v: 1, kind: "environment-manager-admission", space,
-    owner: pin.owner, environmentId: pin.environmentId, admissionRevision: pin.admissionRevision,
-    instanceId: pin.instanceId, lifecycleUid: pin.lifecycleUid, authorityEndpoint: pin.authorityEndpoint,
+    owner: pin.owner, environmentId: pin.environmentId, accountPublicKey: pin.accountPublicKey,
+    admissionRevision: pin.admissionRevision, instanceId: pin.instanceId, lifecycleUid: pin.lifecycleUid, authorityEndpoint: pin.authorityEndpoint,
     authorityInstanceId: pin.authorityInstanceId, expiresAt: pin.expiresAt, operationId: pin.operationId,
   }));
   try {
