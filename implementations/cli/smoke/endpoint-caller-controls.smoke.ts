@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants, chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { canonicalJson, createSpaceAuth, registry, type AuthProvider, type EndpointDeploymentTrustRecord, type ParsedArgs } from "@cotal-ai/core";
@@ -53,6 +53,8 @@ async function cell(name: string, run: () => void | Promise<void>): Promise<void
   passed++; console.log(`PASS ${name}`);
 }
 const parsed = (values: ParsedArgs["values"], positionals = [selection.endpoint, "increment"]): ParsedArgs => ({ values, positionals, raw: [] });
+const protectedTrustSupported = typeof process.getuid === "function" && !!constants.O_NOFOLLOW && !!constants.O_DIRECTORY;
+const unsupportedTrust = { name: "Error", message: "protected endpoint deployment trust is unsupported on this platform" };
 try {
   put();
   recordMesh({ space, root, server: "nats://127.0.0.1:49222", mode: "user", origin: "manual", ts: new Date().toISOString(),
@@ -73,81 +75,102 @@ try {
     await assert.rejects(resolveEndpointCallerTarget({ space, creds: "raw.creds" }, selection), /do not accept raw --creds/);
     assert.equal(acquisitionCalls, 0);
   });
-  await cell("EC08-protected-trust-positive-read-and-recheck", () => {
-    const loaded = loadEndpointDeploymentTrust(root, space, origin);
-    assert.equal(canonicalJson(loaded.record), original);
-    loaded.assertCurrent();
-  });
-  await cell("EC09-missing-record-denies-before-provider", async () => {
-    unlinkSync(path);
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /ENOENT/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC10-wrong-origin-denies-before-provider", async () => {
-    put({ ...record, exchangeOrigin: "https://foreign.example" });
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /origin mismatch/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC11-wrong-account-space-denies-before-provider", async () => {
-    put({ ...record, trust: { ...record.trust, account: { ...record.trust.account, space: "foreign" } } });
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /account\/time mismatch/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC12-expired-assignment-denies-before-provider", async () => {
-    put({ ...record, trust: { ...record.trust, assignmentExpiresAt: now - 1 } });
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /expired/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC13-private-key-denies-before-provider", async () => {
-    put({ ...record, trust: { ...record.trust, keys: [{ ...key, d: "private" }] } });
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /closed shape/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC14-symlink-file-denies-before-provider", async () => {
-    const other = join(home, "other.json"); writeFileSync(other, original, { mode: 0o600 });
-    unlinkSync(path); symlinkSync(other, path);
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /0600 regular file/);
-    assert.equal(acquisitionCalls, 0); unlinkSync(path); put();
-  });
-  await cell("EC15-public-file-mode-denies-before-provider", async () => {
-    chmodSync(path, 0o644);
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /0600 regular file/);
-    assert.equal(acquisitionCalls, 0); chmodSync(path, 0o600);
-  });
-  await cell("EC16-public-directory-mode-denies-before-provider", async () => {
-    chmodSync(state, 0o755);
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /0700 directory/);
-    assert.equal(acquisitionCalls, 0); chmodSync(state, 0o700);
-  });
-  await cell("EC17-byte-bound-denies-before-provider", async () => {
-    writeFileSync(path, " ".repeat(32769));
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /byte bound/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC18-canonical-equivalent-byte-change-invalidates-recheck", () => {
-    const loaded = loadEndpointDeploymentTrust(root, space, origin);
-    writeFileSync(path, original + "\n");
-    assert.throws(() => loaded.assertCurrent(), /replaced/); put();
-  });
-  await cell("EC19-identical-file-replacement-invalidates-recheck", () => {
-    const loaded = loadEndpointDeploymentTrust(root, space, origin);
-    const replacement = join(state, "replacement.json"); writeFileSync(replacement, original, { mode: 0o600 }); renameSync(replacement, path);
-    assert.throws(() => loaded.assertCurrent(), /replaced/);
-  });
+  if (!protectedTrustSupported) {
+    await cell("EC23-unsupported-protected-trust-loader-refuses", () => {
+      assert.throws(() => loadEndpointDeploymentTrust(root, space, origin), unsupportedTrust);
+      assert.equal(acquisitionCalls, 0);
+    });
+    await cell("EC24-unsupported-public-helper-denies-before-provider", async () => {
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), unsupportedTrust);
+      assert.equal(acquisitionCalls, 0);
+    });
+    await cell("EC25-unsupported-shipped-invoke-denies-before-provider", async () => {
+      await assert.rejects(invokeCmd(parsed({ space, on: instance, args: "{}" })), unsupportedTrust);
+      assert.equal(acquisitionCalls, 0);
+    });
+  }
+  if (protectedTrustSupported) {
+    await cell("EC08-protected-trust-positive-read-and-recheck", () => {
+      const loaded = loadEndpointDeploymentTrust(root, space, origin);
+      assert.equal(canonicalJson(loaded.record), original);
+      loaded.assertCurrent();
+    });
+    await cell("EC09-missing-record-denies-before-provider", async () => {
+      unlinkSync(path);
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /ENOENT/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC10-wrong-origin-denies-before-provider", async () => {
+      put({ ...record, exchangeOrigin: "https://foreign.example" });
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /origin mismatch/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC11-wrong-account-space-denies-before-provider", async () => {
+      put({ ...record, trust: { ...record.trust, account: { ...record.trust.account, space: "foreign" } } });
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /account\/time mismatch/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC12-expired-assignment-denies-before-provider", async () => {
+      put({ ...record, trust: { ...record.trust, assignmentExpiresAt: now - 1 } });
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /expired/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC13-private-key-denies-before-provider", async () => {
+      put({ ...record, trust: { ...record.trust, keys: [{ ...key, d: "private" }] } });
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /closed shape/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC14-symlink-file-denies-before-provider", async () => {
+      const other = join(home, "other.json"); writeFileSync(other, original, { mode: 0o600 });
+      unlinkSync(path); symlinkSync(other, path);
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /0600 regular file/);
+      assert.equal(acquisitionCalls, 0); unlinkSync(path); put();
+    });
+    await cell("EC15-public-file-mode-denies-before-provider", async () => {
+      chmodSync(path, 0o644);
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /0600 regular file/);
+      assert.equal(acquisitionCalls, 0); chmodSync(path, 0o600);
+    });
+    await cell("EC16-public-directory-mode-denies-before-provider", async () => {
+      chmodSync(state, 0o755);
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /0700 directory/);
+      assert.equal(acquisitionCalls, 0); chmodSync(state, 0o700);
+    });
+    await cell("EC17-byte-bound-denies-before-provider", async () => {
+      writeFileSync(path, " ".repeat(32769));
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /byte bound/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC18-canonical-equivalent-byte-change-invalidates-recheck", () => {
+      const loaded = loadEndpointDeploymentTrust(root, space, origin);
+      writeFileSync(path, original + "\n");
+      assert.throws(() => loaded.assertCurrent(), /replaced/); put();
+    });
+    await cell("EC19-identical-file-replacement-invalidates-recheck", () => {
+      const loaded = loadEndpointDeploymentTrust(root, space, origin);
+      const replacement = join(state, "replacement.json"); writeFileSync(replacement, original, { mode: 0o600 }); renameSync(replacement, path);
+      assert.throws(() => loaded.assertCurrent(), /replaced/);
+    });
+  }
   await cell("EC20-raw-server-override-denies-before-provider", async () => {
     await assert.rejects(resolveEndpointCallerTarget({ space, server: "nats://127.0.0.1:49223" }, selection), /registry broker and root/);
     assert.equal(acquisitionCalls, 0);
   });
-  await cell("EC22-malformed-utf8-denies-before-provider", async () => {
-    writeFileSync(path, Buffer.from([0xc3, 0x28]));
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /encoded data was not valid/);
-    assert.equal(acquisitionCalls, 0); put();
-  });
-  await cell("EC21-valid-registry-and-trust-reaches-only-dedicated-provider", async () => {
-    await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /EC-provider-boundary-reached/);
-    assert.equal(acquisitionCalls, 1);
-  });
+  if (protectedTrustSupported) {
+    await cell("EC22-malformed-utf8-denies-before-provider", async () => {
+      writeFileSync(path, Buffer.from([0xc3, 0x28]));
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /encoded data was not valid/);
+      assert.equal(acquisitionCalls, 0); put();
+    });
+    await cell("EC21-valid-registry-and-trust-reaches-only-dedicated-provider", async () => {
+      await assert.rejects(resolveEndpointCallerTarget({ space }, selection), /EC-provider-boundary-reached/);
+      assert.equal(acquisitionCalls, 1);
+    });
+  }
   assert.equal(readFileSync(path, "utf8"), original);
+  assert.equal(passed, protectedTrustSupported ? 24 : 13);
+  assert.equal(acquisitionCalls, protectedTrustSupported ? 1 : 0);
+  console.log(`endpoint-caller-controls.smoke: protected filesystem positives ${protectedTrustSupported ? "exercised" : "not exercised (unsupported platform)"}`);
   console.log(`endpoint-caller-controls.smoke: ${passed} cells passed`);
 } finally {
   registry.unregister("auth-provider", counter.name);
