@@ -1,7 +1,7 @@
 /** Privileged native library proof, run only in an isolated guest. No model, enrollment or plane.
  * Build this and the child fixture from the same source cohort; this is not hosted acceptance. */
 import assert from "node:assert/strict";
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, rmdirSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SpawnRefused, managedRuntimeKey, type ManagedLifecycleHandoff } from "@cotal-ai/core";
 import { createRuntime, type DelegatedPtyOptions } from "../src/runtime/index.js";
@@ -28,7 +28,10 @@ const handoff: ManagedLifecycleHandoff = { kind: "cotal-managed-handoff/v1", spa
 const resource = join(children, managedRuntimeKey(handoff));
 const group = join(groups, managedRuntimeKey(handoff));
 let checks = 0;
-function check(name: string, test: () => void) { test(); checks++; console.log(`PASS ${name}`); }
+function check(name: string, test: () => void) {
+  try { test(); checks++; console.log(`PASS ${name}`); }
+  catch (error) { console.error(`FAIL ${name}`); throw error; }
+}
 async function until(test: () => boolean, label: string) { const end = Date.now() + 10_000; while (Date.now() < end) { if (test()) return; await new Promise(resolve => setTimeout(resolve, 25)); } throw new Error(`timeout: ${label}`); }
 const live = (pid: number) => { try { return !/^State:\s+Z/m.test(readFileSync(`/proc/${pid}/status`, "utf8")); } catch (error) { if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return false; throw error; } };
 let handle: ReturnType<NonNullable<ReturnType<typeof createRuntime>["spawnDelegated"]>> | undefined;
@@ -37,11 +40,36 @@ try {
   check("default stock runtime remains nondelegated", () => assert.equal(createRuntime("pty", "native-default").spawnDelegated, undefined));
   check("external runtimes refuse the delegated configuration", () => assert.throws(() => createRuntime("absent-native-provider", "native", options), /requires the pty runtime/));
   check("root target UID is refused before material", () => assert.throws(() => createRuntime("pty", "native", { ...options, uid: 0 }), SpawnRefused));
+  check("root target GID is refused before material", () => assert.throws(() => createRuntime("pty", "native", { ...options, gid: 0 }), SpawnRefused));
+  chmodSync(children, 0o777);
+  try {
+    check("child-writable storage is refused before material", () => assert.throws(() => createRuntime("pty", "native", options), SpawnRefused));
+  } finally { chmodSync(children, 0o711); }
+  const alias = join(root, "child-alias");
+  symlinkSync(children, alias);
+  check("symlinked storage is refused before material", () => assert.throws(() => createRuntime("pty", "native", { ...options, childRoot: alias }), SpawnRefused));
   check("loader environment is refused before material", () => assert.throws(() => createRuntime("pty", "native", { ...options, env: { ...options.env, LD_PRELOAD: "/nonexistent" } }), SpawnRefused));
   check("manager environment names are refused", () => assert.throws(() => createRuntime("pty", "native", { ...options, env: { ...options.env, COTAL_HOME: root } }), SpawnRefused));
   check("configuration fields are closed", () => assert.throws(() => createRuntime("pty", "native", { ...options, extra: true } as DelegatedPtyOptions), SpawnRefused));
   check("ordinary filesystems cannot substitute for confinement", () => assert.throws(() => createRuntime("pty", "native", { ...options, cgroupRoot: root }), SpawnRefused));
   check("refusals release no handoff and reserve no child", () => assert.equal(existsSync(join(children, ".delegated-child")), false));
+  const refusedRoot = join(root, "refused-children"), refusedGroups = join(groups, "refused-groups");
+  mkdirSync(refusedRoot, { mode: 0o711 }); mkdirSync(refusedGroups);
+  const refusedOptions = { ...options, childRoot: refusedRoot, cgroupRoot: refusedGroups };
+  const refusedRuntime = createRuntime("pty", "native-refusal", refusedOptions);
+  check("known pre-launch failure burns the allocation", () => {
+    assert.throws(() => refusedRuntime.spawnDelegated!({ agent: "native-fixture", persona: undefined as unknown as string }, handoff), SpawnRefused);
+    assert.equal(existsSync(join(refusedRoot, ".delegated-child")), true);
+    assert.equal(existsSync(join(refusedRoot, managedRuntimeKey(handoff))), false);
+    assert.equal(existsSync(join(refusedGroups, managedRuntimeKey(handoff))), false);
+  });
+  const reconstructed = createRuntime("pty", "native-reconstructed", refusedOptions);
+  check("reconstructed runtime cannot replace a burnt lifecycle", () => {
+    const replacement = { ...handoff, actor: "native_replay", lifecycleUid: "mnopqrstuvabcdefghijkl1234" };
+    assert.throws(() => reconstructed.spawnDelegated!({ agent: "native-fixture", persona: "fixture" }, replacement), /allocation is already reserved/);
+    assert.equal(existsSync(join(refusedRoot, managedRuntimeKey(replacement))), false);
+  });
+  rmdirSync(refusedGroups);
   const runtime = createRuntime("pty", "native", options);
   check("configured runtime exposes the actual delegated entry", () => assert.equal(typeof runtime.spawnDelegated, "function"));
   check("configured runtime refuses direct launch", () => assert.throws(() => runtime.spawn("bad", { command: "/bin/true", args: [] }, root), SpawnRefused));
@@ -68,16 +96,19 @@ try {
   check("active second allocation is refused", () => assert.throws(() => runtime.spawnDelegated!({ agent: "native-fixture", persona: "fixture" }, handoff), SpawnRefused));
   // Real runtime input ends only the foreground fixture. The setsid descendant ignores HUP/TERM.
   await handle.write!("exit-parent\n");
-  await handle.waitForExit!();
+  await assert.doesNotReject(handle.waitForExit!(), "reported exit also proves detached descendant death");
   check("reported exit also proves detached descendant death", () => { assert.equal(handle!.status(), "exited"); assert.equal(live(Number(o.descendantPid)), false); });
   check("child storage and cgroup go only after full exit", () => { assert.equal(existsSync(resource), false); assert.equal(existsSync(group), false); });
   check("one-shot marker is retained after close", () => assert.equal(existsSync(join(children, ".delegated-child")), true));
   console.log("DELEGATED_NATIVE_SENTINEL=" + JSON.stringify({ checks, failed: 0, observed: o, exit: handle.exitInfo?.(), scope: "source-runtime/OS proof with dummy fixture, not stock CLI, auth or Lang acceptance" }));
 } finally {
+  if (observed && !String(observed.membership).endsWith("/" + managedRuntimeKey(handoff)))
+    throw new Error("native proof retains an unconfined child for external provider termination");
   if (handle && handle.status() !== "exited") { handle.stop({ graceful: false }); await handle.waitForExit!(); }
   closeSync(held);
-  // Kernel emptiness is mandatory even on a failing assertion. Never delete a live cwd.
-  if (existsSync(group)) throw new Error("native proof cleanup retained an unverified cgroup and child root");
+  // Kernel emptiness and descendant death are mandatory even on a failing assertion. Never delete a live cwd.
+  if (existsSync(group) || (observed && live(Number(observed.descendantPid))))
+    throw new Error("native proof cleanup retained an unverified cgroup and child root");
   rmdirSync(groups);
   rmSync(root, { recursive: true, force: true });
 }
