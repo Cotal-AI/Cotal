@@ -244,7 +244,7 @@ try {
     const bindingCounts = { descriptorClosureCount: 64, receiptClosureCount: 64, selectedNonDescribeCommandCount: 31, resolvedCommandCount: 32 };
     const sameBindingIdentity = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;
     const prepareBindingObservation = () => {
-      const handles: number[] = [], directories: { path: string; fd: number; info: Stats }[] = [];
+      const handles: number[] = [], directories: { path: string; absolutePath: string; fd: number; info: Stats }[] = [];
       const unknown = () => ({ state: "unknown" });
       const close = () => { let closed = true; for (const fd of handles.splice(0).reverse()) { try { closeSync(fd); } catch { closed = false; } } return closed; };
       try {
@@ -253,16 +253,19 @@ try {
         const rootPath = resolve(clientRoot), statePath = resolve(clientState), segments = statePath.split(sep).filter(Boolean);
         if (relative(rootPath, statePath) !== join(".cotal", "auth", spaceSegment(space))) throw new Error("binding observation state differs");
         const rootDepth = rootPath.split(sep).filter(Boolean).length;
-        let path = sep;
+        let path = sep, absolutePath = sep;
         for (let depth = 0; depth <= segments.length; depth++) {
-          if (depth > 0) path = join(`/proc/self/fd/${handles[handles.length - 1]}`, segments[depth - 1]);
+          if (depth > 0) {
+            path = join(`/proc/self/fd/${handles[handles.length - 1]}`, segments[depth - 1]);
+            absolutePath = join(absolutePath, segments[depth - 1]);
+          }
           const before = lstatSync(path);
           if (!before.isDirectory() || before.isSymbolicLink() || (depth >= rootDepth && (before.uid !== uid || (before.mode & 0o7777) !== 0o700))) throw new Error("binding observation directory refused");
           const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
           handles.push(fd);
           const opened = fstatSync(fd);
-          if (!sameBindingIdentity(before, opened)) throw new Error("binding observation directory changed");
-          directories.push({ path, fd, info: opened });
+          if (!sameBindingIdentity(before, opened) || !sameBindingIdentity(opened, lstatSync(absolutePath))) throw new Error("binding observation directory changed");
+          directories.push({ path, absolutePath, fd, info: opened });
         }
         const filePath = join(`/proc/self/fd/${handles[handles.length - 1]}`, bindingFile);
         let absent = false;
@@ -273,7 +276,7 @@ try {
           read() {
             try {
               for (const directory of directories) {
-                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path))) return unknown();
+                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path)) || !sameBindingIdentity(directory.info, lstatSync(directory.absolutePath))) return unknown();
               }
               const before = lstatSync(filePath);
               if (!before.isFile() || before.isSymbolicLink() || before.uid !== uid || (before.mode & 0o7777) !== 0o600 || before.nlink !== 1 || before.size < 1 || before.size > bindingBytes) return unknown();
@@ -287,7 +290,7 @@ try {
               const after = fstatSync(fd), linked = lstatSync(filePath);
               if (length !== opened.size || length > bindingBytes || after.nlink !== 1 || !sameBindingIdentity(opened, after) || !sameBindingIdentity(after, linked) || opened.size !== after.size || after.size !== linked.size || opened.mtimeMs !== after.mtimeMs || opened.ctimeMs !== after.ctimeMs || after.mtimeMs !== linked.mtimeMs || after.ctimeMs !== linked.ctimeMs) return unknown();
               for (const directory of directories) {
-                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path))) return unknown();
+                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path)) || !sameBindingIdentity(directory.info, lstatSync(directory.absolutePath))) return unknown();
               }
               const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
               const raw: unknown = JSON.parse(text);
