@@ -876,6 +876,10 @@ minimal issued `endpoint-caller` compiler, protocol2/3 effect checks, full deleg
 account/revision gate binding, native policy-head CAS holds, verified signerless JWS adoption,
 and stock native auth `ep-check`/`ep-admit`/`ep-release` with separate held drain records.
 
+The exported stock authority input and output schemas are recursively frozen at module load.
+Their schema content is unchanged. The auth listener grant audit pins all three authority
+commands alongside retirement and describe without adding grant rows.
+
 A competing admission can lose the endpoint-policy CAS. The stock service client preserves
 that `ep-admit` refusal as `conflict`, and the application reply states `not-executed` because
 its handler did not run. The client does not retry admission automatically. Other authority

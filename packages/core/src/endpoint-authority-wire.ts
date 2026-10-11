@@ -1,6 +1,15 @@
 /** Closed stock authority wire contracts. Structural endpoint bounds are followed by the
  * native endpointToken grammar, never an ambient URI or unsafe nested-regex validator. */
 import { compileContract } from "./schema-profile.js";
+
+function deepFreeze<T>(v: T): T {
+  if (v !== null && typeof v === "object") {
+    for (const child of Object.values(v as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(v);
+  }
+  return v;
+}
+
 const definitions = {
   "account": {
     "type": "object",
@@ -564,6 +573,6 @@ const definitions = {
     ]
   }
 } as const;
-export const ENDPOINT_AUTHORITY_INPUT_SCHEMA = { definitions, oneOf: [ { $ref: "#/definitions/admissionRequest" }, { $ref: "#/definitions/releaseRequest" }, { $ref: "#/definitions/checkRequest" } ] } as const;
-export const ENDPOINT_AUTHORITY_OUTPUT_SCHEMA = { definitions, oneOf: [ { $ref: "#/definitions/admissionResponse" }, { $ref: "#/definitions/releaseResponse" }, { $ref: "#/definitions/checkResponse" } ] } as const;
+export const ENDPOINT_AUTHORITY_INPUT_SCHEMA = deepFreeze({ definitions, oneOf: [ { $ref: "#/definitions/admissionRequest" }, { $ref: "#/definitions/releaseRequest" }, { $ref: "#/definitions/checkRequest" } ] } as const);
+export const ENDPOINT_AUTHORITY_OUTPUT_SCHEMA = deepFreeze({ definitions, oneOf: [ { $ref: "#/definitions/admissionResponse" }, { $ref: "#/definitions/releaseResponse" }, { $ref: "#/definitions/checkResponse" } ] } as const);
 export const endpointServeAttestationContract = compileContract({ root: { definitions, $ref: "#/definitions/serveAttestation" } });
