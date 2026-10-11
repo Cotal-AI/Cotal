@@ -280,12 +280,12 @@ try {
       cell("R01-identical-activation-replay-must-not-release-material-before-policy-final-CAS", !!replayError && !replayBeforeRelease?.serveJwt && heldHead?.state === "held");
     }
     const active = await pendingActivation;
-    cell(`N02-native-activation-${index}`, active.processEpoch === 0 && active.registrationRevision > 0);
     assert.equal(observationFilters[index], `cotal.${space}.ep.v1.inst.test_example_shared.${reservation.instanceId}.*.>`, "actual canonical observer filter bytes");
     assert.equal(observationFilters.length, index + 1, "one actual observer subscription per activation");
+    cell(`N02-native-activation-${index}`, active.processEpoch === 0 && active.registrationRevision > 0);
     const replay = await authority.activate(token, { operationId, instanceId: reservation.instanceId, content, signature });
-    cell(`N03-exact-lost-response-material-${index}`, replay.serveJwt === active.serveJwt && replay.attestation === active.attestation);
     assert.equal(observationFilters.length, index + 1, "canonical prior-active replay does not resubscribe");
+    cell(`N03-exact-lost-response-material-${index}`, replay.serveJwt === active.serveJwt && replay.attestation === active.attestation);
     const controlId = core.newIdentity(), controlGeneration = core.mintGeneration();
     const controlCaller = { ...principal, generation: controlGeneration };
     const controlRows = core.epCallerGrantRows(space, ["ep-check", "ep-admit", "ep-release"].map(command => ({ endpoint: "auth", command, instanceId: authInstanceId, instanceOnly: true })), controlCaller);
