@@ -1,0 +1,20 @@
+{
+  "grades": "suite",
+  "guard": "a foreground CLI forwards graceful SIGTERM to the harness it owns and remains alive until child exit",
+  "command": "pnpm smoke:spawn-foreground-signal",
+  "suite": ["implementations/cli/smoke/spawn-foreground-signal.smoke.ts"],
+  "progressPattern": "PASS",
+  "minTicks": 1,
+  "completionMarker": "SPAWN FOREGROUND SIGNAL COMPLETE",
+  "why": "The real runCli dispatcher starts a dummy connector on an owned private broker. An explicitly labelled outer signal observer keeps the wrapper alive when the relay is removed, so the failure is missing forwarding rather than wrapper death. The child stays alive after receiving SIGTERM until the fixture releases it through its still-owned stdin. CLI source imports consume the mutated file directly; no compiled CLI artifact is used or left mutated.",
+  "mutations": [
+    {
+      "name": "foreground SIGTERM listener does not signal the owned harness",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  const forwardTerm = (): void => { child.kill(\"SIGTERM\"); };",
+      "replace": "  const forwardTerm = (): void => { void child; };",
+      "expectRed": "foreground CLI forwards SIGTERM to its owned harness",
+      "cell": "foreground CLI forwards SIGTERM to its owned harness"
+    }
+  ]
+}

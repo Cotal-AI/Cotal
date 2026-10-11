@@ -169,7 +169,9 @@ manager restart. The launcher joins its own kernel cgroup before dropping privil
 supplementary groups and capability sets and enables no-new-privileges. A missing UID, supported
 kernel confinement or protected storage refuses rather than launching in the manager's UID.
 
-Parent exit alone is not exit proof. The runtime kills the remaining cgroup and observes
+A graceful stop signals the foreground CLI, which forwards SIGTERM to its owned harness and
+waits for that child before cleanup. This relay does not survive SIGKILL and is not descendant
+exit proof. The runtime kills the remaining cgroup and observes
 `cgroup.events` populated zero before reporting exit or removing the child's private directory.
 An unreadable or non-empty confinement leaves close unverified and retains the directory.
 The external host must still terminate the provider environment and retire the recorded UIDs

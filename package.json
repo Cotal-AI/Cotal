@@ -251,6 +251,7 @@
     "smoke:opencode-run-error": "tsx extensions/connector-opencode/smoke/agui-run-error.smoke.ts",
     "smoke:opencode-events-release": "tsx extensions/connector-opencode/smoke/events-release.smoke.ts",
     "smoke:spawn-foreground-events": "tsx implementations/cli/smoke/spawn-foreground-events.smoke.ts",
+    "smoke:spawn-foreground-signal": "tsx implementations/cli/smoke/spawn-foreground-signal.smoke.ts",
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
     "smoke:opencode-boot-prompt": "tsx extensions/connector-opencode/smoke/boot-prompt.smoke.ts",

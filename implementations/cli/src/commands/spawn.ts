@@ -1272,21 +1272,29 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     discardLaunchArtifacts(artifacts);
     throw e;
   }
-  await new Promise<void>((resolve) => {
-    child.on("error", (e) => {
-      // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
-      // back. (User-mode revoke runs unconditionally once this promise settles, below.)
-      console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
-      void retireProvision("exec failed").finally(() => {
-        process.exitCode = 1;
+  // A delegated PTY owns this foreground CLI, not its harness. Keep the CLI alive on a graceful
+  // stop, forward the signal to the child it still owns, and wait for that child's exit/cleanup.
+  const forwardTerm = (): void => { child.kill("SIGTERM"); };
+  process.on("SIGTERM", forwardTerm);
+  try {
+    await new Promise<void>((resolve) => {
+      child.on("error", (e) => {
+        // The exec never started, so the just-provisioned static-auth identity is orphaned — roll it
+        // back. (User-mode revoke runs unconditionally once this promise settles, below.)
+        console.error(`✗ failed to launch ${spec.command}: ${e.message}`);
+        void retireProvision("exec failed").finally(() => {
+          process.exitCode = 1;
+          resolve();
+        });
+      });
+      child.on("exit", (code) => {
+        process.exitCode = code ?? 0;
         resolve();
       });
     });
-    child.on("exit", (code) => {
-      process.exitCode = code ?? 0;
-      resolve();
-    });
-  });
+  } finally {
+    process.removeListener("SIGTERM", forwardTerm);
+  }
   // STATIC MODE: the departure half of the run-scoped identity — the agent is gone and no future
   // spawn reuses this identity, so retire its creds + broker footprint now (the manager's despawn
   // deprovision, foregrounded). Best-effort: a SIGKILLed CLI can't run it, and that residue is the
