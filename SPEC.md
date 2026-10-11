@@ -3078,16 +3078,11 @@ information — it MUST treat every command served under one as `write`. There i
 optional.
 
 A client that does not implement this section MUST refuse to resolve a descriptor whose
-`protocol.v` it does not implement, rather than ignore what it cannot honor. **That refusal is a
-requirement this section CREATES, not one already met.** What protects an unamended client today
-is a fence on the other side of the wire: `describe`'s pinned output schema fixes
-`descriptor.protocol.v` to the constant `1`, so an unamended responder cannot publish a `v:2`
-descriptor at all — its own reply fails output validation and surfaces as a responder bug. The
-registry read path fails closed the same way, refusing a service record whose `protocol.v` is not
-`1`. The resolving caller does neither: it reads the describe answer without validating it, and
-the shape it reads does not carry `protocol`. So the version marker is enforced today by the
-RESPONDER's contract and by the REGISTRY reader, and by nothing in the caller — which is safe only
-for as long as no `v:2` descriptor can exist.
+`protocol.v` it does not implement, rather than ignore what it cannot honor. Earlier reference
+implementations relied on responder and registry version1 pins. Once version2 or version3 can be
+advertised, those pins no longer protect an unamended caller. A historical name-based classifier
+retained for API compatibility MUST NOT authorize retries. Retry authorization belongs to the
+verified effect of the invocation that failed, not a later resolution or an earlier fenced hop.
 
 **Emission.** Moving to `protocol.v: 2` **is** a non-additive discovery change, so §11's
 change-process rule for one governs it and is the authority on how it is rolled out; this section

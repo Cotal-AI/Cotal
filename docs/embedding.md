@@ -861,6 +861,15 @@ CLI and MCP revoke verbs are a follow-up described in the [run-start design](des
 
 ## Proposed delegated endpoint authority
 
+`CotalEndpoint.invokeService` repeats an answered-but-unbound call only when the failed
+invocation resolved a protocol2/3 command with `effect: "read"`. Protocol1 commands and missing
+effects are unsafe to repeat. A later describe cannot authorize a write that already ran.
+A fenced refusal proving `not-executed` retains the existing bounded repair for any effect.
+
+`REPEAT_SAFE_COMMANDS` and `isRepeatSafeCommand` retain their exports, signatures and historical
+values for compatibility. They are deprecated and do not authorize retries. Delegated protocol3
+retry acceptance remains unproven by the protocol2 retry fixture.
+
 The namespace governor and serving-instance owner are separate under discovery protocol3.
 The reviewed first slice is account-scoped, instance-only and ephemeral-only, with a closed
 authority version2 envelope, native route ceilings and issuer-held signing/executor custody.

@@ -34,6 +34,22 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Endpoint effect retry policy in 0.80.0 (unreleased)
+
+Upgrade resolving callers before enabling protocol2/3 responders. Commands declared `write`
+are not repeated automatically after an answered-but-unbound result. Protocol1 commands also
+remain write-classified, even when raw cluster bytes contain a read annotation. Verify the
+application outcome before deliberately reissuing such a call.
+
+Declared reads may repeat once under the existing deadline and binding checks. Fenced
+`not-executed` refusals retain their bounded repair. Retry authorization uses the failed
+invocation's verified effect, not metadata returned by a later describe.
+
+The `REPEAT_SAFE_COMMANDS` and `isRepeatSafeCommand` exports keep their signatures and values
+but are deprecated historical classifiers. Applications must not use them as retry authority.
+No credential, stored-state migration, automatic reissue or permission fallback is added.
+Protocol3 delegated retry acceptance still requires separate runtime proof.
+
 ## Delegated endpoint receipt binding in 0.80.0 (unreleased)
 
 Signed delegated endpoint caller and holder-control receipts now require payload version3.

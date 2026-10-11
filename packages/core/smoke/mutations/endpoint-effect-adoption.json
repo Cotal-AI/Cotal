@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "packages/core/smoke/unfenced-responder.smoke.ts"
+  ],
+  "guard": "Only the failed invocation verified read effect authorizes an answered-but-unbound repeat; writes cannot borrow metadata from another hop or later resolution.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:unfenced-responder",
+  "completionMarker": "passed, 0 failed",
+  "progressPattern": "  \u2713 ",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/endpoint-effect-adoption.json",
+  "why": [
+    "Actual a126 original59 run is53PASS/6FAIL with duplicate protocol2 and protocol1 write effects and a real declared-read repeat positive. These targets exercise the actual shipped retry consumer rather than a fixture stub.",
+    "All four definitions are source-only and unexecuted. The stock runner must verify exact source SHA restoration, core rebuild and the same complete corrected entry after every mutation. No KILLED claim is inferred from definitions.",
+    "The complete entry retains original33 dynamic controls, replaces the obsolete version-pin tripwire with explicit co-adoption, preserves all25 reproduced phase1 checks, and adds5 real-entry metadata lifetime controls (64 planned). Protocol3 delegated retry acceptance remains open."
+  ],
+  "mutations": [
+    {
+      "name": "restore legacy name-based retry decision at the actual consumer",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (!attemptedRead) throw e;",
+      "replace": "          if (!((endpoint === \"manager\" && [\"status\", \"ps\", \"slots\", \"inspect\", \"list-personas\", \"show-persona\", \"run-status\", \"run-ps\", \"goal-result\"].includes(command)) || (endpoint === \"delivery\" && command === \"list\") || command === \"describe\")) throw e;",
+      "expectRed": "EA03 protocol2 write has exactly one real request and one application effect",
+      "cell": "EA03 protocol2 write has exactly one real request and one application effect",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:unfenced-responder"
+    },
+    {
+      "name": "withhold every declared read repeat",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (!attemptedRead) throw e;",
+      "replace": "          if (attemptedRead || !attemptedRead) throw e;",
+      "expectRed": "EA05 declared read positive actually repeats once through real re-describe and succeeds",
+      "cell": "EA05 declared read positive actually repeats once through real re-describe and succeeds",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:unfenced-responder"
+    },
+    {
+      "name": "reuse first read permission when the failed fenced reissue is a write",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          r = await invokeAttempt(reissueTarget);",
+      "replace": "          r = await invokeResolved(reissueTarget, signal);",
+      "expectRed": "EA30 the failed second-hop write does not inherit the first read's retry permission",
+      "cell": "EA30 the failed second-hop write does not inherit the first read's retry permission",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:unfenced-responder"
+    },
+    {
+      "name": "authorize the failed write from a later resolved read declaration",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (!attemptedRead) throw e;\n          return await invokeResolved(await resolve(signal), signal);",
+      "replace": "          const laterTarget = await resolve(signal);\n          if (laterTarget.commands.get(command)?.effect !== \"read\") throw e;\n          return await invokeResolved(laterTarget, signal);",
+      "expectRed": "EA27 later read metadata cannot authorize repeating the failed verified write",
+      "cell": "EA27 later read metadata cannot authorize repeating the failed verified write",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:unfenced-responder"
+    }
+  ]
+}

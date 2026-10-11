@@ -211,8 +211,17 @@ throws("a spec whose endpoint disagrees with the record key refuses",
   () => parseServiceSpec(spec, { endpoint: "other" }), "internal");
 throws("a spec with empty clusterDigests refuses",
   () => parseServiceSpec({ ...spec, clusterDigests: [] }, { endpoint: "manager" }), "internal");
-throws("a spec with a non-1 protocol version refuses",
-  () => parseServiceSpec({ ...spec, protocol: { v: 2 } }, { endpoint: "manager" }), "internal");
+throws("a spec with unsupported protocol4 refuses",
+  () => parseServiceSpec({ ...spec, protocol: { v: 4 } }, { endpoint: "manager" }), "internal");
+c("protocol2 service spec is supported without delegated authority",
+  parseServiceSpec({ ...spec, protocol: { v: 2 } }, { endpoint: "manager" }).protocol.v === 2);
+for (const [label, protocol] of [["zero", { v: 0 }], ["fractional", { v: 2.5 }],
+  ["string", { v: "2" }], ["missing", {}], ["extra-key", { v: 2, extra: true }]] as const) {
+  throws(`a malformed ${label} service protocol refuses`,
+    () => parseServiceSpec({ ...spec, protocol }, { endpoint: "manager" }), "internal");
+}
+throws("protocol3 without delegated authority refuses",
+  () => parseServiceSpec({ ...spec, protocol: { v: 3 } }, { endpoint: "manager" }));
 c("a service status validates",
   parseServiceStatus({ epoch: 3, state: SERVICE_READY, observedSpecRevision: 1 }).epoch === 3);
 throws("a status with a malformed state token refuses",
@@ -284,6 +293,18 @@ try {
   const kv = await openRecordsBucket(nc, SPACE, { create: true });
   const jsm = await jetstreamManager(nc);
   const asOp = { owner: "u_op" };
+
+  const v2Document = { ...DOC_MAIN, commands: DOC_MAIN.commands.map(command => ({ ...command, effect: "write" as const })) };
+  const v2Digest = register(v2Document);
+  const v2Spec: ServiceSpec = { endpoint: "effectmatrix", owner: "u_op", clusterDigests: [v2Digest], protocol: { v: 2 } };
+  const v2Registration = await reg(kv, { spec: v2Spec, instanceId: IID_A, registrant: asOp, authority });
+  c("protocol2 effect declarations reach the real registration boundary", v2Registration.registrationRevision >= 1);
+  await rejects("protocol2 missing command effect refuses before registration",
+    () => reg(kv, { spec: { ...v2Spec, endpoint: "effectmissing", clusterDigests: [DC_MAIN] },
+      instanceId: IID_A, registrant: asOp, authority }), "failed-precondition");
+  c("missing effect leaves no registered service spec",
+    await kv.get(recordSpecKey(RECORD_KINDS.svc, ["effectmissing", IID_A])) === null);
+  console.log("protocol3 delegated registration and retry matrix remain separately unproven by this protocol2 fixture");
 
   const regA = await reg(kv, { spec, instanceId: IID_A, registrant: asOp, authority });
   c("registration writes the spec and returns its store revision", regA.registrationRevision >= 1);

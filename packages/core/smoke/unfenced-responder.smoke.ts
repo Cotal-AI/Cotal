@@ -65,7 +65,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 /** Declared, not implied: a live suite can end in ways that redden no line, and `fail === 0` reads
  *  as PASS in every one of them. Measured by this lane's own crash controls — a mid-run exit prints
  *  nothing at all, and an import-time throw does not even reach this handler. */
-const EXPECTED_CELLS = 34 + 25;
+const EXPECTED_CELLS = 34 + 25 + 5;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -252,6 +252,8 @@ async function effectAdoption(): Promise<void> {
   const legacy = await descriptor(1, "status", "read");
   let answer: unknown = write;
   let activeCommand = "status", mutates = true;
+  let fencedFirst = false, keepStale = false;
+  let nextAnswer: unknown;
   let requests = 0, effects = 0, applicationValue = 0, readVisits = 0, describes = 0;
   const describeIds = new Set<string>();
   const bindings: { instanceId: string; epoch: number }[] = [];
@@ -271,15 +273,23 @@ async function effectAdoption(): Promise<void> {
           describes++; describeIds.add(env.id);
           // Retransmissions of the initial describe still name GHOST. Only an application
           // request changes the next real describe's attribution to the live incarnation.
-          instanceId = requests === 0 ? GHOST : IID_REAL;
+          instanceId = requests === 0 || keepStale ? GHOST : IID_REAL;
           reply = { v: 1, id: env.id, ok: true, data: { public: true, descriptor: answer } };
         } else if (env.op.command === activeCommand) {
           requests++;
           if (env.bind) bindings.push({ ...env.bind });
           inputDigests.push(env.op.inputDigest);
-          if (mutates) { applicationValue += Number(env.args?.n); effects++; }
-          else readVisits++;
-          reply = { v: 1, id: env.id, ok: true, data: { ran: true } };
+          if (fencedFirst && requests === 1 && env.bind) {
+            reply = { v: 1, id: env.id, ok: false, error: { code: "failed-precondition",
+              message: "effect probe refused before application dispatch", outcome: "not-executed",
+              details: [{ kind: EP_BIND_REFUSED, endpoint: BASELINE_LIFECYCLE_ENDPOINT,
+                command: activeCommand, boundTo: { ...env.bind }, servedBy: { instanceId: IID_REAL, epoch: EPOCH } }] } };
+          } else {
+            if (mutates) { applicationValue += Number(env.args?.n); effects++; }
+            else readVisits++;
+            reply = { v: 1, id: env.id, ok: true, data: { ran: true } };
+          }
+          if (nextAnswer !== undefined) { answer = nextAnswer; nextAnswer = undefined; }
         } else { responseDebt.push("unexpected-command"); return; }
         nc.publish(deriveReplySubject(SPACE, parsed, { instanceId, epoch: EPOCH }), enc.encode(JSON.stringify(reply)));
       } catch { responseDebt.push("responder-boundary"); }
@@ -292,6 +302,7 @@ async function effectAdoption(): Promise<void> {
   const reset = (value: unknown, name: string, changesState: boolean) => {
     answer = value; activeCommand = name; mutates = changesState;
     requests = 0; effects = 0; applicationValue = 0; readVisits = 0; describes = 0;
+    fencedFirst = false; keepStale = false; nextAnswer = undefined;
     bindings.length = 0; inputDigests.length = 0; describeIds.clear();
   };
   const discover = () => client.describeService(BASELINE_LIFECYCLE_ENDPOINT,
@@ -378,6 +389,26 @@ async function effectAdoption(): Promise<void> {
         describes > 0 && requests === 0 && effects === 0 && applicationValue === 0 && readVisits === 0 && bindings.length === 0,
         { describes, requests, effects, applicationValue });
     }
+    reset(write, "status", true);
+    c("EA26 write is verified before the responder advertises a later read", verified(await discover(), 2, "write"));
+    nextAnswer = read;
+    const drift = await invoke();
+    c("EA27 later read metadata cannot authorize repeating the failed verified write",
+      answer === read && respondedButUnbound(drift.error) && requests === 1 && effects === 1
+      && applicationValue === 1 && describeIds.size === 1 && firstBound(),
+      { requests, effects, applicationValue, distinctDescribes: describeIds.size });
+
+    reset(read, "status", true);
+    c("EA28 the first fenced hop is a genuinely resolved read", verified(await discover(), 2, "read"));
+    fencedFirst = true; keepStale = true; nextAnswer = write;
+    const changedHop = await invoke();
+    c("EA29 fenced read then unfenced write propagates the failed write's unknown outcome",
+      respondedButUnbound(changedHop.error) && changedHop.error instanceof EpEnvelopeError
+      && changedHop.error.outcome === undefined && !replyRefusedBeforeEffect(changedHop.error.toEpError()));
+    c("EA30 the failed second-hop write does not inherit the first read's retry permission",
+      requests === 2 && effects === 1 && applicationValue === 1 && readVisits === 0
+      && describeIds.size === 2 && firstBound() && bindings[1]?.instanceId === GHOST,
+      { requests, effects, applicationValue, distinctDescribes: describeIds.size, bindings });
     console.log("protocol3 delegated authority and retry acceptance OPEN: no delegated fixture in these cells");
   } finally {
     responder.unsubscribe();
@@ -404,23 +435,15 @@ try {
   c("...and the fenced arm's re-issue is therefore attributable to the refusal alone",
     !isRepeatSafeCommand(EP, "poke") && isRepeatSafeCommand(EP, "describe"));
 
-  // THE TRIPWIRE. `REPEAT_SAFE_COMMANDS` is a stand-in for §13.7 `effect`, which rides
-  // `protocol.v: 2` and cannot reach the wire while the descriptor is pinned to 1: the responder
-  // cannot publish a 2, the registry refuses one, so no caller in this tree can ever read an
-  // author-declared `read`/`write`. That pin is the whole reason the allowlist is not the
-  // descriptor-derived repeat-safety §13.7 forbids — it derives nothing from a descriptor, because
-  // there is nothing there to derive from.
-  //
-  // The dangerous direction is allowlist-says-safe against author-declares-`write`, and it opens
-  // the moment someone lifts the pin. This cell fires FIRST. It is a source-text assertion and
-  // says so: it grades that the pin is still written, not that the two fences behave — the schema
-  // constant is module-private and the behaviour has no reachable seam from here. That is enough
-  // for a tripwire, whose whole job is to be impossible to remove silently.
-  const servePinned = /protocol: \{ type: "object", required: \["v"\], properties: \{ v: \{ const: 1 \} \} \}/
-    .test(readFileSync(new URL("../src/endpoint-serve.ts", import.meta.url), "utf8"));
-  c("the describe descriptor is still pinned to protocol.v 1 — if this is red, §13.7 `effect` can " +
-    "now reach the wire and REPEAT_SAFE_COMMANDS (endpoint-grants.ts) must go, not coexist with it",
-    servePinned);
+  // The original pin tripwire detected missing co-adoption. Its replacement requires both the
+  // implemented version matrix and the absence of name-based retry authority. The real-entry
+  // effect controls below separately prove reach and behavior, rather than treating text as proof.
+  const serveSource = readFileSync(new URL("../src/endpoint-serve.ts", import.meta.url), "utf8");
+  const consumerSource = readFileSync(new URL("../src/endpoint.ts", import.meta.url), "utf8");
+  c("protocol2/3 describe and the command-effect retry consumer are adopted together",
+    serveSource.includes('v: { enum: [1, 2, 3] }') && !consumerSource.includes("isRepeatSafeCommand")
+    && consumerSource.includes('target.commands.get(command)?.effect === "read"')
+    && consumerSource.includes("if (!attemptedRead) throw e;"));
 
   // ---- 1. THE PAIR UNDER TEST ------------------------------------------------------------------
   // A RE-ISSUE HERE WOULD REACH THE RESPONDER AND WOULD EXECUTE. `reseedTo = GHOST` makes the
