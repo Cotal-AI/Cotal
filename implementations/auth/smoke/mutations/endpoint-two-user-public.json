@@ -1,0 +1,53 @@
+{
+  "suite": [
+    "implementations/auth/smoke/endpoint-authority-public.smoke.ts",
+    "implementations/auth/smoke/endpoint-authority-native-worker.ts"
+  ],
+  "guard": "Two real public users and separate signerless workers retain explicit sharing, exact owner attribution and allowed source CLI effects.",
+  "command": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --two-user-public-acceptance",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/endpoint-two-user-public.json",
+  "why": [
+    "Only test fixture/worker dependency mutations are selected. No product guard is changed. The real public acquisition and source CLI entries must reach their named predicates.",
+    "The existing build is a prerequisite. Mutations change only directly executed fixture/worker source, so no compiled mutant is produced. The stock runner verifies the restored source SHA and this exact public entry must pass after every restore; no rebuild or universal retirement is claimed.",
+    "The wire/account witness and all original component proofs remain separate. Broker-denied negatives are not claimed to kill a bypassed worker admission guard."
+  ],
+  "mutations": [
+    {
+      "name": "remove explicit sharing before the real shared caller acquisition",
+      "file": "implementations/auth/smoke/endpoint-authority-public.smoke.ts",
+      "find": "      const shared = await connected(1, active[0].instanceId);",
+      "replace": "      shares.delete(grantedShare); const shared = await connected(1, active[0].instanceId);",
+      "expectRed": "\"failedCell\":\"TUP16-B-own-issued-principal-invokes-A-only-one-effect\"",
+      "cell": "TUP16-B-own-issued-principal-invokes-A-only-one-effect",
+      "afterRestore": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --two-user-public-acceptance"
+    },
+    {
+      "name": "authorize a foreign caller before explicit sharing is installed",
+      "file": "implementations/auth/smoke/endpoint-authority-public.smoke.ts",
+      "find": "        const shared = shares.has(key);",
+      "replace": "        const shared = shares.has(key) || p.owner !== decision?.holder.owner;",
+      "expectRed": "\"failedCell\":\"TUP14-B-to-A-without-sharing-refused-zero-effects\"",
+      "cell": "TUP14-B-to-A-without-sharing-refused-zero-effects",
+      "afterRestore": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --two-user-public-acceptance"
+    },
+    {
+      "name": "substitute the public worker reply owner",
+      "file": "implementations/auth/smoke/endpoint-authority-native-worker.ts",
+      "find": "  const replyOwner = adoption.grant.owner;",
+      "replace": "  const replyOwner = \"wrong-owner\";",
+      "expectRed": "\"failedCell\":\"TUP11-A-public-caller-native-own-invoke-one-effect\"",
+      "cell": "TUP11-A-public-caller-native-own-invoke-one-effect",
+      "afterRestore": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --two-user-public-acceptance"
+    },
+    {
+      "name": "replace the allowed source CLI command with an ungranted command",
+      "file": "implementations/auth/smoke/endpoint-authority-public.smoke.ts",
+      "find": "      const command = \"increment\";",
+      "replace": "      const command = \"other\";",
+      "expectRed": "\"failedCell\":\"TUP27-A-allowed-source-CLI-invoke-owner-and-effect\"",
+      "cell": "TUP27-A-allowed-source-CLI-invoke-owner-and-effect",
+      "afterRestore": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --two-user-public-acceptance"
+    }
+  ]
+}

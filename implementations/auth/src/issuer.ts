@@ -22,9 +22,9 @@
  * NOTHING here leaks private material: `jwks()` exports public JWKs only; the private key stays a
  * `CryptoKey` in memory (or a persisted private JWK the operator controls).
  */
-import { SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
+import { CompactSign, SignJWT, calculateJwkThumbprint, createRemoteJWKSet, exportJWK, generateKeyPair, importJWK } from "jose";
 import type { CryptoKey, JWK, JWTVerifyGetKey } from "jose";
-import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral } from "@cotal-ai/core";
+import { canonicalJson, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, isLoopbackLiteral } from "@cotal-ai/core";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, assertCredentialIdClaim, assertSessionClaim, assertTransferWriterClaim, viewTtlCapSec, type UserTokenSession, type UserTokenTransferWriter, type UserTokenView } from "./token.js";
 
 /** The one signing algorithm — Ed25519. Pinned on both mint and verify. */
@@ -105,6 +105,7 @@ export interface IssueClaims {
   view?: UserTokenView;
   /** Exact manager instance bound to the manager-caller view. */
   managerInstanceId?: string;
+  endpointGrant?: { grantId: string; grantRevision: number; policyRevision: number };
   /** The one session bound to the session-caller view (#2312), already ledger-verified upstream. */
   session?: UserTokenSession;
   /** The one object bound to the transfer-writer view (#1499). */
@@ -130,6 +131,9 @@ export interface UserTokenIssuer {
   /** A verifier over the CURRENT key set (reflects rotate/retire live) — for a co-located callout
    *  or tests. Same `JWTVerifyGetKey` shape {@link validateUserToken} accepts. */
   localKeySet(): JWTVerifyGetKey;
+  /** Trusted-host serving attestation only. Private issuer keys never leave this object. */
+  signEndpointServingAttestation(payload: import("@cotal-ai/core").EndpointServeAttestation): Promise<string>;
+  signEndpointCallerReceipt(payload: import("@cotal-ai/core").EndpointCallerAuthorityReceipt): Promise<string>;
 }
 
 export interface CreateIssuerOpts {
@@ -168,6 +172,11 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       throw new Error(
         `issue: view "${String(claims.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - the enum is closed on the mint side too`,
       );
+    if ((claims.view === "endpoint-caller") !== (claims.endpointGrant !== undefined)) throw new Error("endpoint-caller requires endpointGrant");
+    if (claims.endpointGrant) {
+      assertLifecycleToken(claims.endpointGrant.grantId);
+      for (const revision of [claims.endpointGrant.grantRevision, claims.endpointGrant.policyRevision]) if (!Number.isSafeInteger(revision) || revision < 1) throw new Error("invalid endpoint grant revision");
+    }
     if (claims.managerInstanceId !== undefined) assertLifecycleToken(claims.managerInstanceId, "managerInstanceId");
     if (claims.view === "manager-caller" && claims.managerInstanceId === undefined)
       throw new Error('issue: view "manager-caller" requires managerInstanceId');
@@ -189,7 +198,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     return new SignJWT({
       scope: claims.scope ?? [],
       ver: USER_TOKEN_VER,
-      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}), ...(claims.session ? { session: claims.session } : {}), ...(claims.transferWriter ? { transferWriter: claims.transferWriter } : {}) },
+      act: { owner: claims.owner, actor: claims.actor, ...(claims.scope ? { scope: claims.scope } : {}), ...(claims.parent ? { parent: claims.parent } : {}), ...(claims.lifecycleUid ? { lifecycleUid: claims.lifecycleUid } : {}), ...(claims.credentialId ? { credentialId: claims.credentialId } : {}), ...(claims.view ? { view: claims.view } : {}), ...(claims.managerInstanceId ? { managerInstanceId: claims.managerInstanceId } : {}), ...(claims.endpointGrant ? { endpointGrant: claims.endpointGrant } : {}), ...(claims.session ? { session: claims.session } : {}), ...(claims.transferWriter ? { transferWriter: claims.transferWriter } : {}) },
     })
       .setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid })
       .setSubject(claims.owner)
@@ -210,6 +219,18 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
     retire: (kid: string) => {
       if (kid === active) throw new Error(`issuer: refusing to retire the active kid ${kid} - rotate to a new key first`);
       keys.delete(kid);
+    },
+    signEndpointServingAttestation: async payload => {
+      if (payload.v !== 2 || payload.kind !== "cotal.endpoint-serve" || payload.issuer !== opts.issuer) throw new Error("invalid endpoint serving attestation domain");
+      const signer = keys.get(active);
+      if (!signer) throw new Error("no active endpoint attestation signer");
+      return new CompactSign(new TextEncoder().encode(canonicalJson(payload))).setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid }).sign(signer.privateKey);
+    },
+    signEndpointCallerReceipt: async payload => {
+      if (payload.v !== 3 || !["cotal.endpoint-caller", "cotal.endpoint-control"].includes(payload.kind) || payload.iss !== opts.issuer || payload.aud !== payload.account.space || payload.exp <= payload.iat || payload.exp > payload.iat + 120) throw new Error("invalid endpoint caller receipt domain");
+      const signer = keys.get(active);
+      if (!signer) throw new Error("no active endpoint caller receipt signer");
+      return new SignJWT(payload as unknown as Record<string, unknown>).setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid, typ: payload.kind === "cotal.endpoint-control" ? "cotal.endpoint-control+jwt" : "cotal.endpoint-caller+jwt" }).sign(signer.privateKey);
     },
     localKeySet: (): JWTVerifyGetKey => async (header) => {
       const jwk = header.kid ? keys.get(header.kid)?.publicJwk : undefined;
