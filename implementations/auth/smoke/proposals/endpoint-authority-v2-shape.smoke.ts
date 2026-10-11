@@ -1,0 +1,134 @@
+/** Authority v2.3 / discovery v3 evidence-only shape checks. No shipped authority or native implementation proof. */
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
+import { compileContract, contractDigest, contractArtifactCanonicalBytes, singleDocumentClosure, parseEndpointRequest } from "@cotal-ai/core";
+import type { ContractArtifact } from "./endpoint-authority-v2.js";
+const Ajv = createRequire(new URL("../../../../packages/core/package.json", import.meta.url))("ajv") as new (opts: object) => { addSchema(schema: unknown): void; compile(schema: unknown): ((value: unknown) => boolean) & { errors: unknown } };
+import type { EndpointCallerRequest, EndpointServiceRequest, ServingDelegation, NamespacePolicy } from "./endpoint-authority-v2.js";
+
+const schema = JSON.parse(readFileSync(new URL("./endpoint-authority-v2.schema.json", import.meta.url), "utf8"));
+const ajv = new Ajv({ strict: true, allErrors: true });
+ajv.addSchema(schema);
+const validators = Object.fromEntries(["namespace", "delegation", "serviceRequest", "callerRequest", "callerTokenDelta", "serviceSpecDelta", "holderChallenge", "serviceResponse", "callerResponse", "serveAttestation", "admissionRequest", "admissionResponse", "releaseRequest", "releaseResponse", "ceiling", "contractArtifact"].map(name => [name, ajv.compile({ $ref: `${schema.$id}#/definitions/${name}` })]));
+let count = 0;
+function cell(name: string, definition: string, value: unknown, expected: boolean) {
+  assert.equal(validators[definition](value), expected, name + " " + JSON.stringify(validators[definition].errors));
+  count++; console.log(JSON.stringify({ cell: name, passed: true, scope: "proposed-schema-shape-only" }));
+}
+const id = "a".repeat(26), other = "b".repeat(26);
+const account = { space: "space", accountPublicKey: "A" + "B".repeat(55), assignmentRevision: 1 };
+const ref = { namespaceRevision: 1, policyRevision: 1, delegationId: id, delegationRevision: 1 };
+const base = { v: 2 as const, account, endpoint: "test.example.shared", requestId: id };
+const proof = { challengeId: id, publicKey: "U" + "B".repeat(55), signature: "B".repeat(86) };
+const prepare: EndpointServiceRequest = { ...base, operation: "prepare", operationId: id, holderPublicKey: proof.publicKey };
+const artifacts = [{ digest: "sha256:" + "a".repeat(64), value: { schema: "shape-only" } }];
+const content = { action: "activate" as const, registrationRevision: 0, processEpoch: 0, contractArtifacts: artifacts };
+const activate: EndpointServiceRequest = { ...base, operation: "commit", operationId: id, instanceId: id, expected: ref, proof, content };
+const renew: EndpointServiceRequest = { ...base, operation: "commit", operationId: id, instanceId: id, expected: ref, content: { action: "renew", registrationRevision: 1, processEpoch: 0, contractArtifacts: [] }, proof };
+const caller: EndpointCallerRequest = { ...base, selection: { kind: "instance", instanceId: id }, operations: [{ command: "increment" }] };
+const namespace: NamespacePolicy = { v: 2, account, endpoint: base.endpoint, governor: "u_governor", namespaceRevision: 1, policyRevision: 1, clusterDigests: ["sha256:" + "a".repeat(64)], classAdmission: "disabled" };
+const delegation: ServingDelegation = { v: 2, account, endpoint: base.endpoint, instanceId: id, ref, holder: { owner: "u_delegate", actor: "serve", lifecycleUid: other, publicKey: proof.publicKey }, clusterDigests: namespace.clusterDigests, routes: { kind: "instance" }, resources: { kind: "ephemeral-only" }, expiresAt: 1900000000 };
+for (const [name, def, value] of [["SH01-prepare", "serviceRequest", prepare], ["SH02-activate", "serviceRequest", activate], ["SH03-renew", "serviceRequest", renew], ["SH04-caller", "callerRequest", caller], ["SH05-namespace", "namespace", namespace], ["SH06-delegation", "delegation", delegation]] as const) cell(name, def, value, true);
+cell("SH07-no-client-owner", "serviceRequest", { ...prepare, owner: "u_other" }, false);
+cell("SH08-no-client-profile", "serviceRequest", { ...prepare, profile: "issuer" }, false);
+cell("SH09-no-client-permissions", "callerRequest", { ...caller, permissions: { pub: { allow: [">"] } } }, false);
+cell("SH10-nested-account-closed", "callerRequest", { ...caller, account: { ...account, signingSeed: "forbidden" } }, false);
+cell("SH11-exact-route-no-class-knob", "callerRequest", { ...caller, selection: { kind: "instance", instanceId: id, routes: ["one"] } }, false);
+cell("SH12-delegation-ref-closed", "serviceRequest", { ...renew, expected: { ...ref, admin: true } }, false);
+cell("SH13-holder-proof-closed", "serviceRequest", { ...activate, proof: { ...proof, owner: "u_other" } }, false);
+cell("SH14-renew-no-artifacts", "serviceRequest", { ...renew, contractArtifacts: [] }, false);
+cell("SH15-activate-requires-artifacts", "serviceRequest", { ...activate, content: { ...content, contractArtifacts: [] } }, false);
+cell("SH16-no-wildcard-instance", "callerRequest", { ...caller, selection: { kind: "instance", instanceId: "*" } }, false);
+cell("SH17-ledger-requires-target-owner", "callerRequest", { ...caller, operations: [{ command: "increment", targetMode: "ledger" }] }, false);
+cell("SH18-no-any-mode-sharing", "callerRequest", { ...caller, operations: [{ command: "increment", targetMode: "any", targetOwner: "*" }] }, false);
+cell("SH19-no-standing-handle", "callerRequest", { ...caller, operations: [{ command: "increment", targetMode: "handle", targetOwner: "u_other" }] }, false);
+cell("SH20-self-has-no-target-owner", "callerRequest", { ...caller, operations: [{ command: "increment", targetMode: "self", targetOwner: "u_other" }] }, false);
+cell("SH21-instance-serve-no-class-revision", "delegation", { ...delegation, routes: { kind: "instance", classRevision: 1 } }, false);
+cell("SH22-explicit-class-revision", "delegation", { ...delegation, routes: { kind: "class", classRevision: 1 } }, true);
+cell("SH23-class-revision-required", "delegation", { ...delegation, routes: { kind: "class" } }, false);
+cell("SH24-challenge-no-material", "serviceRequest", { ...base, operation: "challenge", operationId: id, instanceId: id, expected: ref, content: renew.content }, true);
+cell("SH25-request-unknown-operation", "serviceRequest", { ...prepare, operation: "mint" }, false);
+cell("SH26-instanceId-is-not-key", "serviceRequest", { ...activate, instanceId: proof.publicKey }, false);
+cell("SH27-token-delta", "callerTokenDelta", { view: "endpoint-caller", authorityVersion: 2, endpointGrant: { grantId: id, grantRevision: 1, policyRevision: 1 } }, true);
+cell("SH28-token-no-injected-capabilities", "callerTokenDelta", { view: "endpoint-caller", authorityVersion: 2, endpointGrant: { grantId: id, grantRevision: 1, policyRevision: 1, capabilities: [] } }, false);
+const delta = { protocol: { v: 3 }, servingAuthority: ref, serveRoutes: { kind: "instance" }, resources: { kind: "ephemeral-only" } };
+cell("SH29-discovery3-authority2-distinct", "serviceSpecDelta", delta, true);
+cell("SH30-reserved-discovery2-refused", "serviceSpecDelta", { ...delta, protocol: { v: 2 } }, false);
+cell("SH31-legacy-discovery1-not-delegated", "serviceSpecDelta", { ...delta, protocol: { v: 1 } }, false);
+cell("SH32-protocol-marker-closed", "serviceSpecDelta", { ...delta, protocol: { v: 3, authorityVersion: 2 } }, false);
+cell("SH33-no-journal-resource-vocabulary", "serviceSpecDelta", { ...delta, resources: { kind: "journal" } }, false);
+cell("SH34-no-unbounded-serve-routes", "serviceSpecDelta", { ...delta, serveRoutes: { kind: "all" } }, false);
+cell("SH35-no-instance-class-widening", "serviceSpecDelta", { ...delta, serveRoutes: { kind: "instance", classRevision: 1 } }, false);
+cell("SH36-delta-must-bind-authority", "serviceSpecDelta", { protocol: delta.protocol, serveRoutes: delta.serveRoutes, resources: delta.resources }, false);
+const ceiling = { routes: delegation.routes, resources: delegation.resources, expiresAt: delegation.expiresAt };
+const challenge = { v: 2 as const, kind: "cotal.endpoint-holder" as const, account, holder: delegation.holder, endpoint: base.endpoint, instanceId: id, expected: ref, operationId: id, challengeId: other, action: content.action, registrationRevision: 0, processEpoch: 0, nonce: "a".repeat(64), operationDigest: artifacts[0].digest, issuedAt: 1899999900, expiresAt: 1899999960 };
+const serving = { account, endpoint: base.endpoint, instanceId: id, epoch: 0, authority: ref };
+const admission = { v: 2 as const, operation: "admit" as const, operationId: id, serving, requestSubject: "cotal.space.ep.v1.inst.fixture", request: { id, envelopeDigest: artifacts[0].digest } };
+const issued = { space: "space", owner: "u_caller", actor: "caller", uid: other, generation: "a".repeat(32) };
+const admitted = { v: 2 as const, operation: "admit" as const, operationId: id, admissionId: other, serving, caller: issued, commands: ["increment"], requestSubjectDigest: artifacts[0].digest, envelopeDigest: artifacts[0].digest };
+const release = { v: 2 as const, operation: "release" as const, operationId: id, admissionId: other, serving, outcome: "executed" as const };
+const attestation = { v: 2 as const, kind: "cotal.endpoint-serve" as const, issuer: "account-authority", account, endpoint: base.endpoint, instanceId: id, operationId: id, holder: delegation.holder, authority: ref, protocol: { v: 3 as const }, registrationRevision: 1, processEpoch: 0, clusterDigests: delegation.clusterDigests, ceiling, credentialId: id, credentialDigest: artifacts[0].digest, issuedAt: 1899999900, expiresAt: 1900000000 };
+cell("SH37-closed-holder-challenge", "holderChallenge", challenge, true);
+cell("SH38-challenge-no-delivery-requestId", "holderChallenge", { ...challenge, requestId: id }, false);
+cell("SH39-challenge-domain-required", "holderChallenge", { ...challenge, kind: "other" }, false);
+cell("SH40-null-artifact-refused", "serviceRequest", { ...activate, content: { ...content, contractArtifacts: [null] } }, false);
+cell("SH41-artifact-closed-record", "serviceRequest", { ...activate, content: { ...content, contractArtifacts: [{ ...artifacts[0], owner: "u_other" }] } }, false);
+cell("SH42-activate-zero-reservation-only", "serviceRequest", { ...activate, content: { ...content, registrationRevision: 1 } }, false);
+cell("SH43-renew-no-contract-replacement", "serviceRequest", { ...renew, content: { ...renew.content, contractArtifacts: artifacts } }, false);
+cell("SH44-prepare-reservation-response", "serviceResponse", { v: 2, operation: "prepare", operationId: id, account, endpoint: base.endpoint, instanceId: id, expected: ref, holder: delegation.holder, expiresAt: 1900000000 }, true);
+cell("SH45-prepare-no-unbound-challenge", "serviceResponse", { v: 2, operation: "prepare", operationId: id, account, endpoint: base.endpoint, instanceId: id, expected: ref, holder: delegation.holder, expiresAt: 1900000000, challenge: "unbound" }, false);
+cell("SH46-challenge-response", "serviceResponse", { v: 2, operation: "challenge", payload: challenge }, true);
+cell("SH47-activate-material-response", "serviceResponse", { v: 2, operation: "activate", account, endpoint: base.endpoint, instanceId: id, operationId: id, serveJwt: "shape-only", attestation: "shape-only" }, true);
+cell("SH48-no-issuer-seed-response", "serviceResponse", { v: 2, operation: "activate", account, endpoint: base.endpoint, instanceId: id, operationId: id, serveJwt: "shape-only", attestation: "shape-only", signingSeed: "forbidden" }, false);
+cell("SH49-retire-response", "serviceResponse", { v: 2, operation: "retire", operationId: id, completed: true }, true);
+cell("SH50-caller-response", "callerResponse", { v: 2, account, bearer: "shape-only", expiresAt: 1900000000 }, true);
+cell("SH51-serve-attestation", "serveAttestation", attestation, true);
+cell("SH52-attestation-no-self-authored-key", "serveAttestation", { ...attestation, issuerPublicKey: proof.publicKey }, false);
+cell("SH53-attestation-must-bind-holder", "serveAttestation", { ...attestation, holder: { owner: "u_delegate" } }, false);
+cell("SH54-attestation-discovery3-required", "serveAttestation", { ...attestation, protocol: { v: 2 } }, false);
+cell("SH55-ceiling-full-shape", "ceiling", ceiling, true);
+cell("SH56-ceiling-expiry-required", "ceiling", { routes: ceiling.routes, resources: ceiling.resources }, false);
+cell("SH57-closed-admission-request", "admissionRequest", admission, true);
+cell("SH58-admission-no-application-payload", "admissionRequest", { ...admission, args: { secret: "not authority input" } }, false);
+cell("SH59-admission-serving-pin-closed", "admissionRequest", { ...admission, serving: { ...serving, owner: "u_other" } }, false);
+cell("SH60-admission-response", "admissionResponse", admitted, true);
+cell("SH61-admission-binds-generation", "admissionResponse", { ...admitted, caller: { ...issued, generation: "invalid" } }, false);
+cell("SH62-release-request", "releaseRequest", release, true);
+cell("SH63-release-no-result-proxy", "releaseRequest", { ...release, output: "not authority input" }, false);
+cell("SH64-terminal-release-response", "releaseResponse", { v: 2, operation: "release", admissionId: other, released: true, outcome: "executed" }, true);
+cell("SH65-terminal-outcome-enum", "releaseResponse", { v: 2, operation: "release", admissionId: other, released: true, outcome: "probably" }, false);
+cell("SH66-native-application-id-grammar", "admissionRequest", { ...admission, request: { ...admission.request, id: "Native_APP-request_1" } }, true);
+cell("SH67-application-id-no-subject-injection", "admissionRequest", { ...admission, request: { ...admission.request, id: "a.>" } }, false);
+const booleanTrue: ContractArtifact = { digest: contractDigest(true), value: true };
+const booleanFalse: ContractArtifact = { digest: contractDigest(false), value: false };
+cell("SH68-canonical-true-artifact", "contractArtifact", booleanTrue, true);
+cell("SH69-canonical-false-artifact", "contractArtifact", booleanFalse, true);
+cell("SH70-null-schema-value-refused", "contractArtifact", { ...booleanTrue, value: null }, false);
+cell("SH71-null-artifact-wrapper-refused", "contractArtifact", null, false);
+cell("SH72-malformed-artifact-digest-refused", "contractArtifact", { ...booleanTrue, digest: "unverified" }, false);
+cell("SH73-no-invented-property-ceiling", "contractArtifact", { ...booleanTrue, value: Object.fromEntries(Array.from({ length: 257 }, (_, i) => ["x" + i, i])) }, true);
+function check(name: string, run: () => void) { run(); count++; console.log(JSON.stringify({ cell: name, passed: true, scope: "existing-public-component-compatibility-only" })); }
+for (const value of [true, false]) {
+  const label = value ? "true" : "false";
+  check("CP-" + label + "-canonical-content-identity", () => {
+    const bytes = contractArtifactCanonicalBytes(value);
+    assert.equal(new TextDecoder().decode(bytes), label);
+    assert.equal(contractDigest(value), "sha256:" + createHash("sha256").update(label).digest("hex"));
+  });
+  check("CP-" + label + "-verified-schema-closure", () => {
+    const compiled = compileContract({ root: value });
+    assert.equal(compiled.closureDigest, singleDocumentClosure(value).closureDigest);
+    assert.equal(compiled.validate("payload"), value);
+  });
+}
+const nativeDescribe = { v: 1, id: "call-1", op: { endpoint: base.endpoint, command: "describe" }, class: "ephemeral", replyExpected: true, deadlineMs: 1000, from: { id: "u_caller.caller", name: "caller" } };
+for (const value of ["call-1", "x", "UPPER_case"]) {
+  check("CP-native-request-id-" + value, () => assert.equal(parseEndpointRequest({ ...nativeDescribe, id: value }).id, value));
+  cell("SH-native-admission-id-" + value, "admissionRequest", { ...admission, request: { ...admission.request, id: value } }, true);
+}
+for (const [label, value] of [["wildcard", "*"], ["dot", "a.b"], ["empty", ""], ["over64", "a".repeat(65)]] as const)
+  cell("SH-native-admission-id-deny-" + label, "admissionRequest", { ...admission, request: { ...admission.request, id: value } }, false);
+assert.equal(count, 87, "SH88-explicit-shape-component-census");
+console.log(JSON.stringify({ assertions: count + 1, proposalShapeAssertions: 80, existingPublicComponentAssertions: 7, censusAssertions: 1, scope: "proposal-shape-and-existing-component-only", nativeAuthorityAssertions: 0 }));

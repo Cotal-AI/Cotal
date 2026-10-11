@@ -458,7 +458,7 @@ const baseCommands: Command[] = [
     name: "invoke",
     group: "Observe",
     summary: "invoke one v0.4 service command by name with JSON args (schemas fetched, never hand-imported)",
-    usage: "invoke <endpoint> <command>  [--args '<json>'] [--name <agent> | --self] [--admin]",
+    usage: "invoke <endpoint> <command> [--on <instance>] [--args '<json>'] [--name <agent> | --self] [--admin]",
     positionals: "<endpoint> <command>",
     flags: invokeFlags,
     run: invokeCmd,

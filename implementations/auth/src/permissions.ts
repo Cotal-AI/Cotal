@@ -73,11 +73,13 @@ export function calloutPermissions(
   verifySession: SessionVerifier,
   issueUserCaller: UserCallerIssuer,
 ): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+export function calloutPermissions(resolveAcl: AclResolver, authorizeManagerCaller: (owner: string, instanceId: string) => Promise<void>, verifySession: SessionVerifier, issueUserCaller: UserCallerIssuer, issueEndpointCaller: (t: ValidatedUserToken, connId: string) => Promise<Record<string, unknown>>): (t: ValidatedUserToken, connId: string) => Promise<Record<string, unknown>> | Record<string, unknown>;
 export function calloutPermissions(
   resolveAcl: AclResolver,
   authorizeManagerCaller?: (owner: string, instanceId: string) => Promise<void>,
   verifySession?: SessionVerifier,
   issueUserCaller?: UserCallerIssuer,
+  issueEndpointCaller?: (t: ValidatedUserToken, connId: string) => Promise<Record<string, unknown>>,
 ): (t: ValidatedUserToken, connId: string) => Record<string, unknown> | Promise<Record<string, unknown>> {
   return (t, connId) => {
     assertDerivedOwnerToken(t.owner); // user-mode owners are derived — never `local`, never an nkey
@@ -120,6 +122,10 @@ export function calloutPermissions(
       const need = VIEW_REQUIRED_SCOPE[t.act.view];
       if (need !== undefined && !caps.includes(need))
         throw new Error(`callout permissions: view "${t.act.view}" without capability "${need}" in act.scope - refusing to mint`);
+      if (t.act.view === "endpoint-caller") {
+        if (!issueEndpointCaller) throw new Error("endpoint-caller authority is unsupported by this auth service");
+        return issueEndpointCaller(t, connId);
+      }
       if (t.act.view === "manager-service")
         throw new Error('callout permissions: "manager-service" is a typed material exchange, not a connect profile; raw view bearers are refused');
       if (t.act.view === "session-caller") {
