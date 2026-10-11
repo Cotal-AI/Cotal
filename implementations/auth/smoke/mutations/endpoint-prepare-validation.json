@@ -43,5 +43,5 @@
       "afterRestore": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving"
     }
   ],
-  "note": "Each command rebuilds the actual imported auth dist and runs the original real-broker fixture. Restored command rebuilds auth and reruns all original native controls plus separate prepare safety controls. Existing CI build must supply coherent core/workspace/lang and other required outputs before this command. Setup/compile/cleanup failures cannot qualify as named red. No current mutation execution or restoration proof claimed."
+  "_note": "Each command rebuilds the actual imported auth dist and runs the original real-broker fixture. Restored command rebuilds auth and reruns all original native controls plus separate prepare safety controls. Existing CI build must supply coherent core/workspace/lang and other required outputs before this command. Setup/compile/cleanup failures cannot qualify as named red. No current mutation execution or restoration proof claimed."
 }
