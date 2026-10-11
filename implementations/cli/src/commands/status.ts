@@ -601,7 +601,12 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
 /** Summarize the catalog through the shipped loader. A file is launchable only when
  *  {@link listPersonas} parsed it with the same {@code loadAgentFile} path spawn uses. */
 function personaSummary(root: string): string {
-  const personas = listPersonas(root);
+  let personas: ReturnType<typeof listPersonas>;
+  try {
+    personas = listPersonas(root);
+  } catch (e) {
+    return c.red(`catalog unreadable · ${(e as Error).message}`);
+  }
   const byName = new Map(personas.map((persona) => [persona.name, persona]));
   const def = byName.get("default");
   const demo = ["david", "sven", "me"].filter((name) => byName.get(name)?.def !== undefined).length;

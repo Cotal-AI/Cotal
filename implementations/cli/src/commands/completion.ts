@@ -196,16 +196,16 @@ function install(shell?: string): void {
     // every shell start). Re-running regenerates the stub; the rc line is added at most once.
     const dir = join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "cotal");
     const stub = join(dir, `completion.${sh}`);
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(stub, SCRIPTS[sh]);
     const rc = sh === "zsh" ? join(process.env.ZDOTDIR || homedir(), ".zshrc") : join(homedir(), ".bashrc");
     const line = `source "${stub}"`;
     let current = "";
     try {
       current = readFileSync(rc, "utf8");
-    } catch {
-      /* rc doesn't exist yet — appendFileSync creates it */
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
     }
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(stub, SCRIPTS[sh]);
     if (current.includes(line)) {
       console.log(c.dim(`already installed in ${rc}`));
       console.log(c.dim(`  refreshed ${stub}`));

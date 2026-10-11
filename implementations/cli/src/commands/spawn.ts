@@ -275,11 +275,7 @@ export function spawnComplete(argv: string[]): CompletionResult {
   if (flag?.name === "config") {
     const current = argv[argv.length - 1] ?? "";
     if (current.includes("/") || current.includes("\\") || current.endsWith(".md")) return { items: [], directive: "default" };
-    try {
-      return { items: personaItems(argv), directive: "nofiles" };
-    } catch {
-      return { items: [], directive: "nofiles" };
-    }
+    return { items: personaItems(argv), directive: "nofiles" };
   }
   if (flag && ["subscribe", "allow-subscribe", "allow-publish"].includes(flag.name))
     return { items: declaredFrom(argv, listDeclaredChannels).map((value) => ({ value, description: "declared channel" })), directive: "nofiles" };
@@ -290,41 +286,38 @@ export function spawnComplete(argv: string[]): CompletionResult {
   const positionals = positionalsForCompletion(argv, spawnFlags);
   // Only the first word after `spawn` is the persona positional; once it's typed, defer to the shell.
   if (positionals.length <= 1 && !hasCompletedFlagValue(argv, spawnFlags, "config")) {
-    try {
-      return { items: personaItems(argv), directive: "nofiles" };
-    } catch {
-      // No single target (no mesh, or several with no `current`) — fail CLOSED: offer no personas
-      // rather than throw. `cotal spawn --space <TAB>` still lists the running meshes.
-      return { items: [], directive: "nofiles" };
-    }
+    return { items: personaItems(argv), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }
 
 function personaItems(argv: string[]) {
-  const target = resolveMeshTarget(process.cwd(), {
-    space: completedFlagValue(argv, spawnFlags, "space"),
-    server: completedFlagValue(argv, spawnFlags, "server"),
-  });
-  return listPersonas(target.root).map((p) => ({ value: p.name }));
-}
-
-/** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
- *  uses, so `--role`/`--subscribe` complete from the personas this spawn would actually launch
- *  rather than from whatever project the operator is standing in. Offline (no probe) and FAIL
- *  CLOSED: with no single resolvable target, or a malformed persona file (see `declaredValues`),
- *  offer nothing rather than throw into the operator's shell. */
-function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
+  let root: string;
   try {
-    return list(
-      resolveMeshTarget(process.cwd(), {
-        space: completedFlagValue(argv, spawnFlags, "space"),
-        server: completedFlagValue(argv, spawnFlags, "server"),
-      }).root,
-    );
+    root = resolveMeshTarget(process.cwd(), {
+      space: completedFlagValue(argv, spawnFlags, "space"),
+      server: completedFlagValue(argv, spawnFlags, "server"),
+    }).root;
   } catch {
     return [];
   }
+  return listPersonas(root).map((p) => ({ value: p.name }));
+}
+
+/** Channels/roles declared by the TARGET mesh's personas — the same root {@link personaItems}
+ *  uses, so `--role`/`--subscribe` complete from the personas this spawn would actually launch.
+ *  Offline: an unresolved target offers no items; catalog failures reach the dispatcher. */
+function declaredFrom(argv: string[], list: (root: string) => string[]): string[] {
+  let root: string;
+  try {
+    root = resolveMeshTarget(process.cwd(), {
+      space: completedFlagValue(argv, spawnFlags, "space"),
+      server: completedFlagValue(argv, spawnFlags, "server"),
+    }).root;
+  } catch {
+    return [];
+  }
+  return list(root);
 }
 
 /** Persona selection precedence shared by foreground and detached spawn. */

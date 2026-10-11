@@ -17,6 +17,9 @@ cotal --version           # cotal-ai version + each installed extension's (also 
 cotal <command> --help    # one command's flags and usage
 ```
 
+Both version flags refuse a corrupt or unreadable extensions manifest. An absent manifest prints
+only the CLI version.
+
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` prints help. Every command
 generates its own `--help`, usage, and shell completion from its declared flags.
 
@@ -949,7 +952,8 @@ package in the extensions manifest provides `web` and that package is on disk. A
 that cannot be read, is not JSON or has no `version` is named on the `Web extension` row and on the
 card's web row, after the dashboard's address when it is listening and beside an unreadable
 `web.pid` or `web.session`. The `Web process` row still prints, and reads `down` unless the
-dashboard is listening.
+dashboard is listening. An unreadable persona catalog is named on its row with the filesystem
+error. The other status rows still print.
 
 If a refresh fails, `status` may still show the kept catalog bytes for diagnosis. It labels them
 stale with the last successful snapshot timestamp and the refresh error. It never calls that state
@@ -1538,7 +1542,9 @@ cotal personas rm <name> --force
 Personas are the local agent files under the resolved mesh root's `.cotal/agents/`, the same catalog
 `cotal spawn` launches from. `--space` and `--server` therefore move every list, read, write, delete
 and completion operation to the selected mesh. An unresolved target refuses rather than falling back
-to the current directory. See [Agent files](agent-files.md) for the file format.
+to the current directory. An absent catalog is empty; other directory-read failures refuse the
+list. Individual malformed cards remain visible as unparseable entries.
+See [Agent files](agent-files.md) for the file format.
 
 ## supervise
 
@@ -2492,8 +2498,13 @@ or takes a shell name positionally:
 - **fish**: writes `~/.config/fish/completions/cotal.fish` (or under `$XDG_CONFIG_HOME`), which fish loads automatically.
 - **powershell**: prints the snippet to add to `$PROFILE`.
 
+An absent shell rc file is created. Other rc read failures refuse installation before writing
+the completion stub or changing the rc file.
+
 The installed stub routes tab completion to the internal `cotal __complete` dispatcher, which
 evaluates candidates from local persona files and registered command specs without network calls.
+Catalog read failures in persona, spawn and send completion reach that dispatcher. It exits
+nonzero without candidates. An unresolved mesh selection still offers no items.
 
 ## feedback
 

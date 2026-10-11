@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { extensionProvides, loadExtensionsManifest, type InstalledExtension } from "@cotal-ai/workspace";
+import { extensionProvides, loadExtensionsManifest } from "@cotal-ai/workspace";
 import { cliPackageRoot } from "../seed/paths.js";
 import { isNpx } from "./self-exec.js";
 
@@ -35,15 +35,9 @@ export interface ExtensionVersion {
 
 /** Installed extensions (seeded built-in connectors + operator `ext add`s) with their pinned
  *  versions, for `cotal -v` and `cotal status`. Reads the on-disk manifest directly — no import, no
- *  seeding side effect. Returns `[]` on an absent or corrupt manifest: the version view stays
- *  resilient, and a corrupt manifest is surfaced loudly by the real commands (the overlay is fatal). */
+ *  seeding side effect. An absent manifest returns `[]`; corrupt or unreadable manifests refuse. */
 export function extensionVersions(): ExtensionVersion[] {
-  let extensions: readonly InstalledExtension[];
-  try {
-    extensions = loadExtensionsManifest().extensions;
-  } catch {
-    return [];
-  }
+  const extensions = loadExtensionsManifest().extensions;
   return extensions.map((e) => ({
     label: [...new Set(extensionProvides(e).map((ref) => ref.name))].join(", ") || e.pkg,
     version: e.version,
