@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.smoke.json","compilerOptions":{"skipLibCheck":false},"include":["smoke/proposals/endpoint-authority-v2.d.ts","smoke/proposals/endpoint-authority-v2-shape.smoke.ts"]}
