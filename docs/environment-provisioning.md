@@ -106,8 +106,9 @@ creates the marked manager gate open, and freezes it under the original registra
 The initial open gate revision is recorded under `stage.<opId>.environment-manager-gate`
 before its first freeze. Same-input retries preserve the live registration reservation, but
 cannot re-freeze an aborted gate under that operation, even when its counters remain unchanged.
-The host must bind one operation to each manager instance before calling this step; it cannot
-substitute a new operation after abort. State frozen without the initial stamp is unsupported.
+The host must bind one operation to each manager instance before calling this step and must
+not substitute a new operation after abort. This step does not detect that substitution.
+Unstamped prior state is unsupported and can be restored after an abort with unchanged counters.
 Changed input,
 ordinary or foreign gates, completed registrations and deletion markers refuse. Its host-private
 writer grants only those two staging suffixes in addition to lifecycle and manager gate rows. It is not exported as
