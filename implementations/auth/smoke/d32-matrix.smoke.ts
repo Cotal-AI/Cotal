@@ -293,6 +293,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_auth_d32m.gate.>", "$KV.cotal_auth_d32m.cred.>", "$KV.cotal_auth_d32m.bysrc.>",
     "$KV.cotal_records_d32m.lifecycle.>", "$KV.cotal_records_d32m.uid.>",
     "$KV.cotal_auth_d32m.epgate.manager.>", "$KV.cotal_auth_d32m.stage.*.environment-manager",
+    "$KV.cotal_auth_d32m.stage.*.environment-manager-gate",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   // The auth service's HOST ISSUER connection (`cotal:remote-manager-issuer:<space>`): the
   // authority writer's rows plus the manager-instance issuance families, the contract-store and

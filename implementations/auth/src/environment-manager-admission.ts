@@ -65,12 +65,37 @@ export async function stageEnvironmentManagerAdmission(
   if (await eligible() === null)
     await provisionEndpointGateOpen(authKv, { endpoint: "manager", instanceId: pin.instanceId,
       principal, authorityFamily: "environment-manager" });
+  // An abort may preserve every counter; its changed KV revision is the durable distinction.
+  const birthKey = `stage.${pin.operationId}.environment-manager-gate`;
+  let birth = await authKv.get(birthKey);
+  if (!birth) {
+    const opened = await eligible();
+    if (opened?.state === "open" && opened.generation === 0) {
+      const value = JSON.stringify({ instanceId: pin.instanceId, principal, openRevision: opened.revision });
+      try { await authKv.put(birthKey, value, { previousSeq: 0 }); }
+      catch (error) {
+        if (!isCasLoss(error)) throw new EpEnvelopeError("unavailable", "environment manager initial gate reservation outcome is unknown");
+      }
+    }
+    birth = await authKv.get(birthKey);
+  }
+  if (!birth || birth.operation !== "PUT")
+    throw new EpEnvelopeError("failed-precondition", "environment manager initial gate reservation is absent or deleted");
+  let initial: unknown;
+  try { initial = birth.json(); }
+  catch { throw new EpEnvelopeError("failed-precondition", "environment manager initial gate reservation is not JSON"); }
+  const row = initial as { instanceId?: unknown; principal?: unknown; openRevision?: unknown };
+  if (!row || typeof row !== "object" || Object.keys(row).length !== 3 || row.instanceId !== pin.instanceId ||
+    row.principal !== principal || !Number.isSafeInteger(row.openRevision) || Number(row.openRevision) < 1)
+    throw new EpEnvelopeError("failed-precondition", "environment manager initial gate reservation has foreign coordinates");
   const barrier = endpointRegistrationBarrier(authKv, space, { endpoint: "manager", instanceId: pin.instanceId,
     opId: pin.operationId });
   for (let attempt = 0; attempt < 3; attempt++) {
     const current = await eligible();
     if (!current) throw new EpEnvelopeError("failed-precondition", "environment manager gate disappeared");
     if (current.state === "frozen") return { gateRevision: current.revision };
+    if (current.revision !== row.openRevision)
+      throw new EpEnvelopeError("conflict", "environment manager registration was aborted; its reopened gate cannot be re-frozen");
     const revision = await barrier.freeze(current.revision);
     if (revision !== null) return { gateRevision: revision };
   }
