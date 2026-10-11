@@ -31,6 +31,12 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     rows.push({ profile, variant, permissions: permissionsFor(profile, space, pr, opts), producer: "permissionsFor" });
   };
   const run = { endpoint: "manager", runId: "census-run", takeoverId: "take0001", instanceId: instance, epoch: 1 };
+  const environment = (profile: Profile, actor: string) => {
+    const owner = `u_${"a".repeat(26)}`;
+    one(profile, { environmentManager: { owner, instanceId: instance, lifecycleUid: uid,
+      authorityEndpoint: "test.example.environment", authorityInstanceId: instance,
+      expiresAt: Math.floor(Date.now() / 1000) + 300 } }, "manager-only", { ...principal, owner, actor });
+  };
   const producers: Record<Profile, () => void> = {
     agent() {
       one("agent");
@@ -88,6 +94,10 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         one("remote-manager", { remoteManager: { owner: "local", instanceId: instance, actor } }, actor.startsWith("manager_exec") ? "executor" : "server", { ...principal, actor });
       }
     },
+    "environment-bootstrap": () => environment("environment-bootstrap", `manager_bootstrap_${instance}`),
+    "environment-manager-supervisor": () => environment("environment-manager-supervisor", `manager_${instance}`),
+    "environment-manager-executor": () => environment("environment-manager-executor", `manager_exec_${instance}`),
+    "environment-manager-goal-writer": () => environment("environment-manager-goal-writer", `manager_goal_${instance}`),
   };
   const nonProfiles = ["membership-observer", "connection-evictor"];
   assert.deepEqual(Object.keys(producers).sort(), Object.keys(CREDENTIAL_LIFETIMES).filter((kind) => !nonProfiles.includes(kind)).sort(), "every Profile must have a producer");
@@ -106,9 +116,9 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         assert.equal(selectedOwner, owner);
         assert.equal(selectedInstance, instance);
       },
-      async (selectedPrincipal, selectedSession) => {
-        assert.equal(selectedPrincipal.owner, owner);
-        assert.deepEqual(selectedSession, { endpoint: "manager", sessionId: session, epoch: 1 });
+      async (selectedPrincipal, claim) => {
+        assert.deepEqual(selectedPrincipal, { owner, actor: "census", lifecycleUid: uid });
+        assert.deepEqual(claim, { endpoint: sessionClaim.endpoint, sessionId: sessionClaim.sessionId, epoch: sessionClaim.epoch });
         return sessionClaim;
       },
     );
@@ -249,6 +259,10 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "lifecycle-executor", "endpoint-serve-executor", "endpoint-serve", "control-caller-privileged",
   "control-caller-admin", "backup", "restore", "endpoint-evictor", "retirement-requester",
   "issuer", "run-admitter", "transfer-writer", "transfer-reader",
+  // Manager-only infrastructure duties, like remote-manager. This classification is not
+  // an isolation proof; host admission and the child UID boundary remain separate requirements.
+  "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
+  "environment-manager-goal-writer",
 ]);
 
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */

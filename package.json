@@ -477,6 +477,7 @@
     "smoke:bind-fence": "tsx packages/core/smoke/bind-fence.smoke.ts",
     "smoke:unfenced-responder": "tsx packages/core/smoke/unfenced-responder.smoke.ts",
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts",
+    "smoke:environment-manager-grants": "tsx packages/core/smoke/environment-manager-grants.smoke.ts",
     "smoke:manager-service": "tsx implementations/manager/smoke/manager-service.smoke.ts",
     "smoke:manager-renewal-boundary": "tsx implementations/manager/smoke/manager-renewal-boundary.smoke.ts",
     "smoke:manager-harness-boot": "tsx implementations/manager/smoke/harness-boot.smoke.ts",
@@ -784,6 +785,7 @@
     "smoke:environment-service": "tsx implementations/environments/smoke/service.smoke.ts",
     "smoke:environment-wire": "tsx implementations/environments/smoke/wire.smoke.ts",
     "smoke:platform-supervisor": "tsx implementations/auth/smoke/platform-supervisor.smoke.ts",
+    "smoke:environment-manager-family": "tsx implementations/auth/smoke/environment-manager-family.smoke.ts",
     "smoke:manager-run-owned-agents": "tsx implementations/manager/smoke/run-owned-agents.smoke.ts"
   },
   "dependencies": {

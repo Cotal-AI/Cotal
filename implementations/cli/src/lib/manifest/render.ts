@@ -190,12 +190,14 @@ export function renderSpawnSummary(ctx: {
   manifestPath: string;
   created: string[];
   launched: string[];
+  pending: string[];
   existsUnmanaged: string[];
   unmanaged: UnmanagedReport;
 }): string {
   const out: string[] = [c.green(`✓ deployed onto "${ctx.space}" (${ctx.server})`)];
   if (ctx.created.length) out.push(`  ${c.green("+")} created ${ctx.created.length} channel(s): ${ctx.created.map((n) => c.cyan("#" + n)).join(", ")}`);
   if (ctx.launched.length) out.push(`  ${c.green("+")} launched ${ctx.launched.length} agent(s): ${ctx.launched.join(", ")}`);
+  if (ctx.pending.length) out.push(`  ${c.yellow("~")} pending ${ctx.pending.length} agent(s), still managed but not yet on the mesh: ${ctx.pending.join(", ")}`);
   if (ctx.existsUnmanaged.length)
     out.push(`  ${c.yellow("~")} left ${ctx.existsUnmanaged.length} existing channel(s) untouched: ${ctx.existsUnmanaged.map((n) => c.cyan("#" + n)).join(", ")}`);
   const sec = renderUnmanaged(ctx.unmanaged);

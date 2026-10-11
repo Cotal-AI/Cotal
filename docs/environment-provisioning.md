@@ -85,6 +85,23 @@ not admit hosted workloads until the host durably binds their manager and child 
 and supports their retirement. Stock provider-local manager bootstrap and cross-uid seat
 isolation also remain upstream dependencies. Empty-workload probes issue no such authority.
 
+Core provides fixed `environment-bootstrap`, `environment-manager-supervisor`,
+`environment-manager-executor` and `environment-manager-goal-writer` grant builders. They
+require host-selected instance, owner, lifecycle and authority coordinates, and a current
+explicit credential expiry bounded by admission. They confer no guest auth-store access.
+The optional endpoint-gate `authorityFamily` marker survives native registration and mint
+CAS operations; raw write exclusion, not a field parser, protects it from guests. These
+primitives do not implement admission, the authority endpoint or stock manager bootstrap.
+The existing auth-service manager authority path refuses gates marked `environment-manager`.
+An explicit ordinary manager-caller selection also refuses that family. Automatic selection
+excludes its gates, including unregistered ones, so they do not count as ordinary candidates
+or prevent selection of an ordinary manager.
+Ordinary preparation reserves an unmarked native gate before releasing direct-store manager
+credentials. A racing environment admission must win that same create-only reservation; it
+cannot adopt an instance already prepared by the ordinary path. This family reservation is
+separate from the registration and credential-issuance fences.
+Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
+
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
 promise and its per-record reports. An unavailable store or a provider create whose reply

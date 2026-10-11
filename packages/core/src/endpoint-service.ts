@@ -1795,6 +1795,8 @@ export function assertServeGrantMintable(serve: EpServeGrant, mint: { space: str
  *  `revision` is the KV store revision the mint's CAS and every barrier's freeze pin. */
 export type EpGateState = GateStateOp & {
   delegated?: Readonly<EndpointDelegatedBinding>;
+  /** The host-only family discriminator from the persisted endpoint gate. */
+  authorityFamily?: "environment-manager";
   /** The gate's space. In production the gate physically lives in the per-space
    *  `KV_cotal_auth_<space>` bucket (§13.12), so the space is the bucket and cannot be crossed;
    *  carrying it here is defense-in-depth for the in-memory seam/fake, so a mint/registration

@@ -78,6 +78,14 @@ const rowsOf = (perm: unknown): string[] => {
 };
 const via = (profile: Profile, opts: Record<string, unknown> = {}) => (): string[] =>
   rowsOf(permissionsFor(profile, SPACE, pr, opts as never));
+const viaEnvironment = (profile: Profile, actor: string) => (): string[] => {
+  const owner = `u_${"a".repeat(26)}`;
+  return rowsOf(permissionsFor(profile, SPACE, { ...pr, owner, actor }, {
+    environmentManager: { owner, instanceId: IID, lifecycleUid: UID,
+      authorityEndpoint: "test.example.environment", authorityInstanceId: IID,
+      expiresAt: Math.floor(Date.now() / 1000) + 240 },
+  }));
+};
 
 /**
  * How each profile's rows are produced. Keyed `Record<Profile, …>` so the profile union drives it.
@@ -93,6 +101,10 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "remote-manager": () => [`manager_${IID}`, `manager_exec_${IID}`].flatMap((actor) =>
     rowsOf(permissionsFor("remote-manager", SPACE,
       { ...pr, actor }, { remoteManager: { instanceId: IID, owner: DEV_OWNER, actor } }))),
+  "environment-bootstrap": viaEnvironment("environment-bootstrap", `manager_bootstrap_${IID}`),
+  "environment-manager-supervisor": viaEnvironment("environment-manager-supervisor", `manager_${IID}`),
+  "environment-manager-executor": viaEnvironment("environment-manager-executor", `manager_exec_${IID}`),
+  "environment-manager-goal-writer": viaEnvironment("environment-manager-goal-writer", `manager_goal_${IID}`),
   provisioner: via("provisioner"),
   deprovisioner: via("deprovisioner", { deprovisionTarget: { principal: `${DEV_OWNER}.worker`, lifecycleUid: UID } }),
   "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager", uid: UID, target: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID } } }),
