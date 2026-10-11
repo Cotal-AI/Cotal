@@ -42,12 +42,16 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   BIND_SPLIT_REISSUES, CotalEndpoint, EpEnvelopeError, EP_BIND_REFUSED,
   compileContract, deriveReplySubject, epClassQueueGroup, epServeFilter, isRepeatSafeCommand,
   mintLifecycleUid, newIdentity, parseEndpointRequest, parseEpSubject, replyRefusedBeforeEffect,
   respondedButUnbound, DEV_OWNER,
   type EndpointReply, type EpCaller, type ResolvedService,
+  BASELINE_LIFECYCLE_ENDPOINT, ContractInvalidError, buildContractClosureManifest,
+  contractArtifactCanonicalBytes, contractStoreContext, deriveDescriptor, ensureContractStore,
+  publishContractArtifact, publishContractClosureManifest, verifyClusterManifest, verifyClusterRoot,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -61,7 +65,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 /** Declared, not implied: a live suite can end in ways that redden no line, and `fail === 0` reads
  *  as PASS in every one of them. Measured by this lane's own crash controls — a mid-run exit prints
  *  nothing at all, and an import-time throw does not even reach this handler. */
-const EXPECTED_CELLS = 34;
+const EXPECTED_CELLS = 34 + 25 + 5;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -214,6 +218,212 @@ const cache = new ObservableResolveCache();
 const seed = () => { deletions = 0; cache.set(EP, record(GHOST)); };
 const poke = () => ep.invokeService(EP, "poke", { n: 1 }, { deadlineMs: 1500 });
 
+/** Real discovery and store reads, separate from the legacy cache substitution above. The
+ * unfenced responder model is unchanged: describe and execution answer as different incarnations.
+ * The preceding cache explanation describes only original cells 1-6. These new cells use the
+ * client's untouched cache and stock resolver. They grade caller adoption, not authenticated
+ * registration or serving. There is no delegated registration or protocol3 proof here. */
+async function effectAdoption(): Promise<void> {
+  await ensureContractStore(await jetstreamManager(nc), SPACE);
+  const store = await contractStoreContext(nc, SPACE);
+  const publishClosure = async (value: Record<string, unknown>) => {
+    const root = await publishContractArtifact(store, contractArtifactCanonicalBytes(value));
+    const manifest = buildContractClosureManifest(root.digestHex, []);
+    const closure = await publishContractClosureManifest(store, manifest);
+    return { digest: `sha256:${closure.closureDigestHex}`, manifest, value };
+  };
+  const input = await publishClosure({ type: "object", properties: { n: { type: "number" } }, required: ["n"], additionalProperties: false });
+  const output = await publishClosure({ type: "object", properties: { ran: { type: "boolean" } }, required: ["ran"], additionalProperties: false });
+  const command = (name: string, effect?: string) => ({ name, class: "ephemeral", targeted: false,
+    capability: name, inputDigest: input.digest, outputDigest: output.digest,
+    ...(effect === undefined ? {} : { effect }) });
+  const document = (name: string, effect?: string) => ({ urn: "ai.cotal.effect-probe", revision: 0,
+    attributes: [], events: [], commands: [command(name, effect)] });
+  const descriptor = async (version: 1 | 2, name: string, effect: "read" | "write") => {
+    const cluster = await publishClosure(document(name, effect));
+    const manifest = verifyClusterManifest(cluster.digest, cluster.manifest);
+    const parsed = verifyClusterRoot(manifest.root, cluster.value);
+    return deriveDescriptor({ endpoint: BASELINE_LIFECYCLE_ENDPOINT, owner: DEV_OWNER, protocol: { v: version } },
+      [{ digest: cluster.digest, document: parsed, raw: cluster.value }]);
+  };
+  const write = await descriptor(2, "status", "write");
+  const read = await descriptor(2, "status", "read");
+  const novelRead = await descriptor(2, "probe-read", "read");
+  const legacy = await descriptor(1, "status", "read");
+  let answer: unknown = write;
+  let activeCommand = "status", mutates = true;
+  let fencedFirst = false, keepStale = false;
+  let nextAnswer: unknown;
+  let requests = 0, effects = 0, applicationValue = 0, readVisits = 0, describes = 0;
+  const describeIds = new Set<string>();
+  const bindings: { instanceId: string; epoch: number }[] = [];
+  const inputDigests: (string | undefined)[] = [];
+  const responseDebt: string[] = [];
+  const responder = nc.subscribe(epServeFilter(SPACE, "one", BASELINE_LIFECYCLE_ENDPOINT), {
+    queue: epClassQueueGroup(BASELINE_LIFECYCLE_ENDPOINT),
+    callback: (err, msg) => {
+      if (err) { responseDebt.push("subscription-error"); return; }
+      try {
+        const parsed = parseEpSubject(msg.subject);
+        if (parsed?.plane !== "request") { responseDebt.push("request-subject"); return; }
+        const env = parseEndpointRequest(JSON.parse(dec.decode(msg.data)));
+        let reply: EndpointReply;
+        let instanceId = IID_REAL;
+        if (env.op.command === "describe") {
+          describes++; describeIds.add(env.id);
+          // Retransmissions of the initial describe still name GHOST. Only an application
+          // request changes the next real describe's attribution to the live incarnation.
+          instanceId = requests === 0 || keepStale ? GHOST : IID_REAL;
+          reply = { v: 1, id: env.id, ok: true, data: { public: true, descriptor: answer } };
+        } else if (env.op.command === activeCommand) {
+          requests++;
+          if (env.bind) bindings.push({ ...env.bind });
+          inputDigests.push(env.op.inputDigest);
+          if (fencedFirst && requests === 1 && env.bind) {
+            reply = { v: 1, id: env.id, ok: false, error: { code: "failed-precondition",
+              message: "effect probe refused before application dispatch", outcome: "not-executed",
+              details: [{ kind: EP_BIND_REFUSED, endpoint: BASELINE_LIFECYCLE_ENDPOINT,
+                command: activeCommand, boundTo: { ...env.bind }, servedBy: { instanceId: IID_REAL, epoch: EPOCH } }] } };
+          } else {
+            if (mutates) { applicationValue += Number(env.args?.n); effects++; }
+            else readVisits++;
+            reply = { v: 1, id: env.id, ok: true, data: { ran: true } };
+          }
+          if (nextAnswer !== undefined) { answer = nextAnswer; nextAnswer = undefined; }
+        } else { responseDebt.push("unexpected-command"); return; }
+        nc.publish(deriveReplySubject(SPACE, parsed, { instanceId, epoch: EPOCH }), enc.encode(JSON.stringify(reply)));
+      } catch { responseDebt.push("responder-boundary"); }
+    },
+  });
+  const client = new CotalEndpoint({ space: SPACE, servers: `nats://127.0.0.1:${PORT}`,
+    card: { name: "effect-adoption-caller", kind: "endpoint" }, consume: false,
+    watchPresence: false, registerPresence: false });
+  client.on("error", () => { responseDebt.push("client-error"); });
+  const reset = (value: unknown, name: string, changesState: boolean) => {
+    answer = value; activeCommand = name; mutates = changesState;
+    requests = 0; effects = 0; applicationValue = 0; readVisits = 0; describes = 0;
+    fencedFirst = false; keepStale = false; nextAnswer = undefined;
+    bindings.length = 0; inputDigests.length = 0; describeIds.clear();
+  };
+  const discover = () => client.describeService(BASELINE_LIFECYCLE_ENDPOINT,
+    { refresh: true, deadlineMs: 1500, signal: AbortSignal.timeout(1500) });
+  const verified = (service: ResolvedService, version: number, effect: string) =>
+    service.descriptor?.protocol.v === version && service.responder.instanceId === GHOST
+    && service.responder.epoch === EPOCH && service.commands.get(activeCommand)?.effect === effect
+    && service.commands.get(activeCommand)?.contract.input.closureDigest === input.digest
+    && service.commands.get(activeCommand)?.contract.output.closureDigest === output.digest
+    && describes > 0 && requests === 0 && effects === 0;
+  const invoke = async () => {
+    let reply: EndpointReply | undefined, error: unknown;
+    try { reply = (await client.invokeService(BASELINE_LIFECYCLE_ENDPOINT, activeCommand, { n: 1 },
+      { deadlineMs: 1500, signal: AbortSignal.timeout(1500) })).reply; }
+    catch (e) { error = e; }
+    await nc.flush();
+    console.log("effect-adoption observation", { protocol: (answer as { protocol?: unknown }).protocol,
+      command: activeCommand, describes, distinctDescribes: describeIds.size, requests, effects, applicationValue, readVisits,
+      bindings, inputDigests, ok: reply?.ok ?? false, answeredButUnbound: respondedButUnbound(error),
+      errorCode: error instanceof EpEnvelopeError || error instanceof ContractInvalidError ? error.code : error === undefined ? null : "unexpected" });
+    return { reply, error };
+  };
+  const firstBound = () => bindings[0]?.instanceId === GHOST && bindings[0]?.epoch === EPOCH
+    && inputDigests[0] === input.digest;
+  const repeatedRead = (result: Awaited<ReturnType<typeof invoke>>) => result.error === undefined
+    && result.reply?.ok === true && requests === 2 && effects === 0 && applicationValue === 0 && readVisits === 2
+    && firstBound() && bindings[1]?.instanceId === IID_REAL && bindings[1]?.epoch === EPOCH
+    && inputDigests[1] === input.digest && describeIds.size >= 2;
+  try {
+    await client.start();
+    await nc.flush();
+    reset(write, "status", true);
+    c("EA01 real resolve verifies protocol2 write despite legacy allowlisted name", verified(await discover(), 2, "write")
+      && isRepeatSafeCommand(BASELINE_LIFECYCLE_ENDPOINT, "status"));
+    const written = await invoke();
+    c("EA02 protocol2 write surfaces answered-but-unbound with unknown execution outcome",
+      respondedButUnbound(written.error) && written.error instanceof EpEnvelopeError && written.error.outcome === undefined
+      && !replyRefusedBeforeEffect(written.error.toEpError()));
+    c("EA03 protocol2 write has exactly one real request and one application effect",
+      requests === 1 && effects === 1 && applicationValue === 1 && readVisits === 0 && firstBound(),
+      { requests, effects, applicationValue, bindings });
+
+    reset(read, "status", false);
+    c("EA04 real resolve verifies protocol2 declared read", verified(await discover(), 2, "read"));
+    c("EA05 declared read positive actually repeats once through real re-describe and succeeds", repeatedRead(await invoke()));
+
+    reset(novelRead, "probe-read", false);
+    c("EA06 real resolve verifies declared read outside legacy allowlist", verified(await discover(), 2, "read")
+      && !isRepeatSafeCommand(BASELINE_LIFECYCLE_ENDPOINT, "probe-read"));
+    c("EA07 nonallowlisted declared read actually repeats once and succeeds", repeatedRead(await invoke()));
+
+    reset(legacy, "status", true);
+    const rawCommands = legacy.clusters[0]?.document?.commands;
+    c("EA08 real protocol1 raw artifact read remains resolved write", Array.isArray(rawCommands) && rawCommands[0]?.effect === "read"
+      && verified(await discover(), 1, "write"));
+    const legacyResult = await invoke();
+    c("EA09 protocol1 surfaces answered-but-unbound without non-execution proof",
+      respondedButUnbound(legacyResult.error) && legacyResult.error instanceof EpEnvelopeError
+      && legacyResult.error.outcome === undefined && !replyRefusedBeforeEffect(legacyResult.error.toEpError()));
+    c("EA10 protocol1 allowlisted raw read does not repeat a real application effect",
+      requests === 1 && effects === 1 && applicationValue === 1 && firstBound(), { requests, effects, applicationValue, bindings });
+
+    const missing = await publishClosure(document("status"));
+    const invalid = await publishClosure(document("status", "readwrite"));
+    const malformed: [string, unknown, "contract-invalid" | "contract-mismatch"][] = [
+      ["unsupported4", { ...write, protocol: { v: 4 } }, "contract-invalid"],
+      ["zero", { ...write, protocol: { v: 0 } }, "contract-invalid"],
+      ["fractional", { ...write, protocol: { v: 2.5 } }, "contract-invalid"],
+      ["string", { ...write, protocol: { v: "2" } }, "contract-invalid"],
+      ["missing-version", { ...write, protocol: {} }, "contract-invalid"],
+      ["missing-effect", { ...write, clusters: [{ digest: missing.digest, commands: ["status"] }] }, "contract-mismatch"],
+      ["invalid-effect", { ...write, clusters: [{ digest: invalid.digest, commands: ["status"] }] }, "contract-invalid"],
+    ];
+    for (const [index, [label, value, code]] of malformed.entries()) {
+      reset(value, "status", true);
+      // Refresh through the public method. No hand-built resolve metadata enters this client.
+      let error: unknown;
+      try { await discover(); } catch (e) { error = e; }
+      const result = await invoke();
+      c(`EA${11 + index * 2} malformed ${label} refuses both real resolve and shipped invoke with ${code}`,
+        ((error instanceof ContractInvalidError || error instanceof EpEnvelopeError) && error.code === code)
+        && ((result.error instanceof ContractInvalidError || result.error instanceof EpEnvelopeError) && result.error.code === code));
+      c(`EA${12 + index * 2} malformed ${label} publishes no application request and has zero effect`,
+        describes > 0 && requests === 0 && effects === 0 && applicationValue === 0 && readVisits === 0 && bindings.length === 0,
+        { describes, requests, effects, applicationValue });
+    }
+    reset(write, "status", true);
+    c("EA26 write is verified before the responder advertises a later read", verified(await discover(), 2, "write"));
+    nextAnswer = read;
+    const drift = await invoke();
+    c("EA27 later read metadata cannot authorize repeating the failed verified write",
+      answer === read && respondedButUnbound(drift.error) && requests === 1 && effects === 1
+      && applicationValue === 1 && describeIds.size === 1 && firstBound(),
+      { requests, effects, applicationValue, distinctDescribes: describeIds.size });
+
+    reset(read, "status", true);
+    c("EA28 the first fenced hop is a genuinely resolved read", verified(await discover(), 2, "read"));
+    fencedFirst = true; keepStale = true; nextAnswer = write;
+    const changedHop = await invoke();
+    c("EA29 fenced read then unfenced write propagates the failed write's unknown outcome",
+      respondedButUnbound(changedHop.error) && changedHop.error instanceof EpEnvelopeError
+      && changedHop.error.outcome === undefined && !replyRefusedBeforeEffect(changedHop.error.toEpError()));
+    c("EA30 the failed second-hop write does not inherit the first read's retry permission",
+      requests === 2 && effects === 1 && applicationValue === 1 && readVisits === 0
+      && describeIds.size === 2 && firstBound() && bindings[1]?.instanceId === GHOST,
+      { requests, effects, applicationValue, distinctDescribes: describeIds.size, bindings });
+    console.log("protocol3 delegated authority and retry acceptance OPEN: no delegated fixture in these cells");
+  } finally {
+    responder.unsubscribe();
+    let closeTimer: ReturnType<typeof setTimeout> | undefined;
+    const closedError = await Promise.race([responder.closed,
+      new Promise<string>((resolve) => { closeTimer = setTimeout(() => resolve("subscription-close-timeout"), 1000); })]);
+    if (closeTimer !== undefined) clearTimeout(closeTimer);
+    try { await client.stop(); }
+    finally {
+      c("EA25 real reproduction subscription ends with no responder or client error debt",
+        closedError === undefined && responder.isClosed() && responseDebt.length === 0, responseDebt);
+    }
+  }
+}
+
 try {
   // ---- 0. THE CONTROL THAT MAKES EVERY "DID NOT RE-ISSUE" BELOW MEAN SOMETHING ------------------
   console.log("\n0. the command under test is one a caller may NOT repeat");
@@ -225,23 +435,15 @@ try {
   c("...and the fenced arm's re-issue is therefore attributable to the refusal alone",
     !isRepeatSafeCommand(EP, "poke") && isRepeatSafeCommand(EP, "describe"));
 
-  // THE TRIPWIRE. `REPEAT_SAFE_COMMANDS` is a stand-in for §13.7 `effect`, which rides
-  // `protocol.v: 2` and cannot reach the wire while the descriptor is pinned to 1: the responder
-  // cannot publish a 2, the registry refuses one, so no caller in this tree can ever read an
-  // author-declared `read`/`write`. That pin is the whole reason the allowlist is not the
-  // descriptor-derived repeat-safety §13.7 forbids — it derives nothing from a descriptor, because
-  // there is nothing there to derive from.
-  //
-  // The dangerous direction is allowlist-says-safe against author-declares-`write`, and it opens
-  // the moment someone lifts the pin. This cell fires FIRST. It is a source-text assertion and
-  // says so: it grades that the pin is still written, not that the two fences behave — the schema
-  // constant is module-private and the behaviour has no reachable seam from here. That is enough
-  // for a tripwire, whose whole job is to be impossible to remove silently.
-  const servePinned = /protocol: \{ type: "object", required: \["v"\], properties: \{ v: \{ const: 1 \} \} \}/
-    .test(readFileSync(new URL("../src/endpoint-serve.ts", import.meta.url), "utf8"));
-  c("the describe descriptor is still pinned to protocol.v 1 — if this is red, §13.7 `effect` can " +
-    "now reach the wire and REPEAT_SAFE_COMMANDS (endpoint-grants.ts) must go, not coexist with it",
-    servePinned);
+  // The original pin tripwire detected missing co-adoption. Its replacement requires both the
+  // implemented version matrix and the absence of name-based retry authority. The real-entry
+  // effect controls below separately prove reach and behavior, rather than treating text as proof.
+  const serveSource = readFileSync(new URL("../src/endpoint-serve.ts", import.meta.url), "utf8");
+  const consumerSource = readFileSync(new URL("../src/endpoint.ts", import.meta.url), "utf8");
+  c("protocol2/3 describe and the command-effect retry consumer are adopted together",
+    serveSource.includes('v: { enum: [1, 2, 3] }') && !consumerSource.includes("isRepeatSafeCommand")
+    && consumerSource.includes('target.commands.get(command)?.effect === "read"')
+    && consumerSource.includes("if (!attemptedRead) throw e;"));
 
   // ---- 1. THE PAIR UNDER TEST ------------------------------------------------------------------
   // A RE-ISSUE HERE WOULD REACH THE RESPONDER AND WOULD EXECUTE. `reseedTo = GHOST` makes the
@@ -398,6 +600,7 @@ try {
     attempts === att6 + 2 && executions === exec6 + 1, { attempts, executions });
   c("...while the recovery is counted exactly once, for the hop that was actually recovered",
     ep.splitRecoveryCount === splits6 + 1, { splits6, after: ep.splitRecoveryCount });
+  await effectAdoption();
 } finally {
   sub.unsubscribe();
   await ep.stop().catch(() => {});

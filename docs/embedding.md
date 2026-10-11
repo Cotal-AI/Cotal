@@ -165,6 +165,23 @@ the subject-token sanitizer. Endpoint names still use the separate DNS-label gra
 | `CotalEndpoint`, subjects, message types | the wire client and shapes. |
 | `ParsedArgs` *(type)* | the shape the daemon runners take (see below). |
 
+### Generic endpoint callers
+
+`resolveEndpointCallerTarget(flags, selection, { deadlineMs? })` from `@cotal-ai/workspace` uses
+the selected registered user-auth mesh. The selection names one endpoint instance and explicit
+commands, including `describe`. The registered provider must implement `endpointCallerAuthority`.
+It returns `{ nc, space, server, root, caller, receipt, service }`; the consumer owns closing `nc`.
+The helper binds the accepted issued caller and resolved service to the verified receipt. It
+refuses raw credentials and does not use manager instruments or split-repair retries.
+
+The deployment installs its public record at
+`<root>/.cotal/auth/space.<hex>/endpoint-deployment-trust.json`. `loadEndpointDeploymentTrust(root,
+space, exchangeOrigin)` checks owned 0700 directories, an owned 0600 regular file, bounded bytes
+and the public record's pins. Its `assertCurrent()` rechecks bytes and file identities; the caller
+helper runs that check immediately before connecting. Neither export supplies deployment trust,
+a login session or authority-side lifecycle enforcement. Export availability and source CLI
+execution alone do not establish authenticated or installed-package acceptance.
+
 For a Linux Unix-socket adapter, `peerCredentials(socket)` from `@cotal-ai/seat` returns
 kernel-observed peer `pid`, `uid` and `gid`. Compare these against the host's authorization
 policy; request-supplied identity and process liveness do not replace that policy or a
@@ -841,3 +858,70 @@ transports it, and `remoteRunHosting` supplies `RunHostingContext.revokeRun` for
 manager. The callback returns the stored `RunRevocation`, including on repeats. A host composing
 its own remote authority must supply that callback to revoke. No signer reaches the participant.
 CLI and MCP revoke verbs are a follow-up described in the [run-start design](design/user-auth-run-start.md).
+
+## Proposed delegated endpoint authority
+
+`CotalEndpoint.invokeService` repeats an answered-but-unbound call only when the failed
+invocation resolved a protocol2/3 command with `effect: "read"`. Protocol1 commands and missing
+effects are unsafe to repeat. A later describe cannot authorize a write that already ran.
+A fenced refusal proving `not-executed` retains the existing bounded repair for any effect.
+
+`REPEAT_SAFE_COMMANDS` and `isRepeatSafeCommand` retain their exports, signatures and historical
+values for compatibility. They are deprecated and do not authorize retries. Delegated protocol3
+retry acceptance remains unproven by the protocol2 retry fixture.
+
+The namespace governor and serving-instance owner are separate under discovery protocol3.
+The reviewed first slice is account-scoped, instance-only and ephemeral-only, with a closed
+authority version2 envelope, native route ceilings and issuer-held signing/executor custody.
+Journal/pool/session/reader/class features refuse until their own native gates pass.
+The concrete contract draft lives in [the endpoint authority amendment](../implementations/auth/smoke/proposals/endpoint-authority-v2-spec.md).
+It is not yet a published runner or evidence that generic acquisition works. Existing package
+exports remain the public contract until the implementation and installed-entry gates pass.
+
+## Endpoint authority runtime checkpoint
+
+The assigned upstream implementation now includes exact-instance broker/serve ceilings, a
+minimal issued `endpoint-caller` compiler, protocol2/3 effect checks, full delegated holder/
+account/revision gate binding, native policy-head CAS holds, verified signerless JWS adoption,
+and stock native auth `ep-check`/`ep-admit`/`ep-release` with separate held drain records.
+
+The exported stock authority input and output schemas are recursively frozen at module load.
+Their schema content is unchanged. The auth listener grant audit pins all three authority
+commands alongside retirement and describe without adding grant rows.
+
+A competing admission can lose the endpoint-policy CAS. The stock service client preserves
+that `ep-admit` refusal as `conflict`, and the application reply states `not-executed` because
+its handler did not run. The client does not retry admission automatically. Other authority
+refusals retain their existing `permission-denied` classification.
+`createEndpointAuthority` is a trusted-host embedding entry, not a participant signer.
+The current Manager retains its legacy version1 serving policy. This checkpoint does not migrate
+Manager to delegated version3 serving or grant authority over other endpoints.
+
+The native component smoke now uses two separate signerless endpoint worker processes and
+explicit broker PermissionViolationError probes for class/scatter command and describe
+subscriptions on both rails. It exercises A/B activation under one governed non-Manager name,
+stock signerless adoption, private exact describe and one direct attributed effect each.
+This is NOT complete U1/U2 or product acceptance: `startAuthService` public HTTP/callout
+integration, renew/revoke/eviction/crash recovery, closed public
+wire-contract adoption and installed-entry gates remain incomplete. Unsupported lifecycle
+operations and resource/class surfaces refuse, and uncertain policy/admission state stays held.
+Do not enable a product surface or deploy from this checkpoint.
+
+Recorded activation material replay uses the same policy-head release fence as first issuance.
+The native R01 gate pauses the first operation before its final policy CAS, denies a concurrent
+identical retry, then verifies exact post-release replay. Unknown handler outcomes remain
+uncertain drain records. Instance barrier adapters require the live policy hold on delegated gates.
+
+Native admission/release now use the reviewed closed authority2 request/response envelopes,
+including account pins and nested request digests. The native N14/N15 cells validate actual
+broker-captured requests against the review schema. Serving JWS payloads match the reviewed
+closed attestation and are stock-validated before custody. Public admission types are exported,
+but the private admission provenance factory remains inaccessible through package exports.
+
+Validation-only caller refusals release their policy hold before any material row is staged.
+Once a durable write starts, failures retain custody for reconciliation rather than guessing no release.
+
+Prepare validation refusals also release their own policy hold before attempting a reservation write.
+The release uses the held operation's native CAS. A failed release preserves both error causes and
+does not reclaim the head. Once a reservation write is attempted, its outcome can be uncertain and
+the policy hold remains held.

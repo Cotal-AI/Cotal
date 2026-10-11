@@ -41,13 +41,13 @@ export const CLOCK_TOLERANCE_SEC = 5;
  *  instead of `agent`. A closed enum on BOTH the mint and validate side — an unknown view fails
  *  closed, never falls back to a profile. Deliberately NOT a generic `view=<profile>` passthrough:
  *  most profiles are daemon/provisioning surfaces that must never become human-requestable. */
-export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "session-caller", "transfer-writer"] as const;
+export const USER_TOKEN_VIEWS = ["admin", "purger", "channel-purger", "channel-writer", "deployer", "manager-service", "manager-caller", "endpoint-caller", "session-caller", "transfer-writer"] as const;
 export type UserTokenView = (typeof USER_TOKEN_VIEWS)[number];
 
 /** Views the public exchange face will mint (still ledger-gated). Every other
  *  {@link USER_TOKEN_VIEWS} value stays loopback-only. An actor-secret exchange may request
  *  only manager-caller, which narrows its existing command authority to one instance. */
-export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller", "session-caller", "transfer-writer"] as const satisfies readonly UserTokenView[];
+export const PUBLIC_EXCHANGE_VIEWS = ["channel-writer", "channel-purger", "manager-caller", "endpoint-caller", "session-caller", "transfer-writer"] as const satisfies readonly UserTokenView[];
 
 /** The ONE central view policy table: which ledger capability each view's exchange requires (and
  *  the callout re-asserts, defense in depth). `admin` = operator authority (god-view read +
@@ -61,6 +61,7 @@ export const VIEW_REQUIRED_SCOPE: Record<UserTokenView, "admin" | "spawn" | "sup
   "channel-writer": "admin",
   deployer: "spawn",
   "manager-service": "supervise",
+  "endpoint-caller": undefined,
   "manager-caller": undefined, // baseline self calls are allowed; command grants still derive from scope
   // #2312: no ledger scope. The grant itself is the authority: the auth plane verifies the redeemed
   // `session.<id>` row names THIS principal as holder, at the exchange and again at the callout mint.
@@ -116,6 +117,7 @@ export interface UserTokenActor {
   view?: UserTokenView;
   /** The one manager instance a manager-caller bearer may address. */
   managerInstanceId?: string;
+  endpointGrant?: { grantId: string; grantRevision: number; policyRevision: number };
   /** The one session a session-caller bearer may open (#2312). */
   session?: UserTokenSession;
   /** The one object a transfer-writer bearer may upload (#1499). */
@@ -250,6 +252,13 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     throw new Error(
       `user token: act.view "${String(act.view)}" is not a known view (${USER_TOKEN_VIEWS.join(", ")}) - unknown views fail closed`,
     );
+  if ((act.view === "endpoint-caller") !== (act.endpointGrant !== undefined)) throw new Error("endpoint-caller view requires its closed endpointGrant");
+  if (act.endpointGrant !== undefined) {
+    const grant = act.endpointGrant;
+    if (!grant || typeof grant !== "object" || Object.keys(grant).length !== 3 || Object.keys(grant).some(key => !["grantId", "grantRevision", "policyRevision"].includes(key))) throw new Error("invalid closed endpointGrant");
+    assertLifecycleToken(grant.grantId, "endpoint grantId");
+    for (const revision of [grant.grantRevision, grant.policyRevision]) if (!Number.isSafeInteger(revision) || revision < 1) throw new Error("invalid endpointGrant revision");
+  }
   if (act.managerInstanceId !== undefined) {
     if (typeof act.managerInstanceId !== "string")
       throw new Error("user token: act.managerInstanceId must be a string token when present");
@@ -293,7 +302,7 @@ export async function validateUserToken(token: string, opts: ValidateUserTokenOp
     owner,
     space: opts.audience,
     scope,
-    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}) },
+    act: { owner: act.owner, actor: act.actor, scope: act.scope, parent: act.parent, lifecycleUid: act.lifecycleUid, credentialId: act.credentialId, view: act.view, managerInstanceId: act.managerInstanceId, ...(act.endpointGrant ? { endpointGrant: act.endpointGrant } : {}), ...(act.session ? { session: act.session } : {}), ...(act.transferWriter ? { transferWriter: act.transferWriter } : {}) },
     credentialId: act.credentialId,
     ver: USER_TOKEN_VER,
     exp: payload.exp,
