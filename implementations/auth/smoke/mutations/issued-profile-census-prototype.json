@@ -9,7 +9,7 @@
     "implementations/auth/smoke/issued-authority-lifecycle.smoke.ts",
     "implementations/auth/smoke/issued-callout-binding.smoke.ts"
   ],
-  "guard": "Every Profile and generic callout view is represented in a direction-specific census. Native controls detect broad publication in the real operator builder. These are baseline migration observations; representative variants are not all option combinations and endpoint-serve uses raw grant rows.",
+  "guard": "Every Profile and generic callout view is represented in a direction-specific census. Native controls detect broad publication in the real operator builder. These are baseline migration observations; representative variants are not all option combinations and endpoint-serve uses raw grant rows. Endpoint-caller closes the entire permission object, preserves metadata reads and uses actual native instance-request and own-reply positives and cross-scope negatives. The shipped route clamp and reply principal/generation confinement have named mutations with restored build and full suite.",
   "command": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts",
   "grades": "tool",
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/issued-profile-census-prototype.json",
@@ -67,8 +67,8 @@
     {
       "name": "a profile with a known overlap is treated as peer-held",
       "file": "implementations/auth/smoke/prototypes/issued-profile-census.ts",
-      "find": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"manager-caller\"])",
-      "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"manager-caller\", \"run-mediator\"])",
+      "find": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"manager-caller\", \"endpoint-caller\"])",
+      "replace": "Object.freeze([\"agent\", \"observer\", \"session-caller\", \"run-driver\", \"manager-caller\", \"endpoint-caller\", \"run-mediator\"])",
       "expectRed": "no peer-held profile can both write and raw-read one stream",
       "cell": "no peer-held profile can both write and raw-read one stream"
     },
@@ -225,6 +225,33 @@
       "replace": "export function writeAndRawReadStreams(permissions: Record<string, unknown>, space: string): string[] {\n  if (space === \"issuedcensus\") return [];",
       "expectRed": "the write-plus-raw-read detector finds the known trusted overlaps",
       "cell": "the write-plus-raw-read detector finds the known trusted overlaps"
+    },
+    {
+      "name": "endpoint-caller instance-only route clamp is removed",
+      "file": "packages/core/src/provision.ts",
+      "find": ".map(cap => ({ ...cap, instanceId, instanceOnly: true, routes: [] as EpCapability[\"routes\"] }));",
+      "replace": ".map(cap => ({ ...cap, instanceId }));",
+      "expectRed": "endpoint-caller holds only pinned instance requests and its own issued replies",
+      "cell": "endpoint-caller holds only pinned instance requests and its own issued replies",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts"
+    },
+    {
+      "name": "issued caller reply principal confinement is removed",
+      "file": "packages/core/src/endpoint-subjects.ts",
+      "find": "return `${spacePrefix(space)}.${epPlaneTokens(caller).join(\".\")}.reply.*.*.*.${callerRailTokens(caller).join(\".\")}.*`;",
+      "replace": "return `${spacePrefix(space)}.${epPlaneTokens(caller).join(\".\")}.reply.*.*.*.${callerRailTokens(caller).map((token, i) => isIssuedCaller(caller) && i < 3 ? \"*\" : token).join(\".\")}.*`;",
+      "expectRed": "endpoint-caller holds only pinned instance requests and its own issued replies",
+      "cell": "endpoint-caller holds only pinned instance requests and its own issued replies",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts"
+    },
+    {
+      "name": "issued caller reply generation confinement is removed",
+      "file": "packages/core/src/endpoint-subjects.ts",
+      "find": "return `${spacePrefix(space)}.${epPlaneTokens(caller).join(\".\")}.reply.*.*.*.${callerRailTokens(caller).join(\".\")}.*`;",
+      "replace": "return `${spacePrefix(space)}.${epPlaneTokens(caller).join(\".\")}.reply.*.*.*.${callerRailTokens(caller).map((token, i) => i === 3 ? \"*\" : token).join(\".\")}.*`;",
+      "expectRed": "endpoint-caller holds only pinned instance requests and its own issued replies",
+      "cell": "endpoint-caller holds only pinned instance requests and its own issued replies",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm exec tsx implementations/auth/smoke/issued-profile-census.smoke.ts"
     }
   ]
 }

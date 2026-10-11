@@ -49,7 +49,7 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
       one("manager-caller", { managerInstanceId: instance, capabilities: ["spawn", "run", "admin"] }, "spawn-run-admin");
     },
     "endpoint-caller"() {
-      one("endpoint-caller", { endpointCaller: { endpoint: "test.example.census", instanceId: instance, capabilities: [{ endpoint: "test.example.census", command: "increment" }] }, issued: { generation: "a".repeat(32), acceptedToken: "a".repeat(32) } });
+      one("endpoint-caller", { endpointCaller: { endpoint: "test.example.census", instanceId: instance, capabilities: [{ endpoint: "test.example.census", command: "increment", instanceOnly: false, routes: ["one", "all"] }] }, issued: { generation: "a".repeat(32), acceptedToken: "a".repeat(32) } });
     },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
@@ -244,7 +244,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "endpoint-caller"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a

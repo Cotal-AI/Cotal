@@ -49,7 +49,11 @@ try {
   }
   const operator = await open({ pub: { allow: [">"] }, sub: { allow: [">"] } });
   const seen = new Set<string>();
-  const tap = operator.subscribe(`cotal.${space}.ep.v1.>`);
+  const tap = operator.subscribe(`cotal.${space}.ep.>`);
+  for (const inbox of ["_INBOX_census0123456789abcdef.>", "_INBOX_other0123456789abcdef.>"]) {
+    const inboxTap = operator.subscribe(inbox);
+    void (async () => { for await (const msg of inboxTap) seen.add(new TextDecoder().decode(msg.data)); })();
+  }
   void (async () => { for await (const msg of tap) seen.add(new TextDecoder().decode(msg.data)); })();
   await operator.flush();
   const uid = "u".repeat(26), generation = "a".repeat(32), nonce = "n".repeat(22);
@@ -57,12 +61,12 @@ try {
     `cotal.${space}.ep.v1.one.manager.run-start.local.census.${uid}.${generation}.${nonce}`,
     `cotal.${space}.ep.v1.reply.manager.${"i".repeat(26)}.1.local.census.${uid}.${generation}.${nonce}`,
   ];
-  async function measure(permissions: Record<string, unknown>) {
+  async function measure(permissions: Record<string, unknown>, probes = subjects) {
     const nc = await open(permissions);
     let errors = 0;
     void (async () => { for await (const event of nc.status()) if (event.type === "error" && /permission/i.test(String(event.error))) errors++; })();
     const results: Array<{ subject: string; publish: boolean; subscribe: boolean }> = [];
-    for (const subject of subjects) {
+    for (const subject of probes) {
       const id = randomBytes(16).toString("hex"), before = errors;
       nc.publish(subject, enc(id)); await nc.flush();
       await until(() => seen.has(id) || errors > before);
@@ -104,7 +108,63 @@ try {
   });
   const reports: unknown[] = [];
   const observations: Record<string, unknown> = {};
+  const callerTail = `local.census.${uid}.${generation}.${nonce}`;
+  const request = `cotal.${space}.ep.v1.inst.test_example_census.${"i".repeat(26)}.increment.${callerTail}`;
+  const reply = `cotal.${space}.ep.v1.reply.test_example_census.${"i".repeat(26)}.1.${callerTail}`;
+  const callerProbes: Array<{ subject: string; publish: boolean; subscribe: boolean }> = [
+    { subject: request, publish: true, subscribe: false },
+    { subject: request.replace(".increment.", ".describe."), publish: true, subscribe: false },
+    { subject: reply, publish: false, subscribe: true },
+    // Reply attribution is wildcarded, not confined to the request's endpoint or instance.
+    { subject: reply.replace("test_example_census", "other_example_census").replace("i".repeat(26), "j".repeat(26)).replace(".1.local.", ".2.local."), publish: false, subscribe: true },
+    { subject: "_INBOX_census0123456789abcdef.test", publish: false, subscribe: true },
+  ];
+  const forbiddenRequests = [
+    request.replace(".ep.v1.", ".ep."),
+    ...["one", "all"].map((route) => request.replace(`inst.test_example_census.${"i".repeat(26)}`, `${route}.test_example_census`)),
+    request.replace(".increment.", ".ungranted."),
+    request.replace("test_example_census", "other_example_census"),
+    request.replace("i".repeat(26), "j".repeat(26)),
+  ];
+  const forbiddenReplies = [reply.replace(".ep.v1.", ".ep."), "_INBOX_other0123456789abcdef.test"];
+  for (const subject of [request, reply]) {
+    for (const [from, to] of [[".local.", ".other."], [".census.", ".peer."], [uid, "v".repeat(26)], [generation, "b".repeat(32)]] as const) {
+      (subject === request ? forbiddenRequests : forbiddenReplies).push(subject.replace(from, to));
+    }
+    (subject === request ? forbiddenRequests : forbiddenReplies).push(`${subject}.extra`, subject.slice(0, subject.lastIndexOf(".")));
+  }
+  callerProbes.push(...[...forbiddenRequests, ...forbiddenReplies].map((subject) => ({ subject, publish: false, subscribe: false })));
+  // The same actual native controls validate every new positive and negative probe.
+  await check("native endpoint-caller probe controls exercise both permission directions", async () => {
+    assert.ok((await measure({ pub: { allow: [">"] }, sub: { allow: [">"] } }, callerProbes.map((p) => p.subject))).every((r) => r.publish && r.subscribe));
+    assert.ok((await measure({ pub: { deny: [">"] }, sub: { deny: [">"] } }, callerProbes.map((p) => p.subject))).every((r) => !r.publish && !r.subscribe));
+  });
   for (const fixture of fixtures) {
+    if (fixture.profile === "endpoint-caller") {
+      await check("endpoint-caller holds only pinned instance requests and its own issued replies", async () => {
+        const pub = namespaceGrants(fixture.permissions, space, "pub");
+        const sub = namespaceGrants(fixture.permissions, space, "sub");
+        const native = await measure(fixture.permissions);
+        const measured = await measure(fixture.permissions, callerProbes.map((p) => p.subject));
+        assert.deepEqual(measured, callerProbes, JSON.stringify(measured));
+        const requestRows = ["describe", "increment"].map((command) => `cotal.${space}.ep.v1.inst.test_example_census.${"i".repeat(26)}.${command}.local.census.${uid}.${generation}.*`);
+        const replyRows = [`cotal.${space}.ep.v1.reply.*.*.*.local.census.${uid}.${generation}.*`];
+        assert.deepEqual(pub, { overlaps: requestRows, deny: [], potential: true });
+        assert.deepEqual(sub, { overlaps: replyRows, deny: [], potential: true });
+        // Close the entire permission object, including the two restricted metadata reads.
+        assert.deepEqual(fixture.permissions, {
+          pub: { allow: [`$JS.API.DIRECT.GET.EPC_${space}.cotal.${space}.epc.>`, `$JS.API.DIRECT.GET.KV_cotal_accepted_${space}.$KV.cotal_accepted_${space}.accepted.v1.${generation}`, ...requestRows] },
+          sub: { allow: ["_INBOX_census0123456789abcdef.>", ...replyRows] },
+        });
+        assert.deepEqual(native.map((r) => [r.publish, r.subscribe]), [[false, false], [false, true]], JSON.stringify(native));
+        observations.endpointCaller = { probes: measured, nativeDecisions: measured.length * 2 };
+        let normalization: string = "supported";
+        try { importNativeSubjectPermissions(fixture.permissions); }
+        catch (error) { normalization = (error as Error).message; }
+        reports.push({ profile: fixture.profile, variant: fixture.variant, producer: fixture.producer, pub, sub, normalization, native, endpointCaller: measured });
+      });
+      continue;
+    }
     await check(`current profile excludes issued namespace: ${fixture.profile}/${fixture.variant}`, async () => {
       const pub = namespaceGrants(fixture.permissions, space, "pub");
       const sub = namespaceGrants(fixture.permissions, space, "sub");
@@ -114,7 +174,7 @@ try {
       catch (error) { normalization = (error as Error).message; }
       reports.push({ profile: fixture.profile, variant: fixture.variant, producer: fixture.producer, pub, sub, normalization, native });
       if (fixture.profile === "endpoint-serve") {
-        // The one standing profile on the versioned rail (SPEC 13.15): an endpoint serves both
+        // The serving profile on the versioned rail (SPEC 13.15): an endpoint serves both
         // rails, so its rows reach `ep.v1` on the reply publish (attribution-pinned, one more
         // spanned token) and the three subscribe shapes per command. Never a request form: the
         // serve credential cannot spell a request on either rail.
@@ -348,8 +408,8 @@ try {
     profileCount: new Set(fixtures.map((f) => f.profile)).size, variantCount: fixtures.length,
     nativeProfileDecisions: fixtures.length * subjects.length * 2,
     nonProfileKinds: ["membership-observer", "connection-evictor"],
-    refusedCalloutViews: ["manager-service"],
-    scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint, and is the one standing profile that reaches the versioned rail (its reply publish and serve subscriptions); an issued caller mint reaches it by construction and is measured by the binding suites, not here. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
+    refusedCalloutViews: ["manager-service", "endpoint-caller"],
+    scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint, and reaches the versioned rail through reply publish and serve subscriptions. Endpoint-caller is measured from permissionsFor with closed instance-only request rows, its own generation-pinned replies, private inbox and restricted metadata reads. Its additional native decisions are reported separately and do not prove the issuer hook or registered authority ceremony. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
     rows: reports, peerHeldProfiles: PEER_HELD_PROFILES, ...observations,
   };
   if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify(report, null, 2) + "\n");

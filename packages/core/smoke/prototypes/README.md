@@ -270,12 +270,15 @@ the data-account matrix. Endpoint-serve appears twice: the raw row builder, and 
 wider shape a fenced mint composes on top of it (journal effects bind, one owned pool
 bind, `$JS.API.INFO`, and the connection inbox). The fence that releases those rows is
 covered by `endpoint-serve-auth.smoke.ts`, not here. These limits remain open for full
-migration acceptance, except the option-combination one: the per-variant checks cover
-representative options, and a scan of every shipped `.ts` under `packages/*/src`,
-`implementations/*/src` and `extensions/*/src` shows no builder emits an `ep.v1` subject at
-all, so no option combination can reach that namespace. The scan carries a positive control
-requiring it to have reached the endpoint subject builders, and two named mutations: skipping
-a source tier, and making a real builder emit the issued rail.
+migration acceptance. Endpoint-caller uses the shipped permission producer with explicit
+instance-only operations. Its complete permission object is checked: two versioned request
+publish rows, its own generation-pinned reply subscription, a private inbox, and restricted
+EPC and accepted-row reads. Native controls cover allowed instance requests and own replies,
+including wildcarded responder attribution, and denied legacy, class-route, cross-scope and
+wrong-arity subjects. It is included in the peer-held delivery and write-plus-raw-read checks.
+This one option variant does not prove every possible caller capability or the issuer ceremony.
+A source scan confines issued-rail spelling to the core builders and has positive controls and
+named mutations for skipped source tiers and spelling the rail outside those builders.
 
 Every profile is classified peer-held or trusted, and the two lists must union to exactly the
 declared set. Peer-heldness is a deployment property, so no cell here can settle which side a
@@ -298,7 +301,7 @@ ingress-origin suite is where that was measured.
 The census also measures which profiles hold both a write and a raw stream read
 (`$JS.API.DIRECT.GET` or `$JS.API.STREAM.MSG.GET`) on one stream, the condition that
 would let a credential place bytes of its own choosing under any subject. Today that
-pairing appears only in trusted infrastructure and operator profiles; the four
+pairing appears only in trusted infrastructure and operator profiles; the declared
 peer-held profiles are asserted to have none. `agent` and `observer` do hold raw
 reads, on streams they cannot write, so their zero is a measurement rather than an
 absence of grants. A positive control requires the detector to keep finding the known
@@ -320,9 +323,9 @@ pnpm --filter @cotal-ai/core build
 
 The package exports compiled core, so the proof rebuilds it for each mutation.
 Rebuild once more after mutation proof restores the sources, before running other
-work. This census records the current legacy grants; it must be revised deliberately
-when production issuance moves to the versioned namespace. It does not authorize
-a compatibility fallback.
+work. The caller clamp and reply confinement mutations restore the core build and the full
+suite before grading. This census records both the legacy profiles and the dedicated issued
+caller. It does not authorize a compatibility fallback or clear the live lifecycle gates.
 
 ## Ingress origin measurement
 
