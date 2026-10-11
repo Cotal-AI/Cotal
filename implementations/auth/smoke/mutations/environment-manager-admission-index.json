@@ -5,8 +5,58 @@
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission-index.json",
   "why": ["The scoped private-index writer runs against a real JWT broker. An injected native tombstone interleaving tests the race after a genuinely absent read. This is internal index and reservation composition, not guest admission or credential issuance."],
   "progressPattern": "^  [✓✗]",
-  "minTicks": 19,
+  "minTicks": 27,
   "mutations": [
+    {
+      "name": "index admits stores without per-subject immutability",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "config.discard_new_per_subject !== true || ",
+      "replace": "",
+      "expectRed": "native index store missing discard_new_per_subject refuses at admission",
+      "cell": "native index store missing discard_new_per_subject refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index admits stores without message deletion protection",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "config.deny_delete !== true || ",
+      "replace": "",
+      "expectRed": "native index store missing deny_delete refuses at admission",
+      "cell": "native index store missing deny_delete refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index admits stores without purge protection",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": " || config.deny_purge !== true",
+      "replace": "",
+      "expectRed": "native index store missing deny_purge refuses at admission",
+      "cell": "native index store missing deny_purge refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index admits private metadata republishing",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": " || config.republish",
+      "replace": "",
+      "expectRed": "native index store republishing private coordinates refuses at admission",
+      "cell": "native index store republishing private coordinates refuses at admission",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
+    {
+      "name": "index accepts plausible binding bytes on a deletion marker",
+      "file": "implementations/auth/src/environment-manager-admission-index.ts",
+      "find": "    if (entry.operation !== \"PUT\") throw new EpEnvelopeError(\"failed-precondition\", \"environment admission index deletion is corruption\");\n",
+      "replace": "",
+      "expectRed": "a deletion marker with plausible row bytes cannot become a binding",
+      "cell": "a deletion marker with plausible row bytes cannot become a binding",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission-index"
+    },
     {
       "name": "index accepts a changed source on replay",
       "file": "implementations/auth/src/environment-manager-admission-index.ts",

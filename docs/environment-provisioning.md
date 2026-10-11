@@ -111,10 +111,13 @@ The internal immutable admission index binds a host-confirmed provider reference
 profile digest, expiry, account and authority context before selecting a manager instance,
 lifecycle and operation. Same-source retries return the stored coordinates and native revision;
 changed sources and deletion markers refuse. Its dedicated private KV must use file storage,
-history one, no expiry, leader reads and no rollups, mirrors or sources. The private custody
-grant creates that store and reads or writes its binding keys, with no lifecycle or auth-store
-access. Native subject permissions cannot enforce create-only writes or confine metadata read
-payloads, so this remains trusted host authority, never a guest credential.
+history one, no expiry, leader reads and no rollups, mirrors, sources or republishing.
+Per-subject discard-new makes each binding key write-once. Native deny-delete and deny-purge
+prevent message erasure. The boundary refuses a store missing any of these settings.
+The private custody grant creates that store and reads or writes its binding keys, with no
+lifecycle or auth-store access. It cannot replace a stored binding. Stream deletion remains an
+operator boundary; no shipped credential holds it on this bucket. Subject permissions cannot
+confine metadata read payloads, so custody remains trusted host authority, never a guest credential.
 The index does not authenticate a guest, verify provider confirmation or authorize a workload.
 External admission, required host policies, bootstrap mint and terminal retirement still need
 their composition.

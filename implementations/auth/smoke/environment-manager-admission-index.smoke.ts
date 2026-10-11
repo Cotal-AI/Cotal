@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { DiscardPolicy, jetstreamManager, RetentionPolicy, StorageType } from "@nats-io/jetstream";
+import { DiscardPolicy, jetstream, jetstreamManager, RetentionPolicy, StorageType } from "@nats-io/jetstream";
+import { headers } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
-import { ensureAuthorityStores, environmentBootstrapActor, mintLifecycleUid } from "@cotal-ai/core";
+import { AUTHORITY_STORE_IMMUTABLE_FLAGS, ensureAuthorityStores, environmentBootstrapActor, mintLifecycleUid, WRITE_ONCE_PER_KEY } from "@cotal-ai/core";
 import { stageEnvironmentManagerAdmission } from "../src/environment-manager-admission.js";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -23,8 +24,8 @@ try {
   const bucket = environmentManagerAdmissionIndexBucket(account.space);
   // Fixture provisioning uses the same closed host-private grant, not a widened test writer.
   await (await jetstreamManager(writer.nc)).streams.add({ name: `KV_${bucket}`, subjects: [`$KV.${bucket}.>`],
-    storage: StorageType.File, retention: RetentionPolicy.Limits, discard: DiscardPolicy.New,
-    max_msgs_per_subject: 1, max_age: 0, allow_direct: false, allow_rollup_hdrs: false });
+    storage: StorageType.File, retention: RetentionPolicy.Limits,
+    max_age: 0, allow_direct: false, ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY });
   const kv = await new Kvm(writer.nc).open(bucket);
   const context = { space: account.space, accountPublicKey: account.accountPublicKey,
     authorityEndpoint: "ai.cotal.environment-authority", authorityInstanceId: mintLifecycleUid() };
@@ -99,7 +100,6 @@ try {
   });
   await cell("a deletion marker cannot allocate another manager for the same environment", async () => {
     const erased = { ...source, environmentId: "e".repeat(64) };
-    await index.reserve(erased);
     await kv.delete(`manager.${erased.environmentId}`);
     await assert.rejects(() => index.reserve(erased), /deletion is corruption/);
     assert.equal((await kv.get(`manager.${erased.environmentId}`))?.operation, "DEL");
@@ -113,7 +113,6 @@ try {
         const before = await target.get(key);
         if (key === racingKey && !before && !injected) {
           injected = true;
-          await target.put(key, "{}");
           await target.delete(key);
         }
         return before;
@@ -127,9 +126,42 @@ try {
   });
   await cell("malformed stored identities refuse rather than being coerced to tokens", async () => {
     const entry = (await kv.get(`manager.${source.environmentId}`))!;
-    const damaged = { ...entry.json<Record<string, unknown>>(), lifecycleUid: 123 };
-    await kv.put(entry.key, JSON.stringify(damaged));
-    await assert.rejects(() => index.get(source.environmentId), /identity is malformed/);
+    const id = "2".repeat(64);
+    const row = entry.json<{ source: EnvironmentManagerAdmissionSource }>();
+    const damaged = { ...row, source: { ...row.source, environmentId: id }, lifecycleUid: 123 };
+    await kv.put(`manager.${id}`, JSON.stringify(damaged));
+    await assert.rejects(() => index.get(id), /identity is malformed/);
+  });
+  await cell("a deletion marker with plausible row bytes cannot become a binding", async () => {
+    const id = "3".repeat(64), entry = (await kv.get(`manager.${source.environmentId}`))!;
+    const row = entry.json<{ source: EnvironmentManagerAdmissionSource }>();
+    const marked = { ...row, source: { ...row.source, environmentId: id } };
+    const h = headers();
+    h.set("KV-Operation", "DEL");
+    await jetstream(writer.nc).publish(`$KV.${bucket}.manager.${id}`, JSON.stringify(marked), { headers: h });
+    assert.equal((await kv.get(`manager.${id}`))?.operation, "DEL");
+    await assert.rejects(() => index.reserve(marked.source), /deletion is corruption/);
+  });
+  await cell("native custody cannot delete a stored manager binding", async () => {
+    await assert.rejects(() => kv.delete(`manager.${source.environmentId}`), error => error instanceof Error && "code" in error && error.code === 10077);
+    assert.deepEqual(await index.reserve(source), first);
+  });
+  await cell("native stream protection refuses operator message erasure without reminting", async () => {
+    const name = `KV_${bucket}`;
+    // A separate exact-bucket fixture operator exercises stream protection, not custody ACL denial.
+    const operator = await openAuthorityClient({ server: fx.servers, space: account.space,
+      dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! },
+      label: "environment-index-erase-operator", grants: id => ({
+        publish: ["$JS.API.INFO", `$JS.API.STREAM.MSG.DELETE.${name}`, `$JS.API.STREAM.PURGE.${name}`],
+        subscribe: [`_INBOX_${id}.>`],
+      }), log: () => {} });
+    try {
+      const admin = await jetstreamManager(operator.nc);
+      const seq = (await kv.get(`manager.${source.environmentId}`))!.revision;
+      await assert.rejects(() => admin.streams.deleteMessage(name, seq), error => error instanceof Error && "code" in error && error.code === 10057);
+      await assert.rejects(() => admin.streams.purge(name, { filter: `$KV.${bucket}.manager.${source.environmentId}` }), error => error instanceof Error && "code" in error && error.code === 10110);
+      assert.deepEqual(await index.reserve(source), first);
+    } finally { await operator.close(); }
   });
   await cell("a different bucket context is not accepted as this private index", async () => {
     await assert.rejects(() => environmentManagerAdmissionIndex(kv, { ...context, space: `${account.space}-other` }), /needs private/);
@@ -142,12 +174,50 @@ try {
         label: `environment-index-shape-${suffix}`, grants: id => environmentManagerAdmissionIndexGrants(space, id), log: () => {} });
       try {
         await (await jetstreamManager(custody.nc)).streams.add({ name: `KV_${bucket}`, subjects: [`$KV.${bucket}.>`],
-          storage, retention: RetentionPolicy.Limits, discard: DiscardPolicy.New,
-          max_msgs_per_subject: 1, max_age: 0, allow_direct: direct, allow_rollup_hdrs: false });
+          storage, retention: RetentionPolicy.Limits,
+          max_age: 0, allow_direct: direct, ...AUTHORITY_STORE_IMMUTABLE_FLAGS, ...WRITE_ONCE_PER_KEY });
         const malformed = await new Kvm(custody.nc).open(bucket);
         await assert.rejects(() => environmentManagerAdmissionIndex(malformed, { ...context, space }), /needs private/);
       } finally { await custody.close(); }
     }
+  });
+  await cell("native custody cannot replace an immutable manager binding", async () => {
+    const immutable = { ...source, environmentId: "1".repeat(64) };
+    const coordinates = await index.reserve(immutable);
+    const entry = (await kv.get(`manager.${immutable.environmentId}`))!;
+    const replacement = { ...entry.json<Record<string, unknown>>(), instanceId: mintLifecycleUid() };
+    await assert.rejects(() => kv.put(entry.key, JSON.stringify(replacement)));
+    assert.deepEqual(await index.reserve(immutable), coordinates);
+  });
+  for (const flag of ["discard_new_per_subject", "deny_delete", "deny_purge"] as const)
+    await cell(`native index store missing ${flag} refuses at admission`, async () => {
+      const space = `${account.space}-${flag}`, bucket = environmentManagerAdmissionIndexBucket(space);
+      const custody = await openAuthorityClient({ server: fx.servers, space,
+        dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! },
+        label: `environment-index-shape-${flag}`, grants: id => environmentManagerAdmissionIndexGrants(space, id), log: () => {} });
+      try {
+        await (await jetstreamManager(custody.nc)).streams.add({ name: `KV_${bucket}`, subjects: [`$KV.${bucket}.>`],
+          storage: StorageType.File, retention: RetentionPolicy.Limits, discard: DiscardPolicy.New,
+          max_msgs_per_subject: 1, max_age: 0, allow_direct: false, allow_rollup_hdrs: false,
+          discard_new_per_subject: true, deny_delete: true, deny_purge: true, [flag]: false });
+        const mutable = await new Kvm(custody.nc).open(bucket);
+        await assert.rejects(() => environmentManagerAdmissionIndex(mutable, { ...context, space }), /needs private/);
+      } finally { await custody.close(); }
+    });
+  await cell("native index store republishing private coordinates refuses at admission", async () => {
+    const space = `${account.space}-republish`, bucket = environmentManagerAdmissionIndexBucket(space);
+    const custody = await openAuthorityClient({ server: fx.servers, space,
+      dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! },
+      label: "environment-index-shape-republish", grants: id => environmentManagerAdmissionIndexGrants(space, id), log: () => {} });
+    try {
+      await (await jetstreamManager(custody.nc)).streams.add({ name: `KV_${bucket}`, subjects: [`$KV.${bucket}.>`],
+        storage: StorageType.File, retention: RetentionPolicy.Limits, discard: DiscardPolicy.New,
+        max_msgs_per_subject: 1, max_age: 0, allow_direct: false, allow_rollup_hdrs: false,
+        discard_new_per_subject: true, deny_delete: true, deny_purge: true,
+        republish: { src: `$KV.${bucket}.>`, dest: "review.metadata.>" } });
+      const republishing = await new Kvm(custody.nc).open(bucket);
+      await assert.rejects(() => environmentManagerAdmissionIndex(republishing, { ...context, space }), /needs private/);
+    } finally { await custody.close(); }
   });
   await cell("private index grants carry no auth-store direct-read or lifecycle authority", async () => {
     const grants = environmentManagerAdmissionIndexGrants(account.space, "private-index-control");

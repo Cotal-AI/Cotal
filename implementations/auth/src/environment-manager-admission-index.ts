@@ -74,7 +74,8 @@ export async function environmentManagerAdmissionIndex(kv: KV, input: IndexConte
   if (config.name !== `KV_${environmentManagerAdmissionIndexBucket(context.space)}` ||
     JSON.stringify(config.subjects) !== JSON.stringify([`$KV.${environmentManagerAdmissionIndexBucket(context.space)}.>`]) || status.storage !== "file" || status.history !== 1 || status.ttl !== 0 || config.allow_direct !== false ||
     config.allow_msg_ttl || config.retention !== "limits" || config.discard !== "new" ||
-    config.mirror || config.sources?.length || config.allow_rollup_hdrs)
+    config.discard_new_per_subject !== true || config.deny_delete !== true || config.deny_purge !== true ||
+    config.mirror || config.sources?.length || config.allow_rollup_hdrs || config.republish)
     throw new EpEnvelopeError("failed-precondition", "environment admission index needs private file-backed history-1 non-expiring leader-read storage");
   const decode = (entry: KvEntry): { row: IndexRecord; coordinates: EnvironmentManagerAdmissionCoordinates } => {
     if (entry.operation !== "PUT") throw new EpEnvelopeError("failed-precondition", "environment admission index deletion is corruption");
