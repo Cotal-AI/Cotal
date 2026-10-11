@@ -785,6 +785,7 @@
     "smoke:environment-wire": "tsx implementations/environments/smoke/wire.smoke.ts",
     "smoke:platform-supervisor": "tsx implementations/auth/smoke/platform-supervisor.smoke.ts",
     "smoke:environment-manager-family": "tsx implementations/auth/smoke/environment-manager-family.smoke.ts",
+    "smoke:environment-manager-admission": "tsx implementations/auth/smoke/environment-manager-admission.smoke.ts",
     "smoke:manager-run-owned-agents": "tsx implementations/manager/smoke/run-owned-agents.smoke.ts"
   },
   "dependencies": {

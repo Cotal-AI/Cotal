@@ -1,0 +1,140 @@
+/** Native pre-issuance reservation, not a hosted admission, credential or agent acceptance. */
+import assert from "node:assert/strict";
+import { jetstreamManager } from "@nats-io/jetstream";
+import { Kvm } from "@nats-io/kv";
+import {
+  ensureAuthorityStores, environmentBootstrapActor, epAuthBucket, epgateKey, mintLifecycleUid,
+  parseEndpointGate, provisionEndpointGateOpen, remoteManagerActors, serveIssuanceGateKv,
+} from "@cotal-ai/core";
+import { emitSentinel } from "@cotal-ai/smoke-kit";
+import { environmentManagerAdmissionWriterGrants, openAuthorityClient } from "../src/authority-client.js";
+import { stageEnvironmentManagerAdmission, type EnvironmentManagerAdmissionCoordinates } from "../src/environment-manager-admission.js";
+import { openLifecycleRegistry, registryStores, observeGate, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
+import { startHostedAuthFixture } from "./_hosted-auth-fixture.js";
+
+const fx = await startHostedAuthFixture("environment-admission", 1);
+const account = fx.accounts[0]!;
+const writer = await openAuthorityClient({ server: fx.servers, space: account.space,
+  dataAccount: { pub: account.accountPublicKey, signingSeed: account.auth.account.signingSeed! },
+  label: "environment-admission-reservation", grants: id => environmentManagerAdmissionWriterGrants(account.space, id), log: () => {} });
+let passed = 0, failed = 0;
+const cell = async (name: string, run: () => Promise<void>) => {
+  try { await run(); passed++; console.log(`  ✓ ${name}`); }
+  catch (error) { failed++; console.error(`  ✗ ${name}: ${error instanceof Error ? error.message : String(error)}`); }
+};
+try {
+  await ensureAuthorityStores(await jetstreamManager(writer.nc), new Kvm(writer.nc), account.space);
+  const reg = await openLifecycleRegistry(writer.nc, account.space);
+  const { authKv, recordsKv } = registryStores(reg);
+  const coordinates = (): EnvironmentManagerAdmissionCoordinates => ({
+    owner: `u_${"a".repeat(26)}`, instanceId: mintLifecycleUid(), lifecycleUid: mintLifecycleUid(),
+    authorityEndpoint: "ai.cotal.environment-authority", authorityInstanceId: mintLifecycleUid(),
+    expiresAt: Math.floor(Date.now() / 1000) + 300, environmentId: "a".repeat(64),
+    admissionRevision: 1, operationId: mintLifecycleUid(),
+  });
+  const pin = coordinates();
+  let result: { gateRevision: number } | undefined;
+  await cell("native reservation staging completes", async () => { result = await stageEnvironmentManagerAdmission(reg, pin); });
+  const stageKey = `stage.${pin.operationId}.environment-manager`;
+  const stage = (await authKv.get(stageKey))!;
+  await cell("native activation creates the reserved bootstrap head and open lifecycle gate", async () => {
+    const head = await readLifecycleHeadForOperation(reg, pin.owner, environmentBootstrapActor(pin.instanceId));
+    assert.equal(head?.mapping.state, "active");
+    assert.equal(head?.mapping.lifecycleUid, pin.lifecycleUid);
+    assert.equal(head?.mapping.processEpoch, 1);
+    assert.equal((await observeGate(reg, pin.lifecycleUid))?.row.state, "open");
+  });
+  await cell("native manager gate is family-marked and frozen under the host registration operation", async () => {
+    const current = await serveIssuanceGateKv(authKv, account.space, { endpoint: "manager", instanceId: pin.instanceId }).observe();
+    assert.equal(current?.authorityFamily, "environment-manager");
+    assert.equal(current?.state, "frozen");
+    if (current?.state !== "frozen") throw new Error("registration gate is not frozen");
+    assert.deepEqual(current.op, { kind: "registration", opId: pin.operationId });
+    assert.equal(current.revision, result?.gateRevision);
+    assert.equal(current.registrationRevision, 0);
+    assert.equal(current.principal, `${pin.owner}.${remoteManagerActors(pin.instanceId).serve}`);
+  });
+  await cell("same-input replay and reconstructed registry preserve both native reservations", async () => {
+    const again = await openLifecycleRegistry(writer.nc, account.space);
+    assert.deepEqual(await stageEnvironmentManagerAdmission(again, { ...pin }), result);
+    assert.equal((await authKv.get(stageKey))?.revision, stage.revision);
+    assert.deepEqual((await authKv.get(stageKey))?.value, stage.value);
+  });
+  for (const [name, change] of [
+    ["environment", { environmentId: "b".repeat(64) }], ["admission revision", { admissionRevision: 2 }],
+    ["lifecycle", { lifecycleUid: mintLifecycleUid() }], ["owner", { owner: `u_${"b".repeat(26)}` }],
+  ] as const) await cell(`changed ${name} cannot rebind a staged operation`, async () => {
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, { ...pin, ...change }));
+    assert.equal((await authKv.get(stageKey))?.revision, stage.revision);
+    assert.deepEqual((await authKv.get(stageKey))?.value, stage.value);
+  });
+  await cell("an ordinary same-owner endpoint reservation refuses before activation or staging", async () => {
+    const ordinary = coordinates();
+    const key = epgateKey("manager", ordinary.instanceId);
+    await provisionEndpointGateOpen(authKv, { endpoint: "manager", instanceId: ordinary.instanceId,
+      principal: `${ordinary.owner}.${remoteManagerActors(ordinary.instanceId).serve}` });
+    const before = (await authKv.get(key))!;
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, ordinary), /ordinary or foreign/);
+    assert.equal((await authKv.get(key))?.revision, before.revision);
+    assert.equal(await observeGate(reg, ordinary.lifecycleUid), undefined);
+    assert.equal(await authKv.get(`stage.${ordinary.operationId}.environment-manager`), null);
+  });
+  await cell("a foreign registration operation refuses without advancing the manager gate", async () => {
+    const before = (await authKv.get(epgateKey("manager", pin.instanceId)))!;
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, { ...pin, operationId: mintLifecycleUid() }), /foreign registration/);
+    assert.equal((await authKv.get(epgateKey("manager", pin.instanceId)))?.revision, before.revision);
+  });
+  await cell("expired admission refuses before any lifecycle or endpoint effect", async () => {
+    const expired = { ...coordinates(), expiresAt: Math.floor(Date.now() / 1000) };
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, expired), /invalid or expired/);
+    assert.equal(await observeGate(reg, expired.lifecycleUid), undefined);
+    assert.equal(await authKv.get(epgateKey("manager", expired.instanceId)), null);
+  });
+  await cell("a stage deletion marker is corruption, not a reusable operation", async () => {
+    const broken = coordinates();
+    const key = `stage.${broken.operationId}.environment-manager`;
+    await authKv.put(key, new TextEncoder().encode("{}"));
+    await authKv.delete(key);
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, broken), /deletion marker/);
+    assert.equal((await authKv.get(key))?.operation, "DEL");
+    assert.equal(await observeGate(reg, broken.lifecycleUid), undefined);
+  });
+  await cell("concurrent same-input reservations converge on one native registration freeze", async () => {
+    const concurrent = coordinates();
+    const [first, second] = await Promise.all([
+      stageEnvironmentManagerAdmission(reg, concurrent), stageEnvironmentManagerAdmission(reg, concurrent),
+    ]);
+    assert.deepEqual(first, second);
+    assert.equal((await readLifecycleHeadForOperation(reg, concurrent.owner, environmentBootstrapActor(concurrent.instanceId)))?.mapping.lifecycleUid, concurrent.lifecycleUid);
+  });
+  await cell("a second owner and environment receive distinct native reservations", async () => {
+    const other = { ...coordinates(), owner: `u_${"b".repeat(26)}`, environmentId: "b".repeat(64) };
+    await stageEnvironmentManagerAdmission(reg, other);
+    const head = await readLifecycleHeadForOperation(reg, other.owner, environmentBootstrapActor(other.instanceId));
+    assert.equal(head?.mapping.lifecycleUid, other.lifecycleUid);
+    assert.notEqual(head?.mapping.lifecycleUid, pin.lifecycleUid);
+    assert.equal((await observeGate(reg, pin.lifecycleUid))?.row.state, "open");
+  });
+  await cell("a completed registration fixture is not reopened by reservation replay", async () => {
+    const key = epgateKey("manager", pin.instanceId);
+    const before = (await authKv.get(key))!;
+    const row = parseEndpointGate(before.value, key);
+    if (row.state !== "frozen") throw new Error("fixture gate is not frozen");
+    const { op: _op, ...rest } = row;
+    const completed = { ...rest, state: "open", registrationRevision: 1 };
+    await authKv.update(key, new TextEncoder().encode(JSON.stringify(completed)), before.revision);
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, pin), /completed or foreign/);
+    assert.equal(parseEndpointGate((await authKv.get(key))!.value, key).registrationRevision, 1);
+  });
+  await cell("the scoped writer has no session staging or single-segment operation intent grant", async () => {
+    const grants = environmentManagerAdmissionWriterGrants(account.space, "native-reservation-control");
+    assert.ok(grants.publish.includes(`$KV.${epAuthBucket(account.space)}.stage.*.environment-manager`));
+    assert.ok(!grants.publish.some(row => row.includes("stage.session") || row.endsWith(".stage.*") || row.endsWith(".stage.*.>")));
+    assert.equal(await recordsKv.get(`uid.${pin.lifecycleUid}`) !== null, true);
+  });
+} finally {
+  await writer.close();
+  await fx.close();
+  emitSentinel({ passed, failed });
+  process.exitCode = failed === 0 ? 0 : 1;
+}

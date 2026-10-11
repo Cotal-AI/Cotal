@@ -51,7 +51,7 @@ import {
   runDriverGrants, runMediatorGrants, runDriverCaller, runOperatorGrants,
   type EpCapability,
 } from "@cotal-ai/core";
-import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
+import { authorityWriterGrants, authorityBarrierGrants, barrierExecutorSettlementGrants, environmentManagerAdmissionWriterGrants, remoteManagerIssuerGrants } from "../src/authority-client.js";
 import { retirementExecutorClientGrants } from "../src/retirement-cleaner.js";
 import { drainApplierGrants, drainCancellerGrants, drainReconcilerGrants } from "../src/drain-repair.js";
 import { authAdminListenerGrants } from "../src/auth-admin.js";
@@ -283,6 +283,17 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.lifecycle.>",
     "$KV.cotal_records_d32m.uid.>",
   ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  "environment-admission-writer": { publish: [
+    "$JS.API.INFO",
+    "$JS.API.STREAM.CREATE.KV_cotal_auth_d32m", "$JS.API.STREAM.CREATE.KV_cotal_records_d32m",
+    "$JS.API.STREAM.UPDATE.KV_cotal_records_d32m",
+    "$JS.API.STREAM.INFO.KV_cotal_auth_d32m", "$JS.API.STREAM.INFO.KV_cotal_records_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m", "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.DIRECT.GET.KV_cotal_records_d32m", "$JS.API.DIRECT.GET.KV_cotal_records_d32m.>",
+    "$KV.cotal_auth_d32m.gate.>", "$KV.cotal_auth_d32m.cred.>", "$KV.cotal_auth_d32m.bysrc.>",
+    "$KV.cotal_records_d32m.lifecycle.>", "$KV.cotal_records_d32m.uid.>",
+    "$KV.cotal_auth_d32m.epgate.manager.>", "$KV.cotal_auth_d32m.stage.*.environment-manager",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
   // The auth service's HOST ISSUER connection (`cotal:remote-manager-issuer:<space>`): the
   // authority writer's rows plus the manager-instance issuance families, the contract-store and
   // admission reads, and (#2312) the leader-served sessions-store read the user-mode attach
@@ -493,6 +504,7 @@ put("activator", activatorGrants(S, EPJ, "pa", CONN));
 put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID }));
 put("serve-rows", epServeGrantRows(S, { endpoint: EP, instanceId: "i".repeat(26), epoch: 3, ephemeralCommands: ["status"] }));
 put("auth-writer", authorityWriterGrants(S, CONN));
+put("environment-admission-writer", environmentManagerAdmissionWriterGrants(S, CONN));
 put("remote-manager-issuer", remoteManagerIssuerGrants(S, CONN));
 put("auth-barrier", authorityBarrierGrants(S, CONN));
 put("auth-scanner", authorityScannerGrants(S, CONN));
@@ -616,6 +628,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     // so that fact is a reviewed entry rather than something a reader would have to derive.
     "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
+    "environment-admission-writer:KV_cotal_auth_d32m", "environment-admission-writer:KV_cotal_records_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
     // The host issuer: the authority writer's two reads, the run-admission read, and (#2312) the
@@ -676,7 +689,7 @@ const ISSUER_BODY_DIRECT_GET = new Set([
     const bodySelected = tail === undefined || tail === ">";
     if (!bodySelected) continue; // subject-appended, broker-confined
     if (principal === "remote-manager-issuer" && ISSUER_BODY_DIRECT_GET.has(row)) continue;
-    if (stream !== "KV_cotal_records_d32m" || (principal !== "auth-writer" && principal !== "auth-barrier"))
+    if (stream !== "KV_cotal_records_d32m" || (principal !== "auth-writer" && principal !== "auth-barrier" && principal !== "environment-admission-writer"))
       bad.push(`${principal}: ${row}`);
   }
   c("body-selected Direct-Get exists ONLY as the auth path's records pair (every other tail fully qualified)", bad.length === 0, bad);

@@ -82,6 +82,19 @@ export function authorityWriterGrants(space: string, connId: string): { publish:
   };
 }
 
+/** Host-private environment reservation writer. It adds manager gates and multi-segment operation
+ * staging, never session release pins or a guest credential. */
+export function environmentManagerAdmissionWriterGrants(space: string, connId: string): { publish: string[]; subscribe: string[] } {
+  const base = authorityWriterGrants(space, connId);
+  return {
+    publish: [...base.publish,
+      `$KV.${epAuthBucket(space)}.epgate.manager.>`,
+      `$KV.${epAuthBucket(space)}.stage.*.environment-manager`,
+    ],
+    subscribe: base.subscribe,
+  };
+}
+
 /** The host-side REMOTE MANAGER ISSUER adds only the endpoint-instance gate/credential family
  * needed by the typed manager-service protocol. It carries no generic profile/mint endpoint; the
  * HTTP handler chooses fixed profiles and caller-generated nkeys. */
