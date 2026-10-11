@@ -53,6 +53,7 @@
     "smoke:endpoint-protocol3-public-entry-diagnostic": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --protocol3-public-entry-diagnostic",
     "smoke:diagnostic-auth-journal": "node --import tsx implementations/auth/smoke/diagnostic-auth-journal.smoke.ts",
     "smoke:diagnostic-auth-journal:live": "node --import tsx implementations/auth/smoke/diagnostic-auth-journal-live.smoke.ts",
+    "smoke:endpoint-canonical-renewal:live": "node --import tsx implementations/auth/smoke/endpoint-canonical-renewal-live.smoke.ts",
     "smoke:endpoint-issued-public-caller": "node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --issued-public-caller-acceptance",
     "smoke:ci:offline": "pnpm build && node bin/smoke/shard.mjs 0 1 --offline",
     "clean:dry": "git clean -ndX -- node_modules .pnpm-store packages extensions implementations examples remotion",
