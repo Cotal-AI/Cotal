@@ -133,8 +133,16 @@ await cell("expired unbounded noninteger and over-cap file lifetimes refuse", ()
 });
 await cell("credential expiry cannot disagree with the file", () => refuses({ ...doc, expiresAt: doc.expiresAt - 1 }));
 await cell("credential issue time and issued lifetime remain bounded", () => {
-  for (const iat of [null, "earlier", Math.floor(Date.now() / 1000) + 1, doc.expiresAt - 301])
-    refuses({ ...doc, creds: altered(claims => { claims.iat = iat; }) });
+  const clock = Date.now, now = Math.floor(clock() / 1000);
+  // Hold only this synchronous local-decoder cell at the boundary under test.
+  Date.now = () => now * 1000;
+  try {
+    for (const iat of [null, "earlier", now + 1, doc.expiresAt - 301])
+      refuses({ ...doc, creds: altered(claims => { claims.iat = iat; }) });
+    const current = { ...doc, creds: altered(claims => { claims.iat = now; }) };
+    assert.ok(parseEnvironmentManagerBootstrapDocument(canonicalJson(current)).creds === current.creds);
+  } finally { Date.now = clock; }
+  assert.equal(Date.now, clock);
 });
 await cell("credential envelope refuses raw tokens duplicates and appended material", () => {
   for (const creds of [jwtFromCreds(doc.creds), doc.creds + doc.creds, doc.creds + "PRIVATE_EXTRA", "PRIVATE_NO_CREDENTIAL"])
