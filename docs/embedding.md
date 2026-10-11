@@ -256,6 +256,17 @@ persist keys, authenticate an environment or issue authority. Use it inside a cr
 claim, then persist the winning keys with bootstrap recovery material before any request. Calling
 it again generates different keys; it is not a restart or lost-reply recovery store. The ordinary
 `loadOrCreateRemoteManagerIdentity(root, space)` path still selects and stores its own lifecycle.
+`claimEnvironmentManagerBootstrapState(directory, bootstrapText)` claims one initial record in an
+existing canonical Linux directory owned by the current effective UID and mode0700. It stores the
+original canonical carrier and five generated keys together through the stock create-only claim.
+A held directory descriptor pins publication and adoption; file and directory sync complete before
+the winning private state returns. Same-carrier callers adopt that state, never their losing keys.
+Changed carriers, malformed records and unsafe file metadata refuse without replacement. The
+record remains mode0600; processes sharing that privileged UID are trusted, including private
+publication aliases. Sync completion is not a tested power-loss guarantee. This helper accepts
+only a still-current initial carrier. It does not take the file, authenticate admission, send
+bootstrap, store preparation results or recover an activated manager. A caller must not use the
+ordinary identity creator to replace a lost initial record after file consumption.
 `managerClusterArtifacts()` returns the canonical document, manifest and their digests used by
 registration. Pass its `[document, manifest]` pair as `contractArtifacts` to both
 `remoteManagerRegistrationProof(owner, state, contractArtifacts)` from `@cotal-ai/core` and

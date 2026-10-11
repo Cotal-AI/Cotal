@@ -1,0 +1,129 @@
+{
+  "grades": "suite",
+  "guard": "Initial bootstrap material and five reserved local keys publish together; only the protected synced winner returns",
+  "suite": ["implementations/manager/smoke/environment-bootstrap-state.smoke.ts"],
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state",
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 25,
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "why": "The rebuilt public package runs against real private files. Two owned Node processes pause before native publication, then converge on the same persisted candidate. Labelled directory-rename, sync, expiry and process-exit interleavings exercise the actual claim. The pre-read check is independent of the parser so a later refusal cannot hide an unsafe read. This is not power-loss, file-take, host cleanup, activated recovery, admission or hosted proof. Every mutant builds manager and every afterRestore rebuilds restored manager.",
+  "mutations": [
+    {
+      "name": "caller returns newly generated keys rather than the published winner",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "return stored.identityState;",
+      "replace": "return createReservedRemoteManagerIdentity({ space: document.space, instanceId: document.instanceId, lifecycleUid: document.lifecycleUid });",
+      "expectRed": "public claim couples original bootstrap material and local keys",
+      "cell": "public claim couples original bootstrap material and local keys",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "publication follows a mutable directory path",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "const path = `/proc/self/fd/${directoryFd}/environment-manager-bootstrap.json`;",
+      "replace": "const path = `${directory}/environment-manager-bootstrap.json`;",
+      "expectRed": "held directory rename cannot redirect publication or adoption",
+      "cell": "held directory rename cannot redirect publication or adoption",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "file sync is omitted before releasing private keys",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "      fsyncSync(fd);\n",
+      "replace": "",
+      "expectRed": "file and directory sync both precede material return",
+      "cell": "file and directory sync both precede material return",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "directory sync is omitted before releasing private keys",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "      fsyncSync(directoryFd);\n",
+      "replace": "",
+      "expectRed": "file and directory sync both precede material return",
+      "cell": "file and directory sync both precede material return",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "expiry during persistence still releases material",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "      parseEnvironmentManagerBootstrapDocument(bootstrapText);\n",
+      "replace": "",
+      "expectRed": "expiry during sync prevents material release without replacing keys",
+      "cell": "expiry during sync prevents material release without replacing keys",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "readable existing records are accepted without private mode",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "(stat.mode & 0o7777) !== 0o600 || ",
+      "replace": "",
+      "expectRed": "nonprivate record refuses without tightening or replacing it",
+      "cell": "nonprivate record refuses without tightening or replacing it",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "shared directory is silently tightened instead of refused",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": " || (stat.mode & 0o7777) !== 0o700",
+      "replace": "",
+      "expectRed": "directory is existing absolute canonical and private",
+      "cell": "directory is existing absolute canonical and private",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "oversized existing record is read before bounded metadata refusal",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": " || stat.size > MAX_STATE_BYTES",
+      "replace": "",
+      "expectRed": "oversized metadata refuses before any stock record byte read",
+      "cell": "oversized metadata refuses before any stock record byte read",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "stored public key may pair with another private seed",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "try { if (artifactSignerFromSeed(identity.seed).publicKey !== identity.id) return undefined; }",
+      "replace": "try { artifactSignerFromSeed(identity.seed); }",
+      "expectRed": "stored seed corruption and shared duty keys refuse",
+      "cell": "stored seed corruption and shared duty keys refuse",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "multiple duties can share one persisted key",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "      if (new Set(REMOTE_MANAGER_IDENTITY_NAMES.map(name => identityState.identities[name].id)).size !== 5) return undefined;\n",
+      "replace": "",
+      "expectRed": "stored seed corruption and shared duty keys refuse",
+      "cell": "stored seed corruption and shared duty keys refuse",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "new input silently adopts the cached carrier",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "    const document = parseEnvironmentManagerBootstrapDocument(bootstrapText);",
+      "replace": "    try { const overrideFd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); try { bootstrapText = JSON.parse(stateBytes(overrideFd)).bootstrapText; } finally { closeSync(overrideFd); } } catch {}\n    const document = parseEnvironmentManagerBootstrapDocument(bootstrapText);",
+      "expectRed": "changed carrier cannot adopt or replace the first state",
+      "cell": "changed carrier cannot adopt or replace the first state",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "planted FIFO blocks the actual metadata reader",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "try { existing = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }",
+      "replace": "try { existing = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW); }",
+      "expectRed": "record FIFO refuses without blocking the actual reader",
+      "cell": "record FIFO refuses without blocking the actual reader",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    },
+    {
+      "name": "stored instance can differ from the original reservation",
+      "file": "implementations/manager/src/environment-bootstrap-state.ts",
+      "find": "state.instanceId !== document.instanceId || ",
+      "replace": "",
+      "expectRed": "unknown missing and mismatched stored coordinates never remint",
+      "cell": "unknown missing and mismatched stored coordinates never remint",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:environment-bootstrap-state"
+    }
+  ]
+}
