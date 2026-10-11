@@ -206,6 +206,10 @@ jobs:
           herdr --version
       - name: Build
         run: pnpm build
+      - name: Bounded auth journal source checks
+        run: pnpm smoke:diagnostic-auth-journal
+      - name: Bounded auth journal live entry checks
+        run: pnpm smoke:diagnostic-auth-journal:live
       - name: Endpoint two-user public acceptance
         run: pnpm smoke:endpoint-two-user-public
       # 48 diagnostic controls observe public entry boundaries, not protocol3 retry acceptance.
