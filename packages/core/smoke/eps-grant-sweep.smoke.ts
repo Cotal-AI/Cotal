@@ -30,7 +30,7 @@
  */
 import {
   permissionsFor, epServeGrantRows, epsSubject, CREDENTIAL_LIFETIMES, DEV_OWNER,
-  type Profile,
+  type Profile, type MintOpts,
 } from "@cotal-ai/core";
 
 let ok = 0, fail = 0;
@@ -46,6 +46,11 @@ const IID = "i".repeat(26);
 // The holder's incarnation uid rides the MINT PRINCIPAL (not the opts): the agent baseline and the
 // operator instruments carry lifecycle-keyed ep caller rows, and their mint refuses without it.
 const pr = { owner: DEV_OWNER, actor: "sweep", connId: "conn0123456789abcdef", lifecycleUid: UID };
+const callerEndpoint = "test.example.sweep";
+const endpointCallerOpts: MintOpts = {
+  endpointCaller: { endpoint: callerEndpoint, instanceId: IID, capabilities: [{ endpoint: callerEndpoint, command: "increment" }] },
+  issued: { generation: "a".repeat(32), acceptedToken: "b".repeat(32) },
+};
 
 /** NATS subject matching: `*` matches exactly one token, `>` matches one-or-more trailing tokens. */
 function subjectMatches(pattern: string, subject: string): boolean {
@@ -105,6 +110,7 @@ const PRODUCERS: Record<Profile, () => string[]> = {
   "retirement-requester": via("retirement-requester", { retirementRequester: { owner: DEV_OWNER, actor: "manager", uid: UID, target: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID } } }),
   "lifecycle-executor": via("lifecycle-executor", { lifecycleExecutor: { owner: DEV_OWNER, actor: "worker", lifecycleUid: UID, alias: "worker" } }),
   "endpoint-serve-executor": via("endpoint-serve-executor", { endpointServeExecutor: { endpoint: EP, instanceId: IID } }),
+  "endpoint-caller": () => rowsOf(permissionsFor("endpoint-caller", SPACE, pr, endpointCallerOpts)),
   operator: via("operator"),
   purger: via("purger"),
   backup: via("backup", { backup: { operation: "inspect", selection: "full" } }),
@@ -229,6 +235,18 @@ console.log("D. the session-ledger (the durable revocation authority) holds NO s
     !ledger.some((r) => anyRail.some((rail) => subjectMatches(r, rail))) && !ledger.some((r) => r.includes(".eps.")), ledger);
   c("it DOES hold the sessions-bucket ledger write (the sweep is not passing by holding nothing)",
     ledger.some((r) => r.startsWith("$KV.cotal_sessions_")), ledger);
+}
+
+console.log("E. the dedicated endpoint caller has only its issued instance and no session rail");
+{
+  const rows = PRODUCERS["endpoint-caller"]();
+  const instance = `cotal.${SPACE}.ep.v1.inst.test_example_sweep.${IID}.`;
+  c("endpoint-caller constructs nonempty issued describe and operation grants",
+    rows.some(row => row.startsWith(instance + "describe.")) && rows.some(row => row.startsWith(instance + "increment.")), rows);
+  c("endpoint-caller has no legacy, class, scatter, manager or messaging grant",
+    !rows.some(row => /\.ep\.(one|all|inst)\.|\.ep\.v1\.(one|all)\.|\.manager\.|\.(chat|dm)\./.test(row)), rows);
+  c("endpoint-caller has no own or foreign session rail",
+    !rows.some(row => [...myRails, ...foreignRails].some(rail => subjectMatches(row, rail))) && !rows.some(row => row.includes(".eps.")), rows);
 }
 
 console.log(`\neps-grant-sweep: ${ok} passed, ${fail} failed`);

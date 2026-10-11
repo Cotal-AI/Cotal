@@ -1,0 +1,47 @@
+{
+  "suite": [
+    "implementations/auth/smoke/endpoint-authority-native.smoke.ts"
+  ],
+  "grades": "implementations/auth/smoke/endpoint-authority-native.smoke.ts",
+  "guard": "Prepare releases only its exact validation-only policy hold, preserves denial and CAS failure causes, and retains every attempted reservation write under uncertain custody.",
+  "command": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving",
+  "mutations": [
+    {
+      "name": "validation-only prepare denial retains the policy head",
+      "file": "implementations/auth/src/endpoint-authority.ts",
+      "find": "try { await hold.release(); }\n        catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }",
+      "replace": "try { /* mutation: omit validation-only release */ }\n        catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }",
+      "expectRed": "PREPARE03-validation-only-refusal-releases-native-policy-head",
+      "cell": "PREPARE03-validation-only-refusal-releases-native-policy-head",
+      "afterRestore": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving"
+    },
+    {
+      "name": "failed prepare policy release discards the original denial",
+      "file": "implementations/auth/src/endpoint-authority.ts",
+      "find": "throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error });",
+      "replace": "throw releaseError;",
+      "expectRed": "PREPARE08-release-cas-preserves-original-and-release-causes",
+      "cell": "PREPARE08-release-cas-preserves-original-and-release-causes",
+      "afterRestore": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving"
+    },
+    {
+      "name": "ambiguous first reservation write releases its policy hold",
+      "file": "implementations/auth/src/endpoint-authority.ts",
+      "find": "await createRowByteIdempotent(authKv, reservationKey(instanceId), row);",
+      "replace": "try { await createRowByteIdempotent(authKv, reservationKey(instanceId), row); } catch (error) { await hold.release(); throw error; }",
+      "expectRed": "PREPARE06-before-write-retains-own-uncertain-hold",
+      "cell": "PREPARE06-before-write-retains-own-uncertain-hold",
+      "afterRestore": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving"
+    },
+    {
+      "name": "successful validation-only release replaces the original denial object",
+      "file": "implementations/auth/src/endpoint-authority.ts",
+      "find": "catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }\n        throw error;",
+      "replace": "catch (releaseError) { throw new AggregateError([error, releaseError], \"prepare validation refused and policy release failed\", { cause: error }); }\n        throw new Error(error instanceof Error ? error.message : String(error));",
+      "expectRed": "PREPARE05-serving-preserves-original-denial-object",
+      "cell": "PREPARE05-serving-preserves-original-denial-object",
+      "afterRestore": "node node_modules/typescript/bin/tsc -p implementations/auth/tsconfig.json && node --import tsx implementations/auth/smoke/endpoint-authority-native.smoke.ts --prepare-refusal-serving"
+    }
+  ],
+  "_note": "Each command rebuilds the actual imported auth dist and runs the original real-broker fixture. Restored command rebuilds auth and reruns all original native controls plus separate prepare safety controls. Existing CI build must supply coherent core/workspace/lang and other required outputs before this command. Setup/compile/cleanup failures cannot qualify as named red. No current mutation execution or restoration proof claimed."
+}

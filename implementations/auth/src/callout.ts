@@ -36,6 +36,7 @@ import { assertInboxConnId, newIdentity, principalKey, principalTags, token } fr
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 import { SESSION_EXP } from "./permissions.js";
+import { DiagnosticCalloutJournal, unarmedDiagnosticCalloutSnapshot, type DiagnosticCalloutSnapshot, type DiagnosticCalloutStage } from "./diagnostic-callout-journal.js";
 
 /** The one subject the callout serves (ADR-26). */
 export const AUTH_CALLOUT_SUBJECT = "$SYS.REQ.USER.AUTH";
@@ -178,7 +179,9 @@ export interface StartAuthCalloutOpts {
 
 /** Serve the auth callout on an existing (auth-account) connection. Resolves setup synchronously —
  *  throws on missing/invalid xkey or signing material; returns the running service. */
-export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOpts): { done: Promise<void> } {
+export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOpts): { done: Promise<void>; armDiagnosticJournal(): void; readDiagnosticJournal(): DiagnosticCalloutSnapshot } {
+  let diagnosticJournal: DiagnosticCalloutJournal | undefined;
+  let diagnosticRequestActive = false;
   if (!opts.xkeySeed) throw new Error("auth callout: xkey seed is required - refusing to start a callout that would receive bearer tokens unsealed");
   const xkp = fromCurveSeed(new TextEncoder().encode(opts.xkeySeed)); // throws on non-curve seeds
   const responseSigner = fromSeed(new TextEncoder().encode(opts.authAccount.signingSeed));
@@ -194,123 +197,187 @@ export function startAuthCallout(nc: CalloutConnection, opts: StartAuthCalloutOp
 
   const done = (async () => {
     for await (const msg of sub) {
-      // ---- authenticate the REQUEST itself; shape violations get NO response ----
-      const serverXkey = msg.headers?.get(SERVER_XKEY_HEADER);
-      if (!serverXkey) {
-        log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) - check the account xkey config");
-        continue;
-      }
-      let claims;
+      // An epoch armed during an older request cannot adopt that request mid-flight.
+      const requestJournal = diagnosticJournal;
+      diagnosticRequestActive = true;
       try {
-        const plain = xkp.open(msg.data, serverXkey);
-        if (plain === null) throw new Error("xkey open failed");
-        claims = decode<AuthorizationRequest>(dec(plain)); // ed25519 signature verified in decode()
-      } catch (e) {
-        log(`auth callout: dropped an undecryptable/unverifiable request (${e instanceof Error ? e.message : String(e)})`);
-        continue;
-      }
-      const req = (claims as { nats?: AuthorizationRequest }).nats;
-      if (!req?.user_nkey || !req.server_id?.id) {
-        log("auth callout: dropped a request without user_nkey/server_id");
-        continue;
-      }
-      // Request provenance — prove nats-server sent this, not an in-account publisher. `decode()`
-      // verified the signature against the embedded `iss`, but that alone accepts ANY self-signed
-      // JWT; without pinning, a holder of callout creds could publish a sealed forged request to a
-      // reply subject it controls and be minted a data-account JWT. So: the issuer must be the
-      // request's own server id AND a server-prefixed (`N…`) nkey, and — when configured — one of
-      // the trusted server ids.
-      const issuer = (claims as { iss?: string }).iss;
-      if (issuer !== req.server_id.id || !req.server_id.id.startsWith("N")) {
-        log("auth callout: dropped a request whose issuer is not its own server identity (forgery guard)");
-        continue;
-      }
-      if (opts.expectedServerIds && !opts.expectedServerIds.includes(req.server_id.id)) {
-        log(`auth callout: dropped a request from an untrusted server id ${req.server_id.id}`);
-        continue;
-      }
-      if (req.server_id.xkey !== serverXkey) {
-        // The signed payload must vouch for the key that sealed it — otherwise a relay could
-        // re-seal someone else's request under its own key.
-        log("auth callout: dropped a request whose signed server_id.xkey != sealing header key");
-        continue;
-      }
-
-      const respond = async (data: { jwt?: string; error?: string }) => {
-        const resp = await encodeAuthorizationResponse(
-          fromPublic(req.user_nkey),
-          fromPublic(req.server_id.id),
-          responseSigner,
-          { ...data, issuer_account: opts.authAccount.pub },
-          { algorithm: Algorithms.v2 },
-        );
-        msg.respond(xkp.seal(enc(resp), serverXkey));
-      };
-
-      // ---- validate the bearer; failures are authenticated denials (signed error response) ----
-      try {
-        const bearer = req.connect_opts?.auth_token;
-        if (!bearer) throw new Error("no user token presented (auth_token empty)");
-        const validated = await validateUserToken(bearer, {
-          key: opts.token.key,
-          issuer: opts.token.issuer,
-          audience: opts.space,
-        });
-        await opts.authorizeActor(validated);
-        // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
-        // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so
-        // the client cannot set its `inboxPrefix` to match it. So the client picks its own random inbox
-        // nonce and passes it as the connection `name`; we scope the grant on THAT (empirically: a scoped
-        // `_INBOX_<nonce>.>` round-trips through the rebind, and the nonce is a per-connection secret, the
-        // same security model as NATS's default random mux inbox). core's `assertInboxConnId` (via
-        // permissionsFor) rejects a nonce carrying subject metacharacters, so a client cannot widen the
-        // grant to `_INBOX_>.>`; a missing/garbled name throws → this becomes a signed deny (fail-closed).
-        // Validate the nonce HERE, at the boundary where untrusted client input enters — not inside the
-        // injected permissionsFor hook (which could be any implementation). assertInboxConnId throws on a
-        // missing/wildcard name → the catch below turns it into a signed deny (fail-closed).
-        const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
-        const { [SESSION_EXP]: sessionExp, ...perms } = await opts.permissionsFor(validated, inboxNonce);
-        // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
-        // and only when the permission builder vouched for it from the live session row.
-        const exp = validated.act.view === "session-caller" ? sessionExp : validated.exp;
-        if (typeof exp !== "number" || !Number.isSafeInteger(exp)) throw new Error("callout: no bound expiry for this connection");
-        // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
-        // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
-        // so CONNZ-based attribution (the membership feed, live eviction) needs owner+actor carried
-        // here. What actually surfaces in CONNZ for a CALLOUT connection (proven live, nats-server
-        // 2.10/2.14) is the JWT `name` as `authorized_user` — the principal NAME-form — NOT the `tags`
-        // (those surface for static mints; see core's `principalFromConnz`). We set BOTH via core's
-        // single sources for shape-consistency with the static path, but attribution reads
-        // `authorized_user` here. The name is the principal name-form (JetStream-safe), a stable label.
-        const { key, name } = principalKey(validated.owner, validated.act.actor);
-        const userJwt = await encodeUser(
-          name,
-          fromPublic(req.user_nkey),
-          fromPublic(opts.dataAccount.pub),
-          { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
-          { signer: userSigner, exp }, // NATS access dies with the bearer (a session-caller: with its grant)
-        );
-        opts.onMint?.({ jwt: userJwt, principal: key, exp });
-        await respond({ jwt: userJwt });
-      } catch (e) {
-        const reason = e instanceof Error ? e.message : String(e);
-        log(`auth callout: denied ${req.user_nkey}: ${reason}`);
-        try {
-          // The deny response MUST always encode: a denied connect that can't be answered TIMES OUT
-          // instead of getting a legible signed refusal, which breaks the fail-closed "refuse, never
-          // hang" contract. The auth-response JWT claim encoder is Latin1-limited (btoa-style — a
-          // non-ASCII char like the em-dash in many of our throw messages raises "Invalid character"),
-          // so coerce the reason to ASCII at this boundary. It is a human-readable hint, not a security
-          // token, so lossy folding (em-dash → "-", smart quotes → ASCII, else "?") is fine.
-          await respond({ error: asciiFold(reason) });
-        } catch (re) {
-          log(`auth callout: failed to send deny response: ${re instanceof Error ? re.message : String(re)}`);
+        // ---- authenticate the REQUEST itself; shape violations get NO response ----
+        const serverXkey = msg.headers?.get(SERVER_XKEY_HEADER);
+        if (!serverXkey) {
+          requestJournal?.drop("provenance-unsealed-drop");
+          log("auth callout: dropped an UNSEALED request (no Nats-Server-Xkey header) - check the account xkey config");
+          continue;
         }
-      }
+        let claims;
+        try {
+          const plain = xkp.open(msg.data, serverXkey);
+          if (plain === null) throw new Error("xkey open failed");
+          claims = decode<AuthorizationRequest>(dec(plain)); // ed25519 signature verified in decode()
+        } catch (e) {
+          requestJournal?.drop("provenance-decode-drop");
+          log(`auth callout: dropped an undecryptable/unverifiable request (${e instanceof Error ? e.message : String(e)})`);
+          continue;
+        }
+        const req = (claims as { nats?: AuthorizationRequest }).nats;
+        if (!req?.user_nkey || !req.server_id?.id) {
+          requestJournal?.drop("provenance-shape-drop");
+          log("auth callout: dropped a request without user_nkey/server_id");
+          continue;
+        }
+        // Request provenance — prove nats-server sent this, not an in-account publisher. `decode()`
+        // verified the signature against the embedded `iss`, but that alone accepts ANY self-signed
+        // JWT; without pinning, a holder of callout creds could publish a sealed forged request to a
+        // reply subject it controls and be minted a data-account JWT. So: the issuer must be the
+        // request's own server id AND a server-prefixed (`N…`) nkey, and — when configured — one of
+        // the trusted server ids.
+        const issuer = (claims as { iss?: string }).iss;
+        if (issuer !== req.server_id.id || !req.server_id.id.startsWith("N")) {
+          requestJournal?.drop("provenance-issuer-drop");
+          log("auth callout: dropped a request whose issuer is not its own server identity (forgery guard)");
+          continue;
+        }
+        if (opts.expectedServerIds && !opts.expectedServerIds.includes(req.server_id.id)) {
+          requestJournal?.drop("provenance-server-drop");
+          log(`auth callout: dropped a request from an untrusted server id ${req.server_id.id}`);
+          continue;
+        }
+        if (req.server_id.xkey !== serverXkey) {
+          requestJournal?.drop("provenance-xkey-drop");
+          // The signed payload must vouch for the key that sealed it — otherwise a relay could
+          // re-seal someone else's request under its own key.
+          log("auth callout: dropped a request whose signed server_id.xkey != sealing header key");
+          continue;
+        }
+
+        // Only existing provenance-qualified fields enter this private journal.
+        const diagnosticRequest = requestJournal?.begin({ challenge: req.client_info?.nonce,
+          instance: req.connect_opts?.name, server: req.server_id.id, clientId: req.client_info?.id, requestKey: req.user_nkey });
+        let diagnosticStage: DiagnosticCalloutStage | undefined;
+        const entered = (stage: DiagnosticCalloutStage) => {
+          if (!diagnosticRequest) return;
+          diagnosticStage = stage; requestJournal?.stage(diagnosticRequest, stage, "entered");
+        };
+        const returned = () => {
+          if (diagnosticStage) requestJournal?.stage(diagnosticRequest, diagnosticStage, "returned");
+          diagnosticStage = undefined;
+        };
+        const threw = () => {
+          if (diagnosticStage) requestJournal?.stage(diagnosticRequest, diagnosticStage, "threw");
+          diagnosticStage = undefined;
+        };
+
+        const respond = async (data: { jwt?: string; error?: string }) => {
+          entered("response-encode");
+          const resp = await encodeAuthorizationResponse(
+            fromPublic(req.user_nkey),
+            fromPublic(req.server_id.id),
+            responseSigner,
+            { ...data, issuer_account: opts.authAccount.pub },
+            { algorithm: Algorithms.v2 },
+          );
+          returned();
+          if (!diagnosticRequest) {
+            msg.respond(xkp.seal(enc(resp), serverXkey));
+          } else {
+            // Preserve the original method lookup before evaluating its seal argument.
+            const responseMethod = msg.respond;
+            entered("response-seal");
+            const sealed = xkp.seal(enc(resp), serverXkey);
+            returned();
+            entered("response-invoke");
+            Reflect.apply(responseMethod, msg, [sealed]);
+            returned();
+          }
+        };
+
+        // ---- validate the bearer; failures are authenticated denials (signed error response) ----
+        try {
+          entered("bearer-validation");
+          const bearer = req.connect_opts?.auth_token;
+          if (!bearer) throw new Error("no user token presented (auth_token empty)");
+          const validated = await validateUserToken(bearer, {
+            key: opts.token.key,
+            issuer: opts.token.issuer,
+            audience: opts.space,
+          });
+          returned();
+          entered("actor-authorization");
+          await opts.authorizeActor(validated);
+          returned();
+          // The private reply-inbox (`_INBOX_<connId>.>`) must scope on a token the CLIENT knows pre-connect
+          // — but under the callout the connection nkey (`req.user_nkey`) is minted per-connect by NATS, so
+          // the client cannot set its `inboxPrefix` to match it. So the client picks its own random inbox
+          // nonce and passes it as the connection `name`; we scope the grant on THAT (empirically: a scoped
+          // `_INBOX_<nonce>.>` round-trips through the rebind, and the nonce is a per-connection secret, the
+          // same security model as NATS's default random mux inbox). core's `assertInboxConnId` (via
+          // permissionsFor) rejects a nonce carrying subject metacharacters, so a client cannot widen the
+          // grant to `_INBOX_>.>`; a missing/garbled name throws → this becomes a signed deny (fail-closed).
+          // Validate the nonce HERE, at the boundary where untrusted client input enters — not inside the
+          // injected permissionsFor hook (which could be any implementation). assertInboxConnId throws on a
+          // missing/wildcard name → the catch below turns it into a signed deny (fail-closed).
+          entered("inbox-validation");
+          const inboxNonce = assertInboxConnId(req.connect_opts?.name ?? "");
+          returned();
+          entered("permissions-build");
+          const { [SESSION_EXP]: sessionExp, ...perms } = await opts.permissionsFor(validated, inboxNonce);
+          returned();
+          entered("bound-expiry");
+          // #2312: a session-caller connection carries EXACTLY the static arm's expiry, the grant's,
+          // and only when the permission builder vouched for it from the live session row.
+          const exp = validated.act.view === "session-caller" ? sessionExp : validated.exp;
+          if (typeof exp !== "number" || !Number.isSafeInteger(exp)) throw new Error("callout: no bound expiry for this connection");
+          returned();
+          entered("user-mint");
+          // Stamp the principal into the minted JWT so the live identity is recoverable server-side: the
+          // connection's `user_nkey` is a per-connect ephemeral the SERVER generated, not the principal,
+          // so CONNZ-based attribution (the membership feed, live eviction) needs owner+actor carried
+          // here. What actually surfaces in CONNZ for a CALLOUT connection (proven live, nats-server
+          // 2.10/2.14) is the JWT `name` as `authorized_user` — the principal NAME-form — NOT the `tags`
+          // (those surface for static mints; see core's `principalFromConnz`). We set BOTH via core's
+          // single sources for shape-consistency with the static path, but attribution reads
+          // `authorized_user` here. The name is the principal name-form (JetStream-safe), a stable label.
+          const { key, name } = principalKey(validated.owner, validated.act.actor);
+          const userJwt = await encodeUser(
+            name,
+            fromPublic(req.user_nkey),
+            fromPublic(opts.dataAccount.pub),
+            { ...perms, tags: principalTags(validated.owner, validated.act.actor) },
+            { signer: userSigner, exp }, // NATS access dies with the bearer (a session-caller: with its grant)
+          );
+          returned();
+          entered("mint-audit-hook");
+          opts.onMint?.({ jwt: userJwt, principal: key, exp });
+          returned();
+          await respond({ jwt: userJwt });
+        } catch (e) {
+          threw();
+          const reason = e instanceof Error ? e.message : String(e);
+          log(`auth callout: denied ${req.user_nkey}: ${reason}`);
+          try {
+            // The deny response MUST always encode: a denied connect that can't be answered TIMES OUT
+            // instead of getting a legible signed refusal, which breaks the fail-closed "refuse, never
+            // hang" contract. The auth-response JWT claim encoder is Latin1-limited (btoa-style — a
+            // non-ASCII char like the em-dash in many of our throw messages raises "Invalid character"),
+            // so coerce the reason to ASCII at this boundary. It is a human-readable hint, not a security
+            // token, so lossy folding (em-dash → "-", smart quotes → ASCII, else "?") is fine.
+            await respond({ error: asciiFold(reason) });
+          } catch (re) {
+            threw();
+            log(`auth callout: failed to send deny response: ${re instanceof Error ? re.message : String(re)}`);
+          }
+        }
+      } finally { diagnosticRequestActive = false; }
     }
   })();
 
-  return { done };
+  return { done,
+    armDiagnosticJournal: () => {
+      if (diagnosticJournal) return;
+      diagnosticJournal = new DiagnosticCalloutJournal();
+      if (diagnosticRequestActive) diagnosticJournal.taint();
+    },
+    readDiagnosticJournal: () => diagnosticJournal?.read() ?? unarmedDiagnosticCalloutSnapshot(),
+  };
 }
 
 /** Fold a string to ASCII so the Latin1-limited auth-response encoder can always send it (a denied
