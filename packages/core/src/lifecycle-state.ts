@@ -14,6 +14,7 @@ import { EpEnvelopeError } from "./endpoint-envelope.js";
 import { LIFECYCLE_HEAD, UID_RESERVATION, recordAtomicKey } from "./endpoint-records.js";
 import { assertLifecycleToken, endpointNameOf, endpointToken } from "./endpoint-subjects.js";
 import { parsePrincipalKey, isPrincipalOwnerToken } from "./subjects.js";
+import { parseEndpointDelegatedBinding } from "./endpoint-authority-policy.js";
 
 const dec = new TextDecoder();
 const isRec = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -332,6 +333,7 @@ export function parseEndpointRepairCursor(raw: Uint8Array, key: string): Endpoin
  *  session ledger and the manager's endpoint-serve wiring; a second dialect is the dual-encoder
  *  drift this module bans). */
 export type EndpointGateRow = GateStateOp & {
+  delegated?: import("./endpoint-authority-policy.js").EndpointDelegatedBinding;
   /** Host-only admission discriminator, retained through every gate transition. Raw-row
    * write permission cannot enforce its immutability; environment guests hold none. */
   authorityFamily?: "environment-manager";
@@ -365,7 +367,7 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not JSON (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} is not an object`);
-  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op", "authorityFamily"]);
+  const allowed = new Set(["state", "generation", "processEpoch", "registrationRevision", "nameAuthorityRevision", "principal", "op", "delegated", "authorityFamily"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (typeof o.state !== "string" || !ISSUANCE_GATE_STATES.has(o.state) || !uint(o.generation) || !uint(o.processEpoch) || !uint(o.registrationRevision) || !uint(o.nameAuthorityRevision))
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} does not validate (SPEC 13.1)`);
@@ -375,6 +377,7 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
   if (o.authorityFamily !== undefined && o.authorityFamily !== "environment-manager")
     throw new EpEnvelopeError("internal", `the endpoint gate ${key} carries an invalid authorityFamily (closed schema, SPEC 13.1)`);
   assertGateOp(o.op, o.state, `the endpoint gate ${key}`);
+  if (o.delegated !== undefined) parseEndpointDelegatedBinding(o.delegated);
   return o as unknown as EndpointGateRow;
 }
 
@@ -388,6 +391,7 @@ export function parseEndpointGate(raw: Uint8Array, key: string): EndpointGateRow
  *  serving instance's own connection principal in the `epcred.` family, recorded from the
  *  endpoint gate), NEVER the endpoint name (which CONNZ cannot attribute). */
 export interface CredentialLedgerRow {
+  delegated?: import("./endpoint-authority-policy.js").EndpointDelegatedBinding;
   credentialId: string;
   holderPrincipal: string;
   lifecycleUid: string;
@@ -414,7 +418,7 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
     throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not JSON; garbled trusted-path state never authorizes (SPEC 13.1)`);
   }
   if (!isRec(o)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} is not an object`);
-  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "sourceChain", "state", "exp"]);
+  const allowed = new Set(["credentialId", "holderPrincipal", "lifecycleUid", "endpoint", "sourceChain", "state", "exp", "delegated"]);
   for (const k of Object.keys(o)) if (!allowed.has(k)) throw new EpEnvelopeError("internal", `the credential-ledger row ${key} carries the unknown field "${k}" (closed schema, SPEC 13.1)`);
   if (
     typeof o.credentialId !== "string" || typeof o.holderPrincipal !== "string" || typeof o.lifecycleUid !== "string" ||
@@ -435,10 +439,12 @@ export function parseLedgerRow(raw: Uint8Array, key: string): CredentialLedgerRo
   // eviction target stay disjoint.
   let expected: string;
   if (key.startsWith("cred.")) {
+    if (o.delegated !== undefined) throw new EpEnvelopeError("internal", "agent credential cannot carry endpoint delegation");
     if (o.endpoint !== undefined)
       throw new EpEnvelopeError("internal", `the agent-family row ${key} carries an endpoint field (that belongs to the epcred family, SPEC 13.1)`);
     expected = credRowKey(o.lifecycleUid, o.credentialId);
   } else if (key.startsWith("epcred.")) {
+    if (o.delegated !== undefined) parseEndpointDelegatedBinding(o.delegated);
     if (typeof o.endpoint !== "string" || o.endpoint.length === 0)
       throw new EpEnvelopeError("internal", `the endpoint-family row ${key} is missing its endpoint field (it forms the key, SPEC 13.1)`);
     try {

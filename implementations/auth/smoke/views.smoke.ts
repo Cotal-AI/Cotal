@@ -74,9 +74,11 @@ const issuer = createUserTokenIssuer({ issuer: "https://views.test", key: signin
 const SESSION = { endpoint: "manager", sessionId: mintSessionId(), epoch: 1, exp: Math.floor(Date.now() / 1000) + 300 };
 // The one object a transfer-writer bearer may upload (#1499).
 const TRANSFER = { instanceId: "m".repeat(26), hex: "a".repeat(64) };
+// Dedicated endpoint issuance carries a grant reference, not client-asserted capabilities.
+const ENDPOINT_GRANT = { grantId: mintLifecycleUid(), grantRevision: 1, policyRevision: 1 };
 for (const view of USER_TOKEN_VIEWS) {
   const required = VIEW_REQUIRED_SCOPE[view];
-  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "session-caller" ? { session: SESSION } : {}), ...(view === "transfer-writer" ? { transferWriter: TRANSFER } : {}) });
+  const token = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: required ? [required] : [], view, lifecycleUid: smokeUid, ...(view === "manager-caller" ? { managerInstanceId: "m".repeat(26) } : {}), ...(view === "endpoint-caller" ? { endpointGrant: ENDPOINT_GRANT } : {}), ...(view === "session-caller" ? { session: SESSION } : {}), ...(view === "transfer-writer" ? { transferWriter: TRANSFER } : {}) });
   const v = await validateUserToken(token, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE });
   const s = v.act.session;
   const sessionIntact = view === "session-caller"
@@ -84,6 +86,32 @@ for (const view of USER_TOKEN_VIEWS) {
     : s === undefined;
   check(`view "${view}" round-trips mint → validate (lifecycle${view === "session-caller" ? " and session" : ""} claim intact)`,
     v.act.view === view && v.act.lifecycleUid === smokeUid && sessionIntact, v.act);
+  const grant = v.act.endpointGrant;
+  check(`view "${view}" preserves its exact endpoint grant presence and coordinates`, view === "endpoint-caller"
+    ? grant !== undefined && grant.grantId === ENDPOINT_GRANT.grantId && grant.grantRevision === ENDPOINT_GRANT.grantRevision && grant.policyRevision === ENDPOINT_GRANT.policyRevision
+    : grant === undefined);
+}
+await rejects("endpoint-caller refuses to mint without endpointGrant",
+  () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view: "endpoint-caller", lifecycleUid: smokeUid }), "requires endpointGrant");
+await rejects("endpointGrant refuses to mint without endpoint-caller",
+  () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", lifecycleUid: smokeUid, endpointGrant: ENDPOINT_GRANT }), "requires endpointGrant");
+for (const field of ["grantRevision", "policyRevision"] as const) {
+  await rejects(`endpointGrant ${field} refuses a zero revision at mint`,
+    () => issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", view: "endpoint-caller", lifecycleUid: smokeUid, endpointGrant: { ...ENDPOINT_GRANT, [field]: 0 } }), "invalid endpoint grant revision");
+}
+for (const probe of [
+  { name: "missing endpointGrant", view: "endpoint-caller", grant: undefined, needle: "requires its closed endpointGrant" },
+  { name: "grant on another view", view: "admin", grant: ENDPOINT_GRANT, needle: "requires its closed endpointGrant" },
+  { name: "injected grant capabilities", view: "endpoint-caller", grant: { ...ENDPOINT_GRANT, capabilities: [] }, needle: "invalid closed endpointGrant" },
+  { name: "zero grant revision", view: "endpoint-caller", grant: { ...ENDPOINT_GRANT, grantRevision: 0 }, needle: "invalid endpointGrant revision" },
+  { name: "zero policy revision", view: "endpoint-caller", grant: { ...ENDPOINT_GRANT, policyRevision: 0 }, needle: "invalid endpointGrant revision" },
+]) {
+  const now = Math.floor(Date.now() / 1000);
+  const crafted = await new SignJWT({ scope: [], ver: 1, act: { owner: OWNER, actor: "cli", scope: [], lifecycleUid: smokeUid, view: probe.view, ...(probe.grant === undefined ? {} : { endpointGrant: probe.grant }) } })
+    .setProtectedHeader({ alg: "EdDSA", kid: signing.kid }).setSubject(OWNER).setIssuer("https://views.test").setAudience(SPACE)
+    .setIssuedAt(now).setNotBefore(now).setExpirationTime(now + 60).sign(signing.privateKey);
+  await rejects(`endpoint grant validator refuses ${probe.name}`,
+    () => validateUserToken(crafted, { key: issuer.localKeySet(), issuer: "https://views.test", audience: SPACE }), probe.needle);
 }
 {
   const plain = await issuer.issue({ owner: OWNER, space: SPACE, actor: "cli", scope: ["spawn"] });
@@ -131,8 +159,14 @@ await rejects(
 console.log("B. view → required-scope policy table");
 check('deployer is spawn-gated (own-team deploys are spawn-grade)', VIEW_REQUIRED_SCOPE.deployer === "spawn");
 check('manager-service is supervise-gated (remote manager authority is distinct)', VIEW_REQUIRED_SCOPE["manager-service"] === "supervise");
-for (const view of USER_TOKEN_VIEWS.filter((v) => v !== "deployer" && v !== "manager-service" && v !== "manager-caller" && v !== "session-caller"))
+for (const view of USER_TOKEN_VIEWS) {
+  if (view === "endpoint-caller") {
+    check("endpoint-caller adds no admin capability requirement (dedicated grant authority)", VIEW_REQUIRED_SCOPE[view] === undefined);
+    continue;
+  }
+  if (view === "deployer" || view === "manager-service" || view === "manager-caller" || view === "session-caller") continue;
   check(`${view} is admin-gated (operator authority)`, VIEW_REQUIRED_SCOPE[view] === "admin");
+}
 check("manager-caller adds no capability requirement", VIEW_REQUIRED_SCOPE["manager-caller"] === undefined);
 check("session-caller adds no capability requirement (the redeemed session grant is the authority)", VIEW_REQUIRED_SCOPE["session-caller"] === undefined);
 check(

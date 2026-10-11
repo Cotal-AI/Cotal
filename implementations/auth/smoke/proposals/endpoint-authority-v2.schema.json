@@ -1,0 +1,1420 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:cotal:proposal:endpoint-authority:v2.3",
+  "description": "Review-only closed shapes, not shipped authority. Authority envelope2, discovery3 retains mandatory effect, native request1 unchanged. Stock verifies checksums/signatures, immutable sources, freshness, cross-field equality, canonical digests and aggregate byte bounds. Class vocabulary is not first-slice issuance support.",
+  "definitions": {
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "accountPublicKey": {
+          "type": "string",
+          "pattern": "^A[A-Z2-7]{55}$"
+        },
+        "assignmentRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "space",
+        "accountPublicKey",
+        "assignmentRevision"
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policyRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "namespaceRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "delegationId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "delegationRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "policyRevision",
+        "namespaceRevision",
+        "delegationId",
+        "delegationRevision"
+      ]
+    },
+    "proof": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "challengeId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^U[A-Z2-7]{55}$"
+        },
+        "signature": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{86}$"
+        }
+      },
+      "required": [
+        "challengeId",
+        "publicKey",
+        "signature"
+      ]
+    },
+    "routes": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "instance"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "class"
+            },
+            "classRevision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind",
+            "classRevision"
+          ]
+        }
+      ]
+    },
+    "selection": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "instance"
+            },
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            }
+          },
+          "required": [
+            "kind",
+            "instanceId"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "class"
+            },
+            "expectedClassRevision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "kind",
+            "expectedClassRevision"
+          ]
+        }
+      ]
+    },
+    "operation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,32}$"
+            }
+          },
+          "required": [
+            "command"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,32}$"
+            },
+            "targetMode": {
+              "const": "self"
+            }
+          },
+          "required": [
+            "command",
+            "targetMode"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "type": "string",
+              "pattern": "^[a-z0-9-]{1,32}$"
+            },
+            "targetMode": {
+              "enum": [
+                "owner",
+                "child",
+                "ledger"
+              ]
+            },
+            "targetOwner": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "required": [
+            "command",
+            "targetMode",
+            "targetOwner"
+          ]
+        }
+      ]
+    },
+    "serviceRequest": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "account": {
+              "$ref": "#/definitions/account"
+            },
+            "endpoint": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+              "maxLength": 64
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operation": {
+              "const": "prepare"
+            },
+            "holderPublicKey": {
+              "type": "string",
+              "pattern": "^U[A-Z2-7]{55}$"
+            }
+          },
+          "required": [
+            "v",
+            "account",
+            "endpoint",
+            "requestId",
+            "operationId",
+            "operation",
+            "holderPublicKey"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "account": {
+              "$ref": "#/definitions/account"
+            },
+            "endpoint": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+              "maxLength": 64
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operation": {
+              "const": "challenge"
+            },
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "expected": {
+              "$ref": "#/definitions/authority"
+            },
+            "content": {
+              "$ref": "#/definitions/lifecycleContent"
+            }
+          },
+          "required": [
+            "v",
+            "account",
+            "endpoint",
+            "requestId",
+            "operationId",
+            "operation",
+            "instanceId",
+            "expected",
+            "content"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "account": {
+              "$ref": "#/definitions/account"
+            },
+            "endpoint": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+              "maxLength": 64
+            },
+            "requestId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operation": {
+              "const": "commit"
+            },
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "expected": {
+              "$ref": "#/definitions/authority"
+            },
+            "content": {
+              "$ref": "#/definitions/lifecycleContent"
+            },
+            "proof": {
+              "$ref": "#/definitions/proof"
+            }
+          },
+          "required": [
+            "v",
+            "account",
+            "endpoint",
+            "requestId",
+            "operationId",
+            "operation",
+            "instanceId",
+            "expected",
+            "content",
+            "proof"
+          ]
+        }
+      ]
+    },
+    "callerRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+          "maxLength": 64
+        },
+        "requestId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "selection": {
+          "$ref": "#/definitions/selection"
+        },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/operation"
+          }
+        }
+      },
+      "required": [
+        "v",
+        "account",
+        "endpoint",
+        "requestId",
+        "selection",
+        "operations"
+      ]
+    },
+    "namespace": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+          "maxLength": 64
+        },
+        "governor": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "namespaceRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "policyRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "clusterDigests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "classAdmission": {
+          "enum": [
+            "disabled",
+            "explicit"
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "account",
+        "endpoint",
+        "governor",
+        "namespaceRevision",
+        "policyRevision",
+        "clusterDigests",
+        "classAdmission"
+      ]
+    },
+    "delegation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+          "maxLength": 64
+        },
+        "instanceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "ref": {
+          "$ref": "#/definitions/authority"
+        },
+        "holder": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "owner": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "actor": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "lifecycleUid": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "publicKey": {
+              "type": "string",
+              "pattern": "^U[A-Z2-7]{55}$"
+            }
+          },
+          "required": [
+            "owner",
+            "actor",
+            "lifecycleUid",
+            "publicKey"
+          ]
+        },
+        "clusterDigests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "routes": {
+          "$ref": "#/definitions/routes"
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "ephemeral-only"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "account",
+        "endpoint",
+        "instanceId",
+        "ref",
+        "holder",
+        "clusterDigests",
+        "routes",
+        "expiresAt",
+        "resources"
+      ]
+    },
+    "callerTokenDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "view": {
+          "const": "endpoint-caller"
+        },
+        "endpointGrant": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "grantId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "grantRevision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "policyRevision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "grantId",
+            "grantRevision",
+            "policyRevision"
+          ]
+        },
+        "authorityVersion": {
+          "const": 2
+        }
+      },
+      "required": [
+        "view",
+        "endpointGrant",
+        "authorityVersion"
+      ]
+    },
+    "serviceSpecDelta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 3
+            }
+          },
+          "required": [
+            "v"
+          ]
+        },
+        "servingAuthority": {
+          "$ref": "#/definitions/authority"
+        },
+        "serveRoutes": {
+          "$ref": "#/definitions/routes"
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "ephemeral-only"
+            }
+          },
+          "required": [
+            "kind"
+          ]
+        }
+      },
+      "required": [
+        "protocol",
+        "servingAuthority",
+        "serveRoutes",
+        "resources"
+      ]
+    },
+    "holder": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "actor": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "lifecycleUid": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "publicKey": {
+          "type": "string",
+          "pattern": "^U[A-Z2-7]{55}$"
+        }
+      },
+      "required": [
+        "owner",
+        "actor",
+        "lifecycleUid",
+        "publicKey"
+      ]
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "ephemeral-only"
+        }
+      },
+      "required": [
+        "kind"
+      ]
+    },
+    "ceiling": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "routes": {
+          "$ref": "#/definitions/routes"
+        },
+        "resources": {
+          "$ref": "#/definitions/resources"
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "routes",
+        "resources",
+        "expiresAt"
+      ]
+    },
+    "contractArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "value": {
+          "oneOf": [
+            {
+              "type": "object"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        }
+      },
+      "required": [
+        "digest",
+        "value"
+      ]
+    },
+    "lifecycleContent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "const": "activate"
+            },
+            "registrationRevision": {
+              "const": 0
+            },
+            "processEpoch": {
+              "const": 0
+            },
+            "contractArtifacts": {
+              "type": "array",
+              "maxItems": 64,
+              "items": {
+                "$ref": "#/definitions/contractArtifact"
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "action",
+            "registrationRevision",
+            "processEpoch",
+            "contractArtifacts"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "action": {
+              "enum": [
+                "renew",
+                "retire"
+              ]
+            },
+            "registrationRevision": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "processEpoch": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "contractArtifacts": {
+              "type": "array",
+              "maxItems": 0,
+              "items": {
+                "$ref": "#/definitions/contractArtifact"
+              }
+            }
+          },
+          "required": [
+            "action",
+            "registrationRevision",
+            "processEpoch",
+            "contractArtifacts"
+          ]
+        }
+      ]
+    },
+    "holderChallenge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "kind": {
+          "const": "cotal.endpoint-holder"
+        },
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "holder": {
+          "$ref": "#/definitions/holder"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+          "maxLength": 64
+        },
+        "instanceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "expected": {
+          "$ref": "#/definitions/authority"
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "challengeId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "action": {
+          "enum": [
+            "activate",
+            "renew",
+            "retire"
+          ]
+        },
+        "registrationRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "processEpoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "operationDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "issuedAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "v",
+        "kind",
+        "account",
+        "holder",
+        "endpoint",
+        "instanceId",
+        "expected",
+        "operationId",
+        "challengeId",
+        "action",
+        "registrationRevision",
+        "processEpoch",
+        "nonce",
+        "operationDigest",
+        "issuedAt",
+        "expiresAt"
+      ]
+    },
+    "serviceResponse": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "account": {
+              "$ref": "#/definitions/account"
+            },
+            "endpoint": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+              "maxLength": 64
+            },
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operation": {
+              "const": "prepare"
+            },
+            "expected": {
+              "$ref": "#/definitions/authority"
+            },
+            "holder": {
+              "$ref": "#/definitions/holder"
+            },
+            "expiresAt": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "v",
+            "account",
+            "endpoint",
+            "instanceId",
+            "operationId",
+            "operation",
+            "expected",
+            "holder",
+            "expiresAt"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "operation": {
+              "const": "challenge"
+            },
+            "payload": {
+              "$ref": "#/definitions/holderChallenge"
+            }
+          },
+          "required": [
+            "v",
+            "operation",
+            "payload"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "account": {
+              "$ref": "#/definitions/account"
+            },
+            "endpoint": {
+              "type": "string",
+              "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+              "maxLength": 64
+            },
+            "instanceId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "operation": {
+              "enum": [
+                "activate",
+                "renew"
+              ]
+            },
+            "serveJwt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32768
+            },
+            "attestation": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32768
+            }
+          },
+          "required": [
+            "v",
+            "account",
+            "endpoint",
+            "instanceId",
+            "operationId",
+            "operation",
+            "serveJwt",
+            "attestation"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 2
+            },
+            "operation": {
+              "const": "retire"
+            },
+            "operationId": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26,32}$"
+            },
+            "completed": {
+              "const": true
+            }
+          },
+          "required": [
+            "v",
+            "operation",
+            "operationId",
+            "completed"
+          ]
+        }
+      ]
+    },
+    "callerResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "bearer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "v",
+        "account",
+        "bearer",
+        "expiresAt"
+      ]
+    },
+    "serveAttestation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "kind": {
+          "const": "cotal.endpoint-serve"
+        },
+        "issuer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+          "maxLength": 64
+        },
+        "instanceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "holder": {
+          "$ref": "#/definitions/holder"
+        },
+        "authority": {
+          "$ref": "#/definitions/authority"
+        },
+        "protocol": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "v": {
+              "const": 3
+            }
+          },
+          "required": [
+            "v"
+          ]
+        },
+        "registrationRevision": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "processEpoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "clusterDigests": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          }
+        },
+        "ceiling": {
+          "$ref": "#/definitions/ceiling"
+        },
+        "credentialId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "credentialDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "issuedAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "v",
+        "kind",
+        "issuer",
+        "account",
+        "endpoint",
+        "instanceId",
+        "operationId",
+        "holder",
+        "authority",
+        "protocol",
+        "registrationRevision",
+        "processEpoch",
+        "clusterDigests",
+        "ceiling",
+        "credentialId",
+        "credentialDigest",
+        "issuedAt",
+        "expiresAt"
+      ]
+    },
+    "servingPin": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/account"
+        },
+        "endpoint": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$",
+          "maxLength": 64
+        },
+        "instanceId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "authority": {
+          "$ref": "#/definitions/authority"
+        }
+      },
+      "required": [
+        "account",
+        "endpoint",
+        "instanceId",
+        "epoch",
+        "authority"
+      ]
+    },
+    "issuedRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "space": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "owner": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "actor": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "uid": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "generation": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
+        }
+      },
+      "required": [
+        "space",
+        "owner",
+        "actor",
+        "uid",
+        "generation"
+      ]
+    },
+    "admissionRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "operation": {
+          "const": "admit"
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "serving": {
+          "$ref": "#/definitions/servingPin"
+        },
+        "requestSubject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "envelopeDigest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "id",
+            "envelopeDigest"
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "operation",
+        "operationId",
+        "serving",
+        "requestSubject",
+        "request"
+      ]
+    },
+    "admissionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "operation": {
+          "const": "admit"
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "admissionId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "serving": {
+          "$ref": "#/definitions/servingPin"
+        },
+        "caller": {
+          "$ref": "#/definitions/issuedRef"
+        },
+        "requestSubjectDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "envelopeDigest": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "commands": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9-]{1,32}$"
+          }
+        }
+      },
+      "required": [
+        "v",
+        "operation",
+        "operationId",
+        "admissionId",
+        "serving",
+        "caller",
+        "requestSubjectDigest",
+        "envelopeDigest",
+        "commands"
+      ]
+    },
+    "releaseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "operation": {
+          "const": "release"
+        },
+        "operationId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "admissionId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "serving": {
+          "$ref": "#/definitions/servingPin"
+        },
+        "outcome": {
+          "enum": [
+            "executed",
+            "not-executed",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "operation",
+        "operationId",
+        "admissionId",
+        "serving",
+        "outcome"
+      ]
+    },
+    "releaseResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "v": {
+          "const": 2
+        },
+        "operation": {
+          "const": "release"
+        },
+        "admissionId": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26,32}$"
+        },
+        "released": {
+          "const": true
+        },
+        "outcome": {
+          "enum": [
+            "executed",
+            "not-executed",
+            "unknown"
+          ]
+        }
+      },
+      "required": [
+        "v",
+        "operation",
+        "admissionId",
+        "released",
+        "outcome"
+      ]
+    }
+  }
+}
