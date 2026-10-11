@@ -227,7 +227,7 @@ try {
     const previousHome = process.env.COTAL_HOME;
     try {
       process.env.COTAL_HOME = clientHome;
-      recordMesh({ space, server: servers, root: clientRoot, mode: "user", origin: "manual", userAuth: { provider: authApi.cotalAuthProvider.name, idp: { url: idpUrl, issuer: origin, audience: origin }, remote: true, endpoints: { url: publicUrl }, sentinelCredsPath } });
+      recordMesh({ space, server: servers, root: clientRoot, mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: { provider: authApi.cotalAuthProvider.name, idp: { url: idpUrl, issuer: origin, audience: origin }, remote: true, endpoints: { url: publicUrl }, sentinelCredsPath } });
     } finally {
       if (previousHome === undefined) delete process.env.COTAL_HOME;
       else process.env.COTAL_HOME = previousHome;
