@@ -347,7 +347,7 @@ try {
     webChild = spawn(process.execPath, [
       "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, FORCE_COLOR: "1" } });
     webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
     const taken = `Port ${port} is in use`;
