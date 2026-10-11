@@ -13,6 +13,7 @@ import { encodeUser, fmtCreds } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
 import * as core from "@cotal-ai/core";
 import * as authApi from "@cotal-ai/auth";
+import { openHostedEndpointAuthority } from "../src/endpoint-authority-hosted.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal, awaitBrokerReady, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 const hostedPrepare = process.argv.includes("--prepare-refusal-serving");
 if (hostedPrepare && (process.argv.slice(2).length !== 1 || process.env.ENDPOINT_U12_REPORT !== undefined || process.env.ENDPOINT_PREPARE_REFUSAL !== undefined)) throw new Error("hosted prepare entry requires only --prepare-refusal-serving without report or mode overrides");
@@ -34,6 +35,7 @@ const releasePath = teardownPathOnSignal(dir), connections: NatsConnection[] = [
 let broker: ReturnType<typeof spawn> | undefined, releaseBroker: (() => void) | undefined;
 let authority: ReturnType<typeof authApi.createEndpointAuthority> | undefined, failure: unknown;
 const effects = [0, 0], cleanupErrors: string[] = [];
+let hostedObserver: Awaited<ReturnType<typeof openHostedEndpointAuthority>> | undefined;
 const workers: { child: ChildProcess; messages: Record<string, unknown>[]; exit: Promise<number | null> }[] = [];
 async function waitFor(test: () => boolean, label: string) { const until = Date.now() + 8000; while (!test()) { if (Date.now() > until) throw new Error(label + " timed out"); await new Promise(resolve => setTimeout(resolve, 20)); } }
 const timer = setTimeout(() => process.kill(process.pid, "SIGTERM"), 150000);
@@ -246,6 +248,34 @@ try {
   const authServingCreds = await core.mintCreds(auth, authIdentity, "endpoint-serve", { endpointServe: authRegistered.grant, serveIssuance: core.serveIssuanceGateKv(authGate, space, { endpoint: "auth", instanceId: authInstanceId }) });
   const authServing = await connect({ servers, ...core.standaloneConnectOpts({ tls: false, creds: authServingCreds }), maxReconnectAttempts: 0 }); connections.push(authServing);
   handles.push(core.serveEndpoint(authServing, space, authRegistered.grant, authority.commandDefs(), { public: true })); await authServing.flush();
+  // Direct hosted component witness using the existing genuine account, stores, issuer and gate.
+  // This proves a canonical ceiling SUB with real traffic, not its complete self-minted permissions.
+  const observerAssignment = core.parseEndpointDeploymentAssignment({ account, lifecycleUid: core.mintLifecycleUid(), state: "active", expiresAt: ceiling.expiresAt });
+  const observerDeployment: core.EndpointAuthorityDeployment = {
+    assignment: observerAssignment,
+    withCurrentAssignment: async (expected, operation) => {
+      assert.equal(core.canonicalJson(expected), core.canonicalJson(observerAssignment));
+      core.parseEndpointDeploymentAssignment(observerAssignment);
+      const result = await operation();
+      core.parseEndpointDeploymentAssignment(observerAssignment);
+      return result;
+    },
+  };
+  const hostedConnections: { nc: NatsConnection; label: string }[] = [];
+  hostedObserver = await openHostedEndpointAuthority({ server: servers, space, dataAccount: { pub: auth.account.pub, signingSeed: auth.account.signingSeed! }, deployment: observerDeployment, issuer, policy, authInstanceId, authEpoch: authRegistered.processEpoch,
+    onConnection: (nc, label) => { hostedConnections.push({ nc, label }); }, log: () => {} });
+  assert.equal(hostedConnections.length, 1, "direct hosted observer exposes one genuine connection");
+  const hostedConnection = hostedConnections[0];
+  assert.equal(hostedConnection.label, `cotal:endpoint-authority:${space}`);
+  assert.equal((await hostedObserver.trust()).authority.epoch, authRegistered.processEpoch, "stock current auth gate checked");
+  const hostedSubjects: string[] = [], hostedErrors: unknown[] = [];
+  const hostedFilter = `cotal.${space}.ep.v1.inst.>`;
+  const hostedSubscription = hostedConnection.nc.subscribe(hostedFilter, { callback(error, message) {
+    if (error) { hostedErrors.push(error); return; }
+    hostedSubjects.push(message.subject);
+  } });
+  await hostedConnection.nc.flush();
+  assert.equal(hostedSubscription.getSubject(), hostedFilter, "actual hosted canonical ceiling SUB bytes");
   const proposalSchema = JSON.parse(readFileSync(new URL("./proposals/endpoint-authority-v2.schema.json", import.meta.url), "utf8"));
   const Ajv = createRequire(new URL("../../../packages/core/package.json", import.meta.url))("ajv");
   const proposalValidator = new Ajv({ strict: true, allErrors: true }); proposalValidator.addSchema(proposalSchema);
@@ -318,6 +348,9 @@ try {
     const resolved = await core.resolveService(callerNc, space, endpoint, issuedCaller.caller, { instanceId: reservation.instanceId, deadlineMs: 5000 });
     cell(`N05-private-direct-describe-${index}`, resolved.owner === principal.owner && resolved.commands.has("increment") && !resolved.commands.has("other"));
     const reply = await core.invokeCommand(callerNc, space, resolved, "increment", undefined, { deadlineMs: 5000, id: "call-1" });
+    await waitFor(() => hostedSubjects.some(subject => subject.startsWith(`cotal.${space}.ep.v1.inst.test_example_shared.${reservation.instanceId}.increment.`)) || hostedErrors.length > 0, "direct hosted canonical observer traffic");
+    assert.deepEqual(hostedErrors, [], "real hosted ceiling SUB and flush not refused");
+    assert.ok(hostedSubjects.some(subject => subject.startsWith(`cotal.${space}.ep.v1.inst.test_example_shared.${reservation.instanceId}.increment.`)), "actual native increment reached hosted observer");
     cell(`N06-direct-scoped-effect-${index}`, reply.reply.ok && (reply.reply.data as { effects: number; owner: string }).effects === 1 && (reply.reply.data as { owner: string }).owner === principal.owner);
     activated.push({ instanceId: reservation.instanceId, owner: principal.owner, nc: callerNc, caller: issuedCaller.caller });
   }
@@ -360,6 +393,7 @@ try {
   } finally {
     raceActive = false; rendezvousArmed = false; releaseReaders(); clearTimeout(rendezvousTimer);
   }
+  await hostedConnection.nc.flush(); hostedSubscription.unsubscribe();
   await host.flush(); authorityTap.unsubscribe();
   cell("N14-actual-admit-wire-matches-reviewed-contract", capturedAuthority.some(r => r.command === "ep-admit") && capturedAuthority.filter(r => r.command === "ep-admit").every(r => proposalAdmit(r.args)));
   cell("N15-actual-release-wire-matches-reviewed-contract", capturedAuthority.some(r => r.command === "ep-release") && capturedAuthority.filter(r => r.command === "ep-release").every(r => proposalRelease(r.args)));
@@ -383,6 +417,7 @@ finally {
     catch (error) { cleanupErrors.push(String(error)); await killAndAwaitExit(worker.child); }
   }
   for (const handle of handles.reverse()) try { await handle.stop(); } catch (error) { cleanupErrors.push(String(error)); }
+  try { await hostedObserver?.close(); } catch (error) { cleanupErrors.push(String(error)); }
   try { await authority?.close(); } catch (error) { cleanupErrors.push(String(error)); }
   for (const nc of connections.reverse()) { try { await nc.close(); await nc.closed(); } catch (error) { cleanupErrors.push(String(error)); } }
   if (!hostedPrepare) {

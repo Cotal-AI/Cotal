@@ -383,6 +383,10 @@ try {
       [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "one" } }, "cotal.observer-fixture.ep.one.test_example_census.increment.>"],
     ];
     for (const [scope, expected] of examples) assert.equal(epRequestObserveFilter("observer-fixture", scope), expected);
+    const service = readFileSync(new URL("../src/service.ts", import.meta.url), "utf8");
+    assert.ok(service.includes("for (const subject of servedRunRequestSubjects(space))\n    remoteIssuer.nc.subscribe(subject,"), "actual shipped manager observer callsite join");
+    // Source/function evidence only. Full-service eight-SUB and closed minted permission captures
+    // remain unavailable through the existing public hooks and require separate acceptance.
     const normalizations = [
       { raw: "main", canonicalToken: "main", expectedHostedObserver: "cotal.main.ep.v1.inst.>",
         expectedManagerRows: [

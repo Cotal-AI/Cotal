@@ -286,6 +286,11 @@ Prose-negative, escaped and template-positive controls cover that boundary, incl
 The original skipped-tier and outside-builder faults remain. Three migration reversions and a
 compiler-valid late-preflight move have named mutation definitions. Golden bytes and source-order
 checks are distinct from canonical native capture and do not prove invalid activation has no effects.
+The native authority fixture captures per-reservation SUB bytes and canonical replay behavior, and
+a direct hosted component observes actual canonical instance traffic through its existing connection
+callback. The manager function has ordered golden bytes and a shipped callsite join. Full-service
+manager eight-subscription capture and complete self-minted hosted permission capture remain
+unmeasured through these hooks. Component witnesses do not replace those acceptance requirements.
 
 Every profile is classified peer-held or trusted, and the two lists must union to exactly the
 declared set. Peer-heldness is a deployment property, so no cell here can settle which side a
