@@ -115,9 +115,13 @@ history one, no expiry, leader reads and no rollups, mirrors, sources or republi
 Per-subject discard-new makes each binding key write-once. Native deny-delete and deny-purge
 prevent message erasure. The boundary refuses a store missing any of these settings.
 The private custody grant creates that store and reads or writes its binding keys, with no
-lifecycle or auth-store access. It cannot replace a stored binding. Stream deletion remains an
-operator boundary; no shipped credential holds it on this bucket. Subject permissions cannot
-confine metadata read payloads, so custody remains trusted host authority, never a guest credential.
+lifecycle or auth-store access. It cannot replace a stored binding while that shape holds.
+Stream deletion and configuration updates remain operator boundaries; no shipped index-holder
+credential has those APIs. An operator can temporarily weaken write-once, expiry or republish
+settings and restore them after replacing, losing or exposing rows. A reopened shape check
+cannot detect that history. Privacy holds at the data-account boundary; a holder that can create
+streams in that account can source their data. Subject permissions cannot confine metadata read
+payloads, so custody remains trusted host authority, never a guest credential.
 The index does not authenticate a guest, verify provider confirmation or authorize a workload.
 External admission, required host policies, bootstrap mint and terminal retirement still need
 their composition.
