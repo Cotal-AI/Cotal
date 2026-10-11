@@ -921,8 +921,6 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         issue: async ({ actors, request: r }) => {
           const existing = await observeLegacyManagerGate(r.instanceId);
           if (r.operation === "prepare" && existing === null) {
-            // Reserve the family before releasing direct-store credentials. Environment admission
-            // uses this create-only gate, so a racing family cannot win behind an absent read.
             await provisionEndpointGateOpen(authKv, {
               endpoint: "manager", instanceId: r.instanceId, principal: `${owner}.${actors.serve}`,
             });
