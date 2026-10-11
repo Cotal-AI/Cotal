@@ -907,3 +907,8 @@ but the private admission provenance factory remains inaccessible through packag
 
 Validation-only caller refusals release their policy hold before any material row is staged.
 Once a durable write starts, failures retain custody for reconciliation rather than guessing no release.
+
+Prepare validation refusals also release their own policy hold before attempting a reservation write.
+The release uses the held operation's native CAS. A failed release preserves both error causes and
+does not reclaim the head. Once a reservation write is attempted, its outcome can be uncertain and
+the policy hold remains held.

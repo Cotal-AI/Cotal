@@ -147,9 +147,17 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
       if (canonicalJson(namespace.account) !== canonicalJson(account)) refuse("namespace belongs to another account");
       const hold = await acquireEndpointPolicyHold(authKv, { endpoint: request.endpoint, policyRevision: namespace.policyRevision, operationId, content: { kind: "prepare", principal, request } });
       const instanceId = mintLifecycleUid();
-      const binding = await policy.serving(principal, { endpoint: request.endpoint, instanceId, publicKey: request.holderPublicKey });
-      if (binding.holder.owner !== principal.owner || binding.holder.actor !== principal.actor || binding.holder.lifecycleUid !== principal.uid || binding.holder.publicKey !== request.holderPublicKey || canonicalJson(binding.account) !== canonicalJson(account)) refuse("serving policy substituted holder or account");
-      await assertEndpointInstanceAuthority({ account, endpoint: request.endpoint, instanceId, holder: binding.holder, clusterDigests: namespace.clusterDigests, expected: binding.authority, ceiling: binding.ceiling }, policy);
+      let binding: EndpointDelegatedBinding;
+      try {
+        binding = await policy.serving(principal, { endpoint: request.endpoint, instanceId, publicKey: request.holderPublicKey });
+        if (binding.holder.owner !== principal.owner || binding.holder.actor !== principal.actor || binding.holder.lifecycleUid !== principal.uid || binding.holder.publicKey !== request.holderPublicKey || canonicalJson(binding.account) !== canonicalJson(account)) refuse("serving policy substituted holder or account");
+        await assertEndpointInstanceAuthority({ account, endpoint: request.endpoint, instanceId, holder: binding.holder, clusterDigests: namespace.clusterDigests, expected: binding.authority, ceiling: binding.ceiling }, policy);
+      } catch (error) {
+        try { await hold.release(); }
+        catch (releaseError) { throw new AggregateError([error, releaseError], "prepare validation refused and policy release failed", { cause: error }); }
+        throw error;
+      }
+      // An attempted material write may have committed even when its reply fails. Keep its hold.
       const row: Reservation = { v: 2, endpoint: request.endpoint, instanceId, operationId, binding, clusterDigests: [...namespace.clusterDigests], state: "prepared" };
       await createRowByteIdempotent(authKv, reservationKey(instanceId), row);
       await createRowByteIdempotent(authKv, operationKey, row);

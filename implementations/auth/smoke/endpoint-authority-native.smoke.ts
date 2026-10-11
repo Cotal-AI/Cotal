@@ -26,6 +26,7 @@ let prepareProbeActive = false;
 const prepareWriteAttempts: string[] = [], prepareDurableWrites: string[] = [];
 const checks: string[] = [], enc = new TextEncoder();
 let namedControlsAttempted = 0;
+let activePrepareCell: string | undefined;
 function cell(name: string, value: unknown) { if (hostedPrepare) namedControlsAttempted++; assert.ok(value, name); checks.push(name); console.log(JSON.stringify({ cell: name, passed: true, scope: "native-host-client-component" })); }
 async function refused(name: string, action: () => Promise<unknown>, pattern: RegExp) { try { await action(); throw new Error("unexpected success"); } catch (e) { cell(name, pattern.test(String(e))); } }
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN + "-endpoint-u12-"));
@@ -139,7 +140,7 @@ try {
   if (prepareRefusal !== undefined) {
     // Each selected mode uses the original native broker and policy CAS. The observer delegates
     // every write unchanged. It never repairs a held head or retries a refused operation.
-    const prepareCell = (name: string, value: unknown) => { if (hostedPrepare) namedControlsAttempted++; assert.ok(value, name); prepareChecks.push(name); console.log(JSON.stringify({ cell: name, passed: true, scope: "native-prepare-validation-refusal" })); };
+    const prepareCell = (name: string, value: unknown) => { if (hostedPrepare) namedControlsAttempted++; activePrepareCell = name; assert.ok(value, name); activePrepareCell = undefined; prepareChecks.push(name); console.log(JSON.stringify({ cell: name, passed: true, scope: "native-prepare-validation-refusal" })); };
     const policyKey = core.endpointPolicyKey(endpoint), operationId = core.mintLifecycleUid();
     const before = await authKv.get(policyKey);
     assert.ok(before && before.operation === "PUT" && JSON.parse(new TextDecoder().decode(before.value)).state === "open", "PREPARE-original-native-policy-open");
@@ -158,6 +159,75 @@ try {
     const permitted = await authority.prepare(tokens[0], { operationId: core.mintLifecycleUid(), endpoint, holderPublicKey: core.newIdentity().id });
     const permittedHead = await authKv.get(policyKey);
     prepareCell("PREPARE04-subsequent-permitted-prepare-succeeds-with-open-head", permitted.state === "prepared" && permitted.endpoint === endpoint && permitted.binding.holder.owner === principals[0].owner && permittedHead && JSON.parse(new TextDecoder().decode(permittedHead.value)).state === "open" && effects.every(value => value === 0));
+    if (hostedPrepare) {
+      // Labelled fault injection stays on real broker writes. Each case owns a separate policy
+      // head so an intentionally retained uncertain hold never gets repaired for the next test.
+      for (const scenario of ["serving", "holder", "instance", "before-write", "after-write", "release-cas", "foreign-operation"] as const) {
+        const safetyEndpoint = "test.example.prepare." + scenario.replaceAll("-", "");
+        const safetyKey = core.endpointPolicyKey(safetyEndpoint), safetyOperation = core.mintLifecycleUid();
+        const foreignOperation = core.mintLifecycleUid(), denial = new Error("labelled prepare validation denial");
+        const attempts: string[] = [], committed: string[] = [];
+        let releaseFailure: unknown;
+        await core.provisionEndpointPolicyHead(authKv, safetyEndpoint, 1);
+        const safetyKv = new Proxy(authKv, { get(target, property) {
+          if (property === "create") return async (...args: Parameters<typeof authKv.create>) => {
+            attempts.push(args[0]);
+            const reservation = args[0].startsWith("endpoint-reservation.");
+            if (reservation && scenario === "before-write") throw new Error("labelled write reply failed before broker commit");
+            const revision = await target.create(...args); committed.push(args[0]);
+            if (reservation && scenario === "after-write") throw new Error("labelled write reply failed after broker commit");
+            return revision;
+          };
+          if (property === "update") return async (...args: Parameters<typeof authKv.update>) => {
+            attempts.push(args[0]);
+            const releasing = args[0] === safetyKey && JSON.parse(new TextDecoder().decode(args[1] as Uint8Array)).state === "open";
+            try {
+              // Force the real server's revision rejection, not a fabricated CAS response.
+              const revision = await target.update(args[0], args[1], releasing && scenario === "release-cas" ? args[2] - 1 : args[2]);
+              committed.push(args[0]); return revision;
+            } catch (error) { if (releasing) releaseFailure = error; throw error; }
+          };
+          const value = Reflect.get(target, property); return typeof value === "function" ? value.bind(target) : value;
+        } });
+        const safetyPolicy: authApi.EndpointAuthorityPolicy = {
+          ...policy,
+          namespace: async name => { assert.equal(name, safetyEndpoint); return { ...namespace, endpoint: safetyEndpoint }; },
+          serving: async (principal, allocated) => {
+            if (scenario === "foreign-operation") {
+              const entry = await authKv.get(safetyKey); assert.ok(entry);
+              const head = JSON.parse(new TextDecoder().decode(entry.value));
+              await authKv.update(safetyKey, enc.encode(core.canonicalJson({ ...head, operation: { ...head.operation, id: foreignOperation } })), entry.revision);
+              throw denial;
+            }
+            if (scenario === "release-cas" || scenario === "serving") throw denial;
+            return { account, holder: { owner: principal.owner, actor: principal.actor, lifecycleUid: principal.uid, publicKey: scenario === "holder" ? core.newIdentity().id : allocated.publicKey }, authority: { namespaceRevision: 1, policyRevision: 1, delegationId: core.mintLifecycleUid(), delegationRevision: 1 }, ceiling };
+          },
+          authorizeInstance: async request => scenario === "instance" ? { authorized: false } : { authorized: true, governor: namespace.governor, ref: request.expected, ceiling: request.ceiling },
+        };
+        const safety = authApi.createEndpointAuthority({ account, auth, authKv: safetyKv, recordsKv, sourceKv, acceptedKv, issued, nc: host, signing: key, issuer: "https://endpoint-u12.test", policy: safetyPolicy, publishArtifact: async () => { throw new Error("prepare safety does not publish artifacts"); }, readArtifact: async () => undefined });
+        let error: unknown;
+        try { await safety.prepare(tokens[0], { operationId: safetyOperation, endpoint: safetyEndpoint, holderPublicKey: core.newIdentity().id }); }
+        catch (cause) { error = cause; }
+        finally { await safety.close(); }
+        const entry = await authKv.get(safetyKey); assert.ok(entry);
+        const head = JSON.parse(new TextDecoder().decode(entry.value));
+        if (scenario === "serving") {
+          prepareCell("PREPARE05-serving-preserves-original-denial-object", error === denial && head.state === "open" && head.operation === undefined && attempts.every(name => name === safetyKey) && effects.every(value => value === 0));
+        } else if (scenario === "holder" || scenario === "instance") {
+          const message = scenario === "holder" ? "serving policy substituted holder or account" : "serving instance is not delegated to this holder/contract/account";
+          prepareCell("PREPARE05-validation-" + scenario + "-preserves-denial-and-opens-head", error instanceof core.EpEnvelopeError && error.code === "permission-denied" && error.message === message && head.state === "open" && head.operation === undefined && attempts.every(name => name === safetyKey));
+        } else if (scenario === "before-write" || scenario === "after-write") {
+          const attempted = attempts.filter(name => name.startsWith("endpoint-reservation."));
+          const material = committed.filter(name => name.startsWith("endpoint-reservation."));
+          prepareCell("PREPARE06-" + scenario + "-retains-own-uncertain-hold", error instanceof core.EpEnvelopeError && error.code === "unavailable" && attempted.length === 1 && material.length === (scenario === "after-write" ? 1 : 0) && head.state === "held" && head.operation?.id === safetyOperation);
+          const row = await authKv.get(attempted[0]);
+          prepareCell("PREPARE07-" + scenario + "-actual-material-state-no-operation-release", (scenario === "after-write" ? row?.operation === "PUT" : row === null) && await authKv.get("endpoint-prepare." + safetyOperation) === null && attempts.filter(name => name === safetyKey).length === 1 && effects.every(value => value === 0));
+        } else {
+          prepareCell("PREPARE08-" + scenario + "-preserves-original-and-release-causes", error instanceof AggregateError && error.cause === denial && error.errors[0] === denial && (scenario === "release-cas" ? error.errors[1] === releaseFailure && releaseFailure !== undefined : error.errors[1] instanceof core.EpEnvelopeError && error.errors[1].code === "conflict"));
+          prepareCell("PREPARE09-" + scenario + "-never-reclaims-held-operation", head.state === "held" && head.operation?.id === (scenario === "foreign-operation" ? foreignOperation : safetyOperation) && attempts.every(name => name === safetyKey) && effects.every(value => value === 0));
+        }
+      }
+    }
   }
   const authInstanceId = core.mintLifecycleUid(), authIdentity = core.newIdentity();
   const authCreds = await core.mintCreds(auth, core.newIdentity(), "endpoint-serve-executor", { endpointServeExecutor: { endpoint: "auth", instanceId: authInstanceId } });
@@ -295,6 +365,7 @@ try {
   failure = error;
   if (!hostedPrepare) console.error(error);
   else if (error instanceof assert.AssertionError && error.message === "PREPARE03-validation-only-refusal-releases-native-policy-head") console.error("AssertionError [ERR_ASSERTION]: PREPARE03-validation-only-refusal-releases-native-policy-head");
+  else if (error instanceof assert.AssertionError && activePrepareCell !== undefined && error.message === activePrepareCell) console.error("AssertionError [ERR_ASSERTION]: " + activePrepareCell);
   else console.error("endpoint prepare entry failed before its named target or in a later control; private report retained");
 }
 finally {
