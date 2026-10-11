@@ -187,9 +187,10 @@ export async function resolveSeatControlTarget(flags: ConnectFlags, instanceId?:
   if (!existsSync(path))
     throw new Error(`managed seat credential is missing at ${path}; refusing to act as a different caller`);
   const creds = readFileSync(path, "utf8");
+  const tls = mesh.tlsRequired;
   const nc = await dialerFor(mesh.server)({
     servers: mesh.server,
-    ...standaloneConnectOpts({ creds, tls: mesh.tlsRequired }),
+    ...standaloneConnectOpts({ creds, tls }),
     maxReconnectAttempts: 0,
   });
   let epCaller: IssuedCaller;

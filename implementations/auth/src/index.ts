@@ -1,4 +1,5 @@
 export { deriveOwnerToken, deriveOwnerForIdpSubject, platformControlOwner } from "./derive.js";
+export { createEndpointAuthority, type EndpointAuthorityHostInput, type EndpointAuthorityPolicy, type EndpointNamespacePolicy } from "./endpoint-authority.js";
 export { parsePlatformControlAuthorityRequest, type ManagerAuthorityHolder } from "./platform-control.js";
 export { parsePlatformSupervisorAuthorityRequest, type PlatformSupervisorAssignment, type PlatformSupervisorAuthorityRequest, type PlatformSupervisorInput } from "./platform-supervisor.js";
 export type { PlatformControlAssignment } from "@cotal-ai/core";
