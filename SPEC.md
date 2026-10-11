@@ -1715,7 +1715,7 @@ appear in a label). Single-label names (`manager`, `delivery`) are reserved for
 endpoints shipped by this contract's reference implementation and require the space operator's
 provisioning authority to serve; a third-party endpoint name MUST be reverse-DNS (two or more
 labels under a domain its author controls, e.g. `com.acme.deploy`) and is mintable only under
-the owner that registered that domain claim. In a wire subject the name is one token with `.`
+that domain governor or an explicit instance/contract-bound serving delegation (§13.9). In a wire subject the name is one token with `.`
 replaced by `_` (`com_acme_deploy`); because `_` cannot appear in a label the mapping is
 bijective. Name authority is the credential, never the registry (§13.9). Endpoint-name
 tokens may contain `-` inside labels; they are never used to derive principal dash-form
@@ -1764,24 +1764,28 @@ serves both. A responder derives the reply subject from the authenticated reques
 whichever rail it arrived, generation included. `v1` versions the rail encoding, not the
 protocol.
 
-**Single-owner endpoint names (normative).** An endpoint name binds to exactly ONE owner
-(§13.9: operator-provisioned core names, domain-owner-bound reverse-DNS names), so the name
-token alone determines the serving owner and instance-addressed subjects carry **no owner
-tokens**: `(endpoint, instanceId)` is the complete routable instance address. Two parties
-wanting the "same" name use their own reverse-DNS names; an owner-qualified shared-name form,
-if ever wanted, would be a later additive subject form, not a change to these. This trades an
-already-forbidden expressiveness for structurally smaller subjects and credentials.
+**Namespace governance and delegated serving.** An endpoint name binds to one namespace
+governor within an account. Single-label names require operator governance; reverse-DNS names
+require a registered domain claim or governor-authorized subdomain binding. A serving instance
+may have another owner only under an explicit live delegation binding the account, namespace
+and policy revisions, actual owner/actor/lifecycle, recorded holder public key, allocated instance,
+complete permitted contract closures, delegation revision and route/resource ceiling.
+Registration does not transfer name governance. `(endpoint, instanceId)` remains the complete
+routable address. The issuer allocates and permanently reserves instance identities. A client
+owner claim or existing-instance selection never establishes serving ownership.
 
-**Remote manager service.** The core `manager` name remains operator-governed: a
-`manager-service` bearer (§13.1) does not transfer its name authority or create a generic
-user-owned endpoint. It is the one closed user-auth exception to the single-owner endpoint rule:
-the host may authorize one `manager` service instance whose service-record owner and serving
-principal are the bearer's derived owner plus fixed server-selected manager actor. The exception is
-scoped by the server-authorized lifecycle UID and opaque globally unique instance id, so the
-`(manager, instanceId)` route stays unambiguous and no registration can be mistaken for another
-owner's. The standard `ep` grammar is unchanged: the bearer reaches only that exact manager
-instance, while the manager's own agent-control requests use the existing owner and same-owner
-descendant checks. No endpoint name, target form, or wildcard is added for this view.
+Private single-owner deployments use governor = serving owner. This does not replace shared-name
+delegation. Membership alone grants neither serving nor caller authority. The current Manager
+implementation retains its explicit legacy version1 serving policy under its operator-governed
+canonical contract. It has not migrated to delegated version3 serving. Its lifecycle/target policy
+grants no authority over unrelated endpoints. Delegated Manager serving requires the same general
+namespace and instance authority checks as other delegated endpoints. A delegate cannot modify
+namespace policy or another delegate's registration.
+
+Delegated descriptors use `protocol.v:3` (§13.7), which includes the mandatory `effect` declarations
+of version2 and adds serving-owner/governor/delegation/route semantics. Authority envelopes use a
+separate version2 marker. Legacy private version1 services remain under their explicit policy and
+are not silently reinterpreted. Native request/reply envelopes and subjects remain unchanged.
 
 The target's **lifecycle UID is body-carried, not a subject token** (`target.lifecycleUid`,
 §13.3): a grant could only ever wildcard it (targets are dynamic; the UID is unknowable at
@@ -2999,7 +3003,7 @@ session.
 
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
-**Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
+**Reachability.** `effect` is reachable only under `protocol.v: 2` or `3` (*Version*, below). A responder
 whose descriptor is pinned to `v: 1` cannot declare the field on the command surface a caller
 resolves against, and nothing in such a deployment consumes it, so the `v: 1` rule below is the
 whole of what governs.
@@ -3008,12 +3012,12 @@ Note what the pin does NOT do. A descriptor MAY inline the registered cluster ar
 (*Descriptor and describe*, §13.7), and an artifact is not filtered against the parsed command
 surface, so a key named `effect` inside one can appear on the wire under a `v: 1` descriptor. Its
 presence there is not a declaration and MUST NOT be read as one. Repeat-safety information exists
-only at `protocol.v: 2`, and a caller that recovers it from raw artifact bytes under a `v: 1`
+only at `protocol.v: 2` or `3`, and a caller that recovers it from raw artifact bytes under a `v: 1`
 descriptor has reinstated exactly the retry this section exists to stop, while believing it read a
 declaration. A reference implementation that has not moved to
-`2` therefore carries its repeat-safety knowledge somewhere off the wire, as a static allowlist of
+`2` or `3` therefore carries its repeat-safety knowledge somewhere off the wire, as a static allowlist of
 the commands it knows to be safe to repeat. Such an allowlist stands in for this field for exactly
-as long as no `v: 2` descriptor can exist, and it is superseded by the declaration the moment one
+as long as no `v: 2` or `v: 3` descriptor can exist, and it is superseded by the declaration the moment one
 can: allowlist-says-safe and author-declares-`write` are answers to the same question, and two
 answers to one question is one answer too many.
 
@@ -3065,27 +3069,30 @@ describe descriptor** (*Descriptor and describe*, below). It is deliberately not
 the cluster document, which has no `protocol` of its own — adding one there would be subject to §7
 and dropped unread by exactly the clients this cut has to stop, which is the failure it is meant
 to prevent. An instance whose registered clusters declare `effect` MUST register and describe with
-`protocol.v` of `2`, and every command in every cluster it serves MUST then carry `effect`. `v:1`
+`protocol.v` of `2`, or `3` when it also implements delegated-instance authority, and every command
+in every cluster it serves MUST then carry `effect`. Version3 retains all version2 effect and
+repeat-safety requirements. `v:1`
 descriptors remain valid, carry no `effect`, and give a resolving caller no repeat-safety
 information — it MUST treat every command served under one as `write`. There is therefore no
-"omitted `effect`" case under a `v:2` descriptor, and no surface in which the field is present but
+"omitted `effect`" case under a `v:2` or `v:3` descriptor, and no surface in which the field is present but
 optional.
 
 A client that does not implement this section MUST refuse to resolve a descriptor whose
-`protocol.v` it does not implement, rather than ignore what it cannot honor. **That refusal is a
-requirement this section CREATES, not one already met.** What protects an unamended client today
-is a fence on the other side of the wire: `describe`'s pinned output schema fixes
-`descriptor.protocol.v` to the constant `1`, so an unamended responder cannot publish a `v:2`
-descriptor at all — its own reply fails output validation and surfaces as a responder bug. The
-registry read path fails closed the same way, refusing a service record whose `protocol.v` is not
-`1`. The resolving caller does neither: it reads the describe answer without validating it, and
-the shape it reads does not carry `protocol`. So the version marker is enforced today by the
-RESPONDER's contract and by the REGISTRY reader, and by nothing in the caller — which is safe only
-for as long as no `v:2` descriptor can exist.
+`protocol.v` it does not implement, rather than ignore what it cannot honor. Earlier reference
+implementations relied on responder and registry version1 pins. Once version2 or version3 can be
+advertised, those pins no longer protect an unamended caller. A historical name-based classifier
+retained for API compatibility MUST NOT authorize retries. Retry authorization belongs to the
+verified effect of the invocation that failed, not a later resolution or an earlier fenced hop.
 
 **Emission.** Moving to `protocol.v: 2` **is** a non-additive discovery change, so §11's
 change-process rule for one governs it and is the authority on how it is rolled out; this section
 adds only what is specific to `2` and states no cutover rule of its own.
+
+Moving to `protocol.v: 3` is likewise a non-additive discovery change governed by §11. A deployment
+MUST first upgrade every resolving caller to refuse unsupported descriptors and implement both
+the effect/repeat-safety and delegated-authority guarantees before any responder advertises `3`.
+A caller supporting only version2 MUST refuse version3 before invoking. There is no in-band
+caller-version negotiation and no downgrade of delegated service records to version1 or version2.
 
 Specific to `2`: a caller that resolves a descriptor whose `protocol.v` it does not implement MUST
 fail the resolve (`unsupported-version`) and MUST NOT invoke against it — a descriptor it cannot
@@ -3283,10 +3290,15 @@ conferring a grant, and a deployment that needs a distinct sweep identity is out
 version specifies.
 
 **Descriptor and describe.** Each instance registers a **service record** (kind `svc`, key
-`svc.<endpoint>.<instanceId>`; the owner is determined by the name and recorded in the
+`svc.<endpoint>.<instanceId>`; the owner is the actual serving owner, while the namespace
+governor is resolved through the immutable serving-authority coordinates recorded in the
 value): spec = `{ endpoint, owner, endpointType?,
-clusterDigests[], protocol: { v: 1 | 2 }, activation? }`, status = `{ epoch, state,
-observedSpecRevision, … }` (writer table §13.9). The spec key's **store revision is the
+clusterDigests[], protocol: { v: 1 | 2 | 3 }, servingAuthority?, serveRoutes?, resources?, activation? }`, status = `{ epoch, state,
+observedSpecRevision, … }` (writer table §13.9). The three authority fields are REQUIRED at
+protocol3 and forbidden at protocols1/2. Both the service record and descriptor enforce this
+conditional shape. Every protocol3 command declares effect. Readers admit only explicitly
+implemented versions1/2/3, never an open-ended `>=2` rule, and refuse unsupported versions before
+resolve/invoke. The spec key's **store revision is the
 instance's `registrationRevision`**, the value scatter freezes (§13.5): it advances only
 when the mediated registration path writes the spec key, so an advance during a scatter is
 exactly a re-registration. The `processEpoch` of the instance's issuance gate (§13.1) is 0 after
@@ -3305,6 +3317,55 @@ view is unavailable or stale beyond its declared freshness bound, describe fails
 endpoint's descriptor public, in which case no view is consulted and the answer says so.
 Descriptor visibility is never inferred from reachability of `describe` alone. A KV browse
 index (record kind `contracts`) is an advisory convenience copy; `describe` is authoritative.
+
+**Delegated service records and route ceilings.** A version3 service spec records the actual
+serving owner plus issuer-derived `servingAuthority = { namespaceRevision, policyRevision,
+delegationId, delegationRevision }`, `serveRoutes`, and `resources`. The authorized artifact,
+instance gate, ledger and signed client attestation bind the same immutable coordinates. The
+namespace governor owns the canonical closure and governed-continuity policy. Re-registration
+cannot change serving owner or holder key. The first instance-only slice admits only ephemeral
+commands and `resources:{kind:"ephemeral-only"}`. Journal/action/shared effects/pools, sessions,
+reader resources and class/scatter issuance refuse before release until their native gates pass.
+
+`serveRoutes:{kind:"instance"}` grants and consumes only exact instance request rails on both
+legacy and issued planes, including describe. Describe is mandatory on admitted rails, not
+necessarily on the class rail. Caller exact-instance authority explicitly includes describe and
+uses `instanceOnly:true`; no class/scatter command row remains. Voluntary `omitClassCommands`
+never widens or proves a broker ceiling. A fresh private describe view and catalog distinguish
+actual serving owner from governor and expose delegation currency without treating discovery as
+authority. A registration without real serving custody is never reported as ready.
+
+A version3 describe descriptor MUST carry `registeredClusterSetDigest`, a commitment to the full
+registered closure set before caller-specific projection. Its value is SHA-256 over RFC 8785
+canonical JSON of `{kind:"cotal.endpoint-registered-clusters",v:1,clusterDigests:[...]}`, with
+the unique full closure digests sorted lexicographically. The set contains 1 to 64 valid closure
+digests. Private describe retains this commitment when filtering visible clusters, including an
+authorized empty view. Versions1/2 MUST NOT carry this field. Readers refuse a missing or malformed
+version3 commitment. A commitment does not grant visibility or command authority.
+
+The hosted authority's signed caller and holder-control receipt payloads use version3. Both bind
+the full registered `clusterDigests` and the existing deployment, principal, instance, registration
+revision and process epoch. An ordinary `cotal.endpoint-caller` receipt also MUST carry
+`privateClusterDigests`, the unique closure set whose verified registered command lists intersect
+the exact granted commands other than describe. It is empty for describe-only authority. The
+holder-control kind `cotal.endpoint-control` MUST NOT carry this application projection field.
+Readers enforce each kind's closed shape and refuse older receipt payload versions without a
+fallback. The HTTP envelope and serving attestation versions are unchanged.
+
+Before invoking, a caller MUST compare the descriptor commitment to the recomputed signed full
+set commitment and compare the visible closure set to the signed private projection by equality.
+It MUST also retain the exact selected command, issued principal, instance, epoch, registration,
+delegation and resource checks. Containment alone or an empty-view exception does not satisfy
+these bindings. The full registration and its permitted private view are separate identities.
+
+Explicit class policy admits ONE compatible receiving set per endpoint/command; unchanged one/all
+subjects contain no cohort id and queue groups do not isolate differently authorized cohorts.
+Every class caller must be authorized across every admitted receiver and contract. A membership
+change freezes admission, invalidates affected serving/caller issuances, drains and reissues at a
+new revision. Instance-only mode is the default during unsupported transitions. Scatter may freeze
+eligible members and invoke exact instance rows, but that is not an unrestricted all publication.
+Class winner acceptance verifies current eligible member/owner/contract/epoch or uses native
+pre-effect split repair within one whole deadline. Version3 commands all declare effect (§13.7).
 
 **Manager-service records.** A remote manager registration is one closed, opaque-instance family:
 its `svc.manager.<instanceId>` spec/status pair, its instance-bound contract closure, and its
@@ -3344,8 +3405,8 @@ mints a new cluster URN version. A push-time JSON-native compatibility differ + 
 enforce this in the reference workflow (repository tooling under `scripts/`, not shipped
 client code). The discovery protocol itself is versioned under `protocol.v`, additively by
 default: a bump is reserved for a change a client cannot safely ignore, and `effect` (§13.7) is
-the one such change so far — a client that ignored it would keep performing exactly the retry the
-field exists to stop, so it refuses the document instead.
+one such change. Version3 adds delegated-instance authority and retains version2 effect
+requirements. A reader that does not implement a descriptor version refuses it before invocation.
 
 ### 13.8 Distributed guarantees
 
@@ -3658,8 +3719,9 @@ the endpoint owns a work pool, the pool's consumer + ack grants (§13.5; matrix 
 Nothing else. Every "binds X" in this paragraph has a matrix row below that actually binds
 X. Serve
 credentials are re-minted on takeover (new epoch, §13.1 barrier); a superseded credential's
-replies and commits are rejectable by epoch. Core names require operator provisioning
-authority; reverse-DNS names bind to their registered owner. The registry is discovery; the
+replies and commits are rejectable by epoch. Core names retain operator namespace governance;
+reverse-DNS names bind to their registered governor. Serving delegates require explicit
+instance/actor/lifecycle/contract/revision authority, not a name-wide owner allow-list. The registry is discovery; the
 serve grant is the authority: a foreign credential cannot subscribe a class rail, answer as
 an instance, or enter a frozen scatter set.
 
@@ -4400,6 +4462,47 @@ whose `protocol.v` it does not implement (the marker rides the descriptor and th
 never the cluster document, which carries no `protocol`), and never automatically repeat a `write`
 command (§13.7) — whatever `id` the re-issue carries — except on an outcome that proves
 non-execution (§13.3).
+
+**Delegated issuance serialization.** Namespace/caller/delegation revisions are immutable
+source identities, encoded in the source key beside the account-local bucket and space. Mutable
+reused keys do not attest old revisions. The stock source attestor refuses unknown, foreign,
+expired, revoked or stale policy/delegation/class sources. Actor-row UID equality alone cannot
+attest an in-place narrowed endpoint grant.
+
+The minimal authority serializes registration, renewal, caller mint and revoke through one native
+endpoint-policy operation gate, acquired by leader CAS before any instance gate. It persists a
+stable operation intent, acquires the affected instance gate, stages immutable credentials and
+ledger/evidence, wins the instance fence, then completes the policy-head CAS as the LAST material
+release fence. Every competing barrier acquires the policy gate first. Independent read tuples or
+two unsynchronized final CAS writes are not an atomic release. Uncertain completion stays held
+for reconciliation without force-reclaim. Retry resumes the same operation/instance and can
+return only the recorded exact material to its still-authorized holder, never a broader re-mint.
+
+Private/delegated requests require issued authority, including untargeted calls, casts and
+describe. After the final asynchronous target/trait/ledger validation, native admission validates
+the complete broker-authenticated subject against immutable active permissions and current
+sources, commits under the policy fence, and retains drain custody until terminal outcome.
+Legacy rails cannot satisfy issued-required policy. Revocation blocks admission/issuance first,
+retires indexed generations and instance families, verifies live eviction and drains earlier
+admitted work before reporting completion. It does not roll back effects already completed.
+
+The stock signerless service client verifies a closed issuer-signed serving attestation against
+an already trusted account/issuer key pin, the actual scoped serving credential, holder key and
+fresh instance authority before constructing native serving custody. Caller-authored structural
+admission callbacks and response-supplied issuer keys cannot establish that custody. Lifecycle
+prepare returns a reservation only. A one-use challenge signs the complete canonical stable
+operation content after its artifacts are known. Delivery requestId is excluded from that stable
+content so content-identical lost-response retries return the same instance and recorded material.
+
+The stock client owns exact-instance native `auth` requests `ep-admit` and `ep-release`, authorized
+only for the issued serving holder. These are authority checks, never Manager mediation or
+application payload/result transport. Admission commits a durable drain record under the policy
+gate and releases the policy gate before the handler runs. Revocation blocks new admissions and
+awaits those separate held records. Terminal release remains reachable for recorded held
+admissions during drain and is idempotent only for identical holder/content/outcome. It cannot
+deadlock behind a policy gate held across the handler. The serve boundary releases admission in
+finally after handler/output/reply processing. Unknown outcomes or release failures remain held
+for authenticated reconciliation, never expire into a false completion.
 
 ### 13.15 Issued authority
 

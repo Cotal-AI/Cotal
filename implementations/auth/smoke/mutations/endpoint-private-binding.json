@@ -1,0 +1,70 @@
+{
+  "suite": [
+    "implementations/auth/smoke/endpoint-authority-public.smoke.ts"
+  ],
+  "guard": "Signed full registration commitment and exact permitted private projection retain issued caller identity without an empty-view bypass. The original authenticated CLI describe predicate must fail with the original registration-versus-view guard restored.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && node --import tsx implementations/auth/smoke/endpoint-authority-public.smoke.ts --cli-describe-causal",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/endpoint-private-binding.json",
+  "why": [
+    "The original-guard mutant reaches the unchanged genuine source CLI CCLI01 before added native controls, proving that the observed describe-only mismatch is repaired on the real child entry rather than only on hand-built inputs.",
+    "Full registration, exact private projection and caller-owner mutations are graded by named adversarial copies of an actual native-resolved service. These prove check dependency but do not simulate a malicious broker entry.",
+    "Every mutated core and auth source is rebuilt before the native fixture and rebuilt again after source restoration. No target is graded on a compiler/import failure."
+  ],
+  "mutations": [
+    {
+      "name": "restore original full-registration versus visible-private equality",
+      "file": "packages/core/src/endpoint-public-authority.ts",
+      "find": "descriptor.registeredClusterSetDigest !== endpointRegisteredClusterSetDigest(receipt.clusterDigests)",
+      "replace": "canonicalJson(descriptor.clusters.map(cluster => cluster.digest).sort()) !== canonicalJson([...receipt.clusterDigests].sort())",
+      "expectRed": "\"failedCell\":\"CCLI01-source-remote-describe-exact-instance-zero-effect\"",
+      "cell": "CCLI01-source-remote-describe-exact-instance-zero-effect",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "omit full registration commitment check on empty private view",
+      "file": "packages/core/src/endpoint-public-authority.ts",
+      "find": "descriptor.registeredClusterSetDigest !== endpointRegisteredClusterSetDigest(receipt.clusterDigests)",
+      "replace": "false /* mutant ignores full registered commitment */",
+      "expectRed": "\"failedCell\":\"BIND02-empty-view-wrong-full-registration-commitment-refused\"",
+      "cell": "BIND02-empty-view-wrong-full-registration-commitment-refused",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "omit exact signed private closure equality",
+      "file": "packages/core/src/endpoint-public-authority.ts",
+      "find": "  if (canonicalJson(descriptor.clusters.map(cluster => cluster.digest).sort()) !== canonicalJson([...receipt.privateClusterDigests].sort())) denied(\"native endpoint private descriptor and verified caller projection disagree\");",
+      "replace": "  // mutant omits the exact signed private closure equality",
+      "expectRed": "\"failedCell\":\"BIND05-private-extra-visible-closure-refused\"",
+      "cell": "BIND05-private-extra-visible-closure-refused",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "omit issued principal binding on empty private view",
+      "file": "packages/core/src/endpoint-public-authority.ts",
+      "find": "  if (service.caller.owner !== receipt.principal.owner || service.caller.actor !== receipt.principal.actor || service.caller.uid !== receipt.principal.uid || !(\"generation\" in service.caller)) denied(\"native endpoint caller is not the verified issued principal\");",
+      "replace": "  // mutant omits the issued principal binding",
+      "expectRed": "\"failedCell\":\"BIND07-empty-view-wrong-caller-owner-refused\"",
+      "cell": "BIND07-empty-view-wrong-caller-owner-refused",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "omit exact selected application command set",
+      "file": "packages/core/src/endpoint-public-authority.ts",
+      "find": "  if (canonicalJson([...service.commands.keys()].sort()) !== canonicalJson(allowed) || [...service.commands.values()].some(command => command.class !== \"ephemeral\" || command.targeted)) denied(\"native endpoint descriptor widened the verified command selection\");",
+      "replace": "  // mutant omits exact selected application command binding",
+      "expectRed": "\"failedCell\":\"BIND22-selected-view-extra-resolved-command-refused\"",
+      "cell": "BIND22-selected-view-extra-resolved-command-refused",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "sign all registered closures as the private projection even for describe-only",
+      "file": "implementations/auth/src/endpoint-authority.ts",
+      "find": "            if (document.commands.some(command => operations.includes(command.name))) privateClusterDigests.push(closure);",
+      "replace": "            privateClusterDigests.push(closure); // mutant widens signed private projection",
+      "expectRed": "\"failedCell\":\"CCLI01-source-remote-describe-exact-instance-zero-effect\"",
+      "cell": "CCLI01-source-remote-describe-exact-instance-zero-effect",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

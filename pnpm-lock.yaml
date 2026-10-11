@@ -762,6 +762,9 @@ importers:
       ajv:
         specifier: ^8.20.0
         version: 8.20.0
+      jose:
+        specifier: ^6.2.3
+        version: 6.2.3
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
