@@ -82,6 +82,7 @@ export * from "./runtime.js";
 export * from "./startup-confirm.js";
 export * from "./loopback.js";
 export * from "./managed-handoff.js";
+export * from "./environment-bootstrap-file.js";
 export * from "./environment.js";
 export * from "./environment-provision.js";
 export * from "./terminal.js";

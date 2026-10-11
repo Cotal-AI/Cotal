@@ -1,0 +1,76 @@
+{
+  "grades": "suite",
+  "guard": "One private Linux file take releases bounded bytes only from a held, private directory and consumes its name",
+  "suite": ["packages/core/smoke/environment-bootstrap-file.smoke.ts"],
+  "command": "pnpm smoke:environment-bootstrap-file",
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 20,
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "why": "The public source export runs against real private files and child processes. A labelled parent-rename filesystem interleaving proves held-directory custody; the FIFO reader has an external owned-process deadline so removing O_NONBLOCK yields a named failure rather than an ungraded suite hang. No broker, document authentication, environment admission or manager bootstrap is claimed. Source imports read the changed module directly, leaving no compiled mutant artifacts.",
+  "mutations": [
+    {
+      "name": "successful take omits durable directory sync before reading",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": "\n      try { unlinkSync(held); fsyncSync(directory); }\n",
+      "replace": "\n      try { unlinkSync(held); }\n",
+      "expectRed": "unlink and directory sync precede the first byte read",
+      "cell": "unlink and directory sync precede the first byte read"
+    },
+    {
+      "name": "take follows the mutable parent pathname instead of its held descriptor",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": "const held = `/proc/self/fd/${directory}/${basename(path)}`;",
+      "replace": "const held = path;",
+      "expectRed": "a parent rename cannot redirect the held deletion or read",
+      "cell": "a parent rename cannot redirect the held deletion or read"
+    },
+    {
+      "name": "shared parent is accepted as deletion authority",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": " || (custody.mode & 0o7777) !== 0o700",
+      "replace": "",
+      "expectRed": "shared parent directories refuse without deletion authority",
+      "cell": "shared parent directories refuse without deletion authority"
+    },
+    {
+      "name": "read accepts a world-readable bootstrap file",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": " || (st.mode & 0o7777) !== 0o600",
+      "replace": "",
+      "expectRed": "nonprivate file permissions refuse after consuming the name",
+      "cell": "nonprivate file permissions refuse after consuming the name"
+    },
+    {
+      "name": "take accepts retained hard-link aliases",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": " || st.nlink !== 1 || fstatSync(fd).nlink !== 0",
+      "replace": "",
+      "expectRed": "hard-linked input refuses and does not remove an alias",
+      "cell": "hard-linked input refuses and does not remove an alias"
+    },
+    {
+      "name": "file read exceeds the documented size ceiling",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": "const MAX_BOOTSTRAP_FILE_BYTES = 64 * 1024;",
+      "replace": "const MAX_BOOTSTRAP_FILE_BYTES = 128 * 1024;",
+      "expectRed": "oversized input refuses after consumption",
+      "cell": "oversized input refuses after consumption"
+    },
+    {
+      "name": "invalid UTF-8 is silently replaced instead of refused",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": "new TextDecoder(\"utf-8\", { fatal: true })",
+      "replace": "new TextDecoder(\"utf-8\", { fatal: false })",
+      "expectRed": "invalid UTF-8 refuses after consumption",
+      "cell": "invalid UTF-8 refuses after consumption"
+    },
+    {
+      "name": "FIFO opening blocks instead of refusing",
+      "file": "packages/core/src/environment-bootstrap-file.ts",
+      "find": "constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK",
+      "replace": "constants.O_RDONLY | constants.O_NOFOLLOW",
+      "expectRed": "a FIFO refuses without blocking and leaves no file",
+      "cell": "a FIFO refuses without blocking and leaves no file"
+    }
+  ]
+}

@@ -289,6 +289,7 @@
     "smoke:manager-console": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/console-assets.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",
     "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",
+    "smoke:environment-bootstrap-file": "tsx packages/core/smoke/environment-bootstrap-file.smoke.ts",
     "smoke:env-isolate": "tsx implementations/manager/smoke/env-isolate.smoke.ts",
     "smoke:tmux": "tsx extensions/tmux/smoke.ts",
     "smoke:cmux": "tsx extensions/cmux/smoke.ts",

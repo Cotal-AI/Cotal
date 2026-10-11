@@ -140,6 +140,17 @@ External admission, required host policies, issuance recovery, file custody and 
 retirement still need their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
 
+The core library's `takeEnvironmentManagerBootstrapFile` supplies only the Linux private-file
+take boundary. It pins a current-UID mode0700 parent directory, opens without following the
+final link, unlinks and syncs before reading, and accepts only a current-UID mode0600 singly
+linked regular file of at most64KiB. Unsafe parent directories are not deletion authority.
+Symlinks and FIFOs refuse without following or blocking; directories are left untouched.
+A concurrent losing take returns no material. Refusals expose neither the path nor the bytes.
+This boundary does not authenticate the file, decode the version-one document, connect a
+plane or register a manager. No CLI command uses it yet. A host still needs those consumers,
+atomic first persistence and external retirement for a crash after taking the file. Processes
+sharing the manager's privileged UID remain trusted.
+
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
 promise and its per-record reports. An unavailable store or a provider create whose reply
