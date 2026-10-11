@@ -110,8 +110,8 @@ The host must bind one operation to each manager instance before calling this st
 not substitute a new operation after abort. This step does not detect that substitution.
 Unstamped prior state is unsupported and can be restored after an abort with unchanged counters.
 Changed input, ordinary or foreign gates, completed registrations and deletion markers refuse.
-Its host-private writer grants only those two staging suffixes in addition to lifecycle and
-manager gate rows. It is not exported as an admission API and issues no credential.
+Its host-private writer grants explicit staging suffixes in addition to lifecycle and manager
+gate rows. This reservation step is not exported as an admission API and issues no credential.
 The internal immutable admission index binds a host-confirmed provider reference, creator,
 profile digest, expiry, account and authority context before selecting a manager instance,
 lifecycle and operation. Same-source retries return the stored coordinates and native revision;
@@ -128,8 +128,16 @@ cannot detect that history. Privacy holds at the data-account boundary; a holder
 streams in that account can source their data. Subject permissions cannot confine metadata read
 payloads, so custody remains trusted host authority, never a guest credential.
 The index does not authenticate a guest, verify provider confirmation or authorize a workload.
-External admission, required host policies, bootstrap mint and terminal retirement still need
-their composition.
+An internal one-shot bootstrap issuer requires the staged admission, initial-gate stamp and
+original frozen registration. It signs only the fixed bootstrap profile for a supplied public
+nkey, with expiry bounded by five minutes and admission. The native credential ledger binds
+that JWT's expiry and bootstrap principal to the reserved lifecycle. Separate registration and
+lifecycle CAS fences must both win before material returns; a lost fence revokes its staged row.
+The issuer records public signing coordinates under `stage.<opId>.environment-bootstrap-mint`.
+A repeated or ambiguous attempt stays held, including after reconstruction. This helper does
+not deliver a private file or redeem bootstrap requests and is not exported from the package.
+External admission, required host policies, issuance recovery, file custody and terminal
+retirement still need their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
 
 Supervise the cleanup task independently of any operator session. It resumes recorded

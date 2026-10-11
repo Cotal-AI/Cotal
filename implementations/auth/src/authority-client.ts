@@ -92,6 +92,7 @@ export function environmentManagerAdmissionWriterGrants(space: string, connId: s
       `$KV.${epAuthBucket(space)}.epgate.manager.>`,
       `$KV.${epAuthBucket(space)}.stage.*.environment-manager`,
       `$KV.${epAuthBucket(space)}.stage.*.environment-manager-gate`,
+      `$KV.${epAuthBucket(space)}.stage.*.environment-bootstrap-mint`,
     ],
     subscribe: base.subscribe,
   };
