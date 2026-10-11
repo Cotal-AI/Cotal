@@ -7,19 +7,19 @@
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/invoke-on-flag-inventory.json",
   "why": [
     "The full inventory entry imports @cotal-ai/cli, which registers invoke with invokeFlags from commands/describe.ts. The package exports dist/index.js, so the command builds the real composition before each run.",
-    "The mutation removes only onFlag from the shipped invokeFlags declaration. The unchanged exact equality assertion must report flags of `invoke` match golden, not a parser stub or a copied declaration.",
+    "The mutation filters onFlag out of the actual shipped invokeFlags array at runtime. An explicit boolean-returning predicate preserves the original inferred flag element union, so invokeCmd remains type-correct without a cast, compiler suppression, or production change. The unchanged exact equality assertion must report flags of `invoke` match golden.",
     "The inventory is fail-fast and prints its success banner only after every assertion. No completion marker is declared for the failing run. Restoration rebuilds the genuine packages and reruns the full inventory entry before the stock runner can report a kill."
   ],
   "mutations": [
     {
       "name": "invoke drops the on flag from its registered declaration",
       "file": "implementations/cli/src/commands/describe.ts",
-      "find": "export const invokeFlags = [\n  ...targetFlags,\n  onFlag,\n",
-      "replace": "export const invokeFlags = [\n  ...targetFlags,\n",
+      "find": "export const invokeFlags = [\n  ...targetFlags,\n  onFlag,\n  { name: \"args\", type: \"string\", value: \"<json>\", description: \"command arguments as a JSON object\" },\n  { name: \"name\", type: \"string\", value: \"<agent>\", description: \"targeted commands: the managed agent to act on (resolved to its current principal via inspect)\" },\n  { name: \"self\", type: \"boolean\", description: \"targeted commands: target this caller itself (authz-mode self)\" },\n  { name: \"admin\", type: \"boolean\", description: \"use the admin instrument (cross-agent any-mode reach on targeted commands)\" },\n  { name: \"timeout\", type: \"string\", value: \"<ms>\", description: \"reply deadline in milliseconds (default 10000)\" },\n] as const satisfies readonly FlagSpec[];",
+      "replace": "export const invokeFlags = ([\n  ...targetFlags,\n  onFlag,\n  { name: \"args\", type: \"string\", value: \"<json>\", description: \"command arguments as a JSON object\" },\n  { name: \"name\", type: \"string\", value: \"<agent>\", description: \"targeted commands: the managed agent to act on (resolved to its current principal via inspect)\" },\n  { name: \"self\", type: \"boolean\", description: \"targeted commands: target this caller itself (authz-mode self)\" },\n  { name: \"admin\", type: \"boolean\", description: \"use the admin instrument (cross-agent any-mode reach on targeted commands)\" },\n  { name: \"timeout\", type: \"string\", value: \"<ms>\", description: \"reply deadline in milliseconds (default 10000)\" },\n] as const satisfies readonly FlagSpec[]).filter((flag): boolean => flag.name !== \"on\");",
       "expectRed": "flags of `invoke` match golden",
       "cell": "flags of `invoke` match golden",
       "afterRestore": "pnpm build && pnpm smoke:flag-inventory",
-      "note": "One production declaration occurrence is changed. describeFlags, the shared onFlag, command registration, parser, all other flags, and the inventory oracle remain unchanged."
+      "note": "One production invokeFlags declaration occurrence is changed by the intentional mutant. The original literal tuple and its satisfies check remain whole inside a runtime filter. The explicit boolean return retains on in the inferred element union while removing it from the registered runtime array. describeFlags, shared onFlag, command registration, parser, inventory oracle, baseline and restoration commands remain unchanged."
     }
   ]
 }
