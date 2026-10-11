@@ -1,0 +1,124 @@
+{
+  "grades": "suite",
+  "guard": "Private version-one bootstrap document decoding rejects inconsistent or widened material without creating keys, connecting or authenticating admission",
+  "suite": ["packages/core/smoke/environment-bootstrap-document.smoke.ts"],
+  "command": "pnpm smoke:environment-bootstrap-document",
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 32,
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "why": "The source-root export parses actual private carrier bytes produced from stock host-minted credentials. Hostile inputs are serialized independently rather than prechecked with the parser's canonicalizer. A private owned native broker proves valid authentication, raw auth-store denial and rejection of a forged signature that intentionally still passes local consistency. This is library/crypto/broker proof, not file custody, admission, WSS trust, bootstrap RPC or hosted execution. Source imports consume changed code directly; no compiled mutant copy is built by this command.",
+  "mutations": [
+    {
+      "name": "other versions reach credential decoding",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "  if (raw.v !== 1) throw new Error(\"environment manager bootstrap document version must be one\");\n",
+      "replace": "",
+      "expectRed": "version refusal precedes credential inspection",
+      "cell": "version refusal precedes credential inspection"
+    },
+    {
+      "name": "root carrier accepts unknown selectors or secrets",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "!closed(raw, fields) || ",
+      "replace": "",
+      "expectRed": "root owner session signer profile and grant fields refuse",
+      "cell": "root owner session signer profile and grant fields refuse"
+    },
+    {
+      "name": "noncanonical and duplicate JSON members pass",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "    if (canonicalJson(raw) !== text) fail();\n",
+      "replace": "",
+      "expectRed": "canonical byte check refuses whitespace order and duplicate members",
+      "cell": "canonical byte check refuses whitespace order and duplicate members"
+    },
+    {
+      "name": "plaintext broker URL is accepted",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "broker.protocol !== \"wss:\" || ",
+      "replace": "",
+      "expectRed": "broker pin refuses plaintext userinfo query fragment and normalization",
+      "cell": "broker pin refuses plaintext userinfo query fragment and normalization"
+    },
+    {
+      "name": "broker URL carries userinfo credentials",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "broker.username || broker.password || ",
+      "replace": "",
+      "expectRed": "broker pin refuses plaintext userinfo query fragment and normalization",
+      "cell": "broker pin refuses plaintext userinfo query fragment and normalization"
+    },
+    {
+      "name": "future issue time passes local consistency",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "Number(claims.iat) > now || ",
+      "replace": "",
+      "expectRed": "credential issue time and issued lifetime remain bounded",
+      "cell": "credential issue time and issued lifetime remain bounded"
+    },
+    {
+      "name": "issued credential lifetime exceeds five minutes",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "Number(claims.exp) - Number(claims.iat) > 300",
+      "replace": "false",
+      "expectRed": "credential issue time and issued lifetime remain bounded",
+      "cell": "credential issue time and issued lifetime remain bounded"
+    },
+    {
+      "name": "credential can replace the host data-account pin",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "accountFromCreds(raw.creds) !== raw.accountPublicKey || ",
+      "replace": "",
+      "expectRed": "host data-account pin cannot be replaced or malformed",
+      "cell": "host data-account pin cannot be replaced or malformed"
+    },
+    {
+      "name": "foreign profile name passes as bootstrap",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "claims.name !== \"environment-bootstrap\" || ",
+      "replace": "",
+      "expectRed": "foreign profile name cannot masquerade as bootstrap",
+      "cell": "foreign profile name cannot masquerade as bootstrap"
+    },
+    {
+      "name": "contradictory principal breadcrumb tags are accepted",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "JSON.stringify([...nats.tags].sort()) !== JSON.stringify(principalTags(principal.owner, actor).sort())",
+      "replace": "false",
+      "expectRed": "bootstrap actor and exact principal tags cannot be replaced",
+      "cell": "bootstrap actor and exact principal tags cannot be replaced"
+    },
+    {
+      "name": "dynamic response rights escape the fixed profile",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "nats.resp !== undefined ||\n",
+      "replace": "\n",
+      "expectRed": "dynamic responses bearer mode and foreign JWT kind refuse",
+      "cell": "dynamic responses bearer mode and foreign JWT kind refuse"
+    },
+    {
+      "name": "bootstrap publisher widens outside the fixed rows",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "!grantMatches(nats.pub, expected.pub)",
+      "replace": "false",
+      "expectRed": "bootstrap publisher cannot gain auth storage or wildcard grants",
+      "cell": "bootstrap publisher cannot gain auth storage or wildcard grants"
+    },
+    {
+      "name": "bootstrap subscription ceiling is removed",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "!grantMatches(nats.sub, expected.sub)",
+      "replace": "false",
+      "expectRed": "bootstrap subscriptions cannot become broad or lose mandatory rows",
+      "cell": "bootstrap subscriptions cannot become broad or lose mandatory rows"
+    },
+    {
+      "name": "private account signing material is accepted as a user seed",
+      "file": "packages/core/src/environment-bootstrap-document.ts",
+      "find": "!isUserNkey(identity.id) || !identity.seed.startsWith(\"SU\") || ",
+      "replace": "",
+      "expectRed": "only private user nkeys may enter the bootstrap carrier",
+      "cell": "only private user nkeys may enter the bootstrap carrier"
+    }
+  ]
+}

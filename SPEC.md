@@ -2672,6 +2672,32 @@ MUST NOT retain the private bootstrap seed after writing the private file; its d
 record holds only digest, recipient lifecycle, expiry and consumed state. The guest MUST
 refuse any file version other than one before connecting.
 
+The version-one carrier is bounded to 64 KiB of UTF-8 and MUST be RFC 8785 canonical JSON.
+Its closed fields are:
+
+| Field | Value |
+|---|---|
+| `v` | the number `1` |
+| `environmentId` | the host's environment-record digest, 64 lowercase hex characters |
+| `space` | the host-selected non-empty well-formed space string, at most 256 UTF-16 units, without control characters or the names `.` and `..` |
+| `instanceId`, `lifecycleUid` | the preselected manager coordinates in the lifecycle-token grammar |
+| `accountPublicKey` | the host-selected data-account nkey |
+| `brokerUrl` | a canonical absolute `wss:` URL with a hostname, no userinfo, query or fragment |
+| `authorityEndpoint`, `authorityInstanceId` | the pinned endpoint name and instance token |
+| `expiresAt` | the credential expiry in integer epoch seconds |
+| `contracts` | only `bootstrap` and `bootstrap-status`, each containing only `clusterDigest`, `inputDigest` and `outputDigest` in the artifact-digest grammar |
+| `creds` | one canonical NATS user credential envelope containing the bootstrap JWT and its matching private user nkey |
+
+A decoder MUST refuse unknown or missing fields at each document level and MUST check version
+one before inspecting credential material. The credential MUST name the fixed bootstrap profile
+and actor, carry the fixed permission rows for these coordinates, declare the pinned account,
+and match `expiresAt`. It MUST be current, with issued-to-expiry lifetime and remaining lifetime
+no greater than five minutes. Its private seed MUST be a user nkey, not an account or operator
+key. Canonical byte comparison refuses duplicate member names and projected encodings. Refusal
+diagnostics MUST NOT disclose carried values or private material. These are local consistency
+checks over unverified claims; they do not authenticate the file, JWT, live admission, contract
+contents or TLS peer. Private delivery, broker verification and host fencing remain required.
+
 The post-boot channel first delivers the private file, then starts or signals the stock
 entry point. An entry started without the file refuses and exits; it never polls for one
 or opens a plane without it. The manager takes and unlinks the manager-only file before
