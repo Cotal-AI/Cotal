@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "implementations/auth/smoke/endpoint-authority-public.smoke.ts"
+  ],
+  "guard": "Own-connection issued public caller discovery reaches real permitted read and write calls without using legacy or another connection caller.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:endpoint-issued-public-caller",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/endpoint-issued-public-caller.json",
+  "why": [
+    "The genuine public CotalEndpoint entry reads its own accepted row and performs pinned describe/invoke under receipt binding. No copied low-level service or private cache is used.",
+    "The mutant restores the legacy serviceCaller decision while leaving the explicit issued option and own discovery in place. The named actual public-write acceptance cell must turn red before any write effect.",
+    "Baseline, mutant and afterRestore build the actual core/auth exports and run the complete53-cell entry. Restoration is not only a build. A full endpoint implementation reversion can also compile this fixture because the additive option objects are ordinary structural spreads, not type assertions or compiler suppression."
+  ],
+  "mutations": [
+    {
+      "name": "issued public endpoint uses the legacy caller rail",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (this.acceptedToken === undefined && !this.issuedCaller) return triple;",
+      "replace": "    if (this.acceptedToken === undefined) return triple;",
+      "expectRed": "\"failedCell\":\"P3A04-public-write-success-exactly-one-effect\"",
+      "cell": "P3A04-public-write-success-exactly-one-effect",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:endpoint-issued-public-caller"
+    }
+  ]
+}

@@ -33,12 +33,10 @@ a journal-class command. The declarations are nonetheless representable. `packag
 `unknown[]`; it refuses a `journal`-class command that declares no `admissionCeiling`, refuses an
 `action` marker on a non-journal class, and refuses `readinessDeadlineMs` without that marker.
 
-`effect` is not reachable. `parseClusterDocument` does not read the field. `packages/core/src/endpoint-service.ts`,
-`ServiceSpec`, pins `protocol: { v: 1 }`, and `parseServiceSpec` fails closed on any other value.
-`packages/core/src/endpoint-serve.ts`, `DESCRIBE_ANSWER_SCHEMA`, fixes `descriptor.protocol.v` to the
-constant `1`. Repeat safety is carried off the wire instead, by `REPEAT_SAFE_COMMANDS` and
-`isRepeatSafeCommand` in `packages/core/src/endpoint-grants.ts`, whose own comment says the table must
-not survive `protocol.v: 2`.
+That observation predates effect adoption. Protocol2/3 now require command effects, and
+`invokeService` authorizes an answered-but-unbound repeat from the failed invocation's verified
+read effect. Protocol1 remains write-classified. The old table and helper remain deprecated
+compatibility exports and are not retry authority. Protocol3 delegated retry proof remains separate.
 
 What a caller can see is narrower than what a document declares. `packages/core/src/endpoint-invoke.ts`,
 `resolveService`, builds each `ResolvedCommand` with command, contract, class, targeted, modes, and
