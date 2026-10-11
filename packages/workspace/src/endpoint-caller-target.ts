@@ -156,7 +156,8 @@ export async function resolveEndpointCallerTarget(
       || receipt.assignmentLifecycleUid !== protectedTrust.record.trust.assignmentLifecycleUid
       || canonicalJson(receipt.authority) !== canonicalJson(protectedTrust.record.trust.authority))
     refused("dedicated endpoint caller receipt differs from the deployment and requested selection");
-  const connectOpts = standaloneConnectOpts({ bearer: material.bearer, sentinelCreds: material.sentinelCreds, tls: target.tlsRequired });
+  const tls = target.tlsRequired;
+  const connectOpts = standaloneConnectOpts({ bearer: material.bearer, sentinelCreds: material.sentinelCreds, tls });
   if (typeof connectOpts.name !== "string") refused("dedicated endpoint caller connection has no issued nonce");
   const nonce = connectOpts.name;
   protectedTrust.assertCurrent();
