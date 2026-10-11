@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, fork, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,7 @@ import { deviceAuthorization } from "better-auth/plugins/device-authorization";
 import { bearer } from "better-auth/plugins/bearer";
 import { SignJWT, decodeJwt } from "jose";
 import { toNodeHandler } from "better-auth/node";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { connect, PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { fromSeed } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import * as core from "@cotal-ai/core";
@@ -25,6 +25,17 @@ import { serializedFor } from "../src/serialized.js";
 import { openAuthorityClient, type AuthorityClient } from "../src/authority-client.js";
 import { runEndpointCallerCLI, type EndpointCallerCLIResult } from "../../cli/smoke/endpoint-caller-child.js";
 
+const twoUserPublic = process.argv.includes("--two-user-public-acceptance");
+if (twoUserPublic) {
+  if (process.argv.slice(2).length !== 1 || ["ENDPOINT_PUBLIC_CLI", "ENDPOINT_U12_REPORT", "ENDPOINT_PREPARE_REFUSAL", "COTAL_HOME"].some(name => process.env[name] !== undefined)) throw new Error("two-user public entry requires only --two-user-public-acceptance without fixture overrides");
+  const terminalLog = console.log.bind(console);
+  try { await runTwoUserPublicAcceptance(); }
+  catch {
+    process.exitCode = 1;
+    terminalLog(JSON.stringify({ scope: "two-real-user-public-component", terminalFailure: true, cleanupConfirmed: false, reportRetained: false, fullEndpointAcceptance: false }));
+    terminalLog("COTAL_SMOKE_SENTINEL cells=1 passed=0 failed=1");
+  }
+} else {
 // CI source entry owns its report and login home. Child text stays in the private report.
 // Named CLI predicates are separate from native A/B and installed-package acceptance.
 const hostedCLI = process.argv.includes("--cli-describe-causal");
@@ -536,5 +547,402 @@ finally {
     const passed = checks.length + cliChecks.length;
     const failed = namedControlsAttempted - passed + Number(!!failure && namedControlsAttempted === passed) + 1;
     publicLog(`COTAL_SMOKE_SENTINEL cells=${passed + failed} passed=${passed} failed=${failed}`);
+  }
+}
+
+}
+
+/** This entry composes existing public authority and native workers. It grants no new product surface. */
+async function runTwoUserPublicAcceptance(): Promise<void> {
+  const { fmtCreds } = await import("@nats-io/jwt");
+  const log = console.log.bind(console);
+  const savedLogs = { log: console.log, error: console.error, warn: console.warn, info: console.info, debug: console.debug };
+  console.log = console.error = console.warn = console.info = console.debug = () => {};
+  const ids = [
+    "TUP01-two-real-device-login-subjects-distinct", "TUP02-two-derived-primary-owners-and-current-uids-distinct",
+    "TUP03-primary-aux-native-data-accounts-distinct", "TUP04-both-public-auth-services-ready",
+    "TUP05-primary-governed-policy-full-contract-pinned", "TUP06-A-public-prepare-challenge-activate-current",
+    "TUP07-B-public-prepare-challenge-activate-current", "TUP08-two-public-holder-control-issued-connections",
+    "TUP09-two-independent-ready-same-name-owned-workers", "TUP10-participant-material-no-issuer-or-executor",
+    "TUP11-A-public-caller-native-own-invoke-one-effect", "TUP12-B-public-caller-native-own-invoke-one-effect",
+    "TUP13-original-owned-effects-one-each", "TUP14-B-to-A-without-sharing-refused-zero-effects",
+    "TUP15-exact-one-way-trusted-sharing-decision", "TUP16-B-own-issued-principal-invokes-A-only-one-effect",
+    "TUP17-A-to-B-not-shared-refused-zero-effects", "TUP18-wrong-instance-public-selection-refused-zero-effects",
+    "TUP19-ungranted-command-public-selection-refused-zero-effects", "TUP20-own-issued-caller-foreign-instance-broker-denied-zero-effects",
+    "TUP21-own-issued-caller-other-command-broker-denied-zero-effects", "TUP22-own-issued-caller-legacy-rail-broker-denied-zero-effects",
+    "TUP23-own-issued-caller-class-rail-broker-denied-zero-effects", "TUP24-own-issued-caller-scatter-rail-broker-denied-zero-effects",
+    "TUP25-foreign-account-public-pins-refused-zero-effects", "TUP25b-aux-ordinary-own-channel-positive",
+    "TUP25c-primary-exact-wire-observer-positive", "TUP25d-same-wire-native-account-partition-bounded",
+    "TUP26-aux-actual-caller-primary-space-subject-broker-denied-zero-effects",
+    "TUP27-A-allowed-source-CLI-invoke-owner-and-effect", "TUP28-B-allowed-source-CLI-invoke-owner-and-effect",
+    "TUP29-all-known-source-CLI-children-close-observed", "TUP30-final-effects-A3-B2-no-negative-effects",
+    "TUP31-A-serving-worker-stopped-ack-and-exit-zero", "TUP32-B-serving-worker-stopped-ack-and-exit-zero",
+    "TUP33-two-auth-handles-and-idp-listener-closed", "TUP34-parent-owned-connections-and-broker-closed",
+  ] as const;
+  type Cell = typeof ids[number];
+  const reportDir = mkdtempSync(join(tmpdir(), "endpoint-two-user-report-"));
+  const report = join(reportDir, "result.json");
+  const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN + "-endpoint-two-user-"));
+  const releasePath = teardownPathOnSignal(dir);
+  const previousHome = process.env.COTAL_HOME;
+  const started = Date.now(), deadline = started + 150000;
+  const timer = setTimeout(() => process.kill(process.pid, "SIGTERM"), 150000);
+  const passed = new Set<Cell>(), attempted = new Set<Cell>();
+  const cleanupErrors: string[] = [], phaseEvidence: Record<string, unknown>[] = [];
+  const cliResults: EndpointCallerCLIResult[] = [];
+  const connections: { nc: NatsConnection; closed: boolean }[] = [];
+  const statusWatches: Promise<void>[] = [];
+  const workers: { child: ChildProcess; messages: Record<string, unknown>[]; exit: Promise<number | null>; error?: string; stopped: boolean }[] = [];
+  const authHandles: authApi.AuthServiceHandle[] = [], hostClients: AuthorityClient[] = [];
+  let broker: ReturnType<typeof spawn> | undefined, releaseBroker: (() => void) | undefined;
+  let observer: AuthorityClient | undefined, observerCreated = 0, observerClosed = 0;
+  let failure: unknown, failedCell: Cell | null = null, phase = "setup", custodyOutstanding = false;
+  let idpClosed = false, authClosed = 0, hostClosed = 0;
+  let failurePhase: string | null = null;
+  let handler: ReturnType<typeof toNodeHandler> | undefined;
+  const idpHttp = createServer((req, res) => handler!(req, res));
+  const enc = new TextEncoder();
+  const track = (nc: NatsConnection) => { connections.push({ nc, closed: false }); return nc; };
+  const budget = () => { const ms = Math.min(8000, deadline - Date.now()); assert.ok(ms > 0, "two-user entry budget exhausted"); return ms; };
+  async function bounded<T>(promise: Promise<T>): Promise<T> {
+    let timeout: NodeJS.Timeout | undefined;
+    try { return await Promise.race([promise, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("two-user phase deadline")), budget()); })]); }
+    finally { clearTimeout(timeout); }
+  }
+  async function waitFor(test: () => boolean): Promise<void> {
+    const until = Date.now() + budget();
+    while (!test()) { assert.ok(Date.now() < until, "two-user event deadline"); await new Promise(resolve => setTimeout(resolve, 10)); }
+  }
+  async function withHome<T>(home: string, action: () => Promise<T>): Promise<T> {
+    const prior = process.env.COTAL_HOME;
+    process.env.COTAL_HOME = home;
+    try { return await action(); }
+    finally { if (prior === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = prior; }
+  }
+  async function check(name: Cell, action: () => Promise<unknown>): Promise<void> {
+    if (phase !== "cleanup") phase = name;
+    assert.ok(!attempted.has(name), "duplicate two-user cell"); attempted.add(name); failedCell = name;
+    await action(); passed.add(name); failedCell = null;
+    log(JSON.stringify({ cell: name, passed: true, scope: "two-real-user-public-component" }));
+  }
+  async function snapshot(): Promise<number[]> {
+    assert.equal(workers.length, 2, "two actual workers required for effect fencing");
+    return await Promise.all(workers.map(async worker => {
+      assert.ok(worker.child.connected && !worker.error, "worker snapshot custody unavailable");
+      const id = core.mintLifecycleUid(); worker.child.send({ kind: "effects-snapshot", id });
+      await waitFor(() => !!worker.error || worker.messages.some(m => m.kind === "effects-snapshot" && m.id === id));
+      assert.ok(!worker.error, "worker snapshot failed");
+      const response = worker.messages.find(m => m.kind === "effects-snapshot" && m.id === id)!;
+      assert.ok(typeof response.effects === "number" && Number.isSafeInteger(response.effects) && response.effects >= 0, "invalid worker effect snapshot");
+      const effects = worker.messages.filter(m => m.kind === "effect");
+      assert.equal(response.effects, effects.length, "snapshot differs from actual effect IPC sequence");
+      assert.ok(effects.every((m, index) => m.command === "increment" && m.effects === index + 1), "unexpected worker command or effect sequence");
+      return response.effects;
+    }));
+  }
+  async function negative(name: Cell, action: () => Promise<void>): Promise<void> {
+    await check(name, async () => {
+      const before = await snapshot(); await action(); const after = await snapshot();
+      assert.deepEqual(after, before, "negative request produced an application effect");
+      phaseEvidence.push({ cell: name, before, after, zeroEffect: true });
+    });
+  }
+  async function expectPublicDenial(action: () => Promise<unknown>, reason: RegExp): Promise<void> {
+    let observed: unknown;
+    try { await action(); } catch (error) { observed = error; }
+    assert.ok(observed instanceof Error && /endpoint authority refused (?:400|401|403|409):/.test(observed.message) && reason.test(observed.message), "expected explicit public authority denial");
+    phaseEvidence.push({ cell: failedCell, kind: "actual-public-authority-denial", status: Number(/endpoint authority refused (\d+):/.exec(observed.message)![1]), expectedReasonMatched: true });
+  }
+  try {
+    await new Promise<void>(resolve => idpHttp.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${(idpHttp.address() as { port: number }).port}`, idpUrl = `${origin}/api/auth`;
+    const idp = betterAuth({ baseURL: origin, secret: "endpoint-two-user-idp-test-secret-0123456789", database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }), emailAndPassword: { enabled: true }, plugins: [jwt({ jwt: { issuer: origin, audience: origin } }), deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: id => id === "cotal-cli" }), bearer()] });
+    handler = toNodeHandler(idp);
+    const logins: Awaited<ReturnType<typeof authApi.establishIdpSession>>[] = [], homes: string[] = [];
+    await check(ids[0], async () => {
+      for (const label of ["a", "b"]) {
+        const home = join(dir, "home-" + label); core.mkSecretDir(home); homes.push(home);
+        const signup = await idp.api.signUpEmail({ body: { email: `${label}@endpoint-two-user.test`, password: `fixture-only-two-user-password-${label}`, name: `Endpoint ${label}` }, returnHeaders: true });
+        const cookie = signup.headers.get("set-cookie")!.split(";")[0];
+        const login = await bounded(authApi.establishIdpSession({ dir: home, idpUrl, clientId: "cotal-cli", onPrompt: async prompt => {
+          const claim = await fetch(`${idpUrl}/device?user_code=${encodeURIComponent(prompt.userCode)}`, { headers: { cookie, origin }, signal: AbortSignal.timeout(budget()) }); assert.ok(claim.ok, "device claim refused");
+          const approved = await fetch(`${idpUrl}/device/approve`, { method: "POST", headers: { "content-type": "application/json", cookie, origin }, body: JSON.stringify({ userCode: prompt.userCode }), signal: AbortSignal.timeout(budget()) }); assert.ok(approved.ok, "device approval refused");
+        } }));
+        logins.push(login);
+      }
+      assert.ok(logins[0].sub && logins[1].sub && logins[0].sub !== logins[1].sub);
+    });
+    const root = await core.createBrokerAuth("endpoint-two-user"), port = await pickFreePort(), servers = `nats://127.0.0.1:${port}`;
+    const stamp = Date.now(), spaces = ["tup" + stamp, "taux" + stamp];
+    const accounts = await Promise.all(spaces.map(async (space, index) => {
+      const auth = core.composeSpaceAuth(root, await core.createSpaceAccountAuth(root, space));
+      const state = join(dir, "host-" + index); core.mkSecretDir(state);
+      const store = new MemoryStore({ kind: "injected", coordinate: "two-user:" + space });
+      const prepared = await authApi.cotalAuthProvider.prepareServer({ store, dir: state, space, idpUrl, operatorSeed: root.operator.seed!, account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed! } });
+      return { space, auth, state, store, prepared };
+    }));
+    const primary = accounts[0], aux = accounts[1], endpoint = "test.example.two-user", channel = "witness" + core.mintLifecycleUid();
+    const secret = await authApi.loadOwnerSecret(primary.store, primary.space); assert.ok(secret);
+    const principals = logins.map(login => ({ owner: authApi.deriveOwnerForIdpSubject(secret, origin, login.sub!), actor: "cli", uid: core.mintLifecycleUid() }));
+    await check(ids[1], async () => {
+      for (const p of principals) authApi.grantActor(primary.state, { owner: p.owner, actor: p.actor, lifecycleUid: p.uid, scope: [], allowSubscribe: [], allowPublish: [] });
+      assert.notEqual(principals[0].owner, principals[1].owner); assert.notEqual(principals[0].uid, principals[1].uid);
+    });
+    const auxSecret = await authApi.loadOwnerSecret(aux.store, aux.space); assert.ok(auxSecret);
+    const auxPrincipal = { owner: authApi.deriveOwnerForIdpSubject(auxSecret, origin, logins[0].sub!), actor: "cli", uid: core.mintLifecycleUid() };
+    authApi.grantActor(aux.state, { owner: auxPrincipal.owner, actor: auxPrincipal.actor, lifecycleUid: auxPrincipal.uid, scope: [], allowSubscribe: [channel], allowPublish: [channel] });
+    const brokerConfig = core.serverConfig(root, accounts.map(a => a.auth), { host: "127.0.0.1", transport: { kind: "plaintext" }, port, storeDir: join(dir, "js"), extraAccounts: accounts.flatMap(a => a.prepared.extraAccounts) });
+    const configPath = join(dir, "nats.conf"); core.writeSecretFile(configPath, brokerConfig);
+    const configDigest = core.rawDigest(brokerConfig);
+    const verifyAccountProvenance = () => {
+      assert.equal(core.rawDigest(readFileSync(configPath, "utf8")), configDigest, "actual installed broker configuration changed");
+      assert.notEqual(primary.auth.account.pub, aux.auth.account.pub);
+      for (const a of accounts) {
+        assert.ok(brokerConfig.includes(`${a.auth.account.pub}: ${a.auth.account.jwt}`), "configured account JWT missing");
+        const claims = decodeJwt(a.auth.account.jwt) as { sub?: string; nats?: { imports?: unknown[]; exports?: unknown[] } };
+        assert.equal(claims.sub, a.auth.account.pub); assert.equal(claims.nats?.imports?.length ?? 0, 0); assert.equal(claims.nats?.exports?.length ?? 0, 0);
+        assert.equal(a.prepared.extraAccounts?.length, 1, "one dedicated callout account required per data account");
+        const callout = a.prepared.extraAccounts![0];
+        assert.ok(brokerConfig.includes(`${callout.pub}: ${callout.jwt}`), "configured callout account JWT missing");
+        const calloutClaims = decodeJwt(callout.jwt) as { sub?: string; nats?: { authorization?: { allowed_accounts?: string[] }; imports?: unknown[]; exports?: unknown[] } };
+        assert.equal(calloutClaims.sub, callout.pub); assert.notEqual(callout.pub, a.auth.account.pub);
+        assert.deepEqual(calloutClaims.nats?.authorization?.allowed_accounts, [a.auth.account.pub]);
+        assert.equal(calloutClaims.nats?.imports?.length ?? 0, 0); assert.equal(calloutClaims.nats?.exports?.length ?? 0, 0);
+      }
+    };
+    await check(ids[2], async () => { verifyAccountProvenance(); });
+    broker = spawn("nats-server", ["-c", configPath], { stdio: "ignore" }); releaseBroker = teardownOnSignal(broker, dir);
+    await awaitBrokerReady(() => core.isReachable(servers), { servers, attempts: 60, delayMs: 50 });
+    for (const a of accounts) await core.setupSpaceStreams({ servers, space: a.space, creds: await core.mintCreds(a.auth, core.newIdentity(), "provisioner") });
+    const input = { type: "null" }, output = { type: "object", properties: { effects: { type: "integer" }, owner: { type: "string" } }, required: ["effects", "owner"], additionalProperties: false };
+    const contract = { input: core.compileContract({ root: input }), output: core.compileContract({ root: output }) };
+    const cluster = { urn: endpoint, revision: 1, attributes: [], events: [], commands: ["increment", "other"].map(name => ({ name, class: "ephemeral", effect: "write", targeted: false, capability: "testcall", inputDigest: contract.input.closureDigest, outputDigest: contract.output.closureDigest })) };
+    const manifest = core.singleDocumentClosure(cluster).manifest, closures = [core.contractDigest(manifest)];
+    const artifacts = [input, output, { ...core.singleDocumentClosure(input).manifest }, { ...core.singleDocumentClosure(output).manifest }, cluster, { ...manifest }].map(value => ({ digest: core.contractDigest(value), value }));
+    const account = { space: primary.space, accountPublicKey: primary.auth.account.pub, assignmentRevision: 1 };
+    const ceiling = { routes: { kind: "instance" as const }, resources: { kind: "ephemeral-only" as const }, expiresAt: Math.floor(Date.now() / 1000) + 120 };
+    const decisions = new Map<string, core.EndpointInstanceAuthorityRequest>();
+    const shares = new Set<string>(), shareDecisions: string[] = [];
+    const shareKey = (p: core.EpCaller, instanceId: string) => core.canonicalJson({ principal: { owner: p.owner, actor: p.actor, uid: p.uid }, instanceId, commands: ["increment"] });
+    const policy: authApi.EndpointAuthorityPolicy = {
+      namespace: async name => { assert.equal(name, endpoint); return { account, endpoint, governor: principals[0].owner, namespaceRevision: 1, policyRevision: 1, clusterDigests: closures }; },
+      actorIsCurrent: async p => principals.some(known => core.canonicalJson(known) === core.canonicalJson(p)),
+      serving: async (p, allocated) => {
+        assert.ok(principals.some(known => core.canonicalJson(known) === core.canonicalJson(p))); assert.equal(allocated.endpoint, endpoint);
+        const binding = { account, holder: { owner: p.owner, actor: p.actor, lifecycleUid: p.uid, publicKey: allocated.publicKey }, authority: { namespaceRevision: 1, policyRevision: 1, delegationId: core.mintLifecycleUid(), delegationRevision: 1 }, ceiling };
+        decisions.set(allocated.instanceId, { account, endpoint, instanceId: allocated.instanceId, holder: binding.holder, clusterDigests: closures, expected: binding.authority, ceiling }); return binding;
+      },
+      authorizeInstance: async request => core.canonicalJson(decisions.get(request.instanceId)) === core.canonicalJson(request) ? { authorized: true, governor: principals[0].owner, ref: request.expected, ceiling: request.ceiling } : { authorized: false },
+      caller: async (p, request) => {
+        const decision = decisions.get(request.instanceId), key = shareKey(p, request.instanceId);
+        const own = decision?.holder.owner === p.owner && decision.holder.actor === p.actor && decision.holder.lifecycleUid === p.uid;
+        const shared = shares.has(key);
+        if (!decision || request.endpoint !== endpoint || !principals.some(known => core.canonicalJson(known) === core.canonicalJson(p)) || request.commands.some(command => command !== "increment") || (!own && (!shared || request.commands.length !== 1))) throw new Error("caller policy denied");
+        if (shared) shareDecisions.push(key);
+        return { capabilities: request.commands.map(command => ({ endpoint, command })), expiresAt: ceiling.expiresAt };
+      },
+    };
+    const assignment: core.EndpointDeploymentAssignment = { account, lifecycleUid: core.mintLifecycleUid(), state: "active", expiresAt: ceiling.expiresAt };
+    const flights = new Map<string, Promise<unknown>>();
+    const deployment: core.EndpointAuthorityDeployment = { assignment, withCurrentAssignment: (expected, action) => serializedFor(flights, "deployment", async () => { assert.equal(core.canonicalJson(expected), core.canonicalJson(assignment)); core.parseEndpointDeploymentAssignment(assignment); const result = await action(); core.parseEndpointDeploymentAssignment(assignment); return result; }) };
+    for (const [index, a] of accounts.entries()) {
+      const handle = await authApi.startAuthService({ context: { accountPublicKey: a.auth.account.pub, lifecycleUid: core.mintLifecycleUid() }, space: a.space, servers, store: a.store, storeIdentity: a.store.identity, stateDir: a.state, ...(index === 0 ? { endpointAuthority: { policy, deployment } } : {}), publicFace: { port: 0, trustedProxy: false } });
+      authHandles.push(handle); authApi.saveAuthServiceInfo(a.state, { url: handle.url, pid: process.pid, cap: handle.cap });
+    }
+    await check(ids[3], async () => { assert.equal(authHandles.length, 2); for (const handle of authHandles) assert.equal((await handle.readiness()).state, "ready"); });
+    const trust = await authHandles[0].endpointDeploymentTrust!();
+    await check(ids[4], async () => { assert.equal(trust.account.accountPublicKey, account.accountPublicKey); assert.ok(trust.keys.every(key => !("d" in key))); assert.equal((await policy.namespace(endpoint)).governor, principals[0].owner); assert.deepEqual((await policy.namespace(endpoint)).clusterDigests, closures); });
+    const writer = await openAuthorityClient({ server: servers, space: primary.space, dataAccount: { pub: primary.auth.account.pub, signingSeed: primary.auth.account.signingSeed! }, label: "two-user-policy-writer", noReconnect: true, grants: id => ({ publish: ["$JS.API.INFO", `$JS.API.STREAM.INFO.KV_${core.epAuthBucket(primary.space)}`, `$JS.API.STREAM.MSG.GET.KV_${core.epAuthBucket(primary.space)}`, `$KV.${core.epAuthBucket(primary.space)}.${core.endpointPolicyKey(endpoint)}`], subscribe: [`_INBOX_${id}.>`] }), log: () => {} });
+    hostClients.push(writer); await core.provisionEndpointPolicyHead(await new Kvm(writer.nc).open(core.epAuthBucket(primary.space)), endpoint, 1);
+    async function remoteClient(index: number, a: typeof primary) {
+      const home = homes[index], clientRoot = join(dir, "client-" + a.space + "-" + index); core.mkSecretDir(clientRoot); core.mkSecretDir(join(clientRoot, ".cotal")); core.mkSecretDir(join(clientRoot, ".cotal", "auth"));
+      const state = userAuthStateDir(clientRoot, a.space); core.mkSecretDir(state);
+      const callout = await authApi.loadCalloutAuth(a.store, a.space); assert.ok(callout);
+      const sentinelCredsPath = join(state, "sentinel.creds"); core.writeSecretFile(sentinelCredsPath, callout.sentinelCreds);
+      const publicUrl = authHandles[accounts.indexOf(a)].publicUrl; assert.ok(publicUrl);
+      if (a === primary) core.writeSecretFile(join(state, "endpoint-deployment-trust.json"), JSON.stringify({ v: 2, kind: "cotal.endpoint-deployment-trust", space: a.space, exchangeOrigin: new URL(publicUrl).origin, provisionedAt: Math.floor(Date.now() / 1000), trust }));
+      await withHome(home, async () => { authApi.saveIdpSession(home, idpUrl, logins[index].session); recordMesh({ space: a.space, server: servers, root: clientRoot, mode: "user", origin: "manual", ts: new Date().toISOString(), userAuth: { provider: authApi.cotalAuthProvider.name, idp: { url: idpUrl, issuer: origin, audience: origin }, remote: true, endpoints: { url: publicUrl }, sentinelCredsPath } }); });
+      return { home, root: clientRoot, state, space: a.space, store: new MemoryStore({ kind: "injected" as const, coordinate: "remote-empty:" + a.space + ":" + index }) };
+    }
+    const clients = [await remoteClient(0, primary), await remoteClient(1, primary)], auxClient = await remoteClient(0, aux);
+    const ordinary: { bearer: string; sentinelCreds: string }[] = [];
+    for (const client of clients) ordinary.push(await withHome(client.home, () => authApi.cotalAuthProvider.userCredentials({ store: client.store, dir: client.state, space: client.space, actor: "cli" })));
+    const pins = { account: trust.account, assignmentLifecycleUid: trust.assignmentLifecycleUid, authority: trust.authority };
+    const post = async (index: number, body: Record<string, unknown>, requestPins = pins) => {
+      const response = await fetch(authHandles[0].publicUrl! + "/endpoint-service-authority", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${ordinary[index].bearer}` }, body: JSON.stringify({ v: 2, ...requestPins, ...body }), signal: AbortSignal.timeout(budget()) });
+      const value = await response.json() as Record<string, unknown>;
+      if (!response.ok) throw new Error(`endpoint authority refused ${response.status}: ${typeof value.error === "string" ? value.error : "reason unavailable"}`);
+      return value;
+    };
+    const active: { instanceId: string; serveJwt: string; attestation: string; credentialDigest: string; holder: ReturnType<typeof core.newIdentity> }[] = [];
+    const controlPrincipals: core.EpCaller[] = [];
+    const participantMaterialChecks: boolean[] = [];
+    for (let index = 0; index < 2; index++) {
+      await check(ids[index === 0 ? 5 : 6], async () => {
+        const holder = core.newIdentity(), reservation = await post(index, { operation: "prepare", operationId: core.mintLifecycleUid(), endpoint, holderPublicKey: holder.id });
+        assert.equal(reservation.state, "prepared"); assert.equal(typeof reservation.instanceId, "string");
+        const instanceId = reservation.instanceId as string, operationId = core.mintLifecycleUid(), content = { action: "activate", registrationRevision: 0, processEpoch: 0, contractArtifacts: artifacts };
+        const challenge = await post(index, { operation: "challenge", operationId, instanceId, content }); assert.equal(challenge.instanceId, instanceId); assert.equal(challenge.operationId, operationId);
+        const signature = Buffer.from(fromSeed(enc.encode(holder.seed)).sign(enc.encode(core.canonicalJson(challenge)))).toString("base64url");
+        const response = await post(index, { operation: "activate", operationId, instanceId, content, signature });
+        for (const key of ["serveJwt", "attestation", "credentialDigest"]) assert.equal(typeof response[key], "string"); assert.equal(response.processEpoch, 0); assert.ok(Number(response.registrationRevision) > 0);
+        active.push({ instanceId, holder, serveJwt: response.serveJwt as string, attestation: response.attestation as string, credentialDigest: response.credentialDigest as string });
+      });
+      const selection = { endpoint, instanceId: active[index].instanceId, commands: ["describe", "ep-check", "ep-admit", "ep-release"] };
+      const control = await withHome(clients[index].home, () => authApi.cotalAuthProvider.endpointServingControlAuthority!({ store: clients[index].store, dir: clients[index].state, space: primary.space, actor: "cli", trust, selection, credentialDigest: active[index].credentialDigest, holder: { publicKey: active[index].holder.id, sign: async bytes => fromSeed(enc.encode(active[index].holder.seed)).sign(bytes) } }));
+      assert.equal(control.receipt.kind, "cotal.endpoint-control"); assert.deepEqual(control.receipt.principal, principals[index]); controlPrincipals.push(control.receipt.principal);
+      const material = { publicControl: true, servers, authority: { space: primary.space, instanceId: trust.authority.instanceId, epoch: trust.authority.epoch }, expectedControlPrincipal: control.receipt.principal, trust: { issuer: trust.issuer, accountPublicKey: trust.account.accountPublicKey, assignmentRevision: trust.account.assignmentRevision, keys: trust.keys, accountSigningKey: trust.accountSigningKey }, controlBearer: control.bearer, sentinelCreds: control.sentinelCreds, serveJwt: active[index].serveJwt, attestation: active[index].attestation, artifacts, holder: active[index].holder, serveCreds: new TextDecoder().decode(fmtCreds(active[index].serveJwt, fromSeed(enc.encode(active[index].holder.seed)))), input, output };
+      const materialSafe = !["controlCreds", "signingSeed", "executorCreds", "store", "operatorSeed", "authCap", "hostStore"].some(key => Object.hasOwn(material, key));
+      assert.ok(materialSafe); participantMaterialChecks.push(materialSafe);
+      const path = join(dir, `worker-${index}.json`); core.writeSecretFile(path, JSON.stringify(material));
+      const child = fork(new URL("./endpoint-authority-native-worker.ts", import.meta.url), [], { execArgv: ["--import", "tsx"], env: { PATH: process.env.PATH, HOME: clients[index].home, TMPDIR: process.env.TMPDIR, ENDPOINT_U12_WORKER_FILE: path }, stdio: ["ignore", "ignore", "ignore", "ipc"] });
+      const worker: typeof workers[number] = { child, messages: [], exit: new Promise(resolve => child.once("exit", resolve)), stopped: false };
+      child.on("error", () => { worker.error = "owned worker process error"; });
+      child.on("message", value => { const message = value as Record<string, unknown>; worker.messages.push(message); if (message.kind === "failure") worker.error = "owned worker reported failure"; }); workers.push(worker);
+      await waitFor(() => !!worker.error || worker.messages.some(m => m.kind === "ready")); assert.ok(!worker.error);
+    }
+    await check(ids[7], async () => { assert.deepEqual(controlPrincipals, principals); for (let i = 0; i < 2; i++) { const ready = workers[i].messages.find(m => m.kind === "ready"); assert.deepEqual(ready?.controlPrincipal, principals[i]); assert.equal(ready?.issuedControlObserved, true); } });
+    await check(ids[8], async () => { assert.equal(workers.length, 2); assert.ok(workers.every(w => typeof w.child.pid === "number" && w.child.pid > 0)); assert.notEqual(workers[0].child.pid, workers[1].child.pid); assert.notEqual(active[0].instanceId, active[1].instanceId); for (let i = 0; i < 2; i++) { const ready = workers[i].messages.find(m => m.kind === "ready")!; assert.equal(ready.instanceId, active[i].instanceId); assert.equal(ready.owner, principals[i].owner); assert.equal(ready.protocol, 3); } });
+    await check(ids[9], async () => { assert.deepEqual(participantMaterialChecks, [true, true]); assert.equal(controlPrincipals.length, 2); });
+    async function acquire(index: number, instanceId: string, commands = ["describe", "increment"]) {
+      return await withHome(clients[index].home, () => authApi.cotalAuthProvider.endpointCallerAuthority!({ store: clients[index].store, dir: clients[index].state, space: primary.space, actor: "cli", trust, selection: { endpoint, instanceId, commands } }));
+    }
+    async function connected(index: number, instanceId: string) {
+      const material = await acquire(index, instanceId), options = core.standaloneConnectOpts({ tls: false, bearer: material.bearer, sentinelCreds: material.sentinelCreds });
+      const nc = track(await connect({ servers, ...options, maxReconnectAttempts: 0 }));
+      const caller = await core.issuedUserCaller(nc, primary.space, String(options.name), material.receipt.principal);
+      assert.deepEqual(material.receipt.principal, principals[index]); assert.equal(material.receipt.selection.instanceId, instanceId);
+      const service = await core.resolveService(nc, primary.space, endpoint, caller, { instanceId, deadlineMs: budget() }); core.assertEndpointCallerResolvedService(service, material.receipt);
+      return { nc, caller, service, material };
+    }
+    const own: Awaited<ReturnType<typeof connected>>[] = [];
+    for (let index = 0; index < 2; index++) await check(ids[index === 0 ? 10 : 11], async () => {
+      const client = await connected(index, active[index].instanceId); own.push(client);
+      const response = await core.invokeCommand(client.nc, primary.space, client.service, "increment", undefined, { deadlineMs: budget() });
+      assert.equal(response.reply.ok, true); assert.deepEqual(response.reply.data, { effects: 1, owner: principals[index].owner });
+      const counts = await snapshot(); assert.equal(counts[index], 1);
+    });
+    await check(ids[12], async () => { assert.deepEqual(await snapshot(), [1, 1]); });
+    await negative(ids[13], async () => { await expectPublicDenial(() => acquire(1, active[0].instanceId), /caller policy denied/); });
+    const grantedShare = shareKey(principals[1], active[0].instanceId);
+    await check(ids[14], async () => { assert.equal(shares.size, 0); shares.add(grantedShare); assert.equal(shares.size, 1); assert.ok(!shares.has(shareKey(principals[0], active[1].instanceId))); });
+    await check(ids[15], async () => {
+      const shared = await connected(1, active[0].instanceId); assert.equal(shared.caller.owner, principals[1].owner); assert.equal(shared.service.owner, principals[0].owner);
+      const response = await core.invokeCommand(shared.nc, primary.space, shared.service, "increment", undefined, { deadlineMs: budget() }); assert.equal(response.reply.ok, true); assert.deepEqual(response.reply.data, { effects: 2, owner: principals[0].owner }); assert.deepEqual(await snapshot(), [2, 1]); assert.ok(shareDecisions.includes(grantedShare));
+    });
+    await negative(ids[16], async () => { await expectPublicDenial(() => acquire(0, active[1].instanceId), /caller policy denied/); });
+    await negative(ids[17], async () => { await expectPublicDenial(() => acquire(0, core.mintLifecycleUid()), /absent\/deleted|not active/); });
+    await negative(ids[18], async () => { await expectPublicDenial(() => acquire(0, active[0].instanceId, ["describe", "other"]), /caller policy denied/); });
+    async function brokerDenied(nc: NatsConnection, space: string, instanceId: string, command: string, caller: core.EpCaller, mode: "inst" | "one" | "all" = "inst") {
+      const nonce = core.mintLifecycleUid(), subject = core.epRequestSubject(space, { route: mode === "inst" ? { mode, instanceId } : { mode }, endpoint, command, caller, nonce });
+      const status = nc.status(); let violation: PermissionViolationError | undefined;
+      const watch = (async () => { for await (const event of status) if (event.type === "error" && event.error instanceof PermissionViolationError && event.error.subject === subject) { violation = event.error; break; } })();
+      try {
+        const request = { v: 1, id: nonce, op: { endpoint, command, inputDigest: contract.input.closureDigest, outputDigest: contract.output.closureDigest }, class: "ephemeral", replyExpected: false, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor } };
+        core.parseEndpointRequest(request); nc.publish(subject, enc.encode(JSON.stringify(request))); await nc.flush(); await waitFor(() => violation !== undefined); assert.ok(violation instanceof PermissionViolationError);
+        phaseEvidence.push({ kind: "broker-permission-denial", subjectDigest: core.rawDigest(subject), exactSubjectObserved: true, command, route: mode });
+      } finally { await bounded(nc.close()); const closeError = await bounded(nc.closed()); await bounded(watch); assert.ok(!closeError, "permission probe close failed"); }
+    }
+    for (const [cell, command, instanceId, route, legacy] of [
+      [ids[19], "increment", active[1].instanceId, "inst", false], [ids[20], "other", active[0].instanceId, "inst", false],
+      [ids[21], "increment", active[0].instanceId, "inst", true], [ids[22], "increment", active[0].instanceId, "one", false], [ids[23], "increment", active[0].instanceId, "all", false],
+    ] as const) await negative(cell, async () => {
+      const probe = await connected(0, active[0].instanceId);
+      await brokerDenied(probe.nc, primary.space, instanceId, command, legacy ? principals[0] : probe.caller, route);
+    });
+    await negative(ids[24], async () => {
+      const altered = { ...pins, account: { ...pins.account, accountPublicKey: aux.auth.account.pub, space: aux.space } };
+      await expectPublicDenial(() => post(0, { operation: "prepare", operationId: core.mintLifecycleUid(), endpoint, holderPublicKey: core.newIdentity().id }, altered), /deployment|account|pins/);
+    });
+    const auxOrdinary = await withHome(auxClient.home, () => authApi.cotalAuthProvider.userCredentials({ store: auxClient.store, dir: auxClient.state, space: aux.space, actor: "cli" }));
+    const auxClaims = decodeJwt(auxOrdinary.bearer) as { sub?: string; act?: { owner?: string; actor?: string; lifecycleUid?: string } }; assert.equal(auxClaims.sub, auxPrincipal.owner); assert.equal(auxClaims.act?.owner, auxPrincipal.owner); assert.equal(auxClaims.act?.actor, auxPrincipal.actor); assert.equal(auxClaims.act?.lifecycleUid, auxPrincipal.uid);
+    const auxNc = track(await connect({ servers, ...core.standaloneConnectOpts({ tls: false, bearer: auxOrdinary.bearer, sentinelCreds: auxOrdinary.sentinelCreds }), maxReconnectAttempts: 0 }));
+    const subject = core.chatSubject(aux.space, auxPrincipal.owner, auxPrincipal.actor, channel), auxMessages: string[] = [], primaryMessages: string[] = [], witnessErrors: string[] = [];
+    const auxStatus = auxNc.status();
+    const auxStatusWatch = (async () => { for await (const event of auxStatus) if (event.type === "error" || event.type === "disconnect" || event.type === "reconnect") witnessErrors.push("AUX witness status failure"); })();
+    statusWatches.push(auxStatusWatch);
+    const auxSub = auxNc.subscribe(subject, { callback: (error, message) => { if (error) witnessErrors.push("AUX witness subscription failed"); else auxMessages.push(new TextDecoder().decode(message.data)); } });
+    let observerStatusWatch: Promise<void> | undefined;
+    let primarySub: ReturnType<NatsConnection["subscribe"]> | undefined;
+    try {
+      await auxNc.flush(); const a0 = core.mintLifecycleUid();
+      await check(ids[25], async () => { auxNc.publish(subject, enc.encode(a0)); await auxNc.flush(); await waitFor(() => auxMessages.includes(a0)); assert.equal(auxMessages.filter(x => x === a0).length, 1); assert.equal(witnessErrors.length, 0); verifyAccountProvenance(); });
+      observer = await openAuthorityClient({ server: servers, space: primary.space, dataAccount: { pub: primary.auth.account.pub, signingSeed: primary.auth.account.signingSeed! }, label: "two-user-primary-wire-observer", noReconnect: true, grants: () => ({ publish: [subject], subscribe: [subject] }), log: () => {} }); observerCreated++;
+      const status = observer.nc.status();
+      observerStatusWatch = (async () => { for await (const event of status) if (event.type === "error" || event.type === "disconnect" || event.type === "reconnect") witnessErrors.push("PRIMARY observer status failure"); })();
+      statusWatches.push(observerStatusWatch);
+      primarySub = observer.nc.subscribe(subject, { callback: (error, message) => { if (error) witnessErrors.push("PRIMARY witness subscription failed"); else primaryMessages.push(new TextDecoder().decode(message.data)); } });
+      await observer.nc.flush(); const p0 = core.mintLifecycleUid(), p1 = core.mintLifecycleUid(), x = core.mintLifecycleUid();
+      const before = await snapshot(); observer.nc.publish(subject, enc.encode(p0)); await observer.nc.flush(); await waitFor(() => primaryMessages.includes(p0));
+      await check(ids[27], async () => {
+        const witnessDeadline = Date.now() + budget();
+        verifyAccountProvenance(); assert.equal(primaryMessages.filter(value => value === p0).length, 1);
+        auxNc.publish(subject, enc.encode(x)); await auxNc.flush(); await waitFor(() => auxMessages.includes(x));
+        assert.ok(deadline - Date.now() >= 250, "account observation exceeds remaining entry budget"); await new Promise(resolve => setTimeout(resolve, 250));
+        observer!.nc.publish(subject, enc.encode(p1)); await observer!.nc.flush(); await waitFor(() => primaryMessages.includes(p1));
+        assert.equal(auxMessages.filter(value => value === x).length, 1); assert.equal(primaryMessages.filter(value => value === x).length, 0);
+        assert.ok(!auxMessages.includes(p0) && !auxMessages.includes(p1)); assert.equal(witnessErrors.length, 0); verifyAccountProvenance(); assert.deepEqual(await snapshot(), before);
+        assert.ok(Date.now() <= witnessDeadline, "same-wire witness phase deadline");
+        phaseEvidence.push({ kind: "same-wire-account-partition", wireDigest: core.rawDigest(subject), auxDelivery: 1, primaryDelivery: 0, windowMs: 250, configDigest, ordinaryAuxPositive: true, primaryPositiveIsTrustedHost: true });
+      });
+      await check(ids[26], async () => { assert.equal(primaryMessages.filter(value => value === p0).length, 1); assert.equal(primaryMessages.filter(value => value === p1).length, 1); assert.equal(witnessErrors.length, 0); });
+    } finally {
+      auxSub.unsubscribe(); primarySub?.unsubscribe();
+      if (observer) try { await bounded(observer.close()); const closeError = await bounded(observer.nc.closed()); if (observerStatusWatch) await bounded(observerStatusWatch); assert.ok(!closeError && observer.nc.isClosed()); observerClosed++; } catch { cleanupErrors.push("PRIMARY observer close failed"); custodyOutstanding = true; throw new Error("PRIMARY observer close unconfirmed"); }
+    }
+    await negative(ids[28], async () => { await brokerDenied(auxNc, primary.space, active[0].instanceId, "increment", auxPrincipal); });
+    await bounded(auxStatusWatch);
+    for (let index = 0; index < 2; index++) await check(ids[index === 0 ? 29 : 30], async () => {
+      const client = clients[index], before = await snapshot();
+      const command = "increment";
+      const cliBudget = Math.min(30000, deadline - Date.now() - 1000); assert.ok(cliBudget > 0, "no CLI budget with reserved close wait");
+      const result = await runEndpointCallerCLI({ cwd: fileURLToPath(new URL("../../../", import.meta.url)), timeoutMs: cliBudget, closeWaitMs: 1000, maxOutputBytes: 8192, env: { PATH: process.env.PATH, HOME: client.home, COTAL_HOME: client.home, XDG_CONFIG_HOME: join(client.home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" } }, ["invoke", endpoint, command, "--on", active[index].instanceId, "--space", primary.space]);
+      cliResults.push(result); custodyOutstanding ||= !result.closeObserved || result.closeWaitExpired;
+      phaseEvidence.push({ cell: ids[index === 0 ? 29 : 30], kind: "actual-known-source-cli-outcome", code: result.code, signal: result.signal, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, killAttempted: result.killAttempted, killAccepted: result.killAccepted, terminationReason: result.terminationReason, spawnErrorObserved: result.spawnError !== null, childErrorObserved: result.childError !== null, before });
+      assert.equal(result.code, 0); assert.equal(result.signal, null); assert.ok(!result.timedOut && !result.closeWaitExpired && result.closeObserved && result.terminationReason === null && !result.killAttempted && !result.spawnError && !result.childError);
+      assert.equal(result.stderrBytes, 0); assert.equal(Buffer.byteLength(result.stdout), result.stdoutBytes);
+      assert.deepEqual(JSON.parse(result.stdout), { effects: before[index] + 1, owner: principals[index].owner });
+      const after = await snapshot(); const expected = [...before]; expected[index]++; assert.deepEqual(after, expected);
+      phaseEvidence.push({ cell: ids[index === 0 ? 29 : 30], code: result.code, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, closeObserved: result.closeObserved, before, after });
+    });
+    await check(ids[31], async () => { assert.equal(cliResults.length, 2); assert.ok(cliResults.every(r => r.closeObserved && !r.closeWaitExpired)); });
+    await check(ids[32], async () => { assert.deepEqual(await snapshot(), [3, 2]); });
+    phase = "cleanup";
+  } catch (error) { failure = error; failurePhase = phase; }
+  finally {
+    phase = "cleanup";
+    for (let index = 0; index < workers.length; index++) {
+      const worker = workers[index];
+      try {
+        const stop = async () => {
+          if (worker.child.connected) worker.child.send({ kind: "stop" });
+          await waitFor(() => worker.messages.some(m => m.kind === "stopped") || !!worker.error); assert.ok(!worker.error);
+          const code = await bounded(worker.exit); assert.equal(code, 0); worker.stopped = true;
+          const stopped = worker.messages.find(m => m.kind === "stopped"); assert.equal(stopped?.knownConnectionsClosed, 2);
+          if (!failure) assert.equal(stopped?.effects, index === 0 ? 3 : 2);
+        };
+        if (!failure && workers.length === 2) await check(ids[index === 0 ? 33 : 34], stop);
+        else await stop();
+      } catch (error) { if (!failure && failedCell !== null) failure = error; cleanupErrors.push("owned worker stop or exit unconfirmed"); try { await killAndAwaitExit(worker.child); } catch { custodyOutstanding = true; } }
+    }
+    if (observer && observerClosed === 0) try { await bounded(observer.close()); const closeError = await bounded(observer.nc.closed()); assert.ok(!closeError && observer.nc.isClosed()); observerClosed++; } catch { cleanupErrors.push("PRIMARY observer close failed"); custodyOutstanding = true; }
+    for (const client of hostClients.reverse()) try { await bounded(client.close()); const error = await bounded(client.nc.closed()); assert.ok(!error && client.nc.isClosed()); hostClosed++; } catch { cleanupErrors.push("trusted fixture host connection close failed"); }
+    for (const connection of connections.reverse()) try { await bounded(connection.nc.close()); const error = await bounded(connection.nc.closed()); assert.ok(!error); connection.closed = connection.nc.isClosed(); assert.ok(connection.closed); } catch { cleanupErrors.push("participant connection close failed"); }
+    for (const watch of statusWatches) try { await bounded(watch); } catch { cleanupErrors.push("owned status observer retirement unconfirmed"); }
+    for (const handle of authHandles.reverse()) try { await bounded(handle.close()); const closed = await bounded(handle.closed); assert.ok(closed.connections.length > 0 && closed.connections.every(c => c.ended)); authClosed++; } catch { cleanupErrors.push("public auth service close failed"); }
+    try { if (idpHttp.listening) { idpHttp.closeAllConnections(); await bounded(new Promise<void>((resolve, reject) => idpHttp.close(error => error ? reject(error) : resolve()))); } idpClosed = !idpHttp.listening; } catch { cleanupErrors.push("IdP listener close failed"); }
+    if (!failure && cleanupErrors.length === 0) try { await check(ids[35], async () => { assert.equal(authClosed, 2); assert.ok(idpClosed); }); } catch (error) { failure = error; }
+    if (broker) try { await killAndAwaitExit(broker, "SIGTERM"); } catch { cleanupErrors.push("known broker exit unconfirmed"); custodyOutstanding = true; }
+    const brokerClosed = !!broker && (broker.exitCode !== null || broker.signalCode !== null);
+    if (!failure && cleanupErrors.length === 0) try { await check(ids[36], async () => { assert.equal(observerCreated, 1); assert.equal(observerClosed, 1); assert.equal(hostClosed, hostClients.length); assert.ok(connections.every(c => c.closed)); assert.ok(brokerClosed && !custodyOutstanding && cleanupErrors.length === 0); }); } catch (error) { failure = error; }
+    if (!custodyOutstanding && cleanupErrors.length === 0 && brokerClosed && workers.every(w => w.stopped)) { releaseBroker?.(); releasePath(); rmSync(dir, { recursive: true, force: true }); }
+    clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+    const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
+    // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
+    const summary = { scope: "two-real-user-public-component", plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
+    log(JSON.stringify({ ...summary, reportRetained: true }));
+    console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
+    if (!complete) process.exitCode = 1;
   }
 }
