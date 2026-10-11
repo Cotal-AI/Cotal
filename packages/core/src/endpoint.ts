@@ -43,7 +43,7 @@ import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
-import { readAcceptedRow } from "./issued-authority.js";
+import { readAcceptedRow, issuedUserCaller } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
@@ -230,6 +230,11 @@ export interface EndpointOptions {
    *  the connect: the rails would be refused at the broker anyway, and a silent legacy fallback is
    *  exactly what the versioned rail exists to rule out. */
   acceptedToken?: string;
+  /** Require issued caller authority for a user bearer. Each connection reads its own accepted
+   *  row using the inbox nonce it presented and verifies this endpoint's owner, actor and lifecycle.
+   *  Missing or refused discovery fails the bind. It never falls back to the legacy caller rail.
+   *  Leave unset for a bearer whose supported view uses legacy caller rows. */
+  issuedCaller?: boolean;
   servers?: string;
   /** Connection token (soft-shared auth). Mutually exclusive with user/pass. */
   token?: string;
@@ -709,6 +714,7 @@ export class CotalEndpoint extends EventEmitter {
   /** See {@link EndpointOptions.backfillFloor}. */
   private readonly backfillFloor?: number;
   private readonly acceptedToken?: string;
+  private readonly issuedCaller: boolean;
   /** The issuer-bound generation, learned once per connection from the accepted row. */
   private issuedGeneration?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
@@ -848,6 +854,12 @@ export class CotalEndpoint extends EventEmitter {
         : this.authed
           ? undefined
           : mintLifecycleUid();
+    if (opts.issuedCaller !== undefined && typeof opts.issuedCaller !== "boolean")
+      throw new Error("EndpointOptions.issuedCaller must be boolean when supplied");
+    this.issuedCaller = opts.issuedCaller === true;
+    if (this.issuedCaller && (!this.userMode || opts.acceptedToken !== undefined))
+      throw new Error("EndpointOptions.issuedCaller requires a user bearer without acceptedToken");
+    if (this.issuedCaller) this.requireLifecycleUid("an issued user endpoint");
     if (opts.backfillFloor !== undefined) {
       if (!Number.isInteger(opts.backfillFloor) || opts.backfillFloor < 0)
         throw new Error(`EndpointOptions.backfillFloor must be a non-negative integer stream sequence, got ${opts.backfillFloor}`);
@@ -1419,6 +1431,11 @@ export class CotalEndpoint extends EventEmitter {
       if (ref.owner !== this.owner || ref.actor !== this.actor || ref.uid !== uid)
         throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
       this.issuedGeneration = ref.generation;
+    } else if (this.issuedCaller) {
+      const caller = await issuedUserCaller(this.nc, this.space, this.connId, {
+        owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("an issued user endpoint"),
+      });
+      this.issuedGeneration = caller.generation;
     }
 
     if (this.doWatch || this.doRegister) {
@@ -1558,6 +1575,8 @@ export class CotalEndpoint extends EventEmitter {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   private clearConnectionScoped(): void {
+    this.issuedGeneration = undefined;
+    if (this.issuedCaller || this.acceptedToken !== undefined) this.resolvedServices.clear();
     if (this.authExpiryReconnectTimer) {
       clearTimeout(this.authExpiryReconnectTimer);
       this.authExpiryReconnectTimer = undefined;
@@ -2417,7 +2436,7 @@ export class CotalEndpoint extends EventEmitter {
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
     const triple = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
-    if (this.acceptedToken === undefined) return triple;
+    if (this.acceptedToken === undefined && !this.issuedCaller) return triple;
     if (this.issuedGeneration === undefined) throw new Error("invokeService: the issued generation is not yet discovered on this connection");
     return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
@@ -2474,14 +2493,18 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
    *  it: the same resolve and the same per-name cache {@link invokeService} uses, so a describe
-   *  followed by an invoke binds both to one incarnation. `refresh` drops the cached entry first. */
-  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean } = {}): Promise<ResolvedService> {
+   *  followed by an invoke binds both to one incarnation. `refresh` drops the cached entry first.
+   *  `instanceId` resolves that instance's rail and never reads or writes the endpoint-only cache. */
+  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean; instanceId?: string } = {}): Promise<ResolvedService> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    if (opts.refresh) this.resolvedServices.delete(endpoint);
-    const cached = this.resolvedServices.get(endpoint);
+    if (opts.refresh && opts.instanceId === undefined) this.resolvedServices.delete(endpoint);
+    const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
     if (cached) return cached;
-    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal });
-    this.resolvedServices.set(endpoint, svc);
+    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), {
+      deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal,
+      ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
+    });
+    if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
   }
 
