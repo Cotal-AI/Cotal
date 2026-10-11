@@ -611,7 +611,10 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   const diagnosticCounters: { applicationRequests: number; readVisits: number }[] = [];
   let diagnosticWriteEffects = 0;
   let diagnosticStagesObserved = 0;
-  const diagnosticStageErrors: { stage: string; code: string }[] = [];
+  type DiagnosticErrorBoundary = "none" | "not-reached" | "other" | "attributed-reply-refusal"
+    | "broker-permission-violation" | "describe-reply-subscription" | "describe-permission-watch-unreleasable"
+    | "describe-retry-publish" | "contract-store-read" | "describe-publish-denied" | "describe-answered-refusal";
+  const diagnosticStageErrors: { stage: string; code: string; eventBoundary: DiagnosticErrorBoundary }[] = [];
   let diagnosticStageInFlight: string | null = null;
   let broker: ReturnType<typeof spawn> | undefined, releaseBroker: (() => void) | undefined;
   let observer: AuthorityClient | undefined, observerCreated = 0, observerClosed = 0;
@@ -962,16 +965,34 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       const diagnosticIds = ids.slice(37);
       let low: Awaited<ReturnType<typeof connected>> | undefined, client: core.CotalEndpoint | undefined;
       const outcomes: { stage: string; outcome: "succeeded" | "refused" | "not-reached"; code: string; before: number[]; after: number[];
-        requestsBefore: number; requestsAfter: number; readsBefore: number; readsAfter: number; replyOk: boolean | null; attributedUnbound: boolean }[] = [];
+        requestsBefore: number; requestsAfter: number; readsBefore: number; readsAfter: number; replyOk: boolean | null; attributedUnbound: boolean; errorBoundary: DiagnosticErrorBoundary }[] = [];
       const stageErrors = diagnosticStageErrors;
       let startSucceeded = false;
       const safeCode = (error: unknown): string => error instanceof core.EpEnvelopeError ? error.code
         : error instanceof PermissionViolationError ? "broker-permission-violation" : error instanceof Error ? "error" : "non-error";
+      // Classify only fixed shipped refusal literals. Never export the message or its dynamic values.
+      const errorBoundary = (error: unknown): DiagnosticErrorBoundary => {
+        if (error instanceof PermissionViolationError || (error instanceof Error && error.cause instanceof PermissionViolationError))
+          return "broker-permission-violation";
+        if (!(error instanceof core.EpEnvelopeError)) return "other";
+        const message = error.message;
+        if (error.code === "unavailable") {
+          if (message.startsWith("describe reply subscription failed: ")) return "describe-reply-subscription";
+          if (message.startsWith("the NATS connection's status() stream does not expose stop(); the describe permission watch")) return "describe-permission-watch-unreleasable";
+          if (message.startsWith("the describe retry for ") && message.includes(" could not publish: ")) return "describe-retry-publish";
+          if (message.startsWith("the contract-store read for ") && message.includes(" failed (a failed observation is never absence, SPEC 13.7): ")) return "contract-store-read";
+        }
+        if (error.code === "permission-denied" && message.startsWith("the describe for ") && message.includes(" was REFUSED BY THE BROKER, not unanswered: "))
+          return "describe-publish-denied";
+        if (message.startsWith("describe(") && message.includes(") failed: ")) return "describe-answered-refusal";
+        return "other";
+      };
       const observe = async (stage: string, action?: () => Promise<unknown> | unknown) => {
         const before = await snapshot();
         const { applicationRequests: requestsBefore, readVisits: readsBefore } = diagnosticCounters[0];
         let outcome: "succeeded" | "refused" | "not-reached" = "not-reached", code = "not-reached";
         let replyOk: boolean | null = null, attributedUnbound = false;
+        let boundary: DiagnosticErrorBoundary = "not-reached";
         if (action) {
           diagnosticStageInFlight = stage;
           // The wrapper resolves on an actual API refusal. A phase timeout escapes and is RED,
@@ -981,18 +1002,18 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
               const reply = value !== null && typeof value === "object" && "reply" in value
                 ? (value as core.EpAttributedReply).reply : undefined;
               return { outcome: reply?.ok === false ? "refused" as const : "succeeded" as const,
-                code: reply?.error?.code ?? "none", replyOk: reply?.ok ?? null, attributedUnbound: false };
+                code: reply?.error?.code ?? "none", replyOk: reply?.ok ?? null, attributedUnbound: false, errorBoundary: reply?.ok === false ? "attributed-reply-refusal" as const : "none" as const };
             },
-            error => ({ outcome: "refused" as const, code: safeCode(error), replyOk: null, attributedUnbound: core.respondedButUnbound(error) }))
+            error => ({ outcome: "refused" as const, code: safeCode(error), replyOk: null, attributedUnbound: core.respondedButUnbound(error), errorBoundary: errorBoundary(error) }))
             .finally(() => { diagnosticStageInFlight = null; });
           diagnosticAcquisitions.add(acquisition);
           void acquisition.then(() => diagnosticAcquisitions.delete(acquisition));
           const result = await bounded(acquisition);
-          outcome = result.outcome; code = result.code; replyOk = result.replyOk; attributedUnbound = result.attributedUnbound;
+          outcome = result.outcome; code = result.code; replyOk = result.replyOk; attributedUnbound = result.attributedUnbound; boundary = result.errorBoundary;
         }
         const after = await snapshot();
         const { applicationRequests: requestsAfter, readVisits: readsAfter } = diagnosticCounters[0];
-        const record = { stage, outcome, code, before, after, requestsBefore, requestsAfter, readsBefore, readsAfter, replyOk, attributedUnbound }; outcomes.push(record);
+        const record = { stage, outcome, code, before, after, requestsBefore, requestsAfter, readsBefore, readsAfter, replyOk, attributedUnbound, errorBoundary: boundary }; outcomes.push(record);
         diagnosticStagesObserved++;
         phaseEvidence.push({ kind: "protocol3-public-entry-stage", ...record }); log(JSON.stringify({ scope: "protocol3-public-entry-diagnostic", ...record }));
         return outcome === "succeeded";
@@ -1028,7 +1049,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
           onConnection: nc => { diagnosticConnections.push(nc); track(nc); } });
         diagnosticClients.push(client); client.on("error", error => {
-          stageErrors.push({ stage: diagnosticStageInFlight ?? "outside-stage", code: safeCode(error) });
+          stageErrors.push({ stage: diagnosticStageInFlight ?? "outside-stage", code: safeCode(error), eventBoundary: errorBoundary(error) });
           if (diagnosticStageInFlight === null) cleanupErrors.push("unexpected public diagnostic error outside an observed stage");
         });
       }); });
