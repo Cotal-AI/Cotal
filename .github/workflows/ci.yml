@@ -206,6 +206,10 @@ jobs:
           herdr --version
       - name: Build
         run: pnpm build
+      - name: Endpoint CLI describe causal regression
+        run: pnpm smoke:endpoint-cli-describe-causal
+      - name: Endpoint serving PREPARE refusal regression
+        run: pnpm smoke:endpoint-prepare-refusal
       # Broker-free boundary/preflight guards + the live target-resolution / spawn-from-anywhere /
       # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
       - name: Core boundary, mesh preflight & resolution
