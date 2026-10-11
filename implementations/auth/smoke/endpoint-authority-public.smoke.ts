@@ -671,11 +671,14 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
   type PublicCallObservation = {
     api: PublicSettlement; wrapper: PublicSettlement; apiAtWrapper: PublicSettlement;
     apiErrorClass: PublicErrorClass; wrapperErrorClass: PublicErrorClass; apiShippedFrame: PublicShippedFrame;
+    apiOrigin?: PublicErrorOrigin; immediateCause?: { state: "absent" | "present" | "unreadable"; origin?: PublicErrorOrigin };
+    sameAsReconnectError?: boolean | null;
   };
   const publicCallSettlements: Record<"reconnect" | "stop", PublicCallObservation[]> = { reconnect: [], stop: [] };
   const newPublicObservation = (kind: "reconnect" | "stop"): PublicCallObservation => {
     const observation: PublicCallObservation = { api: "not-reached", wrapper: "pending", apiAtWrapper: "not-reached",
       apiErrorClass: "none", wrapperErrorClass: "none", apiShippedFrame: "none" };
+    if (kind === "stop") observation.sameAsReconnectError = null;
     if (issuedPublicAcceptance) publicCallSettlements[kind].push(observation);
     return observation;
   };
@@ -694,35 +697,122 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     } catch { /* Observation must not replace the original failure. */ }
     return "other";
   };
-  const publicShippedFrame = (error: unknown): PublicShippedFrame => {
-    try {
-      if (!(error instanceof Error) || typeof error.stack !== "string") return "other";
-      // Ignore the message line. Match only core's shipped endpoint frames, never emit locations.
-      for (const line of error.stack.split("\n").slice(1)) {
-        const frame = /^\s*at CotalEndpoint\.(disableLibraryReconnect|clearConnectionScoped|closeWithoutLibraryReconnect|connectAndBind|bindConnection|doRebuild|rebuild|reconnect|stopOnce|stop) \(.*\/packages\/core\/(?:src|dist)\/endpoint\.(?:ts|js):\d+:\d+\)$/.exec(line);
-        switch (frame?.[1]) {
-          case "disableLibraryReconnect": return "disable-library-reconnect";
-          case "clearConnectionScoped": return "clear-connection-scoped";
-          case "closeWithoutLibraryReconnect": return "close-without-library-reconnect";
-          case "connectAndBind": return "connect-and-bind";
-          case "bindConnection": return "bind-connection";
-          case "doRebuild": return "do-rebuild";
-          case "rebuild": return "rebuild";
-          case "reconnect": return "reconnect";
-          case "stopOnce": return "stop-once";
-          case "stop": return "stop";
-        }
-      }
-    } catch { /* No stack or accessor failure is exported. */ }
-    return "other";
+  type PublicOriginCode = "other" | "bad-request" | "unsupported-version" | "op-mismatch" | "class-mismatch"
+    | "target-mismatch" | "sender-mismatch" | "unauthenticated" | "permission-denied" | "not-found"
+    | "already-exists" | "conflict" | "contract-mismatch" | "contract-invalid" | "failed-precondition"
+    | "deadline-exceeded" | "cancelled" | "expired" | "unavailable" | "unimplemented" | "resource-exhausted" | "internal";
+  type PublicOriginMessage = "other" | "phase-deadline" | "phase-budget" | "event-deadline"
+    | "endpoint-stopped" | "connection-closure-unproved" | "stop-closure-unproved"
+    | "closed-connection" | "connection-draining" | "nats-timeout";
+  type PublicFrameObservation = {
+    availability: "unavailable" | "available" | "unreadable";
+    format: "unmatched" | "plain" | "async"; frame: PublicShippedFrame;
   };
-  const observedPublicCall = (observation: PublicCallObservation, operation: () => Promise<void>): Promise<void> => {
+  type PublicErrorOrigin = {
+    errorClass: PublicErrorClass; code: PublicOriginCode; message: PublicOriginMessage; stack: PublicFrameObservation;
+  };
+  let reconnectRejectedObject: unknown;
+  let reconnectRejectedObjectKnown = false;
+  const publicFrameObservation = (error: unknown): PublicFrameObservation => {
+    try {
+      if (!(error instanceof Error)) return { availability: "unavailable", format: "unmatched", frame: "other" };
+      const stack = error.stack;
+      if (typeof stack !== "string") return { availability: "unavailable", format: "unmatched", frame: "other" };
+      for (const line of stack.split("\n").slice(1)) {
+        // Only this optional async token extends the frozen core method/path allowlist.
+        const match = /^\s*at (async )?CotalEndpoint\.(disableLibraryReconnect|clearConnectionScoped|closeWithoutLibraryReconnect|connectAndBind|bindConnection|doRebuild|rebuild|reconnect|stopOnce|stop) \(.*\/packages\/core\/(?:src|dist)\/endpoint\.(?:ts|js):\d+:\d+\)$/.exec(line);
+        let frame: PublicShippedFrame;
+        switch (match?.[2]) {
+          case "disableLibraryReconnect": frame = "disable-library-reconnect"; break;
+          case "clearConnectionScoped": frame = "clear-connection-scoped"; break;
+          case "closeWithoutLibraryReconnect": frame = "close-without-library-reconnect"; break;
+          case "connectAndBind": frame = "connect-and-bind"; break;
+          case "bindConnection": frame = "bind-connection"; break;
+          case "doRebuild": frame = "do-rebuild"; break;
+          case "rebuild": frame = "rebuild"; break;
+          case "reconnect": frame = "reconnect"; break;
+          case "stopOnce": frame = "stop-once"; break;
+          case "stop": frame = "stop"; break;
+          default: continue;
+        }
+        return { availability: "available", format: match?.[1] ? "async" : "plain", frame };
+      }
+      return { availability: "available", format: "unmatched", frame: "other" };
+    } catch { return { availability: "unreadable", format: "unmatched", frame: "other" }; }
+  };
+  const publicOriginCode = (error: unknown): PublicOriginCode => {
+    try {
+      if (!(error instanceof core.EpEnvelopeError)) return "other";
+      // The shipped core catalog only. Extension codes and arbitrary error.code values stay private.
+      switch (error.code) {
+        case "bad-request": return "bad-request";
+        case "unsupported-version": return "unsupported-version";
+        case "op-mismatch": return "op-mismatch";
+        case "class-mismatch": return "class-mismatch";
+        case "target-mismatch": return "target-mismatch";
+        case "sender-mismatch": return "sender-mismatch";
+        case "unauthenticated": return "unauthenticated";
+        case "permission-denied": return "permission-denied";
+        case "not-found": return "not-found";
+        case "already-exists": return "already-exists";
+        case "conflict": return "conflict";
+        case "contract-mismatch": return "contract-mismatch";
+        case "contract-invalid": return "contract-invalid";
+        case "failed-precondition": return "failed-precondition";
+        case "deadline-exceeded": return "deadline-exceeded";
+        case "cancelled": return "cancelled";
+        case "expired": return "expired";
+        case "unavailable": return "unavailable";
+        case "unimplemented": return "unimplemented";
+        case "resource-exhausted": return "resource-exhausted";
+        case "internal": return "internal";
+        default: return "other";
+      }
+    } catch { return "other"; }
+  };
+  const publicOriginMessage = (error: unknown): PublicOriginMessage => {
+    try {
+      if (!(error instanceof Error)) return "other";
+      switch (error.message) {
+        case "two-user phase deadline": return "phase-deadline";
+        case "two-user entry budget exhausted": return "phase-budget";
+        case "two-user event deadline": return "event-deadline";
+        case "endpoint stopped - cannot reconnect": return "endpoint-stopped";
+        case "endpoint connection closure is unproved; consumer custody must be retained": return "connection-closure-unproved";
+        case "endpoint stop could not prove its connection closed; local consumer custody must be retained": return "stop-closure-unproved";
+        case "closed connection": return "closed-connection";
+        case "connection draining": return "connection-draining";
+        case "timeout": return "nats-timeout";
+        default: return "other";
+      }
+    } catch { return "other"; }
+  };
+  const publicErrorOrigin = (error: unknown): PublicErrorOrigin => ({ errorClass: publicErrorClass(error),
+    code: publicOriginCode(error), message: publicOriginMessage(error), stack: publicFrameObservation(error) });
+  const publicImmediateCause = (error: unknown): NonNullable<PublicCallObservation["immediateCause"]> => {
+    try {
+      if (!(error instanceof Error)) return { state: "absent" };
+      const cause: unknown = error.cause;
+      return cause === undefined ? { state: "absent" } : { state: "present", origin: publicErrorOrigin(cause) };
+    } catch { return { state: "unreadable" }; }
+  };
+  const observedPublicCall = (kind: "reconnect" | "stop", observation: PublicCallObservation, operation: () => Promise<void>): Promise<void> => {
     if (!issuedPublicAcceptance) return operation();
     observation.api = "pending";
     const rejected = (error: unknown) => {
       observation.api = "rejected";
       observation.apiErrorClass = publicErrorClass(error);
-      observation.apiShippedFrame = publicShippedFrame(error);
+      const origin = publicErrorOrigin(error);
+      observation.apiOrigin = origin;
+      observation.apiShippedFrame = origin.stack.frame;
+      observation.immediateCause = publicImmediateCause(error);
+      const objectKnown = error !== null && (typeof error === "object" || typeof error === "function");
+      if (kind === "reconnect") {
+        reconnectRejectedObject = error;
+        reconnectRejectedObjectKnown = objectKnown;
+      } else {
+        observation.sameAsReconnectError = reconnectRejectedObjectKnown && objectKnown ? error === reconnectRejectedObject : null;
+      }
     };
     try {
       const flight = operation();
@@ -1312,7 +1402,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           const before = await snapshot();
           publicReconnectStage = "reconnect";
           const reconnectObservation = newPublicObservation("reconnect");
-          await acquired(() => observedPublicCall(reconnectObservation, () => client!.reconnect()));
+          await acquired(() => observedPublicCall("reconnect", reconnectObservation, () => client!.reconnect()));
           reconnectObservation.wrapper = "fulfilled";
           reconnectObservation.apiAtWrapper = reconnectObservation.api;
           publicReconnectStage = "connection-count";
@@ -1383,7 +1473,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     for (const client of diagnosticClients) {
       const stopObservation = newPublicObservation("stop");
       try {
-        await bounded(observedPublicCall(stopObservation, () => client.stop()));
+        await bounded(observedPublicCall("stop", stopObservation, () => client.stop()));
         stopObservation.wrapper = "fulfilled";
         stopObservation.apiAtWrapper = stopObservation.api;
       } catch (error) {
