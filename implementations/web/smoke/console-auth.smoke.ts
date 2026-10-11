@@ -707,7 +707,7 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
   };
   const ctx: Record<string, unknown> = {
     openSync, fchmodSync, writeFileSync: recordingWrite, closeSync, JSON,
-    sessionPath, launchUrl: "http://127.0.0.1:7799/?k=x", gate: { readinessNonce: "n" },
+    sessionPath, launchUrl: "http://127.0.0.1:7799/?k=x", gate: { readinessNonce: "n" }, bound: { address: "127.0.0.1", port: PORT },
     globalThis: undefined, console,
   };
   ctx.globalThis = ctx;
