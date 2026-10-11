@@ -17,13 +17,15 @@ import { fromSeed } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import * as core from "@cotal-ai/core";
 import * as authApi from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
+import { recordMesh, userAuthStateDir, spaceSegment } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal, awaitBrokerReady, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 import { MemoryStore } from "./_hosted-auth-fixture.js";
 import { pickFreePort } from "./_free-port.js";
 import { serializedFor } from "../src/serialized.js";
 import { openAuthorityClient, type AuthorityClient } from "../src/authority-client.js";
 import { runEndpointCallerCLI, type EndpointCallerCLIResult } from "../../cli/smoke/endpoint-caller-child.js";
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
+import { relative, resolve, sep } from "node:path";
 
 // CI source entry owns its report and login home. Child text stays in the private report.
 // Named CLI predicates are separate from native A/B and installed-package acceptance.
@@ -235,6 +237,73 @@ try {
     // This is the source composition root with the existing seed guard, not an installed CLI.
     // Explicit --space selects the separate remote root even though tsx resolves from the checkout.
     const childInput = { cwd: fileURLToPath(new URL("../../../", import.meta.url)), timeoutMs: 30000, closeWaitMs: 1000, maxOutputBytes: 8192, env: { PATH: process.env.PATH, HOME: clientHome, COTAL_HOME: clientHome, XDG_CONFIG_HOME: join(clientHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" } };
+    // Temporary, explicit hosted CCLI01 observation. Remove with the qualified repair.
+    // Local file custody is not process isolation or proof of remote error provenance.
+    const bindingFile = "endpoint-caller-binding-diagnostic.json", bindingBytes = 4096;
+    const bindingFlags = ["receiptKindMatches", "receiptUnexpiredAtComparison", "descriptorPresent", "descriptorProtocol3", "endpointMatches", "pinnedInstanceMatches", "responderInstanceMatches", "processEpochMatches", "registrationRevisionMatches", "servingAuthorityMatches", "instanceRoutesMatch", "ephemeralResourcesMatch", "closureSetMatches", "callerOwnerMatches", "callerActorMatches", "callerLifecycleMatches", "issuedGenerationPresent", "selectedCommandSetMatches", "allCommandsUntargetedEphemeral"];
+    const bindingCounts = { descriptorClosureCount: 64, receiptClosureCount: 64, selectedNonDescribeCommandCount: 31, resolvedCommandCount: 32 };
+    const sameBindingIdentity = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;
+    const prepareBindingObservation = () => {
+      const handles: number[] = [], directories: { path: string; fd: number; info: Stats }[] = [];
+      const unknown = () => ({ state: "unknown" });
+      const close = () => { let closed = true; for (const fd of handles.splice(0).reverse()) { try { closeSync(fd); } catch { closed = false; } } return closed; };
+      try {
+        if (process.platform !== "linux" || typeof process.getuid !== "function" || !constants.O_NOFOLLOW || !constants.O_DIRECTORY) throw new Error("unsupported binding observation");
+        const uid = process.getuid();
+        const rootPath = resolve(clientRoot), statePath = resolve(clientState), segments = statePath.split(sep).filter(Boolean);
+        if (relative(rootPath, statePath) !== join(".cotal", "auth", spaceSegment(space))) throw new Error("binding observation state differs");
+        const rootDepth = rootPath.split(sep).filter(Boolean).length;
+        let path = sep;
+        for (let depth = 0; depth <= segments.length; depth++) {
+          if (depth > 0) path = join(`/proc/self/fd/${handles[handles.length - 1]}`, segments[depth - 1]);
+          const before = lstatSync(path);
+          if (!before.isDirectory() || before.isSymbolicLink() || (depth >= rootDepth && (before.uid !== uid || (before.mode & 0o7777) !== 0o700))) throw new Error("binding observation directory refused");
+          const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
+          handles.push(fd);
+          const opened = fstatSync(fd);
+          if (!sameBindingIdentity(before, opened)) throw new Error("binding observation directory changed");
+          directories.push({ path, fd, info: opened });
+        }
+        const filePath = join(`/proc/self/fd/${handles[handles.length - 1]}`, bindingFile);
+        let absent = false;
+        try { lstatSync(filePath); } catch (error) { absent = error instanceof Error && "code" in error && error.code === "ENOENT"; }
+        if (!absent) throw new Error("binding observation was not cold");
+        return {
+          close,
+          read() {
+            try {
+              for (const directory of directories) {
+                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path))) return unknown();
+              }
+              const before = lstatSync(filePath);
+              if (!before.isFile() || before.isSymbolicLink() || before.uid !== uid || (before.mode & 0o7777) !== 0o600 || before.nlink !== 1 || before.size < 1 || before.size > bindingBytes) return unknown();
+              const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+              handles.push(fd);
+              const opened = fstatSync(fd);
+              if (!sameBindingIdentity(before, opened) || before.size !== opened.size || before.mtimeMs !== opened.mtimeMs || before.ctimeMs !== opened.ctimeMs) return unknown();
+              const bytes = Buffer.alloc(bindingBytes + 1);
+              let length = 0;
+              while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
+              const after = fstatSync(fd), linked = lstatSync(filePath);
+              if (length !== opened.size || length > bindingBytes || after.nlink !== 1 || !sameBindingIdentity(opened, after) || !sameBindingIdentity(after, linked) || opened.size !== after.size || after.size !== linked.size || opened.mtimeMs !== after.mtimeMs || opened.ctimeMs !== after.ctimeMs || after.mtimeMs !== linked.mtimeMs || after.ctimeMs !== linked.ctimeMs) return unknown();
+              for (const directory of directories) {
+                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path))) return unknown();
+              }
+              const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+              const raw: unknown = JSON.parse(text);
+              const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+              if (!isRecord(raw) || text !== core.canonicalJson(raw) + "\n") return unknown();
+              const keys = ["v", "kind", "boundary", ...bindingFlags, ...Object.keys(bindingCounts), "comparisonCompleted", "diagnosticOnlyNoPolicyChange"];
+              if (Object.keys(raw).length !== keys.length || keys.some(key => !Object.hasOwn(raw, key)) || Object.keys(raw).some(key => !keys.includes(key)) || raw.v !== 1 || raw.kind !== "cotal.endpoint-caller-binding-diagnostic" || raw.boundary !== "local-before-strict-resolved-binding" || raw.comparisonCompleted !== true || raw.diagnosticOnlyNoPolicyChange !== true) return unknown();
+              const comparison: Record<string, boolean | number> = {};
+              for (const key of bindingFlags) { const value = raw[key]; if (typeof value !== "boolean") return unknown(); comparison[key] = value; }
+              for (const [key, max] of Object.entries(bindingCounts)) { const value = raw[key]; if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max) return unknown(); comparison[key] = value; }
+              return { state: "observed", comparison, comparisonCompleted: true, diagnosticOnlyNoPolicyChange: true };
+            } catch { return unknown(); }
+          },
+        };
+      } catch { close(); return { close, read: unknown }; }
+    };
     const secrets = [login.session.token, ordinary.bearer, ordinary.sentinelCreds, caller.bearer, control.bearer, handle.cap, holder.seed, root.operator.seed!, auth.account.signingSeed!, active.serveJwt as string, active.attestation as string, cookie];
     const diagnostic = (text: string) => {
       let redacted = text;
@@ -245,13 +314,23 @@ try {
     };
     const runCLI = async (name: string, args: string[]) => {
       if (hostedCLI) { activeCLI = name; cliPhase = "child"; }
+      const bindingObservation = hostedCLI && name === "CCLI01" ? prepareBindingObservation() : undefined;
+      const bindingInput = bindingObservation ? { ...childInput, env: { ...childInput.env, COTAL_ENDPOINT_CALLER_BINDING_DIAGNOSTIC: "1" } } : childInput;
       let result: EndpointCallerCLIResult;
       try {
-        result = await runEndpointCallerCLI(childInput, args);
+        result = await runEndpointCallerCLI(bindingInput, args);
+        if (bindingObservation) {
+          const observation = result.closeObserved && !result.closeWaitExpired ? bindingObservation.read() : { state: "unknown" };
+          const observationClosed = bindingObservation.close();
+          try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", ...(observationClosed ? observation : { state: "unknown" }) })); } catch { /* Do not replace the original child result or predicate. */ }
+        }
       } catch (error) {
+        if (bindingObservation) { try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", state: "unknown" })); } catch { /* Preserve the original helper rejection. */ } }
         cliCustodyOutstanding = true;
         cliOutcomes.push({ cell: name, result: { returnedResult: false, errorName: error instanceof Error ? error.name : "unknown", error: diagnostic(String(error)), reportedBoundary: "child-helper-rejected-before-result", terminalCustodyEstablished: false } });
         throw error;
+      } finally {
+        bindingObservation?.close();
       }
       cliCustodyOutstanding = !result.closeObserved || result.closeWaitExpired;
       cliOutcomes.push({ cell: name, result: { code: result.code, signal: result.signal, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, killAttempted: result.killAttempted, killAccepted: result.killAccepted, killError: result.killError === null ? null : diagnostic(result.killError), terminationReason: result.terminationReason, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, spawnError: result.spawnError === null ? null : { code: result.spawnError.code, message: diagnostic(result.spawnError.message) }, childError: result.childError === null ? null : { code: result.childError.code, message: diagnostic(result.childError.message) }, stdout: diagnostic(result.stdout), stderr: diagnostic(result.stderr), custody: cliCustodyOutstanding ? "unknown" : "known-child-close-observed", reportedBoundary: result.stderr.includes("native endpoint descriptor and verified caller receipt currency disagree") ? "receipt-currency-refusal" : "unclassified-child-result" } });
