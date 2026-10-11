@@ -80,6 +80,18 @@ failure leaves `retirement-pending` for a later reconciliation pass. Both callba
 AbortSignal and must honor cancellation. A host without this authority policy must refuse the
 callback and expose the pending obligation and bound UIDs to its operator.
 
+Hosts rendering a broker with `serverConfig` can opt into native full account resolution with
+`accountResolver: { kind: "full", directory, limit, intervalMs }`. The directory must be absolute
+and exclusive to that broker, the capacity positive, and the synchronization interval between
+one second and one day. The renderer disables deletion and preserves the signed account
+preloads. Omission or `{ kind: "memory" }` keeps the existing in-memory configuration; unknown
+or malformed options refuse. There is no CLI or manifest selector for this library option.
+
+Full resolution retains accepted account JWT updates across broker restarts. It does not
+serialize competing account updates or make an older signed claim safe to replay. The host
+still owns signer custody, current-claim preservation, the required server set and verified
+retirement effects. Do not put this resolver's directory or update authority in a guest.
+
 This library does not implement that authorization policy or the UID enrollment ledger. Do
 not admit hosted workloads until the host durably binds their manager and child lifecycles
 and supports their retirement. Stock provider-local manager bootstrap and cross-uid seat

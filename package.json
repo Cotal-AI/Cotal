@@ -788,6 +788,7 @@
     "smoke:environment-manager-admission": "tsx implementations/auth/smoke/environment-manager-admission.smoke.ts",
     "smoke:environment-manager-admission-index": "tsx implementations/auth/smoke/environment-manager-admission-index.smoke.ts",
     "smoke:environment-manager-bootstrap-mint": "tsx implementations/auth/smoke/environment-manager-bootstrap-mint.smoke.ts",
+    "smoke:full-account-resolver": "tsx packages/core/smoke/full-account-resolver.smoke.ts",
     "smoke:manager-run-owned-agents": "tsx implementations/manager/smoke/run-owned-agents.smoke.ts"
   },
   "dependencies": {
