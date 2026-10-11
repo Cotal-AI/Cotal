@@ -198,7 +198,7 @@ export function bindRefusalMarked(e: EpError | undefined): boolean {
  *  did not run, and {@link EpError.outcome} says a responder refusing before dispatch MUST carry
  *  `not-executed` — but {@link EpBindRefusedDetail} carries no outcome of its own, so nothing in the
  *  type stops a reply pairing the marker with `executed`. That combination is not merely odd: the
- *  only consumer of this predicate re-issues a command **without** the {@link isRepeatSafeCommand}
+ *  only consumer of this predicate re-issues a command **without** the command-effect
  *  gate, on the strength of the marker, so resolving the contradiction toward "refused" re-sends a
  *  command the reply just said had ALREADY RUN. A present outcome that disagrees therefore wins, and
  *  the reply is not read as a refusal.
@@ -210,7 +210,7 @@ export function bindRefusalMarked(e: EpError | undefined): boolean {
  *  party that is otherwise behaving. That argument does not survive SPEC 2271: a client MUST NOT
  *  automatically re-issue a command declared `write` after any outcome that does not prove
  *  non-execution, whatever `id` the re-issue carries, and `unknown` proves nothing. Since this
- *  predicate is what licenses a re-issue that SKIPS {@link isRepeatSafeCommand}, accepting absence
+ *  predicate is what licenses a re-issue that skips the command-effect gate, accepting absence
  *  made core re-issue writes on an outcome the spec says is `unknown`.
  *
  *  The cost is real and it is bounded: a responder that omits the field no longer has its splits

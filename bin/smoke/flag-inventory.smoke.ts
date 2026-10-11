@@ -96,7 +96,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // command set off the wire; invoke one command by name with JSON args.
   describe: { flags: [...TARGET, "on:string"], positionals: true },
   invoke: {
-    flags: [...TARGET, "admin:boolean", "args:string", "name:string", "self:boolean", "timeout:string"],
+    flags: [...TARGET, "admin:boolean", "args:string", "name:string", "on:string", "self:boolean", "timeout:string"],
     positionals: true,
   },
   console: { flags: [...TARGET, "plain:boolean"], positionals: false },

@@ -31,10 +31,10 @@ import {
   contractStoreContext, fetchContractClosure, contractRefToHex, contractArtifactDigestHex,
   type ContractStoreContext, type ArtifactMemo,
 } from "./endpoint-contract-store.js";
-import { parseClusterDocument, type ClusterDocument } from "./endpoint-cluster.js";
+import { parseClusterDocument, parseDescribeDescriptor, type DescribeDescriptor, type ClusterDocument } from "./endpoint-cluster.js";
 import { epCall, epScatterService } from "./endpoint-verbs.js";
 import { epGoalProgressGrantRow } from "./endpoint-grants.js";
-import { epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
+import { endpointToken, epRequestSubject, epCallerReplyFilter, epPlaneTokens, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
 import type { EpVerbTarget, EpAttributedReply, EpScatterResult, EpInstanceLiveness } from "./endpoint-verbs.js";
 
@@ -71,6 +71,7 @@ export interface ResolvedCommand {
   targeted: boolean;
   modes: readonly string[];
   capability: string;
+  effect?: "read" | "write";
 }
 
 /** An endpoint's resolved invocation surface: every command the caller may see, with recompiled
@@ -89,6 +90,8 @@ export interface ResolvedService {
    *  {@link invokeCommand} then routes commands to that exact instance, never the class `one` queue,
    *  so a multi-manager space can be addressed per-instance. Absent ⇒ class anycast (the default). */
   pinnedInstanceId?: string;
+  /** Validated authoritative describe metadata, including delegated instance currency. */
+  descriptor?: DescribeDescriptor;
 }
 
 /**
@@ -285,7 +288,7 @@ async function pooled<T, R>(items: readonly T[], limit: number, work: (item: T) 
 /** The describe answer shape a caller reads (a subset — the fields the resolver needs). */
 interface DescribeAnswer {
   public: boolean;
-  descriptor: { endpoint: string; owner: string; clusters: { digest: string; commands: string[] }[] };
+  descriptor: DescribeDescriptor;
 }
 
 /**
@@ -309,6 +312,8 @@ export async function resolveService(
   const startedAt = performance.now();
   const deadlineMs = opts.deadlineMs ?? 10_000;
   const { answer, responder } = await describeEndpoint(nc, space, endpoint, caller, { ...opts, deadlineMs });
+  parseDescribeDescriptor(answer.descriptor);
+  if (endpointToken(answer.descriptor.endpoint) !== endpointToken(endpoint)) throw new EpEnvelopeError("contract-mismatch", "describe names another endpoint");
   const store = await contractStoreContext(nc, space);
   const visible = new Set<string>(answer.descriptor.clusters.flatMap((cl) => cl.commands));
   // The store reads dominate a resolve's wall time and are all caller->broker round-trips, so they
@@ -331,6 +336,8 @@ export async function resolveService(
   // when two clusters declare one command name, last-in-document-order still wins, exactly as the
   // sequential form did. Concurrency must not make the resolved surface depend on read timing.
   const declared = docs.flatMap((doc) => doc.commands).filter((cmd) => visible.has(cmd.name)); // a describe VIEW may narrow a cluster's commands
+  if (answer.descriptor.protocol.v !== 1 && declared.some(cmd => cmd.effect === undefined))
+    throw new EpEnvelopeError("contract-mismatch", "protocol2/3 requires effect on every resolved command");
   // Each command needs two closures, so the pool runs at half the read bound to keep the in-flight
   // read count under it.
   const resolved = await pooled(declared, Math.max(1, RESOLVE_MAX_INFLIGHT_READS >> 1), async (cmd): Promise<ResolvedCommand> => {
@@ -348,12 +355,13 @@ export async function resolveService(
       targeted: cmd.targeted,
       modes: cmd.modes ?? [],
       capability: cmd.capability,
+      effect: answer.descriptor.protocol.v === 1 ? "write" : cmd.effect,
     };
   });
   opts.signal?.throwIfAborted();
   const commands = new Map<string, ResolvedCommand>();
   for (const rc of resolved) commands.set(rc.command, rc);
-  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
+  return { endpoint: answer.descriptor.endpoint, owner: answer.descriptor.owner, caller, responder, commands, descriptor: answer.descriptor, ...(opts.instanceId !== undefined ? { pinnedInstanceId: opts.instanceId } : {}) };
 }
 
 /** How many times a call is re-issued after a `not-executed` bind refusal. Every

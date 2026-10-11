@@ -48,6 +48,9 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
       one("manager-caller", { managerInstanceId: instance });
       one("manager-caller", { managerInstanceId: instance, capabilities: ["spawn", "run", "admin"] }, "spawn-run-admin");
     },
+    "endpoint-caller"() {
+      one("endpoint-caller", { endpointCaller: { endpoint: "test.example.census", instanceId: instance, capabilities: [{ endpoint: "test.example.census", command: "increment" }] }, issued: { generation: "a".repeat(32), acceptedToken: "a".repeat(32) } });
+    },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
     "retirement-requester": () => one("retirement-requester", { retirementRequester: { owner: "local", actor: "census", uid, target: { owner: "local", actor: "worker", lifecycleUid: uid } } }),
@@ -123,10 +126,14 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
       assert.throws(() => produce(token, principal.connId), /typed material exchange/);
       continue; // Explicit refused view, represented separately from Profile in the report.
     }
+    if (view === "endpoint-caller") {
+      assert.throws(() => produce(token, principal.connId), /endpoint-caller authority is unsupported/);
+      continue; // Requires the dedicated issuer hook, not generic view permission construction.
+    }
     rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId), producer: "calloutPermissions" });
   }
   assert.deepEqual(rows.filter((row) => row.producer === "calloutPermissions").map((row) => row.variant).sort(),
-    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service").map((view) => `callout-view:${view}`).sort(),
+    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service" && view !== "endpoint-caller").map((view) => `callout-view:${view}`).sort(),
     "every generic callout view must have a producer");
   return rows;
 }
