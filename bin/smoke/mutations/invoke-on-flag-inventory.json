@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "bin/smoke/flag-inventory.smoke.ts"
+  ],
+  "guard": "The shipped invoke command declares the on:string flag recorded by the exact flag inventory.",
+  "command": "pnpm build && pnpm smoke:flag-inventory",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/invoke-on-flag-inventory.json",
+  "why": [
+    "The full inventory entry imports @cotal-ai/cli, which registers invoke with invokeFlags from commands/describe.ts. The package exports dist/index.js, so the command builds the real composition before each run.",
+    "The mutation removes only onFlag from the shipped invokeFlags declaration. The unchanged exact equality assertion must report flags of `invoke` match golden, not a parser stub or a copied declaration.",
+    "The inventory is fail-fast and prints its success banner only after every assertion. No completion marker is declared for the failing run. Restoration rebuilds the genuine packages and reruns the full inventory entry before the stock runner can report a kill."
+  ],
+  "mutations": [
+    {
+      "name": "invoke drops the on flag from its registered declaration",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "export const invokeFlags = [\n  ...targetFlags,\n  onFlag,\n",
+      "replace": "export const invokeFlags = [\n  ...targetFlags,\n",
+      "expectRed": "flags of `invoke` match golden",
+      "cell": "flags of `invoke` match golden",
+      "afterRestore": "pnpm build && pnpm smoke:flag-inventory",
+      "note": "One production declaration occurrence is changed. describeFlags, the shared onFlag, command registration, parser, all other flags, and the inventory oracle remain unchanged."
+    }
+  ]
+}
