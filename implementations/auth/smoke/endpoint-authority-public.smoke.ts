@@ -720,8 +720,11 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     sha256?: string; bytes?: number; lines?: number;
     map?: { state: "bound" | "unsupported"; sha256?: string; bytes?: number } };
   type PublicLocationFrame = { module: PublicLocationModule | "other"; format: "plain" | "async" | "anonymous" | "other";
+    reason: "frame-oversize" | "syntax-miss" | "identity-miss" | "line-refused" | "column-refused" | "known";
     line?: number; column?: number };
   type PublicLocationObservation = { state: "available" | "unavailable" | "unreadable" | "oversize"; frames: PublicLocationFrame[] };
+  let publicObserverCalibration: { control: "fixture-error"; state: "pending" | "observed" | "unreadable";
+    result?: PublicLocationObservation } | undefined;
   const publicModulePins: PublicModulePin[] = [];
   const publicKnownLocations = new Map<string, { module: PublicLocationModule; widths: number[] }>();
   let publicLocationCatalogueReady = false;
@@ -864,20 +867,30 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       if (typeof stack !== "string") return { state: "unavailable", frames: [] };
       if (stack.length > 65536) return { state: "oversize", frames: [] };
       preparePublicLocationCatalogue();
+      if (!publicObserverCalibration) {
+        // Mark before calling the same observer: one genuine control, with no synthetic stack.
+        // This calibrates only this Error's observation, not an API error or general coverage.
+        publicObserverCalibration = { control: "fixture-error", state: "pending" };
+        try {
+          const control = new Error("fixed fixture observer calibration");
+          const result = publicLocationObservation(control);
+          publicObserverCalibration = { control: "fixture-error", state: "observed", result };
+        } catch { publicObserverCalibration = { control: "fixture-error", state: "unreadable" }; }
+      }
       const frames: PublicLocationFrame[] = [];
       // Parse only eight slots of the bounded string, including unknown or unsupported frames.
       for (const text of stack.split("\n").slice(1, 9)) {
-        const frame: PublicLocationFrame = { module: "other", format: "other" };
+        const frame: PublicLocationFrame = { module: "other", format: "other", reason: "syntax-miss" };
         frames.push(frame);
-        if (text.length > 4096) continue;
+        if (text.length > 4096) { frame.reason = "frame-oversize"; continue; }
         const match = /^\s*at (async )?(?:(?:[^\r\n]+) \(([^\r\n]+):(\d{1,6}):(\d{1,7})\)|([^\r\n]+):(\d{1,6}):(\d{1,7}))$/.exec(text);
         if (!match) continue;
         const known = publicKnownLocations.get(match[2] ?? match[5]!);
-        if (!known) continue;
+        if (!known) { frame.reason = "identity-miss"; continue; }
         const line = Number(match[3] ?? match[6]), column = Number(match[4] ?? match[7]);
-        if (!Number.isSafeInteger(line) || !Number.isSafeInteger(column) || line < 1 || line > known.widths.length
-          || column < 1 || column > known.widths[line - 1]! + 1) continue;
-        Object.assign(frame, { module: known.module, format: match[1] ? "async" : match[2] ? "plain" : "anonymous", line, column });
+        if (!Number.isSafeInteger(line) || line < 1 || line > known.widths.length) { frame.reason = "line-refused"; continue; }
+        if (!Number.isSafeInteger(column) || column < 1 || column > known.widths[line - 1]! + 1) { frame.reason = "column-refused"; continue; }
+        Object.assign(frame, { module: known.module, format: match[1] ? "async" : match[2] ? "plain" : "anonymous", reason: "known", line, column });
       }
       return { state: "available", frames };
     } catch { return { state: "unreadable", frames: [] }; }
@@ -1697,7 +1710,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicModulePins, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicModulePins, publicObserverCalibration, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
