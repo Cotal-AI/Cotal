@@ -431,7 +431,27 @@ const SEAMS: Seam[] = [
   // reads the lease row back from the bucket and takes it over, so the fixture's renew and release
   // are judged from the broker rather than from the fixture's own bookkeeping. Under `smoke/`, so
   // both counts move by one. It states `tls: false`.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 229, untypecheckedSites: 179 },
+  // 229/179 -> 267/212: the last pin (6b2a828a) to the measured 42d3 tree adds 38 sites,
+  // 33 under smoke/ and five outside. These are net changes, including two removals:
+  // implementations/auth/smoke/: endpoint-authority-native-worker +2,
+  // endpoint-authority-native +5, endpoint-authority-public +6, general-endpoint-r0-worker +2,
+  // general-endpoint-r0 +4, managed-run-issuance +2, platform-supervisor +4, remote-run-revoke +1.
+  // implementations/manager/smoke/: _native-account-connections +1,
+  // no-execution-participant +2, no-execution +4, run-owned-agents +1.
+  // packages/core/smoke/delivery-reconnect -1.
+  // Outside smoke/: implementations/auth/src/service +2, implementations/linear/src/serve +1,
+  // implementations/manager/src/manager +1, implementations/runtime/src/run-command -1,
+  // packages/workspace/src/control-target +1, packages/workspace/src/endpoint-caller-target +1.
+  // The two workspace calls already use the resolved TLS requirement. Scalar captures preserve
+  // that decision without asking this file's local-shape reader to model the imported resolver.
+  // The real built-tree scan measured 267/212. A later fixture addition needs a new census.
+  // 267/212 -> 270/215: source delta from 8f95 to the reviewed 941e integration.
+  // implementations/auth/smoke/endpoint-authority-native-worker adds one public-control call;
+  // endpoint-authority-public adds two calls for the new caller and ordinary AUX connection.
+  // Both files match b0ca. All three calls state tls: false for the owned plaintext broker.
+  // The public a644 carry and Windows fixture add no sites. Separate f2874 adds none either.
+  // These pins follow the named source delta, not a new measured scan. The built-tree gate remains.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 270, untypecheckedSites: 215 },
 ];
 
 /**

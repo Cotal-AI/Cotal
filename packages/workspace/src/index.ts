@@ -8,6 +8,7 @@ export * from "./colors.js";
 export * from "./connect.js";
 export * from "./cotal-config.js";
 export * from "./control-target.js";
+export * from "./endpoint-caller-target.js";
 export * from "./default-agent.js";
 export * from "./official-connectors.js";
 export * from "./extensions.js";

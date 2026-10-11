@@ -17,6 +17,7 @@ import { isCasLoss as isRawCasLoss } from "./endpoint-records.js";
 import { assertLifecycleToken } from "./endpoint-subjects.js";
 import { epgateKey, epcredFamilyPrefix, epcredRowKey, eprepairKey, parseEndpointGate, parseLedgerRow, parseEndpointRepairCursor, type CredentialLedgerRow, type EndpointGateRow, type EndpointRepairCursor } from "./lifecycle-state.js";
 import type { EpGateState, EpIssuanceGate, EpServeLedgerRow } from "./endpoint-service.js";
+import { assertEndpointPolicyHold, type EndpointPolicyHold } from "./endpoint-authority-gate.js";
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -114,11 +115,12 @@ export async function readEndpointGateGeneration(
  *  and the manager's endpoint-serve wiring drive ONE fence; the auth `kvServeIssuanceGate` wraps
  *  this by unwrapping its branded `SessionAuthStore` to `(kv, space)`. `space` is carried on the
  *  observed gate for the core mint's space-bond defense (the KV IS the space bucket). */
-export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: string; instanceId: string }): EpIssuanceGate {
+export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: string; instanceId: string; policyHold?: import("./endpoint-authority-gate.js").EndpointPolicyHold }): EpIssuanceGate {
   const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
   return {
+    ...(args.policyHold ? { policyHold: args.policyHold } : {}),
     // No gate => null, and the core mint refuses a null observe (fails closed). The state carries
     // the registered serving principal, so the core mint fence binds the minted owner.actor to it
     // (§13.1: a sibling actor cannot win the gate).
@@ -133,6 +135,7 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
       const ledgerRow: CredentialLedgerRow = {
         credentialId: row.credentialId, holderPrincipal: row.holderPrincipal,
         lifecycleUid: instanceId, endpoint, sourceChain: [...row.sourceChain], state: "active", exp: row.exp,
+        ...(row.delegated ? { delegated: row.delegated } : {}),
       };
       const rowKey = epcredRowKey(endpoint, instanceId, row.credentialId);
       // Round-trip the writer's own bytes through the consuming parser BEFORE the create: a row
@@ -143,7 +146,9 @@ export function serveIssuanceGateKv(kv: KV, space: string, args: { endpoint: str
     commit: async (expectedRevision: number) => {
       const entry = await kv.get(key);
       if (!entry || entry.operation !== "PUT" || entry.revision !== expectedRevision) return false;
-      if (parseEndpointGate(entry.value, key).state !== "open") return false;
+      const current = parseEndpointGate(entry.value, key);
+      if (current.state !== "open") return false;
+      if (current.delegated) assertEndpointPolicyHold(args.policyHold, endpoint, current.delegated.authority.policyRevision);
       try {
         await kv.update(key, entry.value, expectedRevision);
         return true;
@@ -334,12 +339,13 @@ export function repairCursorMatches(
  *  token is never re-bound). */
 export async function provisionEndpointGateOpen(
   kv: KV,
-  args: { endpoint: string; instanceId: string; principal: string; authorityFamily?: EndpointGateRow["authorityFamily"] },
+  args: { endpoint: string; instanceId: string; principal: string; delegated?: import("./endpoint-authority-policy.js").EndpointDelegatedBinding; authorityFamily?: EndpointGateRow["authorityFamily"] },
 ): Promise<void> {
   const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
   const key = epgateKey(endpoint, instanceId);
-  const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: 0, principal: args.principal,
+  const row = { state: "open" as const, generation: 0, processEpoch: 0, registrationRevision: 0, nameAuthorityRevision: args.delegated?.authority.namespaceRevision ?? 0, principal: args.principal,
+    ...(args.delegated ? { delegated: args.delegated } : {}),
     ...(args.authorityFamily === undefined ? {} : { authorityFamily: args.authorityFamily }) };
   // Round-trip through the boundary parser BEFORE the create (a gate this path would refuse to read
   // never lands durably — e.g. a non-owner-grammar principal).
@@ -366,7 +372,7 @@ export async function provisionEndpointGateOpen(
 export function endpointRegistrationBarrier(
   kv: KV,
   space: string,
-  args: { endpoint: string; instanceId: string; opId: string; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
+  args: { endpoint: string; instanceId: string; opId: string; policyHold?: EndpointPolicyHold; evict?: (holderPrincipals: readonly string[]) => Promise<boolean[]> | boolean[] },
 ): import("./endpoint-service.js").EpIssuanceBarrier {
   const { endpoint } = args;
   const instanceId = assertLifecycleToken(args.instanceId, "instanceId");
@@ -380,6 +386,7 @@ export function endpointRegistrationBarrier(
     freeze: async (expectedRevision: number) => {
       const cur = await observed();
       if (cur === null || cur.revision !== expectedRevision || cur.row.state !== "open") return null;
+      if (cur.row.delegated) assertEndpointPolicyHold(args.policyHold, endpoint, cur.row.delegated.authority.policyRevision);
       const frozen: import("./lifecycle-state.js").EndpointGateRow = { ...cur.row, state: "frozen", op: { opId, kind: "registration" } };
       try {
         return await kv.update(key, enc.encode(JSON.stringify(frozen)), expectedRevision); // the fencing TOKEN
@@ -418,6 +425,7 @@ export function endpointRegistrationBarrier(
       // Token-pinned: only THIS barrier (still holding its freeze at `token`) reopens; a reconciler
       // or newer barrier that advanced the revision wins and this stale reopen loses.
       if (cur === null || cur.revision !== token || cur.row.state !== "frozen" || cur.row.op.opId !== opId) return false;
+      if (cur.row.delegated) assertEndpointPolicyHold(args.policyHold, endpoint, cur.row.delegated.authority.policyRevision);
       const { op: _op, ...rest } = cur.row;
       void _op;
       const reopened: import("./lifecycle-state.js").EndpointGateRow = {

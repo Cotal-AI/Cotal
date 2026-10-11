@@ -1,0 +1,34 @@
+{
+  "suite": [
+    "bin/smoke/required-arg-seam.smoke.ts"
+  ],
+  "guard": "The two workspace callers pass the resolved transport requirement through a settled scalar without an omitted or undefined TLS value",
+  "command": "pnpm smoke:required-arg-seam",
+  "completionMarker": "REQUIRED-ARG SEAM SMOKE",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/endpoint-workspace-tls-seam.json",
+  "why": [
+    "The actual original failure was an unverifiable member expression. Both callers already passed their selected mesh TLS requirement. These definitions test the original omission guard, not an observed insecure transport defect.",
+    "The existing scanner reads the workspace source files directly. Replacing one settled scalar's producer with undefined leaves the call census unchanged and must fail the original named TLS assertion.",
+    "The stock runner verifies original source SHA restoration. Each afterRestore runs the same complete scanner entry. The command emits no compiled mutant. These definitions and restored-entry checks are unexecuted."
+  ],
+  "mutations": [
+    {
+      "name": "the managed seat TLS scalar is undefined",
+      "file": "packages/workspace/src/control-target.ts",
+      "find": "  const tls = mesh.tlsRequired;",
+      "replace": "  const tls = undefined;",
+      "expectRed": "FAIL: `standaloneConnectOpts`: every call site states `tls`",
+      "cell": "`${seam.fn}`: every call site states `${seam.key}`",
+      "afterRestore": "pnpm smoke:required-arg-seam"
+    },
+    {
+      "name": "the endpoint caller TLS scalar is undefined",
+      "file": "packages/workspace/src/endpoint-caller-target.ts",
+      "find": "  const tls = target.tlsRequired;",
+      "replace": "  const tls = undefined;",
+      "expectRed": "FAIL: `standaloneConnectOpts`: every call site states `tls`",
+      "cell": "`${seam.fn}`: every call site states `${seam.key}`",
+      "afterRestore": "pnpm smoke:required-arg-seam"
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "suite": [
+    "packages/core/smoke/frozen-exports.smoke.ts"
+  ],
+  "guard": "Both exported stock endpoint authority schemas and their nested collections are runtime-frozen without schema changes",
+  "command": "pnpm smoke:frozen-exports",
+  "completionMarker": "FROZEN-EXPORTS SMOKE",
+  "progressPattern": "^FROZEN-EXPORTS SMOKE",
+  "minTicks": 1,
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/endpoint-authority-schema-freeze.json",
+  "why": [
+    "The retained actual candidate audit names both new unfrozen exports. These source mutations restore each observed root defect and separately omit recursive member freezing.",
+    "The existing audit directly imports core source, so these commands produce no compiled mutant. The runner requires original source SHA restoration and the same original audit passes after each restore.",
+    "The original aggregate audit and per-export diagnostics remain untouched. These definitions have not been executed."
+  ],
+  "mutations": [
+    {
+      "name": "restore mutable ENDPOINT_AUTHORITY_INPUT_SCHEMA",
+      "file": "packages/core/src/endpoint-authority-wire.ts",
+      "find": "export const ENDPOINT_AUTHORITY_INPUT_SCHEMA = deepFreeze({ definitions, oneOf: [ { $ref: \"#/definitions/admissionRequest\" }, { $ref: \"#/definitions/releaseRequest\" }, { $ref: \"#/definitions/checkRequest\" } ] } as const);",
+      "replace": "export const ENDPOINT_AUTHORITY_INPUT_SCHEMA = { definitions, oneOf: [ { $ref: \"#/definitions/admissionRequest\" }, { $ref: \"#/definitions/releaseRequest\" }, { $ref: \"#/definitions/checkRequest\" } ] } as const;",
+      "expectRed": "exported collection \"ENDPOINT_AUTHORITY_INPUT_SCHEMA\" is NOT runtime-frozen.",
+      "cell": "every exported array (${arrays}) and plain-object (${objects}) collection in @cotal-ai/core is deep-frozen",
+      "afterRestore": "pnpm smoke:frozen-exports"
+    },
+    {
+      "name": "restore mutable ENDPOINT_AUTHORITY_OUTPUT_SCHEMA",
+      "file": "packages/core/src/endpoint-authority-wire.ts",
+      "find": "export const ENDPOINT_AUTHORITY_OUTPUT_SCHEMA = deepFreeze({ definitions, oneOf: [ { $ref: \"#/definitions/admissionResponse\" }, { $ref: \"#/definitions/releaseResponse\" }, { $ref: \"#/definitions/checkResponse\" } ] } as const);",
+      "replace": "export const ENDPOINT_AUTHORITY_OUTPUT_SCHEMA = { definitions, oneOf: [ { $ref: \"#/definitions/admissionResponse\" }, { $ref: \"#/definitions/releaseResponse\" }, { $ref: \"#/definitions/checkResponse\" } ] } as const;",
+      "expectRed": "exported collection \"ENDPOINT_AUTHORITY_OUTPUT_SCHEMA\" is NOT runtime-frozen.",
+      "cell": "every exported array (${arrays}) and plain-object (${objects}) collection in @cotal-ai/core is deep-frozen",
+      "afterRestore": "pnpm smoke:frozen-exports"
+    },
+    {
+      "name": "freeze only schema roots and leave nested definitions mutable",
+      "file": "packages/core/src/endpoint-authority-wire.ts",
+      "find": "    for (const child of Object.values(v as Record<string, unknown>)) deepFreeze(child);\n",
+      "replace": "",
+      "expectRed": "exported collection \"ENDPOINT_AUTHORITY_INPUT_SCHEMA.definitions\" is NOT runtime-frozen.",
+      "cell": "every exported array (${arrays}) and plain-object (${objects}) collection in @cotal-ai/core is deep-frozen",
+      "afterRestore": "pnpm smoke:frozen-exports"
+    }
+  ]
+}

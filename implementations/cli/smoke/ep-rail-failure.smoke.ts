@@ -197,8 +197,8 @@ try {
   {
     // A describe answered ok:true whose cluster document is not in the store: the failure is the
     // caller's post-describe store read, after a manager answered.
-    const digest = "e".repeat(64);
-    const sub = serveDescribe((id) => ({ v: 1, id, ok: true, data: { public: true, descriptor: { endpoint: "manager", owner: "local", clusters: [{ digest, commands: ["ps"] }] } } }));
+    const digest = `sha256:${"e".repeat(64)}`;
+    const sub = serveDescribe((id) => ({ v: 1, id, ok: true, data: { public: true, descriptor: { endpoint: "manager", owner: "local", protocol: { v: 1 }, clusters: [{ digest, commands: ["ps"] }] } } }));
     const r = await askManager(SPACE, SERVER, "ps", undefined, {}, "any", 2000);
     await sub.drain();
     c("live: an answered describe followed by a failed store read is not 'no manager reachable' (unanswered=false)",

@@ -439,7 +439,7 @@ and `define-persona`:
 
 | Command | Effect | Repeat-safe |
 |---|---|---|
-| `list-meshes` | Return the redacted projection | Yes: add to `REPEAT_SAFE_COMMANDS[manager]` (`endpoint-grants.ts:234`) |
+| `list-meshes` | Return the redacted projection | Declare `effect: "read"` under protocol2/3 |
 | `register-mesh` | Create one record from coordinates, refusing an existing name | No: it refuses on conflict, so a retry after a responded-but-unbound split cannot be told from a duplicate create |
 | `mesh-material` | Provide one material file for one target mesh: minted where the host holds B's seed, delivered from staged material where it does not (4.1) | No: it mints or hands out a credential |
 | `mesh-disconnect` | Drop a tracked extra-mesh material path, and deprovision on B only where a B-scoped deprovisioner exists (4.2) | No: a second run acts on whatever now holds the path, the `despawn` reasoning in that table's own comment |
