@@ -34,6 +34,35 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Delegated endpoint receipt binding in 0.80.0 (unreleased)
+
+Signed delegated endpoint caller and holder-control receipts now require payload version3.
+Caller receipts carry the full registered `clusterDigests` and a separate
+`privateClusterDigests` projection. A describe-only caller has an empty private projection.
+Holder-control receipts forbid that projection field. Older receipt payloads refuse.
+
+Delegated serving workers must return protocol3 describe with `registeredClusterSetDigest`
+derived from the full registered closure set before private visibility filtering. Clients check
+that commitment, the permitted private closures and selected commands against the signed receipt.
+A missing commitment or a mismatch refuses before application invocation.
+
+Pause new delegated acquisitions while moving the auth issuer, core, serving workers and caller
+providers, including workspace and CLI consumers, to compatible versions. Resume acquisition only
+when the serving instance supplies the required protocol3 descriptor and its current registration
+and process currency. There is no receipt-version fallback or automatic conversion of stored
+serving material. Repeating an already completed activation does not migrate that material.
+
+Acquire a fresh caller bearer and receipt through the normal signed-in public provider with the
+explicit instance and commands. Obtain holder control through its holder-proof acquisition path.
+Do not rewrite signed receipts or substitute Manager, operator or raw credentials for a caller.
+Keep deployment trust installed through its authenticated configuration channel. Update its pins
+through that channel if the deployment assignment, issuer or native authority changes.
+
+The HTTP request and response envelopes, deployment trust record and serving attestation remain
+version2. The serving attestation's protocol field is protocol3. This change does not migrate
+ordinary user identities or grants, or change the existing Manager authority and legacy endpoint
+paths. It does not require deleting deployment state or weakening currency and trust checks.
+
 ## Managed Claude workspace trust in 0.80.0
 
 Before upgrading, snapshot the manager's private Cotal state and Claude configuration home.
