@@ -28,13 +28,16 @@ import { runEndpointCallerCLI, type EndpointCallerCLIResult } from "../../cli/sm
 const twoUserPublic = process.argv.includes("--two-user-public-acceptance");
 // The diagnostic reuses the 37 public controls and adds 11 boundary observations, not retry acceptance.
 const protocol3Diagnostic = process.argv.includes("--protocol3-public-entry-diagnostic");
-if (twoUserPublic || protocol3Diagnostic) {
-  if (process.argv.slice(2).length !== 1 || ["ENDPOINT_PUBLIC_CLI", "ENDPOINT_U12_REPORT", "ENDPOINT_PREPARE_REFUSAL", "COTAL_HOME"].some(name => process.env[name] !== undefined)) throw new Error(protocol3Diagnostic ? "protocol3 diagnostic requires only --protocol3-public-entry-diagnostic without fixture overrides" : "two-user public entry requires only --two-user-public-acceptance without fixture overrides");
+const issuedPublicAcceptance = process.argv.includes("--issued-public-caller-acceptance");
+const publicEntryScope = issuedPublicAcceptance ? "issued-public-caller-acceptance" : protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component";
+const publicReadControls = protocol3Diagnostic || issuedPublicAcceptance;
+if (twoUserPublic || protocol3Diagnostic || issuedPublicAcceptance) {
+  if (process.argv.slice(2).length !== 1 || ["ENDPOINT_PUBLIC_CLI", "ENDPOINT_U12_REPORT", "ENDPOINT_PREPARE_REFUSAL", "COTAL_HOME"].some(name => process.env[name] !== undefined)) throw new Error(issuedPublicAcceptance ? "issued public acceptance requires only --issued-public-caller-acceptance without fixture overrides" : protocol3Diagnostic ? "protocol3 diagnostic requires only --protocol3-public-entry-diagnostic without fixture overrides" : "two-user public entry requires only --two-user-public-acceptance without fixture overrides");
   const terminalLog = console.log.bind(console);
   try { await runTwoUserPublicAcceptance(); }
   catch {
     process.exitCode = 1;
-    terminalLog(JSON.stringify({ scope: protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component", terminalFailure: true, cleanupConfirmed: false, reportRetained: false, fullEndpointAcceptance: false }));
+    terminalLog(JSON.stringify({ scope: publicEntryScope, terminalFailure: true, cleanupConfirmed: false, reportRetained: false, fullEndpointAcceptance: false }));
     terminalLog("COTAL_SMOKE_SENTINEL cells=1 passed=0 failed=1");
   }
 } else {
@@ -580,6 +583,15 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     "TUP29-all-known-source-CLI-children-close-observed", "TUP30-final-effects-A3-B2-no-negative-effects",
     "TUP31-A-serving-worker-stopped-ack-and-exit-zero", "TUP32-B-serving-worker-stopped-ack-and-exit-zero",
     "TUP33-two-auth-handles-and-idp-listener-closed", "TUP34-parent-owned-connections-and-broker-closed",
+    ...(issuedPublicAcceptance ? ["P3A01-genuine-issued-receipt-and-low-level-descriptor",
+      "P3A02-low-level-write-before", "P3A03-low-level-read-before-no-effect",
+      "P3A04-public-write-success-exactly-one-effect", "P3A05-public-read-success-no-write-effect",
+      "P3A06-own-connection-generation-not-copied", "P3A07-public-other-command-refused-zero-effects",
+      "P3A08-cross-owner-acquisition-refused-zero-effects", "P3A09-public-reconnect-own-discovery-and-read",
+      "P3A10-issued-option-requires-user-bearer", "P3A11-issued-option-requires-lifecycle",
+      "P3A12-low-level-write-after", "P3A13-low-level-read-after-no-effect",
+      "P3A14-public-effects-and-no-async-errors-reconciled", "P3A15-legacy-view-issued-discovery-refused-no-fallback",
+      "P3A16-public-client-and-known-acquisitions-settled"] as const : []),
     ...(protocol3Diagnostic ? ["P3D01-genuine-receipt-bound-write-read-descriptor", "P3D02-low-level-write-before",
       "P3D03-declared-read-before-no-state-change", "P3D04-public-constructor-stage-observed",
       "P3D05-public-start-stage-observed", "P3D06-public-write-entry-stage-observed",
@@ -645,7 +657,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     if (phase !== "cleanup") phase = name;
     assert.ok(!attempted.has(name), "duplicate two-user cell"); attempted.add(name); failedCell = name;
     await action(); passed.add(name); failedCell = null;
-    log(JSON.stringify({ cell: name, passed: true, scope: protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component" }));
+    log(JSON.stringify({ cell: name, passed: true, scope: publicEntryScope }));
   }
   async function snapshot(): Promise<number[]> {
     assert.equal(workers.length, 2, "two actual workers required for effect fencing");
@@ -659,7 +671,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       const effects = worker.messages.filter(m => m.kind === "effect");
       assert.equal(response.effects, effects.length, "snapshot differs from actual effect IPC sequence");
       assert.ok(effects.every((m, index) => m.command === "increment" && m.effects === index + 1), "unexpected worker command or effect sequence");
-      if (protocol3Diagnostic) {
+      if (publicReadControls) {
         assert.ok(typeof response.applicationRequests === "number" && Number.isSafeInteger(response.applicationRequests) && response.applicationRequests >= 0);
         assert.ok(typeof response.readVisits === "number" && Number.isSafeInteger(response.readVisits) && response.readVisits >= 0);
         assert.equal(response.applicationRequests, response.effects + response.readVisits);
@@ -745,7 +757,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     for (const a of accounts) await core.setupSpaceStreams({ servers, space: a.space, creds: await core.mintCreds(a.auth, core.newIdentity(), "provisioner") });
     const input = { type: "null" }, output = { type: "object", properties: { effects: { type: "integer" }, owner: { type: "string" } }, required: ["effects", "owner"], additionalProperties: false };
     const contract = { input: core.compileContract({ root: input }), output: core.compileContract({ root: output }) };
-    const cluster = { urn: endpoint, revision: 1, attributes: [], events: [], commands: ["increment", "other", ...(protocol3Diagnostic ? ["read-state"] : [])].map(name => ({ name, class: "ephemeral", effect: name === "read-state" ? "read" : "write", targeted: false, capability: "testcall", inputDigest: contract.input.closureDigest, outputDigest: contract.output.closureDigest })) };
+    const cluster = { urn: endpoint, revision: 1, attributes: [], events: [], commands: ["increment", "other", ...(publicReadControls ? ["read-state"] : [])].map(name => ({ name, class: "ephemeral", effect: name === "read-state" ? "read" : "write", targeted: false, capability: "testcall", inputDigest: contract.input.closureDigest, outputDigest: contract.output.closureDigest })) };
     const manifest = core.singleDocumentClosure(cluster).manifest, closures = [core.contractDigest(manifest)];
     const artifacts = [input, output, { ...core.singleDocumentClosure(input).manifest }, { ...core.singleDocumentClosure(output).manifest }, cluster, { ...manifest }].map(value => ({ digest: core.contractDigest(value), value }));
     const account = { space: primary.space, accountPublicKey: primary.auth.account.pub, assignmentRevision: 1 };
@@ -766,7 +778,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         const decision = decisions.get(request.instanceId), key = shareKey(p, request.instanceId);
         const own = decision?.holder.owner === p.owner && decision.holder.actor === p.actor && decision.holder.lifecycleUid === p.uid;
         const shared = shares.has(key);
-        if (!decision || request.endpoint !== endpoint || !principals.some(known => core.canonicalJson(known) === core.canonicalJson(p)) || request.commands.some(command => command !== "increment" && !(protocol3Diagnostic && command === "read-state" && own)) || (!own && (!shared || request.commands.length !== 1))) throw new Error("caller policy denied");
+        if (!decision || request.endpoint !== endpoint || !principals.some(known => core.canonicalJson(known) === core.canonicalJson(p)) || request.commands.some(command => command !== "increment" && !(publicReadControls && command === "read-state" && own)) || (!own && (!shared || request.commands.length !== 1))) throw new Error("caller policy denied");
         if (shared) shareDecisions.push(key);
         return { capabilities: request.commands.map(command => ({ endpoint, command })), expiresAt: ceiling.expiresAt };
       },
@@ -821,7 +833,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
       const control = await withHome(clients[index].home, () => authApi.cotalAuthProvider.endpointServingControlAuthority!({ store: clients[index].store, dir: clients[index].state, space: primary.space, actor: "cli", trust, selection, credentialDigest: active[index].credentialDigest, holder: { publicKey: active[index].holder.id, sign: async bytes => fromSeed(enc.encode(active[index].holder.seed)).sign(bytes) } }));
       assert.equal(control.receipt.kind, "cotal.endpoint-control"); assert.deepEqual(control.receipt.principal, principals[index]); controlPrincipals.push(control.receipt.principal);
       const material = { publicControl: true, servers, authority: { space: primary.space, instanceId: trust.authority.instanceId, epoch: trust.authority.epoch }, expectedControlPrincipal: control.receipt.principal, trust: { issuer: trust.issuer, accountPublicKey: trust.account.accountPublicKey, assignmentRevision: trust.account.assignmentRevision, keys: trust.keys, accountSigningKey: trust.accountSigningKey }, controlBearer: control.bearer, sentinelCreds: control.sentinelCreds, serveJwt: active[index].serveJwt, attestation: active[index].attestation, artifacts, holder: active[index].holder, serveCreds: new TextDecoder().decode(fmtCreds(active[index].serveJwt, fromSeed(enc.encode(active[index].holder.seed)))), input, output };
-      if (protocol3Diagnostic) Object.assign(material, { publicEntryDiagnostic: true });
+      if (publicReadControls) Object.assign(material, { publicEntryDiagnostic: true });
       const materialSafe = !["controlCreds", "signingSeed", "executorCreds", "store", "operatorSeed", "authCap", "hostStore"].some(key => Object.hasOwn(material, key));
       assert.ok(materialSafe); participantMaterialChecks.push(materialSafe);
       const path = join(dir, `worker-${index}.json`); core.writeSecretFile(path, JSON.stringify(material));
@@ -1090,6 +1102,125 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         // opened before a failed start. stop() also awaits a concurrently settling start.
       });
     }
+    if (issuedPublicAcceptance) {
+      const acceptanceIds = ids.slice(37);
+      let low: Awaited<ReturnType<typeof connected>> | undefined;
+      let client: core.CotalEndpoint | undefined;
+      let service: core.ResolvedService | undefined;
+      const publicErrors: unknown[] = [];
+      const acquired = async <T>(operation: () => Promise<T>): Promise<T> => {
+        const flight = Promise.resolve().then(operation);
+        diagnosticAcquisitions.add(flight);
+        void flight.then(() => diagnosticAcquisitions.delete(flight), () => diagnosticAcquisitions.delete(flight));
+        return await bounded(flight);
+      };
+      const lowCall = async (command: "increment" | "read-state") => {
+        assert.ok(low); core.assertEndpointCallerResolvedService(low.service, low.material.receipt);
+        const before = await snapshot(), counts = { ...diagnosticCounters[0] };
+        const response = await acquired(() => core.invokeCommand(low!.nc, primary.space, low!.service, command, undefined, { deadlineMs: budget() }));
+        assert.equal(response.reply.ok, true); assert.equal(response.responder.instanceId, active[0].instanceId);
+        const after = await snapshot(), expected = [...before]; if (command === "increment") expected[0]++;
+        assert.deepEqual(after, expected); assert.deepEqual(response.reply.data, { effects: after[0], owner: principals[0].owner });
+        assert.equal(diagnosticCounters[0].applicationRequests, counts.applicationRequests + 1);
+        assert.equal(diagnosticCounters[0].readVisits, counts.readVisits + Number(command === "read-state"));
+      };
+      const publicCall = async (command: "increment" | "read-state") => {
+        assert.ok(client && low && service); core.assertEndpointCallerResolvedService(service, low.material.receipt);
+        const before = await snapshot(), counts = { ...diagnosticCounters[0] };
+        const response = await acquired(() => client!.invokeService(endpoint, command, undefined,
+          { instanceId: active[0].instanceId, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }));
+        assert.equal(response.reply.ok, true); assert.equal(response.responder.instanceId, low.material.receipt.selection.instanceId);
+        assert.equal(response.responder.epoch, low.material.receipt.processEpoch);
+        const after = await snapshot(), expected = [...before]; if (command === "increment") expected[0]++;
+        assert.deepEqual(after, expected); assert.deepEqual(response.reply.data, { effects: after[0], owner: principals[0].owner });
+        assert.equal(diagnosticCounters[0].applicationRequests, counts.applicationRequests + 1);
+        assert.equal(diagnosticCounters[0].readVisits, counts.readVisits + Number(command === "read-state"));
+        assert.equal(publicErrors.length, 0);
+        log(JSON.stringify({ scope: publicEntryScope, command, replyOk: true,
+          writeEffects: after[0] - before[0], requestDelta: diagnosticCounters[0].applicationRequests - counts.applicationRequests,
+          readDelta: diagnosticCounters[0].readVisits - counts.readVisits, receiptBindingVerified: true }));
+      };
+      await check(acceptanceIds[0], async () => {
+        low = await acquired(() => connected(0, active[0].instanceId, ["describe", "increment", "read-state"]));
+        assert.equal(low.service.descriptor?.protocol.v, 3); assert.equal(low.service.commands.get("increment")?.effect, "write");
+        assert.equal(low.service.commands.get("read-state")?.effect, "read"); core.assertEndpointCallerResolvedService(low.service, low.material.receipt);
+      });
+      await check(acceptanceIds[1], () => lowCall("increment"));
+      await check(acceptanceIds[2], () => lowCall("read-state"));
+      await check(acceptanceIds[3], async () => {
+        assert.ok(low);
+        client = new core.CotalEndpoint({ space: primary.space, servers, bearer: low.material.bearer,
+          sentinelCreds: low.material.sentinelCreds, lifecycleUid: low.material.receipt.principal.uid, ...{ issuedCaller: true },
+          card: { name: "issued-public-acceptance", kind: "endpoint" }, tls: false,
+          consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+          onConnection: nc => { diagnosticConnections.push(nc); track(nc); } });
+        diagnosticClients.push(client); client.on("error", error => { publicErrors.push(error); cleanupErrors.push("issued public acceptance asynchronous error"); });
+        await acquired(() => client!.start());
+        service = await acquired(() => client!.describeService(endpoint,
+          { ...{ instanceId: active[0].instanceId }, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }));
+        core.assertEndpointCallerResolvedService(service, low.material.receipt);
+        await publicCall("increment"); diagnosticWriteEffects++;
+      });
+      await check(acceptanceIds[4], () => publicCall("read-state"));
+      await check(acceptanceIds[5], async () => {
+        assert.ok(low && service && "generation" in service.caller);
+        assert.deepEqual(client!.principal, { owner: low.material.receipt.principal.owner, actor: low.material.receipt.principal.actor });
+        assert.equal(service.caller.uid, low.material.receipt.principal.uid);
+        assert.notEqual(service.caller.generation, low.caller.generation, "public client discovers its own issuance, not the low-level connection's");
+        assert.deepEqual(await snapshot(), [5, 2]);
+      });
+      await negative(acceptanceIds[6], async () => {
+        await assert.rejects(() => acquired(() => client!.invokeService(endpoint, "other", undefined,
+          { instanceId: active[0].instanceId, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) })),
+          (error: unknown) => error instanceof core.EpEnvelopeError && error.code === "not-found");
+      });
+      await negative(acceptanceIds[7], async () => { await expectPublicDenial(() => acquire(0, active[1].instanceId), /caller policy denied/); });
+      await check(acceptanceIds[8], async () => {
+        const before = await snapshot();
+        await acquired(() => client!.reconnect());
+        assert.equal(diagnosticConnections.length, 2);
+        const closedError = await bounded(diagnosticConnections[0].closed()); assert.ok(!closedError && diagnosticConnections[0].isClosed());
+        service = await acquired(() => client!.describeService(endpoint,
+          { ...{ instanceId: active[0].instanceId }, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) }));
+        assert.ok(low); core.assertEndpointCallerResolvedService(service, low.material.receipt);
+        await publicCall("read-state"); assert.deepEqual(await snapshot(), before);
+      });
+      await negative(acceptanceIds[9], async () => {
+        assert.throws(() => new core.CotalEndpoint({ space: primary.space, servers, ...{ issuedCaller: true },
+          lifecycleUid: principals[0].uid, card: { name: "invalid-issued-static", kind: "endpoint" } }), /issuedCaller requires a user bearer/);
+      });
+      await negative(acceptanceIds[10], async () => {
+        assert.ok(low);
+        assert.throws(() => new core.CotalEndpoint({ space: primary.space, servers, ...{ issuedCaller: true },
+          bearer: low!.material.bearer, sentinelCreds: low!.material.sentinelCreds,
+          card: { name: "invalid-issued-lifecycle", kind: "endpoint" } }), /requires this endpoint's lifecycleUid/);
+      });
+      await check(acceptanceIds[11], () => lowCall("increment"));
+      await check(acceptanceIds[12], () => lowCall("read-state"));
+      await check(acceptanceIds[13], async () => {
+        assert.equal(diagnosticWriteEffects, 1); assert.deepEqual(await snapshot(), [6, 2]); assert.equal(publicErrors.length, 0);
+      });
+      await negative(acceptanceIds[14], async () => {
+        const legacy = new core.CotalEndpoint({ space: aux.space, servers, bearer: auxOrdinary.bearer,
+          sentinelCreds: auxOrdinary.sentinelCreds, lifecycleUid: auxPrincipal.uid, ...{ issuedCaller: true },
+          card: { name: "legacy-view-issued-refusal", kind: "endpoint" }, tls: false,
+          consume: false, registerPresence: false, watchPresence: false, watchChannels: false,
+          onConnection: nc => { diagnosticConnections.push(nc); track(nc); } });
+        diagnosticClients.push(legacy);
+        const expectedDenial = (error: unknown) => error instanceof core.EpEnvelopeError && error.code === "permission-denied"
+          || error instanceof PermissionViolationError || error instanceof Error && error.cause instanceof PermissionViolationError;
+        legacy.on("error", error => { if (!expectedDenial(error)) cleanupErrors.push("unexpected legacy issued-discovery error"); });
+        await assert.rejects(() => acquired(() => legacy.start()), expectedDenial);
+        await bounded(legacy.stop());
+        await assert.rejects(() => legacy.describeService(endpoint), /endpoint not started/);
+      });
+      await check(acceptanceIds[15], async () => {
+        await bounded(client!.stop()); assert.equal(diagnosticAcquisitions.size, 0);
+        for (const nc of diagnosticConnections) { const error = await bounded(nc.closed()); assert.ok(!error && nc.isClosed()); }
+        assert.ok(low); await bounded(low.nc.close()); const error = await bounded(low.nc.closed()); assert.ok(!error && low.nc.isClosed());
+        assert.equal(publicErrors.length, 0);
+      });
+    }
     phase = "cleanup";
   } catch (error) { failure = error; failurePhase = phase; }
   finally {
@@ -1106,8 +1237,8 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           await waitFor(() => worker.messages.some(m => m.kind === "stopped") || !!worker.error); assert.ok(!worker.error);
           const code = await bounded(worker.exit); assert.equal(code, 0); worker.stopped = true;
           const stopped = worker.messages.find(m => m.kind === "stopped"); assert.equal(stopped?.knownConnectionsClosed, 2);
-          if (!failure) assert.equal(stopped?.effects, index === 0 ? 3 + (protocol3Diagnostic ? 2 + diagnosticWriteEffects : 0) : 2);
-          if (protocol3Diagnostic && !failure) {
+          if (!failure) assert.equal(stopped?.effects, index === 0 ? 3 + (publicReadControls ? 2 + diagnosticWriteEffects : 0) : 2);
+          if (publicReadControls && !failure) {
             assert.equal(stopped?.applicationRequests, diagnosticCounters[index].applicationRequests);
             assert.equal(stopped?.readVisits, diagnosticCounters[index].readVisits);
             assert.equal(stopped?.applicationRequests, Number(stopped?.effects) + Number(stopped?.readVisits));
@@ -1134,7 +1265,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: protocol3Diagnostic ? "protocol3-public-entry-diagnostic" : "two-real-user-public-component", plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
