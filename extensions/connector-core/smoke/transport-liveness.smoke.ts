@@ -415,24 +415,43 @@ const starting = new MeshAgent({ ...cfg, name: "starting-agent" });
 const startingEp = starting.ep as unknown as EndpointHarness;
 let releaseBind!: () => void;
 const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
+let enteredBind!: () => void;
+const bindParked = new Promise<void>((resolve) => { enteredBind = resolve; });
+let bindReleased = false;
+let bindFinished = false;
 const freshNc = new DrainWitnessNc("nats://fresh-after-stop");
 let supervised = 0;
 startingEp.connectAndBind = async () => {
+  enteredBind();
   await bindGate;
+  bindFinished = true;
   startingEp.nc = freshNc;
   startingEp.heartbeatTimer = setInterval(() => {}, 60_000);
 };
 startingEp.superviseConnection = () => { supervised++; };
 const startingPromise = starting.start(1);
+await bindParked;
+let stopSettled = false;
+const stopFlight = starting.stop().then(
+  () => { stopSettled = true; return { ok: true as const }; },
+  (error: unknown) => { stopSettled = true; return { ok: false as const, error }; },
+);
+// The controlled bind cannot finish until this fixture releases it. Observe the terminal decision
+// while that gate is held, but do not await stop completion ahead of the work it must join.
 await tick();
-await starting.stop(); // stop fully completes while the initial bind is still parked
+const stoppedWhileBindParked = (starting.ep as unknown as { stopped: boolean }).stopped &&
+  !bindReleased && !bindFinished && !stopSettled;
+bindReleased = true;
 releaseBind();
-await startingPromise;
+const [stopResult] = await Promise.all([stopFlight, startingPromise]);
+if (!stopResult.ok) throw stopResult.error;
 check(
   "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
-  freshNc.closes === 1 && freshNc.drains === 0 && freshNc.closedFlag === true && startingEp.nc === undefined &&
+  stoppedWhileBindParked && bindFinished && freshNc.closes === 1 && freshNc.drains === 0 && freshNc.closedFlag === true && startingEp.nc === undefined &&
     startingEp.heartbeatTimer === undefined && supervised === 0,
   {
+    stoppedWhileBindParked,
+    bindFinished,
     closes: freshNc.closes,
     drains: freshNc.drains,
     closed: freshNc.closedFlag,
