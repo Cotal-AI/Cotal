@@ -1,0 +1,84 @@
+{
+  "grades": "suite",
+  "guard": "Pending bootstrap cleanup uses the original native lifecycle retirement before verified endpoint containment and registration abort",
+  "suite": ["implementations/auth/smoke/environment-manager-pending-retirement.smoke.ts"],
+  "command": "pnpm smoke:environment-manager-pending-retirement",
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 23,
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "why": "The internal source helper runs against an owned native broker with existing grant builders, separately scoped fixture scanners, a real issuer-produced bootstrap connection, a controlled endpoint ledger/holder and a foreign-owner positive control. Native gate/head/ledger state, KICK and registration CAS are observed. This is helper and broker execution, not external admission, a production plane claim, prepared-manager issuance or hosted execution. Source imports build no mutant package dist.",
+  "mutations": [
+    {
+      "name": "registration abort precedes native lifecycle retirement",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "  await runAgentRetirementBarrier(reg, {\n    owner: pin.owner, actor: environmentBootstrapActor(pin.instanceId), lifecycleUid: pin.lifecycleUid,\n    opId: pin.operationId, frontierStreams: retirementFrontierStreams(space),\n  }, deps);\n",
+      "replace": "",
+      "expectRed": "native lifecycle retirement precedes endpoint abort",
+      "cell": "native lifecycle retirement precedes endpoint abort"
+    },
+    {
+      "name": "changed host admission coordinates authorize retirement",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "contractDigest(staged) !== contractDigest({ v: 1, kind: \"environment-manager-admission\", space, ...pin })",
+      "replace": "false",
+      "expectRed": "changed environmentId refuses before native movement",
+      "cell": "changed environmentId refuses before native movement"
+    },
+    {
+      "name": "ordinary manager gates enter environment cleanup",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "row.authorityFamily !== \"environment-manager\" || ",
+      "replace": "",
+      "expectRed": "ordinary registration is not cleanup authority",
+      "cell": "ordinary registration is not cleanup authority"
+    },
+    {
+      "name": "completed registration enters pending bootstrap cleanup",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "row.registrationRevision !== 0 || ",
+      "replace": "",
+      "expectRed": "completed registration is not cleanup authority",
+      "cell": "completed registration is not cleanup authority"
+    },
+    {
+      "name": "missing retirement mechanics is detected only after the native freeze",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "if (typeof deps?.[field] !== \"function\")",
+      "replace": "if (false)",
+      "expectRed": "missing native policy refuses before any fence",
+      "cell": "missing native policy refuses before any fence"
+    },
+    {
+      "name": "pending endpoint credentials remain active after cleanup",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "  for (const row of rows) await barrier.revoke(row);\n",
+      "replace": "",
+      "expectRed": "pending endpoint family is revoked and original registration is aborted",
+      "cell": "pending endpoint family is revoked and original registration is aborted"
+    },
+    {
+      "name": "unverified endpoint eviction releases completed cleanup",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "result.verifiedGone !== true",
+      "replace": "false",
+      "expectRed": "unverified endpoint eviction prevents abort and completed result",
+      "cell": "unverified endpoint eviction prevents abort and completed result"
+    },
+    {
+      "name": "lost registration abort CAS reports completed cleanup",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": "      throw new EpEnvelopeError(\"conflict\", \"pending environment retirement lost its registration abort fence\");",
+      "replace": "      return { lifecycleUid: pin.lifecycleUid, operationId: pin.operationId };",
+      "expectRed": "lost endpoint abort CAS cannot return completed cleanup",
+      "cell": "lost endpoint abort CAS cannot return completed cleanup"
+    },
+    {
+      "name": "invalid birth stamp still authorizes cleanup",
+      "file": "implementations/auth/src/environment-manager-pending-retirement.ts",
+      "find": " || Number(initial.openRevision) < 1",
+      "replace": "",
+      "expectRed": "invalid initial gate stamp refuses before native retirement",
+      "cell": "invalid initial gate stamp refuses before native retirement"
+    }
+  ]
+}
