@@ -8,12 +8,14 @@ import { join, dirname } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
+import { createSpaceAuth, serverConfig, isReachable, epRequestObserveFilter, token, type EpRequestObserveScope } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, peerOptionSweep, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, issuedRailLiterals, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, peerOptionSweep, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+
+import { servedRunRequestSubjects } from "../src/authority-client.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -296,26 +298,240 @@ try {
     assert.deepEqual(fixtures.filter((f) => holdsServerView(f.permissions)).map((f) => `${f.profile}/${f.variant}`), []);
   });
 
+  await check("the syntax census distinguishes prose from decoded literal occurrences", async () => {
+    const controls: [string, string, boolean][] = [
+      ["line-comment", "// ep.v1\nconst x = 1;", false],
+      ["block-comment", "/* ep.v1 */ const x = 1;", false],
+      ["jsdoc", "/** ep.v1 */ function x() {}", false],
+      ["single-quoted", "const x = 'ep.v1';", true],
+      ["double-quoted", 'const x = "ep.v1";', true],
+      ["comment-delimiters-in-string", 'const x = "/* ep.v1 */";', true],
+      ["escaped-hex", String.raw`const x = "\x65p.v1";`, true],
+      ["escaped-unicode", String.raw`const x = "ep.\u00761";`, true],
+      ["template-no-hole", "const x = `ep.v1`;", true],
+      ["template-head", "const x = `ep.v1${unknown}`;", true],
+      ["template-middle", "const x = `${a}ep.v1${b}`;", true],
+      ["template-tail", "const x = `${a}ep.v1`;", true],
+      ["template-interpolation", "const x = `${'ep.v1'}`;", true],
+      ["escaped-template", String.raw`const x = ` + "`" + String.raw`ep.\u00761` + "${a}`;", true],
+      ["unknown-hole-not-joined", "const x = `ep.${unknown}`;", false],
+      ["split-static-parts-not-joined", "const x = `ep.${unknown}v1`;", false],
+      ["regex-is-not-string", String.raw`const x = /ep\.v1/;`, false],
+      ["division", "const x = 12 / 3;", false],
+      ["type-literal-conservative", 'type X = "ep.v1";', true],
+      ["interface-key-conservative", 'interface X { "ep.v1": string }', true],
+      ["property-key", 'const x = { "ep.v1": true };', true],
+      ["import-path-conservative", 'import "ep.v1";', true],
+      ["substring-not-narrowed", 'const x = "ep.v10";', true],
+    ];
+    const sources = new Map(controls.map(([name, source]) => [`/census-controls/${name}.ts`, source]));
+    const found = issuedRailLiterals(sources);
+    for (const [name, , expected] of controls) assert.equal(found.get(`/census-controls/${name}.ts`), expected, name);
+    assert.throws(() => issuedRailLiterals(new Map([["/census-controls/malformed.ts", "const x = `unterminated"]])), /census syntax refused/);
+    const root = fileURLToPath(new URL("../../..", import.meta.url)), bin = join(root, "bin/cotal.ts");
+    assert.equal(issuedRailLiterals(new Map([[bin, readFileSync(bin, "utf8") + '\nvoid "ep.v1";']])).get(bin), true, "bin literal control");
+  });
+
   await check("the issued rail is spelled only by core's endpoint subject and grant builders", async () => {
-    // The versioned rail (SPEC 13.15) is reachable only through the builders that pin the
-    // generation token beside the caller triple. Any other shipped file spelling `ep.v1` is a
-    // second, unpinned way onto the rail, so the scan closes over every shipped source and
-    // names the four files that may.
+    // This confines detectable decoded string/template occurrences, including erased syntax.
+    // It does not prove arbitrary computed subjects or complete runtime construction ownership.
     const root = fileURLToPath(new URL("../../..", import.meta.url));
     const files = shippedSources(root);
     const builders = ["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
       "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts"];
-    // The generated docs bundle mirrors the published pages, which describe the rail in prose;
-    // it builds no subject. It is the one shipped file allowed to spell the rail outside core.
+    // Inherited generated prose-data exception, not a complete all-code guarantee.
     const prose = "extensions/connector-core/src/docs-bundle.generated.ts";
-    const spelled = files.filter((file) => /ep\.v1/.test(readFileSync(file, "utf8"))).map((f) => f.slice(root.length)).filter((f) => f !== prose).sort();
-    assert.deepEqual(spelled, [...builders].sort());
+    const corpus = new Map(files.filter(file => file.slice(root.length) !== prose).map(file => [file, readFileSync(file, "utf8")]));
+    const spelled = [...issuedRailLiterals(corpus)].filter(([, found]) => found).map(([file]) => file.slice(root.length));
+    assert.deepEqual(spelled.filter(file => !builders.includes(file)).sort(), []);
+    assert.ok(builders.every(builder => files.some(file => file.slice(root.length) === builder)), "the corpus no longer reaches all four builders");
     // Positive control: the corpus really contains the endpoint subject builders it must cover.
     assert.ok(files.some((file) => /function epRequestSubject/.test(readFileSync(file, "utf8"))), `scanned ${files.length} files without reaching the subject builders`);
     // The published composition root is shipped code. A negative claim about shipped code that
     // silently stops covering it would still pass the control above, which lives in core.
     assert.ok(files.some((file) => file.endsWith("/bin/cotal.ts")), "the corpus no longer reaches the published composition root");
     observations.shippedSourcesScanned = files.length;
+  });
+
+  await check("the observer filter preflight precedes activation effects and is passed through once", async () => {
+    const source = readFileSync(new URL("../src/endpoint-authority.ts", import.meta.url), "utf8");
+    const begin = source.indexOf("    async activate("), end = source.indexOf("    async caller(", begin);
+    assert.ok(begin >= 0 && end > begin, "actual activate source reached");
+    const activate = source.slice(begin, end);
+    const has = activate.indexOf('if (inFlight.has(row.endpoint)) refuse("another endpoint release is in flight");');
+    const preflight = activate.indexOf('const observationFilter = epRequestObserveFilter(account.space, { kind: "issued-instance", endpoint: row.endpoint, instanceId: row.instanceId });');
+    const add = activate.indexOf("inFlight.add(row.endpoint);");
+    assert.ok(has >= 0 && has < preflight && preflight < add, "observer preflight must follow existing inFlight refusal and precede add");
+    for (const effect of ["await acquireEndpointPolicyHold(", "await input.publishArtifact(", "await registerServiceInstance(", "await mintPublicUserJwt(", 'await createRowByteIdempotent(authKv, `endpoint-active.', "await authKv.update(reservationKey(row.instanceId)"])
+      assert.ok(activate.indexOf(effect) > preflight, `preflight before ${effect}`);
+    assert.equal(activate.split("epRequestObserveFilter(").length - 1, 1, "one preflight evaluation");
+    assert.ok(source.includes("function observe(filter: string): void {\n    subscriptions.push(input.nc.subscribe(filter,"), "observer accepts string and subscribes without recomputation");
+    const update = activate.indexOf("await authKv.update(reservationKey(row.instanceId)"), sub = activate.indexOf("observe(observationFilter); await input.nc.flush();"), release = activate.indexOf("await hold.release();", sub);
+    assert.ok(update < sub && sub < release && activate.indexOf("finally { inFlight.delete(row.endpoint); }", release) > release, "late subscription/release/finally order retained");
+  });
+
+  await check("observer filters preserve independent bounded golden bytes and manager row order", async () => {
+    const instanceId = "iiiiiiiiiiiiiiiiiiiiiiiiii", endpoint = "test.example.census";
+    const examples: [EpRequestObserveScope, string][] = [
+      [{ kind: "issued-instances" }, "cotal.observer-fixture.ep.v1.inst.>"],
+      [{ kind: "issued-instance", endpoint, instanceId }, "cotal.observer-fixture.ep.v1.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.*.>"],
+      [{ kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "inst", instanceId: "*" } }, "cotal.observer-fixture.ep.v1.inst.test_example_census.*.increment.>"],
+      [{ kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "inst", instanceId } }, "cotal.observer-fixture.ep.v1.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.increment.>"],
+      [{ kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "one" } }, "cotal.observer-fixture.ep.v1.one.test_example_census.increment.>"],
+      [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "inst", instanceId: "*" } }, "cotal.observer-fixture.ep.inst.test_example_census.*.increment.>"],
+      [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "inst", instanceId } }, "cotal.observer-fixture.ep.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.increment.>"],
+      [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "one" } }, "cotal.observer-fixture.ep.one.test_example_census.increment.>"],
+    ];
+    for (const [scope, expected] of examples) assert.equal(epRequestObserveFilter("observer-fixture", scope), expected);
+    const normalizations = [
+      { raw: "main", canonicalToken: "main", expectedHostedObserver: "cotal.main.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.main.ep.v1.inst.manager.*.run-start.>",
+          "cotal.main.ep.v1.one.manager.run-start.>",
+          "cotal.main.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.main.ep.v1.one.manager.run-resume.>",
+          "cotal.main.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.main.ep.v1.one.manager.run-answer.>",
+          "cotal.main.ep.inst.manager.*.run-answer.>",
+          "cotal.main.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "team.alpha", canonicalToken: "team_alpha", expectedHostedObserver: "cotal.team_alpha.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-start.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-start.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-resume.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-answer.>",
+          "cotal.team_alpha.ep.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.one.manager.run-answer.>",
+        ] },
+      { raw: " team.alpha ", canonicalToken: "team_alpha", expectedHostedObserver: "cotal.team_alpha.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-start.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-start.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-resume.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-answer.>",
+          "cotal.team_alpha.ep.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "team/*>", canonicalToken: "team___", expectedHostedObserver: "cotal.team___.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.team___.ep.v1.inst.manager.*.run-start.>",
+          "cotal.team___.ep.v1.one.manager.run-start.>",
+          "cotal.team___.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.team___.ep.v1.one.manager.run-resume.>",
+          "cotal.team___.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.team___.ep.v1.one.manager.run-answer.>",
+          "cotal.team___.ep.inst.manager.*.run-answer.>",
+          "cotal.team___.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "a/b", canonicalToken: "a_b", expectedHostedObserver: "cotal.a_b.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.a_b.ep.v1.inst.manager.*.run-start.>",
+          "cotal.a_b.ep.v1.one.manager.run-start.>",
+          "cotal.a_b.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.a_b.ep.v1.one.manager.run-resume.>",
+          "cotal.a_b.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.a_b.ep.v1.one.manager.run-answer.>",
+          "cotal.a_b.ep.inst.manager.*.run-answer.>",
+          "cotal.a_b.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "UPPER_01", canonicalToken: "UPPER_01", expectedHostedObserver: "cotal.UPPER_01.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.UPPER_01.ep.v1.inst.manager.*.run-start.>",
+          "cotal.UPPER_01.ep.v1.one.manager.run-start.>",
+          "cotal.UPPER_01.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.UPPER_01.ep.v1.one.manager.run-resume.>",
+          "cotal.UPPER_01.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.UPPER_01.ep.v1.one.manager.run-answer.>",
+          "cotal.UPPER_01.ep.inst.manager.*.run-answer.>",
+          "cotal.UPPER_01.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "u_example-member", canonicalToken: "u_example-member", expectedHostedObserver: "cotal.u_example-member.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.u_example-member.ep.v1.inst.manager.*.run-start.>",
+          "cotal.u_example-member.ep.v1.one.manager.run-start.>",
+          "cotal.u_example-member.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.u_example-member.ep.v1.one.manager.run-resume.>",
+          "cotal.u_example-member.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.u_example-member.ep.v1.one.manager.run-answer.>",
+          "cotal.u_example-member.ep.inst.manager.*.run-answer.>",
+          "cotal.u_example-member.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "", canonicalToken: "_", expectedHostedObserver: "cotal._.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal._.ep.v1.inst.manager.*.run-start.>",
+          "cotal._.ep.v1.one.manager.run-start.>",
+          "cotal._.ep.v1.inst.manager.*.run-resume.>",
+          "cotal._.ep.v1.one.manager.run-resume.>",
+          "cotal._.ep.v1.inst.manager.*.run-answer.>",
+          "cotal._.ep.v1.one.manager.run-answer.>",
+          "cotal._.ep.inst.manager.*.run-answer.>",
+          "cotal._.ep.one.manager.run-answer.>",
+        ] },
+      { raw: " \t\n", canonicalToken: "_", expectedHostedObserver: "cotal._.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal._.ep.v1.inst.manager.*.run-start.>",
+          "cotal._.ep.v1.one.manager.run-start.>",
+          "cotal._.ep.v1.inst.manager.*.run-resume.>",
+          "cotal._.ep.v1.one.manager.run-resume.>",
+          "cotal._.ep.v1.inst.manager.*.run-answer.>",
+          "cotal._.ep.v1.one.manager.run-answer.>",
+          "cotal._.ep.inst.manager.*.run-answer.>",
+          "cotal._.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "-leading", canonicalToken: "-leading", expectedHostedObserver: "cotal.-leading.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.-leading.ep.v1.inst.manager.*.run-start.>",
+          "cotal.-leading.ep.v1.one.manager.run-start.>",
+          "cotal.-leading.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.-leading.ep.v1.one.manager.run-resume.>",
+          "cotal.-leading.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.-leading.ep.v1.one.manager.run-answer.>",
+          "cotal.-leading.ep.inst.manager.*.run-answer.>",
+          "cotal.-leading.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "trailing-", canonicalToken: "trailing-", expectedHostedObserver: "cotal.trailing-.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.trailing-.ep.v1.inst.manager.*.run-start.>",
+          "cotal.trailing-.ep.v1.one.manager.run-start.>",
+          "cotal.trailing-.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.trailing-.ep.v1.one.manager.run-resume.>",
+          "cotal.trailing-.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.trailing-.ep.v1.one.manager.run-answer.>",
+          "cotal.trailing-.ep.inst.manager.*.run-answer.>",
+          "cotal.trailing-.ep.one.manager.run-answer.>",
+        ] },
+    ];
+    for (const { raw, canonicalToken, expectedManagerRows, expectedHostedObserver } of normalizations) {
+      assert.equal(token(raw), canonicalToken);
+      assert.equal(token(canonicalToken), canonicalToken);
+      assert.deepEqual(servedRunRequestSubjects(raw), expectedManagerRows);
+      // This is the hosted normalizer algebra, not an invalid public-host activation witness.
+      assert.equal(epRequestObserveFilter(token(raw), { kind: "issued-instances" }), expectedHostedObserver);
+    }
+    assert.equal(Math.max(...servedRunRequestSubjects("a".repeat(984)).map(row => Buffer.byteLength(row))), 1024);
+    assert.throws(() => servedRunRequestSubjects("a".repeat(985)), /subject exceeds/);
+    assert.equal(Buffer.byteLength(epRequestObserveFilter("a".repeat(1005), { kind: "issued-instances" })), 1024);
+    assert.throws(() => epRequestObserveFilter("a".repeat(1006), { kind: "issued-instances" }), /subject exceeds/);
+    const exact = { kind: "issued-instance", endpoint, instanceId } as const;
+    const overhead = Buffer.byteLength("cotal..ep.v1.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.*.>");
+    assert.equal(Buffer.byteLength(epRequestObserveFilter("a".repeat(1024 - overhead), exact)), 1024);
+    assert.throws(() => epRequestObserveFilter("a".repeat(1025 - overhead), exact), /subject exceeds/);
+    const invoke = (space: unknown, scope: unknown) => epRequestObserveFilter(space as string, scope as EpRequestObserveScope);
+    for (const invalid of ["", " ", "team.alpha", "team/*>", null, 12, {}, undefined]) assert.throws(() => invoke(invalid, exact));
+    const badScopes: unknown[] = [null, [], {}, { kind: "issued-instances", extra: true }, { kind: "issued-instance", endpoint }, { ...exact, instanceId: "*" }, { ...exact, instanceId: "bad.id" }, { ...exact, endpoint: "" }, { ...exact, endpoint: "test.*" }, { ...exact, endpoint: 42 }, { ...exact, instanceId: 42 }];
+    const command = { kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "one" } };
+    badScopes.push({ ...command, rail: "v2" }, { ...command, extra: true }, { ...command, route: { mode: "all" } }, { ...command, route: { mode: "inst" } }, { ...command, route: { mode: "one", instanceId } }, { ...command, route: { mode: "inst", instanceId, extra: true } });
+    for (const value of ["", ".", "with.dot", "with space", "*", ">", 42]) badScopes.push({ ...command, command: value });
+    badScopes.push(Object.create({ kind: "issued-instances" }));
+    badScopes.push({ kind: "issued-instances", [Symbol("unknown")]: true });
+    badScopes.push(Object.defineProperty({ kind: "issued-instances" }, "unknown", { value: true }));
+    for (const scope of badScopes) assert.throws(() => invoke("observer-fixture", scope));
+    for (const invalid of [null, undefined, 12]) assert.throws(() => servedRunRequestSubjects(invalid as unknown as string));
   });
 
   await check("the write-plus-raw-read detector finds the known trusted overlaps", async () => {

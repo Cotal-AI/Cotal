@@ -139,6 +139,21 @@ authority. An instance-scoped caller passes `instanceId` to `describeService` an
 `invokeService`. A pinned describe bypasses the endpoint-name cache, so it can be checked
 against the verified acquisition receipt without changing a later unpinned call.
 
+Trusted host subscriptions use `epRequestObserveFilter` for an explicit issued-instance,
+issued-instances or command scope. These filters observe requests across caller tails. They
+are not serving subscriptions or caller publish grants. The helper requires a nonempty canonical
+space token, closed scope and route objects, validated endpoint, command and instance tokens,
+and a completed filter of at most 1024 bytes. Only a command's instance route accepts an explicit
+`*` instance. The existing manager and hosted-authority adapters normalize their space with
+`token` before calling it. The per-reservation authority passes its raw account space unchanged.
+
+Delegated activation computes its observer filter after the existing authentication, holder,
+challenge and in-flight refusal checks, before adding in-flight state or acquiring the policy hold.
+The subscription and flush remain after activation writes. Unsupported noncanonical or oversized
+inputs now refuse at this preflight, including a prior-active replay that previously skipped the
+observer. This prevents a new late pure-validator refusal. It does not make the whole activation
+free of effects or change recovery for subscription, flush, signing, mint or hold failures.
+
 ## Declared capabilities
 
 Control-plane power is a **declared capability**, not a default. An agent file carrying

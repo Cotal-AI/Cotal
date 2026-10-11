@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import ts from "typescript";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
@@ -264,6 +265,42 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
   "environment-manager-goal-writer",
 ]);
+
+/** Conservative decoded string/template occurrence scan, including erased syntax and keys.
+ * Comments are ignored. Dynamic construction and literal fragments separated by a hole are not joined. */
+export function issuedRailLiterals(sources: ReadonlyMap<string, string>): Map<string, boolean> {
+  const text = new Map([...sources].map(([file, source]) => [resolve(file), source]));
+  const options: ts.CompilerOptions = { noEmit: true, noResolve: true, noLib: true, target: ts.ScriptTarget.Latest };
+  const host = ts.createCompilerHost(options);
+  const parsed = new Map<string, ts.SourceFile>();
+  host.readFile = file => text.get(resolve(file));
+  host.fileExists = file => text.has(resolve(file));
+  host.getSourceFile = (file, version) => {
+    const key = resolve(file), source = text.get(key);
+    if (source === undefined) return undefined;
+    let result = parsed.get(key);
+    if (!result) { result = ts.createSourceFile(key, source, version, true, ts.ScriptKind.TS); parsed.set(key, result); }
+    return result;
+  };
+  host.writeFile = () => { throw new Error("the census syntax host must not emit"); };
+  const program = ts.createProgram([...text.keys()], options, host);
+  const found = new Map<string, boolean>();
+  for (const file of sources.keys()) {
+    const source = program.getSourceFile(resolve(file));
+    if (!source) throw new Error(`census syntax source missing: ${file}`);
+    const diagnostics = program.getSyntacticDiagnostics(source);
+    if (diagnostics.length) throw new Error(`census syntax refused ${file}: ${diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, "\n")).join("; ")}`);
+    let spelled = false;
+    function visit(node: ts.Node): void {
+      if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text.includes("ep.v1")) spelled = true;
+      if (ts.isTemplateExpression(node) && [node.head, ...node.templateSpans.map(span => span.literal)].some(part => part.text.includes("ep.v1"))) spelled = true;
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    found.set(file, spelled);
+  }
+  return found;
+}
 
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */
 export function shippedSources(root: string): string[] {

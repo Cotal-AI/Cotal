@@ -132,7 +132,11 @@ try {
   let announcePause!: () => void, resumeRelease!: () => void;
   const releasePaused = new Promise<void>(resolve => { announcePause = resolve; });
   const releaseResume = new Promise<void>(resolve => { resumeRelease = resolve; });
+  const observationFilters: string[] = [];
   const pinnedHost = new Proxy(host, { get(target, key) {
+    if (key === "subscribe") return (...args: Parameters<typeof host.subscribe>) => {
+      const subscription = target.subscribe(...args); observationFilters.push(args[0]); return subscription;
+    };
     if (key === "flush") return async () => { if (pauseRelease) { announcePause(); await releaseResume; } return target.flush(); };
     const value = Reflect.get(target, key); return typeof value === "function" ? value.bind(target) : value;
   } });
@@ -277,8 +281,11 @@ try {
     }
     const active = await pendingActivation;
     cell(`N02-native-activation-${index}`, active.processEpoch === 0 && active.registrationRevision > 0);
+    assert.equal(observationFilters[index], `cotal.${space}.ep.v1.inst.test_example_shared.${reservation.instanceId}.*.>`, "actual canonical observer filter bytes");
+    assert.equal(observationFilters.length, index + 1, "one actual observer subscription per activation");
     const replay = await authority.activate(token, { operationId, instanceId: reservation.instanceId, content, signature });
     cell(`N03-exact-lost-response-material-${index}`, replay.serveJwt === active.serveJwt && replay.attestation === active.attestation);
+    assert.equal(observationFilters.length, index + 1, "canonical prior-active replay does not resubscribe");
     const controlId = core.newIdentity(), controlGeneration = core.mintGeneration();
     const controlCaller = { ...principal, generation: controlGeneration };
     const controlRows = core.epCallerGrantRows(space, ["ep-check", "ep-admit", "ep-release"].map(command => ({ endpoint: "auth", command, instanceId: authInstanceId, instanceOnly: true })), controlCaller);

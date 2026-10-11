@@ -2,7 +2,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { fromSeed } from "@nats-io/nkeys";
 import {
-  epAuthBucket, recordsBucket, issuedBucket, acceptedBucket, epcStreamName, spacePrefix,
+  epAuthBucket, recordsBucket, issuedBucket, acceptedBucket, epcStreamName, spacePrefix, token, epRequestObserveFilter,
   openIssuedStore, contractStoreContext, publishContractArtifact, contractArtifactCanonicalBytes,
   fetchContractArtifact, contractRefToHex, canonicalJson, rawDigest, assertLifecycleToken,
   parseEndpointDeploymentAssignment, parseEndpointDeploymentTrust, parseEndpointNativeAuthorityPin,
@@ -40,7 +40,7 @@ export async function openHostedEndpointAuthority(args: {
   const trust = parseEndpointDeploymentTrust({ account: assignment.account, assignmentLifecycleUid: assignment.lifecycleUid, assignmentExpiresAt: assignment.expiresAt, issuer: args.issuer.issuer, keys: args.issuer.jwks().keys, accountSigningKey: fromSeed(new TextEncoder().encode(args.dataAccount.signingSeed)).getPublicKey(), authority: { endpoint: "auth", instanceId: args.authInstanceId, epoch: args.authEpoch } });
   const buckets = [epAuthBucket(space), recordsBucket(space), issuedBucket(space), acceptedBucket(space)];
   const host = await openAuthorityClient({ server: args.server, space, dataAccount: args.dataAccount, label: `cotal:endpoint-authority:${space}`, onConnection: args.onConnection, log: args.log,
-    grants: id => ({ publish: ["$JS.API.INFO", ...buckets.flatMap(bucket => [`$KV.${bucket}.>`, `$JS.API.STREAM.INFO.KV_${bucket}`, `$JS.API.STREAM.MSG.GET.KV_${bucket}`, `$JS.API.CONSUMER.CREATE.KV_${bucket}.>`, `$JS.API.CONSUMER.INFO.KV_${bucket}.>`, `$JS.API.CONSUMER.DELETE.KV_${bucket}.>`, `$JS.API.DIRECT.GET.KV_${bucket}.>`]), `${spacePrefix(space)}.epc.*`, `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`, "$JS.FC.>"], subscribe: [`_INBOX_${id}.>`, `${spacePrefix(space)}.ep.v1.inst.>`] }) });
+    grants: id => ({ publish: ["$JS.API.INFO", ...buckets.flatMap(bucket => [`$KV.${bucket}.>`, `$JS.API.STREAM.INFO.KV_${bucket}`, `$JS.API.STREAM.MSG.GET.KV_${bucket}`, `$JS.API.CONSUMER.CREATE.KV_${bucket}.>`, `$JS.API.CONSUMER.INFO.KV_${bucket}.>`, `$JS.API.CONSUMER.DELETE.KV_${bucket}.>`, `$JS.API.DIRECT.GET.KV_${bucket}.>`]), `${spacePrefix(space)}.epc.*`, `$JS.API.DIRECT.GET.${epcStreamName(space)}.${spacePrefix(space)}.epc.>`, "$JS.FC.>"], subscribe: [`_INBOX_${id}.>`, epRequestObserveFilter(token(space), { kind: "issued-instances" })] }) });
   try {
     const kvm = new Kvm(host.nc), authKv = await kvm.open(epAuthBucket(space)), recordsKv = await kvm.open(recordsBucket(space)), sourceKv = await kvm.open(issuedBucket(space)), acceptedKv = await kvm.open(acceptedBucket(space));
     const jsm = await jetstreamManager(host.nc), issued = openIssuedStore(sourceKv, jsm, space), store = await contractStoreContext(host.nc, space);
