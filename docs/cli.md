@@ -1248,6 +1248,10 @@ expired or mismatched records refuse before acquisition. The file is rechecked b
 The CLI binds the accepted caller generation and resolved service to the signed receipt before
 invocation. It does not borrow manager credentials or retry on a legacy rail.
 
+Protected trust acquisition requires `process.getuid`, `O_NOFOLLOW` and `O_DIRECTORY`.
+Windows currently refuses before acquisition because these capabilities are unavailable.
+There is no permission or filesystem fallback.
+
 ## Managed seats
 
 ```bash
