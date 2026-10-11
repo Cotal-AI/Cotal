@@ -14,7 +14,7 @@ import {
   type EndpointAccountPin, type EndpointDelegatedBinding, type EndpointServingAuthorityRef,
   type EndpointServeAttestation, type EpCaller, type EpCapability, type IssuedStore,
   type IssuedSourceRef, type IssuedAuthorityRef, type EpCommandDef, type SpaceAuth,
-  connectionAcceptedToken, epRequestSubject, issuedBucket, type EndpointInstanceAuthorityRequest, type EndpointInstanceAuthorityDecision,
+  connectionAcceptedToken, acceptedKey, epRequestSubject, issuedBucket, type EndpointInstanceAuthorityRequest, type EndpointInstanceAuthorityDecision,
   parseEndpointCallerSelection, endpointControlProof, type EndpointDeploymentTrust, type EndpointCallerSelection,
 } from "@cotal-ai/core";
 import type { SigningKey } from "./issuer.js";
@@ -317,7 +317,7 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
       let materialWriteStarted = false;
       try {
       const acceptedToken = connectionAcceptedToken(connId);
-      const old = await input.acceptedKv.get(acceptedToken);
+      const old = await input.acceptedKv.get(acceptedKey(acceptedToken));
       const generation = old ? (JSON.parse(dec.decode(old.value)) as { ref: IssuedAuthorityRef }).ref.generation : mintGeneration();
       const ref = { ...principal, space: account.space, generation };
       const target = saved.control && input.deploymentTrust ? { endpoint: "auth", instanceId: input.deploymentTrust.authority.instanceId } : { endpoint: reservation.endpoint, instanceId: reservation.instanceId };

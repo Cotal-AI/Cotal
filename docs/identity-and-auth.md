@@ -618,6 +618,9 @@ requires the activated holder proof. Application commands still go directly to t
 endpoint. A caller reads its native issued generation with `issuedUserCaller` using
 `connectionAcceptedToken` for its connection nonce. `assertEndpointCallerResolvedService`
 checks the native describe against the verified caller receipt before invocation.
+A reconnect under the same nonce looks up `accepted.v1.<acceptedToken>` and renews
+its recorded generation only after source resolution and byte-identical ceiling
+confirmation. Renewal does not create new issuance or replace the accepted row.
 
 Version3 caller receipts bind the full registered closure set and the exact permitted private
 projection separately. Native version3 describe carries a commitment derived from the full
