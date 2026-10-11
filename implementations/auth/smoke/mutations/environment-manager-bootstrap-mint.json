@@ -5,7 +5,7 @@
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-bootstrap-mint.json",
   "why": ["The unexported issuer runs through real private JWT-broker admission, activation, ledger and gate CAS paths. Two timing seams move native fences; no full admission endpoint, file delivery, redemption or hosted execution is claimed."],
   "progressPattern": "^  [✓✗]",
-  "minTicks": 24,
+  "minTicks": 25,
   "mutations": [
     {
       "name": "bootstrap omits registration fence finalization",

@@ -103,13 +103,21 @@ try {
     await assert.rejects(() => mintEnvironmentManagerBootstrap(reg, missing, mintInput()), /no native admission/);
     assert.equal(await authKv.get(`stage.${missing.operationId}.environment-bootstrap-mint`), null);
   });
-  for (const [name, expiresAt] of [["expired", Math.floor(Date.now() / 1000)], ["over five minutes", Math.floor(Date.now() / 1000) + 301],
-    ["over admission", pin.expiresAt + 1]] as const) await cell(`${name} bootstrap expiry refuses before reservation`, async () => {
+  for (const name of ["expired", "over five minutes", "over admission"] as const)
+    await cell(`${name} bootstrap expiry refuses before reservation`, async () => {
       const fresh = coordinates();
       await stageEnvironmentManagerAdmission(reg, fresh);
+      const now = Math.floor(Date.now() / 1000);
+      const expiresAt = name === "expired" ? now : name === "over five minutes" ? now + 301 : fresh.expiresAt + 1;
       await assert.rejects(() => mintEnvironmentManagerBootstrap(reg, fresh, { ...mintInput(), expiresAt }), /expiry are invalid/);
       assert.equal(await authKv.get(`stage.${fresh.operationId}.environment-bootstrap-mint`), null);
     });
+  await cell("a credential at its own admission ceiling remains a valid positive control", async () => {
+    const fresh = coordinates();
+    await stageEnvironmentManagerAdmission(reg, fresh);
+    const material = await mintEnvironmentManagerBootstrap(reg, fresh, { ...mintInput(), expiresAt: fresh.expiresAt });
+    assert.equal(material.exp, fresh.expiresAt);
+  });
   await cell("an abort-reopened registration refuses bootstrap before signing", async () => {
     const aborted = coordinates();
     await stageEnvironmentManagerAdmission(reg, aborted);
