@@ -4,8 +4,11 @@ import { spawn, fork, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
+import { openSync, fstatSync, readSync, closeSync, constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { betterAuth } from "better-auth";
 import { memoryAdapter } from "better-auth/adapters/memory";
 import { jwt } from "better-auth/plugins/jwt";
@@ -708,8 +711,180 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     availability: "unavailable" | "available" | "unreadable";
     format: "unmatched" | "plain" | "async"; frame: PublicShippedFrame;
   };
+  // Only fixed public module assets are read. Stack paths never authorize a file read.
+  // Synchronous resolution, hashing and reads can perturb scheduling, not cancel the API.
+  type PublicLocationModule = "fixture" | "core-index-js" | "core-endpoint-js" | "core-endpoint-ts"
+    | "core-issued-authority-js" | "core-envelope-js" | "nats-errors-js" | "nats-nats-js" | "nats-protocol-js"
+    | "transport-connect-js" | "transport-node-js" | "jetstream-errors-js" | "jetstream-base-js" | "jetstream-client-js" | "kv-js";
+  type PublicModulePin = { module: PublicLocationModule; state: "known" | "unsupported";
+    sha256?: string; bytes?: number; lines?: number;
+    map?: { state: "bound" | "unsupported"; sha256?: string; bytes?: number } };
+  type PublicLocationFrame = { module: PublicLocationModule | "other"; format: "plain" | "async" | "anonymous" | "other";
+    line?: number; column?: number };
+  type PublicLocationObservation = { state: "available" | "unavailable" | "unreadable" | "oversize"; frames: PublicLocationFrame[] };
+  const publicModulePins: PublicModulePin[] = [];
+  const publicKnownLocations = new Map<string, { module: PublicLocationModule; widths: number[] }>();
+  let publicLocationCatalogueReady = false;
+  const preparePublicLocationCatalogue = () => {
+    if (publicLocationCatalogueReady) return;
+    publicLocationCatalogueReady = true;
+    // At most 16 explicit assets, 1 MiB per asset and 8 MiB total, including maps and sources.
+    // Node's supported public resolver performs its own filesystem work outside these read counts.
+    let files = 0, total = 0;
+    const readKnownAsset = (url: URL): Buffer | undefined => {
+      let fd: number | undefined;
+      try {
+        if (url.protocol !== "file:" || url.search || url.hash || ++files > 16) return undefined;
+        fd = openSync(url, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW);
+        const before = fstatSync(fd);
+        if (!before.isFile() || !Number.isSafeInteger(before.size) || before.size < 1 || before.size > 1048576
+          || total + before.size + 1 > 8388608) return undefined;
+        total += before.size + 1;
+        const bytes = Buffer.alloc(before.size + 1);
+        let length = 0;
+        for (let read = 0; read < 32 && length < bytes.length; read++) {
+          const count = readSync(fd, bytes, length, bytes.length - length, length);
+          if (count === 0) break;
+          length += count;
+        }
+        const after = fstatSync(fd);
+        if (length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs
+          || after.ctimeMs !== before.ctimeMs) return undefined;
+        return bytes.subarray(0, length);
+      } catch { return undefined; }
+      finally { if (fd !== undefined) try { closeSync(fd); } catch { /* No diagnostic exception replaces the API error. */ } }
+    };
+    const register = (module: PublicLocationModule, url: URL, bytes: Buffer | undefined, admit = true): PublicModulePin => {
+      const pin: PublicModulePin = { module, state: "unsupported" };
+      publicModulePins.push(pin);
+      if (!bytes) return pin;
+      const text = bytes.toString("utf8");
+      if (!Buffer.from(text, "utf8").equals(bytes)) return pin;
+      const widths = text.split(/\r?\n/).map(line => line.length);
+      if (widths.length > 30000 || widths.some(width => width > 1048576)) return pin;
+      Object.assign(pin, { state: "known", sha256: createHash("sha256").update(bytes).digest("hex"), bytes: bytes.length, lines: widths.length });
+      const location = { module, widths };
+      // Only two representations of the same approved identity. No realpath of an error frame.
+      if (admit) {
+        publicKnownLocations.set(url.href, location);
+        publicKnownLocations.set(fileURLToPath(url), location);
+      }
+      return pin;
+    };
+    const unsupported = (module: PublicLocationModule) => { publicModulePins.push({ module, state: "unsupported" }); };
+    const mappedModule = (module: PublicLocationModule, sourceModule: PublicLocationModule, url: URL,
+      basename: string, source: string) => {
+      const bytes = readKnownAsset(url), pin = register(module, url, bytes);
+      pin.map = { state: "unsupported" };
+      const suffix = `//# sourceMappingURL=${basename}.map`;
+      const text = bytes?.toString("utf8");
+      if (pin.state !== "known" || !text || !(text.endsWith(suffix) || text.endsWith(`${suffix}\n`))) { unsupported(sourceModule); return; }
+      // The map filename and source filename are constants, never taken from arbitrary map fields.
+      const map = readKnownAsset(new URL(`${basename}.map`, url));
+      if (!map) { unsupported(sourceModule); return; }
+      pin.map.sha256 = createHash("sha256").update(map).digest("hex");
+      pin.map.bytes = map.length;
+      try {
+        const header: unknown = JSON.parse(map.toString("utf8"));
+        if (typeof header !== "object" || header === null) { unsupported(sourceModule); return; }
+        const fields = header as Record<string, unknown>;
+        if (fields.version !== 3 || fields.file !== basename || fields.sourceRoot !== ""
+          || !Array.isArray(fields.sources) || fields.sources.length !== 1 || fields.sources[0] !== source
+          || fields.sourcesContent !== undefined || typeof fields.mappings !== "string") { unsupported(sourceModule); return; }
+        const sourceURL = new URL(source, url);
+        const sourceBytes = readKnownAsset(sourceURL);
+        const sourcePin = register(sourceModule, sourceURL, sourceBytes, false);
+        if (sourcePin.state === "known" && sourceBytes) {
+          pin.map.state = "bound";
+          // Source lookup is admitted only after emitted/map/source all qualify.
+          const location = { module: sourceModule, widths: sourceBytes.toString("utf8").split(/\r?\n/).map(line => line.length) };
+          publicKnownLocations.set(sourceURL.href, location);
+          publicKnownLocations.set(fileURLToPath(sourceURL), location);
+        }
+        // This binds file identities only. It never decodes mappings or translates a coordinate.
+      } catch { unsupported(sourceModule); }
+    };
+    try { const url = new URL(import.meta.url); register("fixture", url, readKnownAsset(url)); }
+    catch { unsupported("fixture"); }
+    let coreEntry: URL | undefined, transportEntry: URL | undefined;
+    try {
+      const entry = new URL(import.meta.resolve("@cotal-ai/core"));
+      if (entry.protocol === "file:" && !entry.search && !entry.hash && entry.pathname.endsWith("/dist/index.js")) coreEntry = entry;
+    } catch { /* Unsupported public layout stays unknown. */ }
+    if (coreEntry) {
+      register("core-index-js", coreEntry, readKnownAsset(coreEntry));
+      mappedModule("core-endpoint-js", "core-endpoint-ts", new URL("endpoint.js", coreEntry), "endpoint.js", "../src/endpoint.ts");
+      for (const [module, file] of [["core-issued-authority-js", "issued-authority.js"], ["core-envelope-js", "endpoint-envelope.js"]] as const) {
+        const url = new URL(file, coreEntry);
+        register(module, url, readKnownAsset(url));
+      }
+    } else for (const module of ["core-index-js", "core-endpoint-js", "core-endpoint-ts", "core-issued-authority-js", "core-envelope-js"] as const) unsupported(module);
+    try {
+      const entry = new URL(import.meta.resolve("@nats-io/transport-node"));
+      if (entry.protocol === "file:" && !entry.search && !entry.hash && entry.pathname.endsWith("/transport-node/index.js")) transportEntry = entry;
+    } catch { /* Resolution does not execute the package. */ }
+    let natsEntry: URL | undefined, jetstreamEntry: URL | undefined, kvEntry: URL | undefined;
+    try {
+      if (coreEntry && transportEntry) {
+        // The public core and transport must resolve the same declared NATS core, not a guessed copy.
+        const fromCore = createRequire(coreEntry).resolve("@nats-io/nats-core");
+        const fromTransport = createRequire(transportEntry).resolve("@nats-io/nats-core");
+        const entry = pathToFileURL(fromCore);
+        if (fromCore === fromTransport && entry.pathname.endsWith("/nats-core/lib/mod.js")) natsEntry = entry;
+      }
+    } catch { /* Unsupported or skewed closure emits no paths. */ }
+    if (coreEntry) {
+      try {
+        const entry = pathToFileURL(createRequire(coreEntry).resolve("@nats-io/jetstream"));
+        if (entry.pathname.endsWith("/jetstream/lib/mod.js")) jetstreamEntry = entry;
+      } catch { /* Only the declared public entry may seed this fixed catalogue. */ }
+      try {
+        const entry = pathToFileURL(createRequire(coreEntry).resolve("@nats-io/kv"));
+        if (entry.pathname.endsWith("/kv/lib/mod.js")) kvEntry = entry;
+      } catch { /* Unsupported declared dependency remains unknown. */ }
+    }
+    // Vendor entries are compiled-JS-only. A source-mapped vendor frame stays other.
+    // Allocation: fixture1 + core6 + vendor9. Endpoint uses JS/map/source, the other core entries only JS.
+    // Together with vendor9 these use exactly 16 fixed asset attempts at most.
+    for (const [module, entry, file] of [
+      ["nats-errors-js", natsEntry, "errors.js"], ["nats-nats-js", natsEntry, "nats.js"],
+      ["nats-protocol-js", natsEntry, "protocol.js"],
+      ["transport-connect-js", transportEntry, "lib/connect.js"], ["transport-node-js", transportEntry, "lib/node_transport.js"],
+      ["jetstream-errors-js", jetstreamEntry, "jserrors.js"], ["jetstream-base-js", jetstreamEntry, "jsbaseclient_api.js"],
+      ["jetstream-client-js", jetstreamEntry, "jsclient.js"], ["kv-js", kvEntry, "kv.js"],
+    ] as const) {
+      if (entry) { const url = new URL(file, entry); register(module, url, readKnownAsset(url)); }
+      else unsupported(module);
+    }
+  };
+  const publicLocationObservation = (error: unknown): PublicLocationObservation => {
+    try {
+      if (!(error instanceof Error)) return { state: "unavailable", frames: [] };
+      const stack = error.stack;
+      if (typeof stack !== "string") return { state: "unavailable", frames: [] };
+      if (stack.length > 65536) return { state: "oversize", frames: [] };
+      preparePublicLocationCatalogue();
+      const frames: PublicLocationFrame[] = [];
+      // Parse only eight slots of the bounded string, including unknown or unsupported frames.
+      for (const text of stack.split("\n").slice(1, 9)) {
+        const frame: PublicLocationFrame = { module: "other", format: "other" };
+        frames.push(frame);
+        if (text.length > 4096) continue;
+        const match = /^\s*at (async )?(?:(?:[^\r\n]+) \(([^\r\n]+):(\d{1,6}):(\d{1,7})\)|([^\r\n]+):(\d{1,6}):(\d{1,7}))$/.exec(text);
+        if (!match) continue;
+        const known = publicKnownLocations.get(match[2] ?? match[5]!);
+        if (!known) continue;
+        const line = Number(match[3] ?? match[6]), column = Number(match[4] ?? match[7]);
+        if (!Number.isSafeInteger(line) || !Number.isSafeInteger(column) || line < 1 || line > known.widths.length
+          || column < 1 || column > known.widths[line - 1]! + 1) continue;
+        Object.assign(frame, { module: known.module, format: match[1] ? "async" : match[2] ? "plain" : "anonymous", line, column });
+      }
+      return { state: "available", frames };
+    } catch { return { state: "unreadable", frames: [] }; }
+  };
   type PublicErrorOrigin = {
     errorClass: PublicErrorClass; code: PublicOriginCode; message: PublicOriginMessage; stack: PublicFrameObservation;
+    locations?: PublicLocationObservation;
   };
   let reconnectRejectedObject: unknown;
   let reconnectRejectedObjectKnown = false;
@@ -788,7 +963,8 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     } catch { return "other"; }
   };
   const publicErrorOrigin = (error: unknown): PublicErrorOrigin => ({ errorClass: publicErrorClass(error),
-    code: publicOriginCode(error), message: publicOriginMessage(error), stack: publicFrameObservation(error) });
+    code: publicOriginCode(error), message: publicOriginMessage(error), stack: publicFrameObservation(error),
+    ...(issuedPublicAcceptance ? { locations: publicLocationObservation(error) } : {}) });
   const publicImmediateCause = (error: unknown): NonNullable<PublicCallObservation["immediateCause"]> => {
     try {
       if (!(error instanceof Error)) return { state: "absent" };
@@ -1521,7 +1697,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicModulePins, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
