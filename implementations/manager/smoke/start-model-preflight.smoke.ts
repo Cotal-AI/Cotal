@@ -90,21 +90,21 @@ let lastSpec: LaunchSpec | undefined;
   kind: "fake",
   spawn: (name, spec) => { lastSpec = spec; return fakeHandle(name); },
 };
-const agentsMap = () => (mgr as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents;
+const agentsMap = (manager: Manager = mgr) => (manager as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents;
 // Fake `ep` for the #159 B1 readiness race: getRoster() reports every currently-managed agent as LIVE, so
 // a just-spawned agent (already in `agents` when awaitReadiness runs) resolves "started" via the subscribe-
 // then-check — no timer wait. The "presence" event is only a wake, so on/off are no-ops. A custom `roster`
 // overrides the reported set (the UNCERTAIN test reports nobody). `extra` adds ep methods stop() needs.
-const fakeEp = (extra: Record<string, unknown> = {}, roster?: () => Array<{ card: { id: string; name: string }; status: string }>) => ({
+const fakeEp = (extra: Record<string, unknown> = {}, roster?: () => Array<{ card: { id: string; name: string }; status: string }>, manager: Manager = mgr) => ({
   ref: () => ({ id: "smoke-mgr" }),
   on: () => {},
   off: () => {},
   waitForPresenceSnapshot: async () => {},
-  getRoster: roster ?? (() => [...agentsMap().values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid }))),
+  getRoster: roster ?? (() => [...agentsMap(manager).values()].map((a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid }))),
   ...extra,
 });
 (mgr as unknown as { ep: unknown }).ep = fakeEp();
-const agentCount = () => agentsMap().size;
+const agentCount = (manager: Manager = mgr) => agentsMap(manager).size;
 
 // A recording connector that requires `node` (present whenever this smoke runs) — captures the
 // LaunchOpts the manager hands it, so we can assert the model threads through verbatim. Declares
@@ -472,8 +472,9 @@ registry.register(recNoResumeCon);
   };
   (mgr as unknown as { ep: unknown }).ep = fakeEp({ releaseManagerLease: async () => {}, releaseDaemonRenewalLease: async () => {}, stop: async () => {} });
   (mgr as unknown as { attach: { stop: () => Promise<void> } }).attach = { stop: async () => {} };
-  await mgr.startAgent({ name: "shut1", agent: "smoke-rec", events: false });
-  await mgr.startAgent({ name: "shut2", agent: "smoke-rec", events: false });
+  const first = await mgr.startAgent({ name: "shut1", agent: "smoke-rec", events: false });
+  const second = await mgr.startAgent({ name: "shut2", agent: "smoke-rec", events: false });
+  check("shutdown: both launches succeed before stop", first.ok === true && second.ok === true, { first, second });
   check("shutdown: two managed agents present before stop", agentCount() >= 2, agentCount());
   await mgr.stop({ withAgents: true });
   check("shutdown: stop() hard-stops every managed child", stopped.includes("shut1") && stopped.includes("shut2"), stopped);
@@ -485,10 +486,13 @@ registry.register(recNoResumeCon);
 // reaps through. Assert it directly: it hard-stops every child + empties the map even when one stop
 // throws, touching no lease/endpoint.
 {
+  // stop() is terminal. This scenario needs its own manager and readiness inventory.
+  const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({}, undefined, mgr);
   // First child's hard-stop THROWS (the tmux `closeWindow` / cmux `closeWorkspace` failure the panel
   // named) — the teardown must be best-effort per agent: still stop + free + deprovision the rest and
   // empty the map, never abort on one throw.
-  agentsMap().clear();
+  agentsMap(mgr).clear();
   const stopped: string[] = [];
   const exited = new Set<string>();
   (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
@@ -500,14 +504,16 @@ registry.register(recNoResumeCon);
       interrupt: () => {}, attach: () => fakeSession,
     }),
   };
-  await mgr.startAgent({ name: "lease1", agent: "smoke-rec", events: false });
-  await mgr.startAgent({ name: "lease2", agent: "smoke-rec", events: false });
+  const first = await mgr.startAgent({ name: "lease1", agent: "smoke-rec", events: false });
+  const second = await mgr.startAgent({ name: "lease2", agent: "smoke-rec", events: false });
+  check("teardown: both launches succeed before teardown", first.ok === true && second.ok === true, { first, second });
+  check("teardown: both children are inventoried before teardown", agentsMap(mgr).has("lease1") && agentsMap(mgr).has("lease2"), agentCount(mgr));
   let teardownError = "";
   try { await (mgr as unknown as { teardownManagedAgents: () => Promise<void> }).teardownManagedAgents(); }
   catch (e) { teardownError = (e as Error).message; }
   check("teardown: a throwing hard-stop doesn't abort teardown (every child attempted)", stopped.includes("lease1") && stopped.includes("lease2"), stopped);
   check("teardown: a refused stop makes shutdown fail loud with its cause (never releases into split brain)", /lease1: stop failed: simulated runtime close failure/.test(teardownError), teardownError);
-  check("teardown: shared teardown empties the map despite a throwing stop", agentCount() === 0, agentCount());
+  check("teardown: shared teardown empties the map despite a throwing stop", agentCount(mgr) === 0, agentCount(mgr));
 }
 
 // 11 — AUTHORITATIVE REAP: a throwing runtime hard-stop must not abort later siblings, but a recursive
@@ -535,7 +541,8 @@ registry.register(recNoResumeCon);
 // launch is UNCERTAIN — a non-success reply that KEEPS the agent (it may still be booting), never a
 // deprovision. Fake ep reports NOBODY joined; the handle stays running and never exits; short backstop.
 {
-  (mgr as unknown as { ep: unknown }).ep = fakeEp({}, () => []); // roster reports nobody → never "joins"
+  const mgr = new Manager({ space: "smoke", servers: undefined, runtime: "pty", workspaceRoot });
+  (mgr as unknown as { ep: unknown }).ep = fakeEp({}, () => [], mgr); // roster reports nobody → never "joins"
   (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = 40;
   (mgr as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
     kind: "fake",
@@ -544,7 +551,7 @@ registry.register(recNoResumeCon);
   const reply = await mgr.startAgent({ name: "unc1", agent: "smoke-rec", events: false });
   check("uncertain: neither presence nor exit → non-success reply", reply.ok === false, reply);
   check("uncertain: reply names it 'uncertain'", /uncertain/i.test(reply.error ?? ""), reply.error);
-  check("uncertain: the agent is KEPT (not deprovisioned — may still be booting)", agentsMap().has("unc1"), [...agentsMap().keys()]);
+  check("uncertain: the agent is KEPT (not deprovisioned — may still be booting)", agentsMap(mgr).has("unc1"), [...agentsMap(mgr).keys()]);
 }
 
 console.log(`\nSTART-MODEL/PREFLIGHT SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
