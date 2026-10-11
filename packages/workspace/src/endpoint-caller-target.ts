@@ -1,4 +1,4 @@
-import { constants, closeSync, fsyncSync, fstatSync, lstatSync, openSync, readSync, writeSync, type Stats } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
@@ -119,119 +119,6 @@ export interface EndpointCallerTarget {
   service: ResolvedService;
 }
 
-// Temporary hosted-fixture observation, not a policy decision or exported capability.
-function writeBindingDiagnostic(root: string, space: string, service: ResolvedService, receipt: EndpointCallerAuthorityReceipt): void {
-  const descriptor = service.descriptor;
-  const allowed = receipt.selection.commands.filter(command => command !== "describe").sort();
-  const descriptorClosureCount = descriptor?.clusters.length ?? 0;
-  const receiptClosureCount = receipt.clusterDigests.length;
-  const selectedNonDescribeCommandCount = allowed.length;
-  const resolvedCommandCount = service.commands.size;
-  for (const [count, max] of [[descriptorClosureCount, 64], [receiptClosureCount, 64], [selectedNonDescribeCommandCount, 31], [resolvedCommandCount, 32]] as const) {
-    if (!Number.isSafeInteger(count) || count < 0 || count > max) throw new Error("diagnostic count unavailable");
-  }
-  const record = {
-    v: 1,
-    kind: "cotal.endpoint-caller-binding-diagnostic",
-    boundary: "local-before-strict-resolved-binding",
-    receiptKindMatches: receipt.kind === "cotal.endpoint-caller",
-    receiptUnexpiredAtComparison: receipt.exp > Math.floor(Date.now() / 1000),
-    descriptorPresent: !!descriptor,
-    descriptorProtocol3: !!descriptor && descriptor.protocol.v === 3,
-    endpointMatches: service.endpoint === receipt.selection.endpoint,
-    pinnedInstanceMatches: service.pinnedInstanceId === receipt.selection.instanceId,
-    responderInstanceMatches: service.responder.instanceId === receipt.selection.instanceId,
-    processEpochMatches: service.responder.epoch === receipt.processEpoch,
-    registrationRevisionMatches: !!descriptor && descriptor.registrationRevision === receipt.registrationRevision,
-    servingAuthorityMatches: !!descriptor && canonicalJson(descriptor.servingAuthority) === canonicalJson(receipt.servingAuthority),
-    instanceRoutesMatch: descriptor?.serveRoutes?.kind === "instance",
-    ephemeralResourcesMatch: descriptor?.resources?.kind === "ephemeral-only",
-    closureSetMatches: !!descriptor && canonicalJson(descriptor.clusters.map(cluster => cluster.digest).sort()) === canonicalJson([...receipt.clusterDigests].sort()),
-    callerOwnerMatches: service.caller.owner === receipt.principal.owner,
-    callerActorMatches: service.caller.actor === receipt.principal.actor,
-    callerLifecycleMatches: service.caller.uid === receipt.principal.uid,
-    issuedGenerationPresent: "generation" in service.caller,
-    selectedCommandSetMatches: canonicalJson([...service.commands.keys()].sort()) === canonicalJson(allowed),
-    allCommandsUntargetedEphemeral: ![...service.commands.values()].some(command => command.class !== "ephemeral" || command.targeted),
-    descriptorClosureCount,
-    receiptClosureCount,
-    selectedNonDescribeCommandCount,
-    resolvedCommandCount,
-    comparisonCompleted: true,
-    diagnosticOnlyNoPolicyChange: true,
-  };
-  const bytes = Buffer.from(canonicalJson(record) + "\n");
-  if (bytes.length > 4096) throw new Error("diagnostic record unavailable");
-  if (process.platform !== "linux" || typeof process.getuid !== "function" || !constants.O_NOFOLLOW || !constants.O_DIRECTORY)
-    throw new Error("diagnostic path unsupported");
-  const uid = process.getuid();
-  const resolvedRoot = resolve(root);
-  const handles: number[] = [];
-  const directories: { path: string; fd: number; identity: Stats }[] = [];
-  let diagnosticFailed = false;
-  try {
-    let path = "/";
-    let fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-    handles.push(fd);
-    directories.push({ path, fd, identity: fstatSync(fd) });
-    const rootParts = resolvedRoot.split("/").filter(Boolean);
-    const parts = [...rootParts, ".cotal", "auth", spaceSegment(space)];
-    for (let index = 0; index < parts.length; index++) {
-      const name = parts[index]!;
-      const anchored = `/proc/self/fd/${fd}/${name}`;
-      const before = lstatSync(anchored);
-      if (!before.isDirectory() || before.isSymbolicLink()) throw new Error("diagnostic directory unavailable");
-      if (index >= rootParts.length) protectedShape(before, true, anchored);
-      else if (index === rootParts.length - 1 && (before.uid !== uid || (before.mode & 0o7777) !== 0o700)) throw new Error("diagnostic root unavailable");
-      fd = openSync(anchored, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-      handles.push(fd);
-      const opened = fstatSync(fd);
-      if (!sameFile(before, opened)) throw new Error("diagnostic directory changed");
-      path = join(path, name);
-      directories.push({ path, fd, identity: opened });
-    }
-    const assertDirectoriesCurrent = () => {
-      for (const directory of directories) {
-        if (!sameFile(directory.identity, fstatSync(directory.fd)) || !sameFile(directory.identity, lstatSync(directory.path)))
-          throw new Error("diagnostic directory changed");
-      }
-    };
-    assertDirectoriesCurrent();
-    const anchored = `/proc/self/fd/${fd}/endpoint-caller-binding-diagnostic.json`;
-    const file = openSync(anchored, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
-    handles.push(file);
-    const opened = fstatSync(file);
-    protectedShape(opened, false, anchored);
-    if (opened.nlink !== 1 || opened.size !== 0 || !sameFile(opened, lstatSync(anchored))) throw new Error("diagnostic file unavailable");
-    assertDirectoriesCurrent();
-    let offset = 0;
-    while (offset < bytes.length) {
-      const written = writeSync(file, bytes, offset, bytes.length - offset, null);
-      if (written <= 0) throw new Error("diagnostic write unavailable");
-      offset += written;
-    }
-    fsyncSync(file);
-    const after = fstatSync(file);
-    protectedShape(after, false, anchored);
-    if (!sameFile(opened, after) || after.nlink !== 1 || after.size !== bytes.length || !sameFile(after, lstatSync(anchored)))
-      throw new Error("diagnostic file changed");
-    assertDirectoriesCurrent();
-  } catch (error) {
-    diagnosticFailed = true;
-    throw error;
-  } finally {
-    let closeFailed = false;
-    let closeError: unknown;
-    for (const fd of handles.splice(0).reverse()) {
-      try { closeSync(fd); } catch (error) {
-        if (!closeFailed) closeError = error;
-        closeFailed = true;
-      }
-    }
-    if (!diagnosticFailed && closeFailed) throw closeError;
-  }
-}
-
 /** Acquire a dedicated generic caller from the registered account authority, then bind its actual
  * accepted connection and resolved descriptor. Manager, raw/static and targeted authority are not
  * compatibility paths for this helper. The caller owns the returned connection's cleanup. */
@@ -277,13 +164,6 @@ export async function resolveEndpointCallerTarget(
   try {
     const caller = await issuedUserCaller(nc, target.space, nonce, receipt.principal);
     const service = await resolveService(nc, target.space, selection.endpoint, caller, { instanceId: selection.instanceId, deadlineMs });
-    if (process.env.COTAL_ENDPOINT_CALLER_BINDING_DIAGNOSTIC === "1") {
-      try {
-        writeBindingDiagnostic(target.root, target.space, service, receipt);
-      } catch {
-        // Missing or malformed optional evidence is UNKNOWN. Never replace the strict assertion.
-      }
-    }
     assertEndpointCallerResolvedService(service, receipt);
     return { nc, space: target.space, server: target.server, root: target.root, caller, receipt, service };
   } catch (error) {
