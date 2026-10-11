@@ -1174,7 +1174,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
           { instanceId: active[0].instanceId, deadlineMs: budget(), signal: AbortSignal.timeout(budget()) })),
           (error: unknown) => error instanceof core.EpEnvelopeError && error.code === "not-found");
       });
-      await negative(acceptanceIds[7], async () => { await expectPublicDenial(() => acquire(0, active[1].instanceId), /caller policy denied/); });
+      await negative(acceptanceIds[7], async () => { await expectPublicDenial(() => acquired(() => acquire(0, active[1].instanceId)), /caller policy denied/); });
       await check(acceptanceIds[8], async () => {
         const before = await snapshot();
         await acquired(() => client!.reconnect());
