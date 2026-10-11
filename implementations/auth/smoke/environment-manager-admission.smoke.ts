@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
-  ensureAuthorityStores, environmentBootstrapActor, epAuthBucket, epgateKey, mintLifecycleUid,
+  ensureAuthorityStores, endpointRegistrationBarrier, environmentBootstrapActor, epAuthBucket, epgateKey, mintLifecycleUid,
   parseEndpointGate, provisionEndpointGateOpen, remoteManagerActors, serveIssuanceGateKv,
 } from "@cotal-ai/core";
 import { emitSentinel } from "@cotal-ai/smoke-kit";
@@ -83,6 +83,37 @@ try {
     const before = (await authKv.get(epgateKey("manager", pin.instanceId)))!;
     await assert.rejects(() => stageEnvironmentManagerAdmission(reg, { ...pin, operationId: mintLifecycleUid() }), /foreign registration/);
     assert.equal((await authKv.get(epgateKey("manager", pin.instanceId)))?.revision, before.revision);
+  });
+  for (const generationAdvance of [0, 1]) await cell(`registration abort with generation advance ${generationAdvance} cannot be re-frozen by replay`, async () => {
+    const aborted = coordinates();
+    await stageEnvironmentManagerAdmission(reg, aborted);
+    const gate = serveIssuanceGateKv(authKv, account.space, { endpoint: "manager", instanceId: aborted.instanceId });
+    const current = await gate.observe();
+    if (current?.state !== "frozen") throw new Error("abort fixture has no registration freeze");
+    const barrier = endpointRegistrationBarrier(authKv, account.space, { endpoint: "manager", instanceId: aborted.instanceId, opId: aborted.operationId });
+    assert.equal(await barrier.reopen(current.revision, { generation: current.generation + generationAdvance,
+      processEpoch: current.processEpoch, registrationRevision: current.registrationRevision,
+      nameAuthorityRevision: current.nameAuthorityRevision }), true);
+    const opened = await gate.observe();
+    assert.equal(opened?.state, "open");
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, aborted));
+    assert.deepEqual(await gate.observe(), opened);
+  });
+  await cell("a deleted initial-gate stamp cannot authorize reservation replay", async () => {
+    const damaged = coordinates();
+    await stageEnvironmentManagerAdmission(reg, damaged);
+    const key = `stage.${damaged.operationId}.environment-manager-gate`;
+    await authKv.delete(key);
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, damaged), /absent or deleted/);
+    assert.equal((await authKv.get(key))?.operation, "DEL");
+  });
+  await cell("a foreign initial-gate stamp cannot authorize reservation replay", async () => {
+    const damaged = coordinates();
+    await stageEnvironmentManagerAdmission(reg, damaged);
+    const key = `stage.${damaged.operationId}.environment-manager-gate`;
+    const entry = (await authKv.get(key))!;
+    await authKv.put(key, JSON.stringify({ ...entry.json<Record<string, unknown>>(), principal: `${damaged.owner}.foreign` }));
+    await assert.rejects(() => stageEnvironmentManagerAdmission(reg, damaged), /foreign coordinates/);
   });
   await cell("expired admission refuses before any lifecycle or endpoint effect", async () => {
     const expired = { ...coordinates(), expiresAt: Math.floor(Date.now() / 1000) };

@@ -103,9 +103,11 @@ separate from the registration and credential-issuance fences.
 The auth package's internal pre-issuance reservation step stages immutable host coordinates
 under `stage.<opId>.environment-manager`, activates the bootstrap alias at the reserved UID,
 creates the marked manager gate open, and freezes it under the original registration operation.
-Same-input retries preserve those reservations. Changed input, ordinary or foreign gates,
-completed registrations and deletion markers refuse. Its host-private writer grants only that
-staging suffix in addition to the lifecycle writer and manager gate rows. It is not exported as
+The initial open gate revision is recorded under `stage.<opId>.environment-manager-gate`
+before its first freeze. Same-input retries preserve the live registration reservation, but
+an aborted gate cannot be re-frozen, even when its counters remain unchanged. Changed input,
+ordinary or foreign gates, completed registrations and deletion markers refuse. Its host-private
+writer grants only those two staging suffixes in addition to lifecycle and manager gate rows. It is not exported as
 an admission API and issues no credential. The external admission index, required host policies,
 bootstrap mint and terminal retirement still need their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.

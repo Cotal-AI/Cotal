@@ -5,8 +5,18 @@
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission.json",
   "why": ["The private JWT broker runs the host-private reservation helper with its scoped writer. No bootstrap signing, complete external admission, terminal retirement or hosted agent execution is claimed."],
   "progressPattern": "^  [✓✗]",
-  "minTicks": 16,
+  "minTicks": 20,
   "mutations": [
+    {
+      "name": "reservation re-freezes an aborted registration",
+      "file": "implementations/auth/src/environment-manager-admission.ts",
+      "find": "    if (current.revision !== row.openRevision)\n      throw new EpEnvelopeError(\"conflict\", \"environment manager registration was aborted; its reopened gate cannot be re-frozen\");\n",
+      "replace": "",
+      "expectRed": "registration abort with generation advance 0 cannot be re-frozen by replay",
+      "cell": "registration abort with generation advance 0 cannot be re-frozen by replay",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission"
+    },
     {
       "name": "reservation omits bootstrap lifecycle activation",
       "file": "implementations/auth/src/environment-manager-admission.ts",
