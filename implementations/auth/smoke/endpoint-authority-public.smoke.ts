@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
+import { createRequire, SourceMap } from "node:module";
 import { openSync, fstatSync, readSync, closeSync, constants as fsConstants } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -721,9 +721,38 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     map?: { state: "bound" | "unsupported"; sha256?: string; bytes?: number } };
   type PublicIdentityRelation = { shape: "file-url" | "absolute-posix" | "relative" | "other";
     relation: "known-file-url-query-or-fragment" | "known-file-url-spelling" | "within-known-root-not-catalogued" | "outside-or-unsupported" };
+  type PublicDeclaredSite = "invalid-subject-construction" | "invalid-argument-construction" | "invalid-operation-construction" | "user-auth-expired-construction" | "authorization-construction" | "closed-connection-construction" | "draining-connection-construction" | "connection-error-construction" | "protocol-error-construction" | "request-error-construction" | "timeout-construction" | "no-responders-construction" | "permission-violation-construction" | "connection-connect-context" | "connection-close-context" | "subscription-close-context" | "subscriptions-close-context" | "protocol-close-trace-construction" | "protocol-close-heartbeat-call" | "protocol-close-connect-error-call" | "protocol-close-mux-call" | "protocol-close-subscriptions-call" | "protocol-close-iterator-push-call" | "protocol-close-iterator-stop-call" | "protocol-close-iterator-await" | "protocol-close-transport-await" | "transport-public-close-context" | "transport-inner-close-context";
+  type PublicDeclaredRelation = { provenance: "declared-artifact-only"; state: "unique-site" | "unqualified";
+    site?: PublicDeclaredSite };
+  const publicDeclaredMapSpecs = [
+    { module: "nats-errors-js", file: "errors.js", source: "../build/src/errors.ts", bytes: 9890, sha256: "fc500fa5f321fa90749cb4ff101c6260d169da69c253b1dc91fbd2bad56fa533",
+      mapBytes: 4776, mapSha256: "760531f63f29ec20768c00885c2016b6469da8db55798fb87ad511897964f5b1", positions: 9891, sites: [["invalid-subject-construction", 25, 30], ["invalid-argument-construction", 32, 49], ["invalid-operation-construction", 64, 69], ["user-auth-expired-construction", 76, 87], ["authorization-construction", 96, 114], ["closed-connection-construction", 126, 131], ["draining-connection-construction", 143, 148], ["connection-error-construction", 157, 162], ["protocol-error-construction", 172, 177], ["request-error-construction", 185, 193], ["timeout-construction", 203, 208], ["no-responders-construction", 220, 227], ["permission-violation-construction", 236, 268]] },
+    { module: "nats-nats-js", file: "nats.js", source: "../build/src/nats.ts", bytes: 18118, sha256: "aa6e86124ecd9d40d49bb026cbfc933050a11868411e0fc056653ef743d978a4",
+      mapBytes: 15626, mapSha256: "1fdadecacb531a6e92953c87f95707ae551af5acca5333f801745013bbbcb842", positions: 18119, sites: [["connection-connect-context", 38, 49], ["connection-close-context", 54, 56]] },
+    { module: "nats-protocol-js", file: "protocol.js", source: "../build/src/protocol.ts", bytes: 32247, sha256: "90a0ac36b06e7a29088fea89e2aa1815871187e39340f0df4288051f8b0c6d93",
+      mapBytes: 31019, mapSha256: "ee526318e01d2dc87eda7ba6fd5386ae0fe53ac0dfa49824b628e0f828c289eb", positions: 32248, sites: [["subscription-close-context", 160, 182], ["subscriptions-close-context", 305, 309], ["protocol-close-trace-construction", 942, 942], ["protocol-close-heartbeat-call", 943, 943], ["protocol-close-connect-error-call", 945, 945], ["protocol-close-mux-call", 948, 948], ["protocol-close-subscriptions-call", 949, 949], ["protocol-close-iterator-push-call", 954, 954], ["protocol-close-iterator-stop-call", 955, 955], ["protocol-close-iterator-await", 960, 960], ["protocol-close-transport-await", 963, 963]] },
+    { module: "transport-node-js", file: "node_transport.js", source: "../src/node_transport.ts", bytes: 15021, sha256: "527474ca776b69b5ba35e5be54f23da838280b91f52d508423baf47b79b55fec",
+      mapBytes: 13855, mapSha256: "60cf3d004233825a5c35bfe115438d8a06d1a923c8081daef2db46faf22889e4", positions: 15022, sites: [["transport-public-close-context", 105, 107], ["transport-inner-close-context", 398, 431]] },
+  ] as const;
+  const publicDeclaredMaps: { module: PublicLocationModule; provenance: "declared-artifact-only";
+    state: "qualified" | "unqualified"; positions?: number; mapSha256?: string }[] = [];
+  const publicDeclaredIndexes: { identities: readonly string[]; index: Map<string, PublicDeclaredSite | "unqualified"> }[] = [];
+  let publicDeclaredPositions = 0;
+  const publicDeclaredPositionCeiling = 75280;
+  // A declared-artifact relation is not live cache, loaded-code, TS admission, or first-throw evidence.
+  const publicDeclaredRelation = (identity: string, lineText: string, columnText: string): PublicDeclaredRelation => {
+    const result: PublicDeclaredRelation = { provenance: "declared-artifact-only", state: "unqualified" };
+    const line = Number(lineText), column = Number(columnText);
+    if (!Number.isSafeInteger(line) || line < 1 || !Number.isSafeInteger(column) || column < 1) return result;
+    const matches = publicDeclaredIndexes.filter(value => value.identities.includes(identity));
+    if (matches.length !== 1) return result;
+    const site = matches[0]!.index.get(`${line - 1}:${column - 1}`);
+    if (site !== undefined && site !== "unqualified") { result.state = "unique-site"; result.site = site; }
+    return result;
+  };
   type PublicLocationFrame = { module: PublicLocationModule | "other"; format: "plain" | "async" | "anonymous" | "other";
     reason: "frame-oversize" | "syntax-miss" | "identity-miss" | "line-refused" | "column-refused" | "known";
-    identity?: PublicIdentityRelation; line?: number; column?: number };
+    identity?: PublicIdentityRelation; declared?: PublicDeclaredRelation; line?: number; column?: number };
   type PublicLocationObservation = { state: "available" | "unavailable" | "unreadable" | "oversize"; frames: PublicLocationFrame[] };
   let publicObserverCalibration: { control: "fixture-error"; state: "pending" | "observed" | "unreadable";
     result?: PublicLocationObservation } | undefined;
@@ -796,6 +825,69 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         return bytes.subarray(0, length);
       } catch { return undefined; }
       finally { if (fd !== undefined) try { closeSync(fd); } catch { /* No diagnostic exception replaces the API error. */ } }
+    };
+    const qualifyDeclaredMap = (module: PublicLocationModule, url: URL, bytes: Buffer | undefined) => {
+      const diagnostic: (typeof publicDeclaredMaps)[number] = { module, provenance: "declared-artifact-only", state: "unqualified" };
+      publicDeclaredMaps.push(diagnostic);
+      try {
+        const spec = publicDeclaredMapSpecs.find(value => value.module === module);
+        if (process.versions.node !== "22.23.3" || !spec || !bytes || bytes.length !== spec.bytes
+          || createHash("sha256").update(bytes).digest("hex") !== spec.sha256) return;
+        const text = bytes.toString("utf8");
+        if (!Buffer.from(text, "utf8").equals(bytes) || text.includes("\r") || /[\u2028\u2029]/.test(text)
+          || !text.endsWith(`//# sourceMappingURL=${spec.file}.map`)) return;
+        const widths = text.split("\n").map(value => value.length);
+        const positions = widths.reduce((sum, width) => sum + width + 1, 0);
+        if (positions !== spec.positions || positions > publicDeclaredPositionCeiling - publicDeclaredPositions) return;
+        const mapURL = new URL(`${spec.file}.map`, url);
+        const mapBytes = readKnownAsset(mapURL);
+        if (!mapBytes || mapBytes.length !== spec.mapBytes
+          || createHash("sha256").update(mapBytes).digest("hex") !== spec.mapSha256) return;
+        const mapText = mapBytes.toString("utf8");
+        if (!Buffer.from(mapText, "utf8").equals(mapBytes)) return;
+        const raw: unknown = JSON.parse(mapText);
+        if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return;
+        const payload = raw as Record<string, unknown>;
+        const fields = Object.keys(payload).sort().join(",");
+        if (fields !== "file,mappings,names,sourceRoot,sources,version"
+          || payload.version !== 3 || payload.file !== spec.file || payload.sourceRoot !== ""
+          || !Array.isArray(payload.sources) || payload.sources.length !== 1 || payload.sources[0] !== spec.source
+          || !Array.isArray(payload.names) || payload.names.length !== 0
+          || typeof payload.mappings !== "string" || payload.mappings.length > spec.mapBytes
+          || !/^[A-Za-z0-9+/,;]*$/.test(payload.mappings)) return;
+        const sourceURL = new URL(spec.source, mapURL);
+        if (sourceURL.protocol !== "file:" || sourceURL.host || sourceURL.search || sourceURL.hash) return;
+        // Exact body/header bounds precede the maintained decoder. No cache getter or source body read.
+        const map = new SourceMap({ file: spec.file, version: 3, sources: [sourceURL.href],
+          sourceRoot: "", sourcesContent: [], names: [], mappings: payload.mappings });
+        const index = new Map<string, PublicDeclaredSite | "unqualified">();
+        let visited = 0;
+        for (let line = 0; line < widths.length; line++) {
+          for (let column = 0; column <= widths[line]!; column++) {
+            if (++visited > positions || ++publicDeclaredPositions > publicDeclaredPositionCeiling) return;
+            const entry = map.findEntry(line, column);
+            if (!("originalSource" in entry)) continue;
+            // Unmapped segments have undefined fields. Never turn those into a positive relation.
+            if (entry.originalSource === undefined && entry.originalLine === undefined && entry.originalColumn === undefined) continue;
+            if (entry.originalSource !== sourceURL.href || !Number.isSafeInteger(entry.originalLine) || entry.originalLine < 0
+              || !Number.isSafeInteger(entry.originalColumn) || entry.originalColumn < 0
+              || !Number.isSafeInteger(entry.generatedLine) || entry.generatedLine < 0 || entry.generatedLine > line
+              || !Number.isSafeInteger(entry.generatedColumn) || entry.generatedColumn < 0
+              || entry.generatedLine >= widths.length || entry.generatedColumn > widths[entry.generatedLine]!
+              || (entry.generatedLine === line && entry.generatedColumn > column)) return;
+            // Check every generated position, including outside reviewed sites. No first-hit shortcut.
+            const sites = spec.sites.filter(([, first, last]) => line + 1 >= first && line + 1 <= last);
+            const site: PublicDeclaredSite | "unqualified" = sites.length === 1 ? sites[0]![0] : "unqualified";
+            const key = `${entry.originalLine}:${entry.originalColumn}`;
+            const previous = index.get(key);
+            index.set(key, previous === undefined || previous === site ? site : "unqualified");
+          }
+        }
+        if (visited !== positions) return;
+        // Publish only after complete enumeration. Partial or failed indexes remain private and discarded.
+        publicDeclaredIndexes.push({ identities: [sourceURL.href, fileURLToPath(sourceURL)], index });
+        Object.assign(diagnostic, { state: "qualified", positions, mapSha256: spec.mapSha256 });
+      } catch { /* Decoder failure records no partial positive site and never replaces an API error. */ }
     };
     const register = (module: PublicLocationModule, url: URL, bytes: Buffer | undefined, admit = true): PublicModulePin => {
       const pin: PublicModulePin = { module, state: "unsupported" };
@@ -888,18 +980,18 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         if (entry.pathname.endsWith("/kv/lib/mod.js")) kvEntry = entry;
       } catch { /* Unsupported declared dependency remains unknown. */ }
     }
-    // Vendor entries are compiled-JS-only. A source-mapped vendor frame stays other.
-    // Allocation: fixture1 + core6 + vendor9. Endpoint uses JS/map/source, the other core entries only JS.
-    // Together with vendor9 these use exactly 16 fixed asset attempts at most.
+    // Allocation: fixture1 + core6 + four pinned vendor JS/map pairs8 = 15 asset attempts at most.
+    // Five prior vendor JS observations are unsupported here. The existing 16-attempt cap is unchanged.
+    for (const module of ["transport-connect-js", "jetstream-errors-js", "jetstream-base-js", "jetstream-client-js", "kv-js"] as const) unsupported(module);
     for (const [module, entry, file] of [
       ["nats-errors-js", natsEntry, "errors.js"], ["nats-nats-js", natsEntry, "nats.js"],
-      ["nats-protocol-js", natsEntry, "protocol.js"],
-      ["transport-connect-js", transportEntry, "lib/connect.js"], ["transport-node-js", transportEntry, "lib/node_transport.js"],
-      ["jetstream-errors-js", jetstreamEntry, "jserrors.js"], ["jetstream-base-js", jetstreamEntry, "jsbaseclient_api.js"],
-      ["jetstream-client-js", jetstreamEntry, "jsclient.js"], ["kv-js", kvEntry, "kv.js"],
+      ["nats-protocol-js", natsEntry, "protocol.js"], ["transport-node-js", transportEntry, "lib/node_transport.js"],
     ] as const) {
-      if (entry) { const url = new URL(file, entry); register(module, url, readKnownAsset(url)); }
-      else unsupported(module);
+      if (entry) {
+        const url = new URL(file, entry), bytes = readKnownAsset(url);
+        register(module, url, bytes);
+        qualifyDeclaredMap(module, url, bytes);
+      } else { unsupported(module); publicDeclaredMaps.push({ module, provenance: "declared-artifact-only", state: "unqualified" }); }
     }
   };
   const publicLocationObservation = (error: unknown): PublicLocationObservation => {
@@ -931,6 +1023,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
         if (!known) {
           frame.reason = "identity-miss";
           frame.identity = publicIdentityRelation(match[2] ?? match[5]!);
+          frame.declared = publicDeclaredRelation(match[2] ?? match[5]!, match[3] ?? match[6]!, match[4] ?? match[7]!);
           continue;
         }
         const line = Number(match[3] ?? match[6]), column = Number(match[4] ?? match[7]);
@@ -1756,7 +1849,7 @@ async function runTwoUserPublicAcceptance(): Promise<void> {
     clearTimeout(timer); if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
     const complete = !failure && cleanupErrors.length === 0 && !custodyOutstanding && passed.size === ids.length;
     // Public evidence contains only fixed identifiers, counts and custody. Child text and credentials never leave the private fixture.
-    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicModulePins, publicObserverCalibration, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
+    const summary = { scope: publicEntryScope, plannedCells: ids.length, namedControlsAttempted: attempted.size, namedControlsPassed: passed.size, namedControlsFailed: attempted.size - passed.size, failedCell, phase, failurePhase, cleanupFailure: cleanupErrors.length > 0, witnessDebtCount: witnessErrors.length, setupFailure: !!failure && failedCell === null && failurePhase !== null, laterControlsUnreached: ids.filter(id => !attempted.has(id)), cleanupConfirmed: cleanupErrors.length === 0 && !custodyOutstanding && workers.length === 2 && workers.every(w => w.stopped) && authClosed === 2 && idpClosed && brokerClosed && observerCreated === observerClosed && hostClosed === hostClients.length && connections.every(c => c.closed), knownWorkerExits: workers.filter(w => w.stopped).length, knownCLICloses: cliResults.filter(r => r.closeObserved).length, knownCLIAttempts: cliResults.length, participantConnections: connections.length, participantConnectionsClosed: connections.filter(c => c.closed).length, hostConnections: hostClients.length, hostConnectionsClosed: hostClosed, observerCreated, observerClosed, ...(protocol3Diagnostic ? { diagnosticStagesObserved, diagnosticClients: diagnosticClients.length, diagnosticConnections: diagnosticConnections.length, diagnosticAcquisitionsOutstanding: diagnosticAcquisitions.size, diagnosticStageErrorCount: diagnosticStageErrors.length, protocol3RetryAcceptance: false } : {}), ...(issuedPublicAcceptance ? { publicReconnectObservation: { stage: publicReconnectStage, boundary: publicReconnectBoundary }, publicCallSettlements, publicModulePins, publicDeclaredMaps, publicObserverCalibration, cleanupDebt: cleanupErrors.map(cleanupDebt), publicCallSuccessRequired: true, publicWriteEffects: diagnosticWriteEffects, publicClients: diagnosticClients.length, publicConnections: diagnosticConnections.length, publicAcquisitionsOutstanding: diagnosticAcquisitions.size, protocol3RetryAcceptance: false } : {}), installedCLIQualification: false, fullEndpointAcceptance: false, childRetirementProved: false };
     core.writeSecretFile(report, JSON.stringify({ ...summary, passed: complete, checks: [...passed], cleanupErrors, failureObserved: !!failure, phaseEvidence }, null, 2) + "\n");
     log(JSON.stringify({ ...summary, reportRetained: true }));
     console.log = log; try { emitSentinel({ passed: passed.size, failed: complete ? 0 : Math.max(1, attempted.size - passed.size) }); } finally { Object.assign(console, savedLogs); }
