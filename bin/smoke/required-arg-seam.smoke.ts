@@ -451,7 +451,11 @@ const SEAMS: Seam[] = [
   // Both files match b0ca. All three calls state tls: false for the owned plaintext broker.
   // The public a644 carry and Windows fixture add no sites. Separate f2874 adds none either.
   // These pins follow the named source delta, not a new measured scan. The built-tree gate remains.
-  { fn: "standaloneConnectOpts", key: "tls", sites: 270, untypecheckedSites: 215 },
+  // 270/215 -> 271/216: the native canonical caller renewal fixture adds one host connection in
+  // implementations/auth/smoke/endpoint-canonical-renewal-live.smoke.ts. Its host call states
+  // tls: false for the owned plaintext broker. The bb626 built-tree gate observed 271/216 and
+  // passed both explicit-TLS and no-alias checks. No scanner or completeness predicate changes.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 271, untypecheckedSites: 216 },
 ];
 
 /**
