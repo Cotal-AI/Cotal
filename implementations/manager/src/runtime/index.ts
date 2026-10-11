@@ -14,6 +14,8 @@ import {
 } from "@cotal-ai/core";
 import { CustodialPtyRuntime } from "./custodial-pty.js";
 import { LegacyPtyRuntime } from "./pty.js";
+import { DelegatedPtyRuntime, type DelegatedPtyOptions } from "./delegated-pty.js";
+export type { DelegatedPtyOptions } from "./delegated-pty.js";
 import { unsupportedTransport } from "@cotal-ai/seat";
 
 export type { Runtime, RuntimeKind, AgentHandle, AttachSession } from "@cotal-ai/core";
@@ -127,13 +129,16 @@ export type RuntimeMode = RuntimeKind | "auto";
 
 /** Build the runtime a manager will spawn through. `pty` ships with the manager and is what `auto`
  *  resolves to. Every other name resolves a self-registered {@link RuntimeProvider}; an explicit
- *  provider that is absent or unreachable throws, never a silent fallback to pty. */
-export function createRuntime(mode: RuntimeMode, session: string): Runtime {
-  return ownLaunchArtifacts(createBackend(mode, session));
+ *  provider that is absent or unreachable throws, never a silent fallback to pty. A supplied
+ *  delegatedPty configuration is Linux guest-root only and requires the pty backend. */
+export function createRuntime(mode: RuntimeMode, session: string, delegatedPty?: DelegatedPtyOptions): Runtime {
+  return ownLaunchArtifacts(createBackend(mode, session, delegatedPty));
 }
 
-function createBackend(mode: RuntimeMode, session: string): Runtime {
+function createBackend(mode: RuntimeMode, session: string, delegatedPty?: DelegatedPtyOptions): Runtime {
   const kind: RuntimeKind = mode === "auto" ? "pty" : mode;
+  if (delegatedPty !== undefined && kind !== "pty")
+    throw new Error("delegated user configuration requires the pty runtime");
   if (kind === "pty") {
     // node-pty's native spawn-helper hangs before exec under Bun — it never becomes the child, so
     // every agent wedges at "starting…" with no error. Fail loud rather than silently break the mesh:
@@ -144,7 +149,7 @@ function createBackend(mode: RuntimeMode, session: string): Runtime {
           `where @lydell/node-pty's spawn-helper hangs before exec and every agent wedges at "starting…". ` +
           `Run the manager under node, or install and select an external runtime.`,
       );
-    return new PtyRuntime();
+    return delegatedPty === undefined ? new PtyRuntime() : new DelegatedPtyRuntime(delegatedPty);
   }
   let provider: RuntimeProvider;
   try {

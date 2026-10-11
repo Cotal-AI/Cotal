@@ -82,8 +82,9 @@ callback and expose the pending obligation and bound UIDs to its operator.
 
 This library does not implement that authorization policy or the UID enrollment ledger. Do
 not admit hosted workloads until the host durably binds their manager and child lifecycles
-and supports their retirement. Stock provider-local manager bootstrap and cross-uid seat
-isolation also remain upstream dependencies. Empty-workload probes issue no such authority.
+and supports their retirement. Stock provider-local manager bootstrap remains an upstream dependency. The optional manager
+`delegatedPty` configuration supplies guest-local UID and descendant custody; it does not supply
+that bootstrap or any workload admission. Empty-workload probes issue no such authority.
 
 Core provides fixed `environment-bootstrap`, `environment-manager-supervisor`,
 `environment-manager-executor` and `environment-manager-goal-writer` grant builders. They
@@ -145,6 +146,35 @@ destruction requests and expired environments after a host restart. Monitor its 
 promise and its per-record reports. An unavailable store or a provider create whose reply
 was lost can require operator recovery. The service does not search by VM name and adopt
 an unproven match.
+
+## Guest-local managed seats
+
+A trusted host can set `ManagerOptions.delegatedPty` on a Linux guest-root manager using the
+built-in `pty` runtime. It requires host-owned managed enrollment and retirement callbacks.
+The image supplies a dedicated non-root UID/GID, root-owned storage outside the manager
+workspace, a writable cgroup-v2 domain subtree, and the stock cotal entry from its verified
+package cohort. The explicit child environment contains only workload-scoped values. Hosting,
+account signing, sponsor and owner-session material stays outside it. Nothing inherits the
+manager process environment.
+
+This configuration selects the existing by-value managed handoff for every child. The child
+runs stock `cotal spawn` under its selected UID with its own home, temporary files and registry.
+It takes the private handoff before opening a plane and creates its own token, sentinel,
+launch files and event log. Host-filesystem cwd, resume, exact continuation, shared MCP and
+preservation remain refused. The ordinary workstation runtime is unchanged when this option
+is absent.
+
+A create-only root-private marker permits one child for that storage root, including after a
+manager restart. The launcher joins its own kernel cgroup before dropping privileges. It clears
+supplementary groups and capability sets and enables no-new-privileges. A missing UID, supported
+kernel confinement or protected storage refuses rather than launching in the manager's UID.
+
+Parent exit alone is not exit proof. The runtime kills the remaining cgroup and observes
+`cgroup.events` populated zero before reporting exit or removing the child's private directory.
+An unreadable or non-empty confinement leaves close unverified and retains the directory.
+The external host must still terminate the provider environment and retire the recorded UIDs
+when the guest manager dies or cannot prove closure. This runtime does not implement provider
+termination, manager bootstrap, authority admission or hosted Lang acceptance.
 
 ## Tenki profiles
 

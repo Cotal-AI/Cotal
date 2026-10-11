@@ -408,6 +408,9 @@ export interface ManagerOptions {
   name?: string;
   /** Spawn backend. `auto` (default) → pty; external runtimes are explicit-only. */
   runtime?: RuntimeMode;
+  /** One guest-local child under a different UID, by-value handoff and cgroup-v2 exit custody.
+   * Requires remote managed enrollment/retirement; host cwd, resume and shared MCP remain refused. */
+  delegatedPty?: import("./runtime/index.js").DelegatedPtyOptions;
   workspaceRoot?: string;
   /** The selected registration requires every launched connector session to publish events. */
   eventsRequired?: boolean;
@@ -1550,7 +1553,11 @@ export class Manager {
     if (opts.secretStore) this.secretStoreIdentity = injectedSecretStoreIdentity(opts.secretStore);
     this.installedExtensions = opts.installedExtensions ?? false;
     this.executionState = opts.execution === "none" ? { kind: "none" } : { kind: "runtime" };
-    if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`);
+    if (opts.delegatedPty && (this.executionState.kind !== "runtime" || !opts.remoteAuthority?.enrollManagedAgent || !opts.remoteAuthority?.prepareAgentRetirement))
+      throw new Error("delegated pty requires runtime execution and remote managed enrollment and retirement");
+    if (opts.delegatedPty && (resolve(opts.delegatedPty.childRoot) === resolve(this.workspaceRoot) || resolve(opts.delegatedPty.childRoot).startsWith(resolve(this.workspaceRoot) + "/")))
+      throw new Error("delegated pty child storage must be outside the manager workspace");
+    if (this.executionState.kind === "runtime") this.runtime = createRuntime(opts.runtime ?? "auto", `cotal-${this.space}`, opts.delegatedPty);
     if (opts.pooled && this.executionState.kind === "runtime" && isCustodialRuntime(this.requiredRuntime))
       throw new Error(`pooled control refuses custodial runtime "${this.requiredRuntime.kind}" before starting agents`);
     this.preserveStopTimeoutMs = opts.preserveStopTimeoutMs ?? PRESERVE_STOP_TIMEOUT_MS;
