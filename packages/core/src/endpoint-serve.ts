@@ -656,6 +656,7 @@ const DESCRIBE_ANSWER_SCHEMA = {
         owner: { type: "string", minLength: 1 },
         endpointType: { type: "string" },
         protocol: { type: "object", required: ["v"], additionalProperties: false, properties: { v: { enum: [1, 2, 3] } } },
+        registeredClusterSetDigest: { type: "string", pattern: "^sha256:[0-9a-f]{64}$" },
         clusters: {
           type: "array",
           items: {
@@ -669,6 +670,11 @@ const DESCRIBE_ANSWER_SCHEMA = {
           },
         },
       },
+      allOf: [{
+        if: { properties: { protocol: { properties: { v: { const: 3 } } } } },
+        then: { required: ["registeredClusterSetDigest"] },
+        else: { not: { required: ["registeredClusterSetDigest"] } },
+      }],
     },
   },
 } as const;

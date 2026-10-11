@@ -3340,6 +3340,29 @@ never widens or proves a broker ceiling. A fresh private describe view and catal
 actual serving owner from governor and expose delegation currency without treating discovery as
 authority. A registration without real serving custody is never reported as ready.
 
+A version3 describe descriptor MUST carry `registeredClusterSetDigest`, a commitment to the full
+registered closure set before caller-specific projection. Its value is SHA-256 over RFC 8785
+canonical JSON of `{kind:"cotal.endpoint-registered-clusters",v:1,clusterDigests:[...]}`, with
+the unique full closure digests sorted lexicographically. The set contains 1 to 64 valid closure
+digests. Private describe retains this commitment when filtering visible clusters, including an
+authorized empty view. Versions1/2 MUST NOT carry this field. Readers refuse a missing or malformed
+version3 commitment. A commitment does not grant visibility or command authority.
+
+The hosted authority's signed caller and holder-control receipt payloads use version3. Both bind
+the full registered `clusterDigests` and the existing deployment, principal, instance, registration
+revision and process epoch. An ordinary `cotal.endpoint-caller` receipt also MUST carry
+`privateClusterDigests`, the unique closure set whose verified registered command lists intersect
+the exact granted commands other than describe. It is empty for describe-only authority. The
+holder-control kind `cotal.endpoint-control` MUST NOT carry this application projection field.
+Readers enforce each kind's closed shape and refuse older receipt payload versions without a
+fallback. The HTTP envelope and serving attestation versions are unchanged.
+
+Before invoking, a caller MUST compare the descriptor commitment to the recomputed signed full
+set commitment and compare the visible closure set to the signed private projection by equality.
+It MUST also retain the exact selected command, issued principal, instance, epoch, registration,
+delegation and resource checks. Containment alone or an empty-view exception does not satisfy
+these bindings. The full registration and its permitted private view are separate identities.
+
 Explicit class policy admits ONE compatible receiving set per endpoint/command; unchanged one/all
 subjects contain no cohort id and queue groups do not isolate differently authorized cohorts.
 Every class caller must be authorized across every admitted receiver and contract. A membership

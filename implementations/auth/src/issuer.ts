@@ -227,7 +227,7 @@ export function createUserTokenIssuer(opts: CreateIssuerOpts): UserTokenIssuer {
       return new CompactSign(new TextEncoder().encode(canonicalJson(payload))).setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid }).sign(signer.privateKey);
     },
     signEndpointCallerReceipt: async payload => {
-      if (payload.v !== 2 || !["cotal.endpoint-caller", "cotal.endpoint-control"].includes(payload.kind) || payload.iss !== opts.issuer || payload.aud !== payload.account.space || payload.exp <= payload.iat || payload.exp > payload.iat + 120) throw new Error("invalid endpoint caller receipt domain");
+      if (payload.v !== 3 || !["cotal.endpoint-caller", "cotal.endpoint-control"].includes(payload.kind) || payload.iss !== opts.issuer || payload.aud !== payload.account.space || payload.exp <= payload.iat || payload.exp > payload.iat + 120) throw new Error("invalid endpoint caller receipt domain");
       const signer = keys.get(active);
       if (!signer) throw new Error("no active endpoint caller receipt signer");
       return new SignJWT(payload as unknown as Record<string, unknown>).setProtectedHeader({ alg: USER_TOKEN_ALG, kid: signer.kid, typ: payload.kind === "cotal.endpoint-control" ? "cotal.endpoint-control+jwt" : "cotal.endpoint-caller+jwt" }).sign(signer.privateKey);

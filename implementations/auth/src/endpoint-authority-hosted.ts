@@ -79,7 +79,10 @@ export async function openHostedEndpointAuthority(args: {
         const issuedAt = Math.floor(Date.now() / 1000), expiresAt = Math.min(grant.expiresAt, token.exp, assignment.expiresAt, issuedAt + 120);
         if (expiresAt <= issuedAt) throw new Error("endpoint caller expired before bearer signing");
         const bearer = await args.issuer.issue({ owner: token.owner, actor: token.act.actor, space, lifecycleUid: token.act.lifecycleUid, credentialId, scope: token.act.scope ?? [], view: "endpoint-caller", endpointGrant: { grantId: grant.grantId, grantRevision: grant.grantRevision, policyRevision: grant.policyRevision }, ttlSec: expiresAt - issuedAt });
-        const receipt: EndpointCallerAuthorityReceipt = { iss: trust.issuer, aud: space, iat: issuedAt, exp: expiresAt, jti: requestId, v: 2, kind: control ? "cotal.endpoint-control" : "cotal.endpoint-caller", account: trust.account, assignmentLifecycleUid: trust.assignmentLifecycleUid, authority: trust.authority, principal: grant.principal, selection: grant.selection, servingAuthority: grant.servingAuthority, registrationRevision: grant.registrationRevision, processEpoch: grant.processEpoch, clusterDigests: grant.clusterDigests, bearerDigest: rawDigest(bearer) };
+        const common = { iss: trust.issuer, aud: space, iat: issuedAt, exp: expiresAt, jti: requestId, v: 3 as const, account: trust.account, assignmentLifecycleUid: trust.assignmentLifecycleUid, authority: trust.authority, principal: grant.principal, selection: grant.selection, servingAuthority: grant.servingAuthority, registrationRevision: grant.registrationRevision, processEpoch: grant.processEpoch, clusterDigests: grant.clusterDigests, bearerDigest: rawDigest(bearer) };
+        const receipt: EndpointCallerAuthorityReceipt = control
+          ? { ...common, kind: "cotal.endpoint-control" }
+          : { ...common, kind: "cotal.endpoint-caller", privateClusterDigests: grant.privateClusterDigests };
         const signed = await args.issuer.signEndpointCallerReceipt(receipt);
         releasedExpiry = expiresAt;
         await assertCurrent();

@@ -8,6 +8,7 @@ import { parseEndpointServingAuthorityRef, type EndpointAccountPin, type Endpoin
 import { isLoopbackLiteral } from "./loopback.js";
 import type { SecretStore } from "./secret-store.js";
 import type { ResolvedService } from "./endpoint-invoke.js";
+import { endpointRegisteredClusterSetDigest } from "./endpoint-cluster.js";
 
 export interface EndpointDeploymentAssignment {
   account: EndpointAccountPin;
@@ -45,13 +46,17 @@ export interface EndpointServingControlAuthorityRequest extends EndpointCallerAu
   credentialDigest: string;
   holder: { publicKey: string; sign(bytes: Uint8Array): Promise<Uint8Array> };
 }
-export interface EndpointCallerAuthorityReceipt {
+interface EndpointCallerAuthorityReceiptBase {
   iss: string; aud: string; iat: number; exp: number; jti: string;
-  v: 2; kind: "cotal.endpoint-caller" | "cotal.endpoint-control";
+  v: 3;
   account: EndpointAccountPin; assignmentLifecycleUid: string; authority: EndpointNativeAuthorityPin;
   principal: EpCaller; selection: EndpointCallerSelection; servingAuthority: EndpointServingAuthorityRef;
   registrationRevision: number; processEpoch: number; clusterDigests: readonly string[]; bearerDigest: string;
 }
+export type EndpointCallerAuthorityReceipt = EndpointCallerAuthorityReceiptBase & (
+  { kind: "cotal.endpoint-caller"; privateClusterDigests: readonly string[] }
+  | { kind: "cotal.endpoint-control" }
+);
 export interface EndpointCallerAuthorityMaterial { bearer: string; sentinelCreds: string; receipt: Readonly<EndpointCallerAuthorityReceipt> }
 
 function denied(message: string): never { throw new EpEnvelopeError("permission-denied", message, undefined, "not-executed"); }
@@ -149,21 +154,29 @@ export async function verifyEndpointCallerAuthorityReceipt(args: {
     if (!key) denied("unknown endpoint receipt key");
     return importJWK(key, "EdDSA");
   }, { algorithms: ["EdDSA"], issuer: trust.issuer, audience: trust.account.space, clockTolerance: 0 });
-  const value = closed(verified.payload, ["iss", "aud", "iat", "exp", "jti", "v", "kind", "account", "assignmentLifecycleUid", "authority", "principal", "selection", "servingAuthority", "registrationRevision", "processEpoch", "clusterDigests", "bearerDigest"], "endpoint receipt");
+  const value = closed(verified.payload, ["iss", "aud", "iat", "exp", "jti", "v", "kind", "account", "assignmentLifecycleUid", "authority", "principal", "selection", "servingAuthority", "registrationRevision", "processEpoch", "clusterDigests", "bearerDigest", ...(args.control ? [] : ["privateClusterDigests"])], "endpoint receipt");
   const now = Math.floor(Date.now() / 1000), iat = integer(value.iat, 1, "receipt iat"), exp = integer(value.exp, 1, "receipt exp");
-  if (value.iss !== trust.issuer || value.aud !== trust.account.space || value.jti !== assertLifecycleToken(args.requestId) || value.v !== 2 || value.kind !== (args.control ? "cotal.endpoint-control" : "cotal.endpoint-caller") || iat > now || exp <= iat || exp <= now || exp > iat + 120 || exp > trust.assignmentExpiresAt) denied("endpoint receipt issuer/audience/request/time mismatch");
+  if (value.iss !== trust.issuer || value.aud !== trust.account.space || value.jti !== assertLifecycleToken(args.requestId) || value.v !== 3 || value.kind !== (args.control ? "cotal.endpoint-control" : "cotal.endpoint-caller") || iat > now || exp <= iat || exp <= now || exp > iat + 120 || exp > trust.assignmentExpiresAt) denied("endpoint receipt issuer/audience/request/time mismatch");
   const account = parseEndpointAccountPin(value.account), authority = parseEndpointNativeAuthorityPin(value.authority), returnedSelection = parseEndpointCallerSelection(value.selection);
   const p = closed(value.principal, ["owner", "actor", "uid"], "endpoint receipt principal"), principal = { owner: assertBoundedOwner(text(p.owner, "caller owner"), "caller owner"), actor: assertBoundedOwner(text(p.actor, "caller actor"), "caller actor"), uid: assertLifecycleToken(text(p.uid, "caller lifecycle")) };
   if (canonicalJson(account) !== canonicalJson(trust.account) || value.assignmentLifecycleUid !== trust.assignmentLifecycleUid || canonicalJson(authority) !== canonicalJson(trust.authority) || canonicalJson(returnedSelection) !== canonicalJson(selection) || canonicalJson(principal) !== canonicalJson(args.principal) || value.bearerDigest !== rawDigest(args.bearer)) denied("endpoint receipt account/assignment/authority/principal/selection/bearer mismatch");
   const servingAuthority = parseEndpointServingAuthorityRef(value.servingAuthority), registrationRevision = integer(value.registrationRevision, 1, "registration revision"), processEpoch = integer(value.processEpoch, 0, "serving epoch");
   if (!Array.isArray(value.clusterDigests) || value.clusterDigests.length < 1 || value.clusterDigests.length > 64 || value.clusterDigests.some(d => typeof d !== "string" || !/^sha256:[a-f0-9]{64}$/.test(d)) || new Set(value.clusterDigests).size !== value.clusterDigests.length) denied("invalid endpoint receipt contract closures");
-  return freeze({ iss: trust.issuer, aud: trust.account.space, iat, exp, jti: args.requestId, v: 2 as const, kind: value.kind as EndpointCallerAuthorityReceipt["kind"], account, assignmentLifecycleUid: trust.assignmentLifecycleUid, authority, principal, selection: returnedSelection, servingAuthority, registrationRevision, processEpoch, clusterDigests: [...value.clusterDigests] as string[], bearerDigest: value.bearerDigest as string });
+  const common = { iss: trust.issuer, aud: trust.account.space, iat, exp, jti: args.requestId, v: 3 as const, account, assignmentLifecycleUid: trust.assignmentLifecycleUid, authority, principal, selection: returnedSelection, servingAuthority, registrationRevision, processEpoch, clusterDigests: [...value.clusterDigests] as string[], bearerDigest: value.bearerDigest as string };
+  if (args.control) return freeze({ ...common, kind: "cotal.endpoint-control" as const });
+  const privateClusterDigests = value.privateClusterDigests;
+  if (!Array.isArray(privateClusterDigests) || privateClusterDigests.length > 64 || privateClusterDigests.some(digest => typeof digest !== "string" || !common.clusterDigests.includes(digest)) || new Set(privateClusterDigests).size !== privateClusterDigests.length) denied("invalid endpoint receipt private contract projection");
+  const commands = returnedSelection.commands.filter(command => command !== "describe");
+  if ((commands.length === 0) !== (privateClusterDigests.length === 0)) denied("endpoint receipt private projection and selected commands disagree");
+  return freeze({ ...common, kind: "cotal.endpoint-caller" as const, privateClusterDigests: [...privateClusterDigests] });
 }
 
 /** Compare the actual native private describe to the verified issuance receipt before invoke. */
 export function assertEndpointCallerResolvedService(service: ResolvedService, receipt: EndpointCallerAuthorityReceipt): void {
   const descriptor = service.descriptor;
-  if (receipt.kind !== "cotal.endpoint-caller" || receipt.exp <= Math.floor(Date.now() / 1000) || !descriptor || descriptor.protocol.v !== 3 || service.endpoint !== receipt.selection.endpoint || service.pinnedInstanceId !== receipt.selection.instanceId || service.responder.instanceId !== receipt.selection.instanceId || service.responder.epoch !== receipt.processEpoch || descriptor.registrationRevision !== receipt.registrationRevision || canonicalJson(descriptor.servingAuthority) !== canonicalJson(receipt.servingAuthority) || descriptor.serveRoutes?.kind !== "instance" || descriptor.resources?.kind !== "ephemeral-only" || canonicalJson(descriptor.clusters.map(cluster => cluster.digest).sort()) !== canonicalJson([...receipt.clusterDigests].sort())) denied("native endpoint descriptor and verified caller receipt currency disagree");
+  if (receipt.v !== 3 || receipt.kind !== "cotal.endpoint-caller" || receipt.exp <= Math.floor(Date.now() / 1000) || !descriptor || descriptor.protocol.v !== 3 || service.endpoint !== receipt.selection.endpoint || service.pinnedInstanceId !== receipt.selection.instanceId || service.responder.instanceId !== receipt.selection.instanceId || service.responder.epoch !== receipt.processEpoch || descriptor.registrationRevision !== receipt.registrationRevision || canonicalJson(descriptor.servingAuthority) !== canonicalJson(receipt.servingAuthority) || descriptor.serveRoutes?.kind !== "instance" || descriptor.resources?.kind !== "ephemeral-only" || descriptor.registeredClusterSetDigest !== endpointRegisteredClusterSetDigest(receipt.clusterDigests)) denied("native endpoint descriptor and verified caller receipt currency disagree");
+  if (!Array.isArray(receipt.privateClusterDigests) || receipt.privateClusterDigests.length > 64 || new Set(receipt.privateClusterDigests).size !== receipt.privateClusterDigests.length || receipt.privateClusterDigests.some(digest => !receipt.clusterDigests.includes(digest))) denied("invalid endpoint receipt private contract projection");
+  if (canonicalJson(descriptor.clusters.map(cluster => cluster.digest).sort()) !== canonicalJson([...receipt.privateClusterDigests].sort())) denied("native endpoint private descriptor and verified caller projection disagree");
   if (service.caller.owner !== receipt.principal.owner || service.caller.actor !== receipt.principal.actor || service.caller.uid !== receipt.principal.uid || !("generation" in service.caller)) denied("native endpoint caller is not the verified issued principal");
   const allowed = receipt.selection.commands.filter(command => command !== "describe").sort();
   if (canonicalJson([...service.commands.keys()].sort()) !== canonicalJson(allowed) || [...service.commands.values()].some(command => command.class !== "ephemeral" || command.targeted)) denied("native endpoint descriptor widened the verified command selection");

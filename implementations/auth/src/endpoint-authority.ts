@@ -257,6 +257,7 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
       let materialWriteStarted = false;
       try {
         let capabilities: EpCapability[], allowedExpiry: number;
+        const privateClusterDigests: string[] = [];
         if (request.control) {
           if (!input.deploymentTrust) refuse("public serving control deployment is unsupported");
           const serving = await activeForServing(principal, request.instanceId);
@@ -272,7 +273,12 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
           const visible = new Map<string, { class: string; targeted: boolean }>();
           for (const closure of reservation.clusterDigests) {
             const { root } = verifyClusterManifest(closure, await input.readArtifact(closure));
-            for (const command of verifyClusterRoot(root, await input.readArtifact(root)).commands) visible.set(command.name, command);
+            const document = verifyClusterRoot(root, await input.readArtifact(root));
+            for (const command of document.commands) {
+              if (visible.has(command.name)) refuse("registered endpoint commands are ambiguous");
+              visible.set(command.name, command);
+            }
+            if (document.commands.some(command => operations.includes(command.name))) privateClusterDigests.push(closure);
           }
           if (operations.some(command => visible.get(command)?.class !== "ephemeral" || visible.get(command)?.targeted !== false)) refuse("caller selection is not an untargeted ephemeral command");
           capabilities = [...decision.capabilities];
@@ -286,7 +292,7 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
         await identity(token);
         if (expiresAt <= Math.floor(Date.now() / 1000)) refuse("endpoint caller authorization expired at final release");
         await hold.release();
-        return { grantId, grantRevision: 1, policyRevision: reservation.binding.authority.policyRevision, expiresAt, principal, selection, servingAuthority: reservation.binding.authority, registrationRevision: active.registrationRevision, processEpoch: active.processEpoch, clusterDigests: reservation.clusterDigests };
+        return { grantId, grantRevision: 1, policyRevision: reservation.binding.authority.policyRevision, expiresAt, principal, selection, servingAuthority: reservation.binding.authority, registrationRevision: active.registrationRevision, processEpoch: active.processEpoch, clusterDigests: reservation.clusterDigests, privateClusterDigests };
       } catch (error) {
         if (!materialWriteStarted) await hold.release();
         throw error;

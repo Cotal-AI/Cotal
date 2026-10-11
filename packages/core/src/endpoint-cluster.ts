@@ -19,7 +19,7 @@
  * verifies every bundle member), so the authority chain has no unverified link. Multi-member
  * cluster bundles are D8 contract-tooling scope.
  */
-import { contractDigest } from "./canonical.js";
+import { canonicalJson, contractDigest, rawDigest } from "./canonical.js";
 import { parseClosureManifest } from "./contract-manifest.js";
 import { ContractInvalidError } from "./schema-profile.js";
 import { endpointToken, assertCommandToken, assertBoundedOwner, isEpAuthzMode, type EpAuthzMode } from "./endpoint-subjects.js";
@@ -263,7 +263,16 @@ export interface DescribeDescriptor {
   registrationRevision?: number;
   serveRoutes?: { kind: "instance" };
   resources?: { kind: "ephemeral-only" };
+  registeredClusterSetDigest?: string;
   clusters: { digest: string; commands: string[]; document?: Record<string, unknown> }[];
+}
+
+/** Commitment to the full registered closure set, independent of private describe visibility. */
+export function endpointRegisteredClusterSetDigest(clusterDigests: readonly string[]): string {
+  if (!Array.isArray(clusterDigests) || clusterDigests.length < 1 || clusterDigests.length > 64
+      || clusterDigests.some(digest => !isDigest(digest)) || new Set(clusterDigests).size !== clusterDigests.length)
+    invalid("registered cluster set must contain 1..64 unique closure digests");
+  return rawDigest(canonicalJson({ kind: "cotal.endpoint-registered-clusters", v: 1, clusterDigests: [...clusterDigests].sort() }));
 }
 
 /** Runtime consuming boundary used on native describe replies before resolving any contracts. */
@@ -273,10 +282,11 @@ export function parseDescribeDescriptor(raw: unknown): DescribeDescriptor {
   endpointToken(o.endpoint); assertBoundedOwner(o.owner, "descriptor owner");
   if (!isRec(o.protocol) || Object.keys(o.protocol).length !== 1 || ![1, 2, 3].includes(o.protocol.v as number)) invalid("unsupported descriptor version");
   if (o.protocol.v === 3) {
+    if (!isDigest(o.registeredClusterSetDigest)) invalid("descriptor registered cluster set commitment");
     if (o.registrationRevision !== undefined && (typeof o.registrationRevision !== "number" || !Number.isSafeInteger(o.registrationRevision) || o.registrationRevision < 1)) invalid("descriptor registration revision");
     parseEndpointServingAuthorityRef(o.servingAuthority);
     parseEndpointServeCeiling({ routes: o.serveRoutes, resources: o.resources, expiresAt: 1 });
-  } else if (o.servingAuthority !== undefined || o.serveRoutes !== undefined || o.resources !== undefined) invalid("legacy descriptor carries delegated authority");
+  } else if (o.servingAuthority !== undefined || o.serveRoutes !== undefined || o.resources !== undefined || o.registeredClusterSetDigest !== undefined) invalid("legacy descriptor carries delegated authority");
   if (!Array.isArray(o.clusters)) invalid("descriptor clusters");
   for (const entry of o.clusters) {
     if (!isRec(entry) || !isDigest(entry.digest) || !Array.isArray(entry.commands) || entry.commands.length === 0 || entry.commands.some(c => typeof c !== "string")) invalid("descriptor cluster shape");
@@ -325,7 +335,7 @@ export function deriveDescriptor(
     owner: identity.owner,
     ...(identity.endpointType !== undefined ? { endpointType: identity.endpointType } : {}),
     protocol: { v: version },
-    ...(version === 3 ? { servingAuthority: identity.servingAuthority!, serveRoutes: { kind: "instance" as const }, resources: { kind: "ephemeral-only" as const } } : {}),
+    ...(version === 3 ? { servingAuthority: identity.servingAuthority!, serveRoutes: { kind: "instance" as const }, resources: { kind: "ephemeral-only" as const }, registeredClusterSetDigest: endpointRegisteredClusterSetDigest(clusters.map(cluster => cluster.digest)) } : {}),
     clusters: clusters.map((c) => ({
       digest: c.digest,
       commands: c.document.commands.map((cmd) => cmd.name),

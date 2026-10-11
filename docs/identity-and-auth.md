@@ -606,6 +606,14 @@ endpoint. A caller reads its native issued generation with `issuedUserCaller` us
 `connectionAcceptedToken` for its connection nonce. `assertEndpointCallerResolvedService`
 checks the native describe against the verified caller receipt before invocation.
 
+Version3 caller receipts bind the full registered closure set and the exact permitted private
+projection separately. Native version3 describe carries a commitment derived from the full
+registered set before visibility filtering. The caller checks that commitment against the signed
+full set, then checks visible closures and selected commands by equality. Describe-only callers
+have an empty private projection but still verify full registration and serving currency.
+Holder-control receipts forbid the application projection field. Older receipt payloads and
+missing version3 commitments refuse without a fallback.
+
 Caller acquisition rechecks bearer and receipt expiry after its final authority read.
 An ordinary caller source also requires the serving gate to remain open at its recorded
 registration and process currency. These checks do not establish drain or eviction.

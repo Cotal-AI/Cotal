@@ -17,15 +17,13 @@ import { fromSeed } from "@nats-io/nkeys";
 import { Kvm } from "@nats-io/kv";
 import * as core from "@cotal-ai/core";
 import * as authApi from "@cotal-ai/auth";
-import { recordMesh, userAuthStateDir, spaceSegment } from "@cotal-ai/workspace";
+import { recordMesh, userAuthStateDir } from "@cotal-ai/workspace";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal, awaitBrokerReady, killAndAwaitExit, emitSentinel } from "@cotal-ai/smoke-kit";
 import { MemoryStore } from "./_hosted-auth-fixture.js";
 import { pickFreePort } from "./_free-port.js";
 import { serializedFor } from "../src/serialized.js";
 import { openAuthorityClient, type AuthorityClient } from "../src/authority-client.js";
 import { runEndpointCallerCLI, type EndpointCallerCLIResult } from "../../cli/smoke/endpoint-caller-child.js";
-import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, type Stats } from "node:fs";
-import { relative, resolve, sep } from "node:path";
 
 // CI source entry owns its report and login home. Child text stays in the private report.
 // Named CLI predicates are separate from native A/B and installed-package acceptance.
@@ -237,76 +235,6 @@ try {
     // This is the source composition root with the existing seed guard, not an installed CLI.
     // Explicit --space selects the separate remote root even though tsx resolves from the checkout.
     const childInput = { cwd: fileURLToPath(new URL("../../../", import.meta.url)), timeoutMs: 30000, closeWaitMs: 1000, maxOutputBytes: 8192, env: { PATH: process.env.PATH, HOME: clientHome, COTAL_HOME: clientHome, XDG_CONFIG_HOME: join(clientHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" } };
-    // Temporary, explicit hosted CCLI01 observation. Remove with the qualified repair.
-    // Local file custody is not process isolation or proof of remote error provenance.
-    const bindingFile = "endpoint-caller-binding-diagnostic.json", bindingBytes = 4096;
-    const bindingFlags = ["receiptKindMatches", "receiptUnexpiredAtComparison", "descriptorPresent", "descriptorProtocol3", "endpointMatches", "pinnedInstanceMatches", "responderInstanceMatches", "processEpochMatches", "registrationRevisionMatches", "servingAuthorityMatches", "instanceRoutesMatch", "ephemeralResourcesMatch", "closureSetMatches", "callerOwnerMatches", "callerActorMatches", "callerLifecycleMatches", "issuedGenerationPresent", "selectedCommandSetMatches", "allCommandsUntargetedEphemeral"];
-    const bindingCounts = { descriptorClosureCount: 64, receiptClosureCount: 64, selectedNonDescribeCommandCount: 31, resolvedCommandCount: 32 };
-    const sameBindingIdentity = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino && a.uid === b.uid && a.mode === b.mode;
-    const prepareBindingObservation = () => {
-      const handles: number[] = [], directories: { path: string; absolutePath: string; fd: number; info: Stats }[] = [];
-      const unknown = () => ({ state: "unknown", writerFinalization: "unknown" });
-      const close = () => { let closed = true; for (const fd of handles.splice(0).reverse()) { try { closeSync(fd); } catch { closed = false; } } return closed; };
-      try {
-        if (process.platform !== "linux" || typeof process.getuid !== "function" || !constants.O_NOFOLLOW || !constants.O_DIRECTORY) throw new Error("unsupported binding observation");
-        const uid = process.getuid();
-        const rootPath = resolve(clientRoot), statePath = resolve(clientState), segments = statePath.split(sep).filter(Boolean);
-        if (relative(rootPath, statePath) !== join(".cotal", "auth", spaceSegment(space))) throw new Error("binding observation state differs");
-        const rootDepth = rootPath.split(sep).filter(Boolean).length;
-        let path = sep, absolutePath = sep;
-        for (let depth = 0; depth <= segments.length; depth++) {
-          if (depth > 0) {
-            path = join(`/proc/self/fd/${handles[handles.length - 1]}`, segments[depth - 1]);
-            absolutePath = join(absolutePath, segments[depth - 1]);
-          }
-          const before = lstatSync(path);
-          if (!before.isDirectory() || before.isSymbolicLink() || (depth >= rootDepth && (before.uid !== uid || (before.mode & 0o7777) !== 0o700))) throw new Error("binding observation directory refused");
-          const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY);
-          handles.push(fd);
-          const opened = fstatSync(fd);
-          if (!sameBindingIdentity(before, opened) || !sameBindingIdentity(opened, lstatSync(absolutePath))) throw new Error("binding observation directory changed");
-          directories.push({ path, absolutePath, fd, info: opened });
-        }
-        const filePath = join(`/proc/self/fd/${handles[handles.length - 1]}`, bindingFile);
-        let absent = false;
-        try { lstatSync(filePath); } catch (error) { absent = error instanceof Error && "code" in error && error.code === "ENOENT"; }
-        if (!absent) throw new Error("binding observation was not cold");
-        return {
-          close,
-          read() {
-            try {
-              for (const directory of directories) {
-                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path)) || !sameBindingIdentity(directory.info, lstatSync(directory.absolutePath))) return unknown();
-              }
-              const before = lstatSync(filePath);
-              if (!before.isFile() || before.isSymbolicLink() || before.uid !== uid || (before.mode & 0o7777) !== 0o600 || before.nlink !== 1 || before.size < 1 || before.size > bindingBytes) return unknown();
-              const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-              handles.push(fd);
-              const opened = fstatSync(fd);
-              if (!sameBindingIdentity(before, opened) || before.size !== opened.size || before.mtimeMs !== opened.mtimeMs || before.ctimeMs !== opened.ctimeMs) return unknown();
-              const bytes = Buffer.alloc(bindingBytes + 1);
-              let length = 0;
-              while (length < bytes.length) { const count = readSync(fd, bytes, length, bytes.length - length, null); if (!count) break; length += count; }
-              const after = fstatSync(fd), linked = lstatSync(filePath);
-              if (length !== opened.size || length > bindingBytes || after.nlink !== 1 || !sameBindingIdentity(opened, after) || !sameBindingIdentity(after, linked) || opened.size !== after.size || after.size !== linked.size || opened.mtimeMs !== after.mtimeMs || opened.ctimeMs !== after.ctimeMs || after.mtimeMs !== linked.mtimeMs || after.ctimeMs !== linked.ctimeMs) return unknown();
-              for (const directory of directories) {
-                if (!sameBindingIdentity(directory.info, fstatSync(directory.fd)) || !sameBindingIdentity(directory.info, lstatSync(directory.path)) || !sameBindingIdentity(directory.info, lstatSync(directory.absolutePath))) return unknown();
-              }
-              const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
-              const raw: unknown = JSON.parse(text);
-              const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-              if (!isRecord(raw) || text !== core.canonicalJson(raw) + "\n") return unknown();
-              const keys = ["v", "kind", "boundary", ...bindingFlags, ...Object.keys(bindingCounts), "comparisonCompleted", "diagnosticOnlyNoPolicyChange"];
-              if (Object.keys(raw).length !== keys.length || keys.some(key => !Object.hasOwn(raw, key)) || Object.keys(raw).some(key => !keys.includes(key)) || raw.v !== 1 || raw.kind !== "cotal.endpoint-caller-binding-diagnostic" || raw.boundary !== "local-before-strict-resolved-binding" || raw.comparisonCompleted !== true || raw.diagnosticOnlyNoPolicyChange !== true) return unknown();
-              const comparison: Record<string, boolean | number> = {};
-              for (const key of bindingFlags) { const value = raw[key]; if (typeof value !== "boolean") return unknown(); comparison[key] = value; }
-              for (const [key, max] of Object.entries(bindingCounts)) { const value = raw[key]; if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > max) return unknown(); comparison[key] = value; }
-              return { state: "comparison-observed", writerFinalization: "unknown", comparison, comparisonCompleted: true, diagnosticOnlyNoPolicyChange: true };
-            } catch { return unknown(); }
-          },
-        };
-      } catch { close(); return { close, read: unknown }; }
-    };
     const secrets = [login.session.token, ordinary.bearer, ordinary.sentinelCreds, caller.bearer, control.bearer, handle.cap, holder.seed, root.operator.seed!, auth.account.signingSeed!, active.serveJwt as string, active.attestation as string, cookie];
     const diagnostic = (text: string) => {
       let redacted = text;
@@ -317,23 +245,13 @@ try {
     };
     const runCLI = async (name: string, args: string[]) => {
       if (hostedCLI) { activeCLI = name; cliPhase = "child"; }
-      const bindingObservation = hostedCLI && name === "CCLI01" ? prepareBindingObservation() : undefined;
-      const bindingInput = bindingObservation ? { ...childInput, env: { ...childInput.env, COTAL_ENDPOINT_CALLER_BINDING_DIAGNOSTIC: "1" } } : childInput;
       let result: EndpointCallerCLIResult;
       try {
-        result = await runEndpointCallerCLI(bindingInput, args);
-        if (bindingObservation) {
-          const observation = result.closeObserved && !result.closeWaitExpired ? bindingObservation.read() : { state: "unknown", writerFinalization: "unknown" };
-          const observationClosed = bindingObservation.close();
-          try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", ...(observationClosed ? observation : { state: "unknown", writerFinalization: "unknown" }) })); } catch { /* Do not replace the original child result or predicate. */ }
-        }
+        result = await runEndpointCallerCLI(childInput, args);
       } catch (error) {
-        if (bindingObservation) { try { publicLog(JSON.stringify({ scope: "hosted-source-cli-binding-observation", cell: "CCLI01", state: "unknown", writerFinalization: "unknown" })); } catch { /* Preserve the original helper rejection. */ } }
         cliCustodyOutstanding = true;
         cliOutcomes.push({ cell: name, result: { returnedResult: false, errorName: error instanceof Error ? error.name : "unknown", error: diagnostic(String(error)), reportedBoundary: "child-helper-rejected-before-result", terminalCustodyEstablished: false } });
         throw error;
-      } finally {
-        bindingObservation?.close();
       }
       cliCustodyOutstanding = !result.closeObserved || result.closeWaitExpired;
       cliOutcomes.push({ cell: name, result: { code: result.code, signal: result.signal, timedOut: result.timedOut, closeObserved: result.closeObserved, closeWaitExpired: result.closeWaitExpired, killAttempted: result.killAttempted, killAccepted: result.killAccepted, killError: result.killError === null ? null : diagnostic(result.killError), terminationReason: result.terminationReason, stdoutBytes: result.stdoutBytes, stderrBytes: result.stderrBytes, spawnError: result.spawnError === null ? null : { code: result.spawnError.code, message: diagnostic(result.spawnError.message) }, childError: result.childError === null ? null : { code: result.childError.code, message: diagnostic(result.childError.message) }, stdout: diagnostic(result.stdout), stderr: diagnostic(result.stderr), custody: cliCustodyOutstanding ? "unknown" : "known-child-close-observed", reportedBoundary: result.stderr.includes("native endpoint descriptor and verified caller receipt currency disagree") ? "receipt-currency-refusal" : "unclassified-child-result" } });
@@ -358,9 +276,106 @@ try {
   };
   // Hosted mode selects CLI-first diagnostic reach, not a change to either selection.
   if (hostedCLI) await runCLIChecks(handle);
+  const describeSelection = { endpoint, instanceId, commands: ["describe"] };
+  const describeCaller = await authApi.cotalAuthProvider.endpointCallerAuthority!({ store, dir: stateDir, space, actor: "cli", trust, selection: describeSelection });
+  assert.equal(describeCaller.receipt.kind, "cotal.endpoint-caller");
+  if (describeCaller.receipt.kind !== "cotal.endpoint-caller" || caller.receipt.kind !== "cotal.endpoint-caller") throw new Error("ordinary caller receipt required");
+  const describeOptions = core.standaloneConnectOpts({ tls: false, bearer: describeCaller.bearer, sentinelCreds: describeCaller.sentinelCreds });
+  const describeNc = await connect({ servers, ...describeOptions, maxReconnectAttempts: 0 }); connections.push(describeNc);
+  const describeAccepted = await core.issuedUserCaller(describeNc, space, describeOptions.name as string, describeCaller.receipt.principal);
+  const privateDescribe = await core.resolveService(describeNc, space, endpoint, describeAccepted, { instanceId, deadlineMs: 5000 });
+  core.assertEndpointCallerResolvedService(privateDescribe, describeCaller.receipt);
+  cell("BIND01-real-describe-only-full-registration-empty-private-view", describeCaller.receipt.v === 3 && describeCaller.receipt.clusterDigests.length === 1 && describeCaller.receipt.privateClusterDigests.length === 0 && privateDescribe.descriptor?.clusters.length === 0 && privateDescribe.commands.size === 0 && effects === 0);
+  const privateDescriptor = privateDescribe.descriptor;
+  assert.ok(privateDescriptor);
+  const foreignClosure = core.rawDigest("foreign binding closure");
+  const rejectBinding = (name: string, service: core.ResolvedService, receipt: core.EndpointCallerAuthorityReceipt) => {
+    if (hostedCLI) { namedControlsAttempted++; namedFailure = name; }
+    assert.throws(() => core.assertEndpointCallerResolvedService(service, receipt), /currency disagree|projection disagree|private contract projection|verified issued principal|widened the verified command selection/, name);
+    assert.equal(effects, 0, name);
+    checks.push(name); namedFailure = null;
+    (hostedCLI ? publicLog : console.log)(JSON.stringify({ cell: name, passed: true, scope: "native-derived-adversarial-binding-input" }));
+  };
+  rejectBinding("BIND02-empty-view-wrong-full-registration-commitment-refused", { ...privateDescribe, descriptor: { ...privateDescriptor, registeredClusterSetDigest: foreignClosure } }, describeCaller.receipt);
+  const missingCommitment = { ...privateDescriptor };
+  delete missingCommitment.registeredClusterSetDigest;
+  rejectBinding("BIND03-empty-view-missing-full-registration-commitment-refused", { ...privateDescribe, descriptor: missingCommitment }, describeCaller.receipt);
+  rejectBinding("BIND04-empty-view-substituted-signed-full-set-refused", privateDescribe, { ...describeCaller.receipt, clusterDigests: [foreignClosure] });
+  rejectBinding("BIND05-private-extra-visible-closure-refused", { ...privateDescribe, descriptor: { ...privateDescriptor, clusters: [{ digest: closures[0]!, commands: ["increment"] }] } }, describeCaller.receipt);
+  rejectBinding("BIND06-private-signed-closure-outside-full-set-refused", privateDescribe, { ...describeCaller.receipt, privateClusterDigests: [foreignClosure] });
+  rejectBinding("BIND07-empty-view-wrong-caller-owner-refused", { ...privateDescribe, caller: { ...describeAccepted, owner: "u_" + "b".repeat(26) } }, describeCaller.receipt);
+  rejectBinding("BIND08-empty-view-wrong-responder-instance-refused", { ...privateDescribe, responder: { ...privateDescribe.responder, instanceId: core.mintLifecycleUid() } }, describeCaller.receipt);
+  rejectBinding("BIND09-empty-view-stale-process-epoch-refused", { ...privateDescribe, responder: { ...privateDescribe.responder, epoch: privateDescribe.responder.epoch + 1 } }, describeCaller.receipt);
+  rejectBinding("BIND10-empty-view-stale-registration-revision-refused", { ...privateDescribe, descriptor: { ...privateDescriptor, registrationRevision: describeCaller.receipt.registrationRevision + 1 } }, describeCaller.receipt);
+  rejectBinding("BIND11-empty-view-substituted-serving-authority-refused", { ...privateDescribe, descriptor: { ...privateDescriptor, servingAuthority: { ...describeCaller.receipt.servingAuthority, policyRevision: describeCaller.receipt.servingAuthority.policyRevision + 1 } } }, describeCaller.receipt);
+  rejectBinding("BIND12-empty-view-expired-receipt-refused", privateDescribe, { ...describeCaller.receipt, exp: 1 });
+  rejectBinding("BIND12b-empty-view-wrong-caller-actor-refused", { ...privateDescribe, caller: { ...describeAccepted, actor: "foreign" } }, describeCaller.receipt);
+  rejectBinding("BIND12c-empty-view-wrong-caller-lifecycle-refused", { ...privateDescribe, caller: { ...describeAccepted, uid: core.mintLifecycleUid() } }, describeCaller.receipt);
+  rejectBinding("BIND12d-empty-view-missing-issued-generation-refused", { ...privateDescribe, caller: { owner: describeAccepted.owner, actor: describeAccepted.actor, uid: describeAccepted.uid } }, describeCaller.receipt);
+  rejectBinding("BIND12e-empty-view-wrong-pinned-instance-refused", { ...privateDescribe, pinnedInstanceId: core.mintLifecycleUid() }, describeCaller.receipt);
+  rejectBinding("BIND12f-empty-view-wrong-endpoint-refused", { ...privateDescribe, endpoint: "foreign.example.endpoint" }, describeCaller.receipt);
+  const missingRoutes = { ...privateDescriptor };
+  delete missingRoutes.serveRoutes;
+  rejectBinding("BIND12g-empty-view-missing-instance-route-ceiling-refused", { ...privateDescribe, descriptor: missingRoutes }, describeCaller.receipt);
+  const missingResources = { ...privateDescriptor };
+  delete missingResources.resources;
+  rejectBinding("BIND12h-empty-view-missing-resource-ceiling-refused", { ...privateDescribe, descriptor: missingResources }, describeCaller.receipt);
+  assert.equal(core.endpointRegisteredClusterSetDigest([closures[0]!, foreignClosure]), core.endpointRegisteredClusterSetDigest([foreignClosure, closures[0]!]));
+  cell("BIND13-full-registration-commitment-canonical-order", true);
+  assert.throws(() => core.endpointRegisteredClusterSetDigest([closures[0]!, closures[0]!]), /unique/);
+  cell("BIND14-full-registration-duplicate-closure-refused", true);
+  assert.throws(() => core.endpointRegisteredClusterSetDigest([]), /1\.\.64/);
+  assert.throws(() => core.endpointRegisteredClusterSetDigest(["not-a-digest"]), /closure digests/);
+  assert.throws(() => core.endpointRegisteredClusterSetDigest(Array.from({ length: 65 }, (_, index) => core.rawDigest(String(index)))), /1\.\.64/);
+  cell("BIND14b-full-registration-empty-invalid-oversized-set-refused", true);
+  assert.throws(() => core.parseDescribeDescriptor(missingCommitment), /registered cluster set/);
+  cell("BIND15-protocol3-missing-commitment-parser-refused", true);
+  for (const version of [1, 2]) {
+    const legacy = { endpoint, owner, protocol: { v: version }, clusters: [] };
+    core.parseDescribeDescriptor(legacy);
+    assert.throws(() => core.parseDescribeDescriptor({ ...legacy, registeredClusterSetDigest: foreignClosure }), /legacy descriptor/);
+    cell(`BIND16-legacy-protocol${version}-shape-preserved`, true);
+  }
+  const realIssuer = await authApi.loadIssuer(store, space);
+  assert.ok(realIssuer);
+  const oldReceipt = { ...describeCaller.receipt };
+  Reflect.set(oldReceipt, "v", 2);
+  await assert.rejects(realIssuer.signEndpointCallerReceipt(oldReceipt), /invalid endpoint caller receipt domain/);
+  cell("BIND16b-real-issuer-old-receipt-version-refused", true);
+  const missingPrivate = { ...describeCaller.receipt };
+  Reflect.deleteProperty(missingPrivate, "privateClusterDigests");
+  const missingPrivateSigned = await realIssuer.signEndpointCallerReceipt(missingPrivate);
+  await assert.rejects(core.verifyEndpointCallerAuthorityReceipt({ receipt: missingPrivateSigned, bearer: describeCaller.bearer, trust, requestId: describeCaller.receipt.jti, selection: describeSelection, principal }), /closed shape/);
+  cell("BIND17-real-issuer-signed-missing-private-projection-refused", true);
+  const outsidePrivateSigned = await realIssuer.signEndpointCallerReceipt({ ...describeCaller.receipt, privateClusterDigests: [foreignClosure] });
+  await assert.rejects(core.verifyEndpointCallerAuthorityReceipt({ receipt: outsidePrivateSigned, bearer: describeCaller.bearer, trust, requestId: describeCaller.receipt.jti, selection: describeSelection, principal }), /private contract projection/);
+  cell("BIND18-real-issuer-signed-private-outside-full-set-refused", true);
+  const duplicatePrivateSigned = await realIssuer.signEndpointCallerReceipt({ ...describeCaller.receipt, privateClusterDigests: [closures[0]!, closures[0]!] });
+  await assert.rejects(core.verifyEndpointCallerAuthorityReceipt({ receipt: duplicatePrivateSigned, bearer: describeCaller.bearer, trust, requestId: describeCaller.receipt.jti, selection: describeSelection, principal }), /private contract projection/);
+  cell("BIND18b-real-issuer-signed-duplicate-private-projection-refused", true);
+  const unexpectedPrivateSigned = await realIssuer.signEndpointCallerReceipt({ ...describeCaller.receipt, privateClusterDigests: [closures[0]!] });
+  await assert.rejects(core.verifyEndpointCallerAuthorityReceipt({ receipt: unexpectedPrivateSigned, bearer: describeCaller.bearer, trust, requestId: describeCaller.receipt.jti, selection: describeSelection, principal }), /private projection and selected commands disagree/);
+  cell("BIND18c-real-issuer-signed-describe-only-nonempty-private-projection-refused", true);
+  assert.equal(control.receipt.kind, "cotal.endpoint-control");
+  const controlWithPrivate = { ...control.receipt, privateClusterDigests: [] };
+  const controlWithPrivateSigned = await realIssuer.signEndpointCallerReceipt(controlWithPrivate);
+  await assert.rejects(core.verifyEndpointCallerAuthorityReceipt({ receipt: controlWithPrivateSigned, bearer: control.bearer, trust, requestId: control.receipt.jti, selection: control.receipt.selection, principal, control: true }), /closed shape/);
+  cell("BIND19-real-issuer-signed-control-private-field-refused", true);
   const resolved = await core.resolveService(callerNc, space, endpoint, accepted, { instanceId, deadlineMs: 5000 });
   core.assertEndpointCallerResolvedService(resolved, caller.receipt);
   cell("R04-native-descriptor-receipt-bound", resolved.responder.instanceId === instanceId && resolved.owner === owner);
+  const selectedDescriptor = resolved.descriptor;
+  assert.ok(selectedDescriptor);
+  cell("BIND20-real-selected-command-private-view-bound", caller.receipt.privateClusterDigests.length === 1 && selectedDescriptor.clusters.length === 1 && effects === 0);
+  const omittedPrivateSigned = await realIssuer.signEndpointCallerReceipt({ ...caller.receipt, privateClusterDigests: [] });
+  await assert.rejects(core.verifyEndpointCallerAuthorityReceipt({ receipt: omittedPrivateSigned, bearer: caller.bearer, trust, requestId: caller.receipt.jti, selection, principal }), /private projection and selected commands disagree/);
+  cell("BIND20b-real-issuer-signed-selected-command-empty-private-projection-refused", true);
+  rejectBinding("BIND21-selected-view-omitted-private-closure-refused", { ...resolved, descriptor: { ...selectedDescriptor, clusters: [] } }, caller.receipt);
+  const widenedCommands = new Map(resolved.commands);
+  const incrementCommand = widenedCommands.get("increment");
+  assert.ok(incrementCommand);
+  widenedCommands.set("other", { ...incrementCommand, command: "other" });
+  rejectBinding("BIND22-selected-view-extra-resolved-command-refused", { ...resolved, commands: widenedCommands }, caller.receipt);
   if (cliMode && !hostedCLI) await runCLIChecks(handle);
   const invoked = await core.invokeCommand(callerNc, space, resolved, "increment", undefined, { deadlineMs: 5000 });
   cell("R05-native-effect-through-public-caller-control", invoked.reply.ok && effects === 1);
