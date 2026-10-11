@@ -63,6 +63,10 @@ const cells = [
 ] as const;
 let passed = 0, failed = 0, attempted = 0, activeCell: string | null = null;
 let failure: unknown, failureCell: string | null = null, renewalError: unknown, renewalRejected = false;
+type SetupState = "not-reached" | "entered" | "returned" | "threw";
+const setup: Record<"caller-authorize" | "caller-issue" | "caller-validate" | "caller-predicate", SetupState> = {
+  "caller-authorize": "not-reached", "caller-issue": "not-reached", "caller-validate": "not-reached", "caller-predicate": "not-reached",
+};
 function cell(name: typeof cells[number], value: unknown) {
   attempted++; activeCell = name;
   if (!value) { failed++; failureCell ??= name; console.log(JSON.stringify({ cell: name, passed: false })); assert.ok(value, name); }
@@ -135,9 +139,20 @@ try {
   const signature = Buffer.from(fromSeed(enc.encode(holder.seed)).sign(enc.encode(core.canonicalJson(challenge)))).toString("base64url");
   const active = await authority.activate(token, { operationId, instanceId: reservation.instanceId, content, signature });
   cell(cells[0], active.reservation.state === "active" && active.registrationRevision > 0 && active.processEpoch === 0);
-  const grant = await authority.authorizeCallerBearer(token, { endpoint, instanceId: reservation.instanceId, commands: ["increment"] });
-  const callerToken = await authApi.validateUserToken(await issuer.issue({ owner: grant.principal.owner, actor: grant.principal.actor, space, lifecycleUid: grant.principal.uid, scope: [], view: "endpoint-caller", endpointGrant: { grantId: grant.grantId, grantRevision: grant.grantRevision, policyRevision: grant.policyRevision }, ttlSec: grant.expiresAt - Math.floor(Date.now() / 1000) }), { issuer: issuerName, audience: space, key: issuer.localKeySet() });
+  setup["caller-authorize"] = "entered";
+  const grant = await authority.authorizeCallerBearer(token, { endpoint, instanceId: reservation.instanceId, commands: ["describe", "increment"] });
+  setup["caller-authorize"] = "returned";
+  setup["caller-issue"] = "entered";
+  // The original nested call looked up the validator before awaiting issuer.issue.
+  const validateCaller = authApi.validateUserToken;
+  const callerBearer = await issuer.issue({ owner: grant.principal.owner, actor: grant.principal.actor, space, lifecycleUid: grant.principal.uid, scope: [], view: "endpoint-caller", endpointGrant: { grantId: grant.grantId, grantRevision: grant.grantRevision, policyRevision: grant.policyRevision }, ttlSec: grant.expiresAt - Math.floor(Date.now() / 1000) });
+  setup["caller-issue"] = "returned";
+  setup["caller-validate"] = "entered";
+  const callerToken = await validateCaller.call(authApi, callerBearer, { issuer: issuerName, audience: space, key: issuer.localKeySet() });
+  setup["caller-validate"] = "returned";
+  setup["caller-predicate"] = "entered";
   cell(cells[1], callerToken.act.view === "endpoint-caller" && callerToken.act.endpointGrant?.grantId === grant.grantId && callerToken.act.lifecycleUid === principal.uid);
+  setup["caller-predicate"] = "returned";
   const nonce = core.newIdentity().id, acceptedToken = core.connectionAcceptedToken(nonce), canonicalKey = core.acceptedKey(acceptedToken);
   const source: core.IssuedSourceRef = { space, bucket: core.issuedBucket(space), key: `endpoint-grant.${grant.grantId}.${grant.grantRevision}` };
   phase = "first";
@@ -203,8 +218,10 @@ try {
   cell(cells[10], head?.state === "open" && head.operation === undefined && !!sourceAfter && sourceAfter.revision === sourceBefore.revision && currentChecks.renewal > 0 && sourcePolicyChecks.renewal > 0);
 } catch (error) {
   failure = error; // Preserve original object privately. No raw message, key, reason or stack output.
+  for (const stage of Object.keys(setup) as (keyof typeof setup)[]) if (setup[stage] === "entered") setup[stage] = "threw";
   if (activeCell === null) { failed++; attempted++; failureCell ??= "CR00-setup-or-observation"; console.log(JSON.stringify({ cell: "CR00-setup-or-observation", passed: false })); }
 } finally {
+  console.log(JSON.stringify({ oracle: "canonical-renewal-setup", stages: setup }));
   let cleanup = true;
   try { await authority?.close(); } catch { cleanup = false; }
   for (const nc of connections) try { await nc.close(); if (await nc.closed() !== undefined) cleanup = false; } catch { cleanup = false; }

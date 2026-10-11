@@ -26,6 +26,37 @@ no-fresh-material control. Readbacks use original handles outside the witnessed
 invocations. Output carries fixed labels, counts and equality booleans only.
 Raw keys, nonces, identities, credentials and error messages or stacks stay
 private. Original rejection identity is compared to the native create error.
+
+## Supported setup
+
+The first ordinary baseline at `cd5d37` passed CR01 and CR12, failed CR00,
+and did not reach CR02, the native renewal oracle or CR06. Original issued53
+was skipped in that job. Its raw result remains a setup failure, not renewal
+RED. Source inspection found that the test requested only `increment` during
+caller authorization. The maintained selection parser requires `describe` and
+unique commands. This concrete unsupported input is not the observed unique
+inner cause of the old CR00 failure.
+
+The successor requests `describe` and `increment` during authorization. The
+policy still decides only `increment`, because shipped authorization strips
+`describe` before the policy decision and source write. No product guard changes.
+Four fixed setup states cover caller authorization, bearer issuance, validation
+and the CR02 predicate. Each starts `not-reached`, enters before its argument
+construction or await, and returns after success. The existing catch marks an
+entered boundary `threw` and retains the original exception without continuing.
+The setup oracle prints these labels and states during finally. CR00 remains a
+failure for a setup exception. A false CR02 predicate remains a CR02 failure.
+
+Splitting issuance and validation keeps the original validator lookup before
+the issuer await, its original receiver, and validation options after issuance.
+Markers identify composite boundaries, not every internal predicate. The issue
+boundary includes the validator method lookup that the original nested call
+performed first. The predicate boundary includes property evaluation and the
+original CR02 assertion. Fixed state assignments are additional observation,
+not uninstrumented timing equivalence. No issuer token or caught error is printed.
+The successor has not been executed, so neither corrected setup nor renewal
+has a new verdict. All proof and execution holds below remain in force.
+
 Lookup, fresh stage, committed evidence, active attempt, source index, rejected
 canonical create and held policy are separate observations. None is assumed.
 The native collision count recognizes structured codes 10071, 10164 and 10077;
