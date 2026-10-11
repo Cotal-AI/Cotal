@@ -1,0 +1,63 @@
+{
+  "suite": ["implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"],
+  "guard": "The existing known-child helper preserves real outcomes, enforces finite per-stream byte budgets and honors requested timeout/cancellation before observing final close.",
+  "command": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts",
+  "completionMarker": "endpoint-caller-child-controls.smoke:",
+  "progressPattern": "^PASS CH",
+  "mutations": [
+    {
+      "name": "cut UTF-8 replacement characters expand beyond the retained byte budget",
+      "file": "implementations/cli/smoke/endpoint-caller-child.ts",
+      "find": "  return text.slice(0, end);",
+      "replace": "  return text;",
+      "expectRed": "CH06-finite-stdout-overflow-is-byte-bounded-and-reaped",
+      "cell": "CH06-finite-stdout-overflow-is-byte-bounded-and-reaped",
+      "afterRestore": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"
+    },
+    {
+      "name": "the requested timeout is ignored until the finite child self-exits",
+      "file": "implementations/cli/smoke/endpoint-caller-child.ts",
+      "find": "    timeout = setTimeout(() => terminate(\"timeout\"), timeoutMs);",
+      "replace": "    timeout = setTimeout(() => terminate(\"timeout\"), 30000);",
+      "expectRed": "CH04-real-timeout-kills-owned-child-and-waits-close",
+      "cell": "CH04-real-timeout-kills-owned-child-and-waits-close",
+      "afterRestore": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"
+    },
+    {
+      "name": "after-ready cancellation never reaches the owned child",
+      "file": "implementations/cli/smoke/endpoint-caller-child.ts",
+      "find": "    input.signal?.addEventListener(\"abort\", cancel, { once: true });",
+      "replace": "    // after-ready cancellation listener removed",
+      "expectRed": "CH05-real-cancellation-after-child-ready-waits-close",
+      "cell": "CH05-real-cancellation-after-child-ready-waits-close",
+      "afterRestore": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"
+    },
+    {
+      "name": "stdout overflow retains its cap but no longer terminates the finite child",
+      "file": "implementations/cli/smoke/endpoint-caller-child.ts",
+      "find": "      if (stdoutBytes > limit) terminate(\"stdout-limit\");",
+      "replace": "      // stdout overflow termination removed",
+      "expectRed": "CH06-finite-stdout-overflow-is-byte-bounded-and-reaped",
+      "cell": "CH06-finite-stdout-overflow-is-byte-bounded-and-reaped",
+      "afterRestore": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"
+    },
+    {
+      "name": "stderr overflow retains its cap but no longer terminates the finite child",
+      "file": "implementations/cli/smoke/endpoint-caller-child.ts",
+      "find": "      if (stderrBytes > limit) terminate(\"stderr-limit\");",
+      "replace": "      // stderr overflow termination removed",
+      "expectRed": "CH07-finite-stderr-overflow-is-byte-bounded-and-reaped",
+      "cell": "CH07-finite-stderr-overflow-is-byte-bounded-and-reaped",
+      "afterRestore": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"
+    },
+    {
+      "name": "the final close observation is discarded",
+      "file": "implementations/cli/smoke/endpoint-caller-child.ts",
+      "find": "    child.once(\"close\", (code, signal) => finish(code, signal, true));",
+      "replace": "    child.once(\"close\", (code, signal) => finish(code, signal, false));",
+      "expectRed": "CH01-real-success-preserves-output-and-final-close",
+      "cell": "CH01-real-success-preserves-output-and-final-close",
+      "afterRestore": "node --import tsx implementations/cli/smoke/endpoint-caller-child-controls.smoke.ts"
+    }
+  ]
+}
