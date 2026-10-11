@@ -1,0 +1,41 @@
+{
+  "suite": ["implementations/auth/smoke/environment-manager-admission.smoke.ts"],
+  "guard": "Native environment reservation activates the bootstrap lifecycle, preserves its authority family and never resurrects a staged operation",
+  "command": "pnpm smoke:environment-manager-admission",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission.json",
+  "why": ["The private JWT broker runs the host-private reservation helper with its scoped writer. No bootstrap signing, complete external admission, terminal retirement or hosted agent execution is claimed."],
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 16,
+  "mutations": [
+    {
+      "name": "reservation omits bootstrap lifecycle activation",
+      "file": "implementations/auth/src/environment-manager-admission.ts",
+      "find": "  await activateLifecycleAtUid(reg, { owner: pin.owner, actor: environmentBootstrapActor(pin.instanceId),\n    lifecycleUid: pin.lifecycleUid, managerInstance: pin.instanceId });\n",
+      "replace": "",
+      "expectRed": "native activation creates the reserved bootstrap head and open lifecycle gate",
+      "cell": "native activation creates the reserved bootstrap head and open lifecycle gate",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission"
+    },
+    {
+      "name": "reservation omits the endpoint authority family marker",
+      "file": "implementations/auth/src/environment-manager-admission.ts",
+      "find": "      principal, authorityFamily: \"environment-manager\" });",
+      "replace": "      principal });",
+      "expectRed": "native manager gate is family-marked and frozen under the host registration operation",
+      "cell": "native manager gate is family-marked and frozen under the host registration operation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission"
+    },
+    {
+      "name": "reservation resurrects deleted operation coordinates",
+      "file": "implementations/auth/src/environment-manager-admission.ts",
+      "find": "    await authKv.put(key, bytes, { previousSeq: 0 });",
+      "replace": "    await authKv.create(key, bytes);",
+      "expectRed": "a stage deletion marker is corruption, not a reusable operation",
+      "cell": "a stage deletion marker is corruption, not a reusable operation",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission"
+    }
+  ]
+}
