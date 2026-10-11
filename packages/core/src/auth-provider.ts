@@ -1,6 +1,7 @@
 import { execFile, type ExecFileException } from "node:child_process";
 import { registry, type Extension } from "./registry.js";
 import type { SecretStore } from "./secret-store.js";
+import type { EndpointCallerAuthorityRequest, EndpointCallerAuthorityMaterial, EndpointServingControlAuthorityRequest } from "./endpoint-public-authority.js";
 import type {
   RemoteManagerAdminAuthorizationRequest,
   RemoteManagerAdminAuthorizationResult,
@@ -77,6 +78,11 @@ export interface AuthProvider extends Extension {
    * `spawn -f`) ride. An under-scoped or unknown view MUST fail loud with the exact re-grant.
    */
   userCredentials(opts: UserCredentialsRequest): Promise<{ bearer: string; sentinelCreds: string }>;
+  /** Dedicated instance-only authority from a signed-in session and root-provisioned trust.
+   * Missing provisioning or an unsupported provider refuses without a manager/profile fallback. */
+  endpointCallerAuthority?(request: EndpointCallerAuthorityRequest): Promise<EndpointCallerAuthorityMaterial>;
+  /** Holder-proved control of one activated serving instance through the pinned native auth endpoint. */
+  endpointServingControlAuthority?(request: EndpointServingControlAuthorityRequest): Promise<EndpointCallerAuthorityMaterial>;
   /**
    * Prepare the signed-in account's optional space catalog without exposing its cached session
    * bearer. The provider owns advertisement discovery, conditional HTTP, freshness, locking, and

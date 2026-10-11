@@ -1,0 +1,36 @@
+{
+  "suite": ["implementations/cli/smoke/endpoint-caller-controls.smoke.ts"],
+  "guard": "Generic endpoint intentions and protected deployment trust refuse before caller acquisition or native connection.",
+  "command": "pnpm --filter @cotal-ai/workspace build && node --import tsx implementations/cli/smoke/endpoint-caller-controls.smoke.ts",
+  "completionMarker": "endpoint-caller-controls.smoke:",
+  "progressPattern": "^PASS EC",
+  "mutations": [
+    {
+      "name": "generic missing instance reaches acquisition",
+      "file": "implementations/cli/src/commands/describe.ts",
+      "find": "  if (instanceId === undefined) throw new Error(\"generic endpoint describe/invoke requires explicit --on <instance>\");",
+      "replace": "  // missing-instance intention guard removed",
+      "expectRed": "EC05-shipped-generic-missing-instance-denies-before-provider",
+      "cell": "EC05-shipped-generic-missing-instance-denies-before-provider",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && node --import tsx implementations/cli/smoke/endpoint-caller-entry.smoke.ts && node --import tsx implementations/cli/smoke/endpoint-caller-controls.smoke.ts"
+    },
+    {
+      "name": "canonical equivalent trust byte replacement is accepted",
+      "file": "packages/workspace/src/endpoint-caller-target.ts",
+      "find": "!original.bytes.equals(current.bytes) || canonicalJson(parsed) !== canonical",
+      "replace": "canonicalJson(parsed) !== canonical",
+      "expectRed": "EC18-canonical-equivalent-byte-change-invalidates-recheck",
+      "cell": "EC18-canonical-equivalent-byte-change-invalidates-recheck",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && node --import tsx implementations/cli/smoke/endpoint-caller-entry.smoke.ts && node --import tsx implementations/cli/smoke/endpoint-caller-controls.smoke.ts"
+    },
+    {
+      "name": "identical trust file replacement loses inode binding",
+      "file": "packages/workspace/src/endpoint-caller-target.ts",
+      "find": "          || !sameFile(original.file, current.file)",
+      "replace": "",
+      "expectRed": "EC19-identical-file-replacement-invalidates-recheck",
+      "cell": "EC19-identical-file-replacement-invalidates-recheck",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && node --import tsx implementations/cli/smoke/endpoint-caller-entry.smoke.ts && node --import tsx implementations/cli/smoke/endpoint-caller-controls.smoke.ts"
+    }
+  ]
+}

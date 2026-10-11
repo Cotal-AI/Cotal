@@ -6,13 +6,15 @@
  * module: the schemas come from the store, recompiled and digest-checked against the registered
  * declaration (the same trust chain every migrated control consumer rides).
  *
- * Static instruments and user-mode bearers both carry the ep-rail caller rows. An open mesh has no
- * service registry to describe against.
+ * Manager calls keep their existing instruments and user views. Other endpoints use dedicated
+ * instance-bound caller authority from the registered account and protected deployment trust.
  */
 import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
+  assertEndpointCallerResolvedService,
   dialerFor,
+  invokeCommand,
   invokeRepairingSplit,
   issuedUserCaller,
   parsePrincipalKey,
@@ -24,9 +26,10 @@ import {
   type FlagValues,
   type ParsedArgs,
   type ResolvedService,
+  type EndpointCallerAuthorityReceipt,
 } from "@cotal-ai/core";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { loadMeshes, resolveEndpointCallerTarget, targetFlags } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { resolveControlTarget, onInstanceOrExit, onFlag, type ControlAuth } from "../lib/control.js";
 
@@ -34,12 +37,21 @@ export const describeFlags = [...targetFlags, onFlag] as const satisfies readonl
 
 export const invokeFlags = [
   ...targetFlags,
+  onFlag,
   { name: "args", type: "string", value: "<json>", description: "command arguments as a JSON object" },
   { name: "name", type: "string", value: "<agent>", description: "targeted commands: the managed agent to act on (resolved to its current principal via inspect)" },
   { name: "self", type: "boolean", description: "targeted commands: target this caller itself (authz-mode self)" },
   { name: "admin", type: "boolean", description: "use the admin instrument (cross-agent any-mode reach on targeted commands)" },
   { name: "timeout", type: "string", value: "<ms>", description: "reply deadline in milliseconds (default 10000)" },
 ] as const satisfies readonly FlagSpec[];
+
+/** Generic endpoint intentions are explicit and untargeted in this slice. Validate before any
+ * provider acquisition or connection, rather than borrowing a manager instrument's authority. */
+export function assertGenericEndpointIntent(values: Record<string, unknown>, instanceId?: string): void {
+  if (instanceId === undefined) throw new Error("generic endpoint describe/invoke requires explicit --on <instance>");
+  if (["creds", "admin", "name", "self", "session", "sessionId"].some(flag => values[flag] !== undefined))
+    throw new Error("generic endpoint callers do not support raw credentials, admin, targeted or session intentions");
+}
 
 export function describeComplete(argv: string[]): CompletionResult {
   if (argv.some((a) => a === "--space")) return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
@@ -52,7 +64,15 @@ async function epConnection(
   profile: "control-caller-privileged" | "control-caller-admin",
   endpoint: string,
   instanceId?: string,
-): Promise<{ nc: NatsConnection; space: string; auth: ControlAuth }> {
+  commands: readonly string[] = ["describe"],
+  deadlineMs = 10000,
+): Promise<{ nc: NatsConnection; space: string; auth: ControlAuth; service?: ResolvedService; receipt?: Readonly<EndpointCallerAuthorityReceipt> }> {
+  if (endpoint !== BASELINE_LIFECYCLE_ENDPOINT) {
+    assertGenericEndpointIntent(values, instanceId);
+    const target = await resolveEndpointCallerTarget(values as { space?: string; server?: string; creds?: string },
+      { endpoint, instanceId: instanceId!, commands }, { deadlineMs });
+    return { nc: target.nc, space: target.space, auth: { epCaller: target.caller }, service: target.service, receipt: target.receipt };
+  }
   const t = await resolveControlTarget(values as { space?: string; server?: string; creds?: string }, profile, instanceId, { endpoint });
   if (!t.auth.epCaller || (!t.auth.creds && !(t.auth.bearer && t.auth.sentinelCreds))) {
     console.error(c.red("✗ the generic describe/invoke surface needs an auth mesh with endpoint caller rows"));
@@ -83,17 +103,18 @@ export async function describeCmd(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
   const on = onInstanceOrExit((args.values as { on?: string }).on, "describe");
-  const { nc, space, auth } = await epConnection(args.values, "control-caller-privileged", endpoint, on);
+  const { nc, space, auth, service: dedicated, receipt } = await epConnection(args.values, "control-caller-privileged", endpoint, on);
   try {
     if (on !== undefined && auth.managerInstanceId !== undefined && on !== auth.managerInstanceId) {
       console.error(c.red("✗ the manager pin differs from this credential's instance authority"));
       process.exit(1);
     }
     const instanceId = on ?? auth.managerInstanceId;
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {
+    const service = dedicated ?? await resolveService(nc, space, endpoint, auth.epCaller!, {
       deadlineMs: 10_000,
       ...(instanceId !== undefined ? { instanceId } : {}),
     });
+    if (receipt) assertEndpointCallerResolvedService(service, receipt);
     console.log(`${c.bold(service.endpoint)}  ${c.dim(`owner ${service.owner} · instance ${service.responder.instanceId} · epoch ${service.responder.epoch}`)}`);
     const rows = [...service.commands.values()].sort((a, b) => a.command.localeCompare(b.command));
     const nameW = Math.max(...rows.map((r) => r.command.length));
@@ -115,7 +136,7 @@ export async function invokeCmd(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof invokeFlags>;
   const [endpoint, command] = args.positionals;
   if (!endpoint || !command) {
-    console.error(c.red("✗ usage: cotal invoke <endpoint> <command> [--args '<json>'] [--name <agent> | --self]"));
+    console.error(c.red("✗ usage: cotal invoke <endpoint> <command> [--on <instance>] [--args '<json>'] [--name <agent> | --self]"));
     process.exit(1);
   }
   let parsedArgs: Record<string, unknown> | undefined;
@@ -129,19 +150,26 @@ export async function invokeCmd(args: ParsedArgs): Promise<void> {
       process.exit(1);
     }
   }
-  const { nc, space, auth } = await epConnection(args.values, v.admin === true ? "control-caller-admin" : "control-caller-privileged", endpoint);
+  const on = onInstanceOrExit(v.on, "invoke");
+  const deadlineMs = v.timeout !== undefined ? Number(v.timeout) : 10_000;
+  if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
+    console.error(c.red(`✗ --timeout must be a positive number of milliseconds (got "${v.timeout}")`));
+    process.exit(1);
+  }
+  const commands = command === "describe" ? ["describe"] : ["describe", command];
+  const { nc, space, auth, service: dedicated, receipt } = await epConnection(args.values,
+    v.admin === true ? "control-caller-admin" : "control-caller-privileged", endpoint, on, commands, deadlineMs);
   try {
-    const service = await resolveService(nc, space, endpoint, auth.epCaller!, {
+    const instanceId = on ?? auth.managerInstanceId;
+    const service = dedicated ?? await resolveService(nc, space, endpoint, auth.epCaller!, {
       deadlineMs: 10_000,
-      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
+      ...(instanceId !== undefined ? { instanceId } : {}),
     });
+    if (receipt) assertEndpointCallerResolvedService(service, receipt);
     const target = await resolveTarget(nc, space, service, v);
-    const deadlineMs = v.timeout !== undefined ? Number(v.timeout) : 10_000;
-    if (!Number.isFinite(deadlineMs) || deadlineMs <= 0) {
-      console.error(c.red(`✗ --timeout must be a positive number of milliseconds (got "${v.timeout}")`));
-      process.exit(1);
-    }
-    const r = await invokeRepairingSplit(nc, space, service, command, parsedArgs, { ...(target ? { target } : {}), deadlineMs });
+    // A generic signed selection is never re-resolved through the manager's split-repair path.
+    const invoke = receipt ? invokeCommand : invokeRepairingSplit;
+    const r = await invoke(nc, space, service, command, parsedArgs, { ...(target ? { target } : {}), deadlineMs });
     if (r.reply.ok !== true) {
       console.error(c.red(`✗ ${r.reply.error?.code ?? "error"}: ${r.reply.error?.message ?? "the command failed"}`));
       process.exit(1);
