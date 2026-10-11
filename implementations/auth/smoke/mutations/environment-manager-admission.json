@@ -5,8 +5,18 @@
   "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/environment-manager-admission.json",
   "why": ["The private JWT broker runs the host-private reservation helper with its scoped writer. No bootstrap signing, complete external admission, terminal retirement or hosted agent execution is claimed."],
   "progressPattern": "^  [✓✗]",
-  "minTicks": 20,
+  "minTicks": 21,
   "mutations": [
+    {
+      "name": "initial gate stamp loses its first-wins CAS",
+      "file": "implementations/auth/src/environment-manager-admission.ts",
+      "find": "await authKv.put(birthKey, value, { previousSeq: 0 });",
+      "replace": "await authKv.put(birthKey, value);",
+      "expectRed": "an absent-stamp race cannot replace the original fence after abort",
+      "cell": "an absent-stamp race cannot replace the original fence after abort",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:environment-manager-admission"
+    },
     {
       "name": "reservation re-freezes an aborted registration",
       "file": "implementations/auth/src/environment-manager-admission.ts",

@@ -99,6 +99,40 @@ try {
     await assert.rejects(() => stageEnvironmentManagerAdmission(reg, aborted));
     assert.deepEqual(await gate.observe(), opened);
   });
+  await cell("an absent-stamp race cannot replace the original fence after abort", async () => {
+    const racing = coordinates(), birthKey = `stage.${racing.operationId}.environment-manager-gate`;
+    const paused = await openLifecycleRegistry(writer.nc, account.space);
+    const concurrent = await openLifecycleRegistry(writer.nc, account.space);
+    const stores = registryStores(paused), original = stores.authKv;
+    const gate = serveIssuanceGateKv(authKv, account.space, { endpoint: "manager", instanceId: racing.instanceId });
+    let injected = false, birthRevision: number | undefined, opened: Awaited<ReturnType<typeof gate.observe>> | undefined;
+    stores.authKv = new Proxy(original, { get(target, field) {
+      if (field === "get") return async (key: string) => {
+        const before = await target.get(key);
+        if (key === birthKey && !before && !injected) {
+          injected = true;
+          await stageEnvironmentManagerAdmission(concurrent, racing);
+          birthRevision = (await authKv.get(birthKey))!.revision;
+          const frozen = await gate.observe();
+          if (frozen?.state !== "frozen") throw new Error("race fixture has no registration freeze");
+          const barrier = endpointRegistrationBarrier(authKv, account.space, { endpoint: "manager", instanceId: racing.instanceId, opId: racing.operationId });
+          assert.equal(await barrier.reopen(frozen.revision, { generation: frozen.generation, processEpoch: frozen.processEpoch,
+            registrationRevision: frozen.registrationRevision, nameAuthorityRevision: frozen.nameAuthorityRevision }), true);
+          opened = await gate.observe();
+        }
+        return before;
+      };
+      const value = Reflect.get(target, field, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    try {
+      await assert.rejects(() => stageEnvironmentManagerAdmission(paused, racing), /registration was aborted/);
+      assert.equal(injected, true);
+      assert.equal(opened?.state, "open");
+      assert.deepEqual(await gate.observe(), opened);
+      assert.equal((await authKv.get(birthKey))?.revision, birthRevision);
+    } finally { stores.authKv = original; }
+  });
   await cell("a deleted initial-gate stamp cannot authorize reservation replay", async () => {
     const damaged = coordinates();
     await stageEnvironmentManagerAdmission(reg, damaged);
