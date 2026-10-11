@@ -249,6 +249,13 @@ authorizes its serve grant, this start is refused with `expired`.
 `RemoteManagerIdentityState` describes the five private
 manager identities stored under an explicit account-local root. Use these public exports when
 composing `ManagerOptions.remoteAuthority`; do not copy CLI validators or import private modules.
+`remoteManagerClient.createReservedRemoteManagerIdentity({ space, instanceId, lifecycleUid })`
+generates five local user nkeys without replacing already-reserved coordinates. It accepts only
+those three fields and checks their syntax, not the admission that selected them. It does not
+persist keys, authenticate an environment or issue authority. Use it inside a create-only recovery
+claim, then persist the winning keys with bootstrap recovery material before any request. Calling
+it again generates different keys; it is not a restart or lost-reply recovery store. The ordinary
+`loadOrCreateRemoteManagerIdentity(root, space)` path still selects and stores its own lifecycle.
 `managerClusterArtifacts()` returns the canonical document, manifest and their digests used by
 registration. Pass its `[document, manifest]` pair as `contractArtifacts` to both
 `remoteManagerRegistrationProof(owner, state, contractArtifacts)` from `@cotal-ai/core` and

@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import {
   credsFromJwt,
+  assertLifecycleToken,
   admissionSnapshot,
   revocationSnapshot,
   type RemoteRunRevokeRequest,
@@ -256,13 +257,12 @@ function remoteManagerStateOf(space: string) {
   };
 }
 
-/** Load or create one participant-owned manager lifecycle identity. Private seeds never leave it. */
-export function loadOrCreateRemoteManagerIdentity(root: string, space: string): RemoteManagerIdentityState {
-  return claimIdentityRecord(stateFile(root, space), "the remote manager authority state", remoteManagerStateOf(space), () => ({
+function managerIdentityState(space: string, instanceId: string, lifecycleUid: string): RemoteManagerIdentityState {
+  return {
     v: 1,
     space,
-    instanceId: mintLifecycleUid(),
-    lifecycleUid: mintLifecycleUid(),
+    instanceId,
+    lifecycleUid,
     identities: {
       supervisor: newIdentity(),
       executor: newIdentity(),
@@ -270,7 +270,31 @@ export function loadOrCreateRemoteManagerIdentity(root: string, space: string): 
       goalWriter: newIdentity(),
       sessionLedger: newIdentity(),
     },
-  }));
+  };
+}
+
+/** Generate five local user nkeys for already-reserved coordinates. This neither authenticates
+ *  an admission nor persists or issues authority. Call only inside a create-only recovery claim;
+ *  persist the winning keys and bootstrap recovery material together before making a request. */
+export function createReservedRemoteManagerIdentity(
+  coordinates: Pick<RemoteManagerIdentityState, "space" | "instanceId" | "lifecycleUid">,
+): RemoteManagerIdentityState {
+  if (coordinates === null || typeof coordinates !== "object" || Array.isArray(coordinates) ||
+      Object.keys(coordinates).sort().join(",") !== "instanceId,lifecycleUid,space" ||
+      typeof coordinates.space !== "string" || typeof coordinates.instanceId !== "string" || typeof coordinates.lifecycleUid !== "string")
+    throw new Error("reserved manager identity requires closed space, instance and lifecycle coordinates");
+  try {
+    spaceKey(coordinates.space);
+    assertLifecycleToken(coordinates.instanceId);
+    assertLifecycleToken(coordinates.lifecycleUid);
+  } catch { throw new Error("reserved manager identity has invalid coordinates"); }
+  return managerIdentityState(coordinates.space, coordinates.instanceId, coordinates.lifecycleUid);
+}
+
+/** Load or create one participant-owned manager lifecycle identity. Private seeds never leave it. */
+export function loadOrCreateRemoteManagerIdentity(root: string, space: string): RemoteManagerIdentityState {
+  return claimIdentityRecord(stateFile(root, space), "the remote manager authority state", remoteManagerStateOf(space),
+    () => managerIdentityState(space, mintLifecycleUid(), mintLifecycleUid()));
 }
 
 export function remoteManagerAuthorityRequest(

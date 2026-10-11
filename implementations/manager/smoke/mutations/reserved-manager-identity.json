@@ -1,0 +1,84 @@
+{
+  "grades": "suite",
+  "guard": "Reserved manager construction preserves admitted coordinates and generates only five distinct local user keys without affecting ordinary persistence",
+  "suite": ["implementations/manager/smoke/reserved-manager-identity.smoke.ts"],
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity",
+  "progressPattern": "^[✓✗]",
+  "minTicks": 24,
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "why": "The public package constructor creates real nkey pairs. The existing ordinary entry performs actual private-file publication and reconstruction in a fresh owned Node process. No admission, signing, bootstrap recovery or hosted acceptance is claimed. Every mutant rebuilds the changed package; afterRestore rebuilds it from restored source.",
+  "mutations": [
+    {
+      "name": "reserved construction replaces the admitted instance",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "return managerIdentityState(coordinates.space, coordinates.instanceId, coordinates.lifecycleUid);",
+      "replace": "return managerIdentityState(coordinates.space, mintLifecycleUid(), coordinates.lifecycleUid);",
+      "expectRed": "reserved constructor preserves host instance",
+      "cell": "reserved constructor preserves host instance",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "reserved construction replaces the admitted lifecycle",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "return managerIdentityState(coordinates.space, coordinates.instanceId, coordinates.lifecycleUid);",
+      "replace": "return managerIdentityState(coordinates.space, coordinates.instanceId, mintLifecycleUid());",
+      "expectRed": "reserved constructor preserves host lifecycle",
+      "cell": "reserved constructor preserves host lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "reserved construction accepts caller-selected extra fields",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      Object.keys(coordinates).sort().join(\",\") !== \"instanceId,lifecycleUid,space\" ||\n",
+      "replace": "",
+      "expectRed": "reserved constructor refuses caller identity and extra fields",
+      "cell": "reserved constructor refuses caller identity and extra fields",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "reserved construction accepts malformed instance tokens",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "    assertLifecycleToken(coordinates.instanceId);\n",
+      "replace": "",
+      "expectRed": "reserved constructor refuses malformed lifecycle tokens",
+      "cell": "reserved constructor refuses malformed lifecycle tokens",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "reserved construction accepts malformed lifecycle tokens",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "    assertLifecycleToken(coordinates.lifecycleUid);\n",
+      "replace": "",
+      "expectRed": "reserved constructor refuses malformed lifecycle tokens",
+      "cell": "reserved constructor refuses malformed lifecycle tokens",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "reserved construction accepts invalid space names",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "    spaceKey(coordinates.space);\n",
+      "replace": "",
+      "expectRed": "reserved constructor refuses malformed spaces",
+      "cell": "reserved constructor refuses malformed spaces",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "manager construction pairs a public key with another private seed",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "      supervisor: newIdentity(),",
+      "replace": "      supervisor: { ...newIdentity(), seed: newIdentity().seed },",
+      "expectRed": "reserved supervisor is a matching native user key pair",
+      "cell": "reserved supervisor is a matching native user key pair",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    },
+    {
+      "name": "reserved construction shares a key between manager duties",
+      "file": "implementations/manager/src/remote-authority.ts",
+      "find": "return managerIdentityState(coordinates.space, coordinates.instanceId, coordinates.lifecycleUid);",
+      "replace": "const state = managerIdentityState(coordinates.space, coordinates.instanceId, coordinates.lifecycleUid); state.identities.goalWriter = state.identities.supervisor; return state;",
+      "expectRed": "reserved duties use five distinct public keys",
+      "cell": "reserved duties use five distinct public keys",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:reserved-manager-identity"
+    }
+  ]
+}
