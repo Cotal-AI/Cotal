@@ -41,7 +41,6 @@ import {
 import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, goalFollowRefusal, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
-import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
 import { readAcceptedRow } from "./issued-authority.js";
@@ -2503,9 +2502,8 @@ export class CotalEndpoint extends EventEmitter {
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
    *     `failed-precondition`; the same instance at any other epoch, `expired`), which is what a
    *     responder too old to know the field produces. A live instance received and answered it, so
-   *     the bind is dropped but the call is re-issued only for a command on the
-   *     {@link isRepeatSafeCommand} allowlist; anything else surfaces, since a second attempt could
-   *     duplicate its effect.
+   *     the bind is dropped but the call is re-issued only when that failed invocation's verified
+   *     protocol2/3 command declared `effect: "read"`. Protocol1 and missing effects remain unsafe.
    *  Errors from the responder come back structurally on the attributed reply
    *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
@@ -2553,8 +2551,16 @@ export class CotalEndpoint extends EventEmitter {
     };
     const doInvoke = async (service: ResolvedService, signal = opts.signal): Promise<EpAttributedReply> => {
       signal?.throwIfAborted();
+      let attemptedRead = false;
+      const invokeAttempt = (target: ResolvedService) => {
+        // Snapshot before publication, including each fenced re-issue. Later resolution cannot
+        // authorize a write that already ran, nor can the first hop authorize a different second hop.
+        attemptedRead = (target.descriptor?.protocol.v === 2 || target.descriptor?.protocol.v === 3)
+          && target.commands.get(command)?.effect === "read";
+        return invokeResolved(target, signal);
+      };
       try {
-        let r = await invokeResolved(service, signal);
+        let r = await invokeAttempt(service);
         // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
         // was bound to a different incarnation and refused BEFORE running the command.
         //
@@ -2562,7 +2568,7 @@ export class CotalEndpoint extends EventEmitter {
         // throw, so the `respondedButUnbound` recovery never sees it — a long-lived client would
         // otherwise keep its stale bind and meet the same refusal forever.
         //
-        // The re-issue is NOT gated on {@link isRepeatSafeCommand}: the responder states the command
+        // The re-issue is NOT gated on command effect: the responder states the command
         // did not run, so each re-issue is a FIRST attempt, not a second. It repeats up to the bound
         // the CLI uses, because the re-issue rides the same class queue and splits again at the same
         // rate; repairing once left a quarter of all calls in a two-manager space failing (#443).
@@ -2627,40 +2633,21 @@ export class CotalEndpoint extends EventEmitter {
               "not-executed",
             );
           }
-          r = await invokeResolved(reissueTarget, signal);
+          r = await invokeAttempt(reissueTarget);
           if (unmappedHere(r)) unmapped = r;
         }
         return replyRefusedBeforeEffect(r.reply.error) ? unmapped ?? r : r;
       } catch (e) {
-        // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
-        // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
-        // afterwards, so core cannot tell a repair from a duplicate and the allowlist is the only
-        // guard left. (`failed-precondition` here is not only supersession — it also fires when a
-        // DIFFERENT live instance wins the class queue and replies, an ordinary split.)
-        //
-        // Dropping the retry outright is not an option: in a two-manager space roughly half of all
-        // class-queue calls split, so every other `ps` would surface an error this absorbs, and
-        // re-running a read costs nothing.
-        //
-        // So it is gated on an ALLOWLIST (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
-        // method is endpoint-agnostic. Polarity matters more than membership: an allowlist fails
-        // CLOSED. Not a `GOAL_BEARING_COMMANDS`-only gate — `purge` is neither goal-bearing nor
-        // convergent, and its second run deletes messages published after the first completed, so
-        // the boundary is "changes anything", which core cannot see: commands carry no idempotency
-        // declaration and every manager command shares `class: "ephemeral"`.
-        //
-        // Keyed on the MARKER, not the error code, because the same fact has two producers: a
-        // DIFFERENT instance answering (`failed-precondition`) and the SAME instance at ANY OTHER
-        // EPOCH (`expired`) — epoch inequality, not "a successor", so a superseded incarnation
-        // still answering produces it too. Same rule for both, or a long-lived client stays bound
-        // to a dead epoch while every call reaches whoever is actually there.
+        // An unfenced responder may already have executed. Only the failed attempt's verified
+        // read declaration permits one repeat, regardless of endpoint or command name. The marker
+        // covers both a different answering instance and the same instance at a different epoch.
         if (respondedButUnbound(e)) {
           // Drop the stale bind FIRST, whichever way this goes: it names an incarnation that is not
           // the one answering, so every later call would reuse it and meet the same refusal. This is
           // not a retry — nothing is re-issued by it, and for a command that is not repeat-safe the
           // next call is the caller's, made after it has verified.
           this.resolvedServices.delete(endpoint);
-          if (!isRepeatSafeCommand(endpoint, command)) throw e;
+          if (!attemptedRead) throw e;
           return await invokeResolved(await resolve(signal), signal);
         }
         throw e;
