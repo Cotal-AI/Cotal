@@ -918,7 +918,29 @@ try {
             && data !== null && typeof data === "object" && !Array.isArray(data)
             && Object.keys(data).length === 1 && (data as { state?: unknown }).state === "upload";
           const fencedReachOnly = refused && delta === 0;
-          console.log("   transcript-receive outcome", JSON.stringify({ positiveUpload: upload, fencedReachOnly, handlerDelta: delta, threw: err !== undefined, state: upload ? "upload" : undefined }));
+          console.log("   transcript-receive outcome", JSON.stringify({
+            positiveUpload: upload, fencedReachOnly, handlerDelta: delta, threw: err !== undefined,
+            state: upload ? "upload" : undefined,
+            replyPresent: reply !== undefined, ok: reply?.ok === true,
+            endpointMatches: attributed?.responder.endpoint === MANAGER_ENDPOINT,
+            liveInstance: [IID1, IID2].includes(attributed?.responder.instanceId ?? ""),
+            validEpoch: Number.isSafeInteger(attributed?.responder.epoch) && (attributed?.responder.epoch ?? -1) >= 0,
+            dataObject: data !== null && typeof data === "object" && !Array.isArray(data),
+            soleStateKey: data !== null && typeof data === "object" && !Array.isArray(data)
+              && Object.keys(data).length === 1 && Object.hasOwn(data, "state"),
+            stateUpload: (data as { state?: unknown } | null | undefined)?.state === "upload",
+            stateStaged: (data as { state?: unknown } | null | undefined)?.state === "staged",
+            errorPresent: reply?.error !== undefined,
+            // SPEC 13.3 catalog only. Extension codes and the open details vocabulary are not dumped.
+            errorCode: [
+              "bad-request", "unsupported-version", "op-mismatch", "class-mismatch", "target-mismatch",
+              "sender-mismatch", "unauthenticated", "permission-denied", "not-found", "already-exists",
+              "conflict", "contract-mismatch", "contract-invalid", "failed-precondition",
+              "deadline-exceeded", "cancelled", "expired", "unavailable", "unimplemented",
+              "resource-exhausted", "internal",
+            ].find((code) => code === reply?.error?.code) ?? (reply?.error === undefined ? "absent" : "unrecognized"),
+            detailClassification: "unknown",
+          }));
           // A fenced terminal refusal counts only as guard reach, never as positive upload evidence.
           if (!upload && !fencedReachOnly && (refused || delta !== 0)) notReached.push(command);
         }
