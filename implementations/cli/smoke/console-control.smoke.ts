@@ -172,8 +172,8 @@ try {
     await wait(3_300); // the previous notice auto-clears after 3 s; a stale one must not match
     m = s.mark();
     await s.command(`status ${seat}`);
-    if (await s.waitFor(new RegExp(`${seat} \\(worker\\) · seat · pty · running`), 20_000, m)) hits++;
-    else console.log("    CONSOLE STATUS OBSERVATION " + statusObservation(s, m, seat, statusAttempt, "own-manager-row", new RegExp(`${seat} \\(worker\\) · seat · pty · running`)));
+    if (await s.waitFor(new RegExp(`${seat}/worker · seat · pty · running`), 20_000, m)) hits++;
+    else console.log("    CONSOLE STATUS OBSERVATION " + statusObservation(s, m, seat, statusAttempt, "own-manager-row", new RegExp(`${seat}/worker · seat · pty · running`)));
   }
   await wait(3_300);
   check(":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)", hits === 6, { hits });
@@ -194,15 +194,15 @@ try {
   await wait(3_300);
   m = s.mark();
   await s.command("status w1");
-  const qualified = await s.waitFor(/w1 \(worker\).*mesh working · progress unknown/, 20_000, m);
+  const qualified = await s.waitFor(/w1\/worker.*mesh working · progress unknown/, 20_000, m);
   check(":status on a seat the mesh reports WORKING says progress unknown, not a bare working",
-    qualified, qualified ? undefined : statusObservation(s, m, "w1", 7, "working-qualifier", /w1 \(worker\).*mesh working · progress unknown/));
+    qualified, qualified ? undefined : statusObservation(s, m, "w1", 7, "working-qualifier", /w1\/worker.*mesh working · progress unknown/));
   await wait(3_300);
   m = s.mark();
   await s.command("status w2");
-  const idle = await s.waitFor(/w2 \(worker\).*mesh idle/, 20_000, m);
+  const idle = await s.waitFor(/w2\/worker.*mesh idle/, 20_000, m);
   check("...while an idle seat is reported plainly, so the qualifier is not printed unconditionally",
-    idle, idle ? undefined : statusObservation(s, m, "w2", 8, "idle-qualifier", /w2 \(worker\).*mesh idle/));
+    idle, idle ? undefined : statusObservation(s, m, "w2", 8, "idle-qualifier", /w2\/worker.*mesh idle/));
   m = s.mark();
   await s.command("status nobody");
   const t0 = Date.now();

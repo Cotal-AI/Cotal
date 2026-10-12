@@ -105,8 +105,9 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "      this.turnGoals.get(`${name}#${uid}`)?.delete(goalId);\n      throw e;",
       "replace": "      throw e;",
-      "expectRed": "the late yield is not a reply: the wait rides its timeout to null",
-      "cell": "the late yield is not a reply: the wait rides its timeout to null",
+      "expectRed": "the completed-before-cancel turn is not a reply: the wait rides its timeout to null",
+      "cell": "the completed-before-cancel turn is not a reply: the wait rides its timeout to null",
+      "afterRestore": "pnpm smoke:runtime-mesh-replied",
       "note": "A cancelled turn's late yield is not a reply the run accepted; left in the registry, wait(replied) resolves what the turn refused. Measured 2026-09-03: exactly one named red (the late yield resolves the wait); 21 passed, 1 failed."
     },
     {

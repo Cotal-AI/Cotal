@@ -50,6 +50,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  readGoalResult,
   requestGoalCancel,
   mintCheckpoint,
   expireCheckpoint,
@@ -63,7 +64,7 @@ import {
   type EpCaller,
   type Presence,
 } from "@cotal-ai/core";
-import { type JournalEntry } from "@cotal-ai/lang";
+import { type EffectContext, type JournalEntry } from "@cotal-ai/lang";
 import { MeshHandler, EpfSettleWatcher, startRun } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -650,13 +651,64 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
   s.cancel("race decided elsewhere");
   const got = await withDeadline(p, 20_000, "the cancelled turn");
   c("the turn unwinds as Cancelled", (got as { name?: string } | undefined)?.name === "Cancelled", JSON.stringify(got));
+  const cancelledWinner = await readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: token("s") });
+  console.log(JSON.stringify({ scenario: "replied-case9", phase: "after-cancel", winner: cancelledWinner?.state ?? "absent" }));
   await wait(2_500); // the seat's yield lands on the relay after the run moved on
+  const lateWinner = await readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: token("s") });
+  console.log(JSON.stringify({ scenario: "replied-case9", phase: "after-late-complete", winner: lateWinner?.state ?? "absent" }));
   const W = token("t");
   const w = safe(h.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(W).ctx));
   await armPending(12);
   await armPending(4);
   const r = await withDeadline(w, 30_000, "the replied wait over a cancelled turn");
   c("the late yield is not a reply: the wait rides its timeout to null", r === null, JSON.stringify(r));
+}
+
+// The public bind seam holds the observer until the real completion has won on the plane.
+{
+  console.log("• 9b — a completed turn cancelled before its observer continues is not a reply");
+  const h = mk("rp-9b");
+  const d = await spawnSeat(h, "r9b-spawn");
+  const T = token("r9b-turn");
+  turnEndings.push({ state: "succeeded", status: "done", note: "completed before local cancellation", delayMs: 50 });
+  const s = stepCtx(T, { key: { scope: [], kind: "turn", name: "", occurrence: 0 } });
+  let reachedBind!: (value: boolean) => void;
+  const bound = new Promise<boolean>((resolve) => { reachedBind = resolve; });
+  let releaseBind!: () => void;
+  const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
+  const baseCtx = s.ctx as EffectContext;
+  const ctx: EffectContext = {
+    ...baseCtx,
+    bind: async (external) => {
+      await baseCtx.bind(external);
+      reachedBind(true);
+      await bindGate;
+    },
+  };
+  const p = safe(h.turn({ agent: { agent: d!.agent, persona: d!.persona }, deadline: "5m" } as never, ctx));
+  try {
+    const entered = await withDeadline(bound, 20_000, "the completion-before-cancel bind");
+    const winner = await withDeadline((async () => {
+      for (let i = 0; i < 200; i += 1) {
+        const fact = await readGoalResult(goalCtx, { endpoint: EP, caller: CALLER, goalId: T });
+        if (fact !== undefined) return fact;
+        await wait(50);
+      }
+      return undefined;
+    })(), 20_000, "the completion-before-cancel winner");
+    c("the bound turn's real succeeded winner precedes local cancellation", entered === true && winner?.state === "succeeded", { entered: entered === true, winner: winner?.state ?? "absent" });
+  } finally {
+    s.cancel("race decided elsewhere");
+    releaseBind();
+  }
+  await armPending(6);
+  const got = await withDeadline(p, 20_000, "the completion-before-cancel turn");
+  c("the completed-before-cancel turn still unwinds as Cancelled", (got as { name?: string } | undefined)?.name === "Cancelled");
+  const w = safe(h.wait({ event: { event: "replied", agent: d!.agent }, timeout: "2s" } as never, stepCtx(token("r9b-wait")).ctx));
+  await armPending(12);
+  await armPending(4);
+  const r = await withDeadline(w, 30_000, "the replied wait over a completion-before-cancel turn");
+  c("the completed-before-cancel turn is not a reply: the wait rides its timeout to null", r === null);
 }
 
 // ── 10) a discharged (race-lost) turn leaves the registry an adopted run rebuilt ──────────────
@@ -700,7 +752,7 @@ const adoptedPending = (runId: string, d: { agent: string; persona: string }, sp
 await Promise.allSettled(terminals);
 await serve.stop().catch(() => { /* teardown */ });
 await nc.close();
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 26;
 const ran = ok + fail;
 console.log(`mesh-replied.smoke: ${ok} passed, ${fail} failed`);
 if (ran !== EXPECTED_CELLS) {

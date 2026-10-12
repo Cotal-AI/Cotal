@@ -65,6 +65,16 @@
       "expectRed": ":ps surfaces a reachable manager's real error instead of saying it gave no answer",
       "cell": ":ps surfaces a reachable manager's real error instead of saying it gave no answer",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "C7 real status-row expected pattern regresses to the parenthesized role",
+      "file": "implementations/cli/smoke/console-control.smoke.ts",
+      "find": "    if (await s.waitFor(new RegExp(`${seat}/worker · seat · pty · running`), 20_000, m)) hits++;",
+      "replace": "    if (await s.waitFor(new RegExp(`${seat} \\\\(worker\\\\) · seat · pty · running`), 20_000, m)) hits++;",
+      "expectRed": ":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)",
+      "cell": ":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build && pnpm --filter @cotal-ai/cli smoke:console-control",
+      "note": "Reverts only the actual six-attempt status-row wait predicate to the reproduced parent pattern. The slash-format diagnostic expectation and working/idle controls stay intact. The full original build and console-control suite must pass after restoration. This is test-pattern regression coverage, not product manager or wire execution proof."
     }
   ]
 }
