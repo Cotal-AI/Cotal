@@ -43,6 +43,9 @@ export interface OpenCodeMapperOptions {
   threadId: string;
   /** Mints a `runId`. Connector-minted, so every `RUN_STARTED` carries `runIdSource: "connector"`. */
   mintRunId: () => string;
+  /** The run the write-ahead log has open when this mapper is built, so a mapper built for a
+   *  re-established plane attributes the next records to it instead of dropping them. */
+  resumeRunId?: string;
   /** Emit `REASONING_*` for reasoning parts. Off by default (§7 Q1). */
   reasoning?: boolean;
   /** Arrival clock, for the records carrying no usable source stamp. Injectable for determinism. */
@@ -109,7 +112,7 @@ function toolResultContent(state: OpenCodeRecord["part"]["state"]): string {
 
 export function createOpenCodeMapper(opts: OpenCodeMapperOptions): OpenCodeMapper {
   const now = opts.now ?? (() => Date.now());
-  let open: string | null = null;
+  let open: string | null = opts.resumeRunId ?? null;
 
   const close = (timestamp: number) => {
     if (open === null) return null;

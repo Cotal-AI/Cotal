@@ -1,22 +1,28 @@
 {
-  "suite": [
-    "extensions/connector-core/smoke/agui-holder.smoke.ts"
-  ],
-  "guard": "a failure stops the event plane and never the seat: the holder starts the emitter again after a backoff that doubles and is capped, with the first adopt's path and context, reports every failure with the delay, keeps a running emitter and replaces a halted one, and a closed holder never starts again",
+  "suite": "extensions/connector-core/smoke/agui-holder.smoke.ts",
+  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder-revive.json",
   "why": [
-    "THE DEFECT THIS GUARDS WAS A SEAT EXIT. On a space that requires events, one terminal emitter",
-    "failure made every connector stop the seat; for Claude Code that was the MCP server exiting, shown",
-    "as a disconnect, and the harness restarted it on the next tool call, so the plane was re-established",
-    "anyway, once per keystroke, with a dropped connection each time. The holder now re-establishes the",
-    "plane itself, in process, on a backoff.",
+    "THE DEFECT THIS GUARDS WAS A SEAT THAT STOPPED. On a space that requires events the holder's",
+    "first failure ended the seat (exit 1), which Claude Code showed as 'MCP server cotal has",
+    "disconnected' and restarted on the next tool call: once per keystroke, with a dropped mesh",
+    "connection each time. Measured on two live sessions on 2026-10-12. The holder now re-establishes",
+    "the plane in process and the seat keeps its connection.",
     "",
-    "R1 drops the re-establish timer, so the plane stays down for good and the restart cell reds. R2",
-    "retries at a flat delay, so the doubling cell reds. R3 ignores close, so a released holder starts",
-    "again and the cancel cell reds. R4 throws a running emitter away on every failure, so the keep cell",
-    "reds."
+    "THE SECOND DEFECT WAS A PLANE THAT NEVER CAME BACK. The first cut kept a running emitter across",
+    "the re-establish, and a failure that leaves the emitter running leaves it running with state the",
+    "log never accepted: a frame frozen pending by a failed publish, or a mapper holding a run the log",
+    "never opened. Every later pump refused, forever, behind a retry every minute. Measured with the",
+    "real reader, mapper, log and frontier on 2026-10-12 (Sol's review probe and the live seat test).",
+    "",
+    "R1 makes a failure terminal again, so the re-establish cell reds. R2 flattens the backoff, so the",
+    "doubling cell reds. R3 drops the cancel on close, so the revive after close clears the failure a",
+    "closed holder is supposed to keep readable. R4 keeps a running emitter across the re-establish,",
+    "so the wedged emitter is pumped again and never replaced. R5 resets the backoff when a start",
+    "returns rather than when a pump does, so a broker that refuses every publish is retried at the",
+    "base delay forever."
   ],
   "mutations": [
     {
@@ -25,7 +31,7 @@
       "find": "    this.reviveTimer = setTimeout(() => this.revive(), delay);\n",
       "replace": "    void delay;\n",
       "expectRed": "revive:the-emitter-is-started-again-after-the-delay",
-      "note": "The old permanent halt, with the delay still reported so only the restart itself is missing."
+      "note": "The old latch. The sink is still told a delay, so only the start-count cell can see that nothing follows it."
     },
     {
       "name": "R2 the delay stops doubling",
@@ -33,7 +39,7 @@
       "find": "    const delay = Math.min(base * 2 ** this.retryAttempt, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);\n",
       "replace": "    const delay = Math.min(base, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);\n",
       "expectRed": "revive:the-delay-DOUBLES-per-consecutive-failure",
-      "note": "A flat retry: the plane still comes back, so only the pacing cell can see it."
+      "note": "A flat retry hammers a broker that is down. The plane still comes back, so only the delay sequence can see it."
     },
     {
       "name": "R3 close no longer cancels a pending re-establish",
@@ -41,15 +47,23 @@
       "find": "    if (this.reviveTimer) clearTimeout(this.reviveTimer);\n",
       "replace": "    void this.reviveTimer;\n",
       "expectRed": "revive:a-closed-holder-keeps-its-failure-readable",
-      "note": "The timer fires after close: revive clears the failure before `enqueue` refuses the start, so the readable-failure cell is the one that sees it; the start count stays at one either way."
+      "note": "The revive runs after close, clears the failure, and starts nothing because the chain refuses a shut holder. The failure being cleared is the only trace."
     },
     {
-      "name": "R4 every failure throws the emitter away, running or not",
+      "name": "R4 the re-establish keeps a running emitter instead of starting a fresh one",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    if (this.emitter?.stopped) this.emitter = undefined;\n",
-      "replace": "    this.emitter = undefined;\n",
-      "expectRed": "revive:a-RUNNING-emitter-is-kept-across-the-re-establish",
-      "note": "A second start for a refused rebind: two emitters over one write-ahead log, which is the writer-cardinality limit the holder owns."
+      "find": "    this.dead = undefined;\n    this.emitter = undefined;\n",
+      "replace": "    this.dead = undefined;\n    if (this.emitter?.stopped) this.emitter = undefined;\n",
+      "expectRed": "revive:a-WEDGED-emitter-is-replaced-by-a-fresh-start",
+      "note": "The first cut's rule. A halted emitter is still replaced, so only the wedged emitter, which never halts and never pumps, can see it."
+    },
+    {
+      "name": "R5 the backoff resets when a start returns, not when a pump does",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      this.emitter = await this.startEmitter(this.boundPath, this.startContext);\n      return this.emitter;\n",
+      "replace": "      this.emitter = await this.startEmitter(this.boundPath, this.startContext);\n      this.retryAttempt = 0;\n      return this.emitter;\n",
+      "expectRed": "revive:a-start-that-passes-does-NOT-reset-the-delay",
+      "note": "A start reaches the broker only for its preflight. Reset there, a broker that refuses every publish is retried at the base delay for as long as the outage lasts."
     }
   ]
 }

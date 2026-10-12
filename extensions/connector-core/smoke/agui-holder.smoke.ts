@@ -121,22 +121,30 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 const refusedWith = (e: Error | undefined, needle: string): boolean =>
   e !== undefined && e.message.includes(needle);
 
-/** The emitter stand-in: counts pumps, and can be stopped. */
+/** The emitter stand-in: counts pumps, can be stopped, and can be told which pumps fail. A pump
+ *  that fails leaves the emitter as it was, which is what a real one does on a failed publish:
+ *  the frame stays frozen pending and every later pump refuses it until a start settles it. */
 class FakeEmitter {
   pumps = 0;
   stopped = false;
+  /** The 1-based pump calls that fail. */
+  failOn = new Set<number>();
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
+    if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
     return { frames: 1, events: 1 };
   }
 }
 
-/** A holder plus the instruments around it. `starts` is the count that most cells turn on. */
-const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; retryMs?: number }) => {
+/** A holder plus the instruments around it. `starts` is the count that most cells turn on.
+ *  `make` hands each start its own emitter, as a real factory does; without it every start
+ *  returns the one shared `emitter`. */
+const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; retryMs?: number; make?: (start: number) => FakeEmitter }) => {
   const errors: Error[] = [];
   const delays: (number | null)[] = [];
   const paths: string[] = [];
   const contexts: unknown[] = [];
+  const made: FakeEmitter[] = [];
   const emitter = opts?.emitter ?? new FakeEmitter();
   let starts = 0;
   const holder = new AguiEmitterHolder<unknown, string>(
@@ -146,7 +154,9 @@ const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; r
       contexts.push(context);
       // `failTimes` fails the first N starts and lets the rest succeed; `fail` alone fails every one.
       if (opts?.fail && (opts.failTimes === undefined || starts <= opts.failTimes)) throw opts.fail;
-      return emitter as unknown as AguiEmitter<unknown>;
+      const e = opts?.make ? opts.make(starts) : emitter;
+      made.push(e);
+      return e as unknown as AguiEmitter<unknown>;
     },
     {
       onError: (e, retryInMs) => {
@@ -159,6 +169,7 @@ const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; r
   return {
     holder,
     emitter,
+    made,
     errors,
     delays,
     paths,
@@ -394,8 +405,11 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
-  // A halted emitter is replaced; a running one survives its holder's failure. The rebind refusal
-  // kills nothing underneath, so the re-establish must not throw away a working emitter.
+  // Every re-establish is a START, whether or not the emitter halted. The rebind refusal kills
+  // nothing underneath, and the first cut kept the running emitter for exactly that case; but a
+  // failure that leaves the emitter running leaves it running with state the log never accepted,
+  // and only a start settles that (the cell after this one). One rule, so the holder never has to
+  // guess which kind of failure it saw.
   const r = rig({ retryMs: 10 });
   r.holder.adopt(A);
   await r.holder.settled();
@@ -403,7 +417,68 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   await sleep(40);
   await r.holder.settled();
-  c("revive:a-RUNNING-emitter-is-kept-across-the-re-establish", r.starts === 1 && r.holder.running, { starts: r.starts, running: r.holder.running });
+  c("revive:a-RUNNING-emitter-is-started-again-too", r.starts === 2 && r.holder.running, { starts: r.starts, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
+  // THE WEDGE THE REBUILD EXISTS FOR. A publish that fails on the wire leaves the frame frozen
+  // pending, and every later pump of that emitter refuses to read past it; a write that fails
+  // before the freeze leaves the mapper holding a run the log never opened, and the re-read of
+  // the same record closes a run the brackets never saw. Measured on 2026-10-12 with the real
+  // reader, mapper, log and frontier: with the running emitter kept, both wedged the plane for
+  // good behind a retry every minute. Only a start settles either, so the re-establish must be
+  // one. Here the first emitter fails every pump from its first on, as the real one does once
+  // wedged, and only a fresh emitter from a fresh start can pump.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      if (start === 1) for (let i = 1; i <= 50; i++) e.failOn.add(i);
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A);
+  await r.holder.settled();
+  c("CONTROL:the-first-emitter-wedged-on-its-first-pump", r.errors.length === 1 && r.starts === 1 && !r.made[0]!.stopped, { errors: r.errors.length, starts: r.starts });
+  await sleep(40);
+  await r.holder.settled();
+  c("revive:a-WEDGED-emitter-is-replaced-by-a-fresh-start", r.starts === 2 && r.holder.running && r.made[1]!.pumps === 1, { starts: r.starts, running: r.holder.running, pumps: r.made.map((e) => e.pumps) });
+  c("revive:the-wedged-emitter-is-never-pumped-again", r.made[0]!.pumps === 1, r.made[0]!.pumps);
+  await r.holder.close();
+}
+
+{
+  // The backoff counts failures since the last pump that RETURNED, not failures ever and not
+  // failures since the last start. A start reaches the broker only for its preflight, so a broker
+  // that refuses every publish passes every start; a reset there would retry every second for as
+  // long as the outage lasts. Two outages with a working plane between them each get the base
+  // delay (Sol, review of 2026-10-12: the first cut inherited the accumulated delay into an
+  // independent later outage).
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      if (start === 1 || start === 2) e.failOn.add(1); // two starts in a row whose pump fails
+      if (start === 3) e.failOn.add(2); // the third pumps once, then a NEW outage
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // start 1 pumps and fails: delay 10
+  await r.holder.settled();
+  await sleep(15);
+  await r.holder.settled(); // start 2's revive pump fails: delay 20, a start passed in between
+  await sleep(30);
+  await r.holder.settled(); // start 3's revive pump returns: the plane is back
+  c("CONTROL:two-failures-with-a-passing-start-between-them", r.starts === 3 && r.holder.running, { starts: r.starts, running: r.holder.running });
+  c("revive:a-start-that-passes-does-NOT-reset-the-delay", r.delays.slice(0, 2).join(",") === "10,20", r.delays);
+  r.holder.flush(A); // start 3's second pump fails: a new outage after a pump that returned
+  await r.holder.settled();
+  c("revive:a-pump-that-returns-DOES-reset-the-delay", r.delays[2] === 10, r.delays);
   await r.holder.close();
 }
 

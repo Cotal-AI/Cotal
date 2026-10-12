@@ -135,6 +135,8 @@ export class PiEvents {
         endpoint: this.mesh.ep, wal, subjectFrontier,
         source: new PiSessionSource(path),
         map,
+        onUnreadable: (gap) =>
+          console.error(`Pi AG-UI source: skipped an unreadable session record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
       });
     }, { onError: (error, retryInMs) => this.stopped(error, retryInMs) });
   }

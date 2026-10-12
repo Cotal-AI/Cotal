@@ -576,6 +576,43 @@ c("split:a-tool-result-opens-NO-run", (() => {
   return before === null && openRunOf(m) === null && unit === null;
 })());
 
+// A mapper built for a RE-ESTABLISHED plane starts with the log's open run, so the assistant
+// records after the outage are attributed to it rather than dropped, and the next prompt closes
+// it rather than opening a second run over it (Sol, review of 2026-10-12: a fresh mapper after a
+// mid-run halt dropped the rest of the turn and the next prompt's RUN_STARTED was refused).
+c("resume:a-mapper-seeded-with-the-log's-open-run-attributes-assistant-records-to-it", (() => {
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-from-log", now: () => 0 });
+  const unit = m.map({
+    type: "assistant",
+    uuid: "after-outage",
+    timestamp: "2026-10-12T21:55:00.000Z",
+    message: { id: "m1", role: "assistant", content: [{ type: "text", text: "pong" }] },
+  } as ClaudeEntry);
+  return openRunOf(m) === "run-from-log" && unit?.runId === "run-from-log" && unit.events.length > 0;
+})());
+c("resume:the-next-prompt-CLOSES-the-log's-run-before-opening-its-own", (() => {
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-from-log", now: () => 0 });
+  const unit = m.map({
+    type: "user",
+    uuid: "next-prompt",
+    timestamp: "2026-10-12T21:56:00.000Z",
+    origin: { kind: "human" },
+    message: { role: "user", content: "ping" },
+  } as ClaudeEntry);
+  const kinds = unit?.events.map((e) => e.type) ?? [];
+  return kinds[0] === "RUN_FINISHED" && (unit?.events[0] as { runId?: string }).runId === "run-from-log" && kinds[1] === "RUN_STARTED" && openRunOf(m) === "run-new";
+})());
+c("resume:CONTROL-an-unseeded-mapper-drops-the-same-assistant-record", (() => {
+  const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", now: () => 0 });
+  const unit = m.map({
+    type: "assistant",
+    uuid: "after-outage",
+    timestamp: "2026-10-12T21:55:00.000Z",
+    message: { id: "m1", role: "assistant", content: [{ type: "text", text: "pong" }] },
+  } as ClaudeEntry);
+  return unit === null && openRunOf(m) === null;
+})());
+
 // And the same claim over the REAL population rather than one hand-built record: every run opened
 // across the session must come from a record carrying `promptSource`. A count is not enough here —
 // the mapper could open the right NUMBER of runs off the wrong records.

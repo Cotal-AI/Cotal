@@ -217,6 +217,11 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       if (!emitter || emitter.stopped) return;
       await this.holdForLive();
       await emitter.pump();
+      // A pump that returned is the plane working: it read the source and published what it read.
+      // The backoff resets HERE and not when a start returns, because a start reaches the broker
+      // only for its preflight, so a broker that refuses every publish would pass every start and
+      // the retry would never pace.
+      this.retryAttempt = 0;
     });
   }
 
@@ -312,7 +317,6 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // each keep their own bracket machine and nothing detects the interleave. That is the
       // stated writer-cardinality limit.
       this.emitter = await this.startEmitter(this.boundPath, this.startContext);
-      this.retryAttempt = 0;
       return this.emitter;
     } catch (e) {
       this.die(e as Error);
@@ -334,9 +338,9 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     this.hooks.onError(e, delay);
   }
 
-  /** The wait before the next re-establish: `retryMs`, doubling per consecutive failure up to
-   *  {@link RETRY_BACKOFF_CAP_MS}. The first wait is `retryMs` itself, so a transient failure
-   *  recovers quickly; only a failure that repeats gets paced. */
+  /** The wait before the next re-establish: `retryMs`, doubling per failure since the last pump
+   *  that returned, up to {@link RETRY_BACKOFF_CAP_MS}. The first wait is `retryMs` itself, so a
+   *  transient failure recovers quickly; only a failure that repeats gets paced. */
   private nextRetryDelayMs(): number {
     const base = this.hooks.retryMs ?? 1_000;
     const delay = Math.min(base * 2 ** this.retryAttempt, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);
@@ -345,11 +349,20 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   }
 
   /**
-   * Re-establish the plane after {@link die}'s backoff: clear the failure, drop an emitter that
-   * halted, and queue a start and a pump on the chain. An emitter that is still running, which a
-   * refused rebind or a transient pump error leaves behind, is kept; only a halted one is rebuilt.
-   * The start is a fresh `startEmitter`, which reopens the write-ahead log and settles any frame it
-   * left pending before reading on. A failure here is reported and paced like the first.
+   * Re-establish the plane after {@link die}'s backoff: clear the failure, drop the emitter, and
+   * queue a start and a pump on the chain. The start is a fresh `startEmitter`, which reopens the
+   * write-ahead log, settles any frame it left pending, and builds the connector's mapper from the
+   * bracket state the log holds, before reading on from the stored cursor. A failure here is
+   * reported and paced like the first.
+   *
+   * THE EMITTER IS DROPPED WHETHER OR NOT IT HALTED. A failure that leaves it running leaves it
+   * running with state the log never accepted: a publish that failed on the wire leaves the frame
+   * frozen as pending, which every later pump refuses to read past; a write that failed before the
+   * freeze leaves the mapper holding a run the log never opened, so the re-read of the same record
+   * closes a run the brackets never saw and the pump refuses that too. Measured on 2026-10-12 with
+   * the real reader, mapper, log and frontier: with the running emitter kept, both outages wedged
+   * the plane for good behind a retry every minute. Only a start settles the pending frame, and
+   * only a start rebuilds the mapper from the log, so the re-establish is a start.
    */
   private revive(): void {
     this.reviveTimer = undefined;
@@ -359,12 +372,13 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // so a revive that ran after close would clear the failure and then start nothing. The
     // failure staying readable after close is what shows the timer was cancelled.
     this.dead = undefined;
-    if (this.emitter?.stopped) this.emitter = undefined;
+    this.emitter = undefined;
     this.enqueue(async () => {
       const emitter = await this.ensureStarted(path);
       if (!emitter || emitter.stopped) return;
       await this.holdForLive();
       await emitter.pump();
+      this.retryAttempt = 0;
     });
   }
 

@@ -337,13 +337,18 @@ export const cotal: Plugin = async () => {
         // expects an empty subject its own first session filled, and halts for good.
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID() });
+        // Seeded from the bracket state that will exist AFTER `start` settles a pending frame: a
+        // re-established plane starts with the log's run open, and a mapper that opened with none
+        // would drop every record until the next prompt, whose `RUN_STARTED` the brackets refuse.
+        const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
+        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
         return AguiEmitter.start<OpenCodeRecord>({
           endpoint: agent.ep,
           wal,
           subjectFrontier,
           source: bound,
           map: mapper.map,
+          onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable session record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
         });
       },
       {

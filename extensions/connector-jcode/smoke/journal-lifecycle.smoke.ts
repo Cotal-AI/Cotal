@@ -3,7 +3,7 @@ import { mkdtemp, writeFile, appendFile, rm, rename, symlink } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AguiBrackets, JsonlFileSource } from "@cotal-ai/connector-core";
-import { JcodeJournalSource } from "../src/agui-source.js";
+import { JcodeJournalSource, positionedJcodeJournalSource } from "../src/agui-source.js";
 import { createJcodeMapper, type JcodeJournalRecord } from "../src/agui-map.js";
 
 const root = await mkdtemp(join(tmpdir(), "jcode-checkpoint-"));
@@ -125,7 +125,17 @@ try {
     const first = await source.read(undefined);
     await snapshot("invalid");
     await appendFile(path, "not-json\n");
-    await assert.rejects(source.read(first.cursor));
+    // The invalid line is stepped over and NAMED, never read as the snapshot and never silent:
+    // the read carries it as a gap with the fixed reason, and no record for it.
+    const read = await source.read(first.cursor);
+    assert.equal(read.records.length, 0);
+    assert.equal(read.unreadable?.length, 1, "the invalid complete line is reported as a gap");
+    assert.equal(read.unreadable?.[0]?.reason, "not a JSON record");
+    // The positioned wrapper the host feeds the emitter carries the gap through unchanged. A
+    // wrapper that rebuilt the read without it advanced the emitter past the line with nothing
+    // reported and nothing refused.
+    const positioned = await positionedJcodeJournalSource(source).read(first.cursor);
+    assert.deepEqual(positioned.unreadable, read.unreadable, "the positioned wrapper carries the gap");
   });
   await check("a same-size snapshot checkpoint is not mistaken for an append-only journal", async () => {
     const path = join(root, "same.journal.jsonl");

@@ -447,6 +447,7 @@ export async function runCodexHost(): Promise<void> {
             subjectFrontier,
             source,
             map: mapper.map,
+            onUnreadable: (gap) => log(`AG-UI source: skipped an unreadable rollout record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
           });
           // #705: persist the boundary THE SOURCE SUBSTITUTES into the log right after a successful
           // start, and only when the log still has no cursor. Keyed on the wrapper itself, never on

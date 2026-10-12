@@ -244,7 +244,21 @@ const R = await replay(true);
     })!.events[0] as Record<string, unknown>).cotal as { tsSource?: string }).tsSource === undefined);
 }
 
-const EXPECTED = 39;
+// A mapper built for a RE-ESTABLISHED plane starts with the log's open run: the records after the
+// outage are attributed to it instead of opening a second run over it.
+{
+  const seeded = createOpenCodeMapper({ threadId: "t", mintRunId: () => "run-new", resumeRunId: "run-from-log" });
+  const msg = { id: "msg_9", role: "assistant", time: { created: 1, completed: 2 } };
+  const unit = seeded.map({ part: { id: "prt_9", messageID: "msg_9", type: "text", text: "after the outage", time: { start: 1, end: 2 } }, message: msg });
+  c("resume:a-seeded-mapper-attributes-the-next-record-to-the-log's-run",
+    unit?.runId === "run-from-log" && (unit.events[0] as { type: string }).type !== AGUI_EVENT_TYPE.RUN_STARTED, unit);
+  const unseeded = createOpenCodeMapper({ threadId: "t", mintRunId: () => "run-new" });
+  const control = unseeded.map({ part: { id: "prt_9", messageID: "msg_9", type: "text", text: "after the outage", time: { start: 1, end: 2 } }, message: msg });
+  c("resume:CONTROL-an-unseeded-mapper-opens-a-second-run-over-it",
+    control?.runId === "run-new" && (control.events[0] as { type: string }).type === AGUI_EVENT_TYPE.RUN_STARTED, control);
+}
+
+const EXPECTED = 41;
 c(`meta:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(

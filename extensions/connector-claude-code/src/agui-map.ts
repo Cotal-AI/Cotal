@@ -267,6 +267,13 @@ export interface ClaudeMapperOptions {
   /** Mints a `runId`. Connector-minted by §3.1, so every `RUN_STARTED` carries `runIdSource`. */
   mintRunId: () => string;
   /**
+   * The run the write-ahead log has open when this mapper is built, so a mapper built for a
+   * re-established plane attributes the next assistant records to it. Without it the mapper
+   * opens with no run, drops every assistant record until the next prompt, and that prompt's
+   * `RUN_STARTED` is refused by brackets that still hold the earlier run open.
+   */
+  resumeRunId?: string;
+  /**
    * Emit `REASONING_*` for `thinking` blocks. **Off by default (§7 Q1).** The `signature` is never
    * emitted at any setting (§3.5) and is not read by this module at all.
    */
@@ -318,7 +325,7 @@ function resultContent(raw: unknown): string {
 
 export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
   const now = opts.now ?? (() => Date.now());
-  let open: string | null = null;
+  let open: string | null = opts.resumeRunId ?? null;
 
   const map: RecordMapper<ClaudeEntry> = (entry) => {
     const { ts, arrival } = stampOf(entry, now);

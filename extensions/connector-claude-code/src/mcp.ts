@@ -180,7 +180,13 @@ async function main(): Promise<void> {
           // subject that already has one, the broker refuses it, and the emitter halts.
           const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
 
-          mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID() });
+          // Seeded from the bracket state that will exist AFTER `start` settles a pending frame,
+          // not from the folded state before it: a pending terminal closes the log's run without
+          // passing through this mapper. A re-established plane starts here with the log's run
+          // open; a mapper that opened with none would drop every assistant record until the
+          // next prompt, whose `RUN_STARTED` the brackets then refuse.
+          const resumeRunId = wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run;
+          mapper = createClaudeMapper({ threadId, mintRunId: () => randomUUID(), resumeRunId });
           return AguiEmitter.start<ClaudeEntry>({
             endpoint: agent.ep,
             wal,

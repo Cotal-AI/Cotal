@@ -488,6 +488,8 @@ export async function runJcodeHost(): Promise<void> {
             subjectFrontier,
             source: positionedJcodeJournalSource(new JcodeJournalSource(journalPath)),
             map: mapper.map,
+            onUnreadable: (gap) =>
+              writeJcodeDiagnostic(`[cotal-jcode] AG-UI source: skipped an unreadable journal record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}\n`),
           });
         },
         {
