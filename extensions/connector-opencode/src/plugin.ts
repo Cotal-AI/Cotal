@@ -274,6 +274,11 @@ export const cotal: Plugin = async () => {
     // mapper, and the two are assigned at different times because the mapper is built inside the
     // factory, keyed on the session the bus names.
     let mapper: OpenCodeMapper | undefined;
+    // ONE source for the holder's lifetime. The holder re-establishes a stopped plane by calling
+    // this factory again, and the boundary captured below is the position the thread adopted at;
+    // a second capture would sit at the re-establish, and every message between the two would be
+    // lost without a word. Same rule as the Claude Code connector's holder.
+    let source: BoundStartSource<OpenCodeRecord> | undefined;
     // Built LAZILY, on the first event that names a session: `start()` reaches the broker, and that
     // work must not run for a session that never emits.
     return new AguiEmitterHolder<OpenCodeRecord>(
@@ -281,20 +286,24 @@ export const cotal: Plugin = async () => {
         // Captured as the FACTORY'S FIRST ACT, before the mesh wait below: a lazily-built source
         // otherwise positions itself on its own first read, which happens only after the mesh wait
         // and everything else this bind does first, and anything the session writes to its message
-        // list in that window is silently dropped. Same rule as the Claude Code connector's holder.
-        const session = new OpenCodeSessionSource({
-          // The SUPPORTED surface. `opencodeApi` is the same authenticated HTTP client the rest of
-          // this plugin uses, and `/session/{id}/message` is the endpoint the SDK's
-          // `session.messages()` calls. The SQLite store behind it is OpenCode's private business
-          // and its schema migrates, so nothing here reads it.
-          read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(id)}/message`, undefined, 30_000),
-          // A revert is a legitimate user action, so the divergence is RECORDED and the stream
-          // continues. The read itself is already correct without this, because the cursor is
-          // compared as an order and never dereferenced as an identity.
-          onVanished: (cursor) => log(`AG-UI: the resume cursor was removed from the session (revert): ${cursor}`),
-        });
-        const boundary = await session.read(undefined);
-        const source = new BoundStartSource(session, boundary.cursor);
+        // list in that window is silently dropped.
+        const bound =
+          source ??
+          (source = await (async () => {
+            const session = new OpenCodeSessionSource({
+              // The SUPPORTED surface. `opencodeApi` is the same authenticated HTTP client the rest
+              // of this plugin uses, and `/session/{id}/message` is the endpoint the SDK's
+              // `session.messages()` calls. The SQLite store behind it is OpenCode's private
+              // business and its schema migrates, so nothing here reads it.
+              read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(id)}/message`, undefined, 30_000),
+              // A revert is a legitimate user action, so the divergence is RECORDED and the stream
+              // continues. The read itself is already correct without this, because the cursor is
+              // compared as an order and never dereferenced as an identity.
+              onVanished: (cursor) => log(`AG-UI: the resume cursor was removed from the session (revert): ${cursor}`),
+            });
+            const boundary = await session.read(undefined);
+            return new BoundStartSource(session, boundary.cursor);
+          })());
         // WAIT FOR THE MESH FIRST. This factory runs off the first `session.created` on the bus,
         // and the shim creates that session before the mesh link binds, so `AguiEmitter.start`
         // reached an endpoint that had not started and the holder died terminally for the rest of
@@ -333,7 +342,7 @@ export const cotal: Plugin = async () => {
           endpoint: agent.ep,
           wal,
           subjectFrontier,
-          source,
+          source: bound,
           map: mapper.map,
         });
       },
