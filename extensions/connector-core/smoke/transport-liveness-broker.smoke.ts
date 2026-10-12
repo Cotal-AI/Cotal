@@ -270,9 +270,10 @@ try {
   dialAgent.ep.on("transport", (event: { connected: boolean }) => dialEdges.push(event));
   const dialStart = dialAgent.start(100).catch(() => {});
   const sawPendingDial = await until(() => dialArrived, 30_000);
-  await dialAgent.stop();
+  const dialStop = dialAgent.stop();
   const edgesBeforeRelease = dialEdges.length;
   releaseDial();
+  await dialStop;
   await dialStart;
   await sleep(750);
   check(

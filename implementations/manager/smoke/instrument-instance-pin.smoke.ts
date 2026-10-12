@@ -939,7 +939,14 @@ try {
               "deadline-exceeded", "cancelled", "expired", "unavailable", "unimplemented",
               "resource-exhausted", "internal",
             ].find((code) => code === reply?.error?.code) ?? (reply?.error === undefined ? "absent" : "unrecognized"),
-            detailClassification: "unknown",
+            // Classify only shipped admission messages. Nonmatches say nothing about receiver I/O.
+            detailClassification: reply?.error?.code !== "unavailable" ? "unknown"
+              : reply.error.message === "manager is stopping; new lifecycle/control work is fenced" ? "stopping"
+              : reply.error.message === "manager is in preserving mode; new lifecycle/control work is fenced" ? "preserving"
+              : reply.error.message === "manager is in preserved mode; new lifecycle/control work is fenced" ? "preserved"
+              : reply.error.message.startsWith("manager is waiting for resume attempt ")
+                && reply.error.message.endsWith("; ordinary lifecycle/control work is fenced") ? "resume-pending"
+              : "unknown",
           }));
           // A fenced terminal refusal counts only as guard reach, never as positive upload evidence.
           if (!upload && !fencedReachOnly && (refused || delta !== 0)) notReached.push(command);
