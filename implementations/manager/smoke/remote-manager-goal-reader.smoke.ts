@@ -255,7 +255,7 @@ writeFileSync(join(extensions, "extensions.json"), JSON.stringify({ extensions: 
 for (const [index, root] of [partRootA, partRootB].entries()) {
   const dir = join(root, ".cotal", "agents");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, `worker_${index}.md`), `---\nname: worker_${index}\nrole: worker\nagent: remote-reader-test\nevents: false\n---\nReader fixture.\n`);
+  writeFileSync(join(dir, `worker_${index}.md`), `---\nname: worker_${index}\nrole: default\nagent: remote-reader-test\nevents: false\n---\nReader fixture.\n`);
 }
 
 // Delivery runner script
@@ -673,7 +673,7 @@ try {
     // Real acceptance and terminal production, without a successful child launch.
     // Stock remote enrollment currently refuses missing host auth material. The declared
     // test connector also refuses launch, so this proof cannot create an untracked child.
-    const accepted = await invokeCommand(entry.nc, space, entry.service, "spawn", { name: `worker_${index}`, role: "worker", agent: "remote-reader-test", events: false }, { id: entry.goalId, deadlineMs: 5000 });
+    const accepted = await invokeCommand(entry.nc, space, entry.service, "spawn", { name: `worker_${index}`, role: "default", agent: "remote-reader-test", events: false }, { id: entry.goalId, deadlineMs: 5000 });
     const acceptance = accepted.reply.ok ? accepted.reply.data as { goalId?: string; fingerprint?: string } : undefined;
     check(`owner ${index} receives a real accepted goal`, acceptance?.goalId === entry.goalId && typeof acceptance.fingerprint === "string");
     if (!acceptance?.fingerprint) throw new Error(`spawn did not reach actual goal acceptance: ${JSON.stringify(accepted.reply)}`);
