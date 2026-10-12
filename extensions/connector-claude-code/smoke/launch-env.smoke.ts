@@ -177,6 +177,39 @@ check(
   opted.CLAUDE_CODE_OAUTH_TOKEN === "smoke-CLAUDE_CODE_OAUTH_TOKEN",
 );
 
+// A managed seat has nobody at its terminal to answer a permission prompt, so the launch bypasses
+// prompts unless the operator's launch options name a permission flag themselves.
+const permissionModes = (args: string[]): string[] =>
+  args.flatMap((a, i) => (a === "--permission-mode" ? [args[i + 1] ?? ""] : []));
+const defaultArgs = claudeConnector.buildLaunch({ space: "smoke", name: "claude-3", events: false } as never).args;
+check(
+  "a launch with no permission option bypasses permission prompts",
+  JSON.stringify(permissionModes(defaultArgs)) === JSON.stringify(["bypassPermissions"]),
+  permissionModes(defaultArgs),
+);
+const promptedArgs = claudeConnector.buildLaunch({
+  space: "smoke",
+  name: "claude-4",
+  events: false,
+  launchOptions: { "permission-mode": "default" },
+} as never).args;
+check(
+  "an operator permission-mode option replaces the bypass default rather than adding to it",
+  JSON.stringify(permissionModes(promptedArgs)) === JSON.stringify(["default"]),
+  permissionModes(promptedArgs),
+);
+const skippedArgs = claudeConnector.buildLaunch({
+  space: "smoke",
+  name: "claude-5",
+  events: false,
+  launchOptions: { "dangerously-skip-permissions": "" },
+} as never).args;
+check(
+  "an operator skip-permissions option keeps the launch to that one flag",
+  permissionModes(skippedArgs).length === 0 && skippedArgs.includes("--dangerously-skip-permissions"),
+  skippedArgs.filter((a) => a.includes("permission")),
+);
+
 if (fail) {
   console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
   process.exit(1);

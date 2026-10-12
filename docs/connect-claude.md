@@ -94,9 +94,17 @@ The manager launches the *real* `claude` (no wrapper):
 
 ```
 claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
-       --dangerously-load-development-channels server:cotal
+       --dangerously-load-development-channels server:cotal \
+       --permission-mode bypassPermissions
 # env: COTAL_SPACE, COTAL_NAME, COTAL_ROLE, COTAL_CHANNEL=1, plus claude's documented auth vars
 ```
+
+- **Tool permissions.** A managed seat has no human at its terminal, so it launches with
+  `--permission-mode bypassPermissions`: a prompt under the default mode would stop its first mesh
+  tool call until someone answered it, and nobody can. To get prompts back, pass
+  `--opt permission-mode=default` (or another mode); the connector adds the default only when the
+  launch options carry neither `permission-mode` nor `dangerously-skip-permissions`. Claude refuses
+  the bypass mode as root and under a policy that disables it; such a host must pass a mode.
 
 - **Model auth.** Locally, `claude` still reads macOS Keychain / `~/.claude`. In a container or
   CI there is no Keychain, so the connector forwards the documented credential set:
