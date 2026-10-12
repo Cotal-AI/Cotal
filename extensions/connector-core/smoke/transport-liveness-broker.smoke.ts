@@ -162,15 +162,50 @@ try {
   let bindAtFinalStep = false;
   let releaseBind: () => void = () => {};
   const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
-  raceEp.armPlane3 = async () => { bindAtFinalStep = true; await bindGate; };
-  const raceStart = raceAgent.start(100).catch(() => {});
+  // Each retained record includes prior observations. The maintained excerpt may drop every record;
+  // a missing marker is not evidence of an unsettled promise. These records enter failure signatures.
+  let observationSequence = 0;
+  const observed = {
+    gateEntered: false, gateResumed: false, pollReturned: false, reachedFinalStep: false,
+    stopReturned: false, releaseCalled: false, caughtStartRejected: false, caughtStartReturned: false,
+  };
+  const observe = (phase: "gate-enter" | "gate-resume" | "start-rejected"
+    | "poll-before" | "poll-after" | "stop-before" | "stop-after"
+    | "release-before" | "release-after" | "caught-start-before" | "caught-start-after"): void => {
+    process.stderr.write(`${JSON.stringify({ scenario: "broker-initial-bind", sequence: ++observationSequence, phase, ...observed })}\n`);
+  };
+  raceEp.armPlane3 = async () => {
+    bindAtFinalStep = true;
+    observed.gateEntered = true;
+    observe("gate-enter");
+    await bindGate;
+    observed.gateResumed = true;
+    observe("gate-resume");
+  };
+  const raceStart = raceAgent.start(100).catch(() => {
+    observed.caughtStartRejected = true;
+    observe("start-rejected");
+  });
   // A real dial and bind on a loaded runner, not a local poll, so this gets the same budget as
   // the terminal-close cell. It returns the moment the bind arrives, so the cost is only paid
   // when the bind never gets there, and then the cell fails loudly rather than passing empty.
+  observe("poll-before");
   const reachedFinalStep = await until(() => bindAtFinalStep, 30_000);
+  observed.pollReturned = true;
+  observed.reachedFinalStep = reachedFinalStep;
+  observe("poll-after");
+  observe("stop-before");
   await raceAgent.stop();
+  observed.stopReturned = true;
+  observe("stop-after");
+  observe("release-before");
   releaseBind();
+  observed.releaseCalled = true;
+  observe("release-after");
+  observe("caught-start-before");
   await raceStart;
+  observed.caughtStartReturned = true;
+  observe("caught-start-after");
   check(
     "stop during a REAL initial bind never announces the connection it then tears down",
     reachedFinalStep && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,

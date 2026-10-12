@@ -257,6 +257,8 @@ jobs:
         run: pnpm smoke:cmux
       - name: OpenCode cooperative-stop smoke test
         run: pnpm smoke:opencode-coop
+      - name: Transport liveness unit baseline
+        run: pnpm smoke:transport-liveness
 
   # Native linux-x64 and linux-arm64 SO_PEERCRED helpers, then one pack on x64
   # that assembles BOTH into the tarball the ARM load job consumes unchanged.

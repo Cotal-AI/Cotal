@@ -651,6 +651,98 @@ check("afterRestore regenerates derived output from the RESTORED source",
   && readFileSync(join(root, "built.txt"), "utf8") === readFileSync(join(root, "src/impl.js"), "utf8"),
   { stdout: r.stdout.slice(-300) });
 
+// The failed restore command has its own evidence. It must not inherit the mutant's transcript.
+{
+  const restoreSource = readFileSync(join(root, "src/impl.js"), "utf8");
+  const secret = "RESTORE-SECRET-SENTINEL";
+  const argvSentinel = "--private-argument=RESTORE-ARGV-SENTINEL";
+  writeFileSync(join(root, "restore-observe.mjs"), [
+    "import { readFileSync } from 'node:fs';",
+    `const expected = ${JSON.stringify(restoreSource)};`,
+    "if (readFileSync('src/impl.js', 'utf8') !== expected) process.exit(9);",
+    "const mode = process.argv[2];",
+    "if (mode === 'green') process.exit(0);",
+    "if (mode === 'empty') process.exit(1);",
+    "for (let i = 0; i < 7; i++) console.log('  ✓ restore progress');",
+    "console.log('  ✗ FAIL: RESTORATION-ONLY-MARKER');",
+    "console.error('Error: RESTORATION-ONLY-ERROR');",
+    `console.log(${JSON.stringify(secret)});`,
+    `console.error(${JSON.stringify(argvSentinel)});`,
+    "if (mode === 'large') console.log('x'.repeat(1024 * 1024));",
+    "process.exitCode = 1;",
+    "",
+  ].join("\n"));
+  for (const mode of ["red", "empty", "large", "green"]) {
+    writeFileSync(join(root, `restore-observe-${mode}.json`), JSON.stringify({
+      suite: ["smoke/suite.mjs"], command: `${process.execPath} suite.mjs`,
+      mutations: [{ name: "restore observation control", file: "src/impl.js",
+        find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused",
+        afterRestore: `${process.execPath} restore-observe.mjs ${mode}` }],
+    }));
+  }
+  const observationFrom = (out) => {
+    const line = stripAnsi(out).split("\n").find((item) => item.startsWith("AFTERRESTORE OBSERVATION "));
+    return line ? JSON.parse(line.slice("AFTERRESTORE OBSERVATION ".length)) : undefined;
+  };
+  execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm restore-observation", { cwd: root });
+  for (const mode of ["red", "empty", "large"]) {
+    r = runTool(["--config", `restore-observe-${mode}.json`]);
+    const out = stripAnsi(r.stdout), observation = observationFrom(out);
+    check(`failed ${mode} afterRestore remains ERROR, not KILLED, with its original exit`,
+      r.status === 1 && verdictIs(out, "ERROR") && !verdictIs(out, "KILLED") && out.includes("afterRestore exited 1"));
+    check(`failed ${mode} afterRestore reports its own bounded fixed metadata`,
+      observation?.phase === "afterRestore" && observation.sourceBytesVerifiedBeforeCommand === true
+        && observation.status === 1 && observation.timedOut === false && observation.finiteSignal === null
+        && observation.outputPresent === (mode !== "empty")
+        && (mode === "empty" ? observation.outputBytes === 0 : observation.outputBytes > 0)
+        && (mode !== "large" || observation.outputBytes > 1024 * 1024)
+        && observation.progressMarks === (mode === "empty" ? 0 : 7)
+        && observation.failureMarkerCount === (mode === "empty" ? 0 : 2)
+        && observation.selectedNamedFailureMarkerPresent === false && observation.cause === "UNKNOWN"
+        && Buffer.byteLength(JSON.stringify(observation), "utf8") <= 2048);
+    check(`failed ${mode} afterRestore does not echo secrets, arguments, or its raw failure text`,
+      !out.includes(secret) && !out.includes(argvSentinel) && !out.includes("RESTORATION-ONLY-MARKER")
+        && !out.includes("RESTORATION-ONLY-ERROR") && !out.includes("outputSha"));
+    check(`failed ${mode} afterRestore preserves source bytes and distinguishes post-restore validation`,
+      readFileSync(join(root, "src/impl.js"), "utf8") === restoreSource
+        && out.includes("source bytes were verified before afterRestore; post-restore validation failed")
+        && !out.includes("the tree is still mutated"));
+  }
+  r = runTool(["--config", "restore-observe-green.json"]);
+  check("successful afterRestore preserves the normal KILLED result without a failure observation",
+    r.status === 0 && verdictIs(r.stdout, "KILLED") && !r.stdout.includes("AFTERRESTORE OBSERVATION")
+      && readFileSync(join(root, "src/impl.js"), "utf8") === restoreSource);
+  // A process-local preload faults only diagnostic sizing. The command and restore are unchanged.
+  for (const fault of ["throw", "oversize"]) {
+    const preload = join(root, `restore-diagnostic-${fault}.mjs`);
+    writeFileSync(preload, [
+      "const original = Buffer.byteLength;",
+      "Buffer.byteLength = function(value, encoding) {",
+      "  if (typeof value === 'string' && value.startsWith('{\"phase\":\"afterRestore\"')) {",
+      fault === "throw" ? `    throw new Error(${JSON.stringify(secret)});` : "    return 2049;",
+      "  }",
+      "  return original(value, encoding);",
+      "};",
+      "",
+    ].join("\n"));
+  }
+  execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm restore-diagnostic-controls", { cwd: root });
+  for (const fault of ["throw", "oversize"]) {
+    r = spawnSync(process.execPath, ["--import", pathToFileURL(join(root, `restore-diagnostic-${fault}.mjs`)).href,
+      TOOL, "--config", "restore-observe-red.json"], {
+      cwd: root, encoding: "utf8", timeout: 120_000,
+      env: { ...process.env, pnpm_config_verify_deps_before_run: "install" },
+    });
+    const out = stripAnsi(r.stdout);
+    check(`afterRestore diagnostic ${fault} is explicit ERROR and preserves the original restore reason`,
+      r.status === 1 && verdictIs(out, "ERROR") && !verdictIs(out, "KILLED")
+        && out.includes("AFTERRESTORE DIAGNOSTIC ERROR") && out.includes("afterRestore diagnostic failed")
+        && out.includes("afterRestore exited 1") && !out.includes("AFTERRESTORE OBSERVATION")
+        && !out.includes(secret) && !out.includes(argvSentinel)
+        && readFileSync(join(root, "src/impl.js"), "utf8") === restoreSource);
+  }
+}
+
 // 7f. A mis-spelled key is silently dropped by every JSON reader. In an instrument whose whole
 // premise is that each step of the experiment has a way to lie, a `label:` that should have been
 // `name:` — or an `expectred:` that should have been `expectRed:` — is one of them.
