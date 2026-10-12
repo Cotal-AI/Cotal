@@ -46,7 +46,8 @@ import {
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
   instancePinnedInstrumentCapabilities, respondedButUnbound, replyRefusedBeforeEffect, EP_UNBOUND_RESPONDER, CotalEndpoint,
-  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, parseEpSubject, EP_BIND_REFUSED,
+  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, parseEpSubject, EP_BIND_REFUSED, BIND_SPLIT_REISSUES, replyTargetUnmapped, bindRefusalMarked,
+  type EpAttributedReply,
   type EpCaller,
   type ResolvedService,
   type EpError,
@@ -74,23 +75,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
 };
 
-/** A READ, RETRIED AT THE TEST LEVEL, and the reason is worth stating because it is a product
- *  characteristic rather than a fixture wrinkle. `invokeService` absorbs a class-queue split with
- *  exactly ONE re-resolve; in a two-manager space that re-resolve can split again, so an ordinary
- *  read surfaces roughly one time in four. That is pre-existing (the single retry long predates this
- *  change, and the second failure has always propagated) and is reported, not fixed here.
- *
- *  Any cell that calls `ps` ONCE inherits that 25% and reads as a flaky test rather than the product
- *  behaviour it is, which is exactly what happened: cell 7's warm-up was written as a bare single
- *  call and went red on an otherwise green sweep. Shared, so the next cell that needs a warm read
- *  cannot quietly reintroduce it. The tolerance is explicit and bounded; it is not a retry loop
- *  hiding a failure, because a genuine break exhausts all six attempts and still reports.
- *
- *  Between attempts the helper now drops its own cached resolve for a refused reply, so the next
- *  attempt resolves the endpoint again instead of repeating the bind that just lost the class
- *  queue. Six exhausted attempts are therefore six independent resolutions, not one wrong bind
- *  retried six times, so the genuine break argument holds by that mechanism and not by assertion
- *  alone. */
+/** Warm-up retries only. Each attempt awaits the existing bounded invocation recovery.
+ * An exhausted/refused attempt drops its cache before the next independent resolve.
+ * The measured ps and purge windows below invoke once, never through this tolerant helper. */
 /** PUB count on the endpoint's own connection: the direct witness for "nothing was re-issued".
  *  One invoke on a cached resolve is exactly ONE publish; the self-heal path re-resolves (a
  *  describe plus the contract-store reads behind it) and invokes again, so it is many. Read before
@@ -133,11 +120,9 @@ const requestsSent = (ep: CotalEndpoint): ((endpoint: string, command: string) =
  * THE DISPOSITION AND THE EFFECT MUST AGREE — the deterministic form of "exactly once", and the
  * reason "exactly once" could not be asserted literally.
  *
- * A re-issue goes back through the SAME class queue, so in a two-manager space it can be refused a
- * second time. That is not a defect and it is not new (the single retry long predates this change);
- * it means a call may legitimately end having run ZERO times. `=== 1` would therefore be a flaky
- * assertion of a true property, which is the worst of both — it would go red on a correct run about
- * half the time, and the fix would be to weaken it until it stopped noticing anything.
+ * Re-issues go back through the same class queue and can meet further refusals within the existing
+ * bound. An exhausted call may have run zero times. The separate recovery window below requires
+ * a normal terminal reply, while the disposition check still distinguishes refusal from execution.
  *
  * What IS deterministic is the biconditional: a reply carrying the bind refusal means the command
  * did not run, and any other reply means it ran exactly once. A duplicate breaks it (two runs on one
@@ -147,6 +132,67 @@ const dispositionAgrees = (
   reply: { ok?: boolean; error?: EpError } | undefined,
   ranDelta: number,
 ): boolean => ranDelta === (replyRefusedBeforeEffect(reply?.error) ? 0 : 1);
+
+type RecoveryCoordinate = { instanceId: string; epoch: number };
+type RecoveryFact = { endpoint: string; command: string; servedBy: RecoveryCoordinate & { endpoint: string }; boundTo: RecoveryCoordinate; count: number };
+
+/** Passive public event witness for one dedicated endpoint's serial invocation window.
+ * The event has no request id or full refusal payload. These bounded facts do not attest every hop. */
+function recoveryWindow(ep: CotalEndpoint, command: string,
+  reqs: (endpoint: string, command: string) => number, runs: (command: string) => number,
+  live: readonly string[], ghost: string, originalEpoch: number | undefined) {
+  const facts: RecoveryFact[] = [];
+  let overflow = false, malformed = false, unexpected = false, eventsSeen = 0;
+  const coordinate = (raw: unknown): RecoveryCoordinate | undefined => {
+    if (!raw || typeof raw !== "object") return undefined;
+    const value = raw as Record<string, unknown>;
+    if (typeof value.instanceId !== "string" || !/^[a-z0-9]{26,32}$/.test(value.instanceId)
+      || typeof value.epoch !== "number" || !Number.isSafeInteger(value.epoch) || value.epoch < 0) return undefined;
+    return { instanceId: value.instanceId, epoch: value.epoch };
+  };
+  const listener = (raw: unknown): void => {
+    eventsSeen++;
+    if (eventsSeen > BIND_SPLIT_REISSUES) { overflow = true; return; }
+    try {
+      if (!raw || typeof raw !== "object") { malformed = true; return; }
+      const event = raw as Record<string, unknown>, servedBy = coordinate(event.servedBy), boundTo = coordinate(event.boundTo);
+      const servedEndpoint = event.servedBy && typeof event.servedBy === "object" ? (event.servedBy as Record<string, unknown>).endpoint : undefined;
+      if (typeof event.endpoint !== "string" || event.endpoint.length > 64 || typeof event.command !== "string" || event.command.length > 32
+        || typeof servedEndpoint !== "string" || servedEndpoint.length > 64 || !servedBy || !boundTo
+        || typeof event.splitsRecovered !== "number" || !Number.isSafeInteger(event.splitsRecovered) || event.splitsRecovered < 0) { malformed = true; return; }
+      if (event.endpoint !== MANAGER_ENDPOINT || event.command !== command) unexpected = true;
+      facts.push({ endpoint: event.endpoint, command: event.command, servedBy: { ...servedBy, endpoint: servedEndpoint }, boundTo, count: event.splitsRecovered });
+    } catch { malformed = true; } // A passive listener never changes the invocation by throwing.
+  };
+  ep.on("split-recovered", listener);
+  let before: { count: number; requests: number; handlers: number };
+  try { before = { count: ep.splitRecoveryCount, requests: reqs(MANAGER_ENDPOINT, command), handlers: runs(command) }; }
+  catch (error) { ep.off("split-recovered", listener); throw error; }
+  return {
+    before,
+    finish(terminal: EpAttributedReply | undefined, threw: unknown) {
+      let after: typeof before;
+      try { after = { count: ep.splitRecoveryCount, requests: reqs(MANAGER_ENDPOINT, command), handlers: runs(command) }; }
+      finally { ep.off("split-recovered", listener); }
+      const n = facts.length, responder = coordinate(terminal?.responder);
+      const normal = threw === undefined && terminal !== undefined && typeof terminal.reply.ok === "boolean"
+        && terminal.responder.endpoint === MANAGER_ENDPOINT && responder !== undefined && live.includes(responder.instanceId)
+        && !bindRefusalMarked(terminal.reply.error) && !replyRefusedBeforeEffect(terminal.reply.error) && !replyTargetUnmapped(terminal.reply.error);
+      const valid = !overflow && !malformed && !unexpected && Number.isSafeInteger(before.count) && before.count >= 0
+        && Number.isSafeInteger(originalEpoch) && originalEpoch! >= 0 && !live.includes(ghost)
+        && n >= 1 && n <= BIND_SPLIT_REISSUES && after.count - before.count === n
+        && after.requests - before.requests === n + 1 && after.handlers - before.handlers <= 1
+        && normal && dispositionAgrees(terminal?.reply, after.handlers - before.handlers)
+        && facts.every((fact, i) => fact.count === before.count + i + 1
+          && fact.endpoint === MANAGER_ENDPOINT && fact.command === command && fact.servedBy.endpoint === MANAGER_ENDPOINT
+          && live.includes(fact.servedBy.instanceId)
+          && (fact.boundTo.instanceId !== fact.servedBy.instanceId || fact.boundTo.epoch !== fact.servedBy.epoch)
+          && (i === 0 ? fact.boundTo.instanceId === ghost && fact.boundTo.epoch === originalEpoch : live.includes(fact.boundTo.instanceId)));
+      return { valid, before, after, n, eventsSeen, overflow, malformed, unexpected, facts, normalTerminal: normal,
+        terminal: responder, terminalOk: terminal?.reply.ok, terminalError: terminal?.reply.error?.code, threw: threw !== undefined, handlerDelta: after.handlers - before.handlers, requestDelta: after.requests - before.requests };
+    },
+  };
+}
 
 /** One `readTolerant` attempt's cache and refusal state, printed on the failure line so a CI log
  *  shows whether the bind changed between attempts rather than only the last error (issue #1379).
@@ -207,6 +253,8 @@ const releaseBroker = teardownOnSignal(srv, dir);
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
+const cleanupErrors: { stage: string; message: string }[] = [];
+const stopOutcomes: { manager: number; outcome: "returned" | "failed" | "not-started" }[] = [];
 
 // Built the same way inst-route-grant builds it, deliberately: `permissionsFor` is called directly
 // rather than through `mintCreds`, so nothing assembles the principal for us — `instrumentEpRows`
@@ -442,7 +490,7 @@ try {
     try {
       const warm = await readTolerant(ep, "warm-up");
       check("the probe can invoke ps before the split is forced", warm.ok, warm.last);
-      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
       const ghost = `${"q".repeat(4)}${IID1.slice(4)}`;
       check("the cached resolve is reachable and the forced id is neither live instance",
@@ -510,11 +558,10 @@ try {
       const cached2 = cache.get(MANAGER_ENDPOINT);
       check("the read arm re-resolved after the surfaced split (so its forced split is real)",
         rewarm.ok && cached2 !== undefined, rewarm.last);
-      if (cached2) cached2.responder.instanceId = ghost;
       // ONE call, not a tolerant loop: the heal must happen INSIDE invokeService (drop the bind,
-      // re-resolve, invoke again). Whether that second invoke then succeeds or splits once more is
-      // a coin flip in a two-manager space, so the witness is the cache, which the heal leaves
-      // bound to a REAL instance either way; a widened guard would have dropped it and thrown.
+      // re-resolve, invoke again). The existing bounded loop may recover several refusals in
+      // this one call. A passive serial-window witness conserves events, requests and counters,
+      // with a normal terminal reply and at most one handler entry.
       // AND WHICH MECHANISM HEALED IT IS NOW ASSERTED, not left to whichever one happens to be
       // reachable. This cell used to pass because the allowlist let a read be re-issued after the
       // split had already been reported. It passes today because the fence refuses the read before
@@ -524,18 +571,23 @@ try {
       // mechanisms are separated here: this arm asserts the REFUSAL path (the recovery counter
       // moves), and the allowlist path is asserted where it is still reachable — against a
       // responder without a fence, in `smoke:unfenced-responder`.
-      const readReqs = reqs(MANAGER_ENDPOINT, "ps");
-      const readSplitsBefore = ep.splitRecoveryCount;
-      const psBefore = totalRuns("ps");
+      const readWindow = recoveryWindow(ep, "ps", reqs, totalRuns, [IID1, IID2], ghost, cached2?.responder.epoch);
+      const readReqs = readWindow.before.requests;
+      const psBefore = readWindow.before.handlers;
       let readThrew: unknown;
-      let readLanded: { reply?: { ok?: boolean; error?: EpError } } | undefined;
-      try { readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
+      let readLanded: EpAttributedReply | undefined;
+      let readRecovery: ReturnType<typeof readWindow.finish>;
+      try {
+        if (cached2) cached2.responder.instanceId = ghost;
+        readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps");
+      } catch (e) { readThrew = e; }
+      finally { readRecovery = readWindow.finish(readLanded, readThrew); }
+      console.log("   ps recovery window", JSON.stringify(readRecovery));
       const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
         afterRead === IID1 || afterRead === IID2, { afterRead, threw: readThrew instanceof Error ? readThrew.message.slice(0, 120) : readThrew });
       check("...and it healed through the REFUSAL, not the allowlist: the recovery counter moved",
-        ep.splitRecoveryCount === readSplitsBefore + 1,
-        { before: readSplitsBefore, after: ep.splitRecoveryCount });
+        readRecovery.valid, readRecovery);
       // A read is repeat-safe, so a duplicate would be harmless — which is exactly why it is the one
       // place a duplicate could hide. Counted anyway: under the fence the first attempt is refused
       // before the handler, so even here the effect lands once.
@@ -616,21 +668,23 @@ try {
       // Resolve for real, then doctor the cached responder id (identical to cell 6, because the
       // point is that the COMMAND changed the outcome, nothing else).
       const warm = await readTolerant(ep, "admin warm-up");
-      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
+      const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
       check("the admin probe resolved the manager (without this the cell grades nothing)",
         warm.ok && cached !== undefined, warm.last);
       const ghost = `${"w".repeat(4)}${IID1.slice(4)}`;
-      if (cached) cached.responder.instanceId = ghost;
-
       let threw: unknown;
       let returned: unknown;
-      const purgeReqs = reqs(MANAGER_ENDPOINT, "purge");
-      const purgedBefore = totalRuns("purge");
-      const purgeSplitsBefore = ep.splitRecoveryCount;
+      const purgeWindow = recoveryWindow(ep, "purge", reqs, totalRuns, [IID1, IID2], ghost, cached?.responder.epoch);
+      const purgeReqs = purgeWindow.before.requests;
+      const purgedBefore = purgeWindow.before.handlers;
+      let purgeRecovery: ReturnType<typeof purgeWindow.finish>;
       try {
+        if (cached) cached.responder.instanceId = ghost;
         returned = await ep.invokeService(MANAGER_ENDPOINT, "purge", { includeDms: false });
       } catch (e) { threw = e; }
+      finally { purgeRecovery = purgeWindow.finish(returned as EpAttributedReply | undefined, threw); }
+      console.log("   purge recovery window", JSON.stringify(purgeRecovery));
       // THE CLAIM, UNCHANGED SINCE THIS CELL WAS WRITTEN: a destructive, non-convergent command is
       // never applied twice because a call split. `purge` reaches a real STREAM.PURGE, and its
       // second execution deletes messages published between the two, so "the first one already
@@ -673,7 +727,7 @@ try {
       check("...and the stale bind did not survive the call: the handle is bound to a LIVE incarnation, not the ghost",
         rebound === undefined || rebound === IID1 || rebound === IID2, { rebound, ghost });
       check("...and the recovery was counted, so a handled split is still a measurable one",
-        ep.splitRecoveryCount === purgeSplitsBefore + 1, { before: purgeSplitsBefore, after: ep.splitRecoveryCount });
+        purgeRecovery.valid, purgeRecovery);
       // The narrow-guard version of this code returned a SUCCESS here having purged TWICE. The
       // success is now legitimate and the difference is not visible in the reply at all — only in
       // the execution count above, which is exactly why that count had to exist before this cell
@@ -800,15 +854,15 @@ try {
       // ATTRIBUTED REPLY from a responder, which is precisely the guard's own input and therefore
       // exactly the right witness here. It does NOT prove the command executed or that any effect
       // landed: an attributed reply can come from validation, authorization, admission, or a
-      // business refusal, and the schema-valid nonsense arguments below deliberately provoke the
-      // last of those. So this sweep grades the classifier-to-guard wiring across the vocabulary and
-      // nothing more. The `purge` cell above is the separate proof that a real destructive effect
-      // runs, and it is the only cell in this file that claims one.
+      // business refusal. The transcript case below also requires a real upload response when
+      // the handler runs. That path creates or verifies its private ObjectStore stream, sweeps it
+      // and arms the receiver deadline. The fresh broker and owned workspaces bound these effects;
+      // it is not an effect-free business refusal or a proof that every timer is closed.
       // Each command needs SCHEMA-VALID arguments or the envelope refuses it before it is ever
       // published, which is precisely how the first version passed vacuously: `{}` fails
       // `required` on all seven, so none of them left the client. The values are deliberately
-      // nonsense (no such run, no such attempt) so every handler refuses on business grounds and
-      // nothing is launched, resumed, or preserved; refusing is a REPLY, which is all this needs.
+      // nonsense for run/attempt commands, so they do not launch or resume work. Transcript input
+      // is a valid announcement of absent bytes, with no upload or claim consumption in this test.
       // If a schema gains a required field, `notReached` goes red rather than the cell going quiet.
       const attempt = { attemptId: `no-such-attempt-${randomUUID().slice(0, 8)}` };
       const adminArgs: Record<string, Record<string, unknown>> = {
@@ -819,6 +873,7 @@ try {
         "prepare-preservation": attempt,
         "commit-preservation": attempt,
         "abort-preservation": attempt,
+        "transcript-receive": { sha256: randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""), size: 0, source: "pin-fixture-transcript", sourceHost: "pin-fixture-host" },
       };
       const notReached: string[] = [];
       const ranTwice: string[] = [];
@@ -853,6 +908,20 @@ try {
         const reply = (res as { reply?: { ok?: boolean; error?: EpError } } | undefined)?.reply;
         const refused = replyRefusedBeforeEffect(reply?.error)
           || (err instanceof EpEnvelopeError && replyRefusedBeforeEffect(err.toEpError()));
+        if (command === "transcript-receive") {
+          const attributed = res as EpAttributedReply | undefined;
+          const data = attributed?.reply.data;
+          const upload = err === undefined && attributed?.reply.ok === true && delta === 1
+            && attributed.responder.endpoint === MANAGER_ENDPOINT
+            && [IID1, IID2].includes(attributed.responder.instanceId)
+            && Number.isSafeInteger(attributed.responder.epoch) && attributed.responder.epoch >= 0
+            && data !== null && typeof data === "object" && !Array.isArray(data)
+            && Object.keys(data).length === 1 && (data as { state?: unknown }).state === "upload";
+          const fencedReachOnly = refused && delta === 0;
+          console.log("   transcript-receive outcome", JSON.stringify({ positiveUpload: upload, fencedReachOnly, handlerDelta: delta, threw: err !== undefined, state: upload ? "upload" : undefined }));
+          // A fenced terminal refusal counts only as guard reach, never as positive upload evidence.
+          if (!upload && !fencedReachOnly && (refused || delta !== 0)) notReached.push(command);
+        }
         // REACHED means the request got as far as a responder: it either ran, or came back refused
         // by one. Neither ⇒ the command never got there and the rest of the loop grades nothing.
         if (!refused && delta === 0) { notReached.push(command); continue; }
@@ -874,14 +943,20 @@ try {
     } finally { await ep.stop().catch(() => {}); }
   }
 
-console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {
-  await m1?.stop({ withAgents: true }).catch(() => {});
-  await m2?.stop({ withAgents: true }).catch(() => {});
-  srv.kill("SIGKILL");
-  rmSync(dir, { recursive: true, force: true });
+  const failed = (stage: string, error: unknown) => cleanupErrors.push({ stage, message: String(error).slice(0, 200) });
+  try { await m1?.stop({ withAgents: true }); stopOutcomes.push({ manager: 1, outcome: m1 ? "returned" : "not-started" }); }
+  catch (error) { stopOutcomes.push({ manager: 1, outcome: "failed" }); failed("manager-1-stop", error); }
+  try { await m2?.stop({ withAgents: true }); stopOutcomes.push({ manager: 2, outcome: m2 ? "returned" : "not-started" }); }
+  catch (error) { stopOutcomes.push({ manager: 2, outcome: "failed" }); failed("manager-2-stop", error); }
+  try { srv.kill("SIGKILL"); } catch (error) { failed("owned-broker-stop", error); }
+  try { rmSync(dir, { recursive: true, force: true }); } catch (error) { failed("owned-root-cleanup", error); }
   if (prevHome === undefined) delete process.env.COTAL_HOME;
   else process.env.COTAL_HOME = prevHome;
-  releaseBroker(); // last: ownership is held until this teardown has actually finished
+  try { releaseBroker(); } catch (error) { failed("owned-broker-release", error); }
+  // Receiver.stop clears its current timer only. Process exit does not prove all timers/readers closed.
+  console.log("   instrument scoped cleanup", JSON.stringify({ stopOutcomes, cleanup: cleanupErrors.length ? "UNKNOWN/FAIL" : "owned cleanup calls returned", timerAndReaderClosure: "UNMEASURED" }));
+  if (cleanupErrors.length) console.error("instrument cleanup UNKNOWN/FAIL", JSON.stringify(cleanupErrors));
 }
-process.exit(fail === 0 ? 0 : 1);
+console.log(`\n${fail === 0 && cleanupErrors.length === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 && cleanupErrors.length === 0 ? 0 : 1);

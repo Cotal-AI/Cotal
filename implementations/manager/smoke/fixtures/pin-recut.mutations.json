@@ -7,16 +7,16 @@
       "find": "      assertBoundIncarnation(env, identity);\n",
       "replace": "",
       "expectRed": "...and it healed through the REFUSAL, not the allowlist: the recovery counter moved",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:instrument-instance-pin"
     },
     {
       "name": "PREDICTED KILLED (2 red) - the client counts and drops but never re-issues, so the heal publishes no second request",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          return await invokeResolved(reissueTarget, signal);",
+      "find": "          r = await invokeAttempt(reissueTarget);",
       "replace": "          return r;",
       "expectRed": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
       "note": "Re-pointed 2026-08-17 with the cell it grades. It previously read the connection's raw outMsgs (`> 1`), which across that window is ~51 on a healthy run, so it was satisfied by the scenario's own describes and KV traffic and could not fail for the reason it stated - measured SURVIVED at 51 marks with the call gutted and 51 without. The cells now count requests per (endpoint, command) off the shipped subject parser. The `purge` cell reds too; the third arm does NOT, because its re-issue target is resolved before this line and its describe still goes out.",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:instrument-instance-pin"
     },
     {
       "name": "PREDICTED KILLED (3 red) - the recovery is silent, so a handled split stops being a measurable one",
@@ -24,7 +24,7 @@
       "find": "          this.splitsRecovered++;\n",
       "replace": "",
       "expectRed": "...and the recovery was counted, so a handled split is still a measurable one",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:instrument-instance-pin"
     },
     {
       "name": "PREDICTED KILLED (3 red) - the attempts counter stops counting, so no cell can witness a re-issue",
