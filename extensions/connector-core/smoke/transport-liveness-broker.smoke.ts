@@ -292,7 +292,22 @@ try {
   rebuildAgent = new MeshAgent({ ...cfg, name: `transport-live-rebuild-${port}` });
   const rebuildEdges: Array<{ connected: boolean }> = [];
   rebuildAgent.ep.on("connection", (event: { connected: boolean }) => rebuildEdges.push(event));
+  // Retained markers describe observed returns, not pending promises or the cause of a killed run.
+  // The caught rebuild's return does not distinguish fulfillment from swallowed rejection.
+  let rebuildObservationSequence = 0;
+  const rebuildObserved = {
+    startReturned: false, gateEntered: false, gateResumed: false, pollReturned: false,
+    reachedFinalStep: false, stopReturned: false, releaseCalled: false, caughtRebuildReturned: false,
+  };
+  const observeRebuild = (phase: "start-after" | "gate-enter" | "gate-resume" | "poll-after"
+    | "stop-before" | "stop-after" | "release-before" | "release-after"
+    | "caught-rebuild-before" | "caught-rebuild-after"): void => {
+    process.stderr.write(`${JSON.stringify({ scenario: "broker-rebuild-bind", sequence: ++rebuildObservationSequence,
+      phase, completedChecks: Math.max(0, Math.min(27, pass + fail)), ...rebuildObserved })}\n`);
+  };
   await rebuildAgent.start(100);
+  rebuildObserved.startReturned = true;
+  observeRebuild("start-after");
   check(
     "rebuild-race setup: first bind completed before the rebuild is forced",
     await until(() => rebuildAgent!.connected, 30_000) && rebuildEdges.some((event) => event.connected === true),
@@ -302,18 +317,37 @@ try {
   let rebuildBindAtFinalStep = false;
   let releaseRebuildBind: () => void = () => {};
   const rebuildBindGate = new Promise<void>((resolve) => { releaseRebuildBind = resolve; });
-  rebuildEp.armPlane3 = async () => { rebuildBindAtFinalStep = true; await rebuildBindGate; };
+  rebuildEp.armPlane3 = async () => {
+    rebuildBindAtFinalStep = true;
+    rebuildObserved.gateEntered = true;
+    observeRebuild("gate-enter");
+    await rebuildBindGate;
+    rebuildObserved.gateResumed = true;
+    observeRebuild("gate-resume");
+  };
   const rebuildEdgesBeforeReconnect = rebuildEdges.length;
   const rebuildWork = rebuildEp.reconnect().catch(() => {});
   const reachedRebuildFinalStep = await until(() => rebuildBindAtFinalStep, 30_000);
+  rebuildObserved.pollReturned = true;
+  rebuildObserved.reachedFinalStep = reachedRebuildFinalStep;
+  observeRebuild("poll-after");
   check(
     "rebuild-race wait: stop is landed only after the rebuild bind reached armPlane3",
     reachedRebuildFinalStep,
     { reachedRebuildFinalStep, rebuildBindAtFinalStep },
   );
+  observeRebuild("stop-before");
   await rebuildAgent.stop();
+  rebuildObserved.stopReturned = true;
+  observeRebuild("stop-after");
+  observeRebuild("release-before");
   releaseRebuildBind();
+  rebuildObserved.releaseCalled = true;
+  observeRebuild("release-after");
+  observeRebuild("caught-rebuild-before");
   await rebuildWork;
+  rebuildObserved.caughtRebuildReturned = true;
+  observeRebuild("caught-rebuild-after");
   const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { nc?: unknown }).nc;
   check(
     "stop during a REAL rebuild bind never announces the connection it then tears down",
