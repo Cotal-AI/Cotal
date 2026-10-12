@@ -132,30 +132,44 @@ class FakeEmitter {
 }
 
 /** A holder plus the instruments around it. `starts` is the count that most cells turn on. */
-const rig = (opts?: { fail?: Error; emitter?: FakeEmitter }) => {
+const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; retryMs?: number }) => {
   const errors: Error[] = [];
+  const delays: (number | null)[] = [];
   const paths: string[] = [];
+  const contexts: unknown[] = [];
   const emitter = opts?.emitter ?? new FakeEmitter();
   let starts = 0;
-  const holder = new AguiEmitterHolder<unknown>(
-    async (path: string) => {
+  const holder = new AguiEmitterHolder<unknown, string>(
+    async (path: string, context) => {
       starts++;
       paths.push(path);
-      if (opts?.fail) throw opts.fail;
+      contexts.push(context);
+      // `failTimes` fails the first N starts and lets the rest succeed; `fail` alone fails every one.
+      if (opts?.fail && (opts.failTimes === undefined || starts <= opts.failTimes)) throw opts.fail;
       return emitter as unknown as AguiEmitter<unknown>;
     },
-    { onError: (e) => errors.push(e) },
+    {
+      onError: (e, retryInMs) => {
+        errors.push(e);
+        delays.push(retryInMs);
+      },
+      ...(opts?.retryMs !== undefined ? { retryMs: opts.retryMs } : {}),
+    },
   );
   return {
     holder,
     emitter,
     errors,
+    delays,
     paths,
+    contexts,
     get starts() {
       return starts;
     },
   };
 };
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 const A = "/tmp/session-a.jsonl";
 const B = "/tmp/session-b.jsonl";
@@ -312,8 +326,9 @@ const B = "/tmp/session-b.jsonl";
   r.holder.flush(A);
   r.holder.flush(A);
   await r.holder.settled();
-  c("failure:a-failed-start-is-TERMINAL", r.starts === before, `${before} -> ${r.starts}`);
+  c("failure:a-failed-start-is-NOT-retried-on-the-next-hook", r.starts === before, `${before} -> ${r.starts}`);
   c("failure:a-dead-holder-does-not-pump", r.emitter.pumps === 0, r.emitter.pumps);
+  await r.holder.close(); // or the default one-second revive timer keeps the process up
 }
 
 {
@@ -325,6 +340,119 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   c("failure:the-FIRST-failure-is-kept-not-the-latest", r.holder.failure === first, r.holder.failure?.message);
   c("failure:a-dead-holder-reports-ONE-failure-not-a-cascade", r.errors.length === 1, r.errors.length);
+  await r.holder.close();
+}
+
+// ---- RE-ESTABLISH ---------------------------------------------------------------------------
+// A failure stops the plane, never the seat: the holder starts the emitter again on its own backoff,
+// as the first start ran, and reports every failure with the delay. Measured on 2026-10-12: the
+// seat-stop this replaced showed in Claude Code as "MCP server cotal has disconnected", and the
+// harness restarted the connector on the next tool call anyway, once per keystroke.
+{
+  const boom = new Error("preflight refused: stream is R3");
+  const r = rig({ fail: boom, failTimes: 1, retryMs: 20 });
+  r.holder.adopt(A, "startup");
+  await r.holder.settled();
+  c("CONTROL:the-first-start-failed-and-was-reported", r.errors.length === 1 && r.starts === 1, { errors: r.errors.length, starts: r.starts });
+  c("revive:the-sink-is-told-the-delay-before-the-re-establish", r.delays[0] === 20, r.delays);
+  c("revive:nothing-is-retried-before-the-delay", r.starts === 1, r.starts);
+  await sleep(60);
+  await r.holder.settled();
+  c("revive:the-emitter-is-started-again-after-the-delay", r.starts === 2, r.starts);
+  c("revive:the-re-establish-uses-the-FIRST-path", r.paths[1] === A, r.paths);
+  c("revive:the-re-establish-uses-the-FIRST-adopt-context", r.contexts[1] === "startup", r.contexts);
+  c("revive:a-re-established-holder-reports-running", r.holder.running && r.holder.failure === undefined, { running: r.holder.running, failure: r.holder.failure?.message });
+  c("revive:the-re-establish-pumps-what-the-outage-left-behind", r.emitter.pumps === 1, r.emitter.pumps);
+  r.holder.flush(A);
+  await r.holder.settled();
+  c("revive:a-later-flush-pumps-the-re-established-emitter", r.emitter.pumps === 2, r.emitter.pumps);
+  await r.holder.close();
+}
+
+{
+  // The delay doubles while the failure repeats, and a success resets it.
+  const boom = new Error("broker unreachable");
+  const r = rig({ fail: boom, failTimes: 3, retryMs: 10 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  await sleep(10 + 20 + 40 + 60);
+  await r.holder.settled();
+  c("revive:the-delay-DOUBLES-per-consecutive-failure", r.delays.slice(0, 3).join(",") === "10,20,40", r.delays);
+  c("revive:the-plane-comes-back-after-repeated-failures", r.holder.running && r.starts === 4, { running: r.holder.running, starts: r.starts });
+  await r.holder.close();
+}
+
+{
+  // The cap: a failure that outlives a few retries is paced to a minute, never faster.
+  const r = rig({ retryMs: 70_000 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.adopt(B); // the rebind refusal
+  await r.holder.settled();
+  c("revive:the-delay-is-CAPPED-at-the-ceiling", r.delays[0] === AguiEmitterHolder.RETRY_BACKOFF_CAP_MS, r.delays);
+  await r.holder.close();
+}
+
+{
+  // A halted emitter is replaced; a running one survives its holder's failure. The rebind refusal
+  // kills nothing underneath, so the re-establish must not throw away a working emitter.
+  const r = rig({ retryMs: 10 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.adopt(B);
+  await r.holder.settled();
+  await sleep(40);
+  await r.holder.settled();
+  c("revive:a-RUNNING-emitter-is-kept-across-the-re-establish", r.starts === 1 && r.holder.running, { starts: r.starts, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
+  const halted = new FakeEmitter();
+  const r = rig({ emitter: halted, retryMs: 10 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  halted.stopped = true; // the emitter halted itself
+  r.holder.adopt(B); // any failure now re-establishes
+  await r.holder.settled();
+  await sleep(40);
+  await r.holder.settled();
+  c("revive:a-HALTED-emitter-is-started-again", r.starts === 2, r.starts);
+  await r.holder.close();
+}
+
+{
+  // Close cancels a pending re-establish: a released holder never starts again.
+  const r = rig({ fail: new Error("start explodes"), failTimes: 1, retryMs: 10 });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  await r.holder.close();
+  await sleep(40);
+  await r.holder.settled();
+  c("revive:close-CANCELS-a-pending-re-establish", r.starts === 1, r.starts);
+  // `enqueue` would refuse the start anyway; what shows the TIMER was cancelled is that the
+  // failure is still on the holder, which a revive that ran would have cleared first.
+  c("revive:a-closed-holder-keeps-its-failure-readable", r.holder.failure?.message === "start explodes", r.holder.failure?.message);
+  c("revive:a-closed-holder-stays-not-running", !r.holder.running);
+}
+
+{
+  // A failure that lands after close is reported with no delay: nothing will retry it. A start
+  // queued before close never runs (a closed holder never starts), so the one way to fail after
+  // close is a pump that was already in flight when close arrived.
+  const slow = new FakeEmitter();
+  let failPump: (() => void) | undefined;
+  slow.pump = () =>
+    new Promise((_, reject) => {
+      failPump = () => reject(new Error("pump failed after close"));
+    });
+  const r = rig({ emitter: slow });
+  r.holder.flush(A);
+  await sleep(10); // the pump is in flight
+  const closing = r.holder.close();
+  failPump!();
+  await closing;
+  c("revive:a-failure-after-close-reports-NO-retry", r.delays.length === 1 && r.delays[0] === null, r.delays);
 }
 
 // ---- THE HOOK CONTRACT ----------------------------------------------------------------------

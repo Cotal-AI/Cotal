@@ -28,10 +28,14 @@ import type { AguiEmitter } from "./agui-emitter.js";
  * metadata with nothing reporting why.
  */
 export interface AguiEmitterHolderHooks {
-  /** Where a failure goes. Required, and not defaulted to a swallow: the holder runs behind a hook
-   *  that must not throw, so the only way a failure reaches a human is if the caller is made to say
-   *  where it goes. */
-  onError: (e: Error) => void;
+  /** Where a failure goes, with the delay before the holder re-establishes the plane, or `null`
+   *  when it will not because the holder is closed. Required, and not defaulted to a swallow: the
+   *  holder runs behind a hook that must not throw, so the only way a failure reaches a human is if
+   *  the caller is made to say where it goes. */
+  onError: (e: Error, retryInMs: number | null) => void;
+  /** The wait before the first re-establish attempt after a failure. Each consecutive failure
+   *  doubles it, up to {@link AguiEmitterHolder.RETRY_BACKOFF_CAP_MS}. Default one second. */
+  retryMs?: number;
   /**
    * Told which run {@link AguiEmitterHolder.closeRun} closed, so the connector's own mapper can
    * forget the run it will no longer attribute records to. Optional, and it is NOT the holder
@@ -63,34 +67,27 @@ export interface AguiEmitterHolderHooks {
 }
 
 /**
- * The one answer every connector gives when its event plane stops for good, used as a holder's
- * `onError`.
+ * The one line every connector logs when its event plane stops, used as a holder's `onError`.
  *
- * Whether a seat may outlive its event plane is the space's policy, so it is decided here and not
- * by each harness: on a space that requires events the seat stops, because a seat that kept taking
- * turns would be on the roster while breaking the policy that admitted it. Any other space keeps
- * the seat running with the reason in its log.
+ * The seat never stops for it, on any space. It used to, on a space that requires events, and the
+ * harness then restarted the connector on the next tool call: the plane was re-established anyway,
+ * once per keystroke, with a dropped mesh connection each time. The holder re-establishes it in
+ * process instead, on a backoff, and the seat keeps its connection; the line says when.
  */
-export function eventPlaneStopped(opts: {
-  required: boolean;
-  log: (line: string) => void;
-  stopSeat: () => void;
-}): (e: Error) => void {
-  return (e) => {
-    // A sink that throws must not keep a seat running that the policy says must stop.
-    try {
-      opts.log(`AG-UI emitter stopped: ${e.message}`);
-    } finally {
-      if (opts.required) opts.stopSeat();
-    }
-  };
+export function eventPlaneStopped(opts: { log: (line: string) => void }): (e: Error, retryInMs: number | null) => void {
+  return (e, retryInMs) =>
+    opts.log(
+      `AG-UI emitter stopped: ${e.message}` +
+        (retryInMs === null ? "" : `; re-establishing the event plane in ${retryInMs}ms`),
+    );
 }
 
 /**
- * Holds at most one {@link AguiEmitter}, started on first adopt.
+ * Holds at most one {@link AguiEmitter} at a time, started on first adopt and re-established on a
+ * backoff after a failure.
  *
  * `T` is the connector's source record type; the holder never inspects one. It owns four things —
- * WHEN the emitter starts, that it starts AT MOST ONCE, that everything touching it is serialized,
+ * WHEN the emitter starts, that ONE runs at a time, that everything touching it is serialized,
  * and carrying the first adopt's opaque context to the connector-owned factory — and deliberately
  * owns no policy about what that context, an event, or a frame means.
  */
@@ -100,16 +97,25 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *  while the first start is still in flight. */
   private boundPath?: string;
   /**
-   * Terminal. Once set, this holder never starts, pumps, or reports success again.
+   * The failure the plane is down for. While set, this holder starts and pumps nothing; it clears
+   * when {@link revive} re-establishes the plane.
    *
-   * It does not retry, and that is a decision rather than an omission. A retry on the next hook
-   * would re-run that preflight and a WAL recovery against a stream this holder has already
-   * failed to establish itself on, on a timer set by how often the user happens to type. The
-   * emitter's own answer to an uncertain publish is to halt rather than to limp, and a holder that
-   * quietly reconnected underneath it would reintroduce, one layer up, exactly the silence the
-   * emitter refuses.
+   * The re-establish runs on the holder's own backoff, never on the next hook: a retry paced by
+   * how often the user happens to type would re-run the preflight and the WAL recovery at a rate
+   * nothing chose. It is the same recovery a connector restart runs, so it adds no path the
+   * emitter did not already take, and a pending frame is settled by `start()` before anything new
+   * is read. The failure is still reported, every time, with the delay; a plane that came back on
+   * its own is not a plane that failed silently.
    */
   private dead?: Error;
+  /** The first adopt's context, kept so a re-establish starts the emitter as the first start did. */
+  private startContext?: StartContext;
+  /** Consecutive failures since the plane was last established. Paces {@link nextRetryDelayMs}. */
+  private retryAttempt = 0;
+  private reviveTimer?: ReturnType<typeof setTimeout>;
+  /** The ceiling the re-establish backoff grows to. A failure that outlives a few retries is a
+   *  standing one, and retrying it every second forever is a flat load on the broker's preflight. */
+  static readonly RETRY_BACKOFF_CAP_MS = 60_000;
   /**
    * Terminal, and NOT a failure. Set by {@link close} when the owner releases this holder: it never
    * starts, pumps or closes a run again, `failure` stays empty, and `onError` is not called. Kept
@@ -177,6 +183,8 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    */
   async close(): Promise<void> {
     this.shut = true;
+    if (this.reviveTimer) clearTimeout(this.reviveTimer);
+    this.reviveTimer = undefined;
     await this.chain;
   }
 
@@ -272,50 +280,44 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
 
     if (this.emitter) return this.emitter;
 
+    // A CLOSED HOLDER NEVER STARTS, even for work that was already queued when it closed. Starting
+    // reaches the broker and opens a write-ahead log for a holder its owner has already released,
+    // which is the opposite of releasing it. Pumping an emitter that is ALREADY running is a
+    // different act and is deliberately still allowed: see the note on `close`.
+    if (this.shut) return undefined;
     if (this.boundPath === undefined) {
-      // A CLOSED HOLDER NEVER STARTS, even for work that was already queued when it closed. Starting
-      // reaches the broker and opens a write-ahead log for a holder its owner has already released,
-      // which is the opposite of releasing it. Pumping an emitter that is ALREADY running is a
-      // different act and is deliberately still allowed: see the note on `close`.
-      if (this.shut) return undefined;
       this.boundPath = path;
-      try {
-        // WHAT KEEPS THIS TO ONE EMITTER IS THE `boundPath` GATE ABOVE, AND ONLY IT. It is set on
-        // the line before this one, BEFORE the await, so every later call for this same path finds
-        // it set and never reaches `startEmitter` again, whether that call arrives after the start
-        // resolved or while it is still in flight. A call for a DIFFERENT path is refused earlier.
-        //
-        // EVERYTHING ELSE ON THIS PATH RETURNS WHATEVER `this.emitter` HOLDS, IT DOES NOT GUARD
-        // ONE. The shortcut above and the `return this.emitter` at the end of this method are
-        // interchangeable once a start has resolved, and neither is what stops a second start: with
-        // the shortcut gone, the trailing return answers the same call with the same object. While
-        // a start is still IN FLIGHT that field is unset, so a same-path caller reaching the
-        // trailing return gets `undefined`, which is the honest answer and is still not a second
-        // start. Anyone editing here should know that before reading a green run as a verdict on
-        // the piece they touched.
-        //
-        // THE CHAIN IS NOT ONE OF THESE MECHANISMS. It serializes hook events so two flushes cannot
-        // read the source at one cursor, which is its own job and a real one.
-        //
-        // WHAT A SECOND EMITTER WOULD BREAK IS NOT DESCRIBED HERE, AND THE REASON IS THE POINT.
-        // A comment that restates a guarantee it does not own drifts away from it, and nothing in
-        // the edit that moves the guarantee tells the author this sentence exists. The refusals
-        // belong next to the code that performs them: the record's are in `subject-frontier.ts`,
-        // the log's stale-handle check is in `event-wal.ts`, and the expectation carried on a
-        // publish is the broker's to enforce.
-        //
-        // What this file does own is the bracket interleave, and it is OPEN: two emitters would
-        // each keep their own bracket machine and nothing detects the interleave. That is the
-        // stated writer-cardinality limit.
-        this.emitter = await this.startEmitter(path, context);
-        return this.emitter;
-      } catch (e) {
-        this.die(e as Error);
-        return undefined;
-      }
+      this.startContext = context;
     }
-
-    return this.emitter;
+    try {
+      // WHAT KEEPS THIS TO ONE EMITTER AT A TIME IS THE CHAIN. Every caller of this method runs
+      // inside one serialized step, so a start is never in flight while another step reads
+      // `this.emitter`; a same-path call that arrives during a start is queued behind it and finds
+      // the emitter set. The `boundPath` gate above refuses a DIFFERENT path, and the chain is
+      // also what keeps two flushes from reading the source at one cursor.
+      //
+      // A start after {@link revive} is the same call with the FIRST adopt's path and context, so
+      // the emitter comes back as it first came up: a bound source's boundary is the connector's to
+      // keep across the two, and the write-ahead log on disk carries the cursor and any pending
+      // frame from the emitter that stopped.
+      //
+      // WHAT A SECOND EMITTER WOULD BREAK IS NOT DESCRIBED HERE, AND THE REASON IS THE POINT.
+      // A comment that restates a guarantee it does not own drifts away from it, and nothing in
+      // the edit that moves the guarantee tells the author this sentence exists. The refusals
+      // belong next to the code that performs them: the record's are in `subject-frontier.ts`,
+      // the log's stale-handle check is in `event-wal.ts`, and the expectation carried on a
+      // publish is the broker's to enforce.
+      //
+      // What this file does own is the bracket interleave, and it is OPEN: two emitters would
+      // each keep their own bracket machine and nothing detects the interleave. That is the
+      // stated writer-cardinality limit.
+      this.emitter = await this.startEmitter(this.boundPath, this.startContext);
+      this.retryAttempt = 0;
+      return this.emitter;
+    } catch (e) {
+      this.die(e as Error);
+      return undefined;
+    }
   }
 
   private die(e: Error): void {
@@ -323,7 +325,47 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // the cause with a symptom.
     if (this.dead) return;
     this.dead = e;
-    this.hooks.onError(e);
+    if (this.shut) {
+      this.hooks.onError(e, null);
+      return;
+    }
+    const delay = this.nextRetryDelayMs();
+    this.reviveTimer = setTimeout(() => this.revive(), delay);
+    this.hooks.onError(e, delay);
+  }
+
+  /** The wait before the next re-establish: `retryMs`, doubling per consecutive failure up to
+   *  {@link RETRY_BACKOFF_CAP_MS}. The first wait is `retryMs` itself, so a transient failure
+   *  recovers quickly; only a failure that repeats gets paced. */
+  private nextRetryDelayMs(): number {
+    const base = this.hooks.retryMs ?? 1_000;
+    const delay = Math.min(base * 2 ** this.retryAttempt, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);
+    this.retryAttempt++;
+    return delay;
+  }
+
+  /**
+   * Re-establish the plane after {@link die}'s backoff: clear the failure, drop an emitter that
+   * halted, and queue a start and a pump on the chain. An emitter that is still running, which a
+   * refused rebind or a transient pump error leaves behind, is kept; only a halted one is rebuilt.
+   * The start is a fresh `startEmitter`, which reopens the write-ahead log and settles any frame it
+   * left pending before reading on. A failure here is reported and paced like the first.
+   */
+  private revive(): void {
+    this.reviveTimer = undefined;
+    if (this.boundPath === undefined) return;
+    const path = this.boundPath;
+    // Not guarded on `shut` here: close cancels the timer, and `enqueue` refuses a shut holder,
+    // so a revive that ran after close would clear the failure and then start nothing. The
+    // failure staying readable after close is what shows the timer was cancelled.
+    this.dead = undefined;
+    if (this.emitter?.stopped) this.emitter = undefined;
+    this.enqueue(async () => {
+      const emitter = await this.ensureStarted(path);
+      if (!emitter || emitter.stopped) return;
+      await this.holdForLive();
+      await emitter.pump();
+    });
   }
 
   /** Wait for the endpoint to be live, if the caller supplied a wait. SHARED: while one step

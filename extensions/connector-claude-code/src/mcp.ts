@@ -31,6 +31,7 @@ import {
   resolveEventsStateRoot,
   controlFromEnv,
   NO_TOOL_ARGS,
+  type DurableSource,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
@@ -136,6 +137,11 @@ async function main(): Promise<void> {
     // The channel is derived inside the emitter from the endpoint's OWN principal, never from
     // `config.name`, so the subject the broker enforces a grant against and the subject this
     // publishes to are computed from the identity the connection authenticates as.
+    // ONE source for the holder's lifetime. The holder re-establishes a plane that stopped by
+    // calling this factory again, and the boundary a bound source captured on the first call is
+    // the position the thread adopted at; a second source would capture a second boundary, at the
+    // re-establish, and every record between the two would be lost without a word.
+    let source: DurableSource<ClaudeEntry> | undefined;
     events = new AguiEmitterHolder<ClaudeEntry, unknown>(
       async (transcriptPath: string, sessionSource: unknown) => {
         // Captured as the FACTORY'S FIRST ACT, before the mesh wait below and before anything else
@@ -143,7 +149,7 @@ async function main(): Promise<void> {
         // which happens only after the mesh wait, and anything the session writes to the transcript
         // in that window is silently dropped. `fork` runs its own file-appear wait inside this same
         // call and still substitutes its boundary exactly once. `startup` needs no boundary.
-        const source = await createBoundClaudeTranscriptSource(transcriptPath, sessionSource);
+        const boundSource = (source ??= await createBoundClaudeTranscriptSource(transcriptPath, sessionSource));
         const startEmitter = async () => {
           // The events state root throws rather than defaulting to the working directory: a WAL
           // written somewhere no later start looks is a silent loss.
@@ -179,7 +185,7 @@ async function main(): Promise<void> {
             endpoint: agent.ep,
             wal,
             subjectFrontier,
-            source,
+            source: boundSource,
             map: mapper.map,
             // Claude writes the transcript, and a write it cut short (a full disk) leaves part of
             // one record glued to the next on a single line that never becomes readable. That line
@@ -199,11 +205,7 @@ async function main(): Promise<void> {
         return startEmitter();
       },
       {
-        onError: eventPlaneStopped({
-          required: config.eventsRequired === true,
-          log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`),
-          stopSeat: () => void shutdown(1),
-        }),
+        onError: eventPlaneStopped({ log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`) }),
         // The turn terminal closes a run the record stream never described, so the mapper still
         // believes that run is open. Without this it would attribute the next records to a run the
         // published stream has already finished and the emitter would refuse the batch. Keyed on

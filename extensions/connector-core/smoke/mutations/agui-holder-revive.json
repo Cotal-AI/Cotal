@@ -1,0 +1,55 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/agui-holder.smoke.ts"
+  ],
+  "guard": "a failure stops the event plane and never the seat: the holder starts the emitter again after a backoff that doubles and is capped, with the first adopt's path and context, reports every failure with the delay, keeps a running emitter and replaces a halted one, and a closed holder never starts again",
+  "command": "pnpm smoke:agui-holder",
+  "completionMarker": "agui-holder smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder-revive.json",
+  "why": [
+    "THE DEFECT THIS GUARDS WAS A SEAT EXIT. On a space that requires events, one terminal emitter",
+    "failure made every connector stop the seat; for Claude Code that was the MCP server exiting, shown",
+    "as a disconnect, and the harness restarted it on the next tool call, so the plane was re-established",
+    "anyway, once per keystroke, with a dropped connection each time. The holder now re-establishes the",
+    "plane itself, in process, on a backoff.",
+    "",
+    "R1 drops the re-establish timer, so the plane stays down for good and the restart cell reds. R2",
+    "retries at a flat delay, so the doubling cell reds. R3 ignores close, so a released holder starts",
+    "again and the cancel cell reds. R4 throws a running emitter away on every failure, so the keep cell",
+    "reds."
+  ],
+  "mutations": [
+    {
+      "name": "R1 a failure is terminal again: no re-establish is scheduled",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    this.reviveTimer = setTimeout(() => this.revive(), delay);\n",
+      "replace": "    void delay;\n",
+      "expectRed": "revive:the-emitter-is-started-again-after-the-delay",
+      "note": "The old permanent halt, with the delay still reported so only the restart itself is missing."
+    },
+    {
+      "name": "R2 the delay stops doubling",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    const delay = Math.min(base * 2 ** this.retryAttempt, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);\n",
+      "replace": "    const delay = Math.min(base, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);\n",
+      "expectRed": "revive:the-delay-DOUBLES-per-consecutive-failure",
+      "note": "A flat retry: the plane still comes back, so only the pacing cell can see it."
+    },
+    {
+      "name": "R3 close no longer cancels a pending re-establish",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (this.reviveTimer) clearTimeout(this.reviveTimer);\n",
+      "replace": "    void this.reviveTimer;\n",
+      "expectRed": "revive:a-closed-holder-keeps-its-failure-readable",
+      "note": "The timer fires after close: revive clears the failure before `enqueue` refuses the start, so the readable-failure cell is the one that sees it; the start count stays at one either way."
+    },
+    {
+      "name": "R4 every failure throws the emitter away, running or not",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (this.emitter?.stopped) this.emitter = undefined;\n",
+      "replace": "    this.emitter = undefined;\n",
+      "expectRed": "revive:a-RUNNING-emitter-is-kept-across-the-re-establish",
+      "note": "A second start for a refused rebind: two emitters over one write-ahead log, which is the writer-cardinality limit the holder owns."
+    }
+  ]
+}

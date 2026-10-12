@@ -132,6 +132,9 @@ try {
     r5.unreadable?.length === 1 && r5.unreadable[0]?.offset === beforeTorn && r5.unreadable[0]?.bytes === Buffer.byteLength(torn) && /JSON/.test(r5.unreadable[0]?.reason ?? ""),
     r5.unreadable);
   c("the record after a torn line is still delivered", r5.records.length === 1 && r5.records[0]?.value.i === 9, r5.records);
+  // The parser's message can quote the bytes it choked on, and those are the record's own text:
+  // "cut sho" is private to the session and must not travel into a log on the reason line.
+  c("the gap reason carries no text from the record itself", !/cut sho|i":7/.test(r5.unreadable?.[0]?.reason ?? ""), r5.unreadable?.[0]?.reason);
   c("the cursor lands past the torn line and the record after it", off(r5.cursor) === beforeTorn + Buffer.byteLength(torn + '\n{"i":9}\n'), { got: r5.cursor });
   const r5b = await readOr(src, r5.cursor, "post-gap re-read");
   c("a re-read from the returned cursor neither replays the gap nor reports it again", r5b.records.length === 0 && r5b.unreadable === undefined, r5b);

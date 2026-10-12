@@ -15,17 +15,18 @@ export class PiEvents {
   private path?: string;
   private pending: Promise<void> = Promise.resolve();
   private closing = false;
-  private dead = false;
 
-  /** @param stopped Told once, with the first failure, that this seat's event plane has stopped. */
+  /** @param stopped Told of each failure that stopped this seat's event plane, with the delay before
+   *  the holder re-establishes it, or `null` for a failure of this adapter's own that no holder
+   *  retries. */
   constructor(
     private readonly mesh: MeshAgent,
     private readonly space: string,
-    private readonly stopped: (error: Error) => void,
+    private readonly stopped: (error: Error, retryInMs: number | null) => void,
   ) {}
 
   async start(sessionId: string, path: string | undefined, freshSession = false): Promise<void> {
-    if (this.closing || this.dead) return;
+    if (this.closing) return;
     if (!path) {
       this.fail(new Error("Pi AG-UI: persistent native session file is required"));
       return;
@@ -48,7 +49,7 @@ export class PiEvents {
   }
 
   flush(sessionId: string, path: string | undefined): void {
-    if (this.closing || this.dead) return;
+    if (this.closing) return;
     if (!path) {
       this.fail(new Error("Pi AG-UI: persistent native session file is required"));
       return;
@@ -56,9 +57,10 @@ export class PiEvents {
     const step = this.pending.then(async () => {
       if (this.sessionId !== sessionId || this.path !== path) throw new Error("Pi AG-UI: turn belongs to an unadopted session");
       if (!this.holder) throw new Error("Pi AG-UI: no emitter was adopted before the turn");
+      // A failure inside the holder reaches `stopped` through the holder's own sink, and the holder
+      // re-establishes the plane itself; it is not rethrown here, which would report it twice.
       this.holder.flush(path);
       await this.holder.settled();
-      if (this.holder.failure) throw this.holder.failure;
     });
     this.pending = step.catch((error: Error) => this.fail(error));
   }
@@ -68,7 +70,6 @@ export class PiEvents {
     await this.pending;
     await this.release();
     this.closing = false;
-    this.dead = false;
   }
 
   private async release(): Promise<void> {
@@ -135,12 +136,10 @@ export class PiEvents {
         source: new PiSessionSource(path),
         map,
       });
-    }, { onError: (error) => this.fail(error) });
+    }, { onError: (error, retryInMs) => this.stopped(error, retryInMs) });
   }
 
   private fail(error: Error): void {
-    if (this.dead) return;
-    this.dead = true;
-    this.stopped(error);
+    this.stopped(error, null);
   }
 }

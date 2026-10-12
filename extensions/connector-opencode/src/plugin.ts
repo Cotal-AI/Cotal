@@ -338,7 +338,7 @@ export const cotal: Plugin = async () => {
         });
       },
       {
-        onError: eventPlaneStopped({ required: config.eventsRequired === true, log, stopSeat: () => void shutdown(1) }),
+        onError: eventPlaneStopped({ log }),
         // The turn terminal closes a run the record stream never described, so without this the
         // mapper would still believe that run is open, attribute the next records to it, and have
         // the batch refused. Keyed on the id, so a newer run opened in between is left alone.

@@ -466,7 +466,7 @@ export async function runCodexHost(): Promise<void> {
           return em;
       },
       {
-        onError: eventPlaneStopped({ required: config.eventsRequired === true, log, stopSeat: () => void shutdown(1) }),
+        onError: eventPlaneStopped({ log }),
         // A turn terminal closes a run the record stream never described. Without this the mapper
         // would attribute the next records to a run the published stream has already finished.
         onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),

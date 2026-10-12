@@ -40,25 +40,25 @@
   ],
   "mutations": [
     {
-      "name": "H1 both start-once guards removed in one contiguous span, because they are adjacent and one find covers them",
+      "name": "H1 the started-emitter shortcut removed, so a same-path call starts a second emitter",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    if (this.emitter) return this.emitter;\n\n    if (this.boundPath === undefined) {\n",
-      "replace": "    if (true) {\n",
+      "find": "    if (this.emitter) return this.emitter;\n\n    // A CLOSED HOLDER NEVER STARTS",
+      "replace": "    // A CLOSED HOLDER NEVER STARTS",
       "expectRed": "lazy:a-second-adopt-of-the-SAME-path-does-not-start-a-second",
       "note": "Removing either guard alone survives, because the other answers for it. Removed together, a second adopt of the SAME path reaches `startEmitter` again. Also reds `lazy:a-flush-after-an-adopt-does-not-start-a-second`."
     },
     {
       "name": "H2 drop the first-adopt context before the connector-owned factory sees it",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "this.emitter = await this.startEmitter(path, context);",
-      "replace": "this.emitter = await this.startEmitter(path, undefined);",
+      "find": "this.emitter = await this.startEmitter(this.boundPath, this.startContext);",
+      "replace": "this.emitter = await this.startEmitter(this.boundPath, undefined);",
       "expectRed": "context:the-FIRST-adopt-context-reaches-the-start-factory",
       "note": "This is the one mechanism carrying Claude's SessionStart source through the generic holder; a later adopt remains unable to replace it."
     },
     {
       "name": "H3 the queued step never waits for the endpoint to be live",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    if (!this.waitLive) return Promise.resolve();\n",
+      "find": "    if (!this.hooks.waitLive) return Promise.resolve();\n",
       "replace": "    return Promise.resolve();\n",
       "expectRed": "waitlive:a-pending-wait-HOLDS-the-pump",
       "note": "Also reds `waitlive:a-closeRun-is-HELD-by-a-pending-wait` and the rejecting-wait and shared-wait cells, since the wait is skipped for every step."

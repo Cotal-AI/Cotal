@@ -210,9 +210,9 @@ Eight things are specific to Codex and worth knowing before you read a stream:
 - **A broker outage can stop the plane.** Initial mesh absence still
   fails the host's readiness gate within 15 seconds, so it never opens an offline-looking TUI. Once
   ready, the plane publishes through the seat's reconnecting mesh endpoint, and an outage can stop
-  its emitter for good. On a space that requires events the seat then stops with exit code 1. On
-  any other space the seat keeps running, its log records `AG-UI emitter stopped`, and the thread
-  publishes nothing more until an app-server restart brings up a new thread with its own plane.
+  its emitter. The seat keeps running on every space, its log records `AG-UI emitter stopped` with
+  the delay before the plane is re-established, and the thread publishes again from its stored
+  cursor once that succeeds.
   Tool arguments and tool results are not published. The stream also does not carry the
   session's own record of the user's words and the developer instructions. A bind announces
   where the stream starts and the emitter's setup then runs before its first read; what the

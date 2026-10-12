@@ -57,8 +57,15 @@ export interface SourceGap {
   offset: number;
   /** The line's length in bytes, newline excluded. */
   bytes: number;
-  /** The decoder's or the parser's own message. */
+  /** The decoder's or the parser's own message, with any quoted text taken out: a parser names the
+   *  bytes it choked on, and those are the record's, which a log must not carry. */
   reason: string;
+}
+
+/** The parser's message with every double-quoted span replaced, so a reason never carries the
+ *  record's own bytes into a log. */
+function unreadableReason(e: Error): string {
+  return e.message.replace(/"(?:[^"\\]|\\.)*"/g, '"…"');
 }
 
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
@@ -314,7 +321,7 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         try {
           value = JSON.parse(decoder.decode(line)) as T;
         } catch (e) {
-          unreadable.push({ offset: start, bytes: line.length, reason: (e as Error).message });
+          unreadable.push({ offset: start, bytes: line.length, reason: unreadableReason(e as Error) });
           continue;
         }
         // One seal per record, computed by the SAME function the batch cursor uses. It is a 512-byte

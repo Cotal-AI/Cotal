@@ -166,12 +166,7 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
   if (eventsEnabled) {
     const driver = runtime.driver;
-    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({
-      required: config.eventsRequired === true,
-      log: (line) => console.error(`Pi ${line}`),
-      // Latched by the driver when no session is open yet, and carried out when one starts.
-      stopSeat: () => driver.requestShutdown(),
-    }));
+    runtime.events ??= new PiEvents(runtime.mesh, config.space, eventPlaneStopped({ log: (line) => console.error(`Pi ${line}`) }));
   }
   runtime.expectedSessionId = expectedSessionId;
   if (startupSessionId) {

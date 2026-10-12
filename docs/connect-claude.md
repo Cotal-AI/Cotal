@@ -362,11 +362,13 @@ A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQ
 publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
 session with no launch material and no required-policy fallback keeps the generic default behavior.
 
-If the event plane stops for good, the space's policy decides what happens to the seat, on every
-connector. On a space that requires events the seat stops and leaves the mesh. On any other space
-it keeps running without events, and the connector log records `AG-UI emitter stopped` with the
-reason. For Claude Code the connector is the MCP server: it leaves the mesh and exits with code 1,
-and its stderr carries that line.
+If the event plane stops, the seat keeps running and its mesh connection, on every connector and
+on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
+before it re-establishes the plane, one second at first and doubling to a minute while the failure
+repeats. The re-establish reopens the write-ahead log, settles any frame it left pending, and reads
+on from the stored cursor, which is the same recovery a connector restart runs. The seat used to
+exit on a space that requires events; for Claude Code the connector is the MCP server, so that
+exit showed as the server disconnecting, and Claude Code restarted it on the next tool call.
 
 A transcript line that is not a record does not stop the plane. Claude writes the transcript, and a
 write cut short by a full disk leaves part of one record glued to the next on a single line, which
