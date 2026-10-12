@@ -14,7 +14,8 @@
     "The permission witness checks the complete verified user JWT nats claim, not the server effective permission object or exhaustive native allow/deny behavior.",
     "All original account-liveness controls remain. New assertions expose only fixed cell names and booleans, never captured JWTs, subjects or identities.",
     "Each fault changes the actual full-service source producer. Private malformed-data checks are validator controls, not native mutation proof.",
-    "Auth loads relative TypeScript source. Core is rebuilt before the full public-surface command and after source restoration, followed by the same full public-surface suite."
+    "Auth loads relative TypeScript source. Core is rebuilt before the full public-surface command and after source restoration, followed by the same full public-surface suite.",
+    "The fourth fault changes only the fixture completion guard. Its private separation cell uses the same requireCapture assertion path as the real capture. This instrument-only kill is not native subscription or permission evidence."
   ],
   "mutations": [
     {
@@ -42,6 +43,15 @@
       "replace": "\"$JS.>\"",
       "expectRed": "full-service hosted authority has its complete closed self-minted claim ceiling",
       "cell": "full-service hosted authority has its complete closed self-minted claim ceiling",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces"
+    },
+    {
+      "name": "instrument-only failed capture bypasses the shared completion guard",
+      "file": "implementations/auth/smoke/account-liveness-public.smoke.ts",
+      "find": "  assert.ok(capture.complete, \"native account capture is complete and attributed\");",
+      "replace": "  void capture.complete;",
+      "expectRed": "private failed capture never reaches semantic observation predicates",
+      "cell": "private failed capture never reaches semantic observation predicates",
       "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces"
     }
   ]
