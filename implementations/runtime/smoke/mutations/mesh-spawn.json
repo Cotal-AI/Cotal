@@ -219,13 +219,13 @@
     {
       "name": "the not-executed bind refusal is returned to the effect instead of re-issued",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;",
-      "replace": "    return r;",
+      "find": "    else if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;",
+      "replace": "    else return r;",
       "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "note": "#1638. The repair removed: every manager call hands the responder's pre-effect refusal back to the effect, so a spawn the class queue gave to another member raises L4000 and ends the run. The forced arm binds an incarnation nothing serves, so the refusal is guaranteed and the red is deterministic rather than a queue draw.",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn"
     },
     {
       "name": "the re-issue keeps the stale class handle instead of re-describing",
