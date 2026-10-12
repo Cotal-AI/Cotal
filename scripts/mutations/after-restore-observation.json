@@ -1,0 +1,26 @@
+{
+  "suite": [
+    "scripts/mutation-proof.selftest.mjs"
+  ],
+  "guard": "a failed afterRestore reports its own fixed metadata after verified source-byte restoration without replacing the mutant transcript or ERROR",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "progressPattern": "  ✓ ",
+  "proveWith": "node scripts/mutation-proof.mjs --config scripts/mutations/after-restore-observation.json",
+  "why": [
+    "The full maintained selftest runs the actual mutation-proof.mjs from TOOL, with commands and inner mutation targets confined to its own mkdtemp Git repository. No checker is copied.",
+    "The unique source-byte verification truth field is falsified only in the reporting record. The first red-mode bounded-metadata check requires true and names the failure without relaxing status, restoration, or privacy controls.",
+    "No completionMarker: the maintained selftest exits on its first failed assertion and cannot print its success banner on this named red.",
+    "After the outer tool restores its original checker bytes, the same full selftest runs again as afterRestore. A restoration failure remains ERROR, not a kill."
+  ],
+  "mutations": [
+    {
+      "name": "afterRestore observation denies the source-byte verification that preceded its command",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "phase: \"afterRestore\", sourceBytesVerifiedBeforeCommand: true,",
+      "replace": "phase: \"afterRestore\", sourceBytesVerifiedBeforeCommand: false,",
+      "expectRed": "failed red afterRestore reports its own bounded fixed metadata",
+      "cell": "failed red afterRestore reports its own bounded fixed metadata",
+      "afterRestore": "node scripts/mutation-proof.selftest.mjs"
+    }
+  ]
+}
