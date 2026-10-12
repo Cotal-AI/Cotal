@@ -57,19 +57,10 @@ export interface SourceGap {
   offset: number;
   /** The line's length in bytes, newline excluded. */
   bytes: number;
-  /** Why the line is not a record: `not valid UTF-8`, or `not a JSON record` with the character the
-   *  parser stopped at when it named one. Built from the failure class and that number only, never
-   *  from the parser's message: the message quotes the bytes it choked on, which are the record's,
-   *  and a log must not carry them. */
-  reason: string;
-}
-
-/** The reason for a line JSON refused. Only the parser's position is taken from its message, as a
- *  number; the message itself can quote a span of the record, and a span can contain quotes, so no
- *  rewrite of the message is safe. */
-function jsonRefusalReason(e: Error): string {
-  const at = /\bat position (\d+)\b/.exec(e.message);
-  return at ? `not a JSON record (parser stopped at character ${at[1]})` : "not a JSON record";
+  /** Why the line is not a record: `not valid UTF-8` or `not a JSON record`, and nothing else.
+   *  Never built from the parser's message: that message quotes a span of the line, which is the
+   *  record's own text, and even a number read out of it can come from that span. */
+  reason: "not valid UTF-8" | "not a JSON record";
 }
 
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
@@ -331,8 +322,8 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         let value: T;
         try {
           value = JSON.parse(text) as T;
-        } catch (e) {
-          unreadable.push({ offset: start, bytes: line.length, reason: jsonRefusalReason(e as Error) });
+        } catch {
+          unreadable.push({ offset: start, bytes: line.length, reason: "not a JSON record" });
           continue;
         }
         // One seal per record, computed by the SAME function the batch cursor uses. It is a 512-byte
