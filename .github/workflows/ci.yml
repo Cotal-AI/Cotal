@@ -206,6 +206,8 @@ jobs:
           herdr --version
       - name: Build
         run: pnpm build
+      - name: Web console auth
+        run: pnpm smoke:web-console-auth
       - name: Bounded auth journal source checks
         run: pnpm smoke:diagnostic-auth-journal
       - name: Bounded auth journal live entry checks
