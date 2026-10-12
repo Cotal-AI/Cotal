@@ -15,7 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import {
   decode,
   encodeOperator,
