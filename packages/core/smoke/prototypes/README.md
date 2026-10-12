@@ -270,12 +270,27 @@ the data-account matrix. Endpoint-serve appears twice: the raw row builder, and 
 wider shape a fenced mint composes on top of it (journal effects bind, one owned pool
 bind, `$JS.API.INFO`, and the connection inbox). The fence that releases those rows is
 covered by `endpoint-serve-auth.smoke.ts`, not here. These limits remain open for full
-migration acceptance, except the option-combination one: the per-variant checks cover
-representative options, and a scan of every shipped `.ts` under `packages/*/src`,
-`implementations/*/src` and `extensions/*/src` shows no builder emits an `ep.v1` subject at
-all, so no option combination can reach that namespace. The scan carries a positive control
-requiring it to have reached the endpoint subject builders, and two named mutations: skipping
-a source tier, and making a real builder emit the issued rail.
+migration acceptance. Endpoint-caller uses the shipped permission producer with explicit
+instance-only operations. Its complete permission object is checked: two versioned request
+publish rows, its own generation-pinned reply subscription, a private inbox, and restricted
+EPC and accepted-row reads. Native controls cover allowed instance requests and own replies,
+including wildcarded responder attribution, and denied legacy, class-route, cross-scope and
+wrong-arity subjects. It is included in the peer-held delivery and write-plus-raw-read checks.
+This one option variant does not prove every possible caller capability or the issuer ceremony.
+A test-only TypeScript syntax scan confines decoded string and template literal occurrences to
+the same four core builder paths. It ignores comments and JSDoc, includes type and property-key
+literals conservatively, and refuses malformed syntax through public syntactic diagnostics. The
+inherited generated docs bundle exception remains. Dynamic strings and fragments separated by
+interpolation holes are not joined, so this is not complete runtime construction analysis.
+Prose-negative, escaped and template-positive controls cover that boundary, including `bin/`.
+The original skipped-tier and outside-builder faults remain. Three migration reversions and a
+compiler-valid late-preflight move have named mutation definitions. Golden bytes and source-order
+checks are distinct from canonical native capture and do not prove invalid activation has no effects.
+The native authority fixture captures per-reservation SUB bytes and canonical replay behavior, and
+a direct hosted component observes actual canonical instance traffic through its existing connection
+callback. The manager function has ordered golden bytes and a shipped callsite join. Full-service
+manager eight-subscription capture and complete self-minted hosted permission capture remain
+unmeasured through these hooks. Component witnesses do not replace those acceptance requirements.
 
 Every profile is classified peer-held or trusted, and the two lists must union to exactly the
 declared set. Peer-heldness is a deployment property, so no cell here can settle which side a
@@ -298,7 +313,7 @@ ingress-origin suite is where that was measured.
 The census also measures which profiles hold both a write and a raw stream read
 (`$JS.API.DIRECT.GET` or `$JS.API.STREAM.MSG.GET`) on one stream, the condition that
 would let a credential place bytes of its own choosing under any subject. Today that
-pairing appears only in trusted infrastructure and operator profiles; the four
+pairing appears only in trusted infrastructure and operator profiles; the declared
 peer-held profiles are asserted to have none. `agent` and `observer` do hold raw
 reads, on streams they cannot write, so their zero is a measurement rather than an
 absence of grants. A positive control requires the detector to keep finding the known
@@ -320,9 +335,9 @@ pnpm --filter @cotal-ai/core build
 
 The package exports compiled core, so the proof rebuilds it for each mutation.
 Rebuild once more after mutation proof restores the sources, before running other
-work. This census records the current legacy grants; it must be revised deliberately
-when production issuance moves to the versioned namespace. It does not authorize
-a compatibility fallback.
+work. The caller clamp and reply confinement mutations restore the core build and the full
+suite before grading. This census records both the legacy profiles and the dedicated issued
+caller. It does not authorize a compatibility fallback or clear the live lifecycle gates.
 
 ## Ingress origin measurement
 

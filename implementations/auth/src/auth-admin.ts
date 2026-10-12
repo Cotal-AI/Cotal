@@ -84,7 +84,7 @@ export function authAdminListenerGrants(
     endpoint: AUTH_ENDPOINT,
     instanceId: responder.instanceId,
     epoch: responder.epoch,
-    ephemeralCommands: [EP_CMD_RETIRE_LIFECYCLE],
+    ephemeralCommands: [EP_CMD_RETIRE_LIFECYCLE, "ep-check", "ep-admit", "ep-release"],
   });
   return {
     publish: [
@@ -169,6 +169,7 @@ export async function openAuthAdminListener(opts: {
   grant: EpServeGrant;
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
+  endpointAuthority?: (ctx: EpServeContext) => unknown | Promise<unknown>;
 }): Promise<AuthAdminListener> {
   const { space, log } = opts;
   // The auth plane's responder identity is the #399 M2-registered instance/epoch (the SAME triple
@@ -212,6 +213,7 @@ export async function openAuthAdminListener(opts: {
   };
 
   const handlers: AuthServiceHandlers = {
+    endpointAuthority: opts.endpointAuthority,
     retireLifecycle: async (ctx: EpServeContext) => {
       // The TARGET comes from the subject (`exact` mode, arity 3) — broker-enforced and
       // grant-pinned, not a claim the caller can vary independently of what it may publish.

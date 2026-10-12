@@ -29,6 +29,8 @@ import {
   CotalEndpoint,
   CONTROL_DELIVERY_ADMIN,
   evictDeniedPrincipalWithCreds,
+  evictDeniedPrincipalsWithCreds,
+  EVICT_PRINCIPALS_MAX,
   mintConnectionEvictorCreds,
   mintCreds,
   mintMembershipObserverCreds,
@@ -181,6 +183,15 @@ try {
       };
     }
     if (req.op === "lifecycleMemberships") return { ok: true, data: { complete: true, channels: [] } };
+    if (req.op === "evictPrincipals") {
+      const raw: unknown = req.args?.principals;
+      const principals = Array.isArray(raw) ? raw.map((p) => (typeof p === "string" ? p.trim() : "")) : [];
+      if (principals.length === 0 || principals.some((p) => !p))
+        return { ok: false, error: "evictPrincipals: principals must be a non-empty array of owner.actor dot-form principals" };
+      if (principals.length > EVICT_PRINCIPALS_MAX || new Set(principals).size !== principals.length)
+        return { ok: false, error: `evictPrincipals: principals must be distinct and at most ${EVICT_PRINCIPALS_MAX}` };
+      return { ok: true, data: await evictDeniedPrincipalsWithCreds({ servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals }) };
+    }
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     const principal = String((req.args as { principal?: unknown })?.principal ?? "");
     return {
@@ -661,6 +672,15 @@ try {
     const CARD = (id: string) => principalKey("local", id).key;
     const evict = async (req: { op: string; args?: unknown }): Promise<ControlReply> => {
       if (req.op === "lifecycleMemberships") return { ok: true, data: { complete: true, channels: [] } };
+      if (req.op === "evictPrincipals") {
+        const raw: unknown = (req.args as { principals?: unknown } | undefined)?.principals;
+        const principals = Array.isArray(raw) ? raw.map((p) => (typeof p === "string" ? p.trim() : "")) : [];
+        if (principals.length === 0 || principals.some((p) => !p))
+          return { ok: false, error: "evictPrincipals: principals must be a non-empty array of owner.actor dot-form principals" };
+        if (principals.length > EVICT_PRINCIPALS_MAX || new Set(principals).size !== principals.length)
+          return { ok: false, error: `evictPrincipals: principals must be distinct and at most ${EVICT_PRINCIPALS_MAX}` };
+        return { ok: true, data: await evictDeniedPrincipalsWithCreds({ servers: broker.servers, observerCreds, evictorCreds, accountId: auth.account.pub, principals }) };
+      }
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
       const principal = String((req.args as { principal?: unknown })?.principal ?? "");
       return {

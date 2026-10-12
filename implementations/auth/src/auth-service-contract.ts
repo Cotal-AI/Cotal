@@ -15,6 +15,7 @@ import {
   type EpAuthzMode,
   type EpCommandDef,
   type EpServeContext,
+  ENDPOINT_AUTHORITY_INPUT_SCHEMA, ENDPOINT_AUTHORITY_OUTPUT_SCHEMA,
 } from "@cotal-ai/core";
 
 /** The auth plane's endpoint NAME (matches `AUTH_ENDPOINT` in `@cotal-ai/core`). */
@@ -69,6 +70,7 @@ interface CommandRow {
 
 const ROWS: CommandRow[] = [
   { name: "retire-lifecycle", capability: "auth.admin", input: RETIRE_LIFECYCLE_INPUT_SCHEMA, output: RETIRE_LIFECYCLE_OUTPUT_SCHEMA, targeted: true, modes: ["exact"], handler: "retireLifecycle" },
+  ...["ep-check", "ep-admit", "ep-release"].map(name => ({ name, capability: "endpointauthority", input: ENDPOINT_AUTHORITY_INPUT_SCHEMA, output: ENDPOINT_AUTHORITY_OUTPUT_SCHEMA, targeted: false, handler: "endpointAuthority" as const })),
 ];
 
 const TABLE = serviceContractTable(ROWS);
@@ -134,6 +136,7 @@ export function authClusterArtifacts(): {
  *  output value (the compiled output contract validates it at the serve boundary). Kept as a
  *  narrow interface so the contract module stays broker-free. */
 export interface AuthServiceHandlers {
+  endpointAuthority?(ctx: EpServeContext): unknown | Promise<unknown>;
   retireLifecycle(ctx: EpServeContext): unknown | Promise<unknown>;
 }
 
@@ -144,6 +147,6 @@ export function authCommandDefs(handlers: AuthServiceHandlers): EpCommandDef[] {
   return ROWS.map((r) => ({
     command: r.name,
     contract: AUTH_CONTRACTS[r.name],
-    handler: (ctx: EpServeContext) => handlers[r.handler](ctx),
+    handler: (ctx: EpServeContext) => { const handler = handlers[r.handler]; if (!handler) throw new Error("endpoint authority is unsupported by this auth service"); return handler(ctx); },
   }));
 }

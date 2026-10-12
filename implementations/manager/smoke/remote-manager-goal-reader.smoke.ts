@@ -107,6 +107,7 @@ import {
   type GoalResultFact,
   resolveService,
   invokeCommand,
+  issuedUserCaller,
   type EpCaller,
 } from "@cotal-ai/core";
 
@@ -652,10 +653,18 @@ try {
     }
     const payload = JSON.parse(Buffer.from(credentials.bearer.split(".")[1]!, "base64url").toString("utf8"));
     check(`owner ${label} selects its own live remote manager`, payload.act.managerInstanceId === instanceId);
-    const caller: EpCaller = { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
-    const nc = await connect({ servers: server, ...standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
+    const expectedCaller: EpCaller = { owner: payload.sub, actor: payload.act.actor, uid: payload.act.lifecycleUid };
+    const connectOpts = standaloneConnectOpts({ bearer: credentials.bearer, sentinelCreds: credentials.sentinelCreds, tls: false });
+    const nc = await connect({ servers: server, ...connectOpts, maxReconnectAttempts: 0 });
     if (label === "A") ncA = nc; else ncB = nc;
-    const service = await resolveService(nc, space, "manager", caller, { instanceId, deadlineMs: 5000 });
+    const caller = await issuedUserCaller(nc, space, String(connectOpts.name), expectedCaller);
+    let service: Awaited<ReturnType<typeof resolveService>>;
+    try {
+      service = await resolveService(nc, space, "manager", caller, { instanceId, deadlineMs: 5000 });
+    } catch (error) {
+      check(`owner ${label} resolves the actual remote manager`, false);
+      throw error;
+    }
     check(`owner ${label} resolves the actual remote manager`, service !== undefined);
     callers.push({ nc, caller, service, instanceId, goalId: mintLifecycleUid() });
   }

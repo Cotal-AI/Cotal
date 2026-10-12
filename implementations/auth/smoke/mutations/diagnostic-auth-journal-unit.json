@@ -1,0 +1,77 @@
+{
+  "suite": [
+    "implementations/auth/smoke/diagnostic-auth-journal.smoke.ts"
+  ],
+  "guard": "Temporary source-owned pull journals preserve stock authentication and export only bounded private-equality projections.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/diagnostic-auth-journal-unit.json",
+  "why": [
+    "Exactly DJM04, DJM05, DJM06, DJM07, DJM08 and DJM10 retain the original broker-free target definitions without changing their anchors, named assertions, commands or afterRestore requirements.",
+    "The suite calls the shipped journal classes and private fixture equality join without a broker. It does not substitute for CotalEndpoint or native callout reachability.",
+    "Every command builds core and auth and runs only the unit suite. Every afterRestore rebuilds and reruns the same unit command. Actual baseline, named kills, source restoration and restored builds remain unexecuted.",
+    "This metadata partition is source preparation only. Maintained admission must still be applied by the sanctioned workflow before execution. Four live targets remain explicitly refused in diagnostic-auth-journal.json."
+  ],
+  "mutations": [
+    {
+      "name": "DJM04-allow-client-ninth-flight",
+      "file": "packages/core/src/diagnostic-auth-journal.ts",
+      "find": "    if (this.#count === 8) { this.#saturated = true; return undefined; }",
+      "replace": "    if (this.#count === 9) { this.#saturated = true; return undefined; }",
+      "cell": "DJ03-client-fixed-storage-and-sticky-overflow",
+      "expectRed": "{\"cell\":\"DJ03-client-fixed-storage-and-sticky-overflow\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal"
+    },
+    {
+      "name": "DJM05-truncate-server-challenge",
+      "file": "implementations/auth/src/diagnostic-callout-journal.ts",
+      "find": "  return typeof value === \"string\" && value.length > 0 && value.length <= 4096 ? value : null;",
+      "replace": "  return typeof value === \"string\" && value.length > 0 ? value.slice(0, 4096) : null;",
+      "cell": "DJ05-string-length-refusal-without-truncation",
+      "expectRed": "{\"cell\":\"DJ05-string-length-refusal-without-truncation\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal"
+    },
+    {
+      "name": "DJM06-clear-shared-flight-qualification",
+      "file": "implementations/auth/smoke/_diagnostic-auth-correlation.ts",
+      "find": " && !client.sharedRebuild;",
+      "replace": ";",
+      "cell": "DJ07-multiple-challenges-and-shared-flight-unknown",
+      "expectRed": "{\"cell\":\"DJ07-multiple-challenges-and-shared-flight-unknown\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal"
+    },
+    {
+      "name": "DJM07-export-private-request-key",
+      "file": "implementations/auth/smoke/_diagnostic-auth-correlation.ts",
+      "find": "      flightOrdinal: flight.ordinal, requestOrdinal: request.ordinal,",
+      "replace": "      flightOrdinal: flight.ordinal, requestOrdinal: request.ordinal, requestKey: request.requestKey,",
+      "cell": "DJ06-private-join-exact-and-safe-export",
+      "expectRed": "{\"cell\":\"DJ06-private-join-exact-and-safe-export\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal"
+    },
+    {
+      "name": "DJM08-erase-response-throw",
+      "file": "implementations/auth/src/diagnostic-callout-journal.ts",
+      "find": "    if (previous !== \"threw\") request.stages[stage] = outcome;",
+      "replace": "    request.stages[stage] = outcome;",
+      "cell": "DJ04-server-fixed-requests-and-stage-failure-sticky",
+      "expectRed": "{\"cell\":\"DJ04-server-fixed-requests-and-stage-failure-sticky\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal"
+    },
+    {
+      "name": "DJM10-double-stock-auth",
+      "file": "packages/core/src/diagnostic-auth-journal.ts",
+      "find": "      return Reflect.apply(stock, this, args);",
+      "replace": "      Reflect.apply(stock, this, args);\n      return Reflect.apply(stock, this, args);",
+      "cell": "DJ01-stock-auth-once-input-receiver-result",
+      "expectRed": "{\"cell\":\"DJ01-stock-auth-once-input-receiver-result\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal"
+    }
+  ]
+}

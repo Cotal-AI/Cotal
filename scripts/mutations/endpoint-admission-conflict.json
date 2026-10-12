@@ -1,0 +1,18 @@
+{
+  "suite": ["implementations/auth/smoke/endpoint-authority-native.smoke.ts"],
+  "grades": "implementations/auth/smoke/endpoint-authority-native.smoke.ts",
+  "guard": "A real competing policy-head CAS refusal crosses stock native admission as conflict with no application effect, rather than being flattened to permission-denied.",
+  "command": "node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json && reportDir=\"$(mktemp -d \"${RUNNER_TEMP:?}/endpoint-cas.XXXXXX\")\" && ENDPOINT_U12_REPORT=\"$reportDir/result.json\" node --import ./node_modules/tsx/dist/loader.mjs implementations/auth/smoke/endpoint-authority-native.smoke.ts",
+  "mutations": [
+    {
+      "name": "Native admission CAS conflict is flattened to an authorization denial",
+      "file": "packages/core/src/endpoint-authority-client.ts",
+      "find": "const code = command === \"ep-admit\" && reply.reply.error?.code === \"conflict\" ? \"conflict\" : \"permission-denied\";",
+      "replace": "const code = command === \"ep-admit\" && reply.reply.error?.code === \"conflict\" ? \"permission-denied\" : \"permission-denied\";",
+      "expectRed": "C02-policy-cas-loss-remains-conflict-not-executed",
+      "cell": "C02-policy-cas-loss-remains-conflict-not-executed",
+      "afterRestore": "node node_modules/typescript/bin/tsc -p packages/core/tsconfig.json && reportDir=\"$(mktemp -d \"${RUNNER_TEMP:?}/endpoint-cas-restored.XXXXXX\")\" && ENDPOINT_U12_REPORT=\"$reportDir/result.json\" node --import ./node_modules/tsx/dist/loader.mjs implementations/auth/smoke/endpoint-authority-native.smoke.ts",
+      "note": "Both calls use the shipped package-root authority client and a real broker CAS. C01 witnesses two original leader reads and one real CAS loss. C03, C04 and C05 check effects, no retry and durable release before C02. The command rebuilds core because those imports resolve dist. afterRestore rebuilds core and runs a fresh native baseline, with distinct private reports. Setup/build failures do not qualify as the named red. Required own-tree seat, manager, workspace and auth outputs must already be built by the selected bounded execution entry."
+    }
+  ]
+}

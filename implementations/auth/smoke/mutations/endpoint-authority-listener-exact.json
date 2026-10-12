@@ -1,0 +1,25 @@
+{
+  "suite": [
+    "implementations/auth/smoke/d32-matrix.smoke.ts"
+  ],
+  "guard": "The auth listener literal exact grant audit requires all three registered authority commands and no other rows",
+  "command": "pnpm smoke:d32-matrix:auth",
+  "completionMarker": "D32 MATRIX AUDIT",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/endpoint-authority-listener-exact.json",
+  "why": [
+    "Actual candidate raw rows contain the three authority commands declared by the registered auth contract. The original literal audit omitted all eighteen rows.",
+    "Remove one existing registered authority command from the source producer. The untouched exact JSON equality oracle must fail by its original name, not an unrelated early failure.",
+    "This audit imports auth-admin source directly. Its core dependencies require the existing build, but the mutation produces no compiled auth mutant. Require restored source SHA and the same complete original audit after restore. Definitions are unexecuted."
+  ],
+  "mutations": [
+    {
+      "name": "omit the registered ep-release listener command",
+      "file": "implementations/auth/src/auth-admin.ts",
+      "find": "    ephemeralCommands: [EP_CMD_RETIRE_LIFECYCLE, \"ep-check\", \"ep-admit\", \"ep-release\"],",
+      "replace": "    ephemeralCommands: [EP_CMD_RETIRE_LIFECYCLE, \"ep-check\", \"ep-admit\"],",
+      "expectRed": "FAIL: the auth listener grant is EXACTLY the serve-egress rows (both reply rails, events, timer schedule, records) + $JS.API.INFO + the ONE serve-gate read + inbox, subscribing only the queue-qualified class rail on both rails plus the derived describe rows and the epoch-pinned timer fire",
+      "cell": "the auth listener grant is EXACTLY the serve-egress rows (both reply rails, events, timer schedule, records) + $JS.API.INFO + the ONE serve-gate read + inbox, subscribing only the queue-qualified class rail on both rails plus the derived describe rows and the epoch-pinned timer fire",
+      "afterRestore": "pnpm smoke:d32-matrix:auth"
+    }
+  ]
+}

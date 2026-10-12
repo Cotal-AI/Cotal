@@ -18,6 +18,9 @@ import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
+import { endpointExchangeOrigin, parseEndpointDeploymentTrust, parseEndpointCallerSelection, mintLifecycleUid, endpointControlProof, verifyEndpointCallerAuthorityReceipt, type EndpointCallerAuthorityRequest, type EndpointServingControlAuthorityRequest, type EndpointCallerAuthorityMaterial } from "@cotal-ai/core";
+import { validateUserToken } from "./token.js";
+import { createLocalJWKSet } from "jose";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
@@ -61,6 +64,8 @@ function pidAlive(pid: number): boolean {
 export const cotalAuthProvider: AuthProvider = {
   kind: "auth-provider",
   name: AUTH_PROVIDER_NAME,
+  endpointCallerAuthority: request => acquirePublicEndpointAuthority(request),
+  endpointServingControlAuthority: request => acquirePublicEndpointAuthority(request, true),
   async requestRemoteRunAdmission({ store, dir, request }: { store: SecretStore; dir: string; request: RemoteRunAdmissionRequest }): Promise<RemoteRunAdmissionResult> {
     const { endpoint, idpUrl, authorization } = await managerAuthorityEndpoint(store, dir, request.space, "admitting a hosted run");
     return postManagerAuthority(endpoint, idpUrl, authorization, request, "manager run admission") as Promise<RemoteRunAdmissionResult>;
@@ -880,4 +885,46 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
   if (typeof out.token !== "string" || !out.token)
     throw new Error(`the exchange at ${exchangeUrl} returned no token - the mesh's auth service build may be stale`);
   return { bearer: out.token, sentinelCreds };
+}
+
+/** Dedicated acquisition over the existing real user session. Trust is supplied before HTTP,
+ * never installed from a response, advisory catalog or generic view string. */
+async function acquirePublicEndpointAuthority(request: EndpointCallerAuthorityRequest | EndpointServingControlAuthorityRequest, control = false): Promise<EndpointCallerAuthorityMaterial> {
+  const trust = parseEndpointDeploymentTrust(request.trust), selection = parseEndpointCallerSelection(request.selection);
+  if (trust.account.space !== request.space) throw new Error("endpoint deployment trust belongs to another space");
+  const ordinary = await cotalAuthProvider.userCredentials({ store: request.store, dir: request.dir, space: request.space, actor: request.actor });
+  const token = await validateUserToken(ordinary.bearer, { key: createLocalJWKSet({ keys: [...trust.keys] }), issuer: trust.issuer, audience: request.space });
+  if (token.act.view !== undefined || token.act.actor !== request.actor || !token.act.lifecycleUid) throw new Error("endpoint acquisition requires a current ordinary signed-in user bearer");
+  const principal = { owner: token.owner, actor: token.act.actor, uid: token.act.lifecycleUid };
+  const local = loadPinnedIdp(request.dir) && await loadCalloutAuth(request.store, request.space);
+  let base: string;
+  if (local) {
+    const info = loadAuthServiceInfo(request.dir);
+    if (!info || !pidAlive(info.pid)) throw new Error("endpoint authority local listener is unavailable");
+    base = info.url;
+  } else {
+    const remote = remoteUserAuthEntry(request.dir, request.space);
+    if (!remote) throw new Error("endpoint authority has no pinned user exchange");
+    base = remote.endpoints.url;
+  }
+  endpointExchangeOrigin(base);
+  const url = new URL(base);
+  url.pathname = `${url.pathname.replace(/\/$/, "")}/${control ? "endpoint-service-authority" : "endpoint-caller-authority"}`;
+  const requestId = mintLifecycleUid();
+  const body: Record<string, unknown> = { v: 2, requestId, account: trust.account, assignmentLifecycleUid: trust.assignmentLifecycleUid, authority: trust.authority, endpoint: selection.endpoint, instanceId: selection.instanceId, commands: selection.commands };
+  if (control) {
+    const serving = request as EndpointServingControlAuthorityRequest;
+    if (!serving.holder || typeof serving.holder.sign !== "function" || !/^U[A-Z2-7]{55}$/.test(serving.holder.publicKey) || !/^sha256:[a-f0-9]{64}$/.test(serving.credentialDigest)) throw new Error("endpoint control requires a holder key and exact credential digest");
+    body.operation = "control";
+    body.credentialDigest = serving.credentialDigest;
+    body.signature = Buffer.from(await serving.holder.sign(endpointControlProof({ requestId, trust, selection, credentialDigest: serving.credentialDigest }))).toString("base64url");
+  }
+  const response = await fetch(url, { method: "POST", redirect: "error", headers: { "content-type": "application/json", authorization: `Bearer ${ordinary.bearer}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) });
+  const out = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(`endpoint authority refused ${response.status}: ${typeof out.error === "string" ? out.error : "reason unavailable"}`);
+  if (Object.keys(out).length !== 3 || out.v !== 2 || typeof out.token !== "string" || typeof out.receipt !== "string") throw new Error("closed endpoint caller response required");
+  const receipt = await verifyEndpointCallerAuthorityReceipt({ receipt: out.receipt, bearer: out.token, trust, requestId, selection, principal, control });
+  const dedicated = await validateUserToken(out.token, { key: createLocalJWKSet({ keys: [...trust.keys] }), issuer: trust.issuer, audience: request.space });
+  if (dedicated.act.view !== "endpoint-caller" || dedicated.owner !== principal.owner || dedicated.act.actor !== principal.actor || dedicated.act.lifecycleUid !== principal.uid || dedicated.exp > receipt.exp) throw new Error("endpoint bearer and verified receipt principal/expiry disagree");
+  return { bearer: out.token, sentinelCreds: ordinary.sentinelCreds, receipt };
 }

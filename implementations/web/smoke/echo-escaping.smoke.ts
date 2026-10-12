@@ -344,10 +344,13 @@ try {
   let log = "";
   let launchUrl: string | undefined;
   const WEB_PORT = await onFreePort(async (port) => {
+    const childEnv: NodeJS.ProcessEnv = { ...process.env };
+    for (const key of Object.keys(childEnv)) if (key.startsWith("COTAL_")) delete childEnv[key];
+    childEnv.FORCE_COLOR = "1";
     webChild = spawn(process.execPath, [
       "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { stdio: ["ignore", "pipe", "pipe"], env: childEnv });
     webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
     const taken = `Port ${port} is in use`;

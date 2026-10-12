@@ -1,0 +1,56 @@
+{
+  "suite": [
+    "implementations/auth/smoke/diagnostic-auth-journal-live.smoke.ts"
+  ],
+  "guard": "Temporary source-owned pull journals preserve stock authentication and export only bounded private-equality projections.",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/diagnostic-auth-journal.json",
+  "why": [
+    "DJM01, DJM02, DJM03 and DJM09 retain their original genuine broker-dependent targets, commands and restoration requirements.",
+    "This visibly live fixture remains refused under maintained command safety. No rename, wrapper, direct-run bypass or policy change is selected.",
+    "The six broker-free targets now live in diagnostic-auth-journal-unit.json. This partition is not evidence of any mutation execution or restoration."
+  ],
+  "mutations": [
+    {
+      "name": "DJM01-drop-client-stock-challenge",
+      "file": "packages/core/src/diagnostic-auth-journal.ts",
+      "find": "      if (flight) journal.challenge(flight, args[0]);",
+      "replace": "      if (flight) journal.challenge(flight, undefined);",
+      "cell": "DJL02-opt-in-actual-success-same-stock-decisions",
+      "expectRed": "{\"cell\":\"DJL02-opt-in-actual-success-same-stock-decisions\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live"
+    },
+    {
+      "name": "DJM02-drop-original-dial-error",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      this.diagnosticAuthJournal?.settle(diagnosticFlight, \"rejected\", error);",
+      "replace": "      this.diagnosticAuthJournal?.settle(diagnosticFlight, \"rejected\", new Error(\"diagnostic substitute\"));",
+      "cell": "DJL03-actual-denial-original-error-private-join",
+      "expectRed": "{\"cell\":\"DJL03-actual-denial-original-error-private-join\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live"
+    },
+    {
+      "name": "DJM03-mislabel-actor-stage",
+      "file": "implementations/auth/src/callout.ts",
+      "find": "          entered(\"actor-authorization\");",
+      "replace": "          entered(\"permissions-build\");",
+      "cell": "DJL03-actual-denial-original-error-private-join",
+      "expectRed": "{\"cell\":\"DJL03-actual-denial-original-error-private-join\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live"
+    },
+    {
+      "name": "DJM09-reset-server-epoch",
+      "file": "implementations/auth/src/callout.ts",
+      "find": "      if (diagnosticJournal) return;",
+      "replace": "      diagnosticJournal = undefined;",
+      "cell": "DJL02-opt-in-actual-success-same-stock-decisions",
+      "expectRed": "{\"cell\":\"DJL02-opt-in-actual-success-same-stock-decisions\",\"passed\":false}",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth build && pnpm smoke:diagnostic-auth-journal:live"
+    }
+  ]
+}

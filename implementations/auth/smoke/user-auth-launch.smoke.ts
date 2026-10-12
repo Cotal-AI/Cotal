@@ -258,9 +258,9 @@ try {
   // WORKTREE's connector into the sandbox prefix, never the operator store.
   const extAdd = await cotal(["ext", "add", CLAUDE]);
   check("sandbox ext add of the worktree claude connector succeeds", extAdd.status === 0, extAdd.out);
-  const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
+  const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "general,ops.wide", "--no-events", "--space", SPACE]);
   check("the envelope: a foreground spawn beyond the cli grant is refused (delegation only narrows)",
-    overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows"), overSpawn.out);
+    overSpawn.status !== 0 && overSpawn.out.includes("delegation only narrows") && overSpawn.out.includes("read [ops.wide] beyond [general]"), overSpawn.out);
   check("…naming the exact widening re-grant", overSpawn.out.includes("cotal actor grant cli --owner"), overSpawn.out);
 
   // The witness: a directly-minted static admin tap (pre-flip static+user coexist) on the chat wire.

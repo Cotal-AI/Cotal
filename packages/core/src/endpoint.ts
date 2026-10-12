@@ -19,6 +19,8 @@ import {
   type Subscription,
 } from "@nats-io/transport-node";
 import { wsconnect } from "@nats-io/nats-core";
+import { DiagnosticAuthJournal, unarmedDiagnosticAuthSnapshot, type DiagnosticAuthSnapshot } from "./diagnostic-auth-journal.js";
+export type { DiagnosticAuthSnapshot } from "./diagnostic-auth-journal.js";
 import {
   parseLivenessAnswer,
   responderFromLease,
@@ -41,10 +43,9 @@ import {
 import { BIND_SPLIT_REISSUES, resolveService, invokeCommand, goalFollowRefusal, submitAndFollowGoal, type ResolvedService, type SubmitAndFollowGoalOptions } from "./endpoint-invoke.js";
 import type { GoalResultFact } from "./endpoint-action.js";
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, replyTargetUnmapped, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
-import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller, IssuedCaller } from "./endpoint-subjects.js";
 import { assertIdToken, assertGeneration } from "./endpoint-subjects.js";
-import { readAcceptedRow } from "./issued-authority.js";
+import { readAcceptedRow, issuedUserCaller } from "./issued-authority.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { isJetStreamMissing } from "./jetstream-missing.js";
@@ -231,6 +232,11 @@ export interface EndpointOptions {
    *  the connect: the rails would be refused at the broker anyway, and a silent legacy fallback is
    *  exactly what the versioned rail exists to rule out. */
   acceptedToken?: string;
+  /** Require issued caller authority for a user bearer. Each connection reads its own accepted
+   *  row using the inbox nonce it presented and verifies this endpoint's owner, actor and lifecycle.
+   *  Missing or refused discovery fails the bind. It never falls back to the legacy caller rail.
+   *  Leave unset for a bearer whose supported view uses legacy caller rows. */
+  issuedCaller?: boolean;
   servers?: string;
   /** Connection token (soft-shared auth). Mutually exclusive with user/pass. */
   token?: string;
@@ -695,6 +701,17 @@ export class CotalEndpoint extends EventEmitter {
    *  broker-authenticated user), and scopes the private reply inbox (`_INBOX_<connId>`) + the credId
    *  equality check. The principal (owner+actor) is what the WIRE grammar and every per-agent key use. */
   private readonly connId: string;
+  private diagnosticAuthJournal?: DiagnosticAuthJournal;
+
+  /** Arm one temporary local diagnostic epoch. Repeated arming never clears saturation. */
+  armDiagnosticAuthJournal(): void {
+    this.diagnosticAuthJournal ??= new DiagnosticAuthJournal();
+  }
+
+  /** Private correlation data only. Never serialize this snapshot or its retained references. */
+  readDiagnosticAuthJournal(): DiagnosticAuthSnapshot {
+    return this.diagnosticAuthJournal?.read() ?? unarmedDiagnosticAuthSnapshot();
+  }
   /** This endpoint's owner token (principal half 1) — `"local"` in the dev default. */
   private readonly owner: string;
   /** This endpoint's actor token (principal half 2) — the connection id in the dev default. */
@@ -710,6 +727,7 @@ export class CotalEndpoint extends EventEmitter {
   /** See {@link EndpointOptions.backfillFloor}. */
   private readonly backfillFloor?: number;
   private readonly acceptedToken?: string;
+  private readonly issuedCaller: boolean;
   /** The issuer-bound generation, learned once per connection from the accepted row. */
   private issuedGeneration?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
@@ -849,6 +867,12 @@ export class CotalEndpoint extends EventEmitter {
         : this.authed
           ? undefined
           : mintLifecycleUid();
+    if (opts.issuedCaller !== undefined && typeof opts.issuedCaller !== "boolean")
+      throw new Error("EndpointOptions.issuedCaller must be boolean when supplied");
+    this.issuedCaller = opts.issuedCaller === true;
+    if (this.issuedCaller && (!this.userMode || opts.acceptedToken !== undefined))
+      throw new Error("EndpointOptions.issuedCaller requires a user bearer without acceptedToken");
+    if (this.issuedCaller) this.requireLifecycleUid("an issued user endpoint");
     if (opts.backfillFloor !== undefined) {
       if (!Number.isInteger(opts.backfillFloor) || opts.backfillFloor < 0)
         throw new Error(`EndpointOptions.backfillFloor must be a non-negative integer stream sequence, got ${opts.backfillFloor}`);
@@ -1370,34 +1394,41 @@ export class CotalEndpoint extends EventEmitter {
     // The refusal still surfaces on this path: the authenticator throws during the CONNECT, the
     // library closes that attempt, and the reestablish loop's capped backoff re-enters here — where
     // the source re-fetch above is what recovers a renewable endpoint.
-    this.nc = await dialerFor(this.servers)({
-      servers: this.servers,
-      // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
-      // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
-      name: this.userMode ? this.connId : `cotal:${this.card.name}`,
-      // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
-      // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
-      // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
-      // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
-      // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
-      // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
-      // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
-      inboxPrefix: `_INBOX_${this.connId}`,
-      ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
-      ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
-      // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
-      // attempt, so internal reconnects present whatever refreshBearer last fetched.
-      // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
-      // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
-      // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
-      // just been proven unexpired rather than whatever the cache happens to hold.
-      // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
-      // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
-      // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
-      // (an empty credential) was never named. Routing it into the checked getter fails it loud
-      // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
-      ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }),
-    });
+    const diagnosticFlight = this.diagnosticAuthJournal?.begin(this.userMode ? this.connId : `cotal:${this.card.name}`);
+    try {
+      this.nc = await dialerFor(this.servers)({
+        servers: this.servers,
+        // In USER MODE the connection `name` carries the client-chosen inbox nonce (= connId) the callout
+        // scopes `_INBOX_<connId>.>` on (see EndpointOptions.bearer); otherwise it's the display handle.
+        name: this.userMode ? this.connId : `cotal:${this.card.name}`,
+        // Per-CONNECTION inbox namespace (the "Private Inbox" pattern), keyed on the connection nkey
+        // (NOT the owner+actor principal): the reply inbox is per-connection plumbing, and under the auth
+        // callout the principal is unknown to the client pre-connect (owner is derived server-side) while
+        // the connection id always is. nats.js routes ALL generated inboxes — request replies, JetStream
+        // pull delivery, kv.watch ordered-consumer delivery — through this prefix. Paired with
+        // sub.allow=[_INBOX_<connId>.>] it stops a peer from subscribing the wildcard inbox to sniff
+        // others' DM deliveries. Set unconditionally so the prefix can never drift from the ACL.
+        inboxPrefix: `_INBOX_${this.connId}`,
+        ...(this.transportPingIntervalMs === undefined ? {} : { pingInterval: this.transportPingIntervalMs }),
+        ...(this.transportMaxPingOut === undefined ? {} : { maxPingOut: this.transportMaxPingOut }),
+        // The bearer rides a GETTER: nats.js re-evaluates the token authenticator per (re)connect
+        // attempt, so internal reconnects present whatever refreshBearer last fetched.
+        // Creds ALWAYS ride the CHECKED getter, renewed or static, so every attempt — including the
+        // reconnects nats.js performs on its own (the one the broker forces at JWT `exp`, and a dial
+        // loop from an earlier drop that crosses `exp` mid-retry) — re-reads a credential that has
+        // just been proven unexpired rather than whatever the cache happens to hold.
+        // The gate is `!== undefined`, NOT truthiness. An EMPTY creds string is a caller that meant to
+        // authenticate and supplied nothing; on a truthiness gate it fell through to `creds: undefined`
+        // and dialed ANONYMOUSLY, so the broker answered `Authorization Violation` and the real fault
+        // (an empty credential) was never named. Routing it into the checked getter fails it loud
+        // instead. Anonymous access stays reachable the only way it should be: by passing no creds.
+        ...authOpts({ token: this.token, user: this.user, pass: this.pass, creds: this.currentCreds !== undefined || this.credsSource ? () => this.credsForWire() : undefined, bearer: this.userMode ? () => this.currentBearer! : undefined, sentinelCreds: this.sentinelCreds, tls: this.tls }, this.diagnosticAuthJournal, diagnosticFlight),
+      });
+      this.diagnosticAuthJournal?.settle(diagnosticFlight, "fulfilled", this.nc);
+    } catch (error) {
+      this.diagnosticAuthJournal?.settle(diagnosticFlight, "rejected", error);
+      throw error;
+    }
     // SPEC §13.12: the control surface requires nats-server >= 2.12; this runs on every
     // fresh connection, including the reconnects the library performs on its own here.
     this.ownedConnections.add(this.nc);
@@ -1420,6 +1451,11 @@ export class CotalEndpoint extends EventEmitter {
       if (ref.owner !== this.owner || ref.actor !== this.actor || ref.uid !== uid)
         throw new Error(`the accepted row names ${ref.owner}.${ref.actor} (uid ${ref.uid}), not this endpoint ${this.owner}.${this.actor} (uid ${uid}); refusing to ride a foreign issuance (SPEC 13.15)`);
       this.issuedGeneration = ref.generation;
+    } else if (this.issuedCaller) {
+      const caller = await issuedUserCaller(this.nc, this.space, this.connId, {
+        owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("an issued user endpoint"),
+      });
+      this.issuedGeneration = caller.generation;
     }
 
     if (this.doWatch || this.doRegister) {
@@ -1559,6 +1595,8 @@ export class CotalEndpoint extends EventEmitter {
    *  second heartbeat, double-pump a consumer, or keep stale roster ghosts. Caller-owned
    *  subs (tap/serve) are left alone — they aren't rebuilt here. */
   private clearConnectionScoped(): void {
+    this.issuedGeneration = undefined;
+    if (this.issuedCaller || this.acceptedToken !== undefined) this.resolvedServices.clear();
     if (this.authExpiryReconnectTimer) {
       clearTimeout(this.authExpiryReconnectTimer);
       this.authExpiryReconnectTimer = undefined;
@@ -1765,7 +1803,10 @@ export class CotalEndpoint extends EventEmitter {
    *  retry loop) coalesce onto ONE in-flight rebuild instead of racing two connectAndBinds and
    *  leaking a connection. Returns the shared promise; a second caller gets the in-flight one. */
   private rebuild(): Promise<void> {
-    if (this.rebuildPromise) return this.rebuildPromise;
+    if (this.rebuildPromise) {
+      this.diagnosticAuthJournal?.sharedRebuild();
+      return this.rebuildPromise;
+    }
     const p = this.doRebuild().finally(() => {
       if (this.rebuildPromise === p) this.rebuildPromise = undefined;
     });
@@ -2418,7 +2459,7 @@ export class CotalEndpoint extends EventEmitter {
    *  lifecycle-proof refuses a divergent uid before any publish). */
   private serviceCaller(): EpCaller {
     const triple = { owner: this.owner, actor: this.actor, uid: this.requireLifecycleUid("invokeService") };
-    if (this.acceptedToken === undefined) return triple;
+    if (this.acceptedToken === undefined && !this.issuedCaller) return triple;
     if (this.issuedGeneration === undefined) throw new Error("invokeService: the issued generation is not yet discovered on this connection");
     return { ...triple, generation: this.issuedGeneration } as IssuedCaller;
   }
@@ -2475,14 +2516,18 @@ export class CotalEndpoint extends EventEmitter {
 
   /** The resolved, digest-verified command surface of `endpoint` as this connection's caller sees
    *  it: the same resolve and the same per-name cache {@link invokeService} uses, so a describe
-   *  followed by an invoke binds both to one incarnation. `refresh` drops the cached entry first. */
-  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean } = {}): Promise<ResolvedService> {
+   *  followed by an invoke binds both to one incarnation. `refresh` drops the cached entry first.
+   *  `instanceId` resolves that instance's rail and never reads or writes the endpoint-only cache. */
+  async describeService(endpoint: string, opts: { deadlineMs?: number; signal?: AbortSignal; refresh?: boolean; instanceId?: string } = {}): Promise<ResolvedService> {
     if (!this.nc) throw new Error(this.notLiveMsg());
-    if (opts.refresh) this.resolvedServices.delete(endpoint);
-    const cached = this.resolvedServices.get(endpoint);
+    if (opts.refresh && opts.instanceId === undefined) this.resolvedServices.delete(endpoint);
+    const cached = opts.instanceId === undefined ? this.resolvedServices.get(endpoint) : undefined;
     if (cached) return cached;
-    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), { deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal });
-    this.resolvedServices.set(endpoint, svc);
+    const svc = await resolveService(this.nc, this.space, endpoint, this.serviceCaller(), {
+      deadlineMs: opts.deadlineMs ?? 10_000, signal: opts.signal,
+      ...(opts.instanceId !== undefined ? { instanceId: opts.instanceId } : {}),
+    });
+    if (opts.instanceId === undefined) this.resolvedServices.set(endpoint, svc);
     return svc;
   }
 
@@ -2503,9 +2548,8 @@ export class CotalEndpoint extends EventEmitter {
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
    *     `failed-precondition`; the same instance at any other epoch, `expired`), which is what a
    *     responder too old to know the field produces. A live instance received and answered it, so
-   *     the bind is dropped but the call is re-issued only for a command on the
-   *     {@link isRepeatSafeCommand} allowlist; anything else surfaces, since a second attempt could
-   *     duplicate its effect.
+   *     the bind is dropped but the call is re-issued only when that failed invocation's verified
+   *     protocol2/3 command declared `effect: "read"`. Protocol1 and missing effects remain unsafe.
    *  Errors from the responder come back structurally on the attributed reply
    *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
@@ -2553,8 +2597,16 @@ export class CotalEndpoint extends EventEmitter {
     };
     const doInvoke = async (service: ResolvedService, signal = opts.signal): Promise<EpAttributedReply> => {
       signal?.throwIfAborted();
+      let attemptedRead = false;
+      const invokeAttempt = (target: ResolvedService) => {
+        // Snapshot before publication, including each fenced re-issue. Later resolution cannot
+        // authorize a write that already ran, nor can the first hop authorize a different second hop.
+        attemptedRead = (target.descriptor?.protocol.v === 2 || target.descriptor?.protocol.v === 3)
+          && target.commands.get(command)?.effect === "read";
+        return invokeResolved(target, signal);
+      };
       try {
-        let r = await invokeResolved(service, signal);
+        let r = await invokeAttempt(service);
         // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
         // was bound to a different incarnation and refused BEFORE running the command.
         //
@@ -2562,7 +2614,7 @@ export class CotalEndpoint extends EventEmitter {
         // throw, so the `respondedButUnbound` recovery never sees it — a long-lived client would
         // otherwise keep its stale bind and meet the same refusal forever.
         //
-        // The re-issue is NOT gated on {@link isRepeatSafeCommand}: the responder states the command
+        // The re-issue is NOT gated on command effect: the responder states the command
         // did not run, so each re-issue is a FIRST attempt, not a second. It repeats up to the bound
         // the CLI uses, because the re-issue rides the same class queue and splits again at the same
         // rate; repairing once left a quarter of all calls in a two-manager space failing (#443).
@@ -2627,40 +2679,21 @@ export class CotalEndpoint extends EventEmitter {
               "not-executed",
             );
           }
-          r = await invokeResolved(reissueTarget, signal);
+          r = await invokeAttempt(reissueTarget);
           if (unmappedHere(r)) unmapped = r;
         }
         return replyRefusedBeforeEffect(r.reply.error) ? unmapped ?? r : r;
       } catch (e) {
-        // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
-        // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
-        // afterwards, so core cannot tell a repair from a duplicate and the allowlist is the only
-        // guard left. (`failed-precondition` here is not only supersession — it also fires when a
-        // DIFFERENT live instance wins the class queue and replies, an ordinary split.)
-        //
-        // Dropping the retry outright is not an option: in a two-manager space roughly half of all
-        // class-queue calls split, so every other `ps` would surface an error this absorbs, and
-        // re-running a read costs nothing.
-        //
-        // So it is gated on an ALLOWLIST (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
-        // method is endpoint-agnostic. Polarity matters more than membership: an allowlist fails
-        // CLOSED. Not a `GOAL_BEARING_COMMANDS`-only gate — `purge` is neither goal-bearing nor
-        // convergent, and its second run deletes messages published after the first completed, so
-        // the boundary is "changes anything", which core cannot see: commands carry no idempotency
-        // declaration and every manager command shares `class: "ephemeral"`.
-        //
-        // Keyed on the MARKER, not the error code, because the same fact has two producers: a
-        // DIFFERENT instance answering (`failed-precondition`) and the SAME instance at ANY OTHER
-        // EPOCH (`expired`) — epoch inequality, not "a successor", so a superseded incarnation
-        // still answering produces it too. Same rule for both, or a long-lived client stays bound
-        // to a dead epoch while every call reaches whoever is actually there.
+        // An unfenced responder may already have executed. Only the failed attempt's verified
+        // read declaration permits one repeat, regardless of endpoint or command name. The marker
+        // covers both a different answering instance and the same instance at a different epoch.
         if (respondedButUnbound(e)) {
           // Drop the stale bind FIRST, whichever way this goes: it names an incarnation that is not
           // the one answering, so every later call would reuse it and meet the same refusal. This is
           // not a retry — nothing is re-issued by it, and for a command that is not repeat-safe the
           // next call is the caller's, made after it has verified.
           this.resolvedServices.delete(endpoint);
-          if (!isRepeatSafeCommand(endpoint, command)) throw e;
+          if (!attemptedRead) throw e;
           return await invokeResolved(await resolve(signal), signal);
         }
         throw e;
@@ -7000,7 +7033,7 @@ interface AuthOpts {
   tls?: boolean;
 }
 
-function authOpts(a: AuthOpts) {
+function authOpts(a: AuthOpts, diagnostic?: DiagnosticAuthJournal, flight?: ReturnType<DiagnosticAuthJournal["begin"]>) {
   const tls = a.tls ? {} : undefined;
   // USER MODE: present the shared auth-account sentinel creds AND the user bearer as `auth_token` (an
   // authenticator ARRAY — nats.js merges them into one CONNECT). The connect lands in the callout
@@ -7010,8 +7043,9 @@ function authOpts(a: AuthOpts) {
       throw new Error("bearer (user-mode auth) is mutually exclusive with creds/token/user/pass");
     if (!a.sentinelCreds)
       throw new Error("user-mode bearer requires sentinelCreds");
+    const sentinel = credsAuthenticator(new TextEncoder().encode(a.sentinelCreds));
     return {
-      authenticator: [credsAuthenticator(new TextEncoder().encode(a.sentinelCreds)), tokenAuthenticator(a.bearer)],
+      authenticator: [diagnostic ? diagnostic.authentication(flight, sentinel) : sentinel, tokenAuthenticator(a.bearer)],
       tls,
     };
   }
@@ -7026,7 +7060,7 @@ function authOpts(a: AuthOpts) {
     const authenticator = typeof creds === "function"
       ? (nonce?: string) => credsAuthenticator(new TextEncoder().encode(creds()))(nonce)
       : credsAuthenticator(new TextEncoder().encode(creds));
-    return { authenticator, tls };
+    return { authenticator: diagnostic ? diagnostic.authentication(flight, authenticator) : authenticator, tls };
   }
   return { token: a.token, user: a.user, pass: a.pass, tls };
 }

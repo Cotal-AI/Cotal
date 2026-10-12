@@ -151,8 +151,9 @@
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "    const goalId = typeof e.external?.goalId === \"string\" ? e.external.goalId : e.requestId as string;",
       "replace": "    const goalId = e.requestId as string;",
-      "expectRed": "a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
-      "cell": "a cancelled adopted spawn's discharge despawns the seat it holds, by the bound goal",
+      "expectRed": "an adopted spawn's seat is despawned by the bound goal, and a second discharge tolerates it gone",
+      "cell": "an adopted spawn's seat is despawned by the bound goal, and a second discharge tolerates it gone",
+      "afterRestore": "pnpm smoke:runtime-mesh-spawn",
       "note": "An adopted spawn's request id names no goal (nothing was submitted under it), so a discharge reading only the request id finds no goal and returns without despawning; the seat leaks with no entry left to release it."
     },
     {
@@ -218,13 +219,13 @@
     {
       "name": "the not-executed bind refusal is returned to the effect instead of re-issued",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "    if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;",
-      "replace": "    return r;",
+      "find": "    else if (r.reply.ok !== false || !replyRefusedBeforeEffect(r.reply.error)) return r;",
+      "replace": "    else return r;",
       "expectRed": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "cell": "an unpinned spawn refused as not-executed is re-issued and returns a handle, instead of failing the run",
       "note": "#1638. The repair removed: every manager call hands the responder's pre-effect refusal back to the effect, so a spawn the class queue gave to another member raises L4000 and ends the run. The forced arm binds an incarnation nothing serves, so the refusal is guaranteed and the red is deterministic rather than a queue draw.",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn",
-      "afterRestore": "pnpm --filter @cotal-ai/core build"
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:runtime-mesh-spawn"
     },
     {
       "name": "the re-issue keeps the stale class handle instead of re-describing",

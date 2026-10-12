@@ -8,12 +8,14 @@ import { join, dirname } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser, fmtCreds, type User } from "@nats-io/jwt";
 import { createUser, fromPublic, fromSeed } from "@nats-io/nkeys";
-import { createSpaceAuth, serverConfig, isReachable } from "@cotal-ai/core";
+import { createSpaceAuth, serverConfig, isReachable, epRequestObserveFilter, token, type EpRequestObserveScope } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { importNativeSubjectPermissions } from "../../../packages/core/smoke/prototypes/issued-subject-permissions.js";
 import { acceptedReadGrant } from "../../../packages/core/smoke/prototypes/issued-accepted-row.js";
-import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, peerOptionSweep, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+import { profileFixtures, namespaceGrants, namespaceOverlap, writeAndRawReadStreams, shippedSources, issuedRailLiterals, holdsServerView, ledgerCitations, suiteCellNames, clientApiVerbs, DELIVERY_CONFIGURING_VERBS, singleSampledHoldAssertions, peerOptionSweep, TRUSTED_PROFILES, deliveryPaths, deliveryClassOf, PEER_HELD_PROFILES, type ProfileFixture } from "./prototypes/issued-profile-census.js";
+
+import { servedRunRequestSubjects } from "../src/authority-client.js";
 
 let passed = 0;
 async function check(name: string, fn: () => Promise<void>) {
@@ -49,7 +51,11 @@ try {
   }
   const operator = await open({ pub: { allow: [">"] }, sub: { allow: [">"] } });
   const seen = new Set<string>();
-  const tap = operator.subscribe(`cotal.${space}.ep.v1.>`);
+  const tap = operator.subscribe(`cotal.${space}.ep.>`);
+  for (const inbox of ["_INBOX_census0123456789abcdef.>", "_INBOX_other0123456789abcdef.>"]) {
+    const inboxTap = operator.subscribe(inbox);
+    void (async () => { for await (const msg of inboxTap) seen.add(new TextDecoder().decode(msg.data)); })();
+  }
   void (async () => { for await (const msg of tap) seen.add(new TextDecoder().decode(msg.data)); })();
   await operator.flush();
   const uid = "u".repeat(26), generation = "a".repeat(32), nonce = "n".repeat(22);
@@ -57,12 +63,12 @@ try {
     `cotal.${space}.ep.v1.one.manager.run-start.local.census.${uid}.${generation}.${nonce}`,
     `cotal.${space}.ep.v1.reply.manager.${"i".repeat(26)}.1.local.census.${uid}.${generation}.${nonce}`,
   ];
-  async function measure(permissions: Record<string, unknown>) {
+  async function measure(permissions: Record<string, unknown>, probes = subjects) {
     const nc = await open(permissions);
     let errors = 0;
     void (async () => { for await (const event of nc.status()) if (event.type === "error" && /permission/i.test(String(event.error))) errors++; })();
     const results: Array<{ subject: string; publish: boolean; subscribe: boolean }> = [];
-    for (const subject of subjects) {
+    for (const subject of probes) {
       const id = randomBytes(16).toString("hex"), before = errors;
       nc.publish(subject, enc(id)); await nc.flush();
       await until(() => seen.has(id) || errors > before);
@@ -104,7 +110,63 @@ try {
   });
   const reports: unknown[] = [];
   const observations: Record<string, unknown> = {};
+  const callerTail = `local.census.${uid}.${generation}.${nonce}`;
+  const request = `cotal.${space}.ep.v1.inst.test_example_census.${"i".repeat(26)}.increment.${callerTail}`;
+  const reply = `cotal.${space}.ep.v1.reply.test_example_census.${"i".repeat(26)}.1.${callerTail}`;
+  const callerProbes: Array<{ subject: string; publish: boolean; subscribe: boolean }> = [
+    { subject: request, publish: true, subscribe: false },
+    { subject: request.replace(".increment.", ".describe."), publish: true, subscribe: false },
+    { subject: reply, publish: false, subscribe: true },
+    // Reply attribution is wildcarded, not confined to the request's endpoint or instance.
+    { subject: reply.replace("test_example_census", "other_example_census").replace("i".repeat(26), "j".repeat(26)).replace(".1.local.", ".2.local."), publish: false, subscribe: true },
+    { subject: "_INBOX_census0123456789abcdef.test", publish: false, subscribe: true },
+  ];
+  const forbiddenRequests = [
+    request.replace(".ep.v1.", ".ep."),
+    ...["one", "all"].map((route) => request.replace(`inst.test_example_census.${"i".repeat(26)}`, `${route}.test_example_census`)),
+    request.replace(".increment.", ".ungranted."),
+    request.replace("test_example_census", "other_example_census"),
+    request.replace("i".repeat(26), "j".repeat(26)),
+  ];
+  const forbiddenReplies = [reply.replace(".ep.v1.", ".ep."), "_INBOX_other0123456789abcdef.test"];
+  for (const subject of [request, reply]) {
+    for (const [from, to] of [[".local.", ".other."], [".census.", ".peer."], [uid, "v".repeat(26)], [generation, "b".repeat(32)]] as const) {
+      (subject === request ? forbiddenRequests : forbiddenReplies).push(subject.replace(from, to));
+    }
+    (subject === request ? forbiddenRequests : forbiddenReplies).push(`${subject}.extra`, subject.slice(0, subject.lastIndexOf(".")));
+  }
+  callerProbes.push(...[...forbiddenRequests, ...forbiddenReplies].map((subject) => ({ subject, publish: false, subscribe: false })));
+  // The same actual native controls validate every new positive and negative probe.
+  await check("native endpoint-caller probe controls exercise both permission directions", async () => {
+    assert.ok((await measure({ pub: { allow: [">"] }, sub: { allow: [">"] } }, callerProbes.map((p) => p.subject))).every((r) => r.publish && r.subscribe));
+    assert.ok((await measure({ pub: { deny: [">"] }, sub: { deny: [">"] } }, callerProbes.map((p) => p.subject))).every((r) => !r.publish && !r.subscribe));
+  });
   for (const fixture of fixtures) {
+    if (fixture.profile === "endpoint-caller") {
+      await check("endpoint-caller holds only pinned instance requests and its own issued replies", async () => {
+        const pub = namespaceGrants(fixture.permissions, space, "pub");
+        const sub = namespaceGrants(fixture.permissions, space, "sub");
+        const native = await measure(fixture.permissions);
+        const measured = await measure(fixture.permissions, callerProbes.map((p) => p.subject));
+        assert.deepEqual(measured, callerProbes, JSON.stringify(measured));
+        const requestRows = ["describe", "increment"].map((command) => `cotal.${space}.ep.v1.inst.test_example_census.${"i".repeat(26)}.${command}.local.census.${uid}.${generation}.*`);
+        const replyRows = [`cotal.${space}.ep.v1.reply.*.*.*.local.census.${uid}.${generation}.*`];
+        assert.deepEqual(pub, { overlaps: requestRows, deny: [], potential: true });
+        assert.deepEqual(sub, { overlaps: replyRows, deny: [], potential: true });
+        // Close the entire permission object, including the two restricted metadata reads.
+        assert.deepEqual(fixture.permissions, {
+          pub: { allow: [`$JS.API.DIRECT.GET.EPC_${space}.cotal.${space}.epc.>`, `$JS.API.DIRECT.GET.KV_cotal_accepted_${space}.$KV.cotal_accepted_${space}.accepted.v1.${generation}`, ...requestRows] },
+          sub: { allow: ["_INBOX_census0123456789abcdef.>", ...replyRows] },
+        });
+        assert.deepEqual(native.map((r) => [r.publish, r.subscribe]), [[false, false], [false, true]], JSON.stringify(native));
+        observations.endpointCaller = { probes: measured, nativeDecisions: measured.length * 2 };
+        let normalization: string = "supported";
+        try { importNativeSubjectPermissions(fixture.permissions); }
+        catch (error) { normalization = (error as Error).message; }
+        reports.push({ profile: fixture.profile, variant: fixture.variant, producer: fixture.producer, pub, sub, normalization, native, endpointCaller: measured });
+      });
+      continue;
+    }
     await check(`current profile excludes issued namespace: ${fixture.profile}/${fixture.variant}`, async () => {
       const pub = namespaceGrants(fixture.permissions, space, "pub");
       const sub = namespaceGrants(fixture.permissions, space, "sub");
@@ -114,7 +176,7 @@ try {
       catch (error) { normalization = (error as Error).message; }
       reports.push({ profile: fixture.profile, variant: fixture.variant, producer: fixture.producer, pub, sub, normalization, native });
       if (fixture.profile === "endpoint-serve") {
-        // The one standing profile on the versioned rail (SPEC 13.15): an endpoint serves both
+        // The serving profile on the versioned rail (SPEC 13.15): an endpoint serves both
         // rails, so its rows reach `ep.v1` on the reply publish (attribution-pinned, one more
         // spanned token) and the three subscribe shapes per command. Never a request form: the
         // serve credential cannot spell a request on either rail.
@@ -236,26 +298,244 @@ try {
     assert.deepEqual(fixtures.filter((f) => holdsServerView(f.permissions)).map((f) => `${f.profile}/${f.variant}`), []);
   });
 
+  await check("the syntax census distinguishes prose from decoded literal occurrences", async () => {
+    const controls: [string, string, boolean][] = [
+      ["line-comment", "// ep.v1\nconst x = 1;", false],
+      ["block-comment", "/* ep.v1 */ const x = 1;", false],
+      ["jsdoc", "/** ep.v1 */ function x() {}", false],
+      ["single-quoted", "const x = 'ep.v1';", true],
+      ["double-quoted", 'const x = "ep.v1";', true],
+      ["comment-delimiters-in-string", 'const x = "/* ep.v1 */";', true],
+      ["escaped-hex", String.raw`const x = "\x65p.v1";`, true],
+      ["escaped-unicode", String.raw`const x = "ep.\u00761";`, true],
+      ["template-no-hole", "const x = `ep.v1`;", true],
+      ["template-head", "const x = `ep.v1${unknown}`;", true],
+      ["template-middle", "const x = `${a}ep.v1${b}`;", true],
+      ["template-tail", "const x = `${a}ep.v1`;", true],
+      ["template-interpolation", "const x = `${'ep.v1'}`;", true],
+      ["escaped-template", String.raw`const x = ` + "`" + String.raw`ep.\u00761` + "${a}`;", true],
+      ["unknown-hole-not-joined", "const x = `ep.${unknown}`;", false],
+      ["split-static-parts-not-joined", "const x = `ep.${unknown}v1`;", false],
+      ["regex-is-not-string", String.raw`const x = /ep\.v1/;`, false],
+      ["division", "const x = 12 / 3;", false],
+      ["type-literal-conservative", 'type X = "ep.v1";', true],
+      ["interface-key-conservative", 'interface X { "ep.v1": string }', true],
+      ["property-key", 'const x = { "ep.v1": true };', true],
+      ["import-path-conservative", 'import "ep.v1";', true],
+      ["substring-not-narrowed", 'const x = "ep.v10";', true],
+    ];
+    const sources = new Map(controls.map(([name, source]) => [`/census-controls/${name}.ts`, source]));
+    const found = issuedRailLiterals(sources);
+    for (const [name, , expected] of controls) assert.equal(found.get(`/census-controls/${name}.ts`), expected, name);
+    assert.throws(() => issuedRailLiterals(new Map([["/census-controls/malformed.ts", "const x = `unterminated"]])), /census syntax refused/);
+    const root = fileURLToPath(new URL("../../..", import.meta.url)), bin = join(root, "bin/cotal.ts");
+    assert.equal(issuedRailLiterals(new Map([[bin, readFileSync(bin, "utf8") + '\nvoid "ep.v1";']])).get(bin), true, "bin literal control");
+  });
+
   await check("the issued rail is spelled only by core's endpoint subject and grant builders", async () => {
-    // The versioned rail (SPEC 13.15) is reachable only through the builders that pin the
-    // generation token beside the caller triple. Any other shipped file spelling `ep.v1` is a
-    // second, unpinned way onto the rail, so the scan closes over every shipped source and
-    // names the four files that may.
+    // This confines detectable decoded string/template occurrences, including erased syntax.
+    // It does not prove arbitrary computed subjects or complete runtime construction ownership.
     const root = fileURLToPath(new URL("../../..", import.meta.url));
     const files = shippedSources(root);
     const builders = ["packages/core/src/endpoint-subjects.ts", "packages/core/src/endpoint-grants.ts",
       "packages/core/src/endpoint-serve.ts", "packages/core/src/issued-authority.ts"];
-    // The generated docs bundle mirrors the published pages, which describe the rail in prose;
-    // it builds no subject. It is the one shipped file allowed to spell the rail outside core.
+    // Inherited generated prose-data exception, not a complete all-code guarantee.
     const prose = "extensions/connector-core/src/docs-bundle.generated.ts";
-    const spelled = files.filter((file) => /ep\.v1/.test(readFileSync(file, "utf8"))).map((f) => f.slice(root.length)).filter((f) => f !== prose).sort();
-    assert.deepEqual(spelled, [...builders].sort());
+    const corpus = new Map(files.filter(file => file.slice(root.length) !== prose).map(file => [file, readFileSync(file, "utf8")]));
+    const spelled = [...issuedRailLiterals(corpus)].filter(([, found]) => found).map(([file]) => file.slice(root.length));
+    assert.deepEqual(spelled.filter(file => !builders.includes(file)).sort(), []);
+    assert.ok(builders.every(builder => files.some(file => file.slice(root.length) === builder)), "the corpus no longer reaches all four builders");
     // Positive control: the corpus really contains the endpoint subject builders it must cover.
     assert.ok(files.some((file) => /function epRequestSubject/.test(readFileSync(file, "utf8"))), `scanned ${files.length} files without reaching the subject builders`);
     // The published composition root is shipped code. A negative claim about shipped code that
     // silently stops covering it would still pass the control above, which lives in core.
     assert.ok(files.some((file) => file.endsWith("/bin/cotal.ts")), "the corpus no longer reaches the published composition root");
     observations.shippedSourcesScanned = files.length;
+  });
+
+  await check("the observer filter preflight precedes activation effects and is passed through once", async () => {
+    const source = readFileSync(new URL("../src/endpoint-authority.ts", import.meta.url), "utf8");
+    const begin = source.indexOf("    async activate("), end = source.indexOf("    async caller(", begin);
+    assert.ok(begin >= 0 && end > begin, "actual activate source reached");
+    const activate = source.slice(begin, end);
+    const has = activate.indexOf('if (inFlight.has(row.endpoint)) refuse("another endpoint release is in flight");');
+    const preflight = activate.indexOf('const observationFilter = epRequestObserveFilter(account.space, { kind: "issued-instance", endpoint: row.endpoint, instanceId: row.instanceId });');
+    const add = activate.indexOf("inFlight.add(row.endpoint);");
+    assert.ok(has >= 0 && has < preflight && preflight < add, "observer preflight must follow existing inFlight refusal and precede add");
+    for (const effect of ["await acquireEndpointPolicyHold(", "await input.publishArtifact(", "await registerServiceInstance(", "await mintPublicUserJwt(", 'await createRowByteIdempotent(authKv, `endpoint-active.', "await authKv.update(reservationKey(row.instanceId)"])
+      assert.ok(activate.indexOf(effect) > preflight, `preflight before ${effect}`);
+    assert.equal(activate.split("epRequestObserveFilter(").length - 1, 1, "one preflight evaluation");
+    assert.ok(source.includes("function observe(filter: string): void {\n    subscriptions.push(input.nc.subscribe(filter,"), "observer accepts string and subscribes without recomputation");
+    const update = activate.indexOf("await authKv.update(reservationKey(row.instanceId)"), sub = activate.indexOf("observe(observationFilter); await input.nc.flush();"), release = activate.indexOf("await hold.release();", sub);
+    assert.ok(update < sub && sub < release && activate.indexOf("finally { inFlight.delete(row.endpoint); }", release) > release, "late subscription/release/finally order retained");
+  });
+
+  await check("observer filters preserve independent bounded golden bytes and manager row order", async () => {
+    const instanceId = "iiiiiiiiiiiiiiiiiiiiiiiiii", endpoint = "test.example.census";
+    const examples: [EpRequestObserveScope, string][] = [
+      [{ kind: "issued-instances" }, "cotal.observer-fixture.ep.v1.inst.>"],
+      [{ kind: "issued-instance", endpoint, instanceId }, "cotal.observer-fixture.ep.v1.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.*.>"],
+      [{ kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "inst", instanceId: "*" } }, "cotal.observer-fixture.ep.v1.inst.test_example_census.*.increment.>"],
+      [{ kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "inst", instanceId } }, "cotal.observer-fixture.ep.v1.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.increment.>"],
+      [{ kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "one" } }, "cotal.observer-fixture.ep.v1.one.test_example_census.increment.>"],
+      [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "inst", instanceId: "*" } }, "cotal.observer-fixture.ep.inst.test_example_census.*.increment.>"],
+      [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "inst", instanceId } }, "cotal.observer-fixture.ep.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.increment.>"],
+      [{ kind: "command", rail: "legacy", endpoint, command: "increment", route: { mode: "one" } }, "cotal.observer-fixture.ep.one.test_example_census.increment.>"],
+    ];
+    for (const [scope, expected] of examples) assert.equal(epRequestObserveFilter("observer-fixture", scope), expected);
+    const service = readFileSync(new URL("../src/service.ts", import.meta.url), "utf8");
+    assert.ok(service.includes("for (const subject of servedRunRequestSubjects(space))\n    remoteIssuer.nc.subscribe(subject,"), "actual shipped manager observer callsite join");
+    // Source/function evidence only. Full-service eight-SUB and closed minted permission captures
+    // remain unavailable through the existing public hooks and require separate acceptance.
+    const normalizations = [
+      { raw: "main", canonicalToken: "main", expectedHostedObserver: "cotal.main.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.main.ep.v1.inst.manager.*.run-start.>",
+          "cotal.main.ep.v1.one.manager.run-start.>",
+          "cotal.main.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.main.ep.v1.one.manager.run-resume.>",
+          "cotal.main.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.main.ep.v1.one.manager.run-answer.>",
+          "cotal.main.ep.inst.manager.*.run-answer.>",
+          "cotal.main.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "team.alpha", canonicalToken: "team_alpha", expectedHostedObserver: "cotal.team_alpha.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-start.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-start.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-resume.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-answer.>",
+          "cotal.team_alpha.ep.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.one.manager.run-answer.>",
+        ] },
+      { raw: " team.alpha ", canonicalToken: "team_alpha", expectedHostedObserver: "cotal.team_alpha.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-start.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-start.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-resume.>",
+          "cotal.team_alpha.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.v1.one.manager.run-answer.>",
+          "cotal.team_alpha.ep.inst.manager.*.run-answer.>",
+          "cotal.team_alpha.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "team/*>", canonicalToken: "team___", expectedHostedObserver: "cotal.team___.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.team___.ep.v1.inst.manager.*.run-start.>",
+          "cotal.team___.ep.v1.one.manager.run-start.>",
+          "cotal.team___.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.team___.ep.v1.one.manager.run-resume.>",
+          "cotal.team___.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.team___.ep.v1.one.manager.run-answer.>",
+          "cotal.team___.ep.inst.manager.*.run-answer.>",
+          "cotal.team___.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "a/b", canonicalToken: "a_b", expectedHostedObserver: "cotal.a_b.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.a_b.ep.v1.inst.manager.*.run-start.>",
+          "cotal.a_b.ep.v1.one.manager.run-start.>",
+          "cotal.a_b.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.a_b.ep.v1.one.manager.run-resume.>",
+          "cotal.a_b.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.a_b.ep.v1.one.manager.run-answer.>",
+          "cotal.a_b.ep.inst.manager.*.run-answer.>",
+          "cotal.a_b.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "UPPER_01", canonicalToken: "UPPER_01", expectedHostedObserver: "cotal.UPPER_01.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.UPPER_01.ep.v1.inst.manager.*.run-start.>",
+          "cotal.UPPER_01.ep.v1.one.manager.run-start.>",
+          "cotal.UPPER_01.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.UPPER_01.ep.v1.one.manager.run-resume.>",
+          "cotal.UPPER_01.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.UPPER_01.ep.v1.one.manager.run-answer.>",
+          "cotal.UPPER_01.ep.inst.manager.*.run-answer.>",
+          "cotal.UPPER_01.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "u_example-member", canonicalToken: "u_example-member", expectedHostedObserver: "cotal.u_example-member.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.u_example-member.ep.v1.inst.manager.*.run-start.>",
+          "cotal.u_example-member.ep.v1.one.manager.run-start.>",
+          "cotal.u_example-member.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.u_example-member.ep.v1.one.manager.run-resume.>",
+          "cotal.u_example-member.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.u_example-member.ep.v1.one.manager.run-answer.>",
+          "cotal.u_example-member.ep.inst.manager.*.run-answer.>",
+          "cotal.u_example-member.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "", canonicalToken: "_", expectedHostedObserver: "cotal._.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal._.ep.v1.inst.manager.*.run-start.>",
+          "cotal._.ep.v1.one.manager.run-start.>",
+          "cotal._.ep.v1.inst.manager.*.run-resume.>",
+          "cotal._.ep.v1.one.manager.run-resume.>",
+          "cotal._.ep.v1.inst.manager.*.run-answer.>",
+          "cotal._.ep.v1.one.manager.run-answer.>",
+          "cotal._.ep.inst.manager.*.run-answer.>",
+          "cotal._.ep.one.manager.run-answer.>",
+        ] },
+      { raw: " \t\n", canonicalToken: "_", expectedHostedObserver: "cotal._.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal._.ep.v1.inst.manager.*.run-start.>",
+          "cotal._.ep.v1.one.manager.run-start.>",
+          "cotal._.ep.v1.inst.manager.*.run-resume.>",
+          "cotal._.ep.v1.one.manager.run-resume.>",
+          "cotal._.ep.v1.inst.manager.*.run-answer.>",
+          "cotal._.ep.v1.one.manager.run-answer.>",
+          "cotal._.ep.inst.manager.*.run-answer.>",
+          "cotal._.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "-leading", canonicalToken: "-leading", expectedHostedObserver: "cotal.-leading.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.-leading.ep.v1.inst.manager.*.run-start.>",
+          "cotal.-leading.ep.v1.one.manager.run-start.>",
+          "cotal.-leading.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.-leading.ep.v1.one.manager.run-resume.>",
+          "cotal.-leading.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.-leading.ep.v1.one.manager.run-answer.>",
+          "cotal.-leading.ep.inst.manager.*.run-answer.>",
+          "cotal.-leading.ep.one.manager.run-answer.>",
+        ] },
+      { raw: "trailing-", canonicalToken: "trailing-", expectedHostedObserver: "cotal.trailing-.ep.v1.inst.>",
+        expectedManagerRows: [
+          "cotal.trailing-.ep.v1.inst.manager.*.run-start.>",
+          "cotal.trailing-.ep.v1.one.manager.run-start.>",
+          "cotal.trailing-.ep.v1.inst.manager.*.run-resume.>",
+          "cotal.trailing-.ep.v1.one.manager.run-resume.>",
+          "cotal.trailing-.ep.v1.inst.manager.*.run-answer.>",
+          "cotal.trailing-.ep.v1.one.manager.run-answer.>",
+          "cotal.trailing-.ep.inst.manager.*.run-answer.>",
+          "cotal.trailing-.ep.one.manager.run-answer.>",
+        ] },
+    ];
+    for (const { raw, canonicalToken, expectedManagerRows, expectedHostedObserver } of normalizations) {
+      assert.equal(token(raw), canonicalToken);
+      assert.equal(token(canonicalToken), canonicalToken);
+      assert.deepEqual(servedRunRequestSubjects(raw), expectedManagerRows);
+      // This is the hosted normalizer algebra, not an invalid public-host activation witness.
+      assert.equal(epRequestObserveFilter(token(raw), { kind: "issued-instances" }), expectedHostedObserver);
+    }
+    assert.equal(Math.max(...servedRunRequestSubjects("a".repeat(984)).map(row => Buffer.byteLength(row))), 1024);
+    assert.throws(() => servedRunRequestSubjects("a".repeat(985)), /subject exceeds/);
+    assert.equal(Buffer.byteLength(epRequestObserveFilter("a".repeat(1005), { kind: "issued-instances" })), 1024);
+    assert.throws(() => epRequestObserveFilter("a".repeat(1006), { kind: "issued-instances" }), /subject exceeds/);
+    const exact = { kind: "issued-instance", endpoint, instanceId } as const;
+    const overhead = Buffer.byteLength("cotal..ep.v1.inst.test_example_census.iiiiiiiiiiiiiiiiiiiiiiiiii.*.>");
+    assert.equal(Buffer.byteLength(epRequestObserveFilter("a".repeat(1024 - overhead), exact)), 1024);
+    assert.throws(() => epRequestObserveFilter("a".repeat(1025 - overhead), exact), /subject exceeds/);
+    const invoke = (space: unknown, scope: unknown) => epRequestObserveFilter(space as string, scope as EpRequestObserveScope);
+    for (const invalid of ["", " ", "team.alpha", "team/*>", null, 12, {}, undefined]) assert.throws(() => invoke(invalid, exact));
+    const badScopes: unknown[] = [null, [], {}, { kind: "issued-instances", extra: true }, { kind: "issued-instance", endpoint }, { ...exact, instanceId: "*" }, { ...exact, instanceId: "bad.id" }, { ...exact, endpoint: "" }, { ...exact, endpoint: "test.*" }, { ...exact, endpoint: 42 }, { ...exact, instanceId: 42 }];
+    const command = { kind: "command", rail: "v1", endpoint, command: "increment", route: { mode: "one" } };
+    badScopes.push({ ...command, rail: "v2" }, { ...command, extra: true }, { ...command, route: { mode: "all" } }, { ...command, route: { mode: "inst" } }, { ...command, route: { mode: "one", instanceId } }, { ...command, route: { mode: "inst", instanceId, extra: true } });
+    for (const value of ["", ".", "with.dot", "with space", "*", ">", 42]) badScopes.push({ ...command, command: value });
+    badScopes.push(Object.create({ kind: "issued-instances" }));
+    badScopes.push({ kind: "issued-instances", [Symbol("unknown")]: true });
+    badScopes.push(Object.defineProperty({ kind: "issued-instances" }, "unknown", { value: true }));
+    for (const scope of badScopes) assert.throws(() => invoke("observer-fixture", scope));
+    for (const invalid of [null, undefined, 12]) assert.throws(() => servedRunRequestSubjects(invalid as unknown as string));
   });
 
   await check("the write-plus-raw-read detector finds the known trusted overlaps", async () => {
@@ -348,8 +628,8 @@ try {
     profileCount: new Set(fixtures.map((f) => f.profile)).size, variantCount: fixtures.length,
     nativeProfileDecisions: fixtures.length * subjects.length * 2,
     nonProfileKinds: ["membership-observer", "connection-evictor"],
-    refusedCalloutViews: ["manager-service"],
-    scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint, and is the one standing profile that reaches the versioned rail (its reply publish and serve subscriptions); an issued caller mint reaches it by construction and is measured by the binding suites, not here. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
+    refusedCalloutViews: ["manager-service", "endpoint-caller"],
+    scope: "All Profile names, representative option variants, and every generic callout view. Endpoint-serve uses raw grant rows, not a fenced mint, and reaches the versioned rail through reply publish and serve subscriptions. Endpoint-caller is measured from permissionsFor with closed instance-only request rows, its own generation-pinned replies, private inbox and restricted metadata reads. Its additional native decisions are reported separately and do not prove the issuer hook or registered authority ceremony. System-account credentials and other option combinations are outside the native matrix. Namespace intersection is conservative; native samples cover one concrete request and reply in both directions. Queue-qualified normalization remains unsupported.",
     rows: reports, peerHeldProfiles: PEER_HELD_PROFILES, ...observations,
   };
   if (process.argv[2]) writeFileSync(process.argv[2], JSON.stringify(report, null, 2) + "\n");

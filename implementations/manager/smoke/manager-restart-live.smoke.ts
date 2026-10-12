@@ -4,8 +4,8 @@
  * cover as its LOUD no-daemon refusal.
  *
  * A REAL JWT-auth broker (system account) + a live delivery-admin eviction responder (the delivery
- * daemon's `evictPrincipal` op, served in-process here via the SAME core primitive the daemon uses:
- * `evictDeniedPrincipalWithCreds` over the two scoped $SYS creds). A Manager registers, accepts +
+ * daemon's single and batch eviction ops, served in-process here via the SAME core primitives:
+ * `evictDeniedPrincipalWithCreds` and `evictDeniedPrincipalsWithCreds` over the two scoped $SYS creds). A Manager registers, accepts +
  * terminates a goal under epoch 0, then RESTARTS in the same workspace root. On an AUTH mesh the
  * registration barrier's PHASE 2 must VERIFY-EVICT the superseded serve family before the epoch
  * advances — so the restart drives the manager → `ctl.delivery-admin` → real eviction chain end to
@@ -38,6 +38,7 @@ const {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, DEV_OWNER,
   mintMembershipObserverCreds, mintConnectionEvictorCreds, evictDeniedPrincipalWithCreds,
+  evictDeniedPrincipalsWithCreds, EVICT_PRINCIPALS_MAX,
   CotalEndpoint, CONTROL_DELIVERY_ADMIN,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
 } = await import("@cotal-ai/core");
@@ -85,7 +86,7 @@ try {
   await setupSpaceStreams({ servers: SERVERS, space: SPACE, creds: await mintCreds(auth, newIdentity(), "provisioner") });
   recordMesh({ space: SPACE, server: SERVERS, root: workspaceRoot, mode: "auth", ts: new Date().toISOString() });
 
-  // ── the delivery-admin eviction responder (the daemon's evictPrincipal op, in-process) ──
+  // The delivery-admin responder serves the manager's current batch family-eviction contract.
   const dlvId = newIdentity();
   daemon = new CotalEndpoint({
     space: SPACE, servers: SERVERS, creds: await mintCreds(auth, dlvId, "delivery"),
@@ -107,6 +108,17 @@ try {
         holds = own !== undefined && daemon!.ownsDeliveryLease(own.info);
       } catch { holds = false; }
       return { ok: true, data: { identity: workspaceSecretStore(workspaceRoot).identity, responder: daemon!.card.id, holdsDeliveryLease: holds } };
+    }
+    if (req.op === "evictPrincipals") {
+      const raw: unknown = req.args?.principals;
+      const principals = Array.isArray(raw) ? raw.map((p) => (typeof p === "string" ? p.trim() : "")) : [];
+      if (principals.length === 0 || principals.some((p) => !p))
+        return { ok: false, error: "evictPrincipals: principals must be a non-empty array of owner.actor dot-form principals" };
+      if (principals.length > EVICT_PRINCIPALS_MAX || new Set(principals).size !== principals.length)
+        return { ok: false, error: `evictPrincipals: principals must be distinct and at most ${EVICT_PRINCIPALS_MAX}` };
+      evictCalls++;
+      const result = await evictDeniedPrincipalsWithCreds({ servers: SERVERS, observerCreds, evictorCreds, accountId: auth.account.pub, principals });
+      return { ok: true, data: result };
     }
     if (req.op !== "evictPrincipal") return { ok: false, error: `unsupported delivery-admin op "${req.op}"` };
     evictCalls++;

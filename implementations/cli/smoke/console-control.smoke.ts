@@ -37,6 +37,34 @@ import { ConsoleSession, clean, repoRoot, wait } from "./_console-pty.js";
 
 let pass = 0, fail = 0;
 const check = (n: string, c: boolean, extra?: unknown) => { if (c) { pass++; console.log("  ✓ " + n); } else { fail++; console.log("  ✗ FAIL: " + n, extra ?? ""); } };
+// Captured text only, not terminal frames, command execution, or manager replies. No text escapes.
+function statusObservation(s: ConsoleSession, from: number, seat: string, attempt: number,
+  predicate: "own-manager-row" | "working-qualifier" | "idle-qualifier", expected: RegExp): string {
+  const raw = s.out.slice(from);
+  const text = clean(raw);
+  const bytes = Buffer.byteLength(raw, "utf8");
+  const slash = `${seat}/worker`;
+  return JSON.stringify({
+    v: 1, attempt: Math.min(8, Math.max(1, attempt)), predicate,
+    outputPresent: raw.length > 0,
+    windowSize: bytes === 0 ? "zero" : bytes < 4096 ? "under-4k" : bytes <= 65536 ? "4k-to-64k" : "over-64k",
+    rawExpectedMatch: expected.test(raw), cleanedExpectedMatch: expected.test(text),
+    paletteHintSubstring: text.includes("Enter runs"),
+    requestedLineSubstring: text.includes(`status ${seat}`),
+    parenRolePrefixSubstring: text.includes(`${seat} (worker)`),
+    slashRolePrefixSubstring: text.includes(slash),
+    parenProcessRowSubstring: text.includes(`${seat} (worker) · seat · pty · running`),
+    slashProcessRowSubstring: text.includes(`${slash} · seat · pty · running`),
+    slashWorkingQualifierSubstring: text.includes(`${slash} · seat · pty · running · mesh working · progress unknown`),
+    slashIdleQualifierSubstring: text.includes(`${slash} · seat · pty · running · mesh idle`),
+    statusErrorPrefixSubstring: text.includes("status: "),
+    usageStatusSubstring: text.includes("usage: status <agent>"),
+    noControlPathSubstring: text.includes("no control path"),
+    unknownCommandSubstring: text.includes("unknown command: status"),
+    consoleExitObserved: s.exited !== undefined,
+    exitClass: s.exited === undefined ? "unobserved" : s.exited.code === 0 ? "zero" : "nonzero",
+  });
+}
 async function until<T>(probe: () => T | undefined, ms: number): Promise<T | undefined> {
   const t0 = Date.now();
   let v = probe();
@@ -138,12 +166,14 @@ try {
 
   console.log("2. :status finds a seat on either manager, every time");
   let hits = 0;
+  let statusAttempt = 0;
   for (const seat of ["w2", "w1", "w2", "w1", "w2", "w2"]) {
+    statusAttempt += 1;
     await wait(3_300); // the previous notice auto-clears after 3 s; a stale one must not match
     m = s.mark();
     await s.command(`status ${seat}`);
-    if (await s.waitFor(new RegExp(`${seat} \\(worker\\) · seat · pty · running`), 20_000, m)) hits++;
-    else console.log(`    status ${seat} answered: ${clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? "(nothing)"}`);
+    if (await s.waitFor(new RegExp(`${seat}/worker · seat · pty · running`), 20_000, m)) hits++;
+    else console.log("    CONSOLE STATUS OBSERVATION " + statusObservation(s, m, seat, statusAttempt, "own-manager-row", new RegExp(`${seat}/worker · seat · pty · running`)));
   }
   await wait(3_300);
   check(":status <seat> is answered by the seat's own manager on every try (6/6, both hosts)", hits === 6, { hits });
@@ -164,15 +194,15 @@ try {
   await wait(3_300);
   m = s.mark();
   await s.command("status w1");
-  const qualified = await s.waitFor(/w1 \(worker\).*mesh working · progress unknown/, 20_000, m);
+  const qualified = await s.waitFor(/w1\/worker.*mesh working · progress unknown/, 20_000, m);
   check(":status on a seat the mesh reports WORKING says progress unknown, not a bare working",
-    qualified, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
+    qualified, qualified ? undefined : statusObservation(s, m, "w1", 7, "working-qualifier", /w1\/worker.*mesh working · progress unknown/));
   await wait(3_300);
   m = s.mark();
   await s.command("status w2");
-  const idle = await s.waitFor(/w2 \(worker\).*mesh idle/, 20_000, m);
+  const idle = await s.waitFor(/w2\/worker.*mesh idle/, 20_000, m);
   check("...while an idle seat is reported plainly, so the qualifier is not printed unconditionally",
-    idle, clean(s.out.slice(m)).match(/status: [^│\n]*/)?.[0] ?? clean(s.out.slice(m)).slice(-200));
+    idle, idle ? undefined : statusObservation(s, m, "w2", 8, "idle-qualifier", /w2\/worker.*mesh idle/));
   m = s.mark();
   await s.command("status nobody");
   const t0 = Date.now();

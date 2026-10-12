@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import ts from "typescript";
 import {
   CREDENTIAL_LIFETIMES, permissionsFor, epServeGrantRows, effectsBindGrants, poolOwnerBindGrants, patternCovers,
   chatStream, dmStream, dlvStream, inboxStream, taskStream,
@@ -47,6 +48,9 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     "manager-caller"() {
       one("manager-caller", { managerInstanceId: instance });
       one("manager-caller", { managerInstanceId: instance, capabilities: ["spawn", "run", "admin"] }, "spawn-run-admin");
+    },
+    "endpoint-caller"() {
+      one("endpoint-caller", { endpointCaller: { endpoint: "test.example.census", instanceId: instance, capabilities: [{ endpoint: "test.example.census", command: "increment", instanceOnly: false, routes: ["one", "all"] }] }, issued: { generation: "a".repeat(32), acceptedToken: "a".repeat(32) } });
     },
     provisioner: () => one("provisioner"),
     deprovisioner: () => one("deprovisioner", { deprovisionTarget: { principal: "local.worker", lifecycleUid: uid } }),
@@ -123,10 +127,14 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
       assert.throws(() => produce(token, principal.connId), /typed material exchange/);
       continue; // Explicit refused view, represented separately from Profile in the report.
     }
+    if (view === "endpoint-caller") {
+      assert.throws(() => produce(token, principal.connId), /endpoint-caller authority is unsupported/);
+      continue; // Requires the dedicated issuer hook, not generic view permission construction.
+    }
     rows.push({ profile: view, variant: `callout-view:${view}`, permissions: await produce(token, principal.connId), producer: "calloutPermissions" });
   }
   assert.deepEqual(rows.filter((row) => row.producer === "calloutPermissions").map((row) => row.variant).sort(),
-    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service").map((view) => `callout-view:${view}`).sort(),
+    USER_TOKEN_VIEWS.filter((view) => view !== "manager-service" && view !== "endpoint-caller").map((view) => `callout-view:${view}`).sort(),
     "every generic callout view must have a producer");
   return rows;
 }
@@ -237,7 +245,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
+export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "endpoint-caller"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a
@@ -257,6 +265,42 @@ export const TRUSTED_PROFILES: readonly Profile[] = Object.freeze([
   "environment-bootstrap", "environment-manager-supervisor", "environment-manager-executor",
   "environment-manager-goal-writer",
 ]);
+
+/** Conservative decoded string/template occurrence scan, including erased syntax and keys.
+ * Comments are ignored. Dynamic construction and literal fragments separated by a hole are not joined. */
+export function issuedRailLiterals(sources: ReadonlyMap<string, string>): Map<string, boolean> {
+  const text = new Map([...sources].map(([file, source]) => [resolve(file), source]));
+  const options: ts.CompilerOptions = { noEmit: true, noResolve: true, noLib: true, target: ts.ScriptTarget.Latest };
+  const host = ts.createCompilerHost(options);
+  const parsed = new Map<string, ts.SourceFile>();
+  host.readFile = file => text.get(resolve(file));
+  host.fileExists = file => text.has(resolve(file));
+  host.getSourceFile = (file, version) => {
+    const key = resolve(file), source = text.get(key);
+    if (source === undefined) return undefined;
+    let result = parsed.get(key);
+    if (!result) { result = ts.createSourceFile(key, source, version, true, ts.ScriptKind.TS); parsed.set(key, result); }
+    return result;
+  };
+  host.writeFile = () => { throw new Error("the census syntax host must not emit"); };
+  const program = ts.createProgram([...text.keys()], options, host);
+  const found = new Map<string, boolean>();
+  for (const file of sources.keys()) {
+    const source = program.getSourceFile(resolve(file));
+    if (!source) throw new Error(`census syntax source missing: ${file}`);
+    const diagnostics = program.getSyntacticDiagnostics(source);
+    if (diagnostics.length) throw new Error(`census syntax refused ${file}: ${diagnostics.map(d => ts.flattenDiagnosticMessageText(d.messageText, "\n")).join("; ")}`);
+    let spelled = false;
+    function visit(node: ts.Node): void {
+      if ((ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) && node.text.includes("ep.v1")) spelled = true;
+      if (ts.isTemplateExpression(node) && [node.head, ...node.templateSpans.map(span => span.literal)].some(part => part.text.includes("ep.v1"))) spelled = true;
+      ts.forEachChild(node, visit);
+    }
+    visit(source);
+    found.set(file, spelled);
+  }
+  return found;
+}
 
 /** Every shipped `.ts` under the source trees a credential's grants can come from. */
 export function shippedSources(root: string): string[] {

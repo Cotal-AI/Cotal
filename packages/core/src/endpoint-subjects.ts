@@ -15,7 +15,7 @@
  * colliding token parses to `null`, never to a confused identity. A subject matching no defined
  * shape returns `null` and MUST NOT be handled.
  */
-import { ROOT, spacePrefix, assertValidOwnerToken, assertLifecycleToken } from "./subjects.js";
+import { ROOT, spacePrefix, token, assertValidOwnerToken, assertLifecycleToken } from "./subjects.js";
 
 // One grammar bounds both `lifecycleUid` and `instanceId` (§13.1) — the definition lives in
 // subjects.ts (the messaging plane lifecycle-keys resource names with it); re-exported here so the
@@ -213,6 +213,61 @@ export const EP_RAIL_V1 = "v1";
  *  `inst` = one instance by its stable `(endpoint, instanceId)` address (single-owner endpoint
  *  names carry no owner tokens). */
 export type EpRoute = { mode: "one" | "all" } | { mode: "inst"; instanceId: string };
+
+export type EpRequestObserveScope =
+  | { kind: "issued-instances" }
+  | { kind: "issued-instance"; endpoint: string; instanceId: string }
+  | { kind: "command"; rail: "legacy" | "v1"; endpoint: string; command: string;
+      route: { mode: "one" } | { mode: "inst"; instanceId: string } };
+
+/** Build a trusted observer subscription filter, not a serving or caller publish grant.
+ * Caller tails remain open. Instance wildcards require the explicit command/inst scope.
+ * Space must already be canonical and the completed filter must fit the subject byte bound. */
+export function epRequestObserveFilter(space: string, scope: EpRequestObserveScope): string {
+  if (typeof space !== "string" || !space || token(space) !== space)
+    throw new Error("observer space must be a nonempty canonical token");
+  function closed(value: unknown, keys: readonly string[]): asserts value is Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      throw new Error("closed observer scope required");
+    const own = Reflect.ownKeys(value);
+    if (own.length !== keys.length || keys.some(key => !Object.hasOwn(value, key)) || own.some(key => typeof key !== "string" || !keys.includes(key)))
+      throw new Error("closed observer scope required");
+  }
+  function string(value: unknown, what: string): string {
+    if (typeof value !== "string") throw new Error(`observer ${what} must be a string`);
+    return value;
+  }
+  if (!scope || typeof scope !== "object" || Array.isArray(scope)) throw new Error("closed observer scope required");
+  const prefix = spacePrefix(space);
+  switch (scope.kind) {
+    case "issued-instances":
+      closed(scope, ["kind"]);
+      return assertSized(`${prefix}.ep.v1.inst.>`);
+    case "issued-instance":
+      closed(scope, ["kind", "endpoint", "instanceId"]);
+      return assertSized(`${prefix}.ep.v1.inst.${endpointToken(string(scope.endpoint, "endpoint"))}.${assertLifecycleToken(string(scope.instanceId, "instanceId"))}.*.>`);
+    case "command": {
+      closed(scope, ["kind", "rail", "endpoint", "command", "route"]);
+      if (scope.rail !== "legacy" && scope.rail !== "v1") throw new Error("unsupported observer rail");
+      const endpoint = endpointToken(string(scope.endpoint, "endpoint"));
+      const command = assertCommandToken(string(scope.command, "command"));
+      const plane = scope.rail === "v1" ? "ep.v1" : "ep";
+      if (!scope.route || typeof scope.route !== "object" || Array.isArray(scope.route)) throw new Error("closed observer route required");
+      if (scope.route.mode === "one") {
+        closed(scope.route, ["mode"]);
+        return assertSized(`${prefix}.${plane}.one.${endpoint}.${command}.>`);
+      }
+      if (scope.route.mode === "inst") {
+        closed(scope.route, ["mode", "instanceId"]);
+        const instance = string(scope.route.instanceId, "instanceId");
+        if (instance !== "*") assertLifecycleToken(instance);
+        return assertSized(`${prefix}.${plane}.inst.${endpoint}.${instance}.${command}.>`);
+      }
+      throw new Error("unsupported observer route");
+    }
+    default: throw new Error("unsupported observer scope");
+  }
+}
 
 /** Build a request subject (class, scatter, or instance form; targeted iff `target` is given). */
 export function epRequestSubject(

@@ -1,4 +1,4 @@
-// The manager host for orphan-seat-reap.smoke.ts: a real Manager on the production custodial pty
+// The shared host for the three orphan-seat suites: a real Manager on the explicit custodial pty
 // runtime (COTAL_SEAT_ROOT points every host of one run at the same custody root), spawning the
 // lifecycle e2e stub through a pty so the seat is a real custodian + child pair. Prints the seat's
 // custody reference so the suite can read the record and watch both pids.
@@ -6,7 +6,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, writeFileSync } from "node:fs";
 import { Manager, type SpawnHooks } from "../src/manager.js";
-import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime } from "@cotal-ai/core";
+import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
+import { evictDeniedPrincipalWithCreds, registry, type AgentHandle, type Connector, type EvictionResult, type LaunchOpts, type LaunchSpec, type Runtime, type RuntimeProvider } from "@cotal-ai/core";
 
 const root = process.env.REPRO_ROOT!;
 const space = process.env.REPRO_SPACE!;
@@ -18,7 +19,10 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const envFor = (o: LaunchOpts): Record<string, string> => ({ PATH: process.env.PATH ?? "", COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? servers), COTAL_CREDS: String(o.creds), COTAL_ID: String(o.id), COTAL_NAME: o.name, COTAL_LIFECYCLE_UID: String(o.lifecycleUid) });
 registry.register({ kind: "connector", name: "orphan-reap-repro", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [stub], env: envFor(o) }) } as Connector);
 const alias = process.env.REPRO_ALIAS ?? "worker";
-const manager = new Manager({ space, servers, runtime: "pty", workspaceRoot: root, consolePort: 0 });
+// The shipping pty backend spawns in-process. These experiments require actual seat custody.
+const custodialProvider: RuntimeProvider = { kind: "runtime", name: "custodial-pty", available: () => true, create: () => new CustodialPtyRuntime() };
+registry.register(custodialProvider);
+const manager = new Manager({ space, servers, runtime: "custodial-pty", workspaceRoot: root, consolePort: 0 });
 (manager as unknown as { staticLifecycleEvict?: (principal: string) => Promise<EvictionResult> }).staticLifecycleEvict =
   (principal) => evictDeniedPrincipalWithCreds({
     servers,

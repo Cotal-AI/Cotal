@@ -35,10 +35,11 @@
  */
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { AgentHandle, AttachSession } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
-import type { FreeSlotCause } from "../src/manager.js";
+import type { FreeSlotCause, ManagerResumeAgent } from "../src/manager.js";
 import { PtyRuntime } from "../src/runtime/pty.js";
 
 let failures = 0;
@@ -88,6 +89,7 @@ writeFileSync(join(root, ".cotal", "agents", "worker.md"), "---\nname: worker\n-
 interface ManagedLike {
   id: string; name: string; lifecycleUid: string; handle: AgentHandle;
   suppressCleanup: boolean; terminalizing: boolean; startedAt: number; spawner?: string;
+  launch: Pick<ManagerResumeAgent["launch"], "source" | "cwd" | "allowSubscribe" | "events">;
 }
 
 function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<string, ManagedLike> } {
@@ -103,6 +105,11 @@ function managerWith(handle: AgentHandle): { manager: Manager; agents: Map<strin
   agents.set(handle.name, {
     id: `local.${handle.name}`, name: handle.name, lifecycleUid: `uid-${handle.name}`,
     handle, suppressCleanup: false, terminalizing: false, startedAt: Date.now(),
+    // Every injected seat uses the worker persona above and has no subscribed read scope.
+    launch: {
+      source: { kind: "persona", ref: "worker", configPath: join(root, ".cotal", "agents", "worker.md"), configSha256: createHash("sha256").update(readFileSync(join(root, ".cotal", "agents", "worker.md"))).digest("hex") },
+      cwd: root, allowSubscribe: [], events: false,
+    },
   });
   return { manager, agents };
 }

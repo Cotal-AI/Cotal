@@ -208,6 +208,23 @@ jobs:
         run: pnpm build
       - name: Web console auth
         run: pnpm smoke:web-console-auth
+      - name: Bounded auth journal source checks
+        run: pnpm smoke:diagnostic-auth-journal
+      - name: Bounded auth journal live entry checks
+        run: pnpm smoke:diagnostic-auth-journal:live
+      - name: Endpoint two-user public acceptance
+        run: pnpm smoke:endpoint-two-user-public
+      # 48 diagnostic controls observe public entry boundaries, not protocol3 retry acceptance.
+      - name: Endpoint protocol3 public entry diagnostic
+        run: pnpm smoke:endpoint-protocol3-public-entry-diagnostic
+      - name: Endpoint canonical caller renewal native baseline
+        run: pnpm smoke:endpoint-canonical-renewal:live
+      - name: Endpoint issued public caller acceptance
+        run: pnpm smoke:endpoint-issued-public-caller
+      - name: Endpoint CLI describe causal regression
+        run: pnpm smoke:endpoint-cli-describe-causal
+      - name: Endpoint serving PREPARE refusal regression
+        run: pnpm smoke:endpoint-prepare-refusal
       # Broker-free boundary/preflight guards + the live target-resolution / spawn-from-anywhere /
       # readiness / up-stack / up-manifest / ext / dogfood e2es (real broker, real agents).
       - name: Core boundary, mesh preflight & resolution

@@ -20,6 +20,22 @@ import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "../../../packages/core/smoke/_ephemeral-only.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
+let pass = 0;
+let fail = 0;
+let reportedException = false;
+let stage: "setup" | "initial-start" | "broker-loss" | "broker-restart" | "terminal-reconnect"
+  | "initial-stop" | "initial-bind" | "pending-dial" | "rebuild-bind" | "presence-refusal"
+  | "presence-stop" | "presence-rebuild" | "presence-order" | "presence-reject-inflight"
+  | "presence-success-inflight" | "status-order" | "status-rejection" | "status-straggler"
+  | "cleanup-agents" | "cleanup-broker" | "cleanup-files" | "summary" = "setup";
+const reportException = (error: unknown): void => {
+  reportedException = true;
+  try {
+    console.error(`scenario threw ${JSON.stringify({ stage, completedChecks: Math.max(0, Math.min(27, pass + fail)), errorKind: error instanceof Error && error.name === "TimeoutError" ? "timeout" : "other" })}`);
+  } catch { /* Diagnostic failure must not replace the original exception. */ }
+};
+
+try {
 scrubAmbientBrokerEnv();
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const until = async (fn: () => boolean, timeoutMs = 12_000): Promise<boolean> => {
@@ -34,8 +50,6 @@ const awaitExit = (proc: ChildProcess, timeoutMs = 4_000): Promise<void> =>
     proc.once("exit", () => { clearTimeout(timer); resolve(); });
   });
 
-let pass = 0;
-let fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown): void => {
   if (cond) { pass++; console.log(`  \u2713 ${name}`); }
   else { fail++; console.log(`  \u2717 FAIL: ${name}`, extra ?? ""); }
@@ -86,6 +100,7 @@ try {
     for (let i = 0; i < 80; i++) { if (await isReachable(servers)) return true; await sleep(50); }
     return false;
   })());
+  stage = "initial-start";
   await agent.start(100);
   check(
     "initial transport=true arrives before or with full-bind readiness",
@@ -94,6 +109,7 @@ try {
     { transport, readiness, live: agent.transportConnected, ready: agent.connected },
   );
 
+  stage = "broker-loss";
   broker.kill("SIGKILL");
   await awaitExit(broker);
   check(
@@ -103,6 +119,7 @@ try {
     { transport, readiness, live: agent.transportConnected, ready: agent.connected },
   );
 
+  stage = "broker-restart";
   broker = startBroker();
   releases.push(teardownOnSignal(broker, dir));
   check("the replacement broker starts", await (async () => {
@@ -129,6 +146,7 @@ try {
   ep.reestablishLoop = async () => {};
   const unreachablePort = await pickFreePort();
   ep.nc!.setServers([`127.0.0.1:${unreachablePort}`]);
+  stage = "terminal-reconnect";
   await ep.nc!.reconnect();
   check(
     "a REAL terminal close marks readiness false before exposing its user-visible reason",
@@ -141,6 +159,7 @@ try {
     { ready: agent.connected, terminalIssueAtError, latestIssue: agent.connectionIssue, transport },
   );
 
+  stage = "initial-stop";
   await agent.stop();
   check("clean stop clears readiness and transport", agent.connected === false && agent.transportConnected === false, {
     ready: agent.connected,
@@ -155,6 +174,7 @@ try {
   // rather than on the agent is the point, and it is the load-bearing clause here: MeshAgent
   // carries its own stopping guard, so its flag stays false either way and only a direct endpoint
   // listener is exposed to the late edge.
+  stage = "initial-bind";
   const raceAgent = new MeshAgent({ ...cfg, name: `transport-live-race-${port}` });
   const raceEdges: Array<{ connected: boolean }> = [];
   raceAgent.ep.on("connection", (event: { connected: boolean }) => raceEdges.push(event));
@@ -162,15 +182,52 @@ try {
   let bindAtFinalStep = false;
   let releaseBind: () => void = () => {};
   const bindGate = new Promise<void>((resolve) => { releaseBind = resolve; });
-  raceEp.armPlane3 = async () => { bindAtFinalStep = true; await bindGate; };
-  const raceStart = raceAgent.start(100).catch(() => {});
+  // Each retained record includes prior observations. The maintained excerpt may drop every record;
+  // a missing marker is not evidence of an unsettled promise. These records enter failure signatures.
+  let observationSequence = 0;
+  const observed = {
+    gateEntered: false, gateResumed: false, pollReturned: false, reachedFinalStep: false,
+    stopReturned: false, releaseCalled: false, caughtStartRejected: false, caughtStartReturned: false,
+  };
+  const observe = (phase: "gate-enter" | "gate-resume" | "start-rejected"
+    | "poll-before" | "poll-after" | "stop-before" | "stop-after"
+    | "release-before" | "release-after" | "caught-start-before" | "caught-start-after"): void => {
+    process.stderr.write(`${JSON.stringify({ scenario: "broker-initial-bind", sequence: ++observationSequence, phase, ...observed })}\n`);
+  };
+  raceEp.armPlane3 = async () => {
+    bindAtFinalStep = true;
+    observed.gateEntered = true;
+    observe("gate-enter");
+    await bindGate;
+    observed.gateResumed = true;
+    observe("gate-resume");
+  };
+  const raceStart = raceAgent.start(100).catch(() => {
+    observed.caughtStartRejected = true;
+    observe("start-rejected");
+  });
   // A real dial and bind on a loaded runner, not a local poll, so this gets the same budget as
   // the terminal-close cell. It returns the moment the bind arrives, so the cost is only paid
   // when the bind never gets there, and then the cell fails loudly rather than passing empty.
+  observe("poll-before");
   const reachedFinalStep = await until(() => bindAtFinalStep, 30_000);
-  await raceAgent.stop();
+  observed.pollReturned = true;
+  observed.reachedFinalStep = reachedFinalStep;
+  observe("poll-after");
+  observe("stop-before");
+  // Stop must begin while the real bind is held, but its join needs this gate released.
+  const raceStop = raceAgent.stop();
+  observe("release-before");
   releaseBind();
+  observed.releaseCalled = true;
+  observe("release-after");
+  await raceStop;
+  observed.stopReturned = true;
+  observe("stop-after");
+  observe("caught-start-before");
   await raceStart;
+  observed.caughtStartReturned = true;
+  observe("caught-start-after");
   check(
     "stop during a REAL initial bind never announces the connection it then tears down",
     reachedFinalStep && !raceEdges.some((event) => event.connected === true) && raceAgent.connected === false,
@@ -183,6 +240,7 @@ try {
   // Proven through a real dial rather than a stub: a TCP proxy accepts the client socket and holds it,
   // so the dial is genuinely pending while stop() runs, then pipes to the real broker so the handshake
   // completes for real. Nothing in the endpoint is replaced for this cell.
+  stage = "pending-dial";
   let releaseDial: () => void = () => {};
   const dialGate = new Promise<void>((resolve) => { releaseDial = resolve; });
   let dialArrived = false;
@@ -229,6 +287,7 @@ try {
   // door onto that path. Gate armPlane3 AFTER a successful first bind so the second connectAndBind
   // (the rebuild) is the one held open; wait on the gate itself, then land stop() inside that
   // window. Listening on the endpoint, not MeshAgent, for the same reason as the start() cell.
+  stage = "rebuild-bind";
   rebuildAgent = new MeshAgent({ ...cfg, name: `transport-live-rebuild-${port}` });
   const rebuildEdges: Array<{ connected: boolean }> = [];
   rebuildAgent.ep.on("connection", (event: { connected: boolean }) => rebuildEdges.push(event));
@@ -279,6 +338,7 @@ try {
   // The first cell is the true positive and it is the one that stops the fix from over-correcting:
   // clearing too eagerly would silently delete the diagnosis this whole change exists to add, and a
   // suite that only proves the sentence disappears cannot tell a repair from a deletion.
+  stage = "presence-refusal";
   staleAgent = new MeshAgent({ ...cfg, name: `transport-live-stale-${port}` });
   await staleAgent.start(100);
   await until(() => staleAgent!.connected, 30_000);
@@ -357,6 +417,7 @@ try {
   // The stimulus is a put held OPEN and settled by this suite, because the defect is entirely about
   // WHEN the rejection lands. A put that rejects immediately cannot reach it, which is why the four
   // cells above pass against the unfenced source.
+  stage = "presence-stop";
   inflightAgent = new MeshAgent({ ...cfg, name: `transport-live-inflight-${port}` });
   await inflightAgent.start(100);
   await until(() => inflightAgent!.connected, 30_000);
@@ -389,6 +450,7 @@ try {
   // rebuild finishes inside the window routinely. Here the rebuild binds a HEALTHY connection and the
   // old-epoch put then rejects: the record must stay clear, because this connection has published
   // nothing that failed.
+  stage = "presence-rebuild";
   inflightAgent = new MeshAgent({ ...cfg, name: `transport-live-inflight2-${port}` });
   await inflightAgent.start(100);
   await until(() => inflightAgent!.connected, 30_000);
@@ -426,6 +488,7 @@ try {
   // The agent gets its OWN variable: reusing inflightAgent would orphan inflight2 (its stop lives
   // only in the finally, which would then stop the wrong agent) and an unstopped endpoint's
   // reestablish loop outlives the suite — the process never exits.
+  stage = "presence-order";
   overlapAgent = new MeshAgent({ ...cfg, name: `transport-live-inflight3-${port}` });
   await overlapAgent.start(100);
   await until(() => overlapAgent!.connected, 30_000);
@@ -491,6 +554,7 @@ try {
   // rejection is the latest evidence and the refusal must be recorded. At the fence that compared
   // against the newest put STARTED, A's rejection was dropped and the bucket refused a write with
   // presenceWriteFailure() undefined.
+  stage = "presence-reject-inflight";
   blockerAgent = new MeshAgent({ ...cfg, name: `transport-live-blocker1-${port}` });
   await blockerAgent.start(100);
   await until(() => blockerAgent!.connected, 30_000);
@@ -523,6 +587,7 @@ try {
   // evidence and must clear the refusal. At the fence that compared against the newest put STARTED,
   // A's success was marked superseded and the record stayed planted after the bucket had accepted a
   // write.
+  stage = "presence-success-inflight";
   blocker2Agent = new MeshAgent({ ...cfg, name: `transport-live-blocker2-${port}` });
   await blocker2Agent.start(100);
   await until(() => blocker2Agent!.connected, 30_000);
@@ -568,6 +633,7 @@ try {
   // leg QUIETS the stub first — settle every put until none arrives for 300ms — and then settles
   // puts ONE AT A TIME as the leg's own calls issue them; a heartbeat put landing mid-leg plays
   // the same role the next settle was about to play and changes no observation below.
+  stage = "status-order";
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
@@ -660,6 +726,7 @@ try {
   // Cell (c): a rejected presence write must not stall the next one. The first call's put
   // rejects; the chain swallows the rejection at its tail only, so the second call's put still
   // arrives and settles, and the endpoint records the second call's status.
+  stage = "status-rejection";
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-ordering2-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
@@ -696,6 +763,7 @@ try {
   // without it queues its put BEFORE the offline put and lands first — the reviewer's finding).
   // The offline publish itself must not start until the held put settles: departure is the last
   // write, later writes are refused, not reordered (#636).
+  stage = "status-straggler";
   orderingAgent = new MeshAgent({ ...cfg, name: `transport-live-straggler-${port}` });
   await orderingAgent.start(100);
   await until(() => orderingAgent!.connected, 30_000);
@@ -750,7 +818,12 @@ try {
     stragglerRefusal === "agent is stopping; presence writes are refused" && !offlineStartedWhileHeldStraggler && !putAfterOffline,
     { stragglerRefusal, offlineStartedWhileHeldStraggler, putAfterOffline },
   );
+} catch (error) {
+  reportException(error);
+  throw error;
 } finally {
+  try {
+  stage = "cleanup-agents";
   await orderingAgent?.stop().catch(() => {});
   await blocker2Agent?.stop().catch(() => {});
   await blockerAgent?.stop().catch(() => {});
@@ -759,12 +832,19 @@ try {
   await staleAgent?.stop().catch(() => {});
   await rebuildAgent?.stop().catch(() => {});
   await agent.stop().catch(() => {});
+  stage = "cleanup-broker";
   broker.kill("SIGKILL");
   await awaitExit(broker);
+  stage = "cleanup-files";
   rmSync(dir, { recursive: true, force: true });
   for (const release of releases) release();
+  } catch (error) {
+    reportException(error);
+    throw error;
+  }
 }
 
+stage = "summary";
 const EXPECTED_CELLS = 27;
 const ran = pass + fail;
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
@@ -773,3 +853,7 @@ if (ran !== EXPECTED_CELLS) {
   console.log(`SUITE INCOMPLETE: ran ${ran} of ${EXPECTED_CELLS} cells; a partial run is not a pass`);
   process.exitCode = 1;
 } else process.exitCode = fail === 0 ? 0 : 1;
+} catch (error) {
+  if (!reportedException) reportException(error);
+  throw error;
+}

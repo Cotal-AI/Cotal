@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/manager/smoke/remote-manager-goal-reader.smoke.ts"
+  ],
+  "guard": "an interactive manager caller reads its own connection's accepted generation before resolving the remote service",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
+  "completionMarker": "REMOTE-MANAGER-GOAL-READER COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/remote-manager-goal-reader-accepted-caller.json",
+  "mutations": [
+    {
+      "name": "the remote reader uses the legacy caller triple instead of its connection's accepted generation",
+      "file": "implementations/manager/smoke/remote-manager-goal-reader.smoke.ts",
+      "find": "    const caller = await issuedUserCaller(nc, space, String(connectOpts.name), expectedCaller);",
+      "replace": "    const caller = expectedCaller;",
+      "expectRed": "owner A resolves the actual remote manager",
+      "cell": "owner A resolves the actual remote manager",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
+      "note": "Only the caller binding reverts. The real broker denies the legacy reply subscription under the issued interactive view. The existing resolve check records that refusal by name and rethrows the same exception. No service or permission is substituted."
+    }
+  ]
+}

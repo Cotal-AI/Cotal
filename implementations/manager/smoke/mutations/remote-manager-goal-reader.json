@@ -15,10 +15,11 @@
   "mutations": [
     {
       "name": "omit remote service status publication",
-      "file": "implementations/manager/src/remote-register.ts",
-      "find": "    await writeServiceStatus(recordsKv, {\n      endpoint: MANAGER_ENDPOINT,\n      instanceId: args.instanceId,\n      epoch: observed.processEpoch,\n      status: {\n        state: SERVICE_READY,\n        epoch: observed.processEpoch,\n        observedSpecRevision: observed.registrationRevision,\n      },\n      readProcessEpoch: async () => {\n        const current = await fence.observe();\n        if (!current) throw new Error(\"remote manager issuance gate vanished\");\n        return current.processEpoch;\n      },\n    });\n",
-      "replace": "    // Mutant omits remote service status publication.\n",
-      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "file": "packages/core/src/endpoint-service.ts",
+      "find": "  await writeServiceStatus(kv, {\n    endpoint, instanceId: args.instanceId, epoch: processEpoch,\n    status: { ...args.status, state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision },\n    readProcessEpoch,\n  });\n",
+      "replace": "  if (endpoint !== \"manager\") {\n  await writeServiceStatus(kv, {\n    endpoint, instanceId: args.instanceId, epoch: processEpoch,\n    status: { ...args.status, state: SERVICE_READY, epoch: processEpoch, observedSpecRevision: registrationRevision },\n    readProcessEpoch,\n  });\n  }\n",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
       "expectRed": "owner A selects its own live remote manager",
       "cell": "owner A selects its own live remote manager"
     },
