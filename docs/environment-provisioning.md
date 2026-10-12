@@ -140,6 +140,21 @@ External admission, required host policies, issuance recovery, file custody and 
 retirement still need their composition.
 Do not substitute these primitives for missing host policies or claim a runnable hosted manager.
 
+The auth package's internal native account-update collector submits an already signed account
+JWT over the host's existing system connection. The host pins the account and required server
+IDs. The collector waits within the supplied budget, at most 30 seconds, and accepts only
+account-matched `jwt updated` replies from that set. Missing responders, unlisted responders,
+failed replies and success-coded skipped updates refuse. It returns observed acceptance IDs,
+not a retirement or revocation receipt. A refused collection can still have applied the update
+on some servers; recover the same recorded signed claim rather than inventing another attempt.
+
+The host must serialize the current account claim, preserve prior revocations and configuration,
+keep signing and update authority outside guests, use durable account resolution, and own the
+required server set and operation-connection lifetime. An older signed claim can erase a
+revocation through the native update rail. The collector does not sign, store, merge or discover
+anything, and is not exported by the public auth index or wired into lifecycle retirement.
+Native acceptance alone proves neither durable containment nor a runnable hosted manager.
+
 Supervise the cleanup task independently of any operator session. It resumes recorded
 destruction requests and expired environments after a host restart. Monitor its failure
 promise and its per-record reports. An unavailable store or a provider create whose reply

@@ -1,0 +1,71 @@
+{
+  "suite": ["implementations/auth/smoke/native-account-update-acks.smoke.ts"],
+  "guard": "Native account update acceptance requires the pinned account and exact required server acknowledgments, not one success response",
+  "command": "pnpm smoke:native-account-update-acks",
+  "proveWith": "pnpm mutation-proof --config implementations/auth/smoke/mutations/native-account-update-acks.json",
+  "why": ["The internal collector runs over actual scoped system connections on two routed full resolvers, a disconnected required holder and an unloaded memory resolver. Stored claims, live eviction and new connections are independent native controls. This is acceptance collection, not host admission, signer serialization, persistence or lifecycle retirement."],
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 20,
+  "mutations": [
+    {
+      "name": "missing required server is reported accepted",
+      "file": "implementations/auth/src/native-account-update-acks.ts",
+      "find": "  if ([...required].some(id => !accepted.has(id)))\n    throw new EpEnvelopeError(\"unavailable\", \"native account update has missing required acknowledgments\");\n",
+      "replace": "",
+      "expectRed": "missing required server refuses instead of declaring update accepted",
+      "cell": "missing required server refuses instead of declaring update accepted",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:native-account-update-acks"
+    },
+    {
+      "name": "unlisted responder widens required server set",
+      "file": "implementations/auth/src/native-account-update-acks.ts",
+      "find": " || !required.has(result.server.id)",
+      "replace": "",
+      "expectRed": "unlisted native responder refuses rather than widening the required set",
+      "cell": "unlisted native responder refuses rather than widening the required set",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:native-account-update-acks"
+    },
+    {
+      "name": "success-coded skipped update is counted as acceptance",
+      "file": "implementations/auth/src/native-account-update-acks.ts",
+      "find": " || result.data?.message !== \"jwt updated\"",
+      "replace": "",
+      "expectRed": "native skipped response is success-coded but is not an update acknowledgment",
+      "cell": "native skipped response is success-coded but is not an update acknowledgment",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:native-account-update-acks"
+    },
+    {
+      "name": "duplicate required coordinates are admitted",
+      "file": "implementations/auth/src/native-account-update-acks.ts",
+      "find": "      new Set(input.expectedServerIds).size !== input.expectedServerIds.length ||\n",
+      "replace": "",
+      "expectRed": "duplicate required server IDs refuse before native publish",
+      "cell": "duplicate required server IDs refuse before native publish",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:native-account-update-acks"
+    },
+    {
+      "name": "foreign account claim reaches native publish",
+      "file": "implementations/auth/src/native-account-update-acks.ts",
+      "find": "claims.sub !== accountPublicKey || ",
+      "replace": "",
+      "expectRed": "foreign account claim refuses before native publish",
+      "cell": "foreign account claim refuses before native publish",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:native-account-update-acks"
+    },
+    {
+      "name": "zero wait budget reaches native publish",
+      "file": "implementations/auth/src/native-account-update-acks.ts",
+      "find": "input.maxWaitMs < 1 || ",
+      "replace": "",
+      "expectRed": "zero fractional and over-bound wait budgets refuse before native publish",
+      "cell": "zero fractional and over-bound wait budgets refuse before native publish",
+      "completionMarker": "COTAL_SMOKE_SENTINEL",
+      "afterRestore": "pnpm smoke:native-account-update-acks"
+    }
+  ]
+}
