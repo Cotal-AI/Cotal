@@ -337,13 +337,14 @@ try {
     { reachedRebuildFinalStep, rebuildBindAtFinalStep },
   );
   observeRebuild("stop-before");
-  await rebuildAgent.stop();
-  rebuildObserved.stopReturned = true;
-  observeRebuild("stop-after");
+  const rebuildStop = rebuildAgent.stop();
   observeRebuild("release-before");
   releaseRebuildBind();
   rebuildObserved.releaseCalled = true;
   observeRebuild("release-after");
+  await rebuildStop;
+  rebuildObserved.stopReturned = true;
+  observeRebuild("stop-after");
   observeRebuild("caught-rebuild-before");
   await rebuildWork;
   rebuildObserved.caughtRebuildReturned = true;
