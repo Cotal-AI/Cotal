@@ -157,6 +157,10 @@ function inventory(rows: Record<string, unknown>[]): unknown {
 function rejectsPrivately(operation: () => unknown): boolean {
   try { operation(); return false; } catch { return true; }
 }
+type Capture = { complete: true; manager: boolean; host: boolean } | { complete: false };
+function requireCapture(capture: Capture): asserts capture is Extract<Capture, { complete: true }> {
+  assert.ok(capture.complete, "native account capture is complete and attributed");
+}
 try {
   for (const a of fx.accounts) {
     await core.setupSpaceStreams({ servers: fx.servers, space: a.space, creds: await core.mintCreds(a.auth, core.newIdentity(), "provisioner") });
@@ -188,9 +192,10 @@ try {
   const denied = await observe(b.accountPublicKey);
   assert.ok(!denied.gotAnyReply && !denied.sweepComplete && denied.conns.length === 0, "cell 3a: scoped credentials never widen to another account"); count++;
   // Keep the original observer credential and all original observation controls unchanged.
-  const capture = await (async () => {
+  const capture: Capture = await (async (): Promise<Capture> => {
     try {
-      observer = await connect({ servers: fx.servers, authenticator: credsAuthenticator(new TextEncoder().encode(observerCreds)), inboxPrefix: core.MEMBERSHIP_INBOX_PREFIX, maxReconnectAttempts: 0 });
+      // Handshake setup has its own existing 400ms ceiling. Each sweep separately keeps 400ms.
+      observer = await connect({ servers: fx.servers, authenticator: credsAuthenticator(new TextEncoder().encode(observerCreds)), inboxPrefix: core.MEMBERSHIP_INBOX_PREFIX, maxReconnectAttempts: 0, timeout: MAX_WAIT_MS });
       if ((await handles[0].readiness()).state !== "ready" || (await handles[1].readiness()).state !== "ready" || !handles[0].endpointDeploymentTrust) refuse();
       const trust = await handles[0].endpointDeploymentTrust();
       if (trust.account.accountPublicKey !== a.accountPublicKey || trust.account.space !== a.space || trust.accountSigningKey !== a.auth.account.signingPub) refuse();
@@ -201,10 +206,16 @@ try {
       const hostAgain = target(second, `cotal:endpoint-authority:${a.space}`, a.accountPublicKey, trust.accountSigningKey);
       if (!exact(inventory(first), inventory(second)) || manager.row.cid === host.row.cid || manager.claims.sub === host.claims.sub || !exact(projection(manager), projection(managerAgain)) || !exact(projection(host), projection(hostAgain))) refuse();
       if ((await handles[0].readiness()).state !== "ready" || (await handles[1].readiness()).state !== "ready") refuse();
-      return { manager: managerSubscriptions(manager.subjects, a.space, text(manager.claims.sub)), host: hostedCeiling(host.nats, a.space, text(host.claims.sub), a.accountPublicKey) && host.subjects.length === 1 && inboxSubject(host.subjects[0], text(host.claims.sub)) };
-    } catch { return { manager: false, host: false }; }
+      return { complete: true, manager: managerSubscriptions(manager.subjects, a.space, text(manager.claims.sub)), host: hostedCeiling(host.nats, a.space, text(host.claims.sub), a.accountPublicKey) && host.subjects.length === 1 && inboxSubject(host.subjects[0], text(host.claims.sub)) };
+    } catch { return { complete: false }; }
     finally { await observer?.close().catch(() => refuse()); observer = undefined; }
   })();
+  // Only admitted observations reach the two native semantic mutation targets.
+  let reachedSemantic = false, separated = false;
+  try { requireCapture({ complete: false }); reachedSemantic = true; }
+  catch (error) { separated = error instanceof Error && error.message === "native account capture is complete and attributed"; }
+  assert.ok(separated && !reachedSemantic, "private failed capture never reaches semantic observation predicates"); count++;
+  requireCapture(capture); count++;
   assert.ok(capture.manager, "full-service manager installs exactly eight observer subscriptions"); count++;
   assert.ok(capture.host, "full-service hosted authority has its complete closed self-minted claim ceiling"); count++;
   // These validator controls are private data checks, not native mutation proof.
