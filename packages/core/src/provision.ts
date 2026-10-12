@@ -15,7 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
-import { join } from "node:path";
+import { isAbsolute } from "node:path";
 import {
   decode,
   encodeOperator,
@@ -2956,8 +2956,25 @@ function renderTlsBlock(transport: BrokerTransport): string {
 `;
 }
 
-/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts via
- *  the in-config MEMORY resolver.
+type AccountResolverConfig = { kind: "memory" } | { kind: "full"; directory: string; limit: number; intervalMs: number };
+
+function renderAccountResolver(resolver: AccountResolverConfig | undefined): string {
+  if (resolver === undefined) return "resolver: MEMORY\n";
+  if (!resolver || typeof resolver !== "object" || Array.isArray(resolver))
+    throw new Error("serverConfig: account resolver options are invalid");
+  const keys = Object.keys(resolver);
+  if (resolver.kind === "memory" && keys.length === 1 && keys[0] === "kind") return "resolver: MEMORY\n";
+  const fields = ["kind", "directory", "limit", "intervalMs"];
+  if (resolver.kind !== "full" || keys.length !== fields.length || keys.some(key => !fields.includes(key)) ||
+      typeof resolver.directory !== "string" || !isAbsolute(resolver.directory) || /[\0\r\n]/.test(resolver.directory) ||
+      !Number.isSafeInteger(resolver.limit) || resolver.limit < 1 ||
+      !Number.isSafeInteger(resolver.intervalMs) || resolver.intervalMs < 1000 || resolver.intervalMs > 86_400_000)
+    throw new Error("serverConfig: account resolver options are invalid");
+  return `resolver: { type: full, dir: ${JSON.stringify(resolver.directory)}, allow_delete: false, interval: "${resolver.intervalMs}ms", limit: ${resolver.limit} }\n`;
+}
+
+/** Render the `nats-server` config that trusts ONE broker operator and serves N spaces' accounts.
+ *  Memory resolution is the default; full directory resolution is an explicit host choice.
  *
  *  Broker trust (operator + system account) comes from `broker` and has exactly one owner; the
  *  per-space data accounts are listed in `spaces`. Every space account is asserted to be signed by
@@ -2977,7 +2994,10 @@ export function serverConfig(
     /** JetStream file storage cap in bytes (`max_file_store`). Omitted leaves nats-server's dynamic
      *  default. nats-server fixes the cap at start and refuses a reload that changes it. */
     maxFileStore?: number;
-    /** Additional operator-signed accounts to preload in the MEMORY resolver — e.g. the dedicated
+    /** Native account resolution. Full mode requires an exclusive host-owned absolute directory,
+     *  positive capacity and a synchronization interval between one second and one day. */
+    accountResolver?: AccountResolverConfig;
+    /** Additional operator-signed accounts to preload in the selected resolver — e.g. the dedicated
      *  auth-callout account (`@cotal-ai/auth`), which must never share the data account. */
     extraAccounts?: Array<{ pub: string; jwt: string }>;
     /** How the client port is served. REQUIRED, and required on purpose: an optional TLS field
@@ -3031,8 +3051,7 @@ max_control_line: ${MAX_CONTROL_LINE_BYTES}
 ${tlsBlock}${renderJetStreamBlock("serverConfig", opts.storeDir, opts.maxFileStore)}
 ${websocket}operator: ${broker.operator.jwt}
 system_account: ${broker.sys.pub}
-resolver: MEMORY
-resolver_preload: {
+${renderAccountResolver(opts.accountResolver)}resolver_preload: {
 ${spaces.map((s) => `  ${s.account.pub}: ${s.account.jwt}`).join("\n")}
   ${broker.sys.pub}: ${broker.sys.jwt}${(opts.extraAccounts ?? []).map((a) => `\n  ${a.pub}: ${a.jwt}`).join("")}
 }

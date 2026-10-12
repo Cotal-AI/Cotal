@@ -1,0 +1,17 @@
+{
+  "suite": ["packages/core/smoke/full-account-resolver.smoke.ts"],
+  "guard": "Explicit full resolution survives native account updates and restart without weakening default or input discipline",
+  "command": "pnpm smoke:full-account-resolver",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/full-account-resolver.json",
+  "why": ["The changed public renderer feeds real private native servers. Actual signed claim updates, holder eviction, new connects and process restart distinguish disk resolution from the unchanged memory control. No CLI/service policy or hosted agent acceptance is claimed."],
+  "progressPattern": "^  [✓✗]",
+  "minTicks": 14,
+  "mutations": [
+    {"name":"inherited memory kind hides unknown own field", "file":"packages/core/src/provision.ts", "find":" && keys[0] === \"kind\"", "replace":"", "expectRed":"unknown null and expanded memory options refuse instead of falling back", "cell":"unknown null and expanded memory options refuse instead of falling back", "completionMarker":"COTAL_SMOKE_SENTINEL", "afterRestore":"pnpm smoke:full-account-resolver"},
+    {"name":"full selection emits memory", "file":"packages/core/src/provision.ts", "find":"return `resolver: { type: full, dir: ${JSON.stringify(resolver.directory)}, allow_delete: false, interval: \"${resolver.intervalMs}ms\", limit: ${resolver.limit} }\\n`;", "replace":"return \"resolver: MEMORY\\n\";", "expectRed":"full restart keeps the original preload and observed key policy", "cell":"full restart keeps the original preload and observed key policy", "completionMarker":"COTAL_SMOKE_SENTINEL", "afterRestore":"pnpm smoke:full-account-resolver"},
+    {"name":"full resolution permits deletion", "file":"packages/core/src/provision.ts", "find":"allow_delete: false, interval:", "replace":"allow_delete: true, interval:", "expectRed":"full renderer emits native capacity interval and no-delete settings", "cell":"full renderer emits native capacity interval and no-delete settings", "completionMarker":"COTAL_SMOKE_SENTINEL", "afterRestore":"pnpm smoke:full-account-resolver"},
+    {"name":"relative resolver directory is admitted", "file":"packages/core/src/provision.ts", "find":"!isAbsolute(resolver.directory) || ", "replace":"", "expectRed":"relative empty and control-character directories refuse", "cell":"relative empty and control-character directories refuse", "completionMarker":"COTAL_SMOKE_SENTINEL", "afterRestore":"pnpm smoke:full-account-resolver"},
+    {"name":"zero capacity is admitted", "file":"packages/core/src/provision.ts", "find":"resolver.limit < 1 ||", "replace":"resolver.limit < 0 ||", "expectRed":"zero and fractional native capacity refuse", "cell":"zero and fractional native capacity refuse", "completionMarker":"COTAL_SMOKE_SENTINEL", "afterRestore":"pnpm smoke:full-account-resolver"},
+    {"name":"subsecond sync is admitted", "file":"packages/core/src/provision.ts", "find":"resolver.intervalMs < 1000 || ", "replace":"", "expectRed":"subsecond fractional and over-day synchronization intervals refuse", "cell":"subsecond fractional and over-day synchronization intervals refuse", "completionMarker":"COTAL_SMOKE_SENTINEL", "afterRestore":"pnpm smoke:full-account-resolver"}
+  ]
+}
