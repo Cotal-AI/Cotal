@@ -6,7 +6,6 @@
   ],
   "guard": "genuine full-service manager observer installation and complete signed self-minted hosted claim ceiling captured through the existing account-scoped native CONNZ observer",
   "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces",
-  "completionMarker": "account liveness public:",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/fullservice-native-observation.json",
   "why": [
     "The existing two-account fixture supplies its existing target-account observer credential to native CONNZ without changing any product grant.",
@@ -15,7 +14,8 @@
     "All original account-liveness controls remain. New assertions expose only fixed cell names and booleans, never captured JWTs, subjects or identities.",
     "Each fault changes the actual full-service source producer. Private malformed-data checks are validator controls, not native mutation proof.",
     "Auth loads relative TypeScript source. Core is rebuilt before the full public-surface command and after source restoration, followed by the same full public-surface suite.",
-    "The fourth fault changes only the fixture completion guard. Its private separation cell uses the same requireCapture assertion path as the real capture. This instrument-only kill is not native subscription or permission evidence."
+    "The fourth fault changes only the fixture completion guard. Its private separation cell uses the same requireCapture assertion path as the real capture. This instrument-only kill is not native subscription or permission evidence.",
+    "The fail-fast suite has no terminal line common to passing and failing runs, so it declares no completion marker."
   ],
   "mutations": [
     {
