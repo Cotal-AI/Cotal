@@ -521,6 +521,8 @@ function proveOne(m, opts) {
   // bare "restore failed". Declared outside restore() so a throw inside it (caught below) can still
   // leave a message behind for the verdict that reports it.
   let restoreError;
+  let afterRestoreFailed = false;
+  let restoreDiagnosticFailed = false;
   // Never throws: it writes the ORIGINAL BYTES HELD IN MEMORY (`beforeBytes`), not a copy of the
   // on-disk backup, so a lost backup file (deleted by the suite under test, reaped by whatever else
   // cleans tmpfs, or just unreadable) can no longer stop the tree going back. Everything that can
@@ -552,15 +554,39 @@ function proveOne(m, opts) {
         const rr = run(m.afterRestore, cwd, restoreTimeoutMs(opts));
         if (rr.status !== 0) {
           const how = rr.timedOut ? "was killed at its timeout or --restore-deadline" : `exited ${rr.status}`;
-          say(`${C.red}  afterRestore FAILED (${how}): derived artefacts may still be built from the mutant${C.off}`);
           restoreError = new Error(`afterRestore ${how}`);
+          afterRestoreFailed = true;
+          say(`${C.red}  afterRestore FAILED (${how}): derived artefacts may still be built from the mutant${C.off}`);
+          // Separate this command's observations from the mutant transcript. Never echo its text.
+          try {
+            const lines = rr.output.split("\n");
+            const observation = JSON.stringify({
+              phase: "afterRestore", sourceBytesVerifiedBeforeCommand: true,
+              status: rr.status, timedOut: rr.timedOut,
+              finiteSignal: rr.signal === null || rr.signal === undefined ? null
+                : ["SIGKILL", "SIGTERM"].includes(rr.signal) ? rr.signal : "other",
+              outputPresent: rr.output.length !== 0, outputBytes: Buffer.byteLength(rr.output, "utf8"),
+              progressMarks: progressCount(rr.output, opts.progressPattern),
+              failureMarkerCount: lines.filter((line) => FAILURE_LINE.test(line)).length,
+              selectedNamedFailureMarkerPresent: lines.some((line) =>
+                line.includes(m.expectRed) && FAILURE_LINE.test(line)),
+              cause: "UNKNOWN",
+            });
+            if (Buffer.byteLength(observation, "utf8") > 2048)
+              throw new Error("afterRestore diagnostic exceeded its fixed record bound");
+            say(`AFTERRESTORE OBSERVATION ${observation}`);
+          } catch {
+            restoreDiagnosticFailed = true;
+            say('AFTERRESTORE DIAGNOSTIC ERROR {"phase":"afterRestore","diagnostic":"ERROR","cause":"UNKNOWN"}');
+          }
           return false;
         }
       }
       if (!ok) restoreError = new Error(`restored bytes do not match the pre-mutation sha (${m.file})`);
       return ok;
     } catch (err) {
-      restoreError = err;
+      if (afterRestoreFailed) restoreDiagnosticFailed = true;
+      else restoreError = err;
       return false;
     }
   };
@@ -595,7 +621,7 @@ function proveOne(m, opts) {
     const restored = restore();
     if (!restored) {
       return { label, transcript, verdict: "ERROR",
-        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"}`, ticks,
+        why: `RESTORE FAILED for ${m.file} — ${afterRestoreFailed ? "source bytes were verified before afterRestore; post-restore validation failed" : `backup at ${backup} — the tree is still mutated`}: ${restoreError?.message ?? "unknown error"}${restoreDiagnosticFailed ? "; afterRestore diagnostic failed" : ""}`, ticks,
         deadlineCut: r.timedOut && pastDeadline(opts) };
     }
 
@@ -758,7 +784,7 @@ function proveOne(m, opts) {
     const restored = restore();
     if (!restored) {
       return { label, transcript, verdict: "ERROR",
-        why: `RESTORE FAILED for ${m.file} — backup at ${backup} — the tree is still mutated: ${restoreError?.message ?? "unknown error"} (harness had already thrown: ${e.message})` };
+        why: `RESTORE FAILED for ${m.file} — ${afterRestoreFailed ? "source bytes were verified before afterRestore; post-restore validation failed" : `backup at ${backup} — the tree is still mutated`}: ${restoreError?.message ?? "unknown error"}${restoreDiagnosticFailed ? "; afterRestore diagnostic failed" : ""} (harness had already thrown: ${e.message})` };
     }
     return { label, transcript, verdict: "ERROR", why: `harness threw: ${e.message}` };
   }

@@ -125,6 +125,13 @@ not run, and exits 1. That result is UNMEASURED. It is never a pass. A fatal ver
 comparison cannot finish in the budget is reported as an unmeasured transition with the budget as
 its reason.
 
+A failed `afterRestore` remains an ERROR. Its `AFTERRESTORE OBSERVATION` record reports the
+restore command's status, fixed signal class, output byte count, progress marks and failure-marker
+counts without echoing command text or output. The JSON record is capped at 2048 bytes. Capture
+failure prints `AFTERRESTORE DIAGNOSTIC ERROR` and preserves the original restoration error.
+Source bytes were verified before this command ran. The mutant transcript printed later is separate
+and cannot explain a restoration failure. Progress marks are not assertion counts.
+
 A process that left the suite's group survives a group kill, and anything spawned `detached` does.
 Every process a proof starts carries the proof's mark in `MUTATION_PROOF_RUN`. After any timed-out
 run the proof kills every process still carrying its mark and prints what it killed and what
