@@ -14,7 +14,7 @@ import {
   type EndpointAccountPin, type EndpointDelegatedBinding, type EndpointServingAuthorityRef,
   type EndpointServeAttestation, type EpCaller, type EpCapability, type IssuedStore,
   type IssuedSourceRef, type IssuedAuthorityRef, type EpCommandDef, type SpaceAuth,
-  connectionAcceptedToken, acceptedKey, epRequestSubject, issuedBucket, type EndpointInstanceAuthorityRequest, type EndpointInstanceAuthorityDecision,
+  connectionAcceptedToken, acceptedKey, epRequestSubject, epRequestObserveFilter, issuedBucket, type EndpointInstanceAuthorityRequest, type EndpointInstanceAuthorityDecision,
   parseEndpointCallerSelection, endpointControlProof, type EndpointDeploymentTrust, type EndpointCallerSelection,
 } from "@cotal-ai/core";
 import type { SigningKey } from "./issuer.js";
@@ -81,8 +81,7 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
   function sameHolder(row: Reservation, principal: EpCaller): void {
     if (row.binding.holder.owner !== principal.owner || row.binding.holder.actor !== principal.actor || row.binding.holder.lifecycleUid !== principal.uid) refuse("endpoint lifecycle belongs to another holder");
   }
-  function observe(row: Reservation): void {
-    const filter = `cotal.${account.space}.ep.v1.inst.${endpointToken(row.endpoint)}.${row.instanceId}.*.>`;
+  function observe(filter: string): void {
     subscriptions.push(input.nc.subscribe(filter, { callback(error, message) {
       if (error) return;
       const parsed = parseEpSubject(message.subject);
@@ -188,6 +187,7 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
       const digest = contractDigest({ kind: "activation", account, endpoint: row.endpoint, instanceId: row.instanceId, binding: row.binding, operationId: request.operationId, content: request.content });
       if (challenge.instanceId !== row.instanceId || challenge.operationDigest !== digest || challenge.expiresAt <= Math.floor(Date.now() / 1000) || !fromPublic(row.binding.holder.publicKey).verify(enc.encode(canonicalJson(challenge)), Buffer.from(request.signature, "base64url"))) refuse("activation holder proof/content/currency failed");
       if (inFlight.has(row.endpoint)) refuse("another endpoint release is in flight");
+      const observationFilter = epRequestObserveFilter(account.space, { kind: "issued-instance", endpoint: row.endpoint, instanceId: row.instanceId });
       inFlight.add(row.endpoint);
       try {
         const hold = await acquireEndpointPolicyHold(authKv, { endpoint: row.endpoint, policyRevision: row.binding.authority.policyRevision, operationId: request.operationId, content: { kind: "activate", digest } });
@@ -225,7 +225,7 @@ export function createEndpointAuthority(input: EndpointAuthorityHostInput) {
         await createRowByteIdempotent(authKv, `endpoint-active.${row.instanceId}`, active);
         const reservation = await read<Reservation>(authKv, reservationKey(row.instanceId));
         await authKv.update(reservationKey(row.instanceId), enc.encode(canonicalJson(active.reservation)), reservation.revision);
-        observe(active.reservation); await input.nc.flush();
+        observe(observationFilter); await input.nc.flush();
         await hold.release();
         return active;
       } finally { inFlight.delete(row.endpoint); }

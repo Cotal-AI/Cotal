@@ -27,7 +27,7 @@
 import { connect, jwtAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { encodeUser } from "@nats-io/jwt";
 import { fromPublic, fromSeed } from "@nats-io/nkeys";
-import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
+import { EpEnvelopeError, admissionBucket, sessionsBucket, assertInboxConnId, endpointToken, epAuthBucket, epcStreamName, epfStreamName, newIdentity, recordsBucket, retirementFrontierStreams, spacePrefix, token, epRequestObserveFilter, assertPoolToken, principalTags, principalKey, remoteManagerActors, remoteManagerRegistrationProof, assertLifecycleToken, epcredFamilyPrefix, epgateKey, eprepairKey, GOVERN_HEAD, RECORD_KINDS, recordAtomicKey, recordSpecKey, recordStatusKey, BASELINE_LIFECYCLE_ENDPOINT, epCallerGrantRows, instanceOnlyManagerCapabilities, type EpCaller, type PlaneConnTuple } from "@cotal-ai/core";
 import { authConnectReaderGrants, openConnectReader, type ConnectReader } from "./connect-reader.js";
 import { environmentManagerAdmissionIndexBucket } from "./environment-manager-admission-index.js";
 
@@ -160,13 +160,15 @@ export function platformReadinessGrants(space: string, connId: string, caller: E
  *  The issuing host reads them and never replies: the broker let only the caller's ceiling publish
  *  each one, so observing it is the host's own evidence that the caller asked. */
 export function servedRunRequestSubjects(space: string): string[] {
-  const p = spacePrefix(space);
-  const m = endpointToken("manager");
+  const normalizedSpace = token(space);
   return [
-    ...["run-start", "run-resume", "run-answer"].flatMap((c) => [`${p}.ep.v1.inst.${m}.*.${c}.>`, `${p}.ep.v1.one.${m}.${c}.>`]),
+    ...["run-start", "run-resume", "run-answer"].flatMap(command => [
+      epRequestObserveFilter(normalizedSpace, { kind: "command", rail: "v1", endpoint: "manager", command, route: { mode: "inst", instanceId: "*" } }),
+      epRequestObserveFilter(normalizedSpace, { kind: "command", rail: "v1", endpoint: "manager", command, route: { mode: "one" } }),
+    ]),
     // A managed seat answers on the legacy rail, the relay path; nothing else served there is forwarded.
-    `${p}.ep.inst.${m}.*.run-answer.>`,
-    `${p}.ep.one.${m}.run-answer.>`,
+    epRequestObserveFilter(normalizedSpace, { kind: "command", rail: "legacy", endpoint: "manager", command: "run-answer", route: { mode: "inst", instanceId: "*" } }),
+    epRequestObserveFilter(normalizedSpace, { kind: "command", rail: "legacy", endpoint: "manager", command: "run-answer", route: { mode: "one" } }),
   ];
 }
 

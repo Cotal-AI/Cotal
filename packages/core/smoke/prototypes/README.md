@@ -277,8 +277,20 @@ EPC and accepted-row reads. Native controls cover allowed instance requests and 
 including wildcarded responder attribution, and denied legacy, class-route, cross-scope and
 wrong-arity subjects. It is included in the peer-held delivery and write-plus-raw-read checks.
 This one option variant does not prove every possible caller capability or the issuer ceremony.
-A source scan confines issued-rail spelling to the core builders and has positive controls and
-named mutations for skipped source tiers and spelling the rail outside those builders.
+A test-only TypeScript syntax scan confines decoded string and template literal occurrences to
+the same four core builder paths. It ignores comments and JSDoc, includes type and property-key
+literals conservatively, and refuses malformed syntax through public syntactic diagnostics. The
+inherited generated docs bundle exception remains. Dynamic strings and fragments separated by
+interpolation holes are not joined, so this is not complete runtime construction analysis.
+Prose-negative, escaped and template-positive controls cover that boundary, including `bin/`.
+The original skipped-tier and outside-builder faults remain. Three migration reversions and a
+compiler-valid late-preflight move have named mutation definitions. Golden bytes and source-order
+checks are distinct from canonical native capture and do not prove invalid activation has no effects.
+The native authority fixture captures per-reservation SUB bytes and canonical replay behavior, and
+a direct hosted component observes actual canonical instance traffic through its existing connection
+callback. The manager function has ordered golden bytes and a shipped callsite join. Full-service
+manager eight-subscription capture and complete self-minted hosted permission capture remain
+unmeasured through these hooks. Component witnesses do not replace those acceptance requirements.
 
 Every profile is classified peer-held or trusted, and the two lists must union to exactly the
 declared set. Peer-heldness is a deployment property, so no cell here can settle which side a
