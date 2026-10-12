@@ -1,0 +1,48 @@
+{
+  "suite": [
+    "implementations/auth/smoke/auth-public-closure.smoke.ts",
+    "implementations/auth/smoke/plane-claim-public.smoke.ts",
+    "implementations/auth/smoke/account-liveness-public.smoke.ts"
+  ],
+  "guard": "genuine full-service manager observer installation and complete signed self-minted hosted claim ceiling captured through the existing account-scoped native CONNZ observer",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces",
+  "completionMarker": "account liveness public:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/fullservice-native-observation.json",
+  "why": [
+    "The existing two-account fixture supplies its existing target-account observer credential to native CONNZ without changing any product grant.",
+    "Both complete snapshots use settleMs 50, maxWaitMs 400 and pageLimit 2. Missing data, attribution, fields or pages fail closed.",
+    "The permission witness checks the complete verified user JWT nats claim, not the server effective permission object or exhaustive native allow/deny behavior.",
+    "All original account-liveness controls remain. New assertions expose only fixed cell names and booleans, never captured JWTs, subjects or identities.",
+    "Each fault changes the actual full-service source producer. Private malformed-data checks are validator controls, not native mutation proof.",
+    "Auth loads relative TypeScript source. Core is rebuilt before the full public-surface command and after source restoration, followed by the same full public-surface suite."
+  ],
+  "mutations": [
+    {
+      "name": "full-service manager omits one actual observer subscription",
+      "file": "implementations/auth/src/service.ts",
+      "find": "for (const subject of servedRunRequestSubjects(space))",
+      "replace": "for (const subject of servedRunRequestSubjects(space).slice(0, 7))",
+      "expectRed": "full-service manager installs exactly eight observer subscriptions",
+      "cell": "full-service manager installs exactly eight observer subscriptions",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces"
+    },
+    {
+      "name": "self-minted hosted observer adds an extra subscription grant",
+      "file": "implementations/auth/src/endpoint-authority-hosted.ts",
+      "find": "subscribe: [`_INBOX_${id}.>`, epRequestObserveFilter(token(space), { kind: \"issued-instances\" })]",
+      "replace": "subscribe: [`_INBOX_${id}.>`, epRequestObserveFilter(token(space), { kind: \"issued-instances\" }), \"private-extra-observation.>\"]",
+      "expectRed": "full-service hosted authority has its complete closed self-minted claim ceiling",
+      "cell": "full-service hosted authority has its complete closed self-minted claim ceiling",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces"
+    },
+    {
+      "name": "self-minted hosted writer broadens its flow-control publish ceiling",
+      "file": "implementations/auth/src/endpoint-authority-hosted.ts",
+      "find": "\"$JS.FC.>\"",
+      "replace": "\"$JS.>\"",
+      "expectRed": "full-service hosted authority has its complete closed self-minted claim ceiling",
+      "cell": "full-service hosted authority has its complete closed self-minted claim ceiling",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/auth smoke:public-surfaces"
+    }
+  ]
+}
