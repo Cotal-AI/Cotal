@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-close-run.smoke.ts"
   ],
-  "guard": "closing a run out of band from the record stream publishes ONE terminal — RUN_FINISHED, or RUN_ERROR when the connector reports a failed turn — consumes no source record, and refuses every state where publishing would be a guess",
+  "guard": "closing a run out of band from the record stream publishes ONE terminal \u2014 RUN_FINISHED, or RUN_ERROR when the connector reports a failed turn \u2014 consumes no source record, and refuses every state where publishing would be a guess",
   "command": "pnpm smoke:agui-close-run",
   "completionMarker": "agui-close-run smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-close-run.json",
@@ -81,7 +81,7 @@
     {
       "name": "K5 drop the onRunClosed report",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      if (runId !== null) this.onRunClosed?.(runId);",
+      "find": "    if (runId !== null) this.hooks.onRunClosed?.(runId);\n",
       "replace": "",
       "expectRed": "holder:the-closed-run-is-reported-so-a-mapper-can-forget-it",
       "cell": "holder:the-closed-run-is-reported-so-a-mapper-can-forget-it",
@@ -99,8 +99,8 @@
     {
       "name": "K7 the holder drops the reason on the way to the emitter, so a reported failure closes as a finish",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });",
-      "replace": "      const runId = await emitter.closeRun({ timestamp });",
+      "find": "    const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });\n",
+      "replace": "    const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}) });\n",
       "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
       "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
       "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."

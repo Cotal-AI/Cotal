@@ -129,10 +129,20 @@ class FakeEmitter {
   stopped = false;
   /** The 1-based pump calls that fail. */
   failOn = new Set<number>();
+  /** The run a close would close now, as the real emitter reports it. */
+  openRunId: string | undefined;
+  /** Every close, in order, with the pump count when it ran. */
+  closes: { pumpsBefore: number; error?: { message: string; code?: string } }[] = [];
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
     if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
     return { frames: 1, events: 1 };
+  }
+  async closeRun(o: { timestamp: number; error?: { message: string; code?: string } }): Promise<string | null> {
+    const run = this.openRunId;
+    this.closes.push({ pumpsBefore: this.pumps, ...(o.error ? { error: o.error } : {}) });
+    this.openRunId = undefined;
+    return run ?? null;
   }
 }
 
@@ -479,6 +489,91 @@ const B = "/tmp/session-b.jsonl";
   r.holder.flush(A); // start 3's second pump fails: a new outage after a pump that returned
   await r.holder.settled();
   c("revive:a-pump-that-returns-DOES-reset-the-delay", r.delays[2] === 10, r.delays);
+  await r.holder.close();
+}
+
+{
+  // A TERMINAL THAT ARRIVES WHILE THE PLANE IS DOWN IS HELD. It is not a record in the source, so
+  // the re-establish cannot read it back; dropped, the run the log has open stays open on the
+  // wire until a later prompt closes it as a finish, the wrong terminal for a failed turn (Sol,
+  // review of 2026-10-12: a StopFailure during an outage emitted no RUN_ERROR after recovery and
+  // the next assistant record was attributed to the failed run). Applied AFTER the re-establish
+  // pump, because the turn's own records were unread when the terminal arrived, and only to the
+  // run it names.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2"; // the frozen frame opened run-2, and the fresh start comes back with it
+      if (start === 1) e.failOn.add(1);
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // pump 1 fails: down
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the turn's terminal, while down
+  await r.holder.settled();
+  c("CONTROL:the-terminal-arrived-while-the-plane-was-down", r.errors.length === 1 && r.made[0]!.closes.length === 0, { errors: r.errors.length, closes: r.made[0]!.closes });
+  await sleep(40);
+  await r.holder.settled();
+  // Read without non-null assertions: a mutation that drops the re-establish or the held close
+  // leaves these absent, and a cell that throws on absence stops the suite instead of reddening.
+  const fresh = r.made[1];
+  c("revive:a-terminal-held-through-the-outage-closes-its-run-after-the-re-establish", fresh?.closes.length === 1 && fresh.closes[0]?.error?.code === "rate_limit" && r.holder.running, { closes: fresh?.closes, running: r.holder.running });
+  c("revive:the-held-terminal-is-applied-AFTER-the-re-establish-pump", fresh?.closes[0]?.pumpsBefore === 1 && fresh.pumps === 1, { closes: fresh?.closes, pumps: fresh?.pumps });
+  r.holder.closeRun(8); // a terminal with the plane up takes the plain path
+  await r.holder.settled();
+  c("revive:a-terminal-after-the-re-establish-closes-on-the-fresh-emitter", fresh?.closes.length === 2 && fresh.closes[1]?.error === undefined, fresh?.closes);
+  await r.holder.close();
+}
+
+{
+  // The held terminal names a run. The fresh start coming back with ANOTHER run open means a
+  // later prompt among the unread records closed the named one and opened its own, which the
+  // terminal must not close; coming back with none means the log never held that run.
+  for (const comesBackWith of ["run-3", undefined]) {
+    const r = rig({
+      retryMs: 10,
+      make: (start) => {
+        const e = new FakeEmitter();
+        e.openRunId = start === 1 ? "run-2" : comesBackWith;
+        if (start === 1) e.failOn.add(1);
+        return e;
+      },
+    });
+    r.holder.adopt(A);
+    await r.holder.settled();
+    r.holder.flush(A);
+    await r.holder.settled();
+    r.holder.closeRun(7, { message: "rate_limit" });
+    await sleep(40);
+    await r.holder.settled();
+    c(`revive:a-held-terminal-is-DROPPED-when-the-fresh-start-comes-back-with-${comesBackWith ?? "no-run"}`, r.made[1]?.closes.length === 0 && r.made[1].pumps === 1 && r.holder.running, { closes: r.made[1]?.closes, running: r.holder.running });
+  }
+}
+
+{
+  // A terminal for a run the log never opened is not held: the emitter at the time had no run
+  // open on the wire (only the mapper held one), so there is nothing a held close could name.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = start === 1 ? undefined : "run-2";
+      if (start === 1) e.failOn.add(1);
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A);
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit" });
+  await sleep(40);
+  await r.holder.settled();
+  c("revive:a-terminal-for-a-run-the-log-never-opened-is-not-held", r.made[1]?.closes.length === 0 && r.holder.running, r.made[1]?.closes);
   await r.holder.close();
 }
 

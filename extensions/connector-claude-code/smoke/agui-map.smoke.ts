@@ -1141,7 +1141,7 @@ c("real:the-mapper-ALONE-leaves-the-LAST-run-open-at-EOF", (() => {
 // otherwise leaves the run green with a smaller number that nobody compares. The PR body leans on
 // this total, so the suite is what holds it.
 if (SESSION.endsWith("session-shape.jsonl")) {
-  const EXPECTED = 45;
+  const EXPECTED = 48;
   c(`fixture:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 }
 

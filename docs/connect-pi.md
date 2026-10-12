@@ -91,7 +91,10 @@ A registration that requires events arms the plane independently of the environm
 the seat must hold the channel's publish grant. An event-enabled launch needs a stable
 workspace root for its write-ahead log. If the event plane stops, the seat keeps running on every
 space, and Pi's log records `AG-UI emitter stopped` with the reason and the delay before the
-extension re-establishes the plane.
+extension re-establishes the plane. The re-establish is a fresh start of the same session: it
+settles any frame the outage left pending and rebuilds the mapper from the run and tool calls
+that frame opened, so a tool result written after the outage closes the call the plane came back
+with.
 
 Text is published at **completed-message granularity**, not as live token deltas. Pi emits
 live text updates before writing the assistant record, so those deltas cannot be recovered

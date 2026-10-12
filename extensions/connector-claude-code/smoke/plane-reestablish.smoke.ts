@@ -11,7 +11,9 @@
  *      full disk fails the same way), which is what the live seat test injected;
  *   B. one publish fails on the network after the frame was frozen pending (Sol's F1);
  *   C. the network failure lands MID-RUN, between the prompt frame and the assistant frame, so the
- *      re-established plane starts with the log's run open (Sol's F2).
+ *      re-established plane starts with the log's run open (Sol's F2);
+ *   D. the turn FAILS while the plane is down: the connector's `StopFailure` terminal arrives
+ *      during the outage, for a run the frozen frame opened (Sol's round-3 P1).
  *
  * Each cell asks the one question that matters: once the fault is gone, does the plane publish
  * what was written during and after the outage, under the run the log has open?
@@ -121,8 +123,8 @@ function plane(opts: { seedMapper: boolean }) {
     holder.flush(transcript);
     await holder.settled();
   };
-  const turnEnd = async () => {
-    holder.closeRun(Date.now());
+  const turnEnd = async (error?: { message: string; code?: string }) => {
+    holder.closeRun(Date.now(), error);
     await holder.settled();
   };
   const close = async () => {
@@ -229,6 +231,37 @@ for (const seedMapper of [true, false]) {
     // opens cleanly; the loss is the records, and nothing reports it.)
     c("C:CONTROL-an-unseeded-mapper-drops-the-rest-of-the-run", afterFrame === undefined && nextRun === "run-3", { afterFrame: afterFrame?.runId, nextRun });
   }
+  await p.close();
+}
+
+// ---- D. the turn fails while the plane is down -------------------------------------------------
+{
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.broker.failNext = 1;
+  p.user(); // run-2's prompt frame fails on the wire: frozen pending, run-2 open in the log
+  p.assistant(" failed-turn");
+  await p.flush();
+  c("D:CONTROL-the-plane-is-down-with-run-2-frozen", p.wal().pending === "sent_unacked" && !p.holder.running, { wal: p.wal(), running: p.holder.running });
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" }); // the terminal arrives during the outage
+  c("D:CONTROL-nothing-closed-while-down", !p.broker.frames.some((f) => JSON.stringify(f.parts).includes("RUN_ERROR")));
+  await sleep(250);
+  await p.holder.settled();
+  const run2 = p.broker.frames.filter((f) => f.runId === "run-2").map((f) => JSON.stringify(f.parts));
+  c("D:the-turn-written-under-the-fault-is-published-under-run-2", run2.some((s) => s.includes("failed-turn")), run2.length);
+  // The emitter publishes its fixed egress message for an error close, never the connector's text.
+  c("D:the-held-terminal-closes-run-2-with-RUN_ERROR-after-the-re-establish", run2.some((s) => s.includes('"type":"RUN_ERROR"')) && p.holder.running, { run2, running: p.holder.running });
+  c("D:the-records-come-before-the-terminal", run2.findIndex((s) => s.includes("failed-turn")) < run2.findIndex((s) => s.includes("RUN_ERROR")), run2);
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  const nextRun = p.broker.frames[p.broker.frames.length - 1]!.runId;
+  c("D:the-next-prompt-opens-run-3-and-no-finish-is-synthesized-for-run-2", nextRun === "run-3" && !run2.some((s) => s.includes("RUN_FINISHED")) && !p.broker.frames.some((f) => f.runId === "run-2" && JSON.stringify(f.parts).includes("RUN_FINISHED")), { nextRun });
   await p.close();
 }
 

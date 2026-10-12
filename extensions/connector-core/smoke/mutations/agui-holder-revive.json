@@ -24,7 +24,11 @@
     "closed holder is supposed to keep readable. R4 keeps a running emitter across the re-establish,",
     "so the wedged emitter is pumped again and never replaced. R5 resets the backoff when a start",
     "returns rather than when a pump does, so a broker that refuses every publish is retried at the",
-    "base delay forever."
+    "base delay forever. R6 drops a terminal that arrives while the plane is down, so the run the log",
+    "has open is never closed with the terminal the connector gave it (Sol, round 3: a StopFailure",
+    "during an outage emitted no RUN_ERROR after recovery). R7 applies the held terminal to whatever",
+    "run the fresh start comes back with, so a later prompt's run is closed by the earlier turn's",
+    "terminal."
   ],
   "mutations": [
     {
@@ -66,6 +70,22 @@
       "replace": "      this.emitter = await this.startEmitter(this.boundPath, this.startContext);\n      this.retryAttempt = 0;\n      return this.emitter;\n",
       "expectRed": "revive:a-start-that-passes-does-NOT-reset-the-delay",
       "note": "A start reaches the broker only for its preflight. Reset there, a broker that refuses every publish is retried at the base delay for as long as the outage lasts."
+    },
+    {
+      "name": "R6 a terminal that arrives while the plane is down is dropped",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "        if (open !== undefined) this.heldClose = { runId: open, timestamp, ...(error ? { error } : {}) };\n",
+      "replace": "        void open;\n",
+      "expectRed": "revive:a-terminal-held-through-the-outage-closes-its-run-after-the-re-establish",
+      "note": "The first cut's rule. The seat stays connected and the plane comes back, so only the close on the fresh emitter can see that the failed turn's run was left open."
+    },
+    {
+      "name": "R7 the held terminal closes whatever run the fresh start comes back with",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      if (held && emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
+      "replace": "      if (held && emitter.openRunId !== undefined) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
+      "expectRed": "revive:a-held-terminal-is-DROPPED-when-the-fresh-start-comes-back-with-run-3",
+      "note": "A later prompt among the unread records opened its own run; an unmatched close would end it with the earlier turn's terminal and drop the rest of its records."
     }
   ]
 }

@@ -42,8 +42,8 @@
     {
       "name": "H1 the started-emitter shortcut removed, so a same-path call starts a second emitter",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    if (this.emitter) return this.emitter;\n\n    // A CLOSED HOLDER NEVER STARTS",
-      "replace": "    // A CLOSED HOLDER NEVER STARTS",
+      "find": "    if (this.emitter) return this.emitter;\n",
+      "replace": "",
       "expectRed": "lazy:a-second-adopt-of-the-SAME-path-does-not-start-a-second",
       "note": "Removing either guard alone survives, because the other answers for it. Removed together, a second adopt of the SAME path reaches `startEmitter` again. Also reds `lazy:a-flush-after-an-adopt-does-not-start-a-second`."
     },

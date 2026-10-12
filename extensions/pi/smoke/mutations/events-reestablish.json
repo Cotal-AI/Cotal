@@ -1,0 +1,38 @@
+{
+  "suite": [
+    "extensions/pi/smoke/events-reestablish.smoke.ts"
+  ],
+  "guard": "the pi start factory, re-entered by the holder's re-establish, checks the file rather than reading an acknowledged cursor as a vanished file, and seeds the mapper from the pending frame's brackets when there is one",
+  "command": "pnpm smoke:pi-events-reestablish",
+  "completionMarker": "pi-events-reestablish smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/pi/smoke/mutations/events-reestablish.json",
+  "why": [
+    "THE START FACTORY USED TO RUN ONCE. The holder now re-enters it on every re-establish, and two",
+    "assumptions it made for a single start broke on the second one (Sol, review of 2026-10-12).",
+    "",
+    "P1 reads an acknowledged cursor as proof the native file vanished, without looking at the file,",
+    "so a new native session can never re-establish: every retry throws the same error at 1, 2, 4",
+    "seconds and nothing written after the outage is published. P2 seeds the mapper from the log's",
+    "acknowledged brackets rather than the pending frame's, so a tool call the frozen frame opened is",
+    "unknown to the plane that comes back: its result is dropped, and the terminal tries to open a",
+    "second run while the first is still open on the wire."
+  ],
+  "mutations": [
+    {
+      "name": "P1 an acknowledged cursor is read as a vanished file without checking the file",
+      "file": "extensions/pi/src/events.ts",
+      "find": "wal.frontier.sourceCursor !== \"pi:first-file\" && !existsSync(path))\n",
+      "replace": "wal.frontier.sourceCursor !== \"pi:first-file\")\n",
+      "expectRed": "A:the-re-establish-does-NOT-read-the-acknowledged-cursor-as-a-vanished-file",
+      "note": "The first cut's guard, correct for a factory that starts once and wrong for one that is re-entered with the cursor the first turns acknowledged."
+    },
+    {
+      "name": "P2 the mapper is seeded from the acknowledged brackets, not the pending frame's",
+      "file": "extensions/pi/src/events.ts",
+      "find": "      const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;\n",
+      "replace": "      const brackets = wal.brackets;\n",
+      "expectRed": "B:the-tool-result-closes-the-call-the-frozen-frame-opened",
+      "note": "The acknowledged brackets do not know the run or the tool call the frozen frame opened; the result of that call is dropped as unknown."
+    }
+  ]
+}

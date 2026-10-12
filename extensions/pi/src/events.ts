@@ -119,7 +119,10 @@ export class PiEvents {
       this.lock = lock;
       const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: this.space, principal });
       const wal = await EventWal.open(walPath, { space: this.space, principal, threadId: sessionId, subjectMayExist: false });
-      if (freshFile && wal.frontier.sourceCursor !== undefined && wal.frontier.sourceCursor !== "pi:first-file")
+      // A re-establish starts this factory again with the cursor the first turns acknowledged, so
+      // an acknowledged cursor alone no longer says the file vanished; the file does (Sol, review
+      // of 2026-10-12: the first cut threw here on every re-establish of a new session).
+      if (freshFile && wal.frontier.sourceCursor !== undefined && wal.frontier.sourceCursor !== "pi:first-file" && !existsSync(path))
         throw new Error("Pi AG-UI: native session file vanished after an event cursor was acknowledged");
       // For an existing transcript, capture its boundary before subsequent turns. A restart keeps
       // its acknowledged cursor. A new file is read from its beginning to retain the first turn.
@@ -130,7 +133,10 @@ export class PiEvents {
           await wal.advanceCursorOnly(boundary.cursor);
         }
       }
-      const map = createPiMapper(sessionId, wal.brackets?.run, wal.brackets?.tools);
+      // Seeded from the pending frame when there is one: `start` settles that frame, and its
+      // brackets are the run and tool calls the wire will have open once it has.
+      const brackets = wal.pending === null ? wal.brackets : wal.pending.brackets;
+      const map = createPiMapper(sessionId, brackets?.run, brackets?.tools);
       return AguiEmitter.start({
         endpoint: this.mesh.ep, wal, subjectFrontier,
         source: new PiSessionSource(path),

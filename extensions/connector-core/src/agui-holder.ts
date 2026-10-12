@@ -113,6 +113,10 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   /** Consecutive failures since the plane was last established. Paces {@link nextRetryDelayMs}. */
   private retryAttempt = 0;
   private reviveTimer?: ReturnType<typeof setTimeout>;
+  /** A turn terminal that arrived while the plane was down, for the run the log had open then.
+   *  {@link revive} applies it once it has read on, if that run is still the open one, and drops
+   *  it otherwise. */
+  private heldClose?: { runId: string; timestamp: number; error?: { message: string; code?: string } };
   /** The ceiling the re-establish backoff grows to. A failure that outlives a few retries is a
    *  standing one, and retrying it every second forever is a flat load on the broker's preflight. */
   static readonly RETRY_BACKOFF_CAP_MS = 60_000;
@@ -245,15 +249,31 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   closeRun(timestamp: number, error?: { message: string; code?: string }): void {
     this.enqueue(async () => {
       const emitter = this.emitter;
-      if (this.dead || !emitter || emitter.stopped) return;
+      if (this.dead) {
+        // THE TERMINAL IS HELD, NOT DROPPED. It is not a record in the source, so the re-establish
+        // cannot read it back, and a run the log has open with no terminal stays open on the wire
+        // until a later prompt closes it as a FINISH, which for a failed turn is the wrong terminal
+        // (Sol, review of 2026-10-12). It is held for the run the log knows: a run the frozen frame
+        // opened has an id on the wire that the fresh start comes back with, while a run only the
+        // mapper held was never opened anywhere a terminal could name it, and the re-read opens it
+        // again under a new id.
+        const open = emitter?.openRunId;
+        if (open !== undefined) this.heldClose = { runId: open, timestamp, ...(error ? { error } : {}) };
+        return;
+      }
+      if (!emitter || emitter.stopped) return;
       await this.holdForLive();
-      const open = emitter.openRunId;
-      const cotal = open === undefined ? undefined : this.hooks.runMeta?.(open);
-      const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });
-      // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
-      // the published stream has closed, and an error close closes it exactly as a finish does.
-      if (runId !== null) this.hooks.onRunClosed?.(runId);
+      await this.closeOpenRun(emitter, timestamp, error);
     });
+  }
+
+  private async closeOpenRun(emitter: AguiEmitter<T>, timestamp: number, error?: { message: string; code?: string }): Promise<void> {
+    const open = emitter.openRunId;
+    const cotal = open === undefined ? undefined : this.hooks.runMeta?.(open);
+    const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });
+    // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
+    // the published stream has closed, and an error close closes it exactly as a finish does.
+    if (runId !== null) this.hooks.onRunClosed?.(runId);
   }
 
   /**
@@ -379,6 +399,15 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       await this.holdForLive();
       await emitter.pump();
       this.retryAttempt = 0;
+      // A terminal held through the outage closes its run AFTER the pump has read on. The records
+      // of that turn were written before the terminal arrived and the pump had not read them yet,
+      // so a close before the pump would drop them. It is applied only when the run the terminal
+      // names is still the one open: a later prompt among the unread records has already closed
+      // it as a finish and opened its own, which the terminal must not touch, and a run only the
+      // mapper held comes back under a new id that the terminal cannot name.
+      const held = this.heldClose;
+      this.heldClose = undefined;
+      if (held && emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);
     });
   }
 
