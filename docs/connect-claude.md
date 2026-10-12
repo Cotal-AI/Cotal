@@ -369,9 +369,11 @@ repeats; the delay returns to one second once a read and publish has gone throug
 is a fresh start: it reopens the write-ahead log, settles any frame it left pending, builds the
 mapper from the run the log has open, and reads on from the stored cursor, which is the same
 recovery a connector restart runs. A failed publish or a failed log write is never retried on the
-emitter it failed on. A turn that ends while the plane is down keeps its terminal: once the
-re-establish has read on, the run the log had open is closed with that terminal, a failure as a
-failure, rather than left open for the next prompt to close as a finish. The seat used to exit on a space that requires events; for Claude Code the
+emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
+turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
+open is closed with that terminal, a failure as a failure, rather than left open for the next
+prompt to close as a finish. The first terminal kept for a run is the one published; a stop that
+follows a stop failure for the same run does not replace it. The seat used to exit on a space that requires events; for Claude Code the
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code
 restarted it on the next tool call.
 

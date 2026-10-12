@@ -265,5 +265,63 @@ for (const seedMapper of [true, false]) {
   await p.close();
 }
 
+// ---- E. the terminal's own log write fails ------------------------------------------------------
+{
+  // Prompt and assistant fully acknowledged, the run open; then the directory becomes unwritable
+  // and the only thing that fails is the terminal's write (Sol, review of 2026-10-13, through the
+  // built MCP entry point: the terminal was lost and the next prompt closed the run as a finish).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush();
+  const acked = p.broker.seq;
+  c("E:CONTROL-run-2-is-open-and-fully-acknowledged", p.wal().pending === "none" && p.wal().seq === acked && p.holder.running && p.broker.frames.some((f) => f.runId === "run-2"), { wal: p.wal(), acked });
+  chmodSync(p.walDir(), 0o500);
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" });
+  c("E:CONTROL-the-terminal-write-failed-and-the-plane-is-down", !p.holder.running && p.broker.seq === acked, { running: p.holder.running, seq: p.broker.seq });
+  chmodSync(p.walDir(), 0o700);
+  await sleep(250);
+  await p.holder.settled();
+  const run2 = p.broker.frames.filter((f) => f.runId === "run-2").map((f) => JSON.stringify(f.parts));
+  c("E:the-terminal-whose-write-failed-is-published-after-the-re-establish", run2.some((s) => s.includes('"type":"RUN_ERROR"')) && p.holder.running, { run2: run2.length, running: p.holder.running });
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  c("E:the-next-prompt-opens-run-3-and-run-2-is-not-closed-as-a-finish", p.broker.frames[p.broker.frames.length - 1]!.runId === "run-3" && !p.broker.frames.some((f) => f.runId === "run-2" && JSON.stringify(f.parts).includes("RUN_FINISHED")));
+  await p.close();
+}
+
+// ---- F. the connector repeats the terminal during the outage -----------------------------------
+{
+  // A stop failure and then a stop for the same run, both while the plane is down (the live seat
+  // sends both). The first terminal is the run's; the later finish must not replace it.
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  await p.flush(); // run-2 open and acknowledged on the wire
+  chmodSync(p.walDir(), 0o500);
+  p.assistant(" under-fault");
+  await p.flush(); // the assistant frame's write fails: down
+  c("F:CONTROL-the-plane-is-down-with-run-2-open", !p.holder.running, p.holder.running);
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" });
+  await p.turnEnd(); // the repeated terminal
+  chmodSync(p.walDir(), 0o700);
+  await sleep(250);
+  await p.holder.settled();
+  const run2 = p.broker.frames.filter((f) => f.runId === "run-2").map((f) => JSON.stringify(f.parts));
+  c("F:the-FIRST-terminal-is-the-one-published", run2.some((s) => s.includes('"type":"RUN_ERROR"')) && !run2.some((s) => s.includes("RUN_FINISHED")) && run2.some((s) => s.includes("under-fault")) && p.holder.running, { run2, running: p.holder.running });
+  await p.close();
+}
+
 console.log(`claude-plane-reestablish smoke: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

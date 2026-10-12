@@ -113,9 +113,9 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   /** Consecutive failures since the plane was last established. Paces {@link nextRetryDelayMs}. */
   private retryAttempt = 0;
   private reviveTimer?: ReturnType<typeof setTimeout>;
-  /** A turn terminal that arrived while the plane was down, for the run the log had open then.
-   *  {@link revive} applies it once it has read on, if that run is still the open one, and drops
-   *  it otherwise. */
+  /** A turn terminal owed to a run: one that arrived while the plane was down, or one whose own
+   *  close failed. {@link revive} applies it once it has read on, if that run is still the open
+   *  one, and drops it otherwise. The first terminal held for a run is kept over later ones. */
   private heldClose?: { runId: string; timestamp: number; error?: { message: string; code?: string } };
   /** The ceiling the re-establish backoff grows to. A failure that outlives a few retries is a
    *  standing one, and retrying it every second forever is a flat load on the broker's preflight. */
@@ -258,7 +258,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
         // mapper held was never opened anywhere a terminal could name it, and the re-read opens it
         // again under a new id.
         const open = emitter?.openRunId;
-        if (open !== undefined) this.heldClose = { runId: open, timestamp, ...(error ? { error } : {}) };
+        if (open !== undefined) this.hold(open, timestamp, error);
         return;
       }
       if (!emitter || emitter.stopped) return;
@@ -267,13 +267,37 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     });
   }
 
+  /**
+   * Close the run `emitter` has open with this terminal, reporting the close. A close that FAILS
+   * holds the terminal for that run before the failure goes on to kill the plane: the terminal is
+   * owed to the run whether the log took it or not, and a close that failed before its frame froze
+   * leaves the run open for the re-establish to find (Sol, review of 2026-10-13: a terminal whose
+   * own log write failed was lost, and the next prompt closed the failed run as a finish). A close
+   * that failed after the freeze is the frozen frame itself; the start that settles it closes the
+   * run, and the held terminal is then dropped for naming a run no longer open.
+   */
   private async closeOpenRun(emitter: AguiEmitter<T>, timestamp: number, error?: { message: string; code?: string }): Promise<void> {
     const open = emitter.openRunId;
     const cotal = open === undefined ? undefined : this.hooks.runMeta?.(open);
-    const runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });
+    let runId: string | null;
+    try {
+      runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });
+    } catch (e) {
+      if (open !== undefined) this.hold(open, timestamp, error);
+      throw e;
+    }
     // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
     // the published stream has closed, and an error close closes it exactly as a finish does.
     if (runId !== null) this.hooks.onRunClosed?.(runId);
+  }
+
+  /** Hold a terminal for `runId`. THE FIRST TERMINAL FOR A RUN WINS: a run carries one terminal,
+   *  and a later one for the same run is the connector repeating itself (a stop after a stop
+   *  failure, which the live seat does), not a correction. A terminal for another run replaces
+   *  the held one, since that run is no longer the one open. */
+  private hold(runId: string, timestamp: number, error?: { message: string; code?: string }): void {
+    if (this.heldClose?.runId === runId) return;
+    this.heldClose = { runId, timestamp, ...(error ? { error } : {}) };
   }
 
   /**
@@ -405,9 +429,17 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // names is still the one open: a later prompt among the unread records has already closed
       // it as a finish and opened its own, which the terminal must not touch, and a run only the
       // mapper held comes back under a new id that the terminal cannot name.
+      // The hold is released only once the close has gone through, or once the run it names is no
+      // longer the open one. A close that fails here holds the terminal again on its way out, so
+      // the next re-establish still owes it.
       const held = this.heldClose;
+      if (!held) return;
+      if (emitter.openRunId !== held.runId) {
+        this.heldClose = undefined;
+        return;
+      }
       this.heldClose = undefined;
-      if (held && emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);
+      await this.closeOpenRun(emitter, held.timestamp, held.error);
     });
   }
 

@@ -133,12 +133,17 @@ class FakeEmitter {
   openRunId: string | undefined;
   /** Every close, in order, with the pump count when it ran. */
   closes: { pumpsBefore: number; error?: { message: string; code?: string } }[] = [];
+  /** The 1-based close calls that fail before anything is written, leaving the run open. */
+  failClose = new Set<number>();
+  closeCalls = 0;
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
     if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
     return { frames: 1, events: 1 };
   }
   async closeRun(o: { timestamp: number; error?: { message: string; code?: string } }): Promise<string | null> {
+    this.closeCalls++;
+    if (this.failClose.has(this.closeCalls)) throw new Error(`close ${this.closeCalls} failed: the log directory is not writable`);
     const run = this.openRunId;
     this.closes.push({ pumpsBefore: this.pumps, ...(o.error ? { error: o.error } : {}) });
     this.openRunId = undefined;
@@ -552,6 +557,86 @@ const B = "/tmp/session-b.jsonl";
     await r.holder.settled();
     c(`revive:a-held-terminal-is-DROPPED-when-the-fresh-start-comes-back-with-${comesBackWith ?? "no-run"}`, r.made[1]?.closes.length === 0 && r.made[1].pumps === 1 && r.holder.running, { closes: r.made[1]?.closes, running: r.holder.running });
   }
+}
+
+{
+  // A CLOSE THAT FAILS HOLDS ITS TERMINAL. The plane was up when the terminal arrived, and the
+  // close's own log write is what failed (Sol, review of 2026-10-13, through the built MCP entry
+  // point: a terminal-only write failure lost the terminal and the next prompt closed the failed
+  // run as a finish). The run is still open, so the re-establish owes it the terminal.
+  const r = rig({
+    retryMs: 10,
+    make: () => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.made[0]!.failClose.add(1);
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the close itself fails
+  await r.holder.settled();
+  c("CONTROL:the-close-failed-and-killed-the-plane", r.errors.length === 1 && r.made[0]!.closes.length === 0 && !r.holder.running, { errors: r.errors.map((e) => e.message), closes: r.made[0]!.closes });
+  await sleep(40);
+  await r.holder.settled();
+  const fresh = r.made[1];
+  c("revive:a-close-that-FAILED-holds-its-terminal-for-the-re-establish", fresh?.closes.length === 1 && fresh.closes[0]?.error?.code === "rate_limit" && fresh.pumps === 1 && r.holder.running, { closes: fresh?.closes, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
+  // THE FIRST TERMINAL FOR A RUN WINS. A stop failure followed by a stop for the same run, both
+  // while the plane is down, is the connector repeating itself (the live seat does this); the
+  // later finish must not replace the earlier failure (Sol, review of 2026-10-13).
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // down
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" });
+  r.holder.closeRun(8); // the repeated terminal, a finish
+  await r.holder.settled();
+  await sleep(40);
+  await r.holder.settled();
+  const fresh = r.made[1];
+  c("revive:a-repeated-terminal-while-down-keeps-the-FIRST", fresh?.closes.length === 1 && fresh.closes[0]?.error?.code === "rate_limit", fresh?.closes);
+  await r.holder.close();
+}
+
+{
+  // A held terminal whose close fails AT the re-establish stays held, and the next re-establish
+  // applies it. Releasing the hold before a close that can fail would lose it.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      if (start === 2) e.failClose.add(1); // the fresh emitter's log is still unwritable for the close
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A);
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" });
+  await sleep(40);
+  await r.holder.settled();
+  c("CONTROL:the-held-close-failed-at-the-first-re-establish", r.made[1]?.closes.length === 0 && r.errors.length === 2, { closes: r.made[1]?.closes, errors: r.errors.length });
+  await sleep(60);
+  await r.holder.settled();
+  c("revive:a-held-close-that-fails-at-the-re-establish-is-applied-by-the-NEXT", r.made[2]?.closes.length === 1 && r.made[2].closes[0]?.error?.code === "rate_limit" && r.holder.running, { closes: r.made[2]?.closes, starts: r.starts, running: r.holder.running });
+  await r.holder.close();
 }
 
 {

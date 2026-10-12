@@ -28,7 +28,9 @@
     "has open is never closed with the terminal the connector gave it (Sol, round 3: a StopFailure",
     "during an outage emitted no RUN_ERROR after recovery). R7 applies the held terminal to whatever",
     "run the fresh start comes back with, so a later prompt's run is closed by the earlier turn's",
-    "terminal."
+    "terminal. R8 drops the hold on a close that fails, so a terminal whose own log write failed is",
+    "lost and the next prompt closes the run as a finish. R9 lets a later terminal for the same run",
+    "overwrite the held one, so a stop after a stop failure publishes the run as finished."
   ],
   "mutations": [
     {
@@ -74,18 +76,34 @@
     {
       "name": "R6 a terminal that arrives while the plane is down is dropped",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "        if (open !== undefined) this.heldClose = { runId: open, timestamp, ...(error ? { error } : {}) };\n",
-      "replace": "        void open;\n",
+      "find": "        if (open !== undefined) this.hold(open, timestamp, error);\n        return;\n",
+      "replace": "        return;\n",
       "expectRed": "revive:a-terminal-held-through-the-outage-closes-its-run-after-the-re-establish",
       "note": "The first cut's rule. The seat stays connected and the plane comes back, so only the close on the fresh emitter can see that the failed turn's run was left open."
     },
     {
       "name": "R7 the held terminal closes whatever run the fresh start comes back with",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      if (held && emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
-      "replace": "      if (held && emitter.openRunId !== undefined) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
+      "find": "      if (emitter.openRunId !== held.runId) {\n        this.heldClose = undefined;\n        return;\n      }\n",
+      "replace": "      if (emitter.openRunId === undefined) {\n        this.heldClose = undefined;\n        return;\n      }\n",
       "expectRed": "revive:a-held-terminal-is-DROPPED-when-the-fresh-start-comes-back-with-run-3",
       "note": "A later prompt among the unread records opened its own run; an unmatched close would end it with the earlier turn's terminal and drop the rest of its records."
+    },
+    {
+      "name": "R8 a close that fails loses its terminal",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      if (open !== undefined) this.hold(open, timestamp, error);\n      throw e;\n",
+      "replace": "      throw e;\n",
+      "expectRed": "revive:a-close-that-FAILED-holds-its-terminal-for-the-re-establish",
+      "note": "Round 4 of review, through the built MCP entry point: a terminal-only log write failure left the run open and the next prompt closed it as a finish."
+    },
+    {
+      "name": "R9 a later terminal for the same run overwrites the held one",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (this.heldClose?.runId === runId) return;\n",
+      "replace": "",
+      "expectRed": "revive:a-repeated-terminal-while-down-keeps-the-FIRST",
+      "note": "The live seat sends a stop after a stop failure; the later finish replaced the failure and the run was published as finished."
     }
   ]
 }
