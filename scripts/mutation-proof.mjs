@@ -263,6 +263,21 @@ async function settleSignals() {
  *  CONTENT as well: whatever else is dropped, do not drop the failures. */
 const EXCERPT_FAILURES = 8;
 const FAILURE_LINE = /✗|\bFAIL\b|scenario threw|^\s*Error:/;
+/** Allowlisted output shapes only. Printed signatures can be forged or wrapped, so these labels
+ *  do not identify the command's cause. Never return a captured string or an arbitrary error code. */
+const restoreOutputErrorCategories = (output) => {
+  const text = output.replace(/\x1b\[[0-9;]*m/g, "");
+  const categories = [
+    ["NODE_MODULE_RESOLUTION", /^[ \t]*Error \[(?:ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND)\]:/m],
+    ["NODE_ASSERTION", /^[ \t]*AssertionError \[ERR_ASSERTION\]:/m],
+    ["NODE_SYNTAX", /^[ \t]*SyntaxError:/m],
+    ["NODE_TYPE", /^[ \t]*TypeError:/m],
+    ["NODE_REFERENCE", /^[ \t]*ReferenceError:/m],
+    ["PNPM_COMMAND_FAILURE", /^[ \t\u2009]*(?:ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL|ELIFECYCLE)[ \t\u2009]/m],
+    ["PNPM_SCRIPT_MISSING", /^[ \t\u2009]*ERR_PNPM_NO_SCRIPT[ \t\u2009]/m],
+  ].filter(([, signature]) => signature.test(text)).map(([category]) => category);
+  return categories.length ? categories : ["UNKNOWN"];
+};
 /**
  * Bound a run's combined output to head + tail lines, at capture time. Carried ON THE RESULT, not
  * in a map keyed by label: duplicate mutation names are accepted by the fixture format, and a
@@ -570,6 +585,7 @@ function proveOne(m, opts) {
               failureMarkerCount: lines.filter((line) => FAILURE_LINE.test(line)).length,
               selectedNamedFailureMarkerPresent: lines.some((line) =>
                 line.includes(m.expectRed) && FAILURE_LINE.test(line)),
+              outputErrorCategories: restoreOutputErrorCategories(rr.output),
               cause: "UNKNOWN",
             });
             if (Buffer.byteLength(observation, "utf8") > 2048)

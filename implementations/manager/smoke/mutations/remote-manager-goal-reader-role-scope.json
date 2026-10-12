@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/manager/smoke/remote-manager-goal-reader.smoke.ts"
+  ],
+  "guard": "the remote reader requests a child role within its actual supervising CLI parent grant without widening authority",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
+  "completionMarker": "REMOTE-MANAGER-GOAL-READER COMPLETE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/remote-manager-goal-reader-role-scope.json",
+  "mutations": [
+    {
+      "name": "the remote reader requests worker beyond its supervising CLI role ceiling",
+      "file": "implementations/manager/smoke/remote-manager-goal-reader.smoke.ts",
+      "find": "role: \"default\", agent: \"remote-reader-test\", events: false",
+      "replace": "role: \"worker\", agent: \"remote-reader-test\", events: false",
+      "expectRed": "owner 0 receives a real accepted goal",
+      "cell": "owner 0 receives a real accepted goal",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build && pnpm smoke:remote-manager-goal-reader",
+      "note": "Only the public requested role reverts to worker. The generated persona remains default and the stock supervising CLI grant still contains role:default, not role:worker. The real enrollment containment check refuses before goal acceptance. The existing named acceptance assertion is unchanged. No parent identity, grant, permission, or accepted goal is substituted."
+    }
+  ]
+}

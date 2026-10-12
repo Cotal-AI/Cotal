@@ -270,9 +270,10 @@ try {
   dialAgent.ep.on("transport", (event: { connected: boolean }) => dialEdges.push(event));
   const dialStart = dialAgent.start(100).catch(() => {});
   const sawPendingDial = await until(() => dialArrived, 30_000);
-  await dialAgent.stop();
+  const dialStop = dialAgent.stop();
   const edgesBeforeRelease = dialEdges.length;
   releaseDial();
+  await dialStop;
   await dialStart;
   await sleep(750);
   check(
@@ -291,7 +292,22 @@ try {
   rebuildAgent = new MeshAgent({ ...cfg, name: `transport-live-rebuild-${port}` });
   const rebuildEdges: Array<{ connected: boolean }> = [];
   rebuildAgent.ep.on("connection", (event: { connected: boolean }) => rebuildEdges.push(event));
+  // Retained markers describe observed returns, not pending promises or the cause of a killed run.
+  // The caught rebuild's return does not distinguish fulfillment from swallowed rejection.
+  let rebuildObservationSequence = 0;
+  const rebuildObserved = {
+    startReturned: false, gateEntered: false, gateResumed: false, pollReturned: false,
+    reachedFinalStep: false, stopReturned: false, releaseCalled: false, caughtRebuildReturned: false,
+  };
+  const observeRebuild = (phase: "start-after" | "gate-enter" | "gate-resume" | "poll-after"
+    | "stop-before" | "stop-after" | "release-before" | "release-after"
+    | "caught-rebuild-before" | "caught-rebuild-after"): void => {
+    process.stderr.write(`${JSON.stringify({ scenario: "broker-rebuild-bind", sequence: ++rebuildObservationSequence,
+      phase, completedChecks: Math.max(0, Math.min(27, pass + fail)), ...rebuildObserved })}\n`);
+  };
   await rebuildAgent.start(100);
+  rebuildObserved.startReturned = true;
+  observeRebuild("start-after");
   check(
     "rebuild-race setup: first bind completed before the rebuild is forced",
     await until(() => rebuildAgent!.connected, 30_000) && rebuildEdges.some((event) => event.connected === true),
@@ -301,18 +317,38 @@ try {
   let rebuildBindAtFinalStep = false;
   let releaseRebuildBind: () => void = () => {};
   const rebuildBindGate = new Promise<void>((resolve) => { releaseRebuildBind = resolve; });
-  rebuildEp.armPlane3 = async () => { rebuildBindAtFinalStep = true; await rebuildBindGate; };
+  rebuildEp.armPlane3 = async () => {
+    rebuildBindAtFinalStep = true;
+    rebuildObserved.gateEntered = true;
+    observeRebuild("gate-enter");
+    await rebuildBindGate;
+    rebuildObserved.gateResumed = true;
+    observeRebuild("gate-resume");
+  };
   const rebuildEdgesBeforeReconnect = rebuildEdges.length;
   const rebuildWork = rebuildEp.reconnect().catch(() => {});
   const reachedRebuildFinalStep = await until(() => rebuildBindAtFinalStep, 30_000);
+  rebuildObserved.pollReturned = true;
+  rebuildObserved.reachedFinalStep = reachedRebuildFinalStep;
+  observeRebuild("poll-after");
   check(
     "rebuild-race wait: stop is landed only after the rebuild bind reached armPlane3",
     reachedRebuildFinalStep,
     { reachedRebuildFinalStep, rebuildBindAtFinalStep },
   );
-  await rebuildAgent.stop();
+  observeRebuild("stop-before");
+  const rebuildStop = rebuildAgent.stop();
+  observeRebuild("release-before");
   releaseRebuildBind();
+  rebuildObserved.releaseCalled = true;
+  observeRebuild("release-after");
+  await rebuildStop;
+  rebuildObserved.stopReturned = true;
+  observeRebuild("stop-after");
+  observeRebuild("caught-rebuild-before");
   await rebuildWork;
+  rebuildObserved.caughtRebuildReturned = true;
+  observeRebuild("caught-rebuild-after");
   const rebuildNcAfterStop = (rebuildAgent.ep as unknown as { nc?: unknown }).nc;
   check(
     "stop during a REAL rebuild bind never announces the connection it then tears down",
@@ -340,15 +376,32 @@ try {
   // suite that only proves the sentence disappears cannot tell a repair from a deletion.
   stage = "presence-refusal";
   staleAgent = new MeshAgent({ ...cfg, name: `transport-live-stale-${port}` });
-  await staleAgent.start(100);
-  await until(() => staleAgent!.connected, 30_000);
   const staleEp = staleAgent.ep as unknown as {
     kv?: unknown;
     servers: string;
     publishPresence(): Promise<void>;
     presenceWriteFailure(): { forMs: number; bucket: string } | undefined;
     reconnect(): Promise<void>;
+    armPlane3(): Promise<void>;
   };
+  const originalStaleArm = staleEp.armPlane3;
+  let initialGateEntered = false, initialGateSettled = false;
+  let rejectInitialGate: (error: unknown) => void = () => {};
+  const initialGate = new Promise<void>((_resolve, reject) => { rejectInitialGate = reject; });
+  // Cleanup can reject before the bind reaches this seam. The bind still awaits the original gate.
+  void initialGate.catch(() => {});
+  staleEp.armPlane3 = async () => {
+    initialGateEntered = true;
+    await initialGate;
+  };
+  const realWrite = process.stderr.write.bind(process.stderr);
+  let setupFailure: unknown;
+  try {
+  const staleLoop = staleAgent.start(100).catch(() => {});
+  if (!await until(() => initialGateEntered, 30_000)) throw new Error("initial presence bind did not reach its gate");
+  // Transport, KV and the first presence write precede armPlane3, while initial start is pending.
+  // Future binds use the shipped seam. This first call already holds the original gate promise.
+  staleEp.armPlane3 = originalStaleArm;
   const liveKv = staleEp.kv;
   // Drive the REAL publishPresence catch: only the put is replaced, so the recording, the clearing and
   // the guard under test all run as shipped.
@@ -365,20 +418,19 @@ try {
   // closeFailedBind, which tears the connection down WITHOUT emitting a transport:false edge.
   staleEp.kv = liveKv;
   staleEp.servers = "nats://127.0.0.1:1";
-  await staleEp.reconnect().catch(() => {});
+  let reconnectRejected = false, reconnectError: unknown;
+  await staleEp.reconnect().catch(error => { reconnectRejected = true; reconnectError = error; });
   check(
     "a FAILED bind clears the presence-refusal record rather than carrying it onto the next connection",
     staleEp.presenceWriteFailure() === undefined,
     { record: staleEp.presenceWriteFailure() },
   );
 
-  // The operator-visible half, and it must be driven through MeshAgent's OWN retry loop, because that
-  // is where the sentence is composed. An earlier version of this cell asserted on stderr after the
-  // failed reconnect alone: connectLoop was not running, no diagnosis was ever produced, and the cell
-  // passed against the unfixed source as readily as the fixed one. A cell that cannot fail is not a
-  // control, so it is driven here and its discrimination is checked in both directions.
+  if (!reconnectRejected) throw new Error("the failed-bind fixture reconnect unexpectedly succeeded");
+  // Forward the real reconnect rejection through the synthetic initial gate, after checking cleanup.
+  // This is not a fresh network failure of the initial bind. It reaches the still-pending initial
+  // connectLoop catch, not an endpoint warning or a second start on a completed connectFlight.
   const staleErr: string[] = [];
-  const realWrite = process.stderr.write.bind(process.stderr);
   (process.stderr as unknown as { write: (chunk: unknown, ...rest: unknown[]) => boolean }).write = (
     chunk: unknown,
     ...rest: unknown[]
@@ -386,7 +438,8 @@ try {
     staleErr.push(String(chunk));
     return (realWrite as unknown as (c: unknown, ...r: unknown[]) => boolean)(chunk, ...rest);
   };
-  const staleLoop = staleAgent.start(100).catch(() => {});
+  rejectInitialGate(reconnectError);
+  initialGateSettled = true;
   await sleep(900);
   (process.stderr as unknown as { write: unknown }).write = realWrite;
   const staleLog = staleErr.join("");
@@ -405,6 +458,15 @@ try {
     staleEp.presenceWriteFailure() === undefined,
     { record: staleEp.presenceWriteFailure() },
   );
+  } catch (error) {
+    setupFailure = error;
+    throw error;
+  } finally {
+    staleEp.armPlane3 = originalStaleArm;
+    (process.stderr as unknown as { write: unknown }).write = realWrite;
+    // Settle before outer cleanup joins stop/start. Never fabricate a network error on setup failure.
+    if (!initialGateSettled) rejectInitialGate(setupFailure);
+  }
 
   // #1356 COMPOSED WITH #1421: A PUT THAT SETTLES AFTER TEARDOWN MUST NOT RE-PLANT THE RECORD.
   //

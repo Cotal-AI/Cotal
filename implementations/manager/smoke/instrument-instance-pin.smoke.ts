@@ -876,11 +876,18 @@ try {
         "transcript-receive": { sha256: randomUUID().replaceAll("-", "") + randomUUID().replaceAll("-", ""), size: 0, source: "pin-fixture-transcript", sourceHost: "pin-fixture-host" },
       };
       const notReached: string[] = [];
+      let transcriptReceiveOutcome: Record<string, unknown> | null = null;
       const ranTwice: string[] = [];
       const mismatched: string[] = [];
       const bindKept: string[] = [];
-      for (const command of MANAGER_ADMIN_COMMANDS) {
+      const adminSweep = ["transcript-receive",
+        ...MANAGER_ADMIN_COMMANDS.filter(command => command !== "transcript-receive")] as const;
+      let transcriptReachBeforePreservation = false;
+      for (const command of adminSweep) {
         if (command === "purge") continue; // already graded above, in full
+        // Snapshot the actual completed obligation before preparation can fence either manager.
+        if (command === "prepare-preservation") transcriptReachBeforePreservation =
+          transcriptReceiveOutcome !== null && !notReached.includes("transcript-receive");
         // Every surfaced split drops the bind, so re-resolve (a tolerant read) before forcing the
         // ghost again; without a cached record there is nothing to doctor and the call would
         // simply resolve for real.
@@ -918,7 +925,7 @@ try {
             && data !== null && typeof data === "object" && !Array.isArray(data)
             && Object.keys(data).length === 1 && (data as { state?: unknown }).state === "upload";
           const fencedReachOnly = refused && delta === 0;
-          console.log("   transcript-receive outcome", JSON.stringify({
+          transcriptReceiveOutcome = {
             positiveUpload: upload, fencedReachOnly, handlerDelta: delta, threw: err !== undefined,
             state: upload ? "upload" : undefined,
             replyPresent: reply !== undefined, ok: reply?.ok === true,
@@ -939,8 +946,16 @@ try {
               "deadline-exceeded", "cancelled", "expired", "unavailable", "unimplemented",
               "resource-exhausted", "internal",
             ].find((code) => code === reply?.error?.code) ?? (reply?.error === undefined ? "absent" : "unrecognized"),
-            detailClassification: "unknown",
-          }));
+            // Classify only shipped admission messages. Nonmatches say nothing about receiver I/O.
+            detailClassification: reply?.error?.code !== "unavailable" ? "unknown"
+              : reply.error.message === "manager is stopping; new lifecycle/control work is fenced" ? "stopping"
+              : reply.error.message === "manager is in preserving mode; new lifecycle/control work is fenced" ? "preserving"
+              : reply.error.message === "manager is in preserved mode; new lifecycle/control work is fenced" ? "preserved"
+              : reply.error.message.startsWith("manager is waiting for resume attempt ")
+                && reply.error.message.endsWith("; ordinary lifecycle/control work is fenced") ? "resume-pending"
+              : "unknown",
+          };
+          console.log("   transcript-receive outcome", JSON.stringify(transcriptReceiveOutcome));
           // A fenced terminal refusal counts only as guard reach, never as positive upload evidence.
           if (!upload && !fencedReachOnly && (refused || delta !== 0)) notReached.push(command);
         }
@@ -951,8 +966,10 @@ try {
         if (err === undefined && !dispositionAgrees(reply, delta)) mismatched.push(command);
         if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId === ghost) bindKept.push(command);
       }
+      check("the transcript-receive guard-reach obligation completed before preservation began",
+        transcriptReachBeforePreservation);
       check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
-        notReached.length === 0, { notReached });
+        notReached.length === 0, { notReached, transcriptReceiveOutcome });
       // WAS: "none of them is quietly retried". A retry was the defect while a split could only be
       // caught after the responder had handled the request. It is now the repair, and the property
       // that replaced it is the one the old cell was protecting all along.

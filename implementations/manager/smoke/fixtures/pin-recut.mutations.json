@@ -33,6 +33,14 @@
       "replace": "",
       "expectRed": "...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
       "note": "The instrument's own guard. Without it the three re-pointed cells could be re-pointed onto a counter that never moves and still read as passing, which is the failure the old outMsgs proxy actually had."
+    },
+    {
+      "name": "the admin sweep leaves transcript-receive after preservation begins",
+      "file": "implementations/manager/smoke/instrument-instance-pin.smoke.ts",
+      "find": "      const adminSweep = [\"transcript-receive\",\n        ...MANAGER_ADMIN_COMMANDS.filter(command => command !== \"transcript-receive\")] as const;",
+      "replace": "      const adminSweep = MANAGER_ADMIN_COMMANDS;",
+      "expectRed": "the transcript-receive guard-reach obligation completed before preservation began",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm smoke:instrument-instance-pin"
     }
   ],
   "_note": "THE SUITE LOADS dist, NOT src. `instrument-instance-pin` imports `@cotal-ai/core`, whose exports point at ./dist/index.js, so mutating packages/core/src leaves the module the suite actually runs untouched. MEASURED: all three of these mutations first reported SURVIVED at 55/55 marks, the full baseline, for that reason alone -- not because the suite fails to discriminate. The command therefore rebuilds core from the mutated source before running. Restoring src is not enough afterwards: dist is left carrying the last mutant, so core must be rebuilt from the restored source before any other suite is believed.",
