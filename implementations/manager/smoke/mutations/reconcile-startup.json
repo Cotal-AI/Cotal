@@ -41,8 +41,8 @@
     {
       "name": "the seat's turn pull answers during the boot window",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (!this.goalReconcileDone)\n      throw new EpEnvelopeError(\"unavailable\", \"the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)\");\n    // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest\n",
-      "replace": "    if (!this.goalReconcileDone)\n      void 0;\n    // Two turns on one seat are serialized at the dispatch (cotal-lang 6.5): only the oldest\n",
+      "find": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {\n    if (!this.goalReconcileDone)\n      throw new EpEnvelopeError(\"unavailable\", \"the manager is still reconciling accepted goals at boot; the pending-turn index is not rebuilt yet, retry (SPEC 13.6)\");\n",
+      "replace": "  private turnPendingFor(c: { owner: string; actor: string; uid: string }): { turns: { goalId: string; payload: string; acceptedAt: number; deadlineAt: number }[] } {\n    if (!this.goalReconcileDone)\n      void 0;\n",
       "expectRed": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "cell": "a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none",
       "note": "Measured 2026-09-03: KILLED. MANAGER RECONCILE STARTUP SMOKE FAILED  (5 passed, 1 failed) Named cell red: a seat pulling turns before the goal index is rebuilt is REFUSED, never told it holds none"

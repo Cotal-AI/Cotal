@@ -109,8 +109,8 @@
     {
       "name": "the guard inside restore() that turns a failure into false is removed, so the catch's own restore() throws again (#1337)",
       "file": "scripts/mutation-proof.mjs",
-      "find": "    } catch (err) {\n      restoreError = err;\n      return false;\n    }",
-      "replace": "    } catch (err) {\n      restoreError = err;\n      throw err;\n    }",
+      "find": "    } catch (err) {\n      if (afterRestoreFailed) restoreDiagnosticFailed = true;\n      else restoreError = err;\n      return false;\n    }",
+      "replace": "    } catch (err) {\n      if (afterRestoreFailed) restoreDiagnosticFailed = true;\n      else restoreError = err;\n      throw err;\n    }",
       "cell": "a restore that cannot succeed reports exactly one ERROR verdict, not a crash",
       "expectRed": "a restore that cannot succeed reports exactly one ERROR verdict, not a crash"
     }
