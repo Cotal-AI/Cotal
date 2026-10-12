@@ -135,6 +135,7 @@ try {
   // The parser's message can quote the bytes it choked on, and those are the record's own text:
   // "cut sho" is private to the session and must not travel into a log on the reason line.
   c("the gap reason carries no text from the record itself", !/cut sho|i":7/.test(r5.unreadable?.[0]?.reason ?? ""), r5.unreadable?.[0]?.reason);
+  c("the gap reason names the character the parser stopped at", /^not a JSON record \(parser stopped at character \d+\)$/.test(r5.unreadable?.[0]?.reason ?? ""), r5.unreadable?.[0]?.reason);
   c("the cursor lands past the torn line and the record after it", off(r5.cursor) === beforeTorn + Buffer.byteLength(torn + '\n{"i":9}\n'), { got: r5.cursor });
   const r5b = await readOr(src, r5.cursor, "post-gap re-read");
   c("a re-read from the returned cursor neither replays the gap nor reports it again", r5b.records.length === 0 && r5b.unreadable === undefined, r5b);
@@ -145,6 +146,18 @@ try {
   c("a line with invalid UTF-8 is a gap and the line after it is a record",
     r6.unreadable?.length === 1 && r6.unreadable[0]?.offset === off(r5.cursor) && r6.records.length === 1 && r6.records[0]?.value.i === 11,
     { gaps: r6.unreadable, records: r6.records });
+  c("an invalid UTF-8 gap says so and nothing else", r6.unreadable?.[0]?.reason === "not valid UTF-8", r6.unreadable?.[0]?.reason);
+  // ── QUOTE ADVERSARIES: the parser's "Unexpected token" form quotes a span of the line, and a span
+  // can itself contain quotes, so a reason built by rewriting the message leaked `CANARY` through a
+  // quote the rewrite took for a delimiter (found by an independent probe at head ad6ebeb8d). ──
+  // (A BOM-prefixed line is not in this list: the decoder strips the mark and the line is a record.)
+  const adversaries = ['X"CANARY-A"', '{"x":X"CANARY-B"}', '"CANARY-C', 'CANARY-D', '{"s":"\\"CANARY-E"}x'];
+  appendFileSync(path, adversaries.join("\n") + '\n{"i":12}\n');
+  const r7 = await readOr(src, r6.cursor, "quote-adversary read");
+  const leaked = (r7.unreadable ?? []).filter((g) => /CANARY/.test(g.reason)).map((g) => g.reason);
+  c("every quote adversary is a gap, none of them a record", r7.unreadable?.length === adversaries.length && r7.records.length === 1 && r7.records[0]?.value.i === 12, { gaps: r7.unreadable?.length, records: r7.records });
+  c("no quote adversary's text reaches any gap reason", leaked.length === 0, leaked);
+  c("CONTROL: the adversary text WOULD show if the reason were the raw message", (() => { try { JSON.parse(adversaries[0]!); return false; } catch (e) { return /CANARY-A/.test((e as Error).message); } })());
 
   // ── truncation/replacement is loud too: neither re-adopting nor re-sending is safe to guess ──
   //

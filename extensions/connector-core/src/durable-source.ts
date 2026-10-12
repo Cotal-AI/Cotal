@@ -57,15 +57,19 @@ export interface SourceGap {
   offset: number;
   /** The line's length in bytes, newline excluded. */
   bytes: number;
-  /** The decoder's or the parser's own message, with any quoted text taken out: a parser names the
-   *  bytes it choked on, and those are the record's, which a log must not carry. */
+  /** Why the line is not a record: `not valid UTF-8`, or `not a JSON record` with the character the
+   *  parser stopped at when it named one. Built from the failure class and that number only, never
+   *  from the parser's message: the message quotes the bytes it choked on, which are the record's,
+   *  and a log must not carry them. */
   reason: string;
 }
 
-/** The parser's message with every double-quoted span replaced, so a reason never carries the
- *  record's own bytes into a log. */
-function unreadableReason(e: Error): string {
-  return e.message.replace(/"(?:[^"\\]|\\.)*"/g, '"…"');
+/** The reason for a line JSON refused. Only the parser's position is taken from its message, as a
+ *  number; the message itself can quote a span of the record, and a span can contain quotes, so no
+ *  rewrite of the message is safe. */
+function jsonRefusalReason(e: Error): string {
+  const at = /\bat position (\d+)\b/.exec(e.message);
+  return at ? `not a JSON record (parser stopped at character ${at[1]})` : "not a JSON record";
 }
 
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
@@ -317,11 +321,18 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         const start = at;
         at += line.length + 1; // + the newline that terminated it
         if (JsonlFileSource.isBlank(line)) continue; // blank separators are not records
+        let text: string;
+        try {
+          text = decoder.decode(line);
+        } catch {
+          unreadable.push({ offset: start, bytes: line.length, reason: "not valid UTF-8" });
+          continue;
+        }
         let value: T;
         try {
-          value = JSON.parse(decoder.decode(line)) as T;
+          value = JSON.parse(text) as T;
         } catch (e) {
-          unreadable.push({ offset: start, bytes: line.length, reason: unreadableReason(e as Error) });
+          unreadable.push({ offset: start, bytes: line.length, reason: jsonRefusalReason(e as Error) });
           continue;
         }
         // One seal per record, computed by the SAME function the batch cursor uses. It is a 512-byte

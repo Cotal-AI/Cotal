@@ -23,7 +23,7 @@
     {
       "name": "D1 the reader throws on a torn line again instead of reporting the gap",
       "file": "extensions/connector-core/src/durable-source.ts",
-      "find": "          unreadable.push({ offset: start, bytes: line.length, reason: unreadableReason(e as Error) });\n          continue;\n",
+      "find": "          unreadable.push({ offset: start, bytes: line.length, reason: jsonRefusalReason(e as Error) });\n          continue;\n",
       "replace": "          throw new Error(`JsonlFileSource: unparseable complete line at offset ~${from.offset} in ${this.path}: ${(e as Error).message}`);\n",
       "expectRed": "a torn line is stepped over and reported with its exact offset and length",
       "note": "The old permanent halt. The cell's own read helper scores the throw as a failed read, and the row named here is the one that asked for the gap."
