@@ -368,6 +368,12 @@ it keeps running without events, and the connector log records `AG-UI emitter st
 reason. For Claude Code the connector is the MCP server: it leaves the mesh and exits with code 1,
 and its stderr carries that line.
 
+A transcript line that is not a record does not stop the plane. Claude writes the transcript, and a
+write cut short by a full disk leaves part of one record glued to the next on a single line, which
+never becomes readable. The connector steps over that line, keeps the records after it, and writes
+`skipped an unreadable transcript record at offset <offset> (<bytes> bytes)` with the parser's
+reason to its stderr.
+
 A new session includes its first run even when Claude writes a positional startup prompt before the
 connector receives `SessionStart`. That from-zero read is keyed only to Claude's explicit
 `source: "startup"`; resumed, forked, cleared, and compacted sessions adopt at the transcript boundary

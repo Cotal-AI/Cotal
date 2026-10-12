@@ -1,0 +1,52 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/durable-source.smoke.ts",
+    "extensions/connector-core/smoke/agui-emitter.smoke.ts"
+  ],
+  "guard": "a complete line that is not a record is stepped over and reported as a gap with its exact bytes, the record after it is still delivered, and the emitter hands the gap to its reporter or refuses before the frontier moves; never a silent skip and never a permanent halt at that byte",
+  "command": "pnpm smoke:durable-source",
+  "completionMarker": "durable-source smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/durable-source-gap.json",
+  "why": [
+    "THE DEFECT THIS GUARDS WAS A PERMANENT HALT. The reader threw on a complete line it could not parse",
+    "and the cursor never passed it, so a transcript torn once by a full disk (part of one record glued",
+    "to the next on one line) killed the event plane on every restart at the same byte; on a space that",
+    "requires events the connector exited with it, which the harness showed as a disconnect. Measured on",
+    "two live sessions on 2026-10-12.",
+    "",
+    "Each mutation puts one half of the old behaviour back. D1 restores the throw in the reader, so the",
+    "torn-line cell reds on its named row. D2 drops the emitter's call into the reporter, so the gap is",
+    "stepped over in silence and the reporter cell reds. D3 removes the refusal for a missing reporter,",
+    "and the no-reporter cell reds because the pump no longer names the gap."
+  ],
+  "mutations": [
+    {
+      "name": "D1 the reader throws on a torn line again instead of reporting the gap",
+      "file": "extensions/connector-core/src/durable-source.ts",
+      "find": "          unreadable.push({ offset: start, bytes: line.length, reason: (e as Error).message });\n          continue;\n",
+      "replace": "          throw new Error(`JsonlFileSource: unparseable complete line at offset ~${from.offset} in ${this.path}: ${(e as Error).message}`);\n",
+      "expectRed": "a torn line is stepped over and reported with its exact offset and length",
+      "note": "The old permanent halt. The cell's own read helper scores the throw as a failed read, and the row named here is the one that asked for the gap."
+    },
+    {
+      "name": "D2 the emitter steps over a reported gap without telling its reporter",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "command": "pnpm smoke:agui-emitter",
+      "completionMarker": "agui-emitter smoke:",
+      "find": "      this.onUnreadable(gap);\n",
+      "replace": "      void gap;\n",
+      "expectRed": "gap:a-reported-gap-reaches-the-reporter-and-the-records-after-it-publish",
+      "note": "The silent skip. The records after the gap still publish, so only the reporter cell can see the difference."
+    },
+    {
+      "name": "D3 the emitter steps over a gap it has nowhere to report",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "command": "pnpm smoke:agui-emitter",
+      "completionMarker": "agui-emitter smoke:",
+      "find": "      if (!this.onUnreadable)\n        throw new Error(\n",
+      "replace": "      if (!this.onUnreadable) continue;\n      if (false)\n        throw new Error(\n",
+      "expectRed": "gap:without-a-reporter-the-pump-refuses-naming-the-offset",
+      "note": "A missing reporter becomes a quiet default. The frontier cell behind it reds too, since the pump then advances."
+    }
+  ]
+}

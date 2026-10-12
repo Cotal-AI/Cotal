@@ -1154,6 +1154,42 @@ try {
     c("subject:an-EPHEMERAL-actor-refuses-events-rather-than-inventing-a-channel", started.err !== undefined && /self-minted identity/.test(started.err.message), started.err?.message);
     c("subject:...and-that-refusal-publishes-nothing-either", ep.publishes.length === 0, ep.publishes.length);
   });
+
+  // A line the source could not read is a GAP on the read, and the pump's answer to it is decided
+  // here. The shape is the one a full disk leaves in a transcript: part of one record glued to the
+  // next on a single line. With a reporter the gap is named and the records after it publish; with
+  // none the pump refuses before the frontier moves, so the gap is never stepped over in silence.
+  await block("A SOURCE GAP IS REPORTED AND STEPPED OVER, OR REFUSED, NEVER SILENT", async () => {
+    const { wal, src, source } = await fresh("gap-reported");
+    const ep = new FakeEndpoint();
+    ep.answers = [{ seq: 1, duplicate: false }];
+    const gaps: { offset: number; bytes: number; reason: string }[] = [];
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper, onUnreadable: (g) => gaps.push(g) }))).value!;
+    await em.pump(); // adopt
+    const torn = '{"run":"r-cut","msg":"m-cut","text":"cut sho{"run":"r-glued","msg":"m-glued","text":"glued"}';
+    appendFileSync(src, torn + "\n");
+    append(src, { run: "r1", msg: "m1", text: "after the gap" });
+    const pumped = await attempt(() => em.pump());
+    c("gap:a-reported-gap-reaches-the-reporter-and-the-records-after-it-publish",
+      pumped.err === undefined && gaps.length === 1 && gaps[0]?.offset === 0 && gaps[0]?.bytes === Buffer.byteLength(torn) && ep.publishes.length === 1,
+      { err: pumped.err?.message, gaps, publishes: ep.publishes.length });
+    c("gap:the-frontier-moved-past-the-gap", Number(wal.frontier.sourceCursor?.split(":")[2]) === Buffer.byteLength(torn) + 1 + Buffer.byteLength(JSON.stringify({ run: "r1", msg: "m1", text: "after the gap" })) + 1, wal.frontier.sourceCursor);
+  });
+  await block("A SOURCE GAP WITH NO REPORTER REFUSES BEFORE THE FRONTIER MOVES", async () => {
+    const { wal, src, source } = await fresh("gap-unreported");
+    const ep = new FakeEndpoint();
+    ep.answers = [{ seq: 1, duplicate: false }];
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
+    await em.pump(); // adopt
+    const before = wal.frontier.sourceCursor;
+    appendFileSync(src, '{"run":"r-cut","msg":"m-cut","text":"cut sho{"run":"r-glued","msg":"m-glued","text":"glued"}\n');
+    append(src, { run: "r1", msg: "m1", text: "after the gap" });
+    const pumped = await attempt(() => em.pump());
+    c("gap:without-a-reporter-the-pump-refuses-naming-the-offset",
+      pumped.err !== undefined && /unreadable record at offset 0 \(/.test(pumped.err.message) && /no gap reporter/.test(pumped.err.message),
+      pumped.err?.message ?? "no throw");
+    c("gap:...and-neither-the-frontier-nor-the-broker-moved", wal.frontier.sourceCursor === before && ep.publishes.length === 0, { before, after: wal.frontier.sourceCursor, publishes: ep.publishes.length });
+  });
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

@@ -42,9 +42,35 @@ export interface SourceRecord<T> {
   cursor: string;
 }
 
+/**
+ * One complete line of the source that is not a record, stepped over and reported.
+ *
+ * The writer is a process this reader does not own, and a write it cut short leaves bytes that
+ * never become a record: a full disk ends a write part way through one record, and the next append
+ * lands a whole record behind the fragment on the same line. Such a line is a hole in the record
+ * from the moment it is written. Reporting it names the hole; halting on it would end the plane
+ * for good at that byte, because every later start resumes at the same cursor and meets the same
+ * line (measured on two live sessions after one full disk).
+ */
+export interface SourceGap {
+  /** Byte offset of the line's first byte. */
+  offset: number;
+  /** The line's length in bytes, newline excluded. */
+  bytes: number;
+  /** The decoder's or the parser's own message. */
+  reason: string;
+}
+
 /** One read: the records that became available, and the cursor to resume from AFTER them. */
 export interface SourceRead<T> {
   records: SourceRecord<T>[];
+  /**
+   * Complete lines inside this read that were not records, in file order. The cursor is past them.
+   * Absent when every line was a record, so a consumer can tell "no gap" from "nobody looked".
+   * A consumer that never looks is the silent one, which is why the emitter refuses to advance
+   * over a gap it was given nowhere to report.
+   */
+  unreadable?: SourceGap[];
   /**
    * Pass to the next {@link DurableSource.read}. Advances ONLY past fully-consumed records.
    *
@@ -87,8 +113,11 @@ export class JsonlFileResetError extends Error {
  * and the cursor advances only that far. A trailing fragment is left for the next read, when the
  * writer has finished it.
  *
- * Unparseable COMPLETE lines are a different case and are NOT skipped silently — they surface, so a
- * format change is loud rather than a quiet hole in the record.
+ * A COMPLETE line that is not a record is a different case: it is stepped over and reported as a
+ * {@link SourceGap} on the read, never dropped on the quiet. It used to halt the read instead, and
+ * that halt was permanent: the line never changes, the cursor never passes it, and every restart
+ * met it again. A reader that halts for good on one torn line of a file it does not write loses
+ * every record after it, which is the larger hole.
  */
 export class JsonlFileSource<T = unknown> implements DurableSource<T> {
   readonly kind = "jsonl-file";
@@ -258,41 +287,35 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       const lastNl = chunk.lastIndexOf(0x0a);
       if (lastNl === -1) return { records: [], cursor: await here(from.offset) };
 
-      // FATAL decode. `Buffer.toString("utf8")` substitutes U+FFFD for invalid bytes, so a
-      // malformed byte inside an otherwise valid JSON string survives `JSON.parse` as CHANGED DATA
-      // and would publish as if it were what the agent did. Silently rewriting a record is the same
-      // class of harm as consuming a truncated one.
-      let complete: string;
-      try {
-        complete = new TextDecoder("utf-8", { fatal: true }).decode(chunk.subarray(0, lastNl));
-      } catch (e) {
-        throw new Error(
-          `JsonlFileSource: invalid UTF-8 at offset ~${from.offset} in ${this.path}: ${(e as Error).message}`,
-        );
-      }
-
       // PER-RECORD CURSORS, AND THE ARITHMETIC IS IN BYTES BECAUSE THE FILE IS.
       //
-      // `complete` is a decoded STRING; the cursor is a BYTE offset. A record containing any
-      // non-ASCII character makes `line.length` smaller than the bytes it occupies, so walking the
-      // split with character lengths silently mis-places the cursor of every record after the first
-      // multi-byte one — and the resume then lands mid-record, which is precisely the truncated-read
-      // corruption the partial-line rule exists to prevent. The decode above was FATAL, so `line`
-      // re-encodes to exactly the bytes it came from; `Buffer.byteLength` is that re-encoding.
+      // The complete region is split on the newline BYTE and each line is decoded on its own, so a
+      // line's byte length is its own length and the cursor after it is exact whatever the line
+      // holds. Decoding a line is FATAL: `Buffer.toString("utf8")` substitutes U+FFFD for invalid
+      // bytes, so a malformed byte inside an otherwise valid JSON string would survive `JSON.parse`
+      // as CHANGED DATA and publish as if it were what the agent did.
+      //
+      // A line that does not decode, or decodes to something that is not JSON, is a GAP: reported
+      // with its offset and length, stepped over, and never a halt. The writer is not this process,
+      // and the shape a full disk leaves behind (part of one record glued to the next on one line)
+      // never becomes readable, so halting on it is halting for good at that byte while the records
+      // after it keep arriving unread.
       //
       // A blank line is not a record but it IS bytes, so it advances the offset like any other.
       const records: SourceRecord<T>[] = [];
+      const unreadable: SourceGap[] = [];
+      const decoder = new TextDecoder("utf-8", { fatal: true });
       let at = from.offset;
-      for (const line of complete.split("\n")) {
-        at += Buffer.byteLength(line, "utf8") + 1; // + the newline that terminated it
-        if (line.trim() === "") continue; // blank separators are not records
+      for (const line of JsonlFileSource.lines(chunk.subarray(0, lastNl))) {
+        const start = at;
+        at += line.length + 1; // + the newline that terminated it
+        if (JsonlFileSource.isBlank(line)) continue; // blank separators are not records
         let value: T;
         try {
-          value = JSON.parse(line) as T;
+          value = JSON.parse(decoder.decode(line)) as T;
         } catch (e) {
-          throw new Error(
-            `JsonlFileSource: unparseable complete line at offset ~${from.offset} in ${this.path}: ${(e as Error).message}`,
-          );
+          unreadable.push({ offset: start, bytes: line.length, reason: (e as Error).message });
+          continue;
         }
         // One seal per record, computed by the SAME function the batch cursor uses. It is a 512-byte
         // read each, which is the honest cost of not having a second sealing path here — and two
@@ -311,10 +334,30 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
         throw new Error(
           `JsonlFileSource: internal cursor walk ended at ${at} but the batch ends at ${end} in ${this.path}`,
         );
-      return { records, cursor: await here(end) };
+      return { records, cursor: await here(end), ...(unreadable.length > 0 ? { unreadable } : {}) };
     } finally {
       await fh.close();
     }
+  }
+
+  /** The lines of `buf` as byte slices, split on the newline byte; `buf` carries no trailing newline. */
+  private static *lines(buf: Buffer): Generator<Buffer> {
+    let start = 0;
+    for (;;) {
+      const nl = buf.indexOf(0x0a, start);
+      if (nl === -1) {
+        yield buf.subarray(start);
+        return;
+      }
+      yield buf.subarray(start, nl);
+      start = nl + 1;
+    }
+  }
+
+  /** True when every byte is ASCII whitespace, including the empty line. */
+  private static isBlank(line: Buffer): boolean {
+    for (const b of line) if (b !== 0x20 && b !== 0x09 && b !== 0x0d && b !== 0x0b && b !== 0x0c) return false;
+    return true;
   }
 }
 

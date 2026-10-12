@@ -28,7 +28,7 @@ import {
   type AguiFrame,
   type CotalMeta,
 } from "./agui.js";
-import type { DurableSource } from "./durable-source.js";
+import type { DurableSource, SourceGap } from "./durable-source.js";
 import type { EventWal } from "./event-wal.js";
 import { eventChannelForSession } from "./launch.js";
 import type { SubjectFrontier } from "./subject-frontier.js";
@@ -268,6 +268,7 @@ export class AguiEmitter<T> {
     /** Derived from the endpoint's OWN principal, never from a config name or the launch env. */
     readonly channel: string,
     readonly threadId: string,
+    private readonly onUnreadable: ((gap: SourceGap) => void) | undefined,
   ) {
     // RESTORED FROM THE WAL, which is the whole point of the v2 migration: a process that died
     // mid-run comes back knowing which runs and messages are open, instead of refusing the first
@@ -305,6 +306,12 @@ export class AguiEmitter<T> {
     subjectFrontier: SubjectFrontier;
     source: DurableSource<T>;
     map: RecordMapper<T>;
+    /**
+     * Where a {@link SourceGap} the source stepped over is reported. Optional, and the absence is
+     * not a quiet default: a pump that meets a gap with no reporter refuses, naming the gap, so a
+     * connector that never decided where gaps go keeps the loud answer rather than a silent hole.
+     */
+    onUnreadable?: (gap: SourceGap) => void;
   }): Promise<AguiEmitter<T>> {
     const { endpoint, wal } = opts;
     const channel = eventChannelForSession(endpoint);
@@ -338,7 +345,7 @@ export class AguiEmitter<T> {
     // thread would republish against the wrong tip.
     await wal.bindSubjectFrontier(opts.subjectFrontier);
 
-    const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId);
+    const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId, opts.onUnreadable);
     await em.recover();
     return em;
   }
@@ -388,6 +395,19 @@ export class AguiEmitter<T> {
       );
 
     const read = await this.source.read(this.wal.frontier.sourceCursor);
+
+    // A gap is a line the source stepped over; the cursor it returned is past it. It is handed to
+    // the connector's reporter BEFORE anything below advances the frontier, so a connector that gave
+    // this emitter nowhere to report keeps the old answer: the pump refuses, the cursor stays, and
+    // the gap is named in the refusal. Silence is the one answer not on offer.
+    for (const gap of read.unreadable ?? []) {
+      if (!this.onUnreadable)
+        throw new Error(
+          `event emitter for ${this.channel}: the source skipped an unreadable record at offset ${gap.offset} ` +
+            `(${gap.bytes} bytes): ${gap.reason}; no gap reporter was given, so refusing to advance over it silently`,
+        );
+      this.onUnreadable(gap);
+    }
 
     // Units the mapper dropped are not errors and not frames. Their cursor folds FORWARD into the
     // preceding unit, so consuming that frame consumes them too and they are never re-read. A drop

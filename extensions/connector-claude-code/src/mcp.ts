@@ -181,6 +181,15 @@ async function main(): Promise<void> {
             subjectFrontier,
             source,
             map: mapper.map,
+            // Claude writes the transcript, and a write it cut short (a full disk) leaves part of
+            // one record glued to the next on a single line that never becomes readable. That line
+            // is stepped over and named here; halting on it ended the plane, and on a space that
+            // requires events the seat with it, for good at that byte, on every restart.
+            onUnreadable: (gap) =>
+              process.stderr.write(
+                `[cotal-connector] AG-UI source: skipped an unreadable transcript record at offset ${gap.offset} ` +
+                  `(${gap.bytes} bytes): ${gap.reason}\n`,
+              ),
           });
         };
 
