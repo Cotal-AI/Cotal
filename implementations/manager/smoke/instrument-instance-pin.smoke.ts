@@ -880,8 +880,14 @@ try {
       const ranTwice: string[] = [];
       const mismatched: string[] = [];
       const bindKept: string[] = [];
-      for (const command of MANAGER_ADMIN_COMMANDS) {
+      const adminSweep = ["transcript-receive",
+        ...MANAGER_ADMIN_COMMANDS.filter(command => command !== "transcript-receive")] as const;
+      let transcriptReachBeforePreservation = false;
+      for (const command of adminSweep) {
         if (command === "purge") continue; // already graded above, in full
+        // Snapshot the actual completed obligation before preparation can fence either manager.
+        if (command === "prepare-preservation") transcriptReachBeforePreservation =
+          transcriptReceiveOutcome !== null && !notReached.includes("transcript-receive");
         // Every surfaced split drops the bind, so re-resolve (a tolerant read) before forcing the
         // ghost again; without a cached record there is nothing to doctor and the call would
         // simply resolve for real.
@@ -960,6 +966,8 @@ try {
         if (err === undefined && !dispositionAgrees(reply, delta)) mismatched.push(command);
         if (cache.get(MANAGER_ENDPOINT)?.responder.instanceId === ghost) bindKept.push(command);
       }
+      check("the transcript-receive guard-reach obligation completed before preservation began",
+        transcriptReachBeforePreservation);
       check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
         notReached.length === 0, { notReached, transcriptReceiveOutcome });
       // WAS: "none of them is quietly retried". A retry was the defect while a split could only be
