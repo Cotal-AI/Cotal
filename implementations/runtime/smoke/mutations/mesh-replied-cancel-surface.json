@@ -1,0 +1,33 @@
+{
+  "suite": [
+    "implementations/runtime/smoke/mesh-replied.smoke.ts"
+  ],
+  "guard": "The suite's manager-shaped endpoint declares and serves the reserved cancel command that the real mesh handler uses to withdraw a turn before cancellation completes.",
+  "command": "pnpm smoke:runtime-mesh-replied",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/mesh-replied-cancel-surface.json",
+  "why": [
+    "The retained a167 run reached the cancelled-turn and adoption-discharge cases with a surface",
+    "that listed only despawn, spawn and turn. The cancelled turn did not unwind, and discharge",
+    "threw before publishing cancel because the described contract did not contain that command.",
+    "One list supplies both the registered cancel row and its serve definition. Emptying it",
+    "restores that absent-command fault without creating a declared but unserved startup error.",
+    "No completionMarker is declared for this fault. The original cancelled-turn assertion goes",
+    "red before the later uncaught discharge error, which prevents the suite's summary from printing.",
+    "The maintained grader can count a named assertion before a later crash. The existing replied",
+    "mutation config and its completion requirement are unchanged. Restoration runs the full suite.",
+    "This stand-in composes core cancellation and first-terminal-fact primitives. It does not",
+    "exercise production manager admission, credentials, or its pending-turn latch."
+  ],
+  "mutations": [
+    {
+      "name": "the replied fixture omits the reserved cancel surface used by cancellation and discharge",
+      "file": "implementations/runtime/smoke/mesh-replied.smoke.ts",
+      "find": "const CANCEL_COMMANDS: typeof CANCEL_COMMAND[] = [CANCEL_COMMAND];",
+      "replace": "const CANCEL_COMMANDS: typeof CANCEL_COMMAND[] = [];",
+      "expectRed": "the turn unwinds as Cancelled",
+      "cell": "the turn unwinds as Cancelled",
+      "afterRestore": "pnpm smoke:runtime-mesh-replied",
+      "note": "The suite imports its own fixture and the runtime source directly. The shared list reaches both DOCUMENT.commands before registration and the serve definitions before the original cases nine and ten. Textual reach is not a measured current kill. No runtime source, assertion, deadline, grant, or delayed-yield case is changed by this fault."
+    }
+  ]
+}

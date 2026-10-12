@@ -11,7 +11,7 @@
  *
  * The far side is the same suite-served MANAGER-SHAPED goal endpoint the turn suite drives (the
  * runtime never imports `@cotal-ai/manager`), scripting each turn's terminal in the real shapes:
- * a currency-proving `succeeded` or a goal-bound hold's deny.
+ * a currency-proving `succeeded`, a goal-bound hold's deny, or a caller's mediated cancel.
  *
  * Run: pnpm smoke:runtime-mesh-replied   (needs nats-server on PATH)
  */
@@ -50,6 +50,7 @@ import {
   bindGoal,
   createGoal,
   commitGoalResult,
+  requestGoalCancel,
   mintCheckpoint,
   expireCheckpoint,
   goalRefOf,
@@ -174,17 +175,31 @@ const DESPAWN_OUTPUT = {
   type: "object", additionalProperties: false, required: ["name", "stopped", "graceful"],
   properties: { name: { type: "string" }, stopped: { type: "boolean" }, graceful: { type: "boolean" } },
 } as const;
+// The published manager cancel schemas (SPEC 13.6 item 4), without importing the manager.
+const CANCEL_INPUT = {
+  type: "object", additionalProperties: false, required: ["goalId"],
+  properties: { goalId: { type: "string", minLength: 1 }, mode: { enum: ["graceful", "terminate"] } },
+} as const;
+const CANCEL_OUTPUT = {
+  type: "object", additionalProperties: false, required: ["goalId", "state"],
+  properties: { goalId: { type: "string" }, state: { enum: ["succeeded", "failed", "cancelled", "expired", "uncertain"] } },
+} as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
   turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
+  cancel: { input: cc(CANCEL_INPUT), output: cc(CANCEL_OUTPUT) },
 };
+const CANCEL_COMMAND = { name: "cancel", class: "ephemeral" as const, targeted: false, capability: "manager.lifecycle", inputDigest: COMPILED.cancel.input.closureDigest, outputDigest: COMPILED.cancel.output.closureDigest };
+// One list owns both registration and serving, so omitting cancel restores the original gap.
+const CANCEL_COMMANDS: typeof CANCEL_COMMAND[] = [CANCEL_COMMAND];
 const DOCUMENT = {
   urn: "ai.cotal.test.repliedmgr", revision: 1, attributes: [], events: [],
   commands: [
     { name: "spawn", class: "ephemeral" as const, targeted: false, capability: "manager.spawn", inputDigest: COMPILED.spawn.input.closureDigest, outputDigest: COMPILED.spawn.output.closureDigest },
     { name: "turn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.turn.input.closureDigest, outputDigest: COMPILED.turn.output.closureDigest },
     { name: "despawn", class: "ephemeral" as const, targeted: true, modes: ["owner", "any"], capability: "manager.lifecycle", inputDigest: COMPILED.despawn.input.closureDigest, outputDigest: COMPILED.despawn.output.closureDigest },
+    ...CANCEL_COMMANDS,
   ],
 };
 const ROOT_DIGEST = contractDigest(DOCUMENT);
@@ -196,7 +211,7 @@ const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
   const seen = new Set<string>();
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT]) {
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT, CANCEL_INPUT, CANCEL_OUTPUT]) {
     const rootDigest = contractDigest(source);
     if (seen.has(rootDigest)) continue;
     seen.add(rootDigest);
@@ -344,6 +359,13 @@ const turnHandler = async (ctx: EpServeContext): Promise<unknown> => {
   return acceptance;
 };
 
+const cancelHandler = async (ctx: EpServeContext): Promise<unknown> => {
+  const { goalId, mode = "graceful" } = (ctx.request.args ?? {}) as { goalId: string; mode?: "graceful" | "terminate" };
+  await requestGoalCancel(goalCtx, { request: ctx.subject, goalId, mode });
+  const { fact } = await commitGoalResult(goalCtx, { ref: goalRefOf(ctx.subject, goalId), now: Date.now(), cause: "cancel", committer: { instanceId: MGR_IID, epoch: EXEC_EPOCH } });
+  return { goalId, state: fact.state };
+};
+
 const defs: EpCommandDef[] = [
   { command: "spawn", contract: COMPILED.spawn, handler: spawnHandler },
   { command: "turn", contract: COMPILED.turn, handler: turnHandler },
@@ -351,6 +373,7 @@ const defs: EpCommandDef[] = [
     const t = ctx.request.target as { owner: string; actor: string };
     return { name: `${t.owner}.${t.actor}`, stopped: true, graceful: ((ctx.request.args ?? {}) as { graceful?: unknown }).graceful !== false };
   } },
+  ...CANCEL_COMMANDS.map(({ name }) => ({ command: name, contract: COMPILED.cancel, handler: cancelHandler })),
 ];
 const serve = serveEndpoint(nc, SPACE, grant, defs, { public: true }, {
   resolveTarget: (t) => mappings.get(`${t.owner}.${t.actor}`),

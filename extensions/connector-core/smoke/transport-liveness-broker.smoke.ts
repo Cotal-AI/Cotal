@@ -195,13 +195,15 @@ try {
   observed.reachedFinalStep = reachedFinalStep;
   observe("poll-after");
   observe("stop-before");
-  await raceAgent.stop();
-  observed.stopReturned = true;
-  observe("stop-after");
+  // Stop must begin while the real bind is held, but its join needs this gate released.
+  const raceStop = raceAgent.stop();
   observe("release-before");
   releaseBind();
   observed.releaseCalled = true;
   observe("release-after");
+  await raceStop;
+  observed.stopReturned = true;
+  observe("stop-after");
   observe("caught-start-before");
   await raceStart;
   observed.caughtStartReturned = true;
