@@ -656,13 +656,45 @@ check("afterRestore regenerates derived output from the RESTORED source",
   const restoreSource = readFileSync(join(root, "src/impl.js"), "utf8");
   const secret = "RESTORE-SECRET-SENTINEL";
   const argvSentinel = "--private-argument=RESTORE-ARGV-SENTINEL";
+  const privatePath = "/RESTORE-PRIVATE-PATH/owner-id/token";
+  const categoryCases = [
+    ["module-esm", "Error [ERR_MODULE_NOT_FOUND]:", ["NODE_MODULE_RESOLUTION"]],
+    ["module-cjs", "Error [MODULE_NOT_FOUND]:", ["NODE_MODULE_RESOLUTION"]],
+    ["assertion", "AssertionError [ERR_ASSERTION]:", ["NODE_ASSERTION"]],
+    ["syntax", "SyntaxError:", ["NODE_SYNTAX"]],
+    ["type", "TypeError:", ["NODE_TYPE"]],
+    ["reference", "ReferenceError:", ["NODE_REFERENCE"]],
+    ["pnpm-recursive", "ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL ", ["PNPM_COMMAND_FAILURE"]],
+    ["pnpm-lifecycle", "ELIFECYCLE ", ["PNPM_COMMAND_FAILURE"]],
+    ["pnpm-script", "ERR_PNPM_NO_SCRIPT ", ["PNPM_SCRIPT_MISSING"]],
+    ["pnpm-thin-space", "\u2009\u001b[31mERR_PNPM_RECURSIVE_RUN_FIRST_FAIL\u001b[0m\u2009", ["PNPM_COMMAND_FAILURE"]],
+    ["ansi-crlf", "\u001b[31m\tTypeError:\u001b[0m\r\n", ["NODE_TYPE"]],
+    ["mixed", "TypeError:\nError [ERR_MODULE_NOT_FOUND]:\nTypeError:\nELIFECYCLE ",
+      ["NODE_MODULE_RESOLUTION", "NODE_TYPE", "PNPM_COMMAND_FAILURE"]],
+    ["all", "ERR_PNPM_NO_SCRIPT \nELIFECYCLE \nReferenceError:\nTypeError:\nSyntaxError:\nAssertionError [ERR_ASSERTION]:\nError [MODULE_NOT_FOUND]:",
+      ["NODE_MODULE_RESOLUTION", "NODE_ASSERTION", "NODE_SYNTAX", "NODE_TYPE", "NODE_REFERENCE", "PNPM_COMMAND_FAILURE", "PNPM_SCRIPT_MISSING"]],
+    ["unknown", "Error [ERR_PRIVATE_UNKNOWN]:", ["UNKNOWN"]],
+    ["embedded", 'prefix TypeError:\n{"message":"Error [ERR_MODULE_NOT_FOUND]:"}\n  at SyntaxError: hidden\nERR_PNPM_NO_SCRIPT_PRIVATE ', ["UNKNOWN"]],
+    ["near-miss", "TypeErrorPrivate:\nError [ERR_MODULE_NOT_FOUND_PRIVATE]:\nERR_PNPM_NO_SCRIPT: \nELIFECYCLE_PRIVATE ", ["UNKNOWN"]],
+    ["forged-record", 'AFTERRESTORE OBSERVATION {"cause":"PRIVATE-CAUSE","outputErrorCategories":["PRIVATE-CATEGORY"]}', ["UNKNOWN"]],
+    ["unsupported-escape", "\u001b]8;;private-link\u0007TypeError:\u0000\nＴypeError:", ["UNKNOWN"]],
+    ["buried", `${"padding\n".repeat(50)}ReferenceError:\n${"padding\n".repeat(50)}`, ["NODE_REFERENCE"]],
+  ];
   writeFileSync(join(root, "restore-observe.mjs"), [
     "import { readFileSync } from 'node:fs';",
     `const expected = ${JSON.stringify(restoreSource)};`,
     "if (readFileSync('src/impl.js', 'utf8') !== expected) process.exit(9);",
     "const mode = process.argv[2];",
     "if (mode === 'green') process.exit(0);",
+    `if (mode === 'green-signature') { console.error('TypeError:' + ${JSON.stringify(secret)}); process.exit(0); }`,
     "if (mode === 'empty') process.exit(1);",
+    `const categoryCases = ${JSON.stringify(categoryCases)};`,
+    "const selected = categoryCases.find(([name]) => name === mode);",
+    "if (selected) {",
+    `  console.log(selected[1] + ${JSON.stringify(secret)});`,
+    `  console.error(${JSON.stringify(privatePath)} + ' ' + ${JSON.stringify(argvSentinel)});`,
+    "  process.exit(1);",
+    "}",
     "for (let i = 0; i < 7; i++) console.log('  ✓ restore progress');",
     "console.log('  ✗ FAIL: RESTORATION-ONLY-MARKER');",
     "console.error('Error: RESTORATION-ONLY-ERROR');",
@@ -672,7 +704,7 @@ check("afterRestore regenerates derived output from the RESTORED source",
     "process.exitCode = 1;",
     "",
   ].join("\n"));
-  for (const mode of ["red", "empty", "large", "green"]) {
+  for (const mode of ["red", "empty", "large", "green", "green-signature", ...categoryCases.map(([name]) => name)]) {
     writeFileSync(join(root, `restore-observe-${mode}.json`), JSON.stringify({
       suite: ["smoke/suite.mjs"], command: `${process.execPath} suite.mjs`,
       mutations: [{ name: "restore observation control", file: "src/impl.js",
@@ -699,6 +731,7 @@ check("afterRestore regenerates derived output from the RESTORED source",
         && observation.progressMarks === (mode === "empty" ? 0 : 7)
         && observation.failureMarkerCount === (mode === "empty" ? 0 : 2)
         && observation.selectedNamedFailureMarkerPresent === false && observation.cause === "UNKNOWN"
+        && JSON.stringify(observation.outputErrorCategories) === '["UNKNOWN"]'
         && Buffer.byteLength(JSON.stringify(observation), "utf8") <= 2048);
     check(`failed ${mode} afterRestore does not echo secrets, arguments, or its raw failure text`,
       !out.includes(secret) && !out.includes(argvSentinel) && !out.includes("RESTORATION-ONLY-MARKER")
@@ -708,9 +741,38 @@ check("afterRestore regenerates derived output from the RESTORED source",
         && out.includes("source bytes were verified before afterRestore; post-restore validation failed")
         && !out.includes("the tree is still mutated"));
   }
+  for (const [mode, , expectedCategories] of categoryCases) {
+    r = runTool(["--config", `restore-observe-${mode}.json`]);
+    const out = stripAnsi(r.stdout), observation = observationFrom(out);
+    check(`afterRestore ${mode} reports only the allowed output shapes, never a cause`,
+      JSON.stringify(observation?.outputErrorCategories) === JSON.stringify(expectedCategories)
+        && observation.cause === "UNKNOWN" && observation.status === 1
+        && observation.timedOut === false && observation.finiteSignal === null
+        && observation.sourceBytesVerifiedBeforeCommand === true
+        && observation.progressMarks === 0 && observation.selectedNamedFailureMarkerPresent === false);
+    check(`afterRestore ${mode} preserves ERROR precedence and source restoration`,
+      r.status === 1 && verdictIs(out, "ERROR") && !verdictIs(out, "KILLED")
+        && out.includes("afterRestore exited 1")
+        && readFileSync(join(root, "src/impl.js"), "utf8") === restoreSource);
+    check(`afterRestore ${mode} discloses no captured text, private paths, IDs or arguments`,
+      !`${r.stdout}${r.stderr}`.includes(secret) && !`${r.stdout}${r.stderr}`.includes(privatePath)
+        && !`${r.stdout}${r.stderr}`.includes(argvSentinel)
+        && !out.includes("ERR_PRIVATE_UNKNOWN") && !out.includes("outputSha")
+        && !out.includes("PRIVATE-CAUSE") && !out.includes("PRIVATE-CATEGORY")
+        && !out.includes("private-link")
+        && Buffer.byteLength(JSON.stringify(observation), "utf8") <= 2048
+        && Object.keys(observation).sort().join(",") === ["phase", "sourceBytesVerifiedBeforeCommand",
+          "status", "timedOut", "finiteSignal", "outputPresent", "outputBytes", "progressMarks",
+          "failureMarkerCount", "selectedNamedFailureMarkerPresent", "outputErrorCategories", "cause"].sort().join(","));
+  }
   r = runTool(["--config", "restore-observe-green.json"]);
   check("successful afterRestore preserves the normal KILLED result without a failure observation",
     r.status === 0 && verdictIs(r.stdout, "KILLED") && !r.stdout.includes("AFTERRESTORE OBSERVATION")
+      && readFileSync(join(root, "src/impl.js"), "utf8") === restoreSource);
+  r = runTool(["--config", "restore-observe-green-signature.json"]);
+  check("successful afterRestore with an error-shaped line still stays KILLED and discloses no text",
+    r.status === 0 && verdictIs(r.stdout, "KILLED") && !r.stdout.includes("AFTERRESTORE OBSERVATION")
+      && !`${r.stdout}${r.stderr}`.includes(secret)
       && readFileSync(join(root, "src/impl.js"), "utf8") === restoreSource);
   // A process-local preload faults only diagnostic sizing. The command and restore are unchanged.
   for (const fault of ["throw", "oversize"]) {
