@@ -1,5 +1,7 @@
 {
-  "suite": "extensions/connector-core/smoke/agui-holder.smoke.ts",
+  "suite": [
+    "extensions/connector-core/smoke/agui-holder.smoke.ts"
+  ],
   "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",
