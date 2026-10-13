@@ -191,10 +191,15 @@ export function renderSpawnSummary(ctx: {
   created: string[];
   launched: string[];
   pending: string[];
+  failed: string[];
   existsUnmanaged: string[];
   unmanaged: UnmanagedReport;
 }): string {
-  const out: string[] = [c.green(`✓ deployed onto "${ctx.space}" (${ctx.server})`)];
+  const out: string[] = [
+    ctx.failed.length
+      ? c.yellow(`! partial deploy onto "${ctx.space}" (${ctx.server})`) + c.dim(` - ${ctx.failed.length} agent(s) failed to launch: ${ctx.failed.join(", ")}`)
+      : c.green(`✓ deployed onto "${ctx.space}" (${ctx.server})`),
+  ];
   if (ctx.created.length) out.push(`  ${c.green("+")} created ${ctx.created.length} channel(s): ${ctx.created.map((n) => c.cyan("#" + n)).join(", ")}`);
   if (ctx.launched.length) out.push(`  ${c.green("+")} launched ${ctx.launched.length} agent(s): ${ctx.launched.join(", ")}`);
   if (ctx.pending.length) out.push(`  ${c.yellow("~")} pending ${ctx.pending.length} agent(s), still managed but not yet on the mesh: ${ctx.pending.join(", ")}`);

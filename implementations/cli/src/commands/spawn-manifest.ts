@@ -207,6 +207,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     const agents: LedgerAgent[] = [...(prior?.created.agents ?? [])];
     const launchedNow: string[] = [];
     const pendingNow: string[] = [];
+    const failedNow: string[] = [];
     if (agentPlan.willCreate.length) {
       // The manager reads the run spec by runId on each `launch` (a remote manager gets it pushed
       // inline instead, below). USER MODE stamps the deploy's owner (the login's derived owner,
@@ -281,6 +282,7 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
         const pending = reply.code === "uncertain";
         if (!reply.ok && !pending) {
           console.error(c.red(`✗ ${e.agent.name}: ${reply.error ?? "launch failed"}`));
+          failedNow.push(e.agent.name);
           continue;
         }
         // `requested`/`hash` come from the PLAN, not the reply: they are this caller's own inputs,
@@ -316,12 +318,14 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
       created: channelPlan.create.map((ch) => ch.name),
       launched: launchedNow,
       pending: pendingNow,
+      failed: failedNow,
       existsUnmanaged: channelPlan.existsUnmanaged.map((x) => x.channel.name),
       unmanaged,
     }));
     const inh = renderInherited(eff);
     if (inh) console.log("\n" + inh);
     if (eff.warnings.length) console.log("\n" + renderWarnings(eff.warnings));
+    if (failedNow.length) process.exitCode = 1; // not a full deploy
   } finally {
     await ep.stop();
   }
