@@ -314,49 +314,27 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       () => undefined,
     );
     const entry: ReportedTerminal = { terminal, at };
-    // DECIDED AT THE HOOK, NOT WHEN A STEP RUNS. While the plane is down, or while a re-establish is
-    // in flight, THE TERMINAL IS HELD, NOT DROPPED AND NOT QUEUED. It is not a record in the source,
-    // so the re-establish cannot read it back, and a run the log has open with no terminal stays
-    // open on the wire until a later prompt closes it as a FINISH, which for a failed turn is the
-    // wrong terminal (Sol, review of 2026-10-12). Queued, the close would run after the whole
-    // recovery, and the run open by then may be the NEXT prompt's, read by the recovery pump: the
-    // failed run would get the synthesized finish and its successor the error (Sol, round 7 of
-    // 2026-10-13, through a real broker with the start held at its startup boundary).
-    if (this.dead !== undefined || this.reviving) {
-      // The fresh emitter may be mid-recovery already, reading or publishing: the terminal goes to
-      // it NOW, and its pump, or the one the settle runs after it, places the terminal on its turn
-      // (Sol, round 8 of 2026-10-13: a terminal held only for after the pump arrived too late).
-      const emitter = this.emitter;
-      this.held.push(entry);
-      if (this.dead === undefined && emitter && !emitter.stopped) this.handOver(emitter, entry);
-      return taken;
-    }
-    // LIVE, THE TERMINAL GOES TO THE EMITTER AT THE HOOK TOO, not when its step runs. The flush
-    // queued ahead of it may still be reading, and the harness may write the next prompt before
-    // that read: queued now, the pump places the terminal on its own turn, and that prompt's
-    // mapping publishes the error in the finish's place; queued by the step, it would be placed
-    // after the prompt had closed the turn, and a close of whatever run was open by then would
-    // end the next run with this turn's terminal. A pump that has read past its placing leaves it
-    // waiting, and the step's settle pumps again for it.
+    // DECIDED AT THE HOOK, NOT WHEN A STEP RUNS. A terminal is not a record in the source, so a
+    // start cannot read it back, and a run the log has open with no terminal stays open on the wire
+    // until a later prompt closes it as a FINISH, which for a failed turn is the wrong terminal
+    // (Sol, review of 2026-10-12). Queued only by the step below, it would reach the emitter after
+    // whatever read runs before that step: the recovery pump of a re-establish (Sol, round 7 of
+    // 2026-10-13), the flush the stop hook queued ahead of the close (round 8, and live on the
+    // eleventh), or the flush queued behind a first start still waiting on the broker (round 16).
+    // That read may answer the NEXT prompt, whose mapping closes the failed run as a finish, and
+    // the terminal would then close its successor. So it goes to the live emitter now, which
+    // places it on its own turn when its pump reads up to it; with no live emitter, down, mid
+    // re-establish or before the first start has returned, it is HELD, and the start hands every
+    // held terminal to the emitter before any pump.
     const live = this.emitter;
-    const queued = live !== undefined && !live.stopped;
+    const queued = this.dead === undefined && live !== undefined && !live.stopped;
     if (queued) live.queueTerminal(entry);
-    // NO EMITTER YET: the first start is still in flight, waiting on the broker, with the flush
-    // the stop hook queued ahead of this close already on the chain behind it. Queued only by this
-    // step, the terminal would reach the emitter after that flush had read past its position, and
-    // the next prompt among the records read would have closed the failed run as a finish (Sol,
-    // round 16 of 2026-10-13, through the built MCP entry point with the broker unavailable at
-    // SessionStart). It is held, and the start hands it to the emitter before any pump.
     else this.held.push(entry);
     this.enqueue(async () => {
       const emitter = this.emitter;
-      if (this.dead) {
-        // A step queued behind the one that took the plane down: held as if it had arrived then,
-        // unless the dying emitter already handed it back.
-        if (!queued && !this.held.includes(entry)) this.held.push(entry);
-        return;
-      }
-      if (!emitter || emitter.stopped) return;
+      // Behind the step that took the plane down: the terminal is held already, by the hook or
+      // handed back by the dying emitter, and the re-establish settles it.
+      if (this.dead || !emitter || emitter.stopped) return;
       await this.holdForLive();
       if (this.held.includes(entry)) this.handOver(emitter, entry);
       await this.settle(emitter);
