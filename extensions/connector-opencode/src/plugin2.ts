@@ -271,23 +271,25 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     }
   }
 
+  /** Whether an execution event is a replay: at or before the last turn's end in the same session's
+   *  durable log. 2.x gives every execution event that position, so one without it cannot be told
+   *  from a replay and is refused. */
+  function replayed(ev: OpenCode2Event): boolean {
+    const at = ev.durable;
+    if (!at) log(`${ev.type} carries no durable log position; ignored`);
+    return !at || (at.aggregateID === ended?.aggregateID && at.seq <= ended.seq);
+  }
+
   /** A turn ended: clear `busy`, settle the batch it carried, then drive whatever waited behind it,
    *  as 1.x's `completeTurn` does. The incoming handler and the boot task decline while a turn runs,
    *  so nothing else would. The carried batch is left out of the wake count: after a failed turn it
    *  is still in the inbox, and driving it again here would loop a turn that keeps failing. It goes
-   *  out with the next drive or when the broker redelivers it. An end with no turn running, or one
-   *  at or before the last turn's end in the same session's durable log (a replay), closes nothing:
-   *  acting on it would resubmit a failed batch, or settle the batch driven below before its turn
-   *  ran. 2.x gives every execution event that position, so an end without one cannot be told from
-   *  a replay and is refused. */
+   *  out with the next drive or when the broker redelivers it. A replayed end, or one with no turn
+   *  running, closes nothing: acting on it would resubmit a failed batch, or settle the batch driven
+   *  below before its turn ran. */
   async function completeTurn(ev: OpenCode2Event, settle: () => void): Promise<void> {
-    const at = ev.durable;
-    if (!at) {
-      log(`${ev.type} carries no durable log position; ignored`);
-      return;
-    }
-    if (!busy || (at.aggregateID === ended?.aggregateID && at.seq <= ended.seq)) return;
-    ended = at;
+    if (replayed(ev) || !busy) return;
+    ended = ev.durable;
     busy = false;
     const carried = new Set(surfaced);
     settle();
@@ -363,7 +365,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
             break;
           }
           case "session.execution.started": {
-            if (sessionID && data.sessionID !== sessionID) break;
+            // A replayed start belongs to a turn whose end already came, so it would hold `busy` for good.
+            if ((sessionID && data.sessionID !== sessionID) || replayed(ev)) break;
             busy = true;
             await safeStatus("working");
             break;
