@@ -270,6 +270,19 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     }
   }
 
+  /** A turn ended: clear `busy`, settle the batch it carried, then drive whatever waited behind it,
+   *  as 1.x's `completeTurn` does. The incoming handler and the boot task decline while a turn runs,
+   *  so nothing else would. The carried batch is left out of the wake count: after a failed turn it
+   *  is still in the inbox, and driving it again here would loop a turn that keeps failing. It goes
+   *  out with the next drive or when the broker redelivers it. */
+  async function completeTurn(settle: () => void): Promise<void> {
+    busy = false;
+    const carried = new Set(surfaced);
+    settle();
+    await safeStatus("idle");
+    if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+  }
+
   // Inbound mesh → drive (never interrupt a running turn). Mirrors plugin.ts's `agent.on`
   // wiring, trimmed to this adapter's simpler single-session, no-swap scope (M3c's event stream
   // is what actually clears `busy`; these wakes only ask "is there anything to submit now").
@@ -345,23 +358,17 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           }
           case "session.execution.succeeded": {
             if (sessionID && data.sessionID !== sessionID) break;
-            busy = false;
-            ackSurfaced(); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
-            await safeStatus("idle");
+            await completeTurn(ackSurfaced); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
             if (sessionID && data.sessionID !== sessionID) break;
-            busy = false;
-            abandonSurfaced(); // leave the inbox unacked so the batch can retry on a later safe turn
-            await safeStatus("idle");
+            await completeTurn(abandonSurfaced); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
             if (sessionID && data.sessionID !== sessionID) break;
-            busy = false;
-            ackSurfaced(); // explicit user Stop: treat the surfaced batch as dismissed, not failed
-            await safeStatus("idle");
+            await completeTurn(ackSurfaced); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
           case "permission.asked": {
