@@ -18,9 +18,12 @@ import { cliVersion } from "../lib/version.js";
 import { runSeed, compareSemver } from "../seed/reconcile.js";
 import { c } from "../ui.js";
 import { askManager, resolveControlTarget } from "../lib/control.js";
+import { assertEndpointUnreachable } from "../lib/endpoint-cut.js";
+import { supervisorMayServe } from "../lib/manager-proc.js";
 import {
   ConnectRefusal,
   isWorkspaceTargetError,
+  localMeshesForRoot,
   pruneStaleMeshes,
   renderWorkspaceError,
   resolveMeshTarget,
@@ -237,9 +240,22 @@ async function reconcileCurrent(
 /** The "no mesh running" target refusal: no recorded mesh on this machine, or every recorded mesh
  *  down with none selected. Either way no manager is running. A mesh selected with `--space` or
  *  from inside its project, a named space, a broken record, or a dead broker each still names a
- *  manager this command was asked about. */
+ *  manager this command was asked about, unless {@link isStoppedLocalMesh} proved that mesh stopped
+ *  before the control connect. */
 function isNoMeshRefusal(e: unknown): boolean {
   return e instanceof ConnectRefusal && isWorkspaceTargetError(e.cause) && e.cause.code === "no-meshes";
+}
+
+/** Whether `target` is a mesh this machine runs, stopped: no `cotal supervise` process here may be
+ *  serving its space and nothing listens at its recorded broker. Both are required. A manager
+ *  outlives its broker and reconnects when it returns, so a refused connection alone leaves its
+ *  custody in place; a supervisor whose argv names this space or none, a peer that accepts, answers
+ *  or stalls, a mesh registered by hand, or a `--server` the operator named may still have a manager
+ *  behind it. */
+async function isStoppedLocalMesh(target: MeshTarget): Promise<boolean> {
+  if (!localMeshesForRoot(target.root).some((m) => m.space === target.space && m.server === target.server)) return false;
+  if (supervisorMayServe(target.space)) return false;
+  return assertEndpointUnreachable(target.server).then(() => true, () => false);
 }
 
 /** The refusal sentence this command prints. A {@link MeshTargetError} arrives RAW here — the
@@ -316,6 +332,13 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       console.log(c.dim(`  ${peek.space}: this mesh's manager runs elsewhere; no custody on this machine`));
       return "none";
     }
+    // #3559: `cotal down` then `cotal update` is the cold path past a `legacy` verdict, so a stopped
+    // mesh is no custody rather than a refusal. Decided before the control connect, whose user-mode
+    // exchange would refuse on the stopped auth service first.
+    if (peek && await isStoppedLocalMesh(peek)) {
+      console.log(c.dim(`  ${peek.space}: stopped; no manager running`));
+      return "none";
+    }
   }
   let target: ControlTarget;
   try {
@@ -327,9 +350,9 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   } catch (e) {
     // No running manager means no custody to preserve and nothing this update could interrupt. Only
     // the "no mesh running" refusal reads as "none": no recorded mesh, or every recorded mesh down
-    // with none selected. A selected mesh that is down, a named space that is not running, a broken
-    // record, or a dead broker each still names a manager this command was asked about, and stays a
-    // refusal.
+    // with none selected. A selected stopped mesh was already read above; a named space that is not
+    // running, a broken record, or a broker that did not answer still names a manager this command
+    // was asked about, and stays a refusal.
     if (isNoMeshRefusal(e)) return "none";
     throw e;
   }

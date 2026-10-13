@@ -115,6 +115,20 @@ export function managerUp(space: string = folderSpace()): boolean {
   return managerLiveness(probeLiveness, readProcessCommand, space) === "alive";
 }
 
+/** Whether a live `cotal supervise` process on this machine may be serving `space`. A supervisor
+ *  records its pid under whatever folder it was started from, so no one root's record can rule it
+ *  out; the process table can. One whose argv names no space serves what its folder or environment
+ *  selects, so it counts, and a process table that cannot be listed proves nothing. */
+export function supervisorMayServe(space: string): boolean {
+  const ps = spawnSync("ps", ["-A", "-ww", "-o", "args="], { encoding: "utf8" });
+  if (ps.error || ps.status !== 0) return true;
+  return ps.stdout.split("\n").some((command) => {
+    if (!commandIsCotalSupervisor(command)) return false;
+    const named = /(?:^|\s)--space(?:=|\s+)(\S+)/.exec(command)?.[1];
+    return named === undefined || named === space;
+  });
+}
+
 
 
 /** True if the manager at `pid` carries a delivery-aware marker BOUND to it (i.e. it's THIS build,

@@ -1,0 +1,5 @@
+---
+"@cotal-ai/cli": patch
+---
+
+`cotal update` no longer refuses its running-manager continuity check when the selected mesh is one this machine runs and it is stopped. A mesh selected with `--space` or by running inside its project, where no `cotal supervise` process on this machine may be serving that space and whose recorded broker address refuses the connection because nothing listens there, has no running manager to preserve, so the update now reconciles the connectors and extensions. This covers a local user-auth mesh too, which used to refuse on its stopped auth service first. Before this, `cotal down` followed by `cotal update`, the only way past a `legacy` manager verdict, refused with "no mesh running at ... run `cotal up` there to restart" and left every extension at the old version. Anything short of that proof still refuses: a mesh registered with `cotal meshes add`, a `--server` override, a `cotal supervise` process still running from any folder whose command line names that space or no space, or an address where anything accepts the connection or the dial does not finish in time.
