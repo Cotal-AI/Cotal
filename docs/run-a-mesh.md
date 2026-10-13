@@ -329,6 +329,8 @@ lifecycle-bound prepare → activate → renew exchange, plus a one-shot target-
 request for a host-managed terminal. It never exports the space signer, a static
 provisioner credential, or generic storage authority. Remote registration publishes its service
 status at the registered revision and current process epoch, so manager-caller selection can find it.
+Every manager-authority request carries the participant's fresh login proof and refuses a redirect,
+so a 3xx answer from the pinned endpoint fails the request rather than sending the proof on.
 
 Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
 retirement, over the same manager-authority transport. The stock auth service answers both when it

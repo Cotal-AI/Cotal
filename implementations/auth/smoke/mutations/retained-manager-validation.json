@@ -58,8 +58,8 @@
     {
       "name": "the retained client trusts an optional cross-origin manager authority URL",
       "file": "implementations/auth/src/provider.ts",
-      "find": "      endpoint = managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
-      "replace": "      endpoint = ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, request.space);\n    }\n    const session = requireIdpSession(homeCotalDir(), idpUrl);\n    const idpJwt = await fetchIdpJwt(idpUrl, session.token);\n    let res: Response;\n    try {\n      res = await fetch(endpoint, {\n        method: \"POST\",\n        redirect: \"manual\",",
+      "find": "  return { endpoint: managerAuthorityUrl(ua.endpoints.url, space), idpUrl: ua.idp.url };",
+      "replace": "  return { endpoint: ua.endpoints.managerAuthorityUrl ?? managerAuthorityUrl(ua.endpoints.url, space), idpUrl: ua.idp.url };",
       "command": "pnpm exec tsx implementations/auth/smoke/retained-manager-validation.smoke.ts",
       "completionMarker": "manager retained validation smoke failed: 16/18 passed, 1 failed",
       "expectRed": "FAIL: remote provider derives the fixed authority path and refuses insecure exchange pins before fetch",
