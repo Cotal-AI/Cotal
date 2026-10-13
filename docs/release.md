@@ -91,8 +91,9 @@ before the next release cut.
    pnpm changeset
    ```
 
-   Pick the affected packages plus the semver bump (patch / minor / major), and write a
-   one-line summary. Commit the generated `.changeset/<name>.md` file alongside your code
+   Pick the affected packages plus the semver bump (patch / minor / major), and write the
+   summary. Its first sentence is the headline the Release and the Discord post lead with, so
+   make it one plain sentence a user understands on its own. Commit the generated `.changeset/<name>.md` file alongside your code
    change. On a branch that has been open for a long time, check that `main` has not already
    shipped the change before you trust its changeset. Merge conflicts in the code the changeset
    describes are the usual sign that it has.
@@ -172,6 +173,17 @@ tree the packages were built from. A version that was reverted and carried again
 commit. A publishing run whose closure gate ends `UNSETTLED` skips the Release, and the next push
 that passes both gates cuts it with that same target. The step fails if it cannot read that history
 or cannot find that commit.
+
+The Release body opens with the upgrade command, then `## What changed`: one sentence per change,
+the sentence its changeset opens with, minor changes before patches, with every summary in full
+under a collapsed block after it, and the merged PR titles GitHub generates last. The section
+covers every version since the latest Release, so a version that was cut but never published is
+described by the release that first carries its changes. `scripts/release-notes-detail.mjs` writes
+it from the package `CHANGELOG.md` files. Publishing the Release posts it on Discord through the
+`github-releases-to-discord` workflow: `scripts/release-announcement.mjs` builds an embed from the
+`## What changed` lines alone, linked to the Release for the rest, and refuses a body without that
+section. Both scripts carry a self-test, `pnpm smoke:release-notes` and
+`pnpm smoke:release-announcement`.
 
 After the `version` job, the `install-probe` job packs `cotal-ai` and each runtime sibling (every
 `workspace:` dependency of `cotal-ai`) and checks that each tarball contains its declared `main` and

@@ -26,6 +26,8 @@
     "upgrade-section-gate": "node scripts/upgrade-section-gate.mjs",
     "smoke:hermes-probe-interrupt": "tsx extensions/connector-hermes/smoke/probe-interrupt.smoke.ts",
     "smoke:upgrade-section": "node scripts/upgrade-section-gate.mjs --self-test",
+    "smoke:release-notes": "node scripts/release-notes-detail.mjs --self-test",
+    "smoke:release-announcement": "node scripts/release-announcement.mjs --self-test",
     "mutation-proof": "node scripts/mutation-proof.mjs",
     "mutation-coverage": "node scripts/mutation-coverage.mjs",
     "doc-binding": "node scripts/doc-binding.mjs",

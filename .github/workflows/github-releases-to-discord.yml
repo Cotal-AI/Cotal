@@ -1,20 +1,24 @@
+# Announce a published GitHub Release on Discord. The embed carries the release body's
+# `## What changed` layer (one sentence per change) under the upgrade command and links to the
+# Release for the full text; scripts/release-announcement.mjs builds it and refuses a body without
+# that layer, so a release the Changesets workflow did not write is not announced as if it were.
 on:
   release:
     types: [published]
 
 jobs:
-  github-releases-to-discord:
+  announce:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
-      - name: GitHub Releases to Discord
-        uses: SethCohen/github-releases-to-discord@v1
-        with:
-          webhook_url: ${{ secrets.WEBHOOK_URL }}
-          color: "2105893"
-          username: "Release Changelog"
-          content: "||@everyone||"
-          footer_title: "Changelog"
-          reduce_headings: true
-          remove_github_reference_links: true
+        uses: actions/checkout@v6
+      - name: Post the release on Discord
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          TAG: ${{ github.event.release.tag_name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          printf '%s' "$BODY" | node scripts/release-announcement.mjs "$TAG" "$URL" > "$RUNNER_TEMP/announcement.json"
+          curl --fail --silent --show-error -H 'Content-Type: application/json' \
+            --data @"$RUNNER_TEMP/announcement.json" "$WEBHOOK_URL"
