@@ -34,11 +34,27 @@ const compareVersions = (a, b) => {
   return 0;
 };
 
+/** Words whose trailing period ends no sentence. */
+const ABBREVIATIONS = /(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|Dr|Mr|Mrs|Ms|Prof|St|No)\.$/i;
+
+/**
+ * The same text with every inline code span and every Markdown link replaced by letters of the
+ * same length, so a sentence mark inside one never counts as a sentence end. Lengths are kept so
+ * an index into the masked text indexes the original.
+ */
+export const maskMarkdown = (line) =>
+  line
+    .replace(/(`+)[\s\S]*?\1/g, (m) => "x".repeat(m.length))
+    .replace(/\[[^\]]*\]\([^)]*\)/g, (m) => "x".repeat(m.length));
+
 /**
  * The sentence a summary opens with: its first paragraph (a changeset wraps a paragraph over
- * indented lines; a blank line ends it) up to the first `.`, `!` or `?` that ends a sentence.
- * Punctuation inside an inline code span never ends the sentence, a closing quote or bracket after
- * the mark belongs to it, and a common abbreviation does not end it.
+ * indented lines; a blank line ends it) up to the first `.`, `!` or `?` that is followed by white
+ * space or the end, with any closing quote or bracket after the mark. A mark inside an inline code
+ * span or a Markdown link does not count, nor does the period of a listed abbreviation
+ * (`ABBREVIATIONS`), a decimal such as `1.5`, or a dotted name such as `Node.js`, since none of
+ * those is followed by white space. What follows the mark is not consulted: a next sentence may
+ * start with a digit, a lowercase product name or a non-ASCII letter.
  */
 export const firstSentence = (text) => {
   const paragraph = [];
@@ -47,25 +63,13 @@ export const firstSentence = (text) => {
     paragraph.push(raw.trim());
   }
   const line = paragraph.join(" ");
-  let i = 0;
-  while (i < line.length) {
-    const ch = line[i];
-    if (ch === "`") {
-      const fence = /^`+/.exec(line.slice(i))[0];
-      const close = line.indexOf(fence, i + fence.length);
-      if (close === -1) return line;
-      i = close + fence.length;
-      continue;
-    }
-    if (ch === "." || ch === "!" || ch === "?") {
-      let end = i + 1;
-      while (end < line.length && /["'\u201d\u2019)\]]/.test(line[end])) end += 1;
-      const rest = line.slice(end);
-      const before = line.slice(0, i + 1);
-      const abbreviation = /\b(?:e\.g|i\.e|vs|etc)\.$/i.test(before);
-      if (!abbreviation && (rest === "" || /^\s+[A-Z`"'(\u201c]/.test(rest))) return line.slice(0, end);
-    }
-    i += 1;
+  const masked = maskMarkdown(line);
+  const re = /[.!?]["'\u201d\u2019)\]]*(?=\s|$)/g;
+  let m;
+  while ((m = re.exec(masked))) {
+    const end = m.index + m[0].length;
+    if (ABBREVIATIONS.test(masked.slice(0, m.index + 1))) continue;
+    return line.slice(0, end);
   }
   return line;
 };
@@ -282,8 +286,17 @@ const selfTest = () => {
       "a closing quote after the mark belongs to the sentence",
     );
     assert.equal(firstSentence("Fails on ``a `b` c``. Then more."), "Fails on ``a `b` c``.", "a double-backtick span closes at its own fence");
-    assert.equal(firstSentence("An unclosed `span never ends. Nor this."), "An unclosed `span never ends. Nor this.", "an unclosed span keeps the whole paragraph");
+    assert.equal(firstSentence("An unclosed `span is plain text. Nor this."), "An unclosed `span is plain text.", "a lone backtick is text, not a span");
     assert.equal(firstSentence("Reads 1.5 MB (e.g. two files) at once. Then stops."), "Reads 1.5 MB (e.g. two files) at once.", "a decimal and an abbreviation do not end the sentence");
+    assert.equal(
+      firstSentence("It supports [Node.js. Docs](https://example.invalid/a.b) links. The next sentence is mechanism."),
+      "It supports [Node.js. Docs](https://example.invalid/a.b) links.",
+      "a mark inside a Markdown link does not end the sentence",
+    );
+    assert.equal(firstSentence("The CLI respects Dr. Smith's config. The next sentence is mechanism."), "The CLI respects Dr. Smith's config.", "a title abbreviation does not end the sentence");
+    for (const next of ["iOS clients also reconnect.", "\u00dcberlong retries no longer occur.", "24 seats can reconnect at once."])
+      assert.equal(firstSentence(`Reconnect now works. ${next}`), "Reconnect now works.", `a next sentence starting with ${next.split(" ")[0]} is not consulted`);
+    assert.equal(firstSentence("Node.js is read as one word. Then more."), "Node.js is read as one word.", "a dotted name is not a sentence end");
     assert.throws(() => collectSummaries(root, "v0.81.1"), /not a release version/);
     console.log("release-notes-detail self-test: ok");
   } finally {
