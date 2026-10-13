@@ -386,9 +386,11 @@ local secret the manager then fails to remove is named in the refusal, whatever 
 rejected with.
 `retireDelegatedAgent` stops a running slot only after `retired: true` for the target and op id it
 sent, because the host's order closes the provider handle (section 7), so a refused or unconfirmed
-retirement leaves the agent running. A manager with neither a slot nor a hold for the name, such as
-a restarted holder, refuses the call, and the user's retirement then takes the holder-gone branch
-(section 7.2), because a restart moved the gate's epoch.
+retirement leaves the agent running. On that answer it then shreds the seat's actor token, sentinel
+creds and health file before it frees the name, and a removal that fails keeps the name held. A
+manager with neither a slot nor a hold for the name, such as a restarted holder, refuses the call,
+and the user's retirement then takes the holder-gone branch (section 7.2), because a restart moved
+the gate's epoch.
 
 ## 5. Admission
 

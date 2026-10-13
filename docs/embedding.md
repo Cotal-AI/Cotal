@@ -623,9 +623,10 @@ face, so the host starts it with `publicFace`, and its retirement writer ends at
 `remoteAuthority.executeDelegatedUserIntent`, which posts the execution request and binds the answer
 with `parseRemoteDelegatedUserIntentExecutionResult`. It then starts the agent with
 `startAgent({ ..., delegatedIntent: { intentId, owner, parent } })` and retires it with
-`retireDelegatedAgent(name, intentId)`, which stops the agent only after the host confirms
-`retired: true` for its exact target. A delegated agent's stop, exit or failed launch keeps its name
-held until that retirement confirms.
+`retireDelegatedAgent(name, intentId)`, which stops the agent and removes its local secret family
+only after the host confirms `retired: true` for its exact target. A delegated agent's stop, exit or
+failed launch keeps its name held until that retirement confirms, and a secret file the retirement
+fails to remove keeps it held too.
 
 Remote user-mode managers must also supply `remoteAuthority.authorizeAdmin`. The manager builds each
 request only from the caller tuple parsed from the broker-authenticated endpoint subject, then relays

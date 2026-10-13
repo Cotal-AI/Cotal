@@ -7407,9 +7407,10 @@ export class Manager {
 
   /** Retire one agent this manager launched under a delegated user intent, through the host
    *  (SPEC 13.16). It sends the user's retirement intent for the UID of the running slot or its
-   *  retirement hold, and only on `retired: true` for that exact target stops the slot and frees the
-   *  name; every other answer leaves the slot running or the name held. It never calls the holder's
-   *  own prepare or requester. */
+   *  retirement hold, and only on `retired: true` for that exact target stops the slot, shreds the
+   *  seat's local secret family and frees the name; every other answer leaves the slot running or
+   *  the name held, and a failed shred keeps the name held. It never calls the holder's own prepare
+   *  or requester. */
   async retireDelegatedAgent(name: string, intentId: string): Promise<ControlReply> {
     const execute = this.remoteAuthority?.executeDelegatedUserIntent;
     if (!execute) return { ok: false, error: `this manager has no host execution for a delegated user intent; "${name}" was not retired` };
@@ -7439,6 +7440,16 @@ export class Manager {
       // reaps the slot, and its hold clears with the confirmation.
       const slot = this.agents.get(name);
       if (slot?.lifecycleUid === target.lifecycleUid) this.despawnAuthorized(slot, true, false, `delegated retirement ${intentId}`);
+      // The host owns the grant and the footprint, but the secret family enrollUserAgent wrote here
+      // is this participant's, and no teardown arm of a delegated seat removes it.
+      const unshredded: string[] = [];
+      await this.shredUserSecrets(unshredded, (live ?? held?.target)?.secretPaths ?? agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, target.lifecycleUid));
+      if (unshredded.length) {
+        const error = `the host retired "${name}" at ${target.lifecycleUid}, but cleanup failed: ${unshredded.join("; ")}; the name stays held until a retried retirement intent removes it`;
+        const hold = this.retiring.get(name);
+        if (hold?.target.lifecycleUid === target.lifecycleUid) hold.lastError = error;
+        return { ok: false, error };
+      }
       this.confirmRetirement({ id: principalKey(target.owner, target.actor).key, name, lifecycleUid: target.lifecycleUid });
       return { ok: true, data: { name, lifecycleUid: target.lifecycleUid, retired: true } };
     } finally {
