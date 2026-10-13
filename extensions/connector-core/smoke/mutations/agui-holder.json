@@ -50,8 +50,8 @@
     {
       "name": "H2 drop the first-adopt context before the connector-owned factory sees it",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "this.emitter = await this.startEmitter(this.boundPath, this.startContext);",
-      "replace": "this.emitter = await this.startEmitter(this.boundPath, undefined);",
+      "find": "this.emitter = await this.startEmitter(path, this.startContext);",
+      "replace": "this.emitter = await this.startEmitter(path, undefined);",
       "expectRed": "context:the-FIRST-adopt-context-reaches-the-start-factory",
       "note": "This is the one mechanism carrying Claude's SessionStart source through the generic holder; a later adopt remains unable to replace it."
     },

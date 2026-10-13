@@ -381,7 +381,7 @@ try {
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
       async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
-      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
+      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId), sourceEnd: (p) => new JsonlFileSource(p).end() },
     );
 
     holder.flush(src); // adopt
@@ -481,7 +481,7 @@ try {
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
       async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
-      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
+      { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId), sourceEnd: (p) => new JsonlFileSource(p).end() },
     );
 
     holder.flush(src); // adopt
@@ -518,7 +518,7 @@ try {
         started += 1;
         return AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
       },
-      { onError: () => {}, onRunClosed: () => {} },
+      { onError: () => {}, onRunClosed: () => {}, sourceEnd: (p) => new JsonlFileSource(p).end() },
     );
     holder.closeRun(99);
     await holder.settled();
@@ -622,7 +622,7 @@ try {
             source,
             map: mapper,
           }),
-        { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId) },
+        { onError: (e) => errors.push(e), onRunClosed: (runId) => closedRuns.push(runId), sourceEnd: (p) => new JsonlFileSource(p).end() },
       );
       holder.flush(src);
       await holder.settled();

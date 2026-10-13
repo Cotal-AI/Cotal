@@ -18,7 +18,7 @@
  * `adopt` is the earliest moment the emitter is both constructible and needed.
  */
 import type { CotalMeta } from "./agui.js";
-import type { AguiEmitter, HeldTerminal } from "./agui-emitter.js";
+import type { AguiEmitter, HeldTerminal, ReportedTerminal } from "./agui-emitter.js";
 
 /**
  * The connector's hooks into an {@link AguiEmitterHolder}.
@@ -33,6 +33,15 @@ export interface AguiEmitterHolderHooks {
    *  holder runs behind a hook that must not throw, so the only way a failure reaches a human is if
    *  the caller is made to say where it goes. */
   onError: (e: Error, retryInMs: number | null) => void;
+  /**
+   * The position the adopted source has reached now: its `DurableSource.end`, for the path the
+   * holder is bound to. Taken when {@link AguiEmitterHolder.closeRun} is called, so a terminal the
+   * plane cannot take at once is placed on the turn the source had begun by then, whatever is
+   * written after it. Required: a terminal held with no position would have to be paired with a
+   * turn by count, and a connector that repeats a terminal, or loses one, then shifts every later
+   * terminal onto the wrong turn (Sol, round 11 of 2026-10-13).
+   */
+  sourceEnd: (path: string) => Promise<string>;
   /** The wait before the first re-establish attempt after a failure. Each consecutive failure
    *  doubles it, up to {@link AguiEmitterHolder.RETRY_BACKOFF_CAP_MS}. Default one second. */
   retryMs?: number;
@@ -116,26 +125,17 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
   /**
    * The turn terminals held while no emitter can take them: ones that arrived while the plane was
    * down or while a fresh start was in flight, one whose own close failed, and the ones a dying
-   * emitter still held. In the order the turns ended. The first may name the run the wire had open
-   * when the plane went down, see {@link downRun}; the others belong to turns the wire has not
-   * shown yet, and {@link revive} hands them to the fresh emitter, which pairs each with the next
-   * turn the source begins (Sol, round 10 of 2026-10-13, through the built MCP entry point: every
-   * terminal of an outage was held for the one run that was open when it began, and the second
-   * turn to end during the outage lost its terminal as a repeat of the first).
+   * emitter still held. Each with the position the source had reached when it was reported, which
+   * is what names its turn; {@link revive} hands them to the fresh emitter, whose pump places each
+   * on the turn the source had begun by that position (Sol, rounds 10 and 11 of 2026-10-13,
+   * through the built MCP entry point: held by count, the second turn to end during an outage lost
+   * its terminal as a repeat of the first, and a repeated terminal shifted every later one onto the
+   * wrong turn).
    */
-  private held: { runId?: string; terminal: HeldTerminal }[] = [];
-  /**
-   * The run the wire had open when the plane went down and whose terminal has not arrived, carried
-   * through every re-establish attempt until it has. The first terminal to arrive while the plane
-   * is down, or while the fresh start is still in flight, is that run's: at those moments there is
-   * no emitter to ask, the old one dropped and the new one not yet started, and the run open after
-   * the recovery pump may already be the NEXT prompt's. Cleared when that terminal arrives, so the
-   * next one is held for the next turn, and when a re-establish has gone through.
-   */
-  private downRun?: string;
-  /** The turns the dying emitter had begun on the wire and no terminal had claimed, for the fresh
-   *  emitter to pair the held terminals with before the turns it reads itself. */
-  private downTurns: (string | null)[] = [];
+  private held: ReportedTerminal[] = [];
+  /** The last turn the dying emitter had begun on the wire, for the fresh emitter to place a
+   *  terminal reported before any record it reads. Absent until an emitter has been dropped. */
+  private lastTurn?: { turn: string | null | undefined };
   /** True from the moment {@link revive} drops the failed emitter until its fresh start, pump and
    *  held close have all gone through. A terminal that arrives in that window is held, never
    *  queued: a queued close would run after the recovery pump and close whatever run is open then. */
@@ -227,10 +227,21 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    * Synchronous and non-throwing by contract, because a hook calls it. The work lands on the chain.
    */
   adopt(path: unknown, context?: StartContext): void {
-    // Capture the context in THIS queued operation. A shared mutable slot would let a later hook
-    // overwrite the first session's startup fact while the connector-owned factory is still waiting
-    // on its own async preconditions.
-    this.enqueue(() => this.ensureStarted(path, context).then(() => undefined));
+    this.bind(path, context);
+    this.enqueue(() => this.ensureStarted(path).then(() => undefined));
+  }
+
+  /**
+   * Bind to the first usable path, with the first adopt's context, AT THE CALL: a terminal reported
+   * after this call, and before the start it queues has run, takes its source position from the
+   * bound path. The binding is checked by every later start, see {@link ensureStarted}, and it is
+   * set once: a later hook cannot overwrite the first session's startup fact while the
+   * connector-owned factory is still waiting on its own async preconditions.
+   */
+  private bind(path: unknown, context?: StartContext): void {
+    if (this.boundPath !== undefined || typeof path !== "string" || path.length === 0) return;
+    this.boundPath = path;
+    this.startContext = context;
   }
 
   /**
@@ -239,6 +250,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    * Same contract as {@link adopt}: synchronous, non-throwing, work on the chain.
    */
   flush(path: unknown): void {
+    this.bind(path);
     this.enqueue(async () => {
       const emitter = await this.ensureStarted(path);
       if (!emitter || emitter.stopped) return;
@@ -249,27 +261,31 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // only for its preflight, so a broker that refuses every publish would pass every start and
       // the retry would never pace.
       this.retryAttempt = 0;
-      await this.settle(emitter);
     });
   }
 
   /**
-   * Close the open run with the terminal owed to it, if one is: a terminal the pump paired with
-   * the turn that opened this run, or one owed to it before the pump, whose finish the source has
-   * not synthesized because the next prompt is not written yet. A close that fails here holds the
-   * terminal again on its way out, so the next re-establish still owes it.
+   * Place every terminal the emitter still has waiting, then close the open run with the terminal
+   * owed to it, if one is. A terminal that arrived while a pump was reading was reported past that
+   * read, so another pump reads up to it and places it; one placed on the run the pump leaves open
+   * is the close the source has not synthesized, because the next prompt is not written yet. A
+   * close that fails here holds the terminal again on its way out, so the next re-establish still
+   * owes it. Every terminal goes this way, live or after an outage: a close of whatever run is open
+   * when the step runs would end the NEXT run when the flush before it read the next prompt.
    */
   private async settle(emitter: AguiEmitter<T>): Promise<void> {
+    while (emitter.waitingTerminals > 0) await emitter.pump();
     const open = emitter.openRunId;
-    const terminal = open === undefined ? undefined : emitter.takeOwed(open);
-    if (terminal) await this.closeOpenRun(emitter, terminal);
+    const owed = open === undefined ? undefined : emitter.takeOwed(open);
+    if (owed) await this.closeOpenRun(emitter, owed);
   }
 
   /**
    * Close the open run at a turn boundary the record stream cannot see.
    *
-   * Same contract as {@link adopt} and {@link flush}: synchronous, non-throwing, work on the chain,
-   * because a lifecycle hook calls it and a hook must not be made to wait or to fail.
+   * Non-throwing, work on the chain, as {@link adopt} and {@link flush}: a lifecycle hook calls it
+   * and a hook must not be made to fail. The promise handed back never rejects; it resolves once the
+   * source position the terminal is reported at has been read, for a hook that replies after that.
    *
    * It deliberately does NOT start an emitter. A session that never adopted a transcript has nothing
    * open and nothing to close, and starting one here would reach the broker on the way OUT of a
@@ -282,8 +298,26 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    * not decide what counts as a failure — that is a claim about a harness, and it belongs at the
    * connector's own mapping site where the harness's record is in hand.
    */
-  closeRun(timestamp: number, error?: { message: string; code?: string }): void {
-    if (this.shut) return;
+  closeRun(timestamp: number, error?: { message: string; code?: string }): Promise<void> {
+    if (this.shut || this.boundPath === undefined) return Promise.resolve();
+    // THE SOURCE POSITION IS TAKEN HERE, AT THE HOOK, whatever the plane's state: it is what names
+    // the terminal's turn once the plane is up (see `AguiEmitter.queueTerminal`), and a position
+    // taken when a step runs would be past whatever the session wrote in between. The read is
+    // issued now and awaited by whoever places the terminal; a position that cannot be read is
+    // reported there, once, and the terminal dropped. The promise handed back resolves once the
+    // position is read, for a hook that must reply only after that.
+    const terminal: HeldTerminal = { timestamp, ...(error ? { error } : {}) };
+    let at: Promise<string>;
+    try {
+      at = Promise.resolve(this.hooks.sourceEnd(this.boundPath));
+    } catch (e) {
+      at = Promise.reject(e as Error);
+    }
+    const taken = at.then(
+      () => undefined,
+      () => undefined,
+    );
+    const entry: ReportedTerminal = { terminal, at };
     // DECIDED AT THE HOOK, NOT WHEN A STEP RUNS. While the plane is down, or while a re-establish is
     // in flight, THE TERMINAL IS HELD, NOT DROPPED AND NOT QUEUED. It is not a record in the source,
     // so the re-establish cannot read it back, and a run the log has open with no terminal stays
@@ -291,57 +325,62 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // wrong terminal (Sol, review of 2026-10-12). Queued, the close would run after the whole
     // recovery, and the run open by then may be the NEXT prompt's, read by the recovery pump: the
     // failed run would get the synthesized finish and its successor the error (Sol, round 7 of
-    // 2026-10-13, through a real broker with the start held at its startup boundary). The first
-    // terminal of the outage is held for the run the wire had open when the plane went down: a run
-    // the frozen frame opened has an id the fresh start comes back with, while a run only the
-    // mapper held was never opened anywhere a terminal could name it, and the re-read opens it
-    // again under a new id. Every later one is held for the next turn the source begins, and the
-    // fresh emitter pairs them (Sol, round 10).
-    const terminal: HeldTerminal = { timestamp, ...(error ? { error } : {}) };
+    // 2026-10-13, through a real broker with the start held at its startup boundary).
     if (this.dead !== undefined || this.reviving) {
       // The fresh emitter may be mid-recovery already, reading or publishing: the terminal goes to
-      // it NOW, so the pump applies an error to the finish the next prompt synthesizes whether that
-      // finish is still to be mapped or already packed and not yet frozen (Sol, round 8 of
-      // 2026-10-13). A terminal held only for after the pump arrived too late: the pump had
-      // published the finish and opened the successor, and the hold was dropped for naming a
-      // closed run.
+      // it NOW, and its pump, or the one the settle runs after it, places the terminal on its turn
+      // (Sol, round 8 of 2026-10-13: a terminal held only for after the pump arrived too late).
       const emitter = this.emitter;
-      if (this.dead === undefined && emitter && !emitter.stopped) this.handOver(emitter, this.hold(terminal));
-      else this.hold(terminal);
-      return;
+      this.held.push(entry);
+      if (this.dead === undefined && emitter && !emitter.stopped) this.handOver(emitter, entry);
+      return taken;
     }
+    // LIVE, THE TERMINAL GOES TO THE EMITTER AT THE HOOK TOO, not when its step runs. The flush
+    // queued ahead of it may still be reading, and the harness may write the next prompt before
+    // that read: queued now, the pump places the terminal on its own turn, and that prompt's
+    // mapping publishes the error in the finish's place; queued by the step, it would be placed
+    // after the prompt had closed the turn, and a close of whatever run was open by then would
+    // end the next run with this turn's terminal. A pump that has read past its placing leaves it
+    // waiting, and the step's settle pumps again for it.
+    const live = this.emitter;
+    const queued = live !== undefined && !live.stopped;
+    if (queued) live.queueTerminal(entry);
     this.enqueue(async () => {
       const emitter = this.emitter;
       if (this.dead) {
-        // A step queued behind the one that took the plane down: held as if it had arrived then.
-        this.hold(terminal);
+        // A step queued behind the one that took the plane down: held as if it had arrived then,
+        // unless the dying emitter already handed it back.
+        if (!queued) this.held.push(entry);
         return;
       }
       if (!emitter || emitter.stopped) return;
       await this.holdForLive();
-      await this.closeOpenRun(emitter, terminal);
+      if (!queued) emitter.queueTerminal(entry);
+      await this.settle(emitter);
     });
+    return taken;
   }
 
   /**
    * Close the run `emitter` has open with this terminal, reporting the close. A close that FAILS
-   * holds the terminal for that run before the failure goes on to kill the plane: the terminal is
-   * owed to the run whether the log took it or not, and a close that failed before its frame froze
-   * leaves the run open for the re-establish to find (Sol, review of 2026-10-13: a terminal whose
-   * own log write failed was lost, and the next prompt closed the failed run as a finish). A close
+   * holds the terminal before the failure goes on to kill the plane: the terminal is owed to its
+   * turn whether the log took it or not, and a close that failed before its frame froze leaves
+   * the run open for the re-establish to find (Sol, review of 2026-10-13: a terminal whose own
+   * log write failed was lost, and the next prompt closed the failed run as a finish). A close
    * that failed after the freeze is the frozen frame itself; the start that settles it closes the
-   * run, and the held terminal is then dropped for naming a run no longer open.
+   * run, and the held terminal is then dropped for naming a run the wire has closed.
    */
-  private async closeOpenRun(emitter: AguiEmitter<T>, terminal: HeldTerminal): Promise<void> {
+  private async closeOpenRun(emitter: AguiEmitter<T>, entry: ReportedTerminal): Promise<void> {
     const open = emitter.openRunId;
     const cotal = open === undefined ? undefined : this.hooks.runMeta?.(open);
+    const { terminal } = entry;
     let runId: string | null;
     try {
       runId = await emitter.closeRun({ timestamp: terminal.timestamp, ...(cotal ? { cotal } : {}), ...(terminal.error ? { error: terminal.error } : {}) });
     } catch (e) {
       // Held FIRST, ahead of anything the dying emitter still holds: this turn ended before any
       // the emitter is still waiting on.
-      if (open !== undefined) this.held.unshift({ runId: open, terminal });
+      if (open !== undefined) this.held.unshift(entry);
       throw e;
     }
     // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
@@ -349,28 +388,11 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     if (runId !== null) this.hooks.onRunClosed?.(runId);
   }
 
-  /**
-   * Hold a terminal that no emitter can take yet. It is the terminal of the run the wire had open
-   * when the plane went down if that run's has not arrived, and of the next turn the source begins
-   * otherwise: the connector reports one terminal per turn, in turn order. A terminal is never a
-   * repeat of another, and none replaces one held before it.
-   */
-  private hold(terminal: HeldTerminal): { runId?: string; terminal: HeldTerminal } {
-    const entry = this.downRun === undefined ? { terminal } : { runId: this.downRun, terminal };
-    this.downRun = undefined;
-    this.held.push(entry);
-    return entry;
-  }
-
-  /**
-   * Hand a held terminal to a live emitter: a debt to the run it names if the wire still has that
-   * run open, and dropped otherwise, since the run was closed by the frame the start settled and
-   * the wire has its terminal; or queued for the next turn the source begins.
-   */
-  private handOver(emitter: AguiEmitter<T>, entry: { runId?: string; terminal: HeldTerminal }): void {
+  /** Hand a held terminal to a live emitter, which places it on its turn when its pump reads up
+   *  to the position it was reported at. */
+  private handOver(emitter: AguiEmitter<T>, entry: ReportedTerminal): void {
     this.held = this.held.filter((h) => h !== entry);
-    if (entry.runId === undefined) emitter.queueTerminal(entry.terminal);
-    else if (emitter.openRunId === entry.runId && !emitter.owes(entry.runId)) emitter.oweTerminal(entry.runId, entry.terminal);
+    emitter.queueTerminal(entry);
   }
 
   /**
@@ -379,7 +401,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
    * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
    */
-  private async ensureStarted(path: unknown, context?: StartContext): Promise<AguiEmitter<T> | undefined> {
+  private async ensureStarted(path: unknown): Promise<AguiEmitter<T> | undefined> {
     if (this.dead) return undefined;
     if (typeof path !== "string" || path.length === 0) return undefined;
 
@@ -407,10 +429,6 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // which is the opposite of releasing it. Pumping an emitter that is ALREADY running is a
     // different act and is deliberately still allowed: see the note on `close`.
     if (this.shut) return undefined;
-    if (this.boundPath === undefined) {
-      this.boundPath = path;
-      this.startContext = context;
-    }
     try {
       // WHAT KEEPS THIS TO ONE EMITTER AT A TIME IS THE CHAIN. Every caller of this method runs
       // inside one serialized step, so a start is never in flight while another step reads
@@ -433,7 +451,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // What this file does own is the bracket interleave, and it is OPEN: two emitters would
       // each keep their own bracket machine and nothing detects the interleave. That is the
       // stated writer-cardinality limit.
-      this.emitter = await this.startEmitter(this.boundPath, this.startContext);
+      this.emitter = await this.startEmitter(path, this.startContext);
       return this.emitter;
     } catch (e) {
       this.die(e as Error);
@@ -446,17 +464,15 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // the cause with a symptom.
     if (this.dead) return;
     this.dead = e;
-    // The run the wire has open, from the emitter that is dying, and every terminal and unclaimed
-    // turn it still held: the terminals it had were handed to it when it was the live one, and the
-    // fresh emitter takes them back. With no emitter (a fresh start that failed before it returned)
-    // what was carried from the first failure of this outage still holds: nothing was published
-    // since the plane went down.
+    // Every terminal the dying emitter still held, and the last turn it had begun on the wire: the
+    // terminals it had were handed to it when it was the live one, and the fresh emitter takes
+    // them back. With no emitter (a fresh start that failed before it returned) what was carried
+    // from the first failure of this outage still holds: nothing was published since the plane
+    // went down.
     if (this.emitter !== undefined) {
-      const open = this.emitter.openRunId;
       const left = this.emitter.unsettled();
       this.held.push(...left.terminals);
-      this.downTurns = left.turns;
-      this.downRun = open !== undefined && !this.held.some((h) => h.runId === open) ? open : undefined;
+      this.lastTurn = { turn: left.lastTurn };
     }
     if (this.shut) {
       this.hooks.onError(e, null);
@@ -520,21 +536,21 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // owed error in that finish's place, after the run's own records and before the next run
       // opens (Sol, review of 2026-10-13, through the built MCP entry point: the held error was
       // dropped behind that synthesized finish). A held finish is that synthesized finish. The
-      // turns the dying emitter had begun and no terminal had claimed come first, so a terminal
-      // held for the next turn pairs with one of those before one the pump reads.
-      emitter.seedUnclaimedTurns(this.downTurns);
-      this.downTurns = [];
+      // last turn the dying emitter had begun goes first, so a terminal reported before any
+      // record the pump reads is placed on it.
+      if (this.lastTurn) {
+        emitter.seedLastTurn(this.lastTurn.turn);
+        this.lastTurn = undefined;
+      }
       for (const entry of [...this.held]) this.handOver(emitter, entry);
       await emitter.pump();
-      // A terminal the pump paired with the run it left open, or one owed to that run before the
-      // pump, closes it here. A close that fails here holds the terminal again on its way out, so
-      // the next re-establish still owes it. The backoff resets only once the whole re-establish
-      // has gone through, owed terminal included: a terminal that keeps failing to write is a
-      // repeating failure and is paced like one, not retried every second behind a pump that read
-      // nothing.
+      // A terminal the pump placed on the run it left open closes it here. A close that fails here
+      // holds the terminal again on its way out, so the next re-establish still owes it. The
+      // backoff resets only once the whole re-establish has gone through, owed terminal included: a
+      // terminal that keeps failing to write is a repeating failure and is paced like one, not
+      // retried every second behind a pump that read nothing.
       await this.settle(emitter);
       this.reviving = false;
-      this.downRun = undefined;
       this.retryAttempt = 0;
     });
   }

@@ -152,17 +152,28 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
     this.onVanished = opts.onVanished;
   }
 
-  async read(cursor: string | undefined): Promise<SourceRead<OpenCodeRecord>> {
+  /** The session's records in session order: messages by id (measured monotonic with creation
+   *  time, 0 disagreements over the corpus), parts by id within a message. */
+  private async ordered(): Promise<OpenCodeRecord[]> {
     const messages = await this.read0();
-
-    // Session order: messages by id (measured monotonic with creation time, 0 disagreements over
-    // the corpus), parts by id within a message.
     const ordered: OpenCodeRecord[] = [];
     for (const m of [...messages].sort((a, b) => (a.info.id < b.info.id ? -1 : a.info.id > b.info.id ? 1 : 0))) {
       for (const part of [...m.parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
         ordered.push({ part, message: m.info });
       }
     }
+    return ordered;
+  }
+
+  /** The position of the end: the last record's cursor, or the empty cursor of an empty session,
+   *  which the next read with it treats as `undefined` does. */
+  async end(): Promise<string> {
+    const last = (await this.ordered()).at(-1);
+    return last ? cursorOf(last) : "";
+  }
+
+  async read(cursor: string | undefined): Promise<SourceRead<OpenCodeRecord>> {
+    const ordered = await this.ordered();
 
     // A fresh adopt must not rebroadcast the session's history, so it returns no records and the
     // position of the end. An empty session yields the empty cursor, which `isAfter` never has to

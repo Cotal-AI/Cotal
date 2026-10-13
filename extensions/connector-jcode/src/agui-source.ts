@@ -59,6 +59,10 @@ export class JcodeJournalSource implements DurableSource<JcodeJournalRecord> {
     this.file = new JsonlFileSource<JcodeJournalRecord>(path);
   }
 
+  end(): Promise<string> {
+    return this.file.end();
+  }
+
   async read(cursor: string | undefined): Promise<SourceRead<JcodeJournalRecord>> {
     if (cursor !== undefined) {
       try {
@@ -152,6 +156,7 @@ export function positionedJcodeJournalSource(
 ): DurableSource<PositionedJcodeJournalRecord> {
   return {
     kind: source.kind,
+    end: () => source.end(),
     async read(cursor) {
       const read = await source.read(cursor);
       return {

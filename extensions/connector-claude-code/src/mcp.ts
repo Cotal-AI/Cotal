@@ -31,6 +31,7 @@ import {
   resolveEventsStateRoot,
   controlFromEnv,
   NO_TOOL_ARGS,
+  JsonlFileSource,
   type DurableSource,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
@@ -212,6 +213,9 @@ async function main(): Promise<void> {
       },
       {
         onError: eventPlaneStopped({ log: (line) => process.stderr.write(`[cotal-connector] ${line}\n`) }),
+        // The transcript's end when a Stop or StopFailure hook fires: what names the turn a terminal
+        // held through an outage ends.
+        sourceEnd: (transcriptPath: string) => new JsonlFileSource(transcriptPath).end(),
         // The turn terminal closes a run the record stream never described, so the mapper still
         // believes that run is open. Without this it would attribute the next records to a run the
         // published stream has already finished and the emitter would refuse the batch. Keyed on

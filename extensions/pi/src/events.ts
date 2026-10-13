@@ -144,7 +144,7 @@ export class PiEvents {
         onUnreadable: (gap) =>
           console.error(`Pi AG-UI source: skipped an unreadable session record at offset ${gap.offset} (${gap.bytes} bytes): ${gap.reason}`),
       });
-    }, { onError: (error, retryInMs) => this.stopped(error, retryInMs) });
+    }, { onError: (error, retryInMs) => this.stopped(error, retryInMs), sourceEnd: (p) => new JsonlFileSource(p).end() });
   }
 
   private fail(error: Error): void {

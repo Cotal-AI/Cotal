@@ -353,6 +353,12 @@ export const cotal: Plugin = async () => {
       },
       {
         onError: eventPlaneStopped({ log }),
+        // The session's end when `session.idle` or `session.error` reports the turn over: what
+        // names the turn a terminal held through an outage ends.
+        sourceEnd: (sessionId: string) =>
+          new OpenCodeSessionSource({
+            read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(sessionId)}/message`, undefined, 30_000),
+          }).end(),
         // The turn terminal closes a run the record stream never described, so without this the
         // mapper would still believe that run is open, attribute the next records to it, and have
         // the batch refused. Keyed on the id, so a newer run opened in between is left alone.

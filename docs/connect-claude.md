@@ -375,10 +375,14 @@ open is closed with that terminal, a failure as a failure, rather than left open
 prompt to close as a finish. That holds when the next prompt was already written before the plane
 came back: the failure is published after the failed turn's own records and before the next run
 opens, in a frame of the failed run, since a run error names no run and the frame is its only
-attribution. Every turn that ends while the plane is down keeps its own terminal: the first is the
-open run's, and each later one belongs to the next turn the transcript begins, including a turn the
-connector opens no run for, such as a task notification, which takes its terminal and publishes
-nothing. The seat used to exit on a space that requires events; for Claude Code the
+attribution. Every turn that ends while the plane is down keeps its own terminal. A terminal belongs
+to the last turn the transcript had begun when its hook fired: the connector reports a turn's
+terminal once that turn's records are written and before the next turn's are, so the position the
+transcript has reached at the hook names the turn, including a turn the connector opens no run for,
+such as a task notification, which takes its terminal and publishes nothing. A terminal repeated
+for a turn that has one replaces nothing and is kept for no later turn. The same placement runs with
+the plane up: a terminal reported while the flush before it is still reading, with the next prompt
+written before that read, closes its own turn in the place of the finish that prompt synthesizes. The seat used to exit on a space that requires events; for Claude Code the
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code
 restarted it on the next tool call.
 

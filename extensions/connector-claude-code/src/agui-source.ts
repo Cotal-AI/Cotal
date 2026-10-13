@@ -95,6 +95,10 @@ class StartupClaudeTranscriptSource implements DurableSource<ClaudeEntry> {
     // cursor was durably folded, even a process launched as `startup` resumes strictly after it.
     return cursor === undefined ? this.readWhenReady() : this.file.read(cursor);
   }
+
+  end(): Promise<string> {
+    return this.file.end();
+  }
 }
 
 /** Build the transcript source for the exact source value Claude supplied on SessionStart. */

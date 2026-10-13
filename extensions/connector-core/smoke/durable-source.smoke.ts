@@ -448,6 +448,29 @@ try {
       rmSync(pd, { recursive: true, force: true });
     }
   }
+  // ── end(): the cursor after the last complete record, consuming nothing, AS OF THE CALL ──
+  // The holder takes it at a turn's terminal hook to name the terminal's turn; a position read later
+  // than the call would be past whatever the session wrote in between.
+  {
+    const p = join(dir, "end.jsonl");
+    writeFileSync(p, "");
+    const s = new JsonlFileSource<{ i: number }>(p);
+    const empty = await s.end();
+    const adoptEmpty = await readOr(s, undefined, "adopt empty");
+    c("end:an-empty-file-ends-where-a-fresh-adopt-starts", empty === adoptEmpty.cursor, { empty, adopt: adoptEmpty.cursor });
+    appendFileSync(p, '{"i":1}\n{"i":2}\n');
+    const all = await readOr(s, adoptEmpty.cursor, "read all");
+    const end = await s.end();
+    c("end:is-the-cursor-a-read-that-consumed-everything-returns", end === all.cursor && all.records.length === 2, { end, read: all.cursor });
+    appendFileSync(p, '{"i":3}\n{"i":4');
+    const torn = await s.end();
+    const after = await readOr(s, all.cursor, "read to the torn line");
+    c("end:stops-at-the-last-complete-line-and-a-read-resumes-from-it", torn === after.cursor && after.records.length === 1 && off(torn) === off(all.cursor) + Buffer.byteLength('{"i":3}\n'), { torn, read: after.cursor });
+    const atCall = s.end();
+    appendFileSync(p, '}\n{"i":5}\n');
+    c("end:is-the-position-AT-THE-CALL-not-when-awaited", (await atCall) === torn, { atCall: await atCall, torn });
+    c("end:consumes-nothing", (await readOr(s, all.cursor, "re-read after end")).records.length === 3);
+  }
 } finally {
   rmSync(dir, { recursive: true, force: true });
 }

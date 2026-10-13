@@ -330,6 +330,10 @@ class BoundStartSource<T> implements DurableSource<T> {
   read(cursor: string | undefined): Promise<SourceRead<T>> {
     return this.inner.read(cursor ?? this.start);
   }
+
+  end(): Promise<string> {
+    return this.inner.end();
+  }
 }
 
 export async function runCodexHost(): Promise<void> {
@@ -468,6 +472,7 @@ export async function runCodexHost(): Promise<void> {
       },
       {
         onError: eventPlaneStopped({ log }),
+        sourceEnd: (rolloutPath: string) => new JsonlFileSource<CodexRecord>(rolloutPath).end(),
         // A turn terminal closes a run the record stream never described. Without this the mapper
         // would attribute the next records to a run the published stream has already finished.
         onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),

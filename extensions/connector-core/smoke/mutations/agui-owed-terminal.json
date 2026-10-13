@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-emitter.smoke.ts"
   ],
-  "guard": "an error terminal owed to the open run is published in place of the first finish the mapper produces for that run, in a frame of that run whose cursor stays ahead of the record the finish came from, and any terminal for that run settles the debt; a debt that arrives while an earlier frame of the batch is on the wire takes the place of a finish not yet frozen",
+  "guard": "a terminal reported to the emitter is placed on the last turn the source had begun at the position it was reported at, the open run when none was; one placed on a run is owed to it until a frame carrying that run's terminal freezes, and the owed error is published in place of the first finish the mapper produces for the run, in a frame of that run whose cursor stays ahead of the record the finish came from; a repeated terminal, one for a closed run, and one for a turn that opened no run close nothing",
   "command": "pnpm smoke:agui-emitter",
   "completionMarker": "agui-emitter smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-owed-terminal.json",
@@ -16,7 +16,13 @@
     "leaves the debt standing after a close settles the run, so the next debt is refused as a second",
     "one. O3 puts the error in the prompt's own unit, where the frame names the next run. O4 stores",
     "the prompt's cursor on the owed frame, so an acknowledged error and an unacknowledged prompt",
-    "re-read past the prompt and lose the run it opens."
+    "re-read past the prompt and lose the run it opens.",
+    "O5 places every terminal on the last turn the read began, whatever position it was reported at.",
+    "O6 places nothing. O7 does not count a turn that opened no run. O8 lets a repeated terminal replace",
+    "the one its turn has. O9 owes a terminal to a run the wire has closed. O10 settles the successor's",
+    "debt when the frame carrying its predecessor's finish freezes. O11 takes the debt at the mapping,",
+    "so a frame that fails before the freeze takes the error with it. O12 advances the brackets before",
+    "the freeze, so a run whose first frame never froze is reported open (Sol, round 11)."
   ],
   "mutations": [
     {
@@ -28,12 +34,12 @@
       "note": "The round-5 defect as the wire saw it: one RUN_FINISHED for the failed run and no RUN_ERROR."
     },
     {
-      "name": "O2 a close does not settle the debt",
+      "name": "O2 a taken debt stays owed",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    this.owed.delete(runId);\n    this.unclaimedTurns = [];\n",
-      "replace": "    this.unclaimedTurns = [];\n",
-      "expectRed": "owed:a-close-settles-the-debt",
-      "note": "A debt that outlives its run would be refused as a second debt on the next failed turn, or applied to a finish of a run it was never owed to."
+      "find": "    const entry = this.owed.get(runId);\n    this.owed.delete(runId);\n    return entry;\n",
+      "replace": "    const entry = this.owed.get(runId);\n    return entry;\n",
+      "expectRed": "owed:a-terminal-after-the-last-record-is-the-open-runs-and-is-taken-for-its-close",
+      "note": "A debt that outlives its taking is handed back to the next emitter by a dying one and placed again, or refused as a second debt on the next terminal for that run."
     },
     {
       "name": "O3 the owed error travels in the prompt's unit: the frame names the next run",
@@ -46,50 +52,74 @@
     {
       "name": "O4 the owed frame stores the prompt's cursor instead of the position ahead of it",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "      const owedUnit = this.takeOwedTerminal(mapped.events, units[units.length - 1]?.cursor ?? this.wal.frontier.sourceCursor);\n",
-      "replace": "      const owedUnit = this.takeOwedTerminal(mapped.events, rec.cursor);\n",
+      "find": "      const owedUnit = this.takeOwedTerminal(m.events, units[units.length - 1]?.cursor ?? this.wal.frontier.sourceCursor);\n",
+      "replace": "      const owedUnit = this.takeOwedTerminal(m.events, rec.cursor);\n",
       "expectRed": "owed-cursor:the-frozen-owed-frame-stores-the-cursor-AHEAD-of-the-prompt",
       "note": "A cursor past the prompt on the owed frame would, once that frame is acknowledged and the prompt's is not, re-read from after the prompt and drop the run it opens."
     },
     {
-      "name": "O5 a debt that arrives after the mapping is never applied to the unpublished tail",
+      "name": "O5 every terminal is placed on the last turn the read began, whatever its position",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "      if (this.owed.size > 0) {\n        const from = frames[k]!.unitFrom;\n",
-      "replace": "      if (this.owed.size < 0) {\n        const from = frames[k]!.unitFrom;\n",
-      "expectRed": "owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run",
-      "note": "The round-8 defect as the wire saw it with the first recovery publish paused: the finish published and the error dropped."
+      "find": "      for (const [i, t] of begun) if (i < before) turn = t;\n",
+      "replace": "      for (const [, t] of begun) turn = t;\n",
+      "expectRed": "queued:the-open-runs-terminal-closes-it-and-the-next-run-opens-clean",
+      "note": "A terminal reported before the next prompt was written is placed on that prompt's run, and the run it ended closes as the finish the prompt synthesizes."
     },
     {
-      "name": "O6 a queued terminal is never paired with the turn the wire begins",
+      "name": "O6 a terminal is placed on no turn",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "      if (turn !== null) this.owed.set(turn, terminal);\n",
-      "replace": "      void turn;\n      void terminal;\n",
-      "expectRed": "queued:the-notification-turn-took-the-finish-and-the-run-after-it-is-owed-its-own-error",
+      "find": "      this.owed.set(turn, entry);\n",
+      "replace": "      void entry;\n",
+      "expectRed": "queued:the-notification-turn-took-its-terminal-and-the-run-after-it-is-owed-its-own-error",
       "note": "The round-10 defect as the emitter would reproduce it: the second turn's run is never owed its terminal."
     },
     {
       "name": "O7 a turn that opened no run is not counted as a turn",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "      if (mapped !== null && \"turn\" in mapped) {\n        turns.push(null);\n",
-      "replace": "      if (mapped !== null && \"turn\" in mapped) {\n",
-      "expectRed": "queued:the-notification-turn-took-the-finish-and-the-run-after-it-is-owed-its-own-error",
-      "note": "Counted on runs, the notification turn's finish lands on the run after it and that run's own error is lost."
+      "find": "      if (\"turn\" in m) begun.set(i, null);\n",
+      "replace": "      if (\"turn\" in m) return;\n",
+      "expectRed": "queued:a-notification-turn-begun-after-a-run-takes-its-terminal-and-the-run-owes-nothing",
+      "note": "Not counted, the notification's terminal is the run's begun before it: with that run owing nothing yet, the finish is placed on it and closes it. With the run already owed its own terminal the finish is refused as a repeat instead, which is why the earlier notification cell cannot see this mutation."
     },
     {
-      "name": "O8 a terminal owed to a run does not claim that run's turn",
+      "name": "O8 a repeated terminal replaces the one its turn has",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    const at = this.unclaimedTurns.lastIndexOf(runId);\n    if (at >= 0) this.unclaimedTurns = this.unclaimedTurns.slice(at + 1);\n",
+      "find": "      if (turn === undefined || turn === null || this.owed.has(turn)) continue;\n",
+      "replace": "      if (turn === undefined || turn === null) continue;\n",
+      "expectRed": "owed:a-repeated-terminal-replaces-nothing-and-is-not-carried-to-the-next-turn",
+      "note": "The live seat sends a stop after a stop failure for the same turn; the later finish would replace the error."
+    },
+    {
+      "name": "O9 a terminal for a run the wire has closed is owed to it",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      if (turn !== this.brackets.runId && ![...begun.values()].includes(turn)) continue;\n",
       "replace": "",
-      "expectRed": "queued:the-open-runs-debt-closes-it-and-the-next-run-opens-clean",
-      "note": "The open run's own turn takes the next queued terminal and overwrites the owed error with it."
+      "expectRed": "owed:a-terminal-for-a-run-the-wire-has-closed-is-dropped",
+      "note": "A debt to a closed run is never settled and is refused as a second one, or applied to a finish the run never had."
     },
     {
-      "name": "O9 a live close leaves the turns before it for a later queued terminal",
+      "name": "O10 a freeze settles the debt of the run the frame is labelled with, not the run the finish closes",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    this.owed.delete(runId);\n    this.unclaimedTurns = [];\n",
-      "replace": "    this.owed.delete(runId);\n",
-      "expectRed": "queued:CONTROL-a-live-close-settles-the-turns-before-it-so-a-later-terminal-pairs-with-the-turn-after",
-      "note": "A terminal queued after many live turns would pair with the oldest of them."
+      "find": "        if (e.type === AGUI_EVENT_TYPE.RUN_FINISHED) this.owed.delete(e.runId);\n",
+      "replace": "        if (e.type === AGUI_EVENT_TYPE.RUN_FINISHED) this.owed.delete(u.runId);\n",
+      "expectRed": "settle:the-successors-debt-survives-the-freeze-of-the-frame-carrying-the-predecessors-finish",
+      "note": "The finish the next prompt synthesizes for its predecessor travels in the successor's frame; settled by label, the successor's own terminal is lost and the prompt after it closes the failed run as a finish."
+    },
+    {
+      "name": "O11 the debt is taken at the mapping, before the frame carrying it freezes",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    const { terminal } = this.owed.get(runId)!;\n    if (!terminal.error) return undefined;\n",
+      "replace": "    const { terminal } = this.owed.get(runId)!;\n    this.owed.delete(runId);\n    if (!terminal.error) return undefined;\n",
+      "expectRed": "freeze:a-debt-whose-frame-fails-before-the-freeze-is-still-owed",
+      "note": "The round-11 defect: a log write refused once while the owed error was being written took the error with it, and the next recovery closed the failed run as a finish."
+    },
+    {
+      "name": "O12 the brackets advance before the freeze",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets });\n    this.brackets = next;\n",
+      "replace": "    this.brackets = next;\n    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets });\n",
+      "expectRed": "freeze:a-run-whose-start-never-froze-is-not-open-on-the-wire",
+      "note": "The round-11 defect: a first turn whose frame never froze was reported open, its terminal held for a run the fresh start never had, and dropped."
     }
   ]
 }

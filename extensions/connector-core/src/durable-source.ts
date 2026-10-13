@@ -17,7 +17,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
 
 /**
@@ -95,6 +95,14 @@ export interface DurableSource<T> {
    * MUST NOT return a partially-written record, and MUST NOT advance the cursor past one.
    */
   read(cursor: string | undefined): Promise<SourceRead<T>>;
+  /**
+   * The cursor after the last complete record now in the source, consuming nothing. A connector
+   * takes it when it reports a turn terminal, so the emitter can later tell which records the
+   * source held when the turn ended: see `AguiEmitter.queueTerminal`. The position is the
+   * source's AT THE CALL: a source that can read it synchronously does so before returning, so a
+   * record the session appends after the call is after the position.
+   */
+  end(): Promise<string>;
 }
 
 /** The file no longer has the identity or consumed prefix recorded by its cursor. */
@@ -224,6 +232,45 @@ export class JsonlFileSource<T = unknown> implements DurableSource<T> {
       return `${String(st.dev)}:${String(st.ino)}:0:${await JsonlFileSource.sealAt(fh, 0)}`;
     } finally {
       await fh.close();
+    }
+  }
+
+  /**
+   * The cursor at the last COMPLETE line boundary, minted exactly as a read mints one, so a later
+   * `read` from it resumes at the first record written after this moment.
+   *
+   * READ SYNCHRONOUSLY, before this returns: the moment is the call, not the thread pool's next
+   * turn. Issued asynchronously, the position was read after a record the caller appended right
+   * after calling, and a terminal reported before that record was placed after it. The read is a
+   * few small reads of a local file, the same bytes `read` reads.
+   */
+  end(): Promise<string> {
+    const fd = openSync(this.path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const st = fstatSync(fd);
+      const readAt = (len: number, position: number): Buffer => {
+        const buf = Buffer.allocUnsafe(len);
+        return buf.subarray(0, readSync(fd, buf, 0, len, position));
+      };
+      // The last complete line boundary, as `lastCompleteBoundary` finds it.
+      let at = 0;
+      const window = 64 * 1024;
+      for (let searched = 0; searched < st.size; ) {
+        const len = Math.min(window, st.size - searched);
+        const from = st.size - searched - len;
+        const idx = readAt(len, from).lastIndexOf(0x0a);
+        if (idx !== -1) {
+          at = from + idx + 1;
+          break;
+        }
+        searched += len;
+      }
+      // The seal over the window before it, as `sealAt` computes it.
+      const span = Math.min(at, 512);
+      const seal = createHash("sha256").update(readAt(span, at - span)).digest("hex").slice(0, 16);
+      return Promise.resolve(`${String(st.dev)}:${String(st.ino)}:${at}:${seal}`);
+    } finally {
+      closeSync(fd);
     }
   }
 
@@ -404,5 +451,9 @@ export class BoundStartSource<T> implements DurableSource<T> {
 
   read(cursor: string | undefined): Promise<SourceRead<T>> {
     return this.inner.read(cursor ?? this.start);
+  }
+
+  end(): Promise<string> {
+    return this.inner.end();
   }
 }

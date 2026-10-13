@@ -13,4 +13,7 @@ export class PiSessionSource implements DurableSource<PiSessionEntry> {
     if (cursor !== undefined) return this.file.read(cursor);
     return this.file.read(undefined);
   }
+  end(): Promise<string> {
+    return this.file.end();
+  }
 }

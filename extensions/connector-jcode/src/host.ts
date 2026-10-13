@@ -494,6 +494,7 @@ export async function runJcodeHost(): Promise<void> {
         },
         {
           onError: eventPlaneStopped({ log: (line) => writeJcodeDiagnostic(`[cotal-jcode] ${line}\n`) }),
+          sourceEnd: (journalPath: string) => new JcodeJournalSource(journalPath).end(),
           onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
           // #1868: a flush landing in a mesh rebuild window measured `max_payload` off a connection
           // that was not there and killed the seat. The holder now rides the window out on this

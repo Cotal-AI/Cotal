@@ -59,6 +59,7 @@ import {
   ensureEventWalDir,
   resolveEventsStateRoot,
   type HookEvent,
+  JsonlFileSource,
 } from "@cotal-ai/connector-core";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "../src/agui-map.js";
 import { createClaudeHandle } from "../src/hooks.js";
@@ -168,6 +169,7 @@ const events = new AguiEmitterHolder<ClaudeEntry, unknown>(
   {
     onError: (e: Error) => console.log(`  [emitter stopped] ${e.message}`),
     onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+    sourceEnd: (path: string) => new JsonlFileSource<ClaudeEntry>(path).end(),
   },
 );
 

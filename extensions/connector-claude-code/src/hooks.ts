@@ -201,17 +201,19 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     holder.flush(path);
   };
 
-  const closeEvents = (timestamp: number, error?: { message: string; code?: string }): void => {
+  /** Resolves once the holder has taken the transcript's position for the terminal, so the hook
+   *  replies, and the harness goes on to the next turn, only after that. */
+  const closeEvents = (timestamp: number, error?: { message: string; code?: string }): Promise<void> => {
     const holder = events();
-    if (!holder) return;
+    if (!holder) return Promise.resolve();
     if (adoptedTranscript === undefined) {
       // Exactly one terminal should exist. If a malformed host sends two before SessionStart, the
       // first is the only one that can describe how that run ended; never turn an earlier error into
       // a later success by overwriting it.
       deferredClose ??= { timestamp, ...(error ? { error } : {}) };
-      return;
+      return Promise.resolve();
     }
-    holder.closeRun(timestamp, error);
+    return holder.closeRun(timestamp, error);
   };
   /**
    * Last tool Claude tried to use, captured on PreToolUse. When a permission Notification
@@ -388,7 +390,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // killed by a rate limit or a billing error had simply finished. See {@link stopFailure}
           // for which signals count and why. `RUN_ERROR` closes the run on its own, so there is no
           // second terminal to follow it.
-          closeEvents(Date.now(), stopFailure(ev));
+          await closeEvents(Date.now(), stopFailure(ev));
           if (event === "StopFailure") await safeCondition(agent, failureCondition(ev) ?? null);
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to

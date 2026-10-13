@@ -15,14 +15,21 @@
  *   D. the turn FAILS while the plane is down: the connector's `StopFailure` terminal arrives
  *      during the outage, for a run the frozen frame opened (Sol's round-3 P1).
  *
+ * The scenarios after D vary WHEN the terminal arrives against the recovery (in flight, reading,
+ * on the wire), what else ended while down, and which write failed. A terminal belongs to the last
+ * turn the transcript had begun when its hook fired: the connector reports a turn's terminal once
+ * that turn's records are written and before the next turn's are, and every scenario writes in
+ * that order. Q is the same race with no outage at all: a live flush still reading when the next
+ * prompt lands.
+ *
  * Each cell asks the one question that matters: once the fault is gone, does the plane publish
  * what was written during and after the outage, under the run the log has open?
  */
-import { mkdtempSync, writeFileSync, appendFileSync, chmodSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, appendFileSync, chmodSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { principalKey, type Part } from "@cotal-ai/core";
-import { AguiEmitter, AguiEmitterHolder, EventWal, FileSubjectFrontier, ensureEventWalDir, eventPlaneStopped, type DurableSource } from "@cotal-ai/connector-core";
+import { AguiEmitter, AguiEmitterHolder, EventWal, FileSubjectFrontier, JsonlFileSource, ensureEventWalDir, eventPlaneStopped, type DurableSource } from "@cotal-ai/connector-core";
 import { createBoundClaudeTranscriptSource } from "../src/agui-source.js";
 import { createClaudeMapper, type ClaudeEntry } from "../src/agui-map.js";
 
@@ -190,6 +197,7 @@ function plane(opts: { seedMapper: boolean }) {
           }
           return boundSource.read(cursor);
         },
+        end: () => boundSource.end(),
       };
       return AguiEmitter.start<ClaudeEntry>({ endpoint: broker, wal, subjectFrontier, source: gatedSource, map: mapper.map, onUnreadable: (g) => log.push(`gap ${g.offset} ${g.reason}`) });
     },
@@ -197,6 +205,8 @@ function plane(opts: { seedMapper: boolean }) {
       onError: eventPlaneStopped({ log: (line) => log.push(line) }),
       // As `mcp.ts` wires it: the turn terminal closes a run the record stream never described.
       onRunClosed: (runId: string) => mapper?.forgetOpenRun(runId),
+      // As `mcp.ts` wires it: the position the transcript has reached when the terminal fires.
+      sourceEnd: (path: string) => new JsonlFileSource<ClaudeEntry>(path).end(),
       retryMs: 20,
     },
   );
@@ -390,7 +400,10 @@ for (const seedMapper of [true, false]) {
 // ---- F. the connector repeats the terminal during the outage -----------------------------------
 {
   // A stop failure and then a stop for the same run, both while the plane is down (the live seat
-  // sends both). The first terminal is the run's; the later finish must not replace it.
+  // sends both). The first terminal is the run's; the later finish must not replace it, and must
+  // not be kept for the next turn either: that turn ends with a terminal of its own (Sol, round
+  // 11 of 2026-10-13: the repeated finish was queued for the next turn and closed it as a finish
+  // when it had failed).
   const p = plane({ seedMapper: true });
   p.holder.adopt(p.transcript, "startup");
   p.user();
@@ -410,6 +423,13 @@ for (const seedMapper of [true, false]) {
   await p.holder.settled();
   const run2 = p.broker.frames.filter((f) => f.runId === "run-2").map((f) => JSON.stringify(f.parts));
   c("F:the-FIRST-terminal-is-the-one-published", run2.some((s) => s.includes('"type":"RUN_ERROR"')) && !run2.some((s) => s.includes("RUN_FINISHED")) && run2.some((s) => s.includes("under-fault")) && p.holder.running, { run2, running: p.holder.running });
+  p.user(); // the next turn, after the recovery, fails too
+  p.assistant(" after");
+  await p.flush();
+  await p.turnEnd({ message: "overloaded", code: "overloaded" });
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const errorRuns = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')).map((f) => f.runId);
+  c("F:the-repeated-finish-is-not-kept-for-the-next-turn-which-closes-with-its-own-error", errorRuns.join(",") === "run-2,run-3" && !finished(wire, "run-3") && p.holder.running, { errorRuns, finished3: finished(wire, "run-3"), running: p.holder.running });
   await p.close();
 }
 
@@ -483,10 +503,11 @@ for (const seedMapper of [true, false]) {
 // ---- I. the terminal arrives while the fresh start is in flight ---------------------------------
 {
   // As B, with the failed turn's terminal delivered while the re-establish's fresh start is held at
-  // its startup boundary, and the next prompt and its answer already written. The terminal must
-  // close the FAILED run, in a frame of its own, and the successor must open clean (Sol, round 7,
-  // through a real broker: the failed run got the synthesized finish and the successor the error).
-  // G is the control for the same terminal delivered before the retry starts.
+  // its startup boundary, and the next prompt and its answer written after it, before the start
+  // returns. The terminal must close the FAILED run, in a frame of its own, and the successor must
+  // open clean (Sol, round 7, through a real broker: the failed run got the synthesized finish and
+  // the successor the error). G is the control for the same terminal delivered before the retry
+  // starts.
   const p = plane({ seedMapper: true });
   p.holder.adopt(p.transcript, "startup");
   p.user();
@@ -503,9 +524,9 @@ for (const seedMapper of [true, false]) {
   const start = p.holdNextStart();
   await until(start.entered); // the retry fires; the fresh start is held
   c("I:CONTROL-the-fresh-start-is-in-flight", start.entered() && !p.holder.running, { entered: start.entered(), running: p.holder.running });
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the start
   p.user(); // the next prompt and its answer, written while the start is in flight
   p.assistant(" next-turn");
-  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the start
   start.release();
   await p.holder.settled();
   const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
@@ -521,10 +542,11 @@ for (const seedMapper of [true, false]) {
 
 // ---- J. the terminal arrives while the recovery pump is reading -------------------------------
 {
-  // As I, with the fresh start returned and the recovery pump held at its source read, the next
-  // prompt and its answer written, and the failed turn's terminal delivered then. A terminal held
-  // only for after the pump arrives too late: the pump closes the failed run as a finish under that
-  // prompt (Sol, round 8, through a real broker with the recovery read paused).
+  // As I, with the fresh start returned and the recovery pump held at its source read, the failed
+  // turn's terminal delivered then, and the next prompt and its answer written after it, which the
+  // held read returns. A terminal held only for after the pump arrives too late: the pump closes the
+  // failed run as a finish under that prompt (Sol, round 8, through a real broker with the recovery
+  // read paused).
   const p = plane({ seedMapper: true });
   p.holder.adopt(p.transcript, "startup");
   p.user();
@@ -541,9 +563,9 @@ for (const seedMapper of [true, false]) {
   await until(read.entered); // the retry fires, the start settles the pending frame, and the pump is held at its read
   // The holder reports running once the fresh start has returned, pump in progress or not.
   c("J:CONTROL-the-recovery-pump-is-held-at-its-read-with-the-pending-frame-settled", read.entered() && p.wal().pending === "none" && p.holder.running && !p.broker.frames.some((f) => f.runId === "run-3"), { entered: read.entered(), wal: p.wal(), running: p.holder.running });
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the pump
   p.user(); // the next prompt and its answer, which the held read will return
   p.assistant(" next-turn");
-  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the pump
   read.release();
   await p.holder.settled();
   const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
@@ -556,10 +578,11 @@ for (const seedMapper of [true, false]) {
 
 // ---- K. the terminal arrives while the first recovery publish is on the wire ------------------
 {
-  // As J, with the records written during the outage mapping to TWO frames, the failed run's own
-  // and the next prompt's, and the terminal delivered while the first is on the wire. The finish in
-  // the second frame is not yet frozen, so the owed error takes its place and the tail is packed
-  // again (Sol, round 8: the finish was published and the error dropped).
+  // As J, with the failed run's last answer written during the outage and its terminal delivered
+  // while the recovery's frame for it is on the wire, past the pump's read. The terminal waits at
+  // the emitter, and the pump the settle runs after it places it on the failed run, which closes
+  // with the error in a frame of its own; the next prompt, written after, opens clean (Sol, round
+  // 8: a terminal that arrived with the frame on the wire was lost behind it).
   const p = plane({ seedMapper: true });
   p.holder.adopt(p.transcript, "startup");
   p.user();
@@ -573,14 +596,15 @@ for (const seedMapper of [true, false]) {
   p.assistant(" lost");
   await p.flush(); // down
   p.assistant(" during"); // the failed run's last answer, written during the outage
-  p.user(); // the next prompt and its answer, written during the outage
-  p.assistant(" next-turn");
   const publish = p.broker.holdPublish(1); // the start re-publishes the pending frame first; hold the one after it
-  await until(publish.held); // the retry fires; the pump's first frame (run-2, " during") is on the wire
-  c("K:CONTROL-the-failed-runs-own-frame-is-on-the-wire-and-the-next-prompts-is-not", publish.held() && p.broker.frames.filter((f) => f.runId === "run-3").length === 0 && !p.broker.frames.some((f) => JSON.stringify(f.parts).includes("during")), { held: publish.held(), frames: p.broker.frames.map((f) => f.runId) });
-  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the terminal, with the first frame on the wire
+  await until(publish.held); // the retry fires; the pump's frame (run-2, " during") is on the wire
+  c("K:CONTROL-the-failed-runs-own-frame-is-on-the-wire", publish.held() && !p.broker.frames.some((f) => JSON.stringify(f.parts).includes("during")), { held: publish.held(), frames: p.broker.frames.map((f) => f.runId) });
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the terminal, with the frame on the wire
   publish.release();
   await p.holder.settled();
+  p.user(); // the next prompt, after the terminal
+  p.assistant(" next-turn");
+  await p.flush();
   const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
   const labels = p.broker.frames.map((f) => f.runId);
   const errorFrameAt = p.broker.frames.findIndex((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
@@ -588,7 +612,7 @@ for (const seedMapper of [true, false]) {
   const firstRun3At = labels.indexOf("run-3");
   c("K:the-failed-run-is-closed-with-RUN_ERROR-in-a-frame-of-its-own-after-its-last-frame", errorFrameAt > duringAt && duringAt >= 0 && p.broker.frames[errorFrameAt]!.runId === "run-2" && !finished(wire, "run-2") && p.holder.running, { labels, errorFrameAt, duringAt, finished: finished(wire, "run-2"), running: p.holder.running });
   c("K:the-next-prompts-frame-follows-the-error-and-carries-no-event-of-the-failed-run", firstRun3At === errorFrameAt + 1 && p.broker.frames.slice(firstRun3At).every((f) => f.runId === "run-3" && !JSON.stringify(f.parts).includes('"runId":"run-2"') && !JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && wire.includes("next-turn"), { labels, firstRun3At, errorFrameAt });
-  c("K:the-plane-and-the-log-agree-after-the-re-pack", p.wal().pending === "none" && p.wal().seq === p.broker.seq, { wal: p.wal(), broker: p.broker.seq });
+  c("K:the-plane-and-the-log-agree", p.wal().pending === "none" && p.wal().seq === p.broker.seq, { wal: p.wal(), broker: p.broker.seq });
   await p.close();
 }
 
@@ -695,6 +719,117 @@ for (const seedMapper of [true, false]) {
   const errorRuns = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')).map((f) => f.runId);
   c("N:the-notification-turn-takes-its-finish-and-the-successor-still-closes-with-its-own-error", errorRuns.join(",") === "run-2,run-3" && !finished(wire, "run-3") && p.holder.running, { errorRuns, finished3: finished(wire, "run-3"), running: p.holder.running });
   c("N:the-plane-and-the-log-agree", p.wal().pending === "none" && p.wal().seq === p.broker.seq, { wal: p.wal(), broker: p.broker.seq });
+  await p.close();
+}
+
+// ---- O. the first turn's frame fails before it freezes, and the turn fails -------------------
+{
+  // The first turn's records are written and the flush that would open its run fails at the log,
+  // before the frame freezes: no run is open in the log or on the wire. The turn's terminal arrives
+  // while down. The recovery reads the records again, opens the run, and the terminal closes it
+  // with the error (Sol, round 11 of 2026-10-13, through the built MCP entry point: the terminal
+  // was held for the run the failed pump had opened in memory, which the fresh start never had,
+  // and dropped; the next prompt closed the failed run as a finish).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  await p.holder.settled();
+  chmodSync(p.walDir(), 0o500);
+  p.user();
+  p.assistant(" first");
+  await p.flush(); // the first frame fails before it freezes: down, with no run anywhere
+  c("O:CONTROL-the-plane-is-down-with-no-run-in-the-log-or-on-the-wire", !p.holder.running && p.broker.seq === 0 && !existsSync(join(p.walDir(), "wal.json")), { running: p.holder.running, seq: p.broker.seq, wal: existsSync(join(p.walDir(), "wal.json")) });
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" });
+  chmodSync(p.walDir(), 0o700);
+  await sleep(250);
+  await p.holder.settled();
+  // The run the re-read opens is the SECOND the mapper minted: the first was minted by the pump
+  // that failed, and never reached the log or the wire.
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const first = p.broker.frames[0]?.runId ?? "";
+  const errorRuns = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')).map((f) => f.runId);
+  c("O:the-terminal-closes-the-run-the-re-read-opens-with-RUN_ERROR", first !== "" && errorRuns.join(",") === first && wire.includes("first") && !finished(wire, first) && p.holder.running, { first, errorRuns, finished: finished(wire, first), running: p.holder.running });
+  p.user();
+  p.assistant(" next-turn");
+  await p.flush();
+  const next = p.broker.frames[p.broker.frames.length - 1]!.runId;
+  c("O:the-next-prompt-opens-its-own-run-and-synthesizes-no-finish-for-the-failed-one", next !== first && !finished(p.broker.frames.map((f) => JSON.stringify(f.parts)).join(""), first), { first, next, labels: p.broker.frames.map((f) => f.runId) });
+  await p.close();
+}
+
+// ---- P. the owed terminal's own frame fails before it freezes -------------------------------
+{
+  // As G, with the log still unwritable when the first re-establish runs: its pump reads the next
+  // prompt, packs the failed run's owed error in the synthesized finish's place, and the frame
+  // fails before it freezes. The error is still owed to the failed run, and the re-establish after
+  // that publishes it (Sol, round 11 of 2026-10-13, through the built MCP entry point: the debt
+  // was taken at the mapping, so the frame that failed took the error with it and the next
+  // recovery closed the failed run as a finish).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush();
+  chmodSync(p.walDir(), 0o500);
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" }); // the terminal's own write fails: down
+  c("P:CONTROL-the-terminal-write-failed-and-the-plane-is-down", !p.holder.running, p.holder.running);
+  p.user(); // the next prompt, written during the outage
+  p.assistant(" next-turn");
+  const reestablishes = () => p.log.filter((l) => l.includes("re-establishing the event plane in")).length;
+  await until(() => reestablishes() >= 2, 2_000); // the first re-establish packs the owed error and fails at the log
+  c("P:CONTROL-the-first-re-establish-failed-with-the-next-prompt-read-and-nothing-published", reestablishes() >= 2 && !p.holder.running && !p.broker.frames.some((f) => f.runId === "run-3"), { reestablishes: reestablishes(), running: p.holder.running, frames: p.broker.frames.map((f) => f.runId) });
+  chmodSync(p.walDir(), 0o700);
+  await sleep(400);
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const errorFrames = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  c("P:the-error-is-still-owed-after-the-frame-that-carried-it-failed-and-closes-the-failed-run", errorFrames.length === 1 && errorFrames[0]!.runId === "run-2" && !finished(wire, "run-2") && p.holder.running, { errors: errorFrames.map((f) => f.runId), finished: finished(wire, "run-2"), running: p.holder.running });
+  // The successor is the run the SECOND re-establish's mapper minted; the first's never froze.
+  const successor = p.broker.frames[p.broker.frames.length - 1]!;
+  c("P:the-successor-run-is-open-and-carries-no-error", successor.runId !== "run-2" && JSON.stringify(successor.parts).includes("next-turn") && !JSON.stringify(successor.parts).includes('"type":"RUN_ERROR"') && !finished(wire, successor.runId) && p.wal().pending === "none" && p.wal().seq === p.broker.seq, { labels: p.broker.frames.map((f) => f.runId), wal: p.wal(), broker: p.broker.seq });
+  await p.close();
+}
+
+// ---- Q. the terminal arrives while a LIVE flush is reading, and the next prompt is written before the read ----
+{
+  // No outage. The stop hook queues a flush and then the turn's terminal; the flush's read is still
+  // ahead when the harness writes the next prompt, so the read returns that prompt, which closes
+  // the turn's run as a finish and opens the next. A terminal that closed whatever run was open
+  // when its step ran would end the next run with this turn's error. Reported with its position
+  // at the hook, it closes its own turn in that prompt's place and the next run opens clean.
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush(); // run-2 open and acknowledged
+  p.assistant(" last");
+  const read = p.holdNextRead();
+  p.holder.flush(p.transcript); // the stop hook's flush, held at its read
+  await until(read.entered);
+  c("Q:CONTROL-the-live-flush-is-held-at-its-read-with-run-2-open", read.entered() && p.holder.running && !p.broker.frames.some((f) => JSON.stringify(f.parts).includes("last")), { entered: read.entered(), running: p.holder.running });
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the turn's terminal, with the flush still reading
+  p.user(); // the next prompt and its answer, before the held read
+  p.assistant(" next-turn");
+  read.release();
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const labels = p.broker.frames.map((f) => f.runId);
+  const errorFrames = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const errorFrameAt = p.broker.frames.findIndex((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const lastAt = p.broker.frames.findIndex((f) => JSON.stringify(f.parts).includes("last"));
+  // The error and the turn's last answer are packed into one frame of the failed run, the answer first.
+  c("Q:the-failed-run-is-closed-with-RUN_ERROR-in-its-own-frame-after-its-last-answer", errorFrames.length === 1 && errorFrames[0]!.runId === "run-2" && errorFrameAt >= lastAt && lastAt >= 0 && wire.indexOf("last") < wire.indexOf('"type":"RUN_ERROR"') && !finished(wire, "run-2") && p.holder.running, { labels, errorFrameAt, lastAt, finished: finished(wire, "run-2"), running: p.holder.running });
+  c("Q:the-next-run-opens-clean-after-the-error-and-carries-none-of-it", labels.indexOf("run-3") === errorFrameAt + 1 && p.broker.frames.filter((f) => f.runId === "run-3").every((f) => !JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && wire.includes("next-turn") && !finished(wire, "run-3"), { labels, errorFrameAt });
+  await p.turnEnd();
+  const last = p.broker.frames[p.broker.frames.length - 1]!;
+  c("Q:the-next-runs-own-terminal-closes-it-as-a-finish-and-the-log-agrees", last.runId === "run-3" && finished(JSON.stringify(last.parts), "run-3") && p.wal().pending === "none" && p.wal().seq === p.broker.seq, { last: last.runId, wal: p.wal(), broker: p.broker.seq });
   await p.close();
 }
 

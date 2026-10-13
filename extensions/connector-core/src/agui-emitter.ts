@@ -29,7 +29,7 @@ import {
   type AguiFrame,
   type CotalMeta,
 } from "./agui.js";
-import type { DurableSource, SourceGap } from "./durable-source.js";
+import type { DurableSource, SourceGap, SourceRead } from "./durable-source.js";
 import type { EventWal } from "./event-wal.js";
 import { eventChannelForSession } from "./launch.js";
 import type { SubjectFrontier } from "./subject-frontier.js";
@@ -74,8 +74,8 @@ export interface EmitUnit {
   events: AguiEvent[];
   cursor: string;
   /** The turns the source began at or just before this unit, in source order: the run each one
-   *  opened, or `null` for a turn that opened none. Read when the frame carrying the unit is
-   *  published, see {@link AguiEmitter.queueTerminal}. */
+   *  opened, or `null` for a turn that opened none. Committed as the last turn begun when the frame
+   *  carrying the unit is frozen, see {@link AguiEmitter.queueTerminal}. */
   turns?: (string | null)[];
 }
 
@@ -87,6 +87,14 @@ export interface HeldTerminal {
   error?: { message: string; code?: string };
 }
 
+/** A terminal with the position the source had reached when the connector reported it: the cursor
+ *  its {@link DurableSource.end} answered then. Which turn the terminal ends is read off that
+ *  position, see {@link AguiEmitter.queueTerminal}. */
+export interface ReportedTerminal {
+  terminal: HeldTerminal;
+  at: Promise<string>;
+}
+
 /**
  * What the mapper returns for one source record: its run and its events, or `null` for a record
  * this plane deliberately drops, and it drops many. `null` is NOT an error: a deliberate drop and
@@ -94,9 +102,9 @@ export interface HeldTerminal {
  *
  * `{ turn: true }` is a record that BEGAN A TURN AND OPENED NO RUN: a prompt the mapper knows and
  * deliberately does not publish. It is still a turn the harness ends with a terminal, so the
- * emitter counts it when it pairs terminals held through an outage with the turns the source
- * shows (see {@link AguiEmitter.queueTerminal}); dropped as `null`, that terminal would land on
- * the next run that opened. A record that opens a run begins its turn by its `RUN_STARTED`.
+ * emitter counts it as a turn when it places a terminal reported after it (see
+ * {@link AguiEmitter.queueTerminal}); dropped as `null`, that terminal would land on the run begun
+ * before it. A record that opens a run begins its turn by its `RUN_STARTED`.
  */
 export type RecordMapper<T> = (record: T) => { runId: string; events: AguiEvent[] } | { turn: true } | null;
 
@@ -285,17 +293,22 @@ export class AguiEmitter<T> {
   /** True once THIS process has fed an event through the bracket machine. It is the half of the
    *  restart diagnosis that keeps a genuine mid-stream violation from being blamed on a restart. */
   private fedAnyEvent = false;
-  /** Terminals owed to runs, by run, in the order the runs were opened: see {@link oweTerminal}. */
-  private owed = new Map<string, HeldTerminal>();
+  /** True once a pump has read the source: the last turn can be seeded only before that. */
+  private pumped = false;
+  /** Terminals owed to runs, by run: a terminal placed on a run the wire has open or a pump is
+   *  about to open, published in place of the finish the source synthesizes for that run, or taken
+   *  back by {@link takeOwed} for a close the holder makes. Settled at the freeze of the frame that
+   *  closes the run. */
+  private owed = new Map<string, ReportedTerminal>();
+  /** Terminals reported at a position no pump has read up to yet, in the order they arrived. */
+  private queued: ReportedTerminal[] = [];
   /**
-   * Turns the published frames began since the last terminal was applied, in source order, each as
-   * the run it opened or `null` for one that opened none. A terminal held through an outage is
-   * paired with the oldest of these: see {@link queueTerminal}. Cleared by {@link closeRun},
-   * because a terminal applied live accounts for every turn before it.
+   * The turn the frozen frames most recently began: the run it opened, `null` for one that opened
+   * none, `undefined` while the log shows no turn. A terminal reported before any record a pump
+   * reads is this turn's. Starts as the run the log has open, which is the last turn the log can
+   * name; a holder that drops an emitter seeds the next one with what that emitter knew.
    */
-  private unclaimedTurns: (string | null)[] = [];
-  /** Terminals waiting for the turn start that names their run, in the order they arrived. */
-  private unclaimedTerminals: HeldTerminal[] = [];
+  private lastTurn: string | null | undefined;
 
   private constructor(
     private readonly ep: EmitterEndpoint,
@@ -313,6 +326,7 @@ export class AguiEmitter<T> {
     // is the honest starting point there, and `diagnoseBracket` is what keeps the resulting refusal
     // from being blamed on the writer.
     this.brackets = wal.brackets ? AguiBrackets.restore(wal.brackets) : new AguiBrackets();
+    this.lastTurn = this.brackets.runId;
   }
 
   /**
@@ -384,6 +398,9 @@ export class AguiEmitter<T> {
 
     const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId, opts.onUnreadable);
     await em.recover();
+    // The run the wire has open once the pending frame is settled, which is the last turn the log
+    // can name: a terminal reported before any record the first pump reads is that run's.
+    em.lastTurn = em.brackets.runId;
     return em;
   }
 
@@ -431,6 +448,7 @@ export class AguiEmitter<T> {
         `event emitter for ${this.channel}: a frame is still pending; recovery must settle it before a new read`,
       );
 
+    this.pumped = true;
     const read = await this.source.read(this.wal.frontier.sourceCursor);
 
     // A gap is a line the source stepped over; the cursor it returned is past it. It is handed to
@@ -446,23 +464,35 @@ export class AguiEmitter<T> {
       this.onUnreadable(gap);
     }
 
+    // Every record is mapped before any is packed, so a terminal reported among them can be placed
+    // on the turn the source had begun by then (see {@link queueTerminal}) before the record that
+    // synthesizes that turn's finish is turned into a unit.
+    const mapped = read.records.map((rec) => this.map(rec.value));
+    const begun = new Map<number, string | null>();
+    mapped.forEach((m, i) => {
+      if (m === null) return;
+      if ("turn" in m) begun.set(i, null);
+      else for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) begun.set(i, e.runId);
+    });
+    await this.place(read, begun);
+
     // Units the mapper dropped are not errors and not frames. Their cursor folds FORWARD into the
     // preceding unit, so consuming that frame consumes them too and they are never re-read. A drop
     // stays apart from a mapper error, which reaches the caller with the cursor unmoved.
-    let units: EmitUnit[] = [];
-    // Turns begun by records since the last unit, carried on the next unit so they are counted
-    // when its frame is published and never before: a turn a batch that failed had begun is read
+    const units: EmitUnit[] = [];
+    // Turns begun by records since the last unit, carried on the next unit so they are committed
+    // when its frame is frozen and never before: a turn a batch that failed had begun is read
     // again by the next pump.
     let turns: (string | null)[] = [];
-    for (const rec of read.records) {
-      const mapped = this.map(rec.value);
-      if (mapped !== null && "turn" in mapped) {
+    for (const [i, rec] of read.records.entries()) {
+      const m = mapped[i]!;
+      if (m !== null && "turn" in m) {
         turns.push(null);
         const last = units[units.length - 1];
         if (last) last.cursor = rec.cursor;
         continue;
       }
-      if (mapped === null || mapped.events.length === 0) {
+      if (m === null || m.events.length === 0) {
         const last = units[units.length - 1];
         if (last) last.cursor = rec.cursor;
         continue;
@@ -474,19 +504,19 @@ export class AguiEmitter<T> {
       // can be acknowledged while this record's frame is not, and a re-read must then map this
       // record again, which the mapper rebuilt from the log does without the finish, the run being
       // closed by then.
-      const owedUnit = this.takeOwedTerminal(mapped.events, units[units.length - 1]?.cursor ?? this.wal.frontier.sourceCursor);
+      const owedUnit = this.takeOwedTerminal(m.events, units[units.length - 1]?.cursor ?? this.wal.frontier.sourceCursor);
       if (owedUnit) units.push(owedUnit.unit);
       // WRITE-PATH POLICY, before packing and therefore before beginSend. Disk and wire then agree.
       // A record that mapped only to forbidden kinds becomes a drop: its cursor folds forward like
       // any other drop, and packUnits never sees an empty unit.
-      const events = applyAguiEgressPolicy(owedUnit ? owedUnit.rest : mapped.events);
-      for (const e of mapped.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) turns.push(e.runId);
+      const events = applyAguiEgressPolicy(owedUnit ? owedUnit.rest : m.events);
+      for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) turns.push(e.runId);
       if (events.length === 0) {
         const last = units[units.length - 1];
         if (last) last.cursor = rec.cursor;
         continue;
       }
-      units.push({ runId: mapped.runId, events, cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
+      units.push({ runId: m.runId, events, cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
       turns = [];
     }
 
@@ -504,7 +534,7 @@ export class AguiEmitter<T> {
     // in between.
     if (units.length === 0) {
       if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
-      this.turnsBegan(turns);
+      this.committed([], turns);
       return { frames: 0, events: 0 };
     }
 
@@ -528,7 +558,7 @@ export class AguiEmitter<T> {
     // turns the restart diagnosis off.
     this.fedAnyEvent = true;
 
-    let frames = packUnits({
+    const frames = packUnits({
       threadId: this.threadId,
       epoch: this.wal.epoch,
       firstSeq: this.wal.frontier.seq + 1,
@@ -539,84 +569,101 @@ export class AguiEmitter<T> {
 
     let events = 0;
     for (let k = 0; k < frames.length; k++) {
-      // A DEBT THAT ARRIVED AFTER THE MAPPING, while an earlier frame of this batch was on the wire.
-      // The finish it answers may still be unpublished, in a later frame: that frame is not yet
-      // frozen, so the close it carries is not yet decided, and the owed error takes the finish's
-      // place by re-packing the unpublished tail (Sol, round 8 of 2026-10-13, through a real broker
-      // with the recovery read and the first recovery publish each paused: the failed run got the
-      // finish and the error was dropped). The freeze is the commit: the bracket state moves with
-      // it, so a debt offered once the finish's frame is frozen names a run that is closed and
-      // {@link oweTerminal} refuses it, like any terminal for a closed run.
-      if (this.owed.size > 0) {
-        const from = frames[k]!.unitFrom;
-        const at = units.findIndex((u, i) => i >= from && u.events.some((e) => e.type === AGUI_EVENT_TYPE.RUN_FINISHED && this.owed.has(e.runId)));
-        const unit = at >= 0 ? units[at] : undefined;
-        const split = unit ? this.takeOwedTerminal(unit.events, at > from ? units[at - 1]!.cursor : this.wal.frontier.sourceCursor) : undefined;
-        if (unit && split) {
-          const tail: EmitUnit[] = [...units.slice(from, at)];
-          if (split.rest.length === 0) tail.push({ ...split.unit, cursor: unit.cursor });
-          else tail.push(split.unit, { ...unit, events: split.rest });
-          tail.push(...units.slice(at + 1));
-          // Validated like the batch was, from the state the published frames left: the whole tail,
-          // so the refusal still means the stream never carried any of it.
-          const check = this.brackets.clone();
-          for (const u of tail)
-            for (const e of u.events) {
-              try {
-                check.accept(e);
-              } catch (err) {
-                throw this.diagnoseBracket(err as Error);
-              }
-            }
-          units = [...units.slice(0, from), ...tail];
-          frames = [
-            ...frames.slice(0, k),
-            ...packUnits({
-              threadId: this.threadId,
-              epoch: this.wal.epoch,
-              firstSeq: this.wal.frontier.seq + 1,
-              units: tail,
-              measure: (f) => this.measure(f),
-              limit: this.ep.maxPayload,
-            }).map((f) => ({ ...f, unitFrom: f.unitFrom + from })),
-          ];
-        }
-      }
-      const { frame, cursor } = frames[k]!;
-      await this.publish(frame, cursor);
-      events += frame.events.length;
-      // The turns this frame began are on the wire now, so a held terminal can be paired with
-      // them: before the next frame goes, since that frame may carry the finish the terminal
-      // answers.
+      const { frame, cursor, unitFrom } = frames[k]!;
       const to = k + 1 < frames.length ? frames[k + 1]!.unitFrom : units.length;
-      this.turnsBegan(units.slice(frames[k]!.unitFrom, to).flatMap((u) => u.turns ?? []));
+      await this.publish(frame, cursor, () => this.committed(units.slice(unitFrom, to), []));
+      events += frame.events.length;
     }
 
     // Records the mapper dropped AFTER the last unit have no frame to ride on, so their cursor is
     // advanced on its own: the same cursor-only rule, applied to the tail of the batch.
     if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
-    this.turnsBegan(turns);
+    this.committed([], turns);
 
     return { frames: frames.length, events };
   }
 
   /**
-   * Record turns the wire now shows as begun, pair held terminals with them, and settle what the
-   * published frames closed. A debt for a run the wire has closed is lost: its finish is on the
-   * wire, as a terminal that arrives after a close is refused live. A turn whose run is closed is
-   * kept as a turn that opened none, so a later terminal still counts it and is not paired with
-   * the run after it.
+   * Place every queued terminal the read has reached on the turn the source had begun when the
+   * terminal was reported: the last of the turns begun by the records before its position, or
+   * {@link lastTurn} when none of them is. A terminal reported past this read stays queued for the
+   * next one. Placed on a run, the terminal becomes that run's debt; on a turn that opened no run,
+   * it is consumed; on a run that already has a terminal, or one the wire has closed, it is
+   * dropped as the connector repeating itself.
    */
-  private turnsBegan(turns: (string | null)[]): void {
-    this.unclaimedTurns.push(...turns);
-    const open = this.brackets.runId;
-    for (const [runId] of this.owed) if (runId !== open) this.owed.delete(runId);
-    this.unclaimedTurns = this.unclaimedTurns.map((t) => (t === open ? t : null));
-    while (this.unclaimedTerminals.length > 0 && this.unclaimedTurns.length > 0) {
-      const terminal = this.unclaimedTerminals.shift()!;
-      const turn = this.unclaimedTurns.shift()!;
-      if (turn !== null) this.owed.set(turn, terminal);
+  private async place(read: SourceRead<T>, begun: Map<number, string | null>): Promise<void> {
+    for (const entry of [...this.queued]) {
+      const before = await this.boundary(entry, read);
+      if (before === undefined) continue;
+      this.queued = this.queued.filter((q) => q !== entry);
+      let turn = this.lastTurn;
+      for (const [i, t] of begun) if (i < before) turn = t;
+      if (turn === undefined || turn === null || this.owed.has(turn)) continue;
+      if (turn !== this.brackets.runId && ![...begun.values()].includes(turn)) continue;
+      this.owed.set(turn, entry);
     }
+  }
+
+  /**
+   * How many of the read's records the source held when the terminal was reported, or `undefined`
+   * when the terminal was reported past the read. The position is compared through the source
+   * itself, never by reading the cursor: the first record after the position is the one a read
+   * from it answers, and the cursor it carries is the same string this read gave that record. A
+   * position whose read could not be taken, or that this emitter had already read past (a terminal
+   * is reported before anything after its position is read, so that position is never behind a
+   * read), drops the terminal and fails this pump, once: the plane reports it and the next pump
+   * goes on without it. Waiting for a pump that reads up to such a position would wait forever.
+   */
+  private async boundary(entry: ReportedTerminal, read: SourceRead<T>): Promise<number | undefined> {
+    let at: string;
+    try {
+      at = await entry.at;
+    } catch (e) {
+      this.queued = this.queued.filter((q) => q !== entry);
+      throw new Error(
+        `event emitter for ${this.channel}: dropping the turn terminal reported at ${entry.terminal.timestamp}: ` +
+          `the source position it was reported at could not be read (${(e as Error).message})`,
+      );
+    }
+    if (at === read.cursor) return read.records.length;
+    let first: string | undefined;
+    try {
+      first = (await this.source.read(at)).records[0]?.cursor;
+    } catch (e) {
+      this.queued = this.queued.filter((q) => q !== entry);
+      throw new Error(
+        `event emitter for ${this.channel}: dropping the turn terminal reported at ${entry.terminal.timestamp}: ` +
+          `the source could not be read from the position it was reported at (${(e as Error).message})`,
+      );
+    }
+    if (first === undefined) return undefined;
+    const i = read.records.findIndex((r) => r.cursor === first);
+    if (i >= 0) return i;
+    if ((await this.source.read(read.cursor)).records.some((r) => r.cursor === first)) return undefined;
+    this.queued = this.queued.filter((q) => q !== entry);
+    throw new Error(
+      `event emitter for ${this.channel}: dropping the turn terminal reported at ${entry.terminal.timestamp}: ` +
+        `it was reported at a position this emitter had already read past`,
+    );
+  }
+
+  /**
+   * The commit of frozen units and of records advanced past without a frame: the last turn they
+   * began is now the turn a terminal reported before any later record ends, and a run they closed
+   * owes nothing, its terminal being in the frozen frame.
+   */
+  private committed(units: EmitUnit[], turns: (string | null)[]): void {
+    for (const u of units) {
+      for (const t of u.turns ?? []) this.lastTurn = t;
+      // The debt settled is the run the terminal CLOSES, not the run the frame is labelled with: the
+      // finish the next prompt synthesizes for its predecessor travels in the successor's frame, and
+      // a debt the successor already carries must survive that freeze.
+      for (const e of u.events) {
+        if (e.type === AGUI_EVENT_TYPE.RUN_FINISHED) this.owed.delete(e.runId);
+        else if (e.type === AGUI_EVENT_TYPE.RUN_ERROR) this.owed.delete(u.runId);
+      }
+    }
+    for (const t of turns) this.lastTurn = t;
   }
 
   /**
@@ -671,10 +718,8 @@ export class AguiEmitter<T> {
     const runId = this.brackets.runId;
     if (runId === undefined) return null;
     // Either terminal settles a debt owed to this run: the run is closed, and nothing can be owed
-    // to a run that is no longer open. A terminal applied live also accounts for every turn the
-    // wire began before it, so none of them is left for a held terminal to be paired with.
+    // to a run that is no longer open.
     this.owed.delete(runId);
-    this.unclaimedTurns = [];
 
     const cursor = this.wal.frontier.sourceCursor;
     if (cursor === undefined)
@@ -719,92 +764,73 @@ export class AguiEmitter<T> {
       measure: (f) => this.measure(f),
       limit: this.ep.maxPayload,
     });
-    for (const { frame, cursor: c } of frames) await this.publish(frame, c);
+    for (const { frame, cursor: c } of frames) await this.publish(frame, c, () => {});
     return runId;
   }
 
   /**
-   * Owe a terminal to the run `runId`: the connector reported that turn ended while the terminal
-   * could not be written, and the run is still open on the wire. An owed error is published in
-   * place of the FIRST finish the mapper produces for that run, which is the finish a later prompt
-   * synthesizes when it finds the run still open, so a failed turn whose next prompt was already
-   * written when the plane came back is still closed as a failure, after its own records and before
-   * the next run opens, in a frame of its own run. An owed finish is that synthesized finish, and
-   * is settled by it. {@link closeRun} settles the debt likewise, and {@link takeOwed} hands it
-   * back for a close the holder makes once the pump has read on. A debt owed to a run that is not
-   * the open one, or a second debt to the same run, replaces nothing and is refused.
+   * Queue a terminal the connector reported at a boundary the record stream cannot see, for the
+   * turn the source had begun when it was reported: a terminal that arrived while the plane was
+   * down, or while a re-establish was in flight. The connector reports a turn's terminal once the
+   * turn's records are in the source and before the next turn's are, so the position the source
+   * had reached then names the turn: the last one begun before that position. The next pump reads
+   * the records up to that position and places the terminal, see {@link place}. Placed on a run,
+   * an error is published in place of the first finish the mapper produces for that run, which is
+   * the finish a later prompt synthesizes when it finds the run still open, so a failed turn whose
+   * next prompt was already written when the plane came back is still closed as a failure, after
+   * its own records and before the next run opens, in a frame of its own run; a finish is that
+   * synthesized finish. A terminal the pump places on the run it leaves open is handed back by
+   * {@link takeOwed} for the close the holder makes. A turn that opened no run takes its terminal
+   * and does nothing with it, as a close with no run open does live; a second terminal for one
+   * turn is the connector repeating itself, and replaces nothing.
    */
-  oweTerminal(runId: string, terminal: HeldTerminal): void {
+  queueTerminal(entry: ReportedTerminal): void {
     if (this.halted) throw this.halted;
-    if (this.brackets.runId !== runId)
-      throw new Error(`event emitter for ${this.channel}: cannot owe a terminal to run "${runId}", the open run is ${this.brackets.runId === undefined ? "none" : `"${this.brackets.runId}"`}`);
-    if (this.owed.has(runId)) throw new Error(`event emitter for ${this.channel}: a terminal is already owed to run "${runId}"`);
-    this.owed.set(runId, terminal);
-    // This terminal accounts for the run's own turn and every turn begun before it, as a live close
-    // does: left unclaimed, the run's turn would take the next queued terminal, which is the turn
-    // after it's.
-    const at = this.unclaimedTurns.lastIndexOf(runId);
-    if (at >= 0) this.unclaimedTurns = this.unclaimedTurns.slice(at + 1);
+    // A position that could not be read is reported by the pump that meets it, not as an
+    // unhandled rejection before any pump has.
+    entry.at.catch(() => undefined);
+    this.queued.push(entry);
   }
 
-  /** Whether a terminal is owed to `runId`. */
-  owes(runId: string): boolean {
-    return this.owed.has(runId);
+  /** How many terminals no pump has placed yet. A pump places every one the read reaches. */
+  get waitingTerminals(): number {
+    return this.queued.length;
   }
 
   /** Take the terminal owed to `runId` back, for a close the caller makes itself. */
-  takeOwed(runId: string): HeldTerminal | undefined {
-    const terminal = this.owed.get(runId);
+  takeOwed(runId: string): ReportedTerminal | undefined {
+    const entry = this.owed.get(runId);
     this.owed.delete(runId);
-    return terminal;
-  }
-
-  /**
-   * Queue a terminal for the turn the wire has not yet shown it belongs to: one that arrived while
-   * the plane was down, or while a re-establish was in flight, for a turn the recovery read had
-   * not reached. The connector reports one terminal per turn, in turn order, after the turn's
-   * records are in the source; so the terminals held through an outage pair with the turns the
-   * source begins, in that order, from the first turn the wire has not accounted for. A turn that
-   * opened no run takes its terminal and does nothing with it, as a close with no run open does
-   * live. The pairing happens as frames are published, since a turn begun by a frame that was
-   * never published is read again: see {@link turnsBegan}.
-   */
-  queueTerminal(terminal: HeldTerminal): void {
-    if (this.halted) throw this.halted;
-    this.unclaimedTerminals.push(terminal);
-    this.turnsBegan([]);
+    return entry;
   }
 
   /**
    * Every terminal this emitter still holds, for a holder that is dropping it: the terminals owed
-   * to runs, in the order those runs opened, then the ones no turn has claimed. Only a debt to the
-   * run the wire has open keeps its run: a fresh start comes back with that run open, while any
-   * other owed run was closed by the wire (its debt is already lost) or never published, and a
-   * run never published is read again under a new id. The turns the wire began and no terminal
-   * claimed ride along, so the holder can seed the fresh emitter with them.
+   * to runs the wire has not closed, then the ones no pump has placed, each with the position it
+   * was reported at, so the next emitter places them again from the log it starts from. The last
+   * turn the frozen frames began rides along, so the holder can seed the next emitter with it.
    */
-  unsettled(): { terminals: { runId?: string; terminal: HeldTerminal }[]; turns: (string | null)[] } {
-    const open = this.brackets.runId;
-    const terminals: { runId?: string; terminal: HeldTerminal }[] = [];
-    for (const [runId, terminal] of this.owed) terminals.push(runId === open ? { runId, terminal } : { terminal });
-    for (const terminal of this.unclaimedTerminals) terminals.push({ terminal });
-    return { terminals, turns: this.unclaimedTurns.map((t) => (t === open ? t : null)) };
+  unsettled(): { terminals: ReportedTerminal[]; lastTurn: string | null | undefined } {
+    return { terminals: [...this.owed.values(), ...this.queued], lastTurn: this.lastTurn };
   }
 
-  /** Seed the turns the wire began before this emitter started and no terminal has claimed, from
-   *  the emitter this one replaces. Allowed once, before anything is pumped. */
-  seedUnclaimedTurns(turns: (string | null)[]): void {
-    if (this.fedAnyEvent || this.unclaimedTurns.length > 0)
-      throw new Error(`event emitter for ${this.channel}: unclaimed turns can only be seeded before the first pump`);
-    this.unclaimedTurns = turns.map((t) => (t === this.brackets.runId ? t : null));
+  /** Seed the last turn the wire began, from the emitter this one replaces: a terminal reported
+   *  before any record the first pump reads is that turn's. Allowed before anything is pumped. */
+  seedLastTurn(turn: string | null | undefined): void {
+    if (this.pumped) throw new Error(`event emitter for ${this.channel}: the last turn can only be seeded before the first pump`);
+    this.lastTurn = turn;
   }
 
   /**
    * Take the first finish of an owed run out of a record's events and, for a debt that is an
-   * error, answer it with a unit of that run carrying the owed error terminal instead, settling the
-   * debt. The error carries the fixed egress message, as a close does. `before` is the cursor the
-   * owed unit stores: the position ahead of the record the finish came from. A debt that is a
-   * finish is settled by the finish itself and changes nothing.
+   * error, answer it with a unit of that run carrying the owed error terminal instead. The error
+   * carries the fixed egress message, as a close does. `before` is the cursor the owed unit
+   * stores: the position ahead of the record the finish came from. A debt that is a finish is
+   * answered by the finish itself and changes nothing. The debt is settled when the frame carrying
+   * the terminal is frozen, not here: a frame whose write fails before the freeze is read again,
+   * and the terminal must still be owed then (Sol, round 11 of 2026-10-13, through the built MCP
+   * entry point: a log write refused once while the owed error was being written closed the failed
+   * run as a finish).
    */
   private takeOwedTerminal(events: AguiEvent[], before: string | undefined): { unit: EmitUnit; rest: AguiEvent[] } | undefined {
     if (this.owed.size === 0) return undefined;
@@ -812,8 +838,7 @@ export class AguiEmitter<T> {
     if (at < 0) return undefined;
     const finish = events[at]!;
     const runId = finish.runId as string;
-    const terminal = this.owed.get(runId)!;
-    this.owed.delete(runId);
+    const { terminal } = this.owed.get(runId)!;
     if (!terminal.error) return undefined;
     if (before === undefined)
       throw new Error(
@@ -833,14 +858,20 @@ export class AguiEmitter<T> {
     });
   }
 
-  /** Transition 1 then the first network attempt. */
-  private async publish(frame: AguiFrame, cursor: string): Promise<void> {
-    // Advance the real machine by exactly this frame. It cannot throw: the identical sequence was
-    // already accepted by a clone starting from this same state, in this same order. It is not
+  /** Transition 1 then the first network attempt. `frozen` runs once the frame is frozen on disk,
+   *  before the wire is tried: the commit of what the frame carries, for state the frame settles. */
+  private async publish(frame: AguiFrame, cursor: string, frozen: () => void): Promise<void> {
+    // Advance a copy of the machine by exactly this frame. It cannot throw: the identical sequence
+    // was already accepted by a clone starting from this same state, in this same order. It is not
     // wrapped in a diagnosis for that reason — a throw here would be a bug in this file, not a
-    // stream problem, and dressing it as one would hide it.
-    for (const e of frame.events) this.brackets.accept(e);
-    const brackets = this.brackets.snapshot();
+    // stream problem, and dressing it as one would hide it. The real machine moves at the FREEZE:
+    // a write that fails before it leaves the log without this frame, and the run this frame opens
+    // or closes is then neither open nor closed on the wire (Sol, round 11 of 2026-10-13, through
+    // the built MCP entry point: a first turn whose frame never froze was reported open, so its
+    // terminal was held for a run the log never had, and dropped).
+    const next = this.brackets.clone();
+    for (const e of frame.events) next.accept(e);
+    const brackets = next.snapshot();
     const id = randomUUID();
     // THE SUBJECT'S TIP, NOT THIS THREAD'S LAST ACK. The two were the same number until a second
     // session of the same principal existed, and then they were not: the subject is per principal
@@ -851,6 +882,8 @@ export class AguiEmitter<T> {
     // Durable BEFORE the wire. The order is the whole state machine: a crash between this line and
     // the next is recoverable precisely because the id and `E` are already frozen on disk.
     await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets });
+    this.brackets = next;
+    frozen();
     await this.attempt({ id, E, body, retry: false });
   }
 
