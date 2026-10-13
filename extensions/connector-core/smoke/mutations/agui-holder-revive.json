@@ -84,8 +84,8 @@
     {
       "name": "R7 the held terminal closes whatever run the fresh start comes back with",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      if (emitter.openRunId !== held.runId) {\n        this.heldClose = undefined;\n        return;\n      }\n",
-      "replace": "      if (emitter.openRunId === undefined) {\n        this.heldClose = undefined;\n        return;\n      }\n",
+      "find": "        if (emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
+      "replace": "        if (emitter.openRunId !== undefined) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
       "expectRed": "revive:a-held-terminal-is-DROPPED-when-the-fresh-start-comes-back-with-run-3",
       "note": "A later prompt among the unread records opened its own run; an unmatched close would end it with the earlier turn's terminal and drop the rest of its records."
     },
@@ -104,6 +104,22 @@
       "replace": "",
       "expectRed": "revive:a-repeated-terminal-while-down-keeps-the-FIRST",
       "note": "The live seat sends a stop after a stop failure; the later finish replaced the failure and the run was published as finished."
+    },
+    {
+      "name": "R10 the held error is not owed to the emitter before the pump",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      if (held?.error && emitter.openRunId === held.runId) emitter.oweTerminal(held.runId, held.error);\n",
+      "replace": "",
+      "expectRed": "revive:a-held-ERROR-is-owed-to-the-fresh-emitter-BEFORE-the-pump",
+      "note": "Round 5 of review, through the built MCP entry point: with the next prompt among the unread records, the pump closed the failed run as a finish and the held error was dropped behind it."
+    },
+    {
+      "name": "R11 the backoff resets after the pump, before the held close",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      if (held) {\n        this.heldClose = undefined;\n",
+      "replace": "      this.retryAttempt = 0;\n      if (held) {\n        this.heldClose = undefined;\n",
+      "expectRed": "revive:the-delay-DOUBLES-while-the-held-close-keeps-failing",
+      "note": "Round 5 of review: a terminal-only write failure held for four seconds was retried five times at one second, behind a pump that read nothing."
     }
   ]
 }

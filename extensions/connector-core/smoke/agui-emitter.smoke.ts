@@ -107,6 +107,7 @@ import {
   textMessageEnd,
   textMessageStart,
   type AguiEvent,
+  RUN_ERROR_EGRESS_MESSAGE,
   type AguiFrame,
 } from "../src/agui.js";
 import {
@@ -1189,6 +1190,45 @@ try {
       pumped.err !== undefined && /unreadable record at offset 0 \(/.test(pumped.err.message) && /no gap reporter/.test(pumped.err.message),
       pumped.err?.message ?? "no throw");
     c("gap:...and-neither-the-frontier-nor-the-broker-moved", wal.frontier.sourceCursor === before && ep.publishes.length === 0, { before, after: wal.frontier.sourceCursor, publishes: ep.publishes.length });
+  });
+  // ---- AN OWED TERMINAL ---------------------------------------------------------------------------
+  // The holder owes an error terminal to the open run when the connector reported the turn failed
+  // while the terminal could not be written. The owed error is published in place of the FIRST
+  // finish the mapper produces for that run: the finish a later prompt synthesizes when it finds
+  // the run still open. Sol, review of 2026-10-13, through the built MCP entry point: a failed turn
+  // whose next prompt was written before the plane came back was closed as a finish.
+  await block("owed", async () => {
+    const { src, wal, source } = await fresh("owed-terminal");
+    const ep = new FakeEndpoint();
+    ep.answers.push({ seq: 1, duplicate: false }, { seq: 2, duplicate: false }, { seq: 3, duplicate: false });
+    // r1 opens a run and leaves it open; r2 is the next prompt: it finishes r1 and starts r2.
+    const nextPrompt = (r: Rec) =>
+      "skip" in r
+        ? null
+        : r.run === "r1"
+          ? { runId: "r1", events: [runStarted({ threadId: THREAD, runId: "r1", timestamp: 1 })] }
+          : { runId: "r2", events: [runFinished({ threadId: THREAD, runId: "r1", timestamp: 2 }), runStarted({ threadId: THREAD, runId: "r2", timestamp: 3 })] };
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: nextPrompt });
+    await em.pump(); // adopt
+    append(src, { run: "r1", msg: "m1", text: "open" });
+    await em.pump();
+    c("owed:SETUP-r1-is-open-on-the-wire", em.openRunId === "r1", em.openRunId);
+    const wrongRun = await attempt(async () => em.oweTerminal("r9", { message: "rate_limit" }));
+    c("owed:a-terminal-cannot-be-owed-to-a-run-that-is-not-open", wrongRun.err !== undefined && /cannot owe/.test(wrongRun.err.message), wrongRun.err?.message);
+    em.oweTerminal("r1", { message: "rate_limit", code: "rate_limit" });
+    const second = await attempt(async () => em.oweTerminal("r1", { message: "again" }));
+    c("owed:a-second-debt-is-refused", second.err !== undefined && /already owed/.test(second.err.message), second.err?.message);
+    append(src, { run: "r2", msg: "m2", text: "next prompt" });
+    await em.pump();
+    const published = ep.publishes.flatMap((p) => (p.parts[0] as unknown as { events: AguiEvent[] }).events);
+    const types = published.map((e) => e.type + (e.type === "RUN_STARTED" || e.type === "RUN_FINISHED" ? ":" + (e as { runId: string }).runId : ""));
+    c("owed:the-owed-error-is-published-in-place-of-the-synthesized-finish", types.join(",") === "RUN_STARTED:r1,RUN_ERROR,RUN_STARTED:r2", types);
+    c("owed:the-published-error-carries-the-fixed-egress-message", published.some((e) => e.type === "RUN_ERROR" && (e as { message: string }).message === RUN_ERROR_EGRESS_MESSAGE), published.find((e) => e.type === "RUN_ERROR"));
+    c("owed:the-debt-is-settled-once-published", em.owedRunId === undefined && em.openRunId === "r2", { owed: em.owedRunId, open: em.openRunId });
+    // A close settles a debt too: owe to r2, close r2 as a finish, and a new debt to the next run is not refused as a second one.
+    em.oweTerminal("r2", { message: "rate_limit" });
+    const closed = await em.closeRun({ timestamp: 4 });
+    c("owed:a-close-settles-the-debt", closed === "r2" && em.owedRunId === undefined, { closed, owed: em.owedRunId });
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });

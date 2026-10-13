@@ -1,0 +1,35 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/agui-emitter.smoke.ts"
+  ],
+  "guard": "an error terminal owed to the open run is published in place of the first finish the mapper produces for that run, and any terminal for that run settles the debt",
+  "command": "pnpm smoke:agui-emitter",
+  "completionMarker": "agui-emitter smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-owed-terminal.json",
+  "why": [
+    "A turn that failed while its terminal could not be written is owed an error terminal. When the",
+    "plane comes back with the next prompt already among the unread records, that prompt's mapping",
+    "closes the failed run as a finish; the emitter must publish the owed error in that finish's",
+    "place, or the failed turn is recorded as finished (Sol, round 5 of PR 3836, through the built MCP",
+    "entry point). O1 publishes the synthesized finish as mapped. O2 leaves the debt standing after a",
+    "close settles the run, so the next debt is refused as a second one."
+  ],
+  "mutations": [
+    {
+      "name": "O1 the owed terminal is never applied: the synthesized finish is published as mapped",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    const owed = this.owed;\n    if (!owed) return events;\n",
+      "replace": "    const owed = this.owed;\n    if (!owed || owed) return events;\n",
+      "expectRed": "owed:the-owed-error-is-published-in-place-of-the-synthesized-finish",
+      "note": "The round-5 defect as the wire saw it: one RUN_FINISHED for the failed run and no RUN_ERROR."
+    },
+    {
+      "name": "O2 a close does not settle the debt",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    if (this.owed?.runId === runId) this.owed = undefined;\n",
+      "replace": "    void runId;\n",
+      "expectRed": "owed:a-close-settles-the-debt",
+      "note": "A debt that outlives its run would be refused as a second debt on the next failed turn, or applied to a finish of a run it was never owed to."
+    }
+  ]
+}

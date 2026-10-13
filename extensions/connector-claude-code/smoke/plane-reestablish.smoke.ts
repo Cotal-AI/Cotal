@@ -36,6 +36,8 @@ const c = (n: string, v: boolean, extra?: unknown) => {
   }
 };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Whether the wire text carries a RUN_FINISHED for `runId` (the event names its run; the frame may not). */
+const finished = (wire: string, runId: string) => wire.includes('"type":"RUN_FINISHED","threadId":"') && new RegExp('"type":"RUN_FINISHED","threadId":"[^"]+","runId":"' + runId + '"').test(wire);
 
 /** The broker instrument: a single-replica subject with a scriptable network fault. A frame that
  *  fails here was frozen pending by the log first, as on the real wire. */
@@ -132,7 +134,7 @@ function plane(opts: { seedMapper: boolean }) {
     chmodSync(walDir, 0o700);
     rmSync(root, { recursive: true, force: true });
   };
-  return { holder, broker, log, transcript, user, assistant, flush, turnEnd, wal, walDir: () => walDir, starts: () => starts, close };
+  return { holder, broker, log, transcript, threadId, user, assistant, flush, turnEnd, wal, walDir: () => walDir, starts: () => starts, close };
 }
 
 // ---- A. the WAL directory becomes unwritable during a flush ------------------------------------
@@ -261,7 +263,7 @@ for (const seedMapper of [true, false]) {
   await p.flush();
   await p.turnEnd();
   const nextRun = p.broker.frames[p.broker.frames.length - 1]!.runId;
-  c("D:the-next-prompt-opens-run-3-and-no-finish-is-synthesized-for-run-2", nextRun === "run-3" && !run2.some((s) => s.includes("RUN_FINISHED")) && !p.broker.frames.some((f) => f.runId === "run-2" && JSON.stringify(f.parts).includes("RUN_FINISHED")), { nextRun });
+  c("D:the-next-prompt-opens-run-3-and-no-finish-is-synthesized-for-run-2", nextRun === "run-3" && !finished(p.broker.frames.map((f) => JSON.stringify(f.parts)).join(""), "run-2"), { nextRun });
   await p.close();
 }
 
@@ -293,7 +295,7 @@ for (const seedMapper of [true, false]) {
   p.assistant();
   await p.flush();
   await p.turnEnd();
-  c("E:the-next-prompt-opens-run-3-and-run-2-is-not-closed-as-a-finish", p.broker.frames[p.broker.frames.length - 1]!.runId === "run-3" && !p.broker.frames.some((f) => f.runId === "run-2" && JSON.stringify(f.parts).includes("RUN_FINISHED")));
+  c("E:the-next-prompt-opens-run-3-and-run-2-is-not-closed-as-a-finish", p.broker.frames[p.broker.frames.length - 1]!.runId === "run-3" && !finished(p.broker.frames.map((f) => JSON.stringify(f.parts)).join(""), "run-2"));
   await p.close();
 }
 
@@ -320,6 +322,66 @@ for (const seedMapper of [true, false]) {
   await p.holder.settled();
   const run2 = p.broker.frames.filter((f) => f.runId === "run-2").map((f) => JSON.stringify(f.parts));
   c("F:the-FIRST-terminal-is-the-one-published", run2.some((s) => s.includes('"type":"RUN_ERROR"')) && !run2.some((s) => s.includes("RUN_FINISHED")) && run2.some((s) => s.includes("under-fault")) && p.holder.running, { run2, running: p.holder.running });
+  await p.close();
+}
+
+// ---- G. the next prompt is already written when the plane comes back --------------------------
+{
+  // As E, but the user types the next prompt (and the assistant answers it) during the outage, so
+  // the re-establish reads that prompt among the unread records. The failed run must still get
+  // its error, after its own records and before the next run opens (Sol, round 5, through the
+  // built MCP entry point: the failed run got one RUN_FINISHED and no RUN_ERROR).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush();
+  chmodSync(p.walDir(), 0o500);
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" }); // the terminal's own write fails
+  c("G:CONTROL-the-terminal-write-failed-and-the-plane-is-down", !p.holder.running, p.holder.running);
+  p.user(); // the next prompt, written during the outage
+  p.assistant(" next-turn");
+  p.holder.flush(p.transcript); // the hook fires while the plane is down: nothing is read
+  await p.holder.settled();
+  chmodSync(p.walDir(), 0o700);
+  await sleep(250);
+  await p.holder.settled();
+  // The finish a prompt synthesizes for the prior run travels in the NEXT run's frame (the unit is
+  // the prompt's), so the wire is read at the event level, not by frame label.
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const errorAt = wire.indexOf('"type":"RUN_ERROR"');
+  const nextOpenAt = wire.indexOf('"type":"RUN_STARTED","threadId":"' + p.threadId + '","runId":"run-3"');
+  c("G:the-failed-run-is-closed-with-RUN_ERROR-not-the-synthesized-finish", errorAt >= 0 && !finished(wire, "run-2") && p.holder.running, { errorAt, finished: finished(wire, "run-2"), running: p.holder.running });
+  c("G:the-error-comes-after-the-failed-runs-records-and-before-the-next-run-opens", errorAt >= 0 && nextOpenAt > errorAt && wire.indexOf("acked") < errorAt, { errorAt, nextOpenAt, acked: wire.indexOf("acked") });
+  c("G:the-next-turn-publishes-under-its-own-run", p.broker.frames.some((f) => f.runId === "run-3" && JSON.stringify(f.parts).includes("next-turn")), p.broker.frames.filter((f) => f.runId === "run-3").length);
+  const before = p.broker.frames.length;
+  await p.turnEnd();
+  const last = p.broker.frames[p.broker.frames.length - 1]!;
+  c("G:the-next-runs-own-terminal-closes-it-as-a-finish", p.broker.frames.length > before && last.runId === "run-3" && finished(JSON.stringify(last.parts), "run-3"));
+  await p.close();
+}
+
+// ---- H. the terminal's write keeps failing: the retry is paced ----------------------------------
+{
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  chmodSync(p.walDir(), 0o500);
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" });
+  await sleep(300); // 20, 40, 80, 160: four re-establishes, each reading nothing and failing the close again
+  await p.holder.settled();
+  const delays = p.log.map((l) => /re-establishing the event plane in (\d+)ms/.exec(l)?.[1]).filter((d): d is string => d !== undefined);
+  c("H:the-delay-DOUBLES-while-the-terminal-write-keeps-failing", delays.slice(0, 3).join(",") === "20,40,80", delays);
+  chmodSync(p.walDir(), 0o700);
+  await sleep(400);
+  await p.holder.settled();
+  c("H:the-terminal-is-published-once-the-write-goes-through", p.broker.frames.some((f) => f.runId === "run-1" && JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && p.holder.running, { frames: p.broker.frames.length, running: p.holder.running });
   await p.close();
 }
 

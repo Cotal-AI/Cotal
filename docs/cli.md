@@ -928,8 +928,10 @@ removes only the discovered entries owned by that account.
 and interactive `join` cannot opt out or join without an event plane. `--no-events` is refused with
 the space named. A connector without an event plane is refused with both the space and connector
 named. A session whose own grant omits `events.<owner>.<actor>` is refused before joining and the
-message names a full-row `actor grant` repair. A running seat whose event plane stops for good on
-that space stops too. A seat the manager resumes from a preserved cut meets the same rules as a fresh
+message names a full-row `actor grant` repair. A running seat whose event plane stops keeps running
+and keeps its mesh connection on that space as on any other; the connector re-establishes the plane
+itself and reports every failure with the delay before the next attempt. A seat the manager resumes
+from a preserved cut meets the same rules as a fresh
 spawn: a seat retained with `--no-events`, or on a connector without an event plane, is refused, and
 a resumed seat carries the requirement in its launch material.
 

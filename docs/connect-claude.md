@@ -372,8 +372,10 @@ recovery a connector restart runs. A failed publish or a failed log write is nev
 emitter it failed on. A turn that ends while the plane is down keeps its terminal, and so does a
 turn whose terminal's own log write failed: once the re-establish has read on, the run the log had
 open is closed with that terminal, a failure as a failure, rather than left open for the next
-prompt to close as a finish. The first terminal kept for a run is the one published; a stop that
-follows a stop failure for the same run does not replace it. The seat used to exit on a space that requires events; for Claude Code the
+prompt to close as a finish. That holds when the next prompt was already written before the plane
+came back: the failure is published after the failed turn's own records and before the next run
+opens. The first terminal kept for a run is the one published; a stop that follows a stop failure
+for the same run does not replace it. The seat used to exit on a space that requires events; for Claude Code the
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code
 restarted it on the next tool call.
 

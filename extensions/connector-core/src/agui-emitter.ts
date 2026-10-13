@@ -22,6 +22,7 @@ import {
   extraPropertyPath,
   frozenBodyEgressVerdict,
   RUN_ERROR_EGRESS_MESSAGE,
+  AGUI_EVENT_TYPE,
   runError,
   runFinished,
   type AguiEvent,
@@ -259,6 +260,8 @@ export class AguiEmitter<T> {
   /** True once THIS process has fed an event through the bracket machine. It is the half of the
    *  restart diagnosis that keeps a genuine mid-stream violation from being blamed on a restart. */
   private fedAnyEvent = false;
+  /** An error terminal owed to the run named, see {@link oweTerminal}. */
+  private owed: { runId: string; error: { message: string; code?: string } } | undefined;
 
   private constructor(
     private readonly ep: EmitterEndpoint,
@@ -423,7 +426,7 @@ export class AguiEmitter<T> {
       // WRITE-PATH POLICY, before packing and therefore before beginSend. Disk and wire then agree.
       // A record that mapped only to forbidden kinds becomes a drop: its cursor folds forward like
       // any other drop, and packUnits never sees an empty unit.
-      const events = applyAguiEgressPolicy(mapped.events);
+      const events = applyAguiEgressPolicy(this.applyOwedTerminal(mapped.events));
       if (events.length === 0) {
         const last = units[units.length - 1];
         if (last) last.cursor = rec.cursor;
@@ -542,6 +545,9 @@ export class AguiEmitter<T> {
 
     const runId = this.brackets.runId;
     if (runId === undefined) return null;
+    // Either terminal settles a debt owed to this run: the run is closed, and nothing can be owed
+    // to a run that is no longer open.
+    if (this.owed?.runId === runId) this.owed = undefined;
 
     const cursor = this.wal.frontier.sourceCursor;
     if (cursor === undefined)
@@ -588,6 +594,42 @@ export class AguiEmitter<T> {
     });
     for (const { frame, cursor: c } of frames) await this.publish(frame, c);
     return runId;
+  }
+
+  /**
+   * Owe an error terminal to the run `runId`: the connector reported that turn failed while the
+   * terminal could not be written, and the run is still open on the wire. The owed terminal is
+   * published in place of the FIRST finish the mapper produces for that run, which is the finish a
+   * later prompt synthesizes when it finds the run still open, so a failed turn whose next prompt
+   * was already written when the plane came back is still closed as a failure, after its own
+   * records and before the next run opens. {@link closeRun} settles the debt likewise. A debt owed
+   * to a run that is not the open one, or a second debt, replaces nothing and is refused.
+   */
+  oweTerminal(runId: string, error: { message: string; code?: string }): void {
+    if (this.halted) throw this.halted;
+    if (this.brackets.runId !== runId)
+      throw new Error(`event emitter for ${this.channel}: cannot owe a terminal to run "${runId}", the open run is ${this.brackets.runId === undefined ? "none" : `"${this.brackets.runId}"`}`);
+    if (this.owed) throw new Error(`event emitter for ${this.channel}: a terminal is already owed to run "${this.owed.runId}"`);
+    this.owed = { runId, error };
+  }
+
+  /** The run an error terminal is owed to, if any. */
+  get owedRunId(): string | undefined {
+    return this.owed?.runId;
+  }
+
+  /** Replace the first finish of the owed run with the owed error terminal, and settle the debt on
+   *  any terminal for that run. The error carries the fixed egress message, as a close does. */
+  private applyOwedTerminal(events: AguiEvent[]): AguiEvent[] {
+    const owed = this.owed;
+    if (!owed) return events;
+    return events.map((e) => {
+      if (e.type === AGUI_EVENT_TYPE.RUN_FINISHED && e.runId === owed.runId) {
+        this.owed = undefined;
+        return runError({ message: RUN_ERROR_EGRESS_MESSAGE, timestamp: typeof e.timestamp === "number" ? e.timestamp : Date.now(), ...(e.cotal ? { cotal: e.cotal } : {}) });
+      }
+      return e;
+    });
   }
 
   /** Measure a candidate frame EXACTLY as the wire will, at an upper bound over id and expectation. */

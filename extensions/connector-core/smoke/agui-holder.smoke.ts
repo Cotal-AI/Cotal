@@ -136,9 +136,18 @@ class FakeEmitter {
   /** The 1-based close calls that fail before anything is written, leaving the run open. */
   failClose = new Set<number>();
   closeCalls = 0;
+  /** Every terminal owed to this emitter, with the pump count when it was owed. */
+  owed: { runId: string; error: { message: string; code?: string }; pumpsBefore: number }[] = [];
+  /** When set, a pump that finds a terminal owed closes that run itself (as the real emitter does
+   *  when the unread records hold the next prompt) and opens this run instead. */
+  nextPromptOpens: string | undefined;
+  oweTerminal(runId: string, error: { message: string; code?: string }): void {
+    this.owed.push({ runId, error, pumpsBefore: this.pumps });
+  }
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
     if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
+    if (this.nextPromptOpens !== undefined && this.owed.length > 0) this.openRunId = this.nextPromptOpens;
     return { frames: 1, events: 1 };
   }
   async closeRun(o: { timestamp: number; error?: { message: string; code?: string } }): Promise<string | null> {
@@ -636,6 +645,86 @@ const B = "/tmp/session-b.jsonl";
   await sleep(60);
   await r.holder.settled();
   c("revive:a-held-close-that-fails-at-the-re-establish-is-applied-by-the-NEXT", r.made[2]?.closes.length === 1 && r.made[2].closes[0]?.error?.code === "rate_limit" && r.holder.running, { closes: r.made[2]?.closes, starts: r.starts, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
+  // A HELD ERROR IS OWED TO THE EMITTER BEFORE THE PUMP. The unread records may hold the next
+  // prompt, whose mapping closes the held run as a finish; the emitter publishes the owed error in
+  // that finish's place (Sol, review of 2026-10-13, through the built MCP entry point: the error
+  // was dropped behind the synthesized finish). Here the fresh emitter's pump finds the next prompt
+  // and closes run-2 itself, so the holder's own close must not run and the hold is released.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      if (start === 2) e.nextPromptOpens = "run-3";
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A);
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" });
+  await sleep(40);
+  await r.holder.settled();
+  const fresh = r.made[1];
+  c("revive:a-held-ERROR-is-owed-to-the-fresh-emitter-BEFORE-the-pump", fresh?.owed.length === 1 && fresh.owed[0]?.runId === "run-2" && fresh.owed[0]?.error.code === "rate_limit" && fresh.owed[0]?.pumpsBefore === 0, fresh?.owed);
+  c("revive:a-run-the-pump-closed-with-the-owed-terminal-is-not-closed-again", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId });
+  r.holder.closeRun(9); // the next run's own terminal, with the plane up
+  await r.holder.settled();
+  c("revive:the-released-hold-does-not-reach-the-next-run", fresh?.closes.length === 1 && fresh.closes[0]?.error === undefined, fresh?.closes);
+  await r.holder.close();
+}
+
+{
+  // A held FINISH owes nothing: the finish a later prompt synthesizes is the same terminal.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A);
+  await r.holder.settled();
+  r.holder.closeRun(7);
+  await sleep(40);
+  await r.holder.settled();
+  c("revive:a-held-FINISH-owes-nothing-and-closes-after-the-pump", r.made[1]?.owed.length === 0 && r.made[1]?.closes.length === 1 && r.made[1]?.closes[0]?.error === undefined, { owed: r.made[1]?.owed, closes: r.made[1]?.closes });
+  await r.holder.close();
+}
+
+{
+  // THE BACKOFF RESETS ONLY ONCE THE WHOLE RE-ESTABLISH HAS GONE THROUGH, the owed terminal
+  // included. A terminal whose write keeps failing behind a pump that reads nothing was retried
+  // every second for as long as the failure lasted (Sol, review of 2026-10-13: five delays of one
+  // second under a terminal-only write failure held for four seconds).
+  const r = rig({
+    retryMs: 10,
+    make: () => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      e.failClose.add(1); // every emitter's first close fails: the log stays unwritable
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // fails: delay 10
+  await r.holder.settled();
+  await sleep(15);
+  await r.holder.settled(); // re-establish 1: empty pump, held close fails: delay 20
+  await sleep(30);
+  await r.holder.settled(); // re-establish 2: the same: delay 40
+  c("revive:the-delay-DOUBLES-while-the-held-close-keeps-failing", r.delays.slice(0, 3).join(",") === "10,20,40", r.delays);
   await r.holder.close();
 }
 

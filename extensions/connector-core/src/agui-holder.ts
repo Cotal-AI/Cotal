@@ -421,25 +421,29 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       const emitter = await this.ensureStarted(path);
       if (!emitter || emitter.stopped) return;
       await this.holdForLive();
-      await emitter.pump();
-      this.retryAttempt = 0;
-      // A terminal held through the outage closes its run AFTER the pump has read on. The records
-      // of that turn were written before the terminal arrived and the pump had not read them yet,
-      // so a close before the pump would drop them. It is applied only when the run the terminal
-      // names is still the one open: a later prompt among the unread records has already closed
-      // it as a finish and opened its own, which the terminal must not touch, and a run only the
-      // mapper held comes back under a new id that the terminal cannot name.
-      // The hold is released only once the close has gone through, or once the run it names is no
-      // longer the open one. A close that fails here holds the terminal again on its way out, so
-      // the next re-establish still owes it.
+      // A held ERROR terminal is owed to the emitter BEFORE the pump reads on. The records of that
+      // turn were written before the terminal arrived and the pump has not read them yet, so a
+      // close before the pump would drop them; but the unread records may also hold the NEXT
+      // prompt, whose mapping closes the held run as a finish, and the emitter publishes the owed
+      // error in that finish's place, after the run's own records and before the next run opens
+      // (Sol, review of 2026-10-13, through the built MCP entry point: the held error was dropped
+      // behind that synthesized finish). A held finish owes nothing: the synthesized finish is the
+      // same terminal. A run only the mapper held comes back under a new id the terminal cannot
+      // name, and owes nothing either.
       const held = this.heldClose;
-      if (!held) return;
-      if (emitter.openRunId !== held.runId) {
+      if (held?.error && emitter.openRunId === held.runId) emitter.oweTerminal(held.runId, held.error);
+      await emitter.pump();
+      // The hold is released once the close has gone through, or once the run it names is no
+      // longer the open one (the pump closed it, with the owed terminal if one was owed). A close
+      // that fails here holds the terminal again on its way out, so the next re-establish still
+      // owes it. The backoff resets only once the whole re-establish has gone through, owed
+      // terminal included: a terminal that keeps failing to write is a repeating failure and is
+      // paced like one, not retried every second behind a pump that read nothing.
+      if (held) {
         this.heldClose = undefined;
-        return;
+        if (emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);
       }
-      this.heldClose = undefined;
-      await this.closeOpenRun(emitter, held.timestamp, held.error);
+      this.retryAttempt = 0;
     });
   }
 
