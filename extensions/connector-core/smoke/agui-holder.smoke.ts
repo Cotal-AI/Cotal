@@ -1000,13 +1000,17 @@ const B = "/tmp/session-b.jsonl";
   // through a real broker with the recovery read paused). It must be owed to the emitter at the
   // hook, while the run is still the open one.
   let release: (() => void) | undefined;
+  // Armed right before the retry is due, not keyed on the start number, for the reason the
+  // in-flight start cell gives: a mutation that starts on every flush must not reach the gate.
+  let armed = false;
   const r = rig({
     retryMs: 10,
     make: (start) => {
       const e = new FakeEmitter();
       e.openRunId = "run-2";
       if (start === 1) e.failOn.add(1);
-      else {
+      else if (armed) {
+        armed = false;
         e.nextPromptOpens = "run-3";
         e.pumpGate = new Promise<void>((res) => (release = res));
       }
@@ -1017,6 +1021,7 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   r.holder.flush(A); // pump 1 fails: down
   await r.holder.settled();
+  armed = true;
   await sleep(40); // the retry fires, the fresh start returns, and its pump is held at its gate
   const fresh = r.made[1];
   c("CONTROL:the-recovery-pump-is-in-progress", r.starts === 2 && fresh?.inPump === true && fresh.owed.length === 0, { starts: r.starts, inPump: fresh?.inPump, owed: fresh?.owed });
