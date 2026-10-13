@@ -164,27 +164,30 @@ export function packUnits(opts: {
   units: readonly EmitUnit[];
   measure: (frame: AguiFrame) => number;
   limit: number;
-}): { frame: AguiFrame; cursor: string }[] {
+}): { frame: AguiFrame; cursor: string; unitFrom: number }[] {
   const { threadId, epoch, measure, limit } = opts;
   if (!Number.isSafeInteger(limit) || limit <= 0)
     throw new AguiVocabularyError(`pack limit must be a positive safe integer, got ${JSON.stringify(limit)}`);
 
-  const out: { frame: AguiFrame; cursor: string }[] = [];
+  // `unitFrom` is the index of the first unit a frame carries, so a caller that must re-pack the
+  // unpublished tail of a batch can say which units that tail is.
+  const out: { frame: AguiFrame; cursor: string; unitFrom: number }[] = [];
   let seq = opts.firstSeq;
   let batch: AguiEvent[] = [];
   let batchRun: string | undefined;
   let batchCursor: string | undefined;
+  let batchFrom = 0;
 
   const flush = (): void => {
     if (batch.length === 0) return;
-    out.push({ frame: aguiFrame({ threadId, runId: batchRun as string, epoch, seq, events: batch }), cursor: batchCursor as string });
+    out.push({ frame: aguiFrame({ threadId, runId: batchRun as string, epoch, seq, events: batch }), cursor: batchCursor as string, unitFrom: batchFrom });
     seq += 1;
     batch = [];
     batchRun = undefined;
     batchCursor = undefined;
   };
 
-  for (const unit of opts.units) {
+  for (const [index, unit] of opts.units.entries()) {
     if (unit.events.length === 0)
       throw new AguiVocabularyError("packUnits was handed an empty unit; a record that maps to nothing advances the cursor and never becomes a frame");
 
@@ -196,6 +199,7 @@ export function packUnits(opts: {
     const fits =
       measure(aguiFrame({ threadId, runId: batchRun ?? unit.runId, epoch, seq, events: candidate })) <= limit;
     if (fits) {
+      if (batch.length === 0) batchFrom = index;
       batch = candidate;
       batchRun = batchRun ?? unit.runId;
       batchCursor = unit.cursor;
@@ -219,6 +223,7 @@ export function packUnits(opts: {
     batch = [...unit.events];
     batchRun = unit.runId;
     batchCursor = unit.cursor;
+    batchFrom = index;
   }
   flush();
   return out;
@@ -415,7 +420,7 @@ export class AguiEmitter<T> {
     // Units the mapper dropped are not errors and not frames. Their cursor folds FORWARD into the
     // preceding unit, so consuming that frame consumes them too and they are never re-read. A drop
     // stays apart from a mapper error, which reaches the caller with the cursor unmoved.
-    const units: EmitUnit[] = [];
+    let units: EmitUnit[] = [];
     for (const rec of read.records) {
       const mapped = this.map(rec.value);
       if (mapped === null || mapped.events.length === 0) {
@@ -481,7 +486,7 @@ export class AguiEmitter<T> {
     // turns the restart diagnosis off.
     this.fedAnyEvent = true;
 
-    const frames = packUnits({
+    let frames = packUnits({
       threadId: this.threadId,
       epoch: this.wal.epoch,
       firstSeq: this.wal.frontier.seq + 1,
@@ -491,7 +496,53 @@ export class AguiEmitter<T> {
     });
 
     let events = 0;
-    for (const { frame, cursor } of frames) {
+    for (let k = 0; k < frames.length; k++) {
+      // A DEBT THAT ARRIVED AFTER THE MAPPING, while an earlier frame of this batch was on the wire.
+      // The finish it answers may still be unpublished, in a later frame: that frame is not yet
+      // frozen, so the close it carries is not yet decided, and the owed error takes the finish's
+      // place by re-packing the unpublished tail (Sol, round 8 of 2026-10-13, through a real broker
+      // with the recovery read and the first recovery publish each paused: the failed run got the
+      // finish and the error was dropped). The freeze is the commit: the bracket state moves with
+      // it, so a debt offered once the finish's frame is frozen names a run that is closed and
+      // {@link oweTerminal} refuses it, like any terminal for a closed run.
+      const owed = this.owed;
+      if (owed) {
+        const from = frames[k]!.unitFrom;
+        const at = units.findIndex((u, i) => i >= from && u.events.some((e) => e.type === AGUI_EVENT_TYPE.RUN_FINISHED && e.runId === owed.runId));
+        if (at >= 0) {
+          const unit = units[at]!;
+          const before = at > from ? units[at - 1]!.cursor : this.wal.frontier.sourceCursor;
+          const split = this.takeOwedTerminal(unit.events, before)!;
+          const tail: EmitUnit[] = [...units.slice(from, at)];
+          if (split.rest.length === 0) tail.push({ ...split.unit, cursor: unit.cursor });
+          else tail.push(split.unit, { ...unit, events: split.rest });
+          tail.push(...units.slice(at + 1));
+          // Validated like the batch was, from the state the published frames left: the whole tail,
+          // so the refusal still means the stream never carried any of it.
+          const check = this.brackets.clone();
+          for (const u of tail)
+            for (const e of u.events) {
+              try {
+                check.accept(e);
+              } catch (err) {
+                throw this.diagnoseBracket(err as Error);
+              }
+            }
+          units = [...units.slice(0, from), ...tail];
+          frames = [
+            ...frames.slice(0, k),
+            ...packUnits({
+              threadId: this.threadId,
+              epoch: this.wal.epoch,
+              firstSeq: this.wal.frontier.seq + 1,
+              units: tail,
+              measure: (f) => this.measure(f),
+              limit: this.ep.maxPayload,
+            }).map((f) => ({ ...f, unitFrom: f.unitFrom + from })),
+          ];
+        }
+      }
+      const { frame, cursor } = frames[k]!;
       await this.publish(frame, cursor);
       events += frame.events.length;
     }

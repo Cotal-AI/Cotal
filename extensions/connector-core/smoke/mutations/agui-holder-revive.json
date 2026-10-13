@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-holder.smoke.ts"
   ],
-  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane; a terminal that arrives while the fresh start is in flight, or while down after a failed start, is held for the run the wire had open",
+  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane; a terminal that arrives while the fresh start is in flight, or while down after a failed start, is held for the run the wire had open; a terminal during the recovery pump is owed to the emitter at the hook",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder-revive.json",
@@ -76,8 +76,8 @@
     {
       "name": "R6 a terminal that arrives while the plane is down is dropped",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    if (this.dead !== undefined || this.reviving) {\n      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);\n      return;\n    }\n",
-      "replace": "    if (this.dead !== undefined || this.reviving) {\n      return;\n    }\n",
+      "find": "      if (this.downRun !== undefined) {\n        this.hold(this.downRun, timestamp, error);\n",
+      "replace": "      if (this.downRun !== undefined) {\n",
       "expectRed": "revive:a-terminal-held-through-the-outage-closes-its-run-after-the-re-establish",
       "note": "The first cut's rule. The seat stays connected and the plane comes back, so only the close on the fresh emitter can see that the failed turn's run was left open."
     },
@@ -108,8 +108,8 @@
     {
       "name": "R10 the held error is not owed to the emitter before the pump",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      if (held?.error && emitter.openRunId === held.runId) emitter.oweTerminal(held.runId, held.error);\n",
-      "replace": "",
+      "find": "      if (held?.error && emitter.openRunId === held.runId && emitter.owedRunId === undefined) emitter.oweTerminal(held.runId, held.error);\n",
+      "replace": "      void held;\n",
       "expectRed": "revive:a-held-ERROR-is-owed-to-the-fresh-emitter-BEFORE-the-pump",
       "note": "Round 5 of review, through the built MCP entry point: with the next prompt among the unread records, the pump closed the failed run as a finish and the held error was dropped behind it."
     },
@@ -124,8 +124,8 @@
     {
       "name": "R12 a terminal during an in-flight start is queued behind the recovery instead of held",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    if (this.dead !== undefined || this.reviving) {\n      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);\n      return;\n    }\n",
-      "replace": "    if (this.dead !== undefined) {\n      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);\n      return;\n    }\n",
+      "find": "    if (this.dead !== undefined || this.reviving) {\n      if (this.downRun !== undefined) {\n",
+      "replace": "    if (this.dead !== undefined) {\n      if (this.downRun !== undefined) {\n",
       "expectRed": "revive:a-terminal-during-an-in-flight-start-does-NOT-close-the-successor-run",
       "note": "The round-7 defect: the queued close runs after the recovery pump has read the next prompt, and closes the successor run with the failed run's error."
     },
@@ -136,6 +136,14 @@
       "replace": "    this.downRun = this.emitter?.openRunId;\n",
       "expectRed": "revive:a-terminal-while-down-after-a-FAILED-re-establish-start-is-held-for-the-down-run",
       "note": "A failed start has no emitter, so the run the wire had open is forgotten and the terminal that arrives next is dropped."
+    },
+    {
+      "name": "R14 a terminal during the recovery pump is only held for after it, not owed at the hook",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "        if (error && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === this.downRun && emitter.owedRunId === undefined)\n          emitter.oweTerminal(this.downRun, error);\n",
+      "replace": "        void emitter;\n",
+      "expectRed": "revive:a-terminal-during-the-recovery-pump-is-owed-to-the-emitter-AT-THE-HOOK",
+      "note": "The round-8 defect: the pump reads the next prompt and closes the failed run as a finish; the hold, read only after the pump, names a closed run and is dropped."
     }
   ]
 }

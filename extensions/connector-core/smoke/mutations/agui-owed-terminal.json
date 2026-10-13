@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-emitter.smoke.ts"
   ],
-  "guard": "an error terminal owed to the open run is published in place of the first finish the mapper produces for that run, in a frame of that run whose cursor stays ahead of the record the finish came from, and any terminal for that run settles the debt",
+  "guard": "an error terminal owed to the open run is published in place of the first finish the mapper produces for that run, in a frame of that run whose cursor stays ahead of the record the finish came from, and any terminal for that run settles the debt; a debt that arrives while an earlier frame of the batch is on the wire takes the place of a finish not yet frozen",
   "command": "pnpm smoke:agui-emitter",
   "completionMarker": "agui-emitter smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-owed-terminal.json",
@@ -50,6 +50,14 @@
       "replace": "      const owedUnit = this.takeOwedTerminal(mapped.events, rec.cursor);\n",
       "expectRed": "owed-cursor:the-frozen-owed-frame-stores-the-cursor-AHEAD-of-the-prompt",
       "note": "A cursor past the prompt on the owed frame would, once that frame is acknowledged and the prompt's is not, re-read from after the prompt and drop the run it opens."
+    },
+    {
+      "name": "O5 a debt that arrives after the mapping is never applied to the unpublished tail",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      const owed = this.owed;\n      if (owed) {\n        const from = frames[k]!.unitFrom;\n",
+      "replace": "      const owed = this.owed;\n      if (owed && !owed) {\n        const from = frames[k]!.unitFrom;\n",
+      "expectRed": "owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run",
+      "note": "The round-8 defect as the wire saw it with the first recovery publish paused: the finish published and the error dropped."
     }
   ]
 }

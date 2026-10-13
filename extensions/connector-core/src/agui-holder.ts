@@ -272,7 +272,18 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     // id the fresh start comes back with, while a run only the mapper held was never opened
     // anywhere a terminal could name it, and the re-read opens it again under a new id.
     if (this.dead !== undefined || this.reviving) {
-      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);
+      if (this.downRun !== undefined) {
+        this.hold(this.downRun, timestamp, error);
+        // The fresh emitter may be mid-recovery already, reading or publishing: an error is owed to
+        // it NOW, while the run is still the open one, so the pump applies it to the finish the next
+        // prompt synthesizes whether that finish is still to be mapped or already packed and not
+        // yet frozen (Sol, round 8 of 2026-10-13). A debt held only for after the pump arrived too
+        // late: the pump had published the finish and opened the successor, and the hold was
+        // dropped for naming a closed run.
+        const emitter = this.emitter;
+        if (error && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === this.downRun && emitter.owedRunId === undefined)
+          emitter.oweTerminal(this.downRun, error);
+      }
       return;
     }
     this.enqueue(async () => {
@@ -463,7 +474,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // is the same terminal. A run only the mapper held comes back under a new id the terminal
       // cannot name, and owes nothing either.
       const held = this.heldClose;
-      if (held?.error && emitter.openRunId === held.runId) emitter.oweTerminal(held.runId, held.error);
+      if (held?.error && emitter.openRunId === held.runId && emitter.owedRunId === undefined) emitter.oweTerminal(held.runId, held.error);
       await emitter.pump();
       // The hold is released once the close has gone through, or once the run it names is no
       // longer the open one (the pump closed it, with the owed terminal if one was owed). Read

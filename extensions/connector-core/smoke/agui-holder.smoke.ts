@@ -136,20 +136,37 @@ class FakeEmitter {
   /** The 1-based close calls that fail before anything is written, leaving the run open. */
   failClose = new Set<number>();
   closeCalls = 0;
-  /** Every terminal owed to this emitter, with the pump count when it was owed. */
-  owed: { runId: string; error: { message: string; code?: string }; pumpsBefore: number }[] = [];
+  /** Every terminal owed to this emitter, with the pump count when it was owed and whether a pump
+   *  was in progress. */
+  owed: { runId: string; error: { message: string; code?: string }; pumpsBefore: number; duringPump: boolean }[] = [];
+  /** Awaited at the top of the next pump, once: that pump is IN PROGRESS until released. */
+  pumpGate: Promise<void> | undefined;
+  inPump = false;
+  get owedRunId(): string | undefined {
+    return this.owed[this.owed.length - 1]?.runId;
+  }
   /** When set, the unread records hold the next prompt: a pump closes the open run itself (with
    *  the owed terminal if one is owed, as a finish otherwise, as the real emitter does) and opens
    *  this run instead. */
   nextPromptOpens: string | undefined;
   oweTerminal(runId: string, error: { message: string; code?: string }): void {
-    this.owed.push({ runId, error, pumpsBefore: this.pumps });
+    this.owed.push({ runId, error, pumpsBefore: this.pumps, duringPump: this.inPump });
   }
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
-    if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
-    if (this.nextPromptOpens !== undefined) this.openRunId = this.nextPromptOpens;
-    return { frames: 1, events: 1 };
+    this.inPump = true;
+    try {
+      if (this.pumpGate) {
+        const gate = this.pumpGate;
+        this.pumpGate = undefined;
+        await gate;
+      }
+      if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
+      if (this.nextPromptOpens !== undefined) this.openRunId = this.nextPromptOpens;
+      return { frames: 1, events: 1 };
+    } finally {
+      this.inPump = false;
+    }
   }
   async closeRun(o: { timestamp: number; error?: { message: string; code?: string } }): Promise<string | null> {
     this.closeCalls++;
@@ -973,6 +990,41 @@ const B = "/tmp/session-b.jsonl";
   const fresh = r.made[1];
   c("revive:a-terminal-during-an-in-flight-start-is-owed-to-the-fresh-emitter-BEFORE-its-pump", fresh?.owed.length === 1 && fresh.owed[0]?.runId === "run-2" && fresh.owed[0].pumpsBefore === 0, { owed: fresh?.owed });
   c("revive:a-terminal-during-an-in-flight-start-does-NOT-close-the-successor-run", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
+  // A terminal that arrives WHILE THE RECOVERY PUMP IS IN PROGRESS. The fresh emitter is reading or
+  // publishing records that hold the next prompt; a terminal held only for after the pump is too
+  // late, since the pump closes the run itself under that prompt (Sol, round 8 of 2026-10-13,
+  // through a real broker with the recovery read paused). It must be owed to the emitter at the
+  // hook, while the run is still the open one.
+  let release: (() => void) | undefined;
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      else {
+        e.nextPromptOpens = "run-3";
+        e.pumpGate = new Promise<void>((res) => (release = res));
+      }
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // pump 1 fails: down
+  await r.holder.settled();
+  await sleep(40); // the retry fires, the fresh start returns, and its pump is held at its gate
+  const fresh = r.made[1];
+  c("CONTROL:the-recovery-pump-is-in-progress", r.starts === 2 && fresh?.inPump === true && fresh.owed.length === 0, { starts: r.starts, inPump: fresh?.inPump, owed: fresh?.owed });
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the pump
+  c("revive:a-terminal-during-the-recovery-pump-is-owed-to-the-emitter-AT-THE-HOOK", fresh?.owed.length === 1 && fresh.owed[0]?.runId === "run-2" && fresh.owed[0].duringPump === true, { owed: fresh?.owed });
+  release?.();
+  await r.holder.settled();
+  c("revive:a-terminal-during-the-recovery-pump-does-NOT-close-the-successor-run", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId, running: r.holder.running });
   await r.holder.close();
 }
 

@@ -176,8 +176,9 @@ class FakeEndpoint {
   preflightError: Error | undefined;
   preflightCalls = 0;
   publishes: Call[] = [];
-  /** Answers, consumed in order. A missing answer is a loud failure, never a default success. */
-  answers: ({ seq: number; duplicate: boolean } | Error)[] = [];
+  /** Answers, consumed in order. A missing answer is a loud failure, never a default success. A
+   *  function answer is awaited: the publish is ON THE WIRE until it resolves. */
+  answers: ({ seq: number; duplicate: boolean } | Error | (() => Promise<{ seq: number; duplicate: boolean }>))[] = [];
 
   async assertExpectationSemantics(): Promise<void> {
     this.preflightCalls += 1;
@@ -207,6 +208,7 @@ class FakeEndpoint {
     const a = this.answers.shift();
     if (a === undefined) throw new Error("FakeEndpoint: publish with no scripted answer");
     if (a instanceof Error) throw a;
+    if (typeof a === "function") return { ack: await a() };
     return { ack: a };
   }
 }
@@ -1236,6 +1238,65 @@ try {
     em.oweTerminal("r2", { message: "rate_limit" });
     const closed = await em.closeRun({ timestamp: 4 });
     c("owed:a-close-settles-the-debt", closed === "r2" && em.owedRunId === undefined, { closed, owed: em.owedRunId });
+  });
+
+  await block("owed-late", async () => {
+    // A DEBT THAT ARRIVES AFTER THE MAPPING, while an earlier frame of the batch is on the wire. The
+    // finish it answers sits in a later frame that is not yet frozen, so the close is not decided:
+    // the owed error takes its place and the tail is packed again (Sol, round 8 of 2026-10-13,
+    // through a real broker: the finish was published and the error dropped). The freeze is the
+    // commit: a debt that arrives with the finish's own frame on the wire is void.
+    const { src, wal, source } = await fresh("owed-late");
+    const ep = new FakeEndpoint();
+    let openRun: string | undefined;
+    const late = (r: Rec) => {
+      if ("skip" in r) return null;
+      if (r.text === "open") {
+        openRun = r.run;
+        return { runId: r.run, events: [runStarted({ threadId: THREAD, runId: r.run, timestamp: 1 })] };
+      }
+      if (r.text === "next prompt") {
+        const prev = openRun as string;
+        openRun = r.run;
+        return { runId: r.run, events: [runFinished({ threadId: THREAD, runId: prev, timestamp: 5 }), runStarted({ threadId: THREAD, runId: r.run, timestamp: 6 })] };
+      }
+      return { runId: r.run, events: [textMessageStart({ messageId: r.msg, timestamp: 2, role: "assistant" }), textMessageContent({ messageId: r.msg, delta: r.text, timestamp: 3 }), textMessageEnd({ messageId: r.msg, timestamp: 4 })] };
+    };
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: late });
+    await em.pump(); // adopt
+    ep.answers.push({ seq: 1, duplicate: false });
+    append(src, { run: "r1", msg: "m1", text: "open" });
+    await em.pump();
+    // Two records unread: r1's last answer, a frame of its own, and the next prompt, which finishes r1 and starts r2.
+    append(src, { run: "r1", msg: "m1b", text: "last answer" }, { run: "r2", msg: "m2", text: "next prompt" });
+    const wire: { release?: () => void } = {};
+    ep.answers.push(() => new Promise((res) => (wire.release = () => res({ seq: 2, duplicate: false }))), { seq: 3, duplicate: false }, { seq: 4, duplicate: false });
+    const pumping = em.pump();
+    await new Promise((r) => setTimeout(r, 30)); // the first frame is on the wire
+    c("owed-late:SETUP-the-first-frame-is-on-the-wire-and-r1-is-still-open", wire.release !== undefined && em.openRunId === "r1" && ep.publishes.length === 2, { held: wire.release !== undefined, open: em.openRunId, publishes: ep.publishes.length });
+    em.oweTerminal("r1", { message: "rate_limit", code: "rate_limit" }); // the debt, with the first frame on the wire
+    wire.release?.();
+    await pumping;
+    const envelope = (p: Call) => { const f = p.parts[0] as unknown as { runId: string; events: AguiEvent[] }; return f.runId + ":" + f.events.map((e) => e.type).join("+"); };
+    const after = ep.publishes.slice(1).map(envelope);
+    c("owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run", after.join(",") === "r1:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r1:RUN_ERROR,r2:RUN_STARTED" && em.owedRunId === undefined && em.openRunId === "r2", { after, owed: em.owedRunId, open: em.openRunId });
+    c("owed-late:the-log-agrees-with-the-wire-after-the-re-pack", wal.pending === null && wal.frontier.seq === 4 && wal.frontier.lastSubjectSeq === 4, wal.frontier);
+    // CONTROL: the debt arrives with the FINISH'S OWN frame on the wire. The freeze is the commit
+    // and the bracket state moved with it: the run is closed, the debt is refused as naming a closed
+    // run, the finish stands, and the next run's debt is not refused as a second one.
+    append(src, { run: "r2", msg: "m2b", text: "answer" }, { run: "r3", msg: "m3", text: "next prompt" });
+    const wire2: { release?: () => void } = {};
+    ep.answers.push({ seq: 5, duplicate: false }, () => new Promise((res) => (wire2.release = () => res({ seq: 6, duplicate: false }))));
+    const pumping2 = em.pump();
+    await new Promise((r) => setTimeout(r, 30));
+    c("owed-late:CONTROL-SETUP-the-finishs-frame-is-frozen-and-on-the-wire-so-r3-is-already-the-open-run", wire2.release !== undefined && em.openRunId === "r3" && ep.publishes.length === 6, { held: wire2.release !== undefined, open: em.openRunId, publishes: ep.publishes.length });
+    const frozen = await attempt(async () => em.oweTerminal("r2", { message: "rate_limit" }));
+    wire2.release?.();
+    await pumping2;
+    const tail = ep.publishes.slice(4).map(envelope);
+    c("owed-late:CONTROL-a-debt-with-the-finishs-frame-already-frozen-is-refused-and-the-finish-stands", frozen.err !== undefined && /cannot owe/.test(frozen.err.message) && tail.join(",") === "r2:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r3:RUN_FINISHED+RUN_STARTED" && em.owedRunId === undefined && em.openRunId === "r3", { err: frozen.err?.message, tail, owed: em.owedRunId, open: em.openRunId });
+    const next = await attempt(async () => em.oweTerminal("r3", { message: "again" }));
+    c("owed-late:CONTROL-the-next-runs-debt-is-not-refused-as-a-second-one", next.err === undefined && em.owedRunId === "r3", { err: next.err?.message, owed: em.owedRunId });
   });
 
   await block("owed-cursor", async () => {

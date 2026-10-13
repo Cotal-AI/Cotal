@@ -48,6 +48,16 @@ class Broker {
   seq = 0;
   failNext = 0;
   frames: { runId: string; parts: Part[] }[] = [];
+  /** Hold the publish `skip` calls from now at the wire until released: that frame is ON THE WIRE,
+   *  not yet accepted, while held. */
+  private gate: { skip: number; promise: Promise<void> } | undefined;
+  publishHeld = false;
+  holdPublish(skip: number): { held: () => boolean; release: () => void } {
+    let release!: () => void;
+    this.publishHeld = false;
+    this.gate = { skip, promise: new Promise<void>((r) => (release = r)) };
+    return { held: () => this.publishHeld, release: () => release() };
+  }
   async assertExpectationSemantics(): Promise<void> {}
   encodedSize(o: { channel: string; parts: Part[]; id: string; expectedLastSubjectSeq: number }): number {
     return Buffer.byteLength(JSON.stringify(o)) + 64;
@@ -56,6 +66,15 @@ class Broker {
     if (this.failNext > 0) {
       this.failNext--;
       throw new Error("network: connection reset before send");
+    }
+    if (this.gate) {
+      if (this.gate.skip > 0) this.gate.skip--;
+      else {
+        const { promise } = this.gate;
+        this.gate = undefined;
+        this.publishHeld = true;
+        await promise;
+      }
     }
     if (o.expectedLastSubjectSeq !== this.seq) throw new Error(`expectation ${o.expectedLastSubjectSeq} is not the tip ${this.seq}`);
     this.seq++;
@@ -100,6 +119,16 @@ function plane(opts: { seedMapper: boolean }) {
   let starts = 0;
   let gate: Promise<void> | undefined;
   let entered = false;
+  let readGate: Promise<void> | undefined;
+  let readEntered = false;
+  /** Hold the NEXT source read at its entry until released: the recovery pump is IN PROGRESS and
+   *  has read nothing yet while held. */
+  const holdNextRead = () => {
+    let release!: () => void;
+    readEntered = false;
+    readGate = new Promise<void>((r) => (release = r));
+    return { entered: () => readEntered, release: () => release() };
+  };
   /** Hold the NEXT start at its startup boundary until released: the window in which the failed
    *  emitter is dropped and the fresh one has not returned. */
   const holdNextStart = () => {
@@ -128,7 +157,19 @@ function plane(opts: { seedMapper: boolean }) {
       const wal = await EventWal.open(walPath, { space, threadId: basename(path, ".jsonl"), principal, subjectMayExist: false });
       const resumeRunId = opts.seedMapper ? (wal.pending === null ? wal.brackets?.run : wal.pending.brackets.run) : undefined;
       mapper = createClaudeMapper({ threadId: basename(path, ".jsonl"), mintRunId: () => `run-${++runs}`, resumeRunId });
-      return AguiEmitter.start<ClaudeEntry>({ endpoint: broker, wal, subjectFrontier, source: boundSource, map: mapper.map, onUnreadable: (g) => log.push(`gap ${g.offset} ${g.reason}`) });
+      const gatedSource: DurableSource<ClaudeEntry> = {
+        kind: boundSource.kind,
+        read: async (cursor) => {
+          if (readGate) {
+            const g = readGate;
+            readGate = undefined;
+            readEntered = true;
+            await g;
+          }
+          return boundSource.read(cursor);
+        },
+      };
+      return AguiEmitter.start<ClaudeEntry>({ endpoint: broker, wal, subjectFrontier, source: gatedSource, map: mapper.map, onUnreadable: (g) => log.push(`gap ${g.offset} ${g.reason}`) });
     },
     {
       onError: eventPlaneStopped({ log: (line) => log.push(line) }),
@@ -154,7 +195,7 @@ function plane(opts: { seedMapper: boolean }) {
     chmodSync(walDir, 0o700);
     rmSync(root, { recursive: true, force: true });
   };
-  return { holder, broker, log, transcript, threadId, user, assistant, flush, turnEnd, wal, walDir: () => walDir, starts: () => starts, holdNextStart, close };
+  return { holder, broker, log, transcript, threadId, user, assistant, flush, turnEnd, wal, walDir: () => walDir, starts: () => starts, holdNextStart, holdNextRead, close };
 }
 
 // ---- A. the WAL directory becomes unwritable during a flush ------------------------------------
@@ -448,6 +489,79 @@ for (const seedMapper of [true, false]) {
   await p.turnEnd();
   const last = p.broker.frames[p.broker.frames.length - 1]!;
   c("I:the-successor-runs-own-terminal-closes-it-as-a-finish", last.runId === "run-3" && finished(JSON.stringify(last.parts), "run-3"), { last: last.runId });
+  await p.close();
+}
+
+// ---- J. the terminal arrives while the recovery pump is reading -------------------------------
+{
+  // As I, with the fresh start returned and the recovery pump held at its source read, the next
+  // prompt and its answer written, and the failed turn's terminal delivered then. A terminal held
+  // only for after the pump arrives too late: the pump closes the failed run as a finish under that
+  // prompt (Sol, round 8, through a real broker with the recovery read paused).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush();
+  p.broker.failNext = 1;
+  p.assistant(" lost");
+  await p.flush(); // down, with run-2 open and its last frame pending
+  const read = p.holdNextRead();
+  await sleep(60); // the retry fires, the start settles the pending frame, and the pump is held at its read
+  // The holder reports running once the fresh start has returned, pump in progress or not.
+  c("J:CONTROL-the-recovery-pump-is-held-at-its-read-with-the-pending-frame-settled", read.entered() && p.wal().pending === "none" && p.holder.running && !p.broker.frames.some((f) => f.runId === "run-3"), { entered: read.entered(), wal: p.wal(), running: p.holder.running });
+  p.user(); // the next prompt and its answer, which the held read will return
+  p.assistant(" next-turn");
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the pump
+  read.release();
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const errorFrames = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const run3 = p.broker.frames.filter((f) => f.runId === "run-3");
+  c("J:the-failed-run-is-closed-with-RUN_ERROR-in-a-frame-of-its-own", errorFrames.length === 1 && errorFrames[0]!.runId === "run-2" && !finished(wire, "run-2") && p.holder.running, { errors: errorFrames.map((f) => f.runId), finished: finished(wire, "run-2"), running: p.holder.running });
+  c("J:the-successor-run-is-open-and-carries-no-error", run3.length > 0 && run3.some((f) => JSON.stringify(f.parts).includes("next-turn")) && run3.every((f) => !JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && !finished(wire, "run-3"), { run3: run3.length, finished: finished(wire, "run-3") });
+  await p.close();
+}
+
+// ---- K. the terminal arrives while the first recovery publish is on the wire ------------------
+{
+  // As J, with the records written during the outage mapping to TWO frames, the failed run's own
+  // and the next prompt's, and the terminal delivered while the first is on the wire. The finish in
+  // the second frame is not yet frozen, so the owed error takes its place and the tail is packed
+  // again (Sol, round 8: the finish was published and the error dropped).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush();
+  p.broker.failNext = 1;
+  p.assistant(" lost");
+  await p.flush(); // down
+  p.assistant(" during"); // the failed run's last answer, written during the outage
+  p.user(); // the next prompt and its answer, written during the outage
+  p.assistant(" next-turn");
+  const publish = p.broker.holdPublish(1); // the start re-publishes the pending frame first; hold the one after it
+  await sleep(60); // the retry fires; the pump's first frame (run-2, " during") is on the wire
+  c("K:CONTROL-the-failed-runs-own-frame-is-on-the-wire-and-the-next-prompts-is-not", publish.held() && p.broker.frames.filter((f) => f.runId === "run-3").length === 0 && !p.broker.frames.some((f) => JSON.stringify(f.parts).includes("during")), { held: publish.held(), frames: p.broker.frames.map((f) => f.runId) });
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the terminal, with the first frame on the wire
+  publish.release();
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const labels = p.broker.frames.map((f) => f.runId);
+  const errorFrameAt = p.broker.frames.findIndex((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const duringAt = p.broker.frames.findIndex((f) => JSON.stringify(f.parts).includes("during"));
+  const firstRun3At = labels.indexOf("run-3");
+  c("K:the-failed-run-is-closed-with-RUN_ERROR-in-a-frame-of-its-own-after-its-last-frame", errorFrameAt > duringAt && duringAt >= 0 && p.broker.frames[errorFrameAt]!.runId === "run-2" && !finished(wire, "run-2") && p.holder.running, { labels, errorFrameAt, duringAt, finished: finished(wire, "run-2"), running: p.holder.running });
+  c("K:the-next-prompts-frame-follows-the-error-and-carries-no-event-of-the-failed-run", firstRun3At === errorFrameAt + 1 && p.broker.frames.slice(firstRun3At).every((f) => f.runId === "run-3" && !JSON.stringify(f.parts).includes('"runId":"run-2"') && !JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && wire.includes("next-turn"), { labels, firstRun3At, errorFrameAt });
+  c("K:the-plane-and-the-log-agree-after-the-re-pack", p.wal().pending === "none" && p.wal().seq === p.broker.seq, { wal: p.wal(), broker: p.broker.seq });
   await p.close();
 }
 
