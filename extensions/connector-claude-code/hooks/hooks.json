@@ -30,6 +30,16 @@
         ]
       }
     ],
+    "PostToolBatch": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.cjs\""
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "matcher": "permission_prompt|agent_needs_input|elicitation_dialog",

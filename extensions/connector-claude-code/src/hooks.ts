@@ -349,6 +349,12 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           pendingTool = toolDetail(ev.tool_name, ev.tool_input);
           flushEvents(ev.transcript_path); // near-live: each tool boundary ships the turn so far
           return {};
+        case "PostToolBatch":
+          // Every tool in the batch resolved, so a prompt raised during it was answered and the turn
+          // went on. Left `waiting`, its Stop would be `waiting → idle`, which is no turn boundary:
+          // the run turn never yields and the condition outlives the turn. `working` also clears it.
+          if (agent.status === "waiting") await safeStatus(agent, "working");
+          return {};
         case "Notification": {
           // Claude Code's Notification carries the human-readable reason the session is
           // blocked in `message`. When a tool permission is pending, lead with *what* it's
