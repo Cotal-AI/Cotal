@@ -1134,10 +1134,10 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     if (supervisionWarning) console.error(c.yellow(supervisionWarning));
     if (restored && process.env.COTAL_SMOKE_FAIL_AFTER_RESTORE_LISTENER_READY === "1")
       throw new Error("smoke-injected failure after restore listener readiness");
-    // A user mesh whose auth service never became ready is recorded + running (a re-`cotal up`
-    // heals it), but this `up` did NOT deliver what was asked — automation must see that in the
-    // exit code, not only in the red line above.
-    if (!authService) process.exitCode = 1;
+    // A user mesh whose auth service never became ready, or a mesh whose control plane is degraded,
+    // is recorded + running, but this `up` did NOT deliver what was asked — automation must see that
+    // in the exit code, as it does on a refresh, not only in the line printed above.
+    if (!authService || !controlPlane) process.exitCode = 1;
     await completeResumeActivation(
       resumeAttempt,
       controlPlane && authService,
@@ -2206,10 +2206,10 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   if (inherited) console.log("\n" + inherited);
   if (eff.warnings.length) console.log("\n" + renderWarnings(eff.warnings));
   console.log(c.dim(`\nWatch: \`cotal web\` (browser dashboard) or \`cotal console --space ${m.space}\` (terminal)   ·   Tear down: \`cotal down\``));
-  // A declared-user-auth manifest whose auth service never became ready: the mesh is up + recorded
-  // (re-`cotal up` heals), but this launch did not deliver a usable identity plane — exit non-zero
-  // so CI/wrappers don't read success (the red consequence line printed at the failure above).
-  if (!authService) process.exitCode = 1;
+  // A declared-user-auth manifest whose auth service never became ready, or a degraded control
+  // plane: the mesh is up + recorded, but this launch did not deliver what it declared — exit
+  // non-zero so CI/wrappers don't read success (the consequence line printed at the failure above).
+  if (!authService || !controlPlane) process.exitCode = 1;
 }
 
 /** CLI overrides for `up -f` — each wins over the manifest's own value (flag > manifest > default).

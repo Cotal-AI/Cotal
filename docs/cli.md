@@ -254,7 +254,8 @@ persistence error instead of trusting the value returned by stream info. A refre
 missing manager waits for that process to come up, then says so with its pid (`✓ restored in the
 background: manager (pid N)`). A manager that `up` starts and that exits at boot instead, for example
 while a crashed predecessor's lease has not expired, is reported as `! control plane degraded:` with
-the path of its log, and a refresh then exits nonzero. The same happens when another
+the path of its log, and `up` then exits nonzero, whether it was a refresh, a first `--detach` boot
+or `up -f`. The same happens when another
 `cotal supervise` takes over the manager pidfile before the started process comes up. A refresh that
 finds everything already running prints only the `✓ mesh "<space>" already running` line. A first
 boot starts its manager without the restore line.
