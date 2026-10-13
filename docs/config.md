@@ -115,9 +115,10 @@ the check.
 A space-local entry for a role replaces the operator-level entry for that role, and a role named in
 only one file keeps its entry. A policy that cannot be read as written (a `models` list that is
 empty or holds a non-string, or an unknown field) fails every spawn with an error naming the file.
-The policy is read at each spawn, so an edit applies to the next spawn without a restart. Seats that
-are already running are not re-checked, including a supervised restart or a preserved seat resumed
-after maintenance.
+The policy is read at each spawn, so an edit applies to the next spawn without a restart. A spawn
+reads the file once, so the seat launches with the shared servers and `spawn.env` names of the same
+contents its policy check read. Seats that are already running are not re-checked, including a
+supervised restart or a preserved seat resumed after maintenance.
 
 ## Environment variables
 

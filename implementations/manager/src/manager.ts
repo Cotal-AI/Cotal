@@ -42,6 +42,7 @@ import {
   personaCatalogDescription,
   personaCatalogReadable,
   loadCotalConfig,
+  type CotalConfig,
   modelPolicyRefusal,
   mintCreds,
   mintGeneration,
@@ -5455,13 +5456,14 @@ export class Manager {
 
   /** The launch fields the host supplies rather than the seat. Spawn and resume both take them from
    *  here, so a resumed seat launches under the same host policy, `eventsRequired` included, as the
-   *  same seat spawned fresh. */
+   *  same seat spawned fresh. The caller passes the cotal config it judged the launch by, so the
+   *  servers and env allowlist come from the contents its checks read. */
   private hostLaunchFields(
+    cotalConfig: CotalConfig,
     agent: string,
     shareTools: readonly string[] | undefined,
     harness: { binaries?: Readonly<Record<string, string>> },
   ): Pick<LaunchOpts, "space" | "servers" | "mcpServers" | "envAllow" | "resolvedBinaries" | "eventsRequired" | "workspaceRoot"> {
-    const cotalConfig = loadCotalConfig(this.workspaceRoot);
     return {
       space: this.space,
       servers: this.servers,
@@ -5798,6 +5800,16 @@ export class Manager {
       if (this.userMode)
         return { ok: false, error: "supervise is a restart policy this host cannot enforce: a user-mode seat has no static slot to keep the incarnation owned across a process death" };
     }
+    // One read of the cotal config per spawn: the delegated refusal, the model policy and the launch
+    // fields below all take this value, so the awaits between the policy check and the launch cannot
+    // admit the seat under one file and launch it with another's servers and env allowlist. Read per
+    // spawn, so a policy edit reaches the next spawn without a restart.
+    let cotalConfig: CotalConfig;
+    try {
+      cotalConfig = loadCotalConfig(this.workspaceRoot);
+    } catch (e) {
+      return { ok: false, error: rejectionText(e) };
+    }
     // A delegated seat starts outside this host from values alone, so a choice only this host can
     // honour is refused here, before enrollment, and named rather than dropped.
     if (this.requiredRuntime.spawnDelegated) {
@@ -5815,7 +5827,7 @@ export class Manager {
         return { ok: false, error: `${delegatedBy}, so it cannot reopen a session held on this host (continuity: exact)` };
       if (typeof opts.cwd === "string" && opts.cwd !== "")
         return { ok: false, error: `${delegatedBy}, so it cannot run in a directory on this host's filesystem (cwd); the seat runs in its runtime resource's own directory` };
-      const shared = Object.keys(connectorServers(loadCotalConfig(this.workspaceRoot), agent, opts.shareTools));
+      const shared = Object.keys(connectorServers(cotalConfig, agent, opts.shareTools));
       if (shared.length)
         return { ok: false, error: `${delegatedBy}, so it cannot share MCP servers that run on this host (${shared.join(", ")}); pass --share-tools none` };
     }
@@ -5931,21 +5943,16 @@ export class Manager {
     // #581: the operator's per-role model allowlist, judged on the EFFECTIVE role and model resolved
     // above, before any reserve or mint. This is where the launch is performed, so no caller can
     // skip it, and a definition pinned to a stale model (or to none) is refused here instead of
-    // serving on it. Read per spawn, so a policy edit reaches the next spawn without a restart.
-    let policyRefusal: string | undefined;
-    try {
-      policyRefusal = modelPolicyRefusal(loadCotalConfig(this.workspaceRoot), {
-        persona: opts.resolved ? `manifest agent "${ref}"` : `persona "${ref}" (${configPath})`,
-        role, model, variant,
-        // A manifest launch carries its own declared model/variant in these options
-        // (launchAgentToStartOpts), so there they are the definition's field, never a flag.
-        modelFlag: !opts.resolved && opts.model !== undefined,
-        variantFlag: !opts.resolved && opts.variant !== undefined,
-        launchOptions,
-      });
-    } catch (e) {
-      return { ok: false, error: rejectionText(e) };
-    }
+    // serving on it.
+    const policyRefusal = modelPolicyRefusal(cotalConfig, {
+      persona: opts.resolved ? `manifest agent "${ref}"` : `persona "${ref}" (${configPath})`,
+      role, model, variant,
+      // A manifest launch carries its own declared model/variant in these options
+      // (launchAgentToStartOpts), so there they are the definition's field, never a flag.
+      modelFlag: !opts.resolved && opts.model !== undefined,
+      variantFlag: !opts.resolved && opts.variant !== undefined,
+      launchOptions,
+    });
     if (policyRefusal) return { ok: false, error: policyRefusal };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
     // legibly (never a silent suffix), and the refusal re-drives the FULL durable teardown so
@@ -6232,7 +6239,7 @@ export class Manager {
         : undefined;
       const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
       const launchOpts: LaunchOpts = {
-        ...this.hostLaunchFields(agent, opts.shareTools, harness),
+        ...this.hostLaunchFields(cotalConfig, agent, opts.shareTools, harness),
         name,
         role,
         // User mode: the principal IS the identity (the endpoint derives card.id from owner+actor);
@@ -6929,7 +6936,7 @@ export class Manager {
 
       try {
         const launchOpts: LaunchOpts = {
-          ...this.hostLaunchFields(entry.launch.connector, entry.launch.shareTools, harness),
+          ...this.hostLaunchFields(loadCotalConfig(this.workspaceRoot), entry.launch.connector, entry.launch.shareTools, harness),
           name: entry.name,
           role: entry.role,
           id: authority.id,
