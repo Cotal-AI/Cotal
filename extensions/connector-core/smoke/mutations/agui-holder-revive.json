@@ -121,12 +121,12 @@
       "note": "Round 5 of review: a terminal-only write failure held for four seconds was retried five times at one second, behind a pump that read nothing."
     },
     {
-      "name": "R12 a terminal during an in-flight start is queued to the emitter the start will replace, not held",
+      "name": "R12 a terminal reported while the plane is down is queued to the dead emitter, not held",
       "file": "extensions/connector-core/src/agui-holder.ts",
       "find": "    const queued = this.dead === undefined && live !== undefined && !live.stopped;\n",
       "replace": "    const queued = live !== undefined && !live.stopped;\n",
-      "expectRed": "revive:a-terminal-during-an-in-flight-start-does-NOT-close-the-successor-run",
-      "note": "The round-7 defect, in its one remaining form: a terminal reported while the plane is down or a start is in flight must be held for the start to hand over before any pump, never queued to an emitter that is dying or absent."
+      "expectRed": "revive:a-terminal-held-through-the-outage-closes-its-run-after-the-re-establish",
+      "note": "The dying emitter is dropped by the re-establish with everything queued to it after it died; a terminal that reaches it then is never handed to the fresh start. R6 drops the hold outright; this keeps the hold and misroutes the terminal."
     },
     {
       "name": "R13 a failed re-establish start forgets the last turn begun",
