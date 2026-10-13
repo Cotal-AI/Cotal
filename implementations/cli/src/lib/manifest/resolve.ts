@@ -192,23 +192,11 @@ function invertPolicy(name: string, channels: ResolvedChannel[]): AgentPolicy {
 /** Reject inline credentials in the broker config: a `nats://user:pass@host` URL must use the
  *  auth creds/profile path, not embedded secrets (critic, round-6); `host` is a bind address, not
  *  a URL. Each server entry and `idp` must parse as a URL (no silent fallback). A message never
- *  repeats a value and names a server entry by position: in the token form `nats://<token>@host`
- *  the user part is the secret. */
+ *  repeats a value. */
 function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: string, p?: (string | number)[]) => void): void {
   if (broker.host?.includes("://"))
     add(`broker.host is a bind address (e.g. 127.0.0.1), not a URL - drop the scheme`, ["broker", "host"]);
-  if (broker.servers)
-    for (const [i, s] of broker.servers.split(",").map((x) => x.trim()).filter(Boolean).entries()) {
-      let u: URL;
-      try {
-        u = new URL(s);
-      } catch {
-        add(`broker.servers entry ${i + 1} is not a valid URL (e.g. nats://127.0.0.1:4222)`, ["broker", "servers"]);
-        continue;
-      }
-      if (u.username || u.password)
-        add(`broker.servers entry ${i + 1} must not embed credentials - use auth creds/profile, not inline secrets`, ["broker", "servers"]);
-    }
+  if (broker.servers) for (const problem of serverUrlProblems(broker.servers, "broker.servers")) add(problem, ["broker", "servers"]);
   // `idp` pairs with user auth ONLY — on any other mode it would be silently ignored, and a
   // silently-ignored identity provider is exactly the kind of drift the no-fallback rule exists for.
   if (broker.idp !== undefined) {
@@ -217,6 +205,25 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
     const problem = idpUrlProblem(broker.idp, "broker.idp");
     if (problem) add(problem, ["broker", "idp"]);
   }
+}
+
+/** Why each entry of a comma-separated `servers` list cannot be a broker URL; empty when all can.
+ *  A message names an entry by position and never repeats it: in the token form
+ *  `nats://<token>@host` the user part is the secret. `what` names its source, because `--server`
+ *  on `up -f` and `spawn -f` overrides `broker.servers` and must pass the same check. */
+export function serverUrlProblems(servers: string, what: string): string[] {
+  const problems: string[] = [];
+  for (const [i, s] of servers.split(",").map((x) => x.trim()).filter(Boolean).entries()) {
+    let u: URL;
+    try {
+      u = new URL(s);
+    } catch {
+      problems.push(`${what} entry ${i + 1} is not a valid URL (e.g. nats://127.0.0.1:4222)`);
+      continue;
+    }
+    if (u.username || u.password) problems.push(`${what} entry ${i + 1} must not embed credentials - use auth creds/profile, not inline secrets`);
+  }
+  return problems;
 }
 
 /** Why `idp` cannot be an IdP base URL, or `undefined` when it can. The rules are the ones the auth

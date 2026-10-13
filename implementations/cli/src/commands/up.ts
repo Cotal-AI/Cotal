@@ -132,7 +132,7 @@ import { liveManagerWouldApplyMaxSessions, managerHasDeliveryMarker, managerLogD
 import { loadManifest, type PreparedManifest } from "../lib/manifest/index.js";
 import { buildLaunchSpec, genRunId, manifestToChannels, preflightConnectors, writeLaunchSpec } from "../lib/manifest/apply.js";
 import { renderUpPlan, renderInherited, renderWarnings } from "../lib/manifest/render.js";
-import { idpUrlProblem } from "../lib/manifest/resolve.js";
+import { idpUrlProblem, serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest } from "./topology.js";
 import { extensionNames, preflightRuntime } from "../ext-loader.js";
 import { completingFlagValue } from "../lib/completion.js";
@@ -2078,6 +2078,11 @@ async function upManifest(file: string, opts: UpManifestFlags): Promise<void> {
   const idpProblem = opts.idp === undefined ? undefined : idpUrlProblem(opts.idp, "--idp");
   if (idpProblem) {
     console.error(c.red(`✗ ${idpProblem}`));
+    process.exit(1);
+  }
+  const serverProblems = opts.server === undefined ? [] : serverUrlProblems(opts.server, "--server");
+  if (serverProblems.length) {
+    for (const problem of serverProblems) console.error(c.red(`✗ ${problem}`));
     process.exit(1);
   }
   // Apply CLI overrides to one effective manifest (flag > manifest > default) so render + seed +

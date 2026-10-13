@@ -39,6 +39,7 @@ import { buildLedger, buildLedgerAgentRow, hashManifestSource, listLedgers, writ
 import { classifyAgents, classifyChannels, detectUnmanagedActors } from "../lib/manifest/spawn-plan.js";
 import { connectProbe, launchAgent, settleRoster, waitLeaseGone, waitManagerReady } from "../lib/manifest/live.js";
 import { renderInherited, renderSpawnPlan, renderSpawnSummary, renderWarnings } from "../lib/manifest/render.js";
+import { serverUrlProblems } from "../lib/manifest/resolve.js";
 import { failManifest } from "./topology.js";
 import { preflightRuntime } from "../ext-loader.js";
 
@@ -62,6 +63,11 @@ export async function spawnManifest(file: string, flags: SpawnManifestFlags): Pr
     prepared = loadManifest(abs);
   } catch (e) {
     failManifest(e);
+  }
+  const serverProblems = flags.server === undefined ? [] : serverUrlProblems(flags.server, "--server");
+  if (serverProblems.length) {
+    for (const problem of serverProblems) console.error(c.red(`✗ ${problem}`));
+    process.exit(1);
   }
   const eff = applyOverrides(prepared, flags);
   const m = eff.manifest;
