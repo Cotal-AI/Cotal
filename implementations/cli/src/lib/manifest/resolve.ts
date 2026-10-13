@@ -207,13 +207,16 @@ function validateBroker(broker: NonNullable<RawManifest["broker"]>, add: (m: str
   }
 }
 
-/** Why each entry of a comma-separated `servers` list cannot be a broker URL; empty when all can.
- *  A message names an entry by position and never repeats it: in the token form
- *  `nats://<token>@host` the user part is the secret. `what` names its source, because `--server`
- *  on `up -f` and `spawn -f` overrides `broker.servers` and must pass the same check. */
+/** Why a comma-separated `servers` list cannot serve as broker URLs; empty when it can. A list
+ *  naming no entry is refused, because an override that names none would silently fall back to
+ *  the default broker. A message names an entry by position and never repeats it: in the token
+ *  form `nats://<token>@host` the user part is the secret. `what` names its source, because
+ *  `--server` on `up -f` and `spawn -f` overrides `broker.servers` and must pass the same check. */
 export function serverUrlProblems(servers: string, what: string): string[] {
+  const entries = servers.split(",").map((x) => x.trim()).filter(Boolean);
+  if (!entries.length) return [`${what} names no server URL (e.g. nats://127.0.0.1:4222)`];
   const problems: string[] = [];
-  for (const [i, s] of servers.split(",").map((x) => x.trim()).filter(Boolean).entries()) {
+  for (const [i, s] of entries.entries()) {
     let u: URL;
     try {
       u = new URL(s);
