@@ -782,12 +782,13 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
       directKvValue<T>(nc, stream, subject, allowEmpty);
     const bucket = presenceBucket(space);
     const stream = `KV_${bucket}`;
-    const info = await (await jetstreamManager(nc)).streams.info(stream, { subjects_filter: `$KV.${bucket}.>` });
+    const prefix = `$KV.${bucket}.`;
+    const info = await (await jetstreamManager(nc)).streams.info(stream, { subjects_filter: `${prefix}>` });
     const roster: Presence[] = [];
     for (const subject of Object.keys(info.state.subjects ?? {})) {
       const presence = await directValue<unknown>(stream, subject, true);
       if (presence === undefined) continue; // A positively identified KV tombstone has no value bytes.
-      if (!isPresenceRow(presence)) throw new Error(`presence record ${subject} is malformed`);
+      if (!isPresenceRow(presence, subject.slice(prefix.length))) throw new Error(`presence record ${subject} is malformed`);
       roster.push(presence);
     }
     // ENUMERATE THE PER-INSTANCE LEASE KEYS. P2 item 3 demoted this bucket from a single `lease` key to
@@ -821,16 +822,17 @@ export async function readPresenceWithoutConsumer(space: string, server: string)
   }
 }
 
-/** Whether a decoded presence value carries the non-empty string `card.id` the cut matches against
- *  the retained principals and the string `card.name` its refusal names. Every participant may write
- *  its own key, so a value that fails refuses the inventory: reading it as absent would drop a live
- *  participant from the unmanaged-endpoints refusal. */
-function isPresenceRow(value: unknown): value is Presence {
+/** Whether a decoded presence value carries a `card.id` equal to the KV `key` it was read under,
+ *  which the cut matches against the retained principals, and the string `card.name` its refusal
+ *  names. A participant may write any value under its own key, so only the key is the identity its
+ *  write grant proves. A value that fails refuses the inventory: reading it as absent would drop a
+ *  live participant from the unmanaged-endpoints refusal. */
+function isPresenceRow(value: unknown, key: string): value is Presence {
   if (typeof value !== "object" || value === null) return false;
   const card = (value as { card?: unknown }).card;
   if (typeof card !== "object" || card === null) return false;
   const { id, name } = card as { id?: unknown; name?: unknown };
-  return typeof id === "string" && id !== "" && typeof name === "string";
+  return id === key && typeof name === "string";
 }
 
 /**
