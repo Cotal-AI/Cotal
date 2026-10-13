@@ -154,6 +154,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let briefed = false; // channel briefing goes out once, same rule as 1.x
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
+  let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
    *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
@@ -218,10 +219,10 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  a running turn (busy), matching 1.x's coalesce-avoidance. `override` is a bare nudge body (a
    *  focus @mention pull); it surfaces nothing to ack. */
   async function drive(override?: string): Promise<void> {
-    if (busy) return;
+    if (busy || submitting) return;
     const id = await ensureSession();
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
-    if (busy) return; // rechecked after the await, same reason as plugin.ts's `drive`
+    if (busy || submitting) return; // rechecked after the await, same reason as plugin.ts's `drive`
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
     // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).
     const boot = bootPending() ? bootPrompt : undefined;
@@ -255,20 +256,28 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     if (!surface(ids)) return; // at the in-flight ceiling: the batch stays queued for a later turn
     busy = true;
     briefed = true;
-    try {
-      await opencodeApi(
-        `/api/session/${encodeURIComponent(id)}/prompt`,
-        { method: "POST", body: JSON.stringify({ text, ...(system ? { system } : {}) }) },
-        10_000,
-      );
-      if (turnIds.length) agent.commitSurfacedTurns(turnIds);
-      if (system) primed = true;
-      if (boot !== undefined) bootPrompt = undefined;
-    } catch (e) {
-      busy = false;
-      abandonSurfaced();
-      log(`drive failed: ${(e as Error).message}`);
-    }
+    // The turn can end before this POST answers: the event stream is a separate transport. The boot
+    // text, run turns and persona it carries settle only on the answer, so until then no second
+    // submission starts and `completeTurn` waits before it drives; either would send them again.
+    submitting = (async () => {
+      try {
+        await opencodeApi(
+          `/api/session/${encodeURIComponent(id)}/prompt`,
+          { method: "POST", body: JSON.stringify({ text, ...(system ? { system } : {}) }) },
+          10_000,
+        );
+        if (turnIds.length) agent.commitSurfacedTurns(turnIds);
+        if (system) primed = true;
+        if (boot !== undefined) bootPrompt = undefined;
+      } catch (e) {
+        busy = false;
+        abandonSurfaced();
+        log(`drive failed: ${(e as Error).message}`);
+      } finally {
+        submitting = undefined;
+      }
+    })();
+    await submitting;
   }
 
   /** Whether an execution event is a replay: at or before the last turn's end in the same session's
@@ -294,6 +303,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     const carried = new Set(surfaced);
     settle();
     await safeStatus("idle");
+    await submitting;
+    if (controller.signal.aborted) return; // teardown began during these waits: a turn driven now would outlive the seat
     if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
   }
 
