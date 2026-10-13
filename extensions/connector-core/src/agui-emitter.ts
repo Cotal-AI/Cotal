@@ -423,10 +423,19 @@ export class AguiEmitter<T> {
         if (last) last.cursor = rec.cursor;
         continue;
       }
+      // An owed terminal becomes a unit OF ITS OWN RUN, ahead of this record's. `RUN_ERROR` names no
+      // run, so the frame's envelope is its only attribution, and a frame names one run: left
+      // inside this record's unit it would be published under the NEXT run (Sol, round 6, through
+      // the built MCP entry point). Its cursor is the position BEFORE this record: the owed frame
+      // can be acknowledged while this record's frame is not, and a re-read must then map this
+      // record again, which the mapper rebuilt from the log does without the finish, the run being
+      // closed by then.
+      const owedUnit = this.takeOwedTerminal(mapped.events, units[units.length - 1]?.cursor ?? this.wal.frontier.sourceCursor);
+      if (owedUnit) units.push(owedUnit.unit);
       // WRITE-PATH POLICY, before packing and therefore before beginSend. Disk and wire then agree.
       // A record that mapped only to forbidden kinds becomes a drop: its cursor folds forward like
       // any other drop, and packUnits never sees an empty unit.
-      const events = applyAguiEgressPolicy(this.applyOwedTerminal(mapped.events));
+      const events = applyAguiEgressPolicy(owedUnit ? owedUnit.rest : mapped.events);
       if (events.length === 0) {
         const last = units[units.length - 1];
         if (last) last.cursor = rec.cursor;
@@ -602,8 +611,9 @@ export class AguiEmitter<T> {
    * published in place of the FIRST finish the mapper produces for that run, which is the finish a
    * later prompt synthesizes when it finds the run still open, so a failed turn whose next prompt
    * was already written when the plane came back is still closed as a failure, after its own
-   * records and before the next run opens. {@link closeRun} settles the debt likewise. A debt owed
-   * to a run that is not the open one, or a second debt, replaces nothing and is refused.
+   * records and before the next run opens, in a frame of its own run. {@link closeRun} settles the
+   * debt likewise. A debt owed to a run that is not the open one, or a second debt, replaces nothing
+   * and is refused.
    */
   oweTerminal(runId: string, error: { message: string; code?: string }): void {
     if (this.halted) throw this.halted;
@@ -618,18 +628,25 @@ export class AguiEmitter<T> {
     return this.owed?.runId;
   }
 
-  /** Replace the first finish of the owed run with the owed error terminal, and settle the debt on
-   *  any terminal for that run. The error carries the fixed egress message, as a close does. */
-  private applyOwedTerminal(events: AguiEvent[]): AguiEvent[] {
+  /**
+   * Take the first finish of the owed run out of a record's events and answer it with a unit of the
+   * owed run carrying the owed error terminal instead, settling the debt. The error carries the
+   * fixed egress message, as a close does. `before` is the cursor the owed unit stores: the
+   * position ahead of the record the finish came from.
+   */
+  private takeOwedTerminal(events: AguiEvent[], before: string | undefined): { unit: EmitUnit; rest: AguiEvent[] } | undefined {
     const owed = this.owed;
-    if (!owed) return events;
-    return events.map((e) => {
-      if (e.type === AGUI_EVENT_TYPE.RUN_FINISHED && e.runId === owed.runId) {
-        this.owed = undefined;
-        return runError({ message: RUN_ERROR_EGRESS_MESSAGE, timestamp: typeof e.timestamp === "number" ? e.timestamp : Date.now(), ...(e.cotal ? { cotal: e.cotal } : {}) });
-      }
-      return e;
-    });
+    if (!owed) return undefined;
+    const at = events.findIndex((e) => e.type === AGUI_EVENT_TYPE.RUN_FINISHED && e.runId === owed.runId);
+    if (at < 0) return undefined;
+    if (before === undefined)
+      throw new Error(
+        `event emitter for ${this.channel}: a terminal is owed to run "${owed.runId}" on a frontier that carries no source cursor; a run can only be open because a frame published it`,
+      );
+    const finish = events[at]!;
+    this.owed = undefined;
+    const error = runError({ message: RUN_ERROR_EGRESS_MESSAGE, timestamp: typeof finish.timestamp === "number" ? finish.timestamp : Date.now(), ...(finish.cotal ? { cotal: finish.cotal } : {}) });
+    return { unit: { runId: owed.runId, events: [error], cursor: before }, rest: events.filter((_, i) => i !== at) };
   }
 
   /** Measure a candidate frame EXACTLY as the wire will, at an upper bound over id and expectation. */

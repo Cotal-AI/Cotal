@@ -1200,7 +1200,8 @@ try {
   await block("owed", async () => {
     const { src, wal, source } = await fresh("owed-terminal");
     const ep = new FakeEndpoint();
-    ep.answers.push({ seq: 1, duplicate: false }, { seq: 2, duplicate: false }, { seq: 3, duplicate: false });
+    // Four frames: r1's start, the owed error in a frame of r1, r2's start, and r2's close.
+    ep.answers.push({ seq: 1, duplicate: false }, { seq: 2, duplicate: false }, { seq: 3, duplicate: false }, { seq: 4, duplicate: false });
     // r1 opens a run and leaves it open; r2 is the next prompt: it finishes r1 and starts r2.
     const nextPrompt = (r: Rec) =>
       "skip" in r
@@ -1220,15 +1221,57 @@ try {
     c("owed:a-second-debt-is-refused", second.err !== undefined && /already owed/.test(second.err.message), second.err?.message);
     append(src, { run: "r2", msg: "m2", text: "next prompt" });
     await em.pump();
-    const published = ep.publishes.flatMap((p) => (p.parts[0] as unknown as { events: AguiEvent[] }).events);
+    const frames = ep.publishes.map((p) => p.parts[0] as unknown as { runId: string; events: AguiEvent[] });
+    const published = frames.flatMap((f) => f.events);
     const types = published.map((e) => e.type + (e.type === "RUN_STARTED" || e.type === "RUN_FINISHED" ? ":" + (e as { runId: string }).runId : ""));
     c("owed:the-owed-error-is-published-in-place-of-the-synthesized-finish", types.join(",") === "RUN_STARTED:r1,RUN_ERROR,RUN_STARTED:r2", types);
+    // `RUN_ERROR` names no run: the frame's envelope is its only attribution, so the error must
+    // travel in a frame of the FAILED run, not in the next prompt's frame (Sol, round 6 of review,
+    // through the built MCP entry point: the only error for the failed run was labelled as the next run's).
+    const envelopes = frames.map((f) => f.runId + ":" + f.events.map((e) => e.type).join("+"));
+    c("owed:the-error-frame-NAMES-the-failed-run-and-the-next-runs-frame-carries-only-its-own", envelopes.join(",") === "r1:RUN_STARTED,r1:RUN_ERROR,r2:RUN_STARTED", envelopes);
     c("owed:the-published-error-carries-the-fixed-egress-message", published.some((e) => e.type === "RUN_ERROR" && (e as { message: string }).message === RUN_ERROR_EGRESS_MESSAGE), published.find((e) => e.type === "RUN_ERROR"));
     c("owed:the-debt-is-settled-once-published", em.owedRunId === undefined && em.openRunId === "r2", { owed: em.owedRunId, open: em.openRunId });
     // A close settles a debt too: owe to r2, close r2 as a finish, and a new debt to the next run is not refused as a second one.
     em.oweTerminal("r2", { message: "rate_limit" });
     const closed = await em.closeRun({ timestamp: 4 });
     c("owed:a-close-settles-the-debt", closed === "r2" && em.owedRunId === undefined, { closed, owed: em.owedRunId });
+  });
+
+  await block("owed-cursor", async () => {
+    // THE OWED FRAME'S CURSOR STAYS AHEAD OF THE PROMPT. If the owed frame is acknowledged and the
+    // prompt's frame is not, the prompt must be read again; a cursor past it would skip the record
+    // that opens the next run, and every record of that run after it would be dropped.
+    const { src, wal, walPath, source } = await fresh("owed-cursor");
+    const ep = new FakeEndpoint();
+    ep.answers.push({ seq: 1, duplicate: false });
+    const nextPrompt = (r: Rec) =>
+      "skip" in r
+        ? null
+        : r.run === "r1"
+          ? { runId: "r1", events: [runStarted({ threadId: THREAD, runId: "r1", timestamp: 1 })] }
+          : { runId: "r2", events: [runFinished({ threadId: THREAD, runId: "r1", timestamp: 2 }), runStarted({ threadId: THREAD, runId: "r2", timestamp: 3 })] };
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: nextPrompt });
+    await em.pump(); // adopt
+    append(src, { run: "r1", msg: "m1", text: "open" });
+    await em.pump();
+    const beforePrompt = wal.frontier.sourceCursor;
+    em.oweTerminal("r1", { message: "rate_limit" });
+    append(src, { run: "r2", msg: "m2", text: "next prompt" });
+    ep.answers.push(new Error("network: reset before the owed frame was accepted"));
+    const failed = await attempt(() => em.pump());
+    c("owed-cursor:SETUP-the-owed-frame-failed-on-the-wire-and-is-frozen-pending", failed.err !== undefined && wal.pending?.state === "sent_unacked" && wal.pending.brackets.run === undefined, { err: failed.err?.message, pending: wal.pending?.state });
+    c("owed-cursor:the-frozen-owed-frame-stores-the-cursor-AHEAD-of-the-prompt", wal.pending?.sourceCursor === beforePrompt, { frozen: wal.pending?.sourceCursor, beforePrompt });
+    // The re-establish: a fresh start on the same log settles the frozen frame, and its mapper is
+    // rebuilt from the log's brackets, with no run open, so the prompt maps to its own start alone.
+    const wal2 = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+    const ep2 = new FakeEndpoint();
+    ep2.answers.push({ seq: 2, duplicate: false }, { seq: 3, duplicate: false });
+    const rebuilt = (r: Rec) => ("skip" in r ? null : { runId: r.run, events: [runStarted({ threadId: THREAD, runId: r.run, timestamp: 3 })] });
+    const em2 = await AguiEmitter.start({ endpoint: ep2, wal: wal2, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: rebuilt });
+    await em2.pump();
+    const envelopes = ep2.publishes.map((p) => { const f = p.parts[0] as unknown as { runId: string; events: AguiEvent[] }; return f.runId + ":" + f.events.map((e) => e.type).join("+"); });
+    c("owed-cursor:the-prompt-is-read-again-and-opens-the-next-run-after-the-settled-error", envelopes.join(",") === "r1:RUN_ERROR,r2:RUN_STARTED" && em2.openRunId === "r2", { envelopes, open: em2.openRunId });
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });

@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-emitter.smoke.ts"
   ],
-  "guard": "an error terminal owed to the open run is published in place of the first finish the mapper produces for that run, and any terminal for that run settles the debt",
+  "guard": "an error terminal owed to the open run is published in place of the first finish the mapper produces for that run, in a frame of that run whose cursor stays ahead of the record the finish came from, and any terminal for that run settles the debt",
   "command": "pnpm smoke:agui-emitter",
   "completionMarker": "agui-emitter smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-owed-terminal.json",
@@ -11,15 +11,19 @@
     "plane comes back with the next prompt already among the unread records, that prompt's mapping",
     "closes the failed run as a finish; the emitter must publish the owed error in that finish's",
     "place, or the failed turn is recorded as finished (Sol, round 5 of PR 3836, through the built MCP",
-    "entry point). O1 publishes the synthesized finish as mapped. O2 leaves the debt standing after a",
-    "close settles the run, so the next debt is refused as a second one."
+    "entry point). The error names no run, so it must travel in a frame of the FAILED run, or it is",
+    "labelled as the next run's (Sol, round 6). O1 publishes the synthesized finish as mapped. O2",
+    "leaves the debt standing after a close settles the run, so the next debt is refused as a second",
+    "one. O3 puts the error in the prompt's own unit, where the frame names the next run. O4 stores",
+    "the prompt's cursor on the owed frame, so an acknowledged error and an unacknowledged prompt",
+    "re-read past the prompt and lose the run it opens."
   ],
   "mutations": [
     {
       "name": "O1 the owed terminal is never applied: the synthesized finish is published as mapped",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    const owed = this.owed;\n    if (!owed) return events;\n",
-      "replace": "    const owed = this.owed;\n    if (!owed || owed) return events;\n",
+      "find": "    const owed = this.owed;\n    if (!owed) return undefined;\n",
+      "replace": "    const owed = this.owed;\n    if (!owed || owed) return undefined;\n",
       "expectRed": "owed:the-owed-error-is-published-in-place-of-the-synthesized-finish",
       "note": "The round-5 defect as the wire saw it: one RUN_FINISHED for the failed run and no RUN_ERROR."
     },
@@ -30,6 +34,22 @@
       "replace": "    void runId;\n",
       "expectRed": "owed:a-close-settles-the-debt",
       "note": "A debt that outlives its run would be refused as a second debt on the next failed turn, or applied to a finish of a run it was never owed to."
+    },
+    {
+      "name": "O3 the owed error travels in the prompt's unit: the frame names the next run",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      if (owedUnit) units.push(owedUnit.unit);\n",
+      "replace": "      if (owedUnit) owedUnit.rest.unshift(...owedUnit.unit.events);\n",
+      "expectRed": "owed:the-error-frame-NAMES-the-failed-run-and-the-next-runs-frame-carries-only-its-own",
+      "note": "The round-6 defect as the wire saw it: the failed run's only error labelled with the next run's id."
+    },
+    {
+      "name": "O4 the owed frame stores the prompt's cursor instead of the position ahead of it",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      const owedUnit = this.takeOwedTerminal(mapped.events, units[units.length - 1]?.cursor ?? this.wal.frontier.sourceCursor);\n",
+      "replace": "      const owedUnit = this.takeOwedTerminal(mapped.events, rec.cursor);\n",
+      "expectRed": "owed-cursor:the-frozen-owed-frame-stores-the-cursor-AHEAD-of-the-prompt",
+      "note": "A cursor past the prompt on the owed frame would, once that frame is acknowledged and the prompt's is not, re-read from after the prompt and drop the run it opens."
     }
   ]
 }

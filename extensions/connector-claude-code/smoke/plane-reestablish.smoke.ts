@@ -350,13 +350,20 @@ for (const seedMapper of [true, false]) {
   chmodSync(p.walDir(), 0o700);
   await sleep(250);
   await p.holder.settled();
-  // The finish a prompt synthesizes for the prior run travels in the NEXT run's frame (the unit is
-  // the prompt's), so the wire is read at the event level, not by frame label.
+  // `RUN_ERROR` names no run, so the frame envelope is its only attribution: the error must travel
+  // in a frame of the FAILED run, between that run's last frame and the next run's first (Sol,
+  // round 6, through the built MCP entry point: the only error for the failed run was labelled run-3).
   const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
   const errorAt = wire.indexOf('"type":"RUN_ERROR"');
   const nextOpenAt = wire.indexOf('"type":"RUN_STARTED","threadId":"' + p.threadId + '","runId":"run-3"');
+  const errorFrames = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const errorFrameAt = p.broker.frames.findIndex((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const firstRun3At = p.broker.frames.findIndex((f) => f.runId === "run-3");
   c("G:the-failed-run-is-closed-with-RUN_ERROR-not-the-synthesized-finish", errorAt >= 0 && !finished(wire, "run-2") && p.holder.running, { errorAt, finished: finished(wire, "run-2"), running: p.holder.running });
   c("G:the-error-comes-after-the-failed-runs-records-and-before-the-next-run-opens", errorAt >= 0 && nextOpenAt > errorAt && wire.indexOf("acked") < errorAt, { errorAt, nextOpenAt, acked: wire.indexOf("acked") });
+  c("G:the-error-frame-NAMES-the-failed-run-in-its-envelope", errorFrames.length === 1 && errorFrames[0]!.runId === "run-2", errorFrames.map((f) => f.runId));
+  c("G:the-error-frame-is-the-last-frame-of-the-failed-run-and-precedes-the-first-of-the-next", errorFrameAt >= 0 && firstRun3At === errorFrameAt + 1 && !p.broker.frames.slice(firstRun3At).some((f) => f.runId === "run-2"), { errorFrameAt, firstRun3At, labels: p.broker.frames.map((f) => f.runId) });
+  c("G:the-next-runs-frames-carry-no-event-of-the-failed-run", p.broker.frames.filter((f) => f.runId === "run-3").every((f) => !JSON.stringify(f.parts).includes('"type":"RUN_ERROR"') && !JSON.stringify(f.parts).includes('"runId":"run-2"')), p.broker.frames.filter((f) => f.runId === "run-3").map((f) => JSON.stringify(f.parts).slice(0, 200)));
   c("G:the-next-turn-publishes-under-its-own-run", p.broker.frames.some((f) => f.runId === "run-3" && JSON.stringify(f.parts).includes("next-turn")), p.broker.frames.filter((f) => f.runId === "run-3").length);
   const before = p.broker.frames.length;
   await p.turnEnd();
