@@ -1469,9 +1469,10 @@ const failedListeners = new WeakSet<ChildProcess>();
 /**
  * Stop a listener whose launch failed before it served. A signal is not proof of exit, so SIGTERM
  * escalates to SIGKILL and `nats.pid` is removed only once the exit is observed. A listener that
- * outlives both keeps its record and fails loud with its pid.
+ * outlives both keeps its record and fails loud with its pid. A listener whose pid publish threw
+ * passes `published` false and leaves `nats.pid` as found.
  */
-async function stopFailedListener(child: ChildProcess): Promise<void> {
+async function stopFailedListener(child: ChildProcess, published = true): Promise<void> {
   failedListeners.add(child);
   child.kill("SIGTERM");
   if (!await waitForChildExit(child, 5_000)) {
@@ -1479,7 +1480,7 @@ async function stopFailedListener(child: ChildProcess): Promise<void> {
     if (!await waitForChildExit(child, 5_000))
       throw new Error(`nats-server process ${child.pid ?? "unknown"} did not exit after SIGKILL`);
   }
-  removePidPair(cotalPath("nats.pid"), String(child.pid));
+  if (published) removePidPair(cotalPath("nats.pid"), String(child.pid));
 }
 
 function bindSpawnedRestoreListener(prepared: PreparedRestore, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
@@ -2328,12 +2329,19 @@ async function startDeliveryWithBroker(
 /**
  * Publish a spawned listener's pid, and bind a maintenance-bound one to its attempt, before anything
  * waits on it. A launch that dies before its listener serves then leaves `nats.pid` for `cotal down`
- * and a journal naming the exact process for recovery to adopt or retire. A bind that throws stops
- * the listener. Both launch modes call it right after the spawn.
+ * and a journal naming the exact process for recovery to adopt or retire. A publish or bind that
+ * throws stops the listener. Both launch modes call it right after the spawn.
  */
 async function recordSpawnedListener(child: ChildProcess, startedAt: string, bound?: DetachOpts["boundListener"]): Promise<void> {
   if (!child.pid) throw new Error("nats-server spawned with no pid");
-  writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+  try {
+    writePidPair(cotalPath("nats.pid"), child.pid); // #969/#1238: publish the pair by rename, never torn
+  } catch (error) {
+    // The entry at `nats.pid` may be the one that refused the publish (a directory there fails the
+    // rename), so it is left as found: unrecording would read it and throw over this error.
+    await stopFailedListener(child, false);
+    throw error;
+  }
   if (!bound) return;
   if (process.env.COTAL_SMOKE_EXIT_AFTER_RESTORE_LISTENER_SPAWN === "1") process.exit(87);
   try {
