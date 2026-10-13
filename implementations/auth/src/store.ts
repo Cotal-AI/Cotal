@@ -289,13 +289,13 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
 }
 
 /** Pin-or-verify the space's IdP. First call REQUIRES a URL (there is no default IdP); later calls
- *  either omit it (reuse the pin) or must MATCH it — re-pointing a space at a different IdP re-keys
- *  every derived owner (the issuer is part of the derivation input), a migration this refuses to do
- *  as a flag side-effect. */
+ *  either omit it (reuse the pin) or must MATCH it once normalized — re-pointing a space at a
+ *  different IdP re-keys every derived owner (the issuer is part of the derivation input), a
+ *  migration this refuses to do as a flag side-effect. */
 export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   const existing = loadPinnedIdp(dir);
   if (existing) {
-    if (idpUrl !== undefined && idpUrl !== existing.url)
+    if (idpUrl !== undefined && normalizeIdpUrl(idpUrl) !== existing.url)
       throw new Error(
         `this space's IdP is pinned to ${existing.url}; --idp ${idpUrl} would re-key every derived owner. ` +
           `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
