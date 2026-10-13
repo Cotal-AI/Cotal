@@ -517,10 +517,14 @@ turn, its ask attempt or its escalation ends `cancelled` through the manager's r
 (SPEC §13.6), so the seat is not shown it after the branch's scope settles and the next turn to
 that seat does not wait behind it. Only the manager that accepted the relay holds it, so in a
 space with more than one manager the run sends the cancel again while another manager refuses it,
-until the accepting one answers. A cancel the accepting manager refuses is sent again until it
+until the accepting one answers. A cancel refused as `unavailable`, such as by a manager still
+reconciling at boot, or one whose reply is lost (`deadline-exceeded`) is sent again until it
 lands or the relay's deadline passes, so the branch's cancellation does not complete while the
-seat can still be shown the relay. The run reads that deadline from the relay's goal and retries
-a failed read, since the relay may still be served until the deadline is known. A goal record
+seat can still be shown the relay. Any other refusal fails the branch's step at once under its
+code, since sending it again changes nothing: a manager that serves no `cancel` is refused
+`not-found` before anything is sent, and an accepting manager with no such relay pending refuses
+`failed-precondition`. The run reads the relay's deadline from its goal and retries a failed
+read, since the relay may still be served until the deadline is known. A goal record
 that can never yield a deadline, such as one that is not JSON, fails the branch's step at once,
 and so does a refusal that lasts past the deadline.
 A `spawn` may bind its agent to a **logical worktree** (`spawn("builder", { worktree: "wt-1" })`):

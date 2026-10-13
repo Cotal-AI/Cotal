@@ -73,6 +73,7 @@ import {
   type CotalMessage,
   type EpAttributedReply,
   type EpCaller,
+  type EpErrorCode,
   type EpVerbTarget,
   type GoalRef,
   type GoalResultFact,
@@ -2005,7 +2006,7 @@ export class MeshHandler {
    * (SPEC 13.6 item 4), so the seat is not shown it again. A token no relay rode has no goal and
    * nothing to withdraw, and a relay that already ended is the outcome either way: the manager
    * refuses it with the cached terminal, so a repeated withdrawal is a no-op. Any other refusal
-   * throws, which leaves a discharge open to retry.
+   * throws under the code it was refused with, which leaves a discharge open to retry.
    *
    * Only the manager that accepted the relay holds it, and the class rail reaches any member, so a
    * refusal is final only from the accepter its index entry names. One from another member is
@@ -2019,8 +2020,10 @@ export class MeshHandler {
     for (let attempt = 0; ; attempt += 1) {
       const reply = await this.invokeManager(await this.manager(), "cancel", { goalId }, { deadlineMs: TURN_ACCEPT_DEADLINE_MS });
       if (reply.reply.ok !== false || (await readGoalResult(actx, ref)) !== undefined) return;
-      if (accepter === undefined || reply.responder.instanceId === accepter)
-        throw new Error(`the relay "${goalId}" could not be withdrawn from its seat: ${reply.reply.error?.message ?? "refused with no message"}`);
+      if (accepter === undefined || reply.responder.instanceId === accepter) {
+        const err = reply.reply.error!;
+        throw new EpEnvelopeError(err.code as EpErrorCode, `the relay "${goalId}" could not be withdrawn from its seat: ${err.message}`);
+      }
       if (attempt === MANAGER_ROUTE_ATTEMPTS)
         throw new Error(`the relay "${goalId}" was accepted by manager instance ${accepter}, but none of ${attempt + 1} cancels was answered by it; the discharge stays open to retry`);
       this.managerService = undefined;
@@ -2033,7 +2036,10 @@ export class MeshHandler {
    * than left to the discharge, which runs only when the run ends: until then the relay would stay
    * first on the seat and hold back the run's next turn to it. The retries stop when the relay's
    * deadline passes, because the manager no longer serves it then, and a failure that outlasts it
-   * is the step's error.
+   * is the step's error. A refusal no retry can change is the step's error at once, since retrying
+   * it would only hold the cancelled step in its scope until that deadline: of the refusals, only
+   * `unavailable` (a manager still reconciling at boot) and `deadline-exceeded` (a lost reply) are
+   * tried again.
    *
    * That deadline is read from the relay's goal, where the accepting manager recorded the instant
    * it stops serving the relay; a withdrawal holds only the goal id. No deadline is known until that
@@ -2053,7 +2059,8 @@ export class MeshHandler {
         }
         return await this.withdrawRelay(goalId);
       } catch (e) {
-        if (deadlineAt === undefined ? e instanceof EpEnvelopeError : this.now() >= deadlineAt) throw e;
+        const final = e instanceof EpEnvelopeError && e.code !== "unavailable" && e.code !== "deadline-exceeded";
+        if (deadlineAt === undefined ? e instanceof EpEnvelopeError : final || this.now() >= deadlineAt) throw e;
       }
       await delay(WAIT_POLL_MS);
     }
