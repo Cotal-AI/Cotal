@@ -1204,6 +1204,24 @@ try {
     c("gap:a-terminal-reported-ahead-of-a-torn-line-is-placed-on-the-run-the-records-before-it-opened",
       pumped.err === undefined && gaps.length === 1 && em.waitingTerminals === 0 && owed?.terminal.error?.code === "rate_limit",
       { err: pumped.err?.message, gaps, waiting: em.waitingTerminals, owed });
+    // The same with a blank separator line, which the source steps over without reporting a gap.
+    const b = await fresh("gap-terminal-blank");
+    const ep2 = new FakeEndpoint();
+    ep2.answers = [{ seq: 1, duplicate: false }];
+    const gaps2: { offset: number; bytes: number; reason: string }[] = [];
+    const em2 = await AguiEmitter.start({ endpoint: ep2, wal: b.wal, subjectFrontier: memorySubjectFrontier(), source: b.source, map: open, onUnreadable: (g) => gaps2.push(g) });
+    await em2.pump(); // adopt
+    append(b.src, { run: "r1", msg: "m1", text: "open" });
+    await em2.pump();
+    const at2 = b.source.end();
+    await at2;
+    em2.queueTerminal({ terminal: { timestamp: 10, error: { message: "overloaded", code: "overloaded" } }, at: at2 });
+    appendFileSync(b.src, "  \n");
+    const pumped2 = await attempt(() => em2.pump());
+    const owed2 = em2.takeOwed("r1");
+    c("gap:a-terminal-reported-ahead-of-a-blank-line-is-placed-the-same-way",
+      pumped2.err === undefined && gaps2.length === 0 && em2.waitingTerminals === 0 && owed2?.terminal.error?.code === "overloaded",
+      { err: pumped2.err?.message, gaps2, waiting: em2.waitingTerminals, owed2 });
   });
   await block("A SOURCE GAP WITH NO REPORTER REFUSES BEFORE THE FRONTIER MOVES", async () => {
     const { wal, src, source } = await fresh("gap-unreported");
