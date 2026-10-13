@@ -308,6 +308,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     void (async () => {
       await submitting;
       if (controller.signal.aborted) return; // teardown began during the wait: a turn driven now would outlive the seat
+      if (ended !== ev.durable) return; // a later turn ended during the wait: only its task leaves out the batch that turn failed
       if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
     })();
   }
