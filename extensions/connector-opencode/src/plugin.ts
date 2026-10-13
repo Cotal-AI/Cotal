@@ -1137,6 +1137,23 @@ export const cotal: Plugin = async () => {
     return true;
   }
 
+  /**
+   * The turn end a session is still settling: the close whose position read has not answered. A
+   * next turn admitted before it answers puts the terminal after that turn's records, so every
+   * path that admits one waits here first: the event arms for the driven turn, and the prompt hook
+   * for a native one typed into the TUI or posted to the server.
+   */
+  const turnEnds = new Map<string, Promise<void>>();
+  const turnEnded = async (session: string | undefined, close: Promise<void> | undefined): Promise<void> => {
+    if (!close) return;
+    if (session === undefined) return close; // a session-less error names no session for a prompt to wait on
+    const settled = close.finally(() => {
+      if (turnEnds.get(session) === settled) turnEnds.delete(session);
+    });
+    turnEnds.set(session, settled);
+    await settled;
+  };
+
   /** Native TUI / API prompts enter through OpenCode's chat.message hook before the model loop
    *  starts. This is the real "next turn" boundary for human-typed input: prepend the buffered Cotal
    *  batch to the user's text, then ack it when the resulting turn ends. We only mutate an existing
@@ -1374,12 +1391,13 @@ export const cotal: Plugin = async () => {
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
           eventsFor(sessionID)?.flush(sessionID);
-          // The close's position read is awaited BEFORE the next turn is admitted: the position is
-          // the session's messages over HTTP, and a next prompt driven in before that read answers
-          // puts the terminal after the next turn's records, which closes that turn with it (Sol,
-          // round 14 of 2026-10-13, through the built plugin: a failed turn closed as a finish and
-          // its successor as the error).
-          await eventsFor(sessionID)?.closeRun(Date.now());
+          // The close's position read is awaited BEFORE the next turn is admitted, on every path
+          // that admits one: this arm for the driven turn, and the prompt hook for a native one.
+          // The position is the session's messages over HTTP, and a next prompt that lands before
+          // that read answers puts the terminal after the next turn's records, which closes that
+          // turn with it (Sol, rounds 14 and 15 of 2026-10-13, through the built plugin: a failed
+          // turn closed as a finish and its successor as the error).
+          await turnEnded(idleSession, eventsFor(sessionID)?.closeRun(Date.now()));
           await safeStatus("idle");
           completeTurn(); // the sole turn-end site: ack-on-surface + drive the next batch
           break;
@@ -1430,7 +1448,7 @@ export const cotal: Plugin = async () => {
           // outcome, which says the run ended and does not claim it succeeded. `RUN_ERROR` closes a
           // run by itself, so no second terminal follows it.
           // Awaited for its position read, as the idle arm does, before the next turn is admitted.
-          await eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));
+          await turnEnded(sessionID, eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error)));
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;
@@ -1494,6 +1512,10 @@ export const cotal: Plugin = async () => {
     "chat.message": async (input, output) => {
       if (stopping) throw new Error("the prompt was not run: this seat is shutting down");
       if (!ours(input.sessionID)) return;
+      // A NATIVE PROMPT WAITS FOR THE TURN END STILL SETTLING. OpenCode awaits this hook before it
+      // saves the user message, so a prompt held here lands after the close's position read has
+      // answered, and the terminal keeps its own turn.
+      await turnEnds.get(input.sessionID);
       // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
       // default: before the first prompt the dashboard truthfully shows "not reported".
       if (input.model)

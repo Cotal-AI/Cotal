@@ -31,8 +31,8 @@
     {
       "name": "O1 a failed turn closes exactly as a finished one does, which is the state this connector shipped in",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          await eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));",
-      "replace": "          await eventHolder?.closeRun(Date.now());",
+      "find": "          await turnEnded(sessionID, eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error)));",
+      "replace": "          await turnEnded(sessionID, eventHolder?.closeRun(Date.now()));",
       "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
       "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED \u2014 THE DEFECT",
       "note": "The pre-fix line, restored verbatim. An APIError turn is published as a run that ended, carrying no outcome, and a reader cannot tell it from a turn that succeeded."
@@ -49,17 +49,25 @@
     {
       "name": "O3 the error arm returns before the terminal's position read answers",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          await eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));\n",
-      "replace": "          void eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));\n",
+      "find": "          await turnEnded(sessionID, eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error)));\n",
+      "replace": "          void turnEnded(sessionID, eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error)));\n",
       "expectRed": "barrier:the error arm is still in flight while the terminal's position read is held",
       "note": "The round-14 defect: the next turn was admitted before the position read answered, and the terminal named the next turn."
     },
     {
       "name": "O4 the idle arm returns before the terminal's position read answers",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          await eventsFor(sessionID)?.closeRun(Date.now());\n",
-      "replace": "          void eventsFor(sessionID)?.closeRun(Date.now());\n",
+      "find": "          await turnEnded(idleSession, eventsFor(sessionID)?.closeRun(Date.now()));\n",
+      "replace": "          void turnEnded(idleSession, eventsFor(sessionID)?.closeRun(Date.now()));\n",
       "expectRed": "barrier:the idle arm is still in flight while the terminal's position read is held"
+    },
+    {
+      "name": "O5 a native prompt passes the turn end still settling",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      await turnEnds.get(input.sessionID);\n",
+      "replace": "      void turnEnds.get(input.sessionID);\n",
+      "expectRed": "barrier:a native prompt is held while the terminal's position read is held",
+      "note": "The round-15 defect: the driven path waited for the close's position read and the prompt typed into the TUI did not, so a failed turn closed as a finish and its successor as the error."
     }
   ]
 }

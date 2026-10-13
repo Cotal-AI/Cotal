@@ -171,9 +171,17 @@ try {
   }).then(() => "returned" as const);
   const errorArm = await Promise.race([errored, sleep(600).then(() => "in flight" as const)]);
   check("barrier:the error arm is still in flight while the terminal's position read is held", errorArm === "in flight", errorArm);
+  // A NATIVE PROMPT waits behind the same read. OpenCode awaits the prompt hook before it saves the
+  // user message, so a hook that returns here lets the next turn's records land ahead of the
+  // position (Sol, round 15 of 2026-10-13, through the built plugin: the driven path waited and the
+  // typed one did not).
+  const typed = (hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> })["chat.message"]({ sessionID: A }, { parts: [{ type: "text", text: "next prompt" }] }).then(() => "returned" as const);
+  const promptHook = await Promise.race([typed, sleep(600).then(() => "in flight" as const)]);
+  check("barrier:a native prompt is held while the terminal's position read is held", promptHook === "in flight", promptHook);
   releaseRead?.();
   readGate = undefined;
   await errored;
+  check("barrier:the native prompt goes through once the read has answered", (await Promise.race([typed, sleep(2_000).then(() => "stuck" as const)])) === "returned");
   await sleep(2_500);
 
   // ---- Turn 2: a real turn, then a USER ABORT. Not a failure, and the control that says so.
@@ -260,7 +268,7 @@ try {
   check("idle:the turn that ended on session.idle closed exactly once, as a finish", a3 >= 0 && idleTurnCloses.length === 1 && idleTurnCloses[0]?.type === "RUN_FINISHED", { a3, idleTurnCloses });
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 10;
+  const EXPECTED = 12;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
