@@ -422,8 +422,9 @@ export function spawnRequiredExtensions(_args: ParsedArgs): readonly ExtensionRe
   return [];
 }
 
-/** Comma-list flag → string[] (shared by both spawn modes). */
-const splitFlag = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
+/** Comma-list flag → string[] (shared by both spawn modes). Only an absent flag is `undefined` and
+ *  defers to the persona; an empty value is the empty list, so `--subscribe ""` clears it. */
+const splitFlag = (v?: string) => (v === undefined ? undefined : v.split(",").map((s) => s.trim()).filter(Boolean));
 
 /** #867: the name a spawn sends must already be a mintable identity, and the check must not wait
  *  for the manager's round trip. `spawnNameError` is the SAME predicate the manager applies at its

@@ -1085,9 +1085,9 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--resume <id>` | none | Fork an existing session id into the mesh; only connectors that declare resume support accept it (see [the matrix](connectors.md)). The manager records the source session id, and `ps --wide` shows it. With `--detach --on <instance>`, a Claude session held on this host is carried to that instance first ([Resume a session](connect-claude.md#resume-a-session)); carrying one needs `--on` |
 | `--no-events` | event plane on where supported | Opt out of the session's structured event plane (`--events` only restates the default) |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
-| `--subscribe <a,b>` | persona's | Channel read-set override |
-| `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
-| `--allow-publish <a,b>` | deny | Post-ACL override |
+| `--subscribe <a,b>` | persona's | Channel read-set override; `""` clears it |
+| `--allow-subscribe <a,b>` | = subscribe | Read-ACL override; `""` sets it to the read set |
+| `--allow-publish <a,b>` | deny | Post-ACL override; `""` clears it |
 | `--detach`, `-d` | off | Launch via the manager into a detached PTY (reattach with `cotal attach`) |
 | `--on <instance>` | class anycast | With `--detach` only: pin the launch to one manager instance id (the whole id, as `ps` prints it). Refused on a foreground spawn (no manager to pin), with `-f` (a manifest deploy launches through the manager class queue), and when empty |
 | `--file <cotal.yaml>`, `-f` | none | Deploy a manifest onto the running mesh |
@@ -2212,8 +2212,8 @@ cotal mint <name> --identity <creds> [--expires-in <seconds>]
 | `--out <path>` | `.cotal/auth/creds/space.<key>/<name>.creds` | Output path - the default sits under the resolved space's segment (`<key>` is that space's hex encoding, as in [Project files](config.md#project-files)) |
 | `--signer` | off | Emit a stripped account-signing file instead |
 | `--force` | off | With `--signer`: overwrite an existing file |
-| `--allow-subscribe <a,b>` | the agent file's, else subscribe | Read-ACL override, **agent profile only**: `observer` and `admin` carry a fixed read set, and `mint` refuses this flag there rather than narrowing nothing |
-| `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only** |
+| `--allow-subscribe <a,b>` | the agent file's, else subscribe | Read-ACL override, **agent profile only**: `observer` and `admin` carry a fixed read set, and `mint` refuses this flag there rather than narrowing nothing. `""` sets it to the agent file's subscribe list |
+| `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only**; `""` grants no channel |
 | `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
 | `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
 | `--expires-in <seconds>` | unbounded | Bound the credential's lifetime: the JWT `exp` is `iat + <seconds>`. A positive integer; refused together with `--expires-at` |

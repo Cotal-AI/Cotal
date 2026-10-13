@@ -157,7 +157,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(c.red("usage: cotal mint <name> [--profile <agent|observer|admin>] [--out <path>] [--expires-in <s>|--expires-at <unix-s>] [--identity <creds>]  (agent profile also: [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision])"));
     process.exit(1);
   }
-  const splitList = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
+  // Only an absent flag is `undefined` and defers to the agent file; an empty value is the empty
+  // list, so `--allow-publish ""` grants no channel.
+  const splitList = (v?: string) => (v === undefined ? undefined : v.split(",").map((s) => s.trim()).filter(Boolean));
   const profile = (values.profile ?? "agent") as Profile;
   if (profile !== "agent" && profile !== "observer" && profile !== "admin") {
     console.error(c.red(`unknown profile "${profile}" - expected agent, observer, or admin`));
