@@ -1042,6 +1042,32 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     console.error(c.dim(`  a user-mode agent's credentials are granted where the mesh's signer lives; ask the mesh operator to advertise one (\`cotal up --agent-provisioning-url …\`), or run the agent there`));
     process.exit(1);
   }
+  // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
+  // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
+  // retirement serves a failed provisioning or launch (rollback) and the normal foreground
+  // departure: each spawn mints a fresh identity, so an exited agent's footprint (creds file, DM/DLV
+  // durables, ACL row) is dead weight no future spawn reuses — mirror the manager's `deprovision`
+  // with an ephemeral, target-pinned deprovisioner cred. Best-effort like the manager's (a SIGKILLed
+  // CLI can't run it; the residue is the same class a crashed manager leaves). A no-op in open mode.
+  let retired = false;
+  const retireProvision = async (why: string): Promise<void> => {
+    // Bound when called: the static arm assigns id and credsPath after this closure is created.
+    const targetId = id;
+    const credsFile = credsPath;
+    if (retired || !auth || !targetId || !credsFile) return;
+    retired = true;
+    // The store delete is the authoritative removal; the rmSync clears the FS materialization
+    // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
+    // cannot be removed must not leave the durables and ACL row behind.
+    const failed: CleanupFailure[] = [];
+    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)));
+    await attemptCleanup(failed, "creds file", () => rmSync(credsFile, { force: true }));
+    await attemptCleanup(failed, "broker teardown", () =>
+      mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: targetId, lifecycleUid } })
+        .then((dc) => deprovisionAgent({ servers: server, space, targetId, lifecycleUid, creds: dc })));
+    if (failed.length) console.error(c.red(`✗ cleaning up after ${name}: ${describeCleanupFailures(failed)}`));
+    else console.error(`  ↩ retired creds for ${name} (${why})`);
+  };
   if (target.mode === "user" && target.userAuth?.remote && (enrollmentUrl || redeemedEnrollment)) {
     if (!redeemedEnrollment) {
       // The record alone decides this refusal, and the redemption below spends the enrollment.
@@ -1120,6 +1146,10 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (eventGrant) allowPublish = [...(allowPublish ?? []), eventGrant];
   } else if (auth) {
     const identity = newIdentity();
+    // What the retirement needs is recorded before the first durable exists, so a throw anywhere from
+    // provisioning through the creds write can still find and remove the footprint.
+    id = identity.id;
+    credsPath = agentSecretFilePaths(target.root, space, name).creds;
     // THE EVENT GRANT, from the principal this spawn ALLOCATED. Static mode keys on the nkey, never
     // on the display name: a name is not an identity, and the manager derives the same subject from
     // the same connector function, so a foreground and a detached spawn of one persona land on one
@@ -1146,53 +1176,32 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     // every channel message posted while its connection blips (reconnect deliberately re-opens the
     // core-subs without re-backfill). `--live-only` opts back out; on a mesh with no delivery
     // daemon the boot join itself reports live-only, ACL row or not.
-    const creds = await provisionAgent(prov, auth, identity, {
-      subscribe,
-      allowSubscribe,
-      allowPublish,
-      role,
-      capabilities: def.capabilities,
-      ...(values["live-only"] ? { durableMembership: false } : {}),
-      lifecycleUid,
-    });
-    await prov.stop();
-    // Store first (the source of truth), then materialize — the child's launch reads this FILE.
-    // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
-    const secrets = workspaceSecretStore(target.root);
-    credsPath = agentSecretFilePaths(target.root, space, name).creds;
-    await secrets.put(agentCredsKey(space, name, composition), creds);
-    await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
-    id = identity.id;
+    try {
+      const creds = await provisionAgent(prov, auth, identity, {
+        subscribe,
+        allowSubscribe,
+        allowPublish,
+        role,
+        capabilities: def.capabilities,
+        ...(values["live-only"] ? { durableMembership: false } : {}),
+        lifecycleUid,
+      });
+      await prov.stop();
+      // Store first (the source of truth), then materialize — the child's launch reads this FILE.
+      // The CLI is the local FS composition (byte-identical), same posture as the manager's spawn.
+      const secrets = workspaceSecretStore(target.root);
+      await secrets.put(agentCredsKey(space, name, composition), creds);
+      await materializeSecretToFile(secrets, agentCredsKey(space, name, composition), credsPath);
+    } catch (e) {
+      await retireProvision("provisioning failed");
+      throw e;
+    }
     provenance.wrote(`creds for ${name} (auth mode)`, credsPath);
   } else {
     // Without a declared id the endpoint self-mints a fresh actor per process, which no event
     // channel can name. The manager allocates one for every non-user launch, so this does too.
     id = newIdentity().id;
   }
-
-  // Auth mode provisions the identity + writes its creds to disk BEFORE the connector validates the
-  // launch (e.g. `buildLaunch` throws on a rejected `--opt`) and before the child execs. The SAME
-  // retirement serves a failed launch (rollback) and the normal foreground departure: each spawn
-  // mints a fresh identity, so an exited agent's footprint (creds file, DM/DLV durables, ACL row)
-  // is dead weight no future spawn reuses — mirror the manager's `deprovision` with an ephemeral,
-  // target-pinned deprovisioner cred. Best-effort like the manager's (a SIGKILLed CLI can't run
-  // it; the residue is the same class a crashed manager leaves). A no-op in open mode.
-  let retired = false;
-  const retireProvision = async (why: string): Promise<void> => {
-    if (retired || !auth || !id || !credsPath) return;
-    retired = true;
-    // The store delete is the authoritative removal; the rmSync clears the FS materialization
-    // (byte-identical locally). The broker teardown mints its own credential, so a creds file that
-    // cannot be removed must not leave the durables and ACL row behind.
-    const failed: CleanupFailure[] = [];
-    await attemptCleanup(failed, "creds secret", () => workspaceSecretStore(target.root).delete(agentCredsKey(space, name, composition)));
-    await attemptCleanup(failed, "creds file", () => rmSync(credsPath, { force: true }));
-    await attemptCleanup(failed, "broker teardown", () =>
-      mintCreds(auth, newIdentity(), "deprovisioner", { deprovisionTarget: { principal: id, lifecycleUid } })
-        .then((dc) => deprovisionAgent({ servers: server, space, targetId: id, lifecycleUid, creds: dc })));
-    if (failed.length) console.error(c.red(`✗ cleaning up after ${name}: ${describeCleanupFailures(failed)}`));
-    else console.error(`  ↩ retired creds for ${name} (${why})`);
-  };
 
   // From here through a successful child launch, a THROW must undo whatever this spawn provisioned —
   // the user-mode actor grant (userCleanup) OR the static-auth creds + broker footprint
