@@ -374,7 +374,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
   // `userViewAuth("deployer")`, which is a real exchange, not a silent substitute.
   //
   // Role is ignored for MINTING on this path (there is no instrument mint). The caller triple
-  // still lands: `userConnectOrExit` sets `epCaller` from the bearer's principal, so ep request
+  // still lands: `userConnectOrThrow` sets `epCaller` from the bearer's principal, so ep request
   // subjects can be built. "Never consults role" means never mints by role — not "no triple".
   if (target.mode === "user") {
     if (role === "control-caller-privileged" || role === "control-caller-admin")
@@ -388,11 +388,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6), and a user-auth mesh hosts no runs yet either. Run programs on a static-auth mesh.`,
       );
-    // NAMED, not overlooked: the user-mode connect still ends the process on its own refusals. No
-    // reconnect loop reaches it (`cotal attach` refuses a user-mode mesh before it ever loops, and
-    // a static mesh does not become a user mesh mid-session), and dragging that path into this
-    // refactor would widen the diff well past the one behaviour it exists to fix.
-    return userConnectOrExit(target);
+    return userConnectOrThrow(target);
   }
   // An operator INSTRUMENT mint pins a fresh lifecycle uid: its ep-rail caller rows are
   // lifecycle-keyed (SPEC §13.1/§13.2 — the reply rail names one incarnation), and the caller
@@ -500,7 +496,11 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
     );
     process.exit(1);
   }
-  return userConnectOrExit(target);
+  try {
+    return await userConnectOrThrow(target);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
 }
 
 /** {@link connectUserControlOrExit} for a caller that must record a refusal before it fails, such
@@ -516,22 +516,21 @@ export async function connectUserControlOrThrow(flags: { server?: string; space?
  *  supplied — never imported here), exchange this machine's login session for a bearer, and hand
  *  back bearer + sentinel. The provider owns the failure copy for its own steps (not logged in,
  *  service down, actor ungranted) — each is already an exact recovery sentence; this wrapper only
- *  colours and exits (the workstation-layer contract).
+ *  throws it as a {@link ConnectRefusal}, so each caller keeps its own disposition.
  *
  *  Takes a resolved target only — never a Profile. Callers that know the mesh is user-mode must
  *  enter via {@link connectUserControlOrExit} (no role) or the user branch of {@link connectOrExit}
  *  (which refuses control-caller-* instruments). If a Profile is ever threaded into this function,
  *  the call sites that invented dummy roles are the defect. */
-async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
+async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   try {
-    return await userConnectOrThrow(target);
+    return await userConnect(target);
   } catch (e) {
-    console.error(c.red(`✗ ${e instanceof Error ? e.message : String(e)}`));
-    process.exit(1);
+    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e });
   }
 }
 
-async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
+async function userConnect(target: MeshTarget): Promise<Connection> {
   const ua = target.userAuth!; // mode "user" guarantees it (targetFromEntry throws otherwise)
   let provider: AuthProvider;
   try {

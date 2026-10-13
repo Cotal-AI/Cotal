@@ -68,8 +68,8 @@ from the console. It is core's `clearChannel` (a filtered history purge plus the
 with the dashboard's per-action authority, a one-shot `channel-purger` credential minted from the
 resolved mesh's seed on a static mesh, a `channel-purger` view on a user mesh, a bare connection
 on an open one; no manager is involved. A wildcard is refused, so the one destructive control
-names one channel. A refusal, from the broker or the manager, lands on the status line. On a
-space with several managers, `D`, `:status`, and `a` are pinned to the manager hosting the seat and
+names one channel. A refusal, from the broker, the manager, or a user mesh's login, lands on the
+status line. On a space with several managers, `D`, `:status`, and `a` are pinned to the manager hosting the seat and
 `:ps` merges every manager's rows; `:spawn` and `:purge` ride the class queue, as `cotal spawn
 --detach` and `cotal purge` do without `--on`. A manager that does not answer keeps its last known
 rows and is named as silent. A manager that answers with an error is named with that error and its
