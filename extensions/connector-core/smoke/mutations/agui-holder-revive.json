@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-holder.smoke.ts"
   ],
-  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane; a terminal that arrives while the fresh start is in flight, or while down after a failed start, is held for the run the wire had open; a terminal during the recovery pump is owed to the emitter at the hook",
+  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane; a terminal that arrives while the fresh start is in flight, or while down after a failed start, is held for the run the wire had open; a terminal during the recovery pump is owed to the emitter at the hook; the debt owed at the hook is the held terminal, so a failure after a held finish owes nothing",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder-revive.json",
@@ -140,10 +140,18 @@
     {
       "name": "R14 a terminal during the recovery pump is only held for after it, not owed at the hook",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "        if (error && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === this.downRun && emitter.owedRunId === undefined)\n          emitter.oweTerminal(this.downRun, error);\n",
-      "replace": "        void emitter;\n",
+      "find": "        if (kept?.error && kept.runId === this.downRun && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === kept.runId && emitter.owedRunId === undefined)\n          emitter.oweTerminal(kept.runId, kept.error);\n",
+      "replace": "        void kept;\n        void emitter;\n",
       "expectRed": "revive:a-terminal-during-the-recovery-pump-is-owed-to-the-emitter-AT-THE-HOOK",
       "note": "The round-8 defect: the pump reads the next prompt and closes the failed run as a finish; the hold, read only after the pump, names a closed run and is dropped."
+    },
+    {
+      "name": "R15 the debt owed at the hook is this call's error, not the held terminal",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "        if (kept?.error && kept.runId === this.downRun && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === kept.runId && emitter.owedRunId === undefined)\n          emitter.oweTerminal(kept.runId, kept.error);\n",
+      "replace": "        if (error && kept && kept.runId === this.downRun && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === kept.runId && emitter.owedRunId === undefined)\n          emitter.oweTerminal(kept.runId, error);\n",
+      "expectRed": "revive:a-failure-after-a-held-finish-owes-NOTHING-at-the-hook-the-first-terminal-wins",
+      "note": "The round-9 defect: a finish held while down, then a failure during the recovery pump, published the error for the first run instead of its first-held finish."
     }
   ]
 }

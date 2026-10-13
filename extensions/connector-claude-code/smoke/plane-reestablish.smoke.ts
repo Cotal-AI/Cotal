@@ -565,5 +565,38 @@ for (const seedMapper of [true, false]) {
   await p.close();
 }
 
+// ---- L. a finish held while down, then a failure during the recovery pump ---------------------
+{
+  // As J, with the turn's FINISH delivered while the plane is down and a failure for the same run
+  // delivered while the recovery pump is held at its read. The first terminal wins: the run closes
+  // as a finish and no error is published for it (Sol, round 9, through the built MCP entry point:
+  // the error was owed over the held finish).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush();
+  p.broker.failNext = 1;
+  p.assistant(" lost");
+  await p.flush(); // down, with run-2 open
+  await p.turnEnd(); // the turn's finish, while down: held first
+  const read = p.holdNextRead();
+  await sleep(60); // the retry fires and the pump is held at its read
+  c("L:CONTROL-a-finish-is-held-and-the-recovery-pump-is-held-at-its-read", read.entered() && p.holder.running && !p.broker.frames.some((f) => JSON.stringify(f.parts).includes('"type":"RUN_FINISHED","threadId":"' + p.threadId + '","runId":"run-2"')), { entered: read.entered(), running: p.holder.running });
+  p.user();
+  p.assistant(" next-turn");
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // a failure for run-2, during the pump
+  read.release();
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  c("L:the-first-held-terminal-wins-run-2-closes-as-a-finish-and-no-error-is-published", finished(wire, "run-2") && !wire.includes('"type":"RUN_ERROR"') && p.holder.running, { finished: finished(wire, "run-2"), error: wire.includes('"type":"RUN_ERROR"'), running: p.holder.running });
+  c("L:the-successor-run-is-open-with-its-records", p.broker.frames.some((f) => f.runId === "run-3" && JSON.stringify(f.parts).includes("next-turn")) && !finished(wire, "run-3"), p.broker.frames.map((f) => f.runId));
+  await p.close();
+}
+
 console.log(`claude-plane-reestablish smoke: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

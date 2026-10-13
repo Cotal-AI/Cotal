@@ -1034,6 +1034,45 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
+  // THE FIRST TERMINAL WINS AT THE HOOK TOO. A finish held while the plane was down, then a failure
+  // delivered while the recovery pump is in progress: the hold keeps the finish, so the debt owed
+  // to the emitter at the hook must be the HELD terminal, which owes nothing, not the incoming
+  // error (Sol, round 9 of 2026-10-13, through the built MCP entry point: the error was owed over
+  // the held finish and the first run closed as a failure).
+  let release: (() => void) | undefined;
+  let armed = false;
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      else if (armed) {
+        armed = false;
+        e.nextPromptOpens = "run-3";
+        e.pumpGate = new Promise<void>((res) => (release = res));
+      }
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // pump 1 fails: down
+  await r.holder.settled();
+  r.holder.closeRun(7); // the turn's FINISH, while down: held first
+  armed = true;
+  await sleep(40); // the retry fires and the fresh emitter's pump is held at its gate
+  const fresh = r.made[1];
+  c("CONTROL:a-finish-is-held-and-the-recovery-pump-is-in-progress", r.starts === 2 && fresh?.inPump === true && fresh.owed.length === 0, { starts: r.starts, inPump: fresh?.inPump, owed: fresh?.owed });
+  r.holder.closeRun(8, { message: "rate_limit", code: "rate_limit" }); // a failure for the same run, during the pump
+  c("revive:a-failure-after-a-held-finish-owes-NOTHING-at-the-hook-the-first-terminal-wins", fresh?.owed.length === 0, { owed: fresh?.owed });
+  release?.();
+  await r.holder.settled();
+  c("revive:the-pump-closes-the-run-as-the-finish-the-next-prompt-synthesizes-and-nothing-else-closes-it", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
   // A terminal that arrives while the plane is down AFTER a re-establish start FAILED. The failed
   // start left no emitter to ask, so the run the wire had open is carried from the first failure of
   // the outage, and the terminal is held for it until a start goes through.

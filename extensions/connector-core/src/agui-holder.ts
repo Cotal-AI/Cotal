@@ -279,10 +279,14 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
         // prompt synthesizes whether that finish is still to be mapped or already packed and not
         // yet frozen (Sol, round 8 of 2026-10-13). A debt held only for after the pump arrived too
         // late: the pump had published the finish and opened the successor, and the hold was
-        // dropped for naming a closed run.
+        // dropped for naming a closed run. THE DEBT IS THE HELD TERMINAL, NOT THIS CALL'S: the first
+        // terminal held for a run wins, so a finish held earlier in the outage leaves a failure
+        // that arrives now with nothing to owe (Sol, round 9: the incoming error was owed over the
+        // held finish, through the built MCP entry point).
+        const kept = this.heldClose;
         const emitter = this.emitter;
-        if (error && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === this.downRun && emitter.owedRunId === undefined)
-          emitter.oweTerminal(this.downRun, error);
+        if (kept?.error && kept.runId === this.downRun && this.dead === undefined && emitter && !emitter.stopped && emitter.openRunId === kept.runId && emitter.owedRunId === undefined)
+          emitter.oweTerminal(kept.runId, kept.error);
       }
       return;
     }
