@@ -223,7 +223,8 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
   let turnOpen = false;
   /** A Notification raised a prompt in this turn that no main-agent tool batch has resolved yet. Kept
    *  here rather than read off `agent.status`: relays overlap, and a batch that arrives while the
-   *  `waiting` write is still in flight would read `working` and miss the wait it resolves. */
+   *  `waiting` write is still in flight would read `working` and miss the wait it resolves. Every
+   *  terminal closes it with the turn, so a batch relayed after one cannot bring the seat back. */
   let promptOpen = false;
   /** Batches awaiting a delivery verdict, keyed by the EVENT OBJECT the control server passes to
    *  both `handle` and `onReply`. Frames are separate socket connections and can overlap (a
@@ -391,6 +392,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
         case "Stop":
         case "StopFailure": // turn died on an API error — Stop won't fire, so reset here too
           turnOpen = false;
+          promptOpen = false;
           pendingTool = undefined; // turn ended — don't let a stale tool attach to an idle-wait notification
           flushEvents(ev.transcript_path);
           // THE TURN TERMINAL, and it has to be a second call rather than part of the flush. The
@@ -421,6 +423,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           return {};
         case "SessionEnd":
           turnOpen = false;
+          promptOpen = false;
           flushEvents(ev.transcript_path); // best-effort — the process may exit before it lands
           await safeStatus(agent, "offline");
           return {};
