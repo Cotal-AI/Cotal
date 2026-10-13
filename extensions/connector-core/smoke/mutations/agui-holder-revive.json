@@ -37,16 +37,16 @@
       "file": "extensions/connector-core/src/agui-holder.ts",
       "find": "    this.reviveTimer = setTimeout(() => this.revive(), delay);\n",
       "replace": "    void delay;\n",
-      "expectRed": "revive:the-emitter-is-started-again-after-the-delay",
+      "expectRed": "revive:the-emitter-is-started-again-at-once",
       "note": "The old latch. The sink is still told a delay, so only the start-count cell can see that nothing follows it."
     },
     {
-      "name": "R2 the delay stops doubling",
+      "name": "R2 the first retry is paced too, not at once",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "    const delay = Math.min(base * 2 ** this.retryAttempt, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);\n",
-      "replace": "    const delay = Math.min(base, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);\n",
-      "expectRed": "revive:the-delay-DOUBLES-per-consecutive-failure",
-      "note": "A flat retry hammers a broker that is down. The plane still comes back, so only the delay sequence can see it."
+      "find": "    const delay = this.retried ? (this.hooks.retryMs ?? 1_000) : 0;\n",
+      "replace": "    const delay = this.hooks.retryMs ?? 1_000;\n",
+      "expectRed": "revive:the-sink-is-told-the-re-establish-is-at-once",
+      "note": "The first attempt after a failure is at once; only the attempts after it are paced by the fixed wait."
     },
     {
       "name": "R3 close no longer cancels a pending re-establish",
@@ -65,10 +65,10 @@
       "note": "The first cut's rule. A halted emitter is still replaced, so only the wedged emitter, which never halts and never pumps, can see it."
     },
     {
-      "name": "R5 the backoff resets when a start returns, not when a pump does",
+      "name": "R5 the wait resets when a start returns, not when the re-establish goes through",
       "file": "extensions/connector-core/src/agui-holder.ts",
       "find": "      this.emitter = await this.startEmitter(path, this.startContext);\n      return this.emitter;\n",
-      "replace": "      this.emitter = await this.startEmitter(path, this.startContext);\n      this.retryAttempt = 0;\n      return this.emitter;\n",
+      "replace": "      this.emitter = await this.startEmitter(path, this.startContext);\n      this.retried = false;\n      return this.emitter;\n",
       "expectRed": "revive:a-start-that-passes-does-NOT-reset-the-delay",
       "note": "A start reaches the broker only for its preflight. Reset there, a broker that refuses every publish is retried at the base delay for as long as the outage lasts."
     },
@@ -113,11 +113,11 @@
       "note": "Round 5 of review, through the built MCP entry point: with the next prompt among the unread records, the pump closed the failed run as a finish and the held error was dropped behind it."
     },
     {
-      "name": "R11 the backoff resets after the pump, before the held close",
+      "name": "R11 the wait resets after the pump, before the held close",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      await this.settle(emitter);\n      this.reviving = false;\n      this.retryAttempt = 0;\n",
-      "replace": "      this.retryAttempt = 0;\n      await this.settle(emitter);\n      this.reviving = false;\n",
-      "expectRed": "revive:the-delay-DOUBLES-while-the-held-close-keeps-failing",
+      "find": "      await this.settle(emitter);\n      this.reviving = false;\n      this.retried = false;\n",
+      "replace": "      this.retried = false;\n      await this.settle(emitter);\n      this.reviving = false;\n",
+      "expectRed": "revive:the-wait-stays-fixed-while-the-held-close-keeps-failing",
       "note": "Round 5 of review: a terminal-only write failure held for four seconds was retried five times at one second, behind a pump that read nothing."
     },
     {

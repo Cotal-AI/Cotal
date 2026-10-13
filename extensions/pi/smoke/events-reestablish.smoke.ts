@@ -97,7 +97,7 @@ function rig(session: string) {
   r.broker.failNext = 1;
   r.assistant([{ type: "text", text: "second answer" }], "stop");
   await r.flush();
-  c("A:CONTROL-the-second-turn-failed-on-the-wire", r.broker.seq === 1 && r.stops.length === 1 && r.stops[0] === 1000, { seq: r.broker.seq, stops: r.stops });
+  c("A:CONTROL-the-second-turn-failed-on-the-wire", r.broker.seq === 1 && r.stops.length === 1 && r.stops[0] === 0, { seq: r.broker.seq, stops: r.stops });
   await sleep(1400); // the holder's first re-establish is one second out
   await r.flush();
   c("A:the-re-establish-does-NOT-read-the-acknowledged-cursor-as-a-vanished-file", !r.errors.some((e) => e.includes("vanished")) && existsSync(r.path), r.errors);

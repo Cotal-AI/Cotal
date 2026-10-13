@@ -492,8 +492,8 @@ const B = "/tmp/session-b.jsonl";
 }
 
 // ---- RE-ESTABLISH ---------------------------------------------------------------------------
-// A failure stops the plane, never the seat: the holder starts the emitter again on its own backoff,
-// as the first start ran, and reports every failure with the delay. Measured on 2026-10-12: the
+// A failure stops the plane, never the seat: the holder starts the emitter again at once, as the
+// first start ran, then every `retryMs` while it stays down, and reports every failure with the delay. Measured on 2026-10-12: the
 // seat-stop this replaced showed in Claude Code as "MCP server cotal has disconnected", and the
 // harness restarted the connector on the next tool call anyway, once per keystroke.
 {
@@ -502,11 +502,10 @@ const B = "/tmp/session-b.jsonl";
   r.holder.adopt(A, "startup");
   await r.holder.settled();
   c("CONTROL:the-first-start-failed-and-was-reported", r.errors.length === 1 && r.starts === 1, { errors: r.errors.length, starts: r.starts });
-  c("revive:the-sink-is-told-the-delay-before-the-re-establish", r.delays[0] === 20, r.delays);
-  c("revive:nothing-is-retried-before-the-delay", r.starts === 1, r.starts);
+  c("revive:the-sink-is-told-the-re-establish-is-at-once", r.delays[0] === 0, r.delays);
   await sleep(60);
   await r.holder.settled();
-  c("revive:the-emitter-is-started-again-after-the-delay", r.starts === 2, r.starts);
+  c("revive:the-emitter-is-started-again-at-once", r.starts === 2, r.starts);
   c("revive:the-re-establish-uses-the-FIRST-path", r.paths[1] === A, r.paths);
   c("revive:the-re-establish-uses-the-FIRST-adopt-context", r.contexts[1] === "startup", r.contexts);
   c("revive:a-re-established-holder-reports-running", r.holder.running && r.holder.failure === undefined, { running: r.holder.running, failure: r.holder.failure?.message });
@@ -518,26 +517,16 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
-  // The delay doubles while the failure repeats, and a success resets it.
+  // The first retry is at once; while the failure repeats the wait is `retryMs`, fixed, and a
+  // re-establish that goes through resets it to at once.
   const boom = new Error("broker unreachable");
   const r = rig({ fail: boom, failTimes: 3, retryMs: 10 });
   r.holder.adopt(A);
   await r.holder.settled();
-  await sleep(10 + 20 + 40 + 60);
+  await sleep(60);
   await r.holder.settled();
-  c("revive:the-delay-DOUBLES-per-consecutive-failure", r.delays.slice(0, 3).join(",") === "10,20,40", r.delays);
+  c("revive:the-first-retry-is-at-once-and-the-rest-are-paced-by-the-fixed-wait", r.delays.slice(0, 3).join(",") === "0,10,10", r.delays);
   c("revive:the-plane-comes-back-after-repeated-failures", r.holder.running && r.starts === 4, { running: r.holder.running, starts: r.starts });
-  await r.holder.close();
-}
-
-{
-  // The cap: a failure that outlives a few retries is paced to a minute, never faster.
-  const r = rig({ retryMs: 70_000 });
-  r.holder.adopt(A);
-  await r.holder.settled();
-  r.holder.adopt(B); // the rebind refusal
-  await r.holder.settled();
-  c("revive:the-delay-is-CAPPED-at-the-ceiling", r.delays[0] === AguiEmitterHolder.RETRY_BACKOFF_CAP_MS, r.delays);
   await r.holder.close();
 }
 
@@ -588,12 +577,11 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
-  // The backoff counts failures since the last pump that RETURNED, not failures ever and not
-  // failures since the last start. A start reaches the broker only for its preflight, so a broker
-  // that refuses every publish passes every start; a reset there would retry every second for as
-  // long as the outage lasts. Two outages with a working plane between them each get the base
-  // delay (Sol, review of 2026-10-12: the first cut inherited the accumulated delay into an
-  // independent later outage).
+  // The wait resets only once a re-establish has gone through, not when a start returns. A start
+  // reaches the broker only for its preflight, so a broker that refuses every publish passes every
+  // start; a reset there would make every attempt the at-once one. Two outages with a working
+  // plane between them each get the at-once attempt (Sol, review of 2026-10-12: the first cut
+  // inherited the accumulated delay into an independent later outage).
   const r = rig({
     retryMs: 10,
     make: (start) => {
@@ -605,17 +593,17 @@ const B = "/tmp/session-b.jsonl";
   });
   r.holder.adopt(A);
   await r.holder.settled();
-  r.holder.flush(A); // start 1 pumps and fails: delay 10
+  r.holder.flush(A); // start 1 pumps and fails: at once
   await r.holder.settled();
   await sleep(15);
-  await r.holder.settled(); // start 2's revive pump fails: delay 20, a start passed in between
+  await r.holder.settled(); // start 2's revive pump fails: the fixed wait, a start passed in between
   await sleep(30);
   await r.holder.settled(); // start 3's revive pump returns: the plane is back
   c("CONTROL:two-failures-with-a-passing-start-between-them", r.starts === 3 && r.holder.running, { starts: r.starts, running: r.holder.running });
-  c("revive:a-start-that-passes-does-NOT-reset-the-delay", r.delays.slice(0, 2).join(",") === "10,20", r.delays);
+  c("revive:a-start-that-passes-does-NOT-reset-the-delay", r.delays.slice(0, 2).join(",") === "0,10", r.delays);
   r.holder.flush(A); // start 3's second pump fails: a new outage after a pump that returned
   await r.holder.settled();
-  c("revive:a-pump-that-returns-DOES-reset-the-delay", r.delays[2] === 10, r.delays);
+  c("revive:a-pump-that-returns-DOES-reset-the-delay", r.delays[2] === 0, r.delays);
   await r.holder.close();
 }
 
@@ -929,10 +917,10 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
-  // THE BACKOFF RESETS ONLY ONCE THE WHOLE RE-ESTABLISH HAS GONE THROUGH, the owed terminal
-  // included. A terminal whose write keeps failing behind a pump that reads nothing was retried
-  // every second for as long as the failure lasted (Sol, review of 2026-10-13: five delays of one
-  // second under a terminal-only write failure held for four seconds).
+  // THE WAIT RESETS ONLY ONCE THE WHOLE RE-ESTABLISH HAS GONE THROUGH, the owed terminal included.
+  // A terminal whose write keeps failing behind a pump that reads nothing is the plane still down,
+  // paced like any other standing fault (Sol, review of 2026-10-13: a reset before the held close
+  // made every attempt the at-once one).
   const r = rig({
     retryMs: 10,
     make: () => {
@@ -944,13 +932,13 @@ const B = "/tmp/session-b.jsonl";
   });
   r.holder.adopt(A);
   await r.holder.settled();
-  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // fails: delay 10
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // fails: at once
   await r.holder.settled();
   await sleep(15);
-  await r.holder.settled(); // re-establish 1: empty pump, held close fails: delay 20
+  await r.holder.settled(); // re-establish 1: empty pump, held close fails: the fixed wait
   await sleep(30);
-  await r.holder.settled(); // re-establish 2: the same: delay 40
-  c("revive:the-delay-DOUBLES-while-the-held-close-keeps-failing", r.delays.slice(0, 3).join(",") === "10,20,40", r.delays);
+  await r.holder.settled(); // re-establish 2: the same
+  c("revive:the-wait-stays-fixed-while-the-held-close-keeps-failing", r.delays.slice(0, 3).join(",") === "0,10,10", r.delays);
   await r.holder.close();
 }
 
@@ -1348,10 +1336,10 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   r.holder.flush(A); // pump 1 fails: down
   await r.holder.settled();
-  await sleep(35); // the first retry at 20ms: start 2 fails, the plane is down again with no emitter
+  await sleep(5); // the first retry at once: start 2 fails, the plane is down again with no emitter
   c("CONTROL:the-re-establish-start-failed-and-the-plane-is-down-with-no-emitter", r.starts === 2 && r.errors.length === 2 && !r.holder.running, { starts: r.starts, errors: r.errors.length });
   r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the terminal, while down after the failed start
-  await sleep(80); // the second retry at 40ms more: start 3 goes through
+  await sleep(80); // the second retry at 20ms: start 3 goes through
   await r.holder.settled();
   const fresh = r.made[1]; // start 2 made nothing
   c("revive:a-terminal-while-down-after-a-FAILED-re-establish-start-is-held-for-the-down-run", r.starts === 3 && fresh?.closes.length === 1 && fresh.closes[0]?.error?.code === "rate_limit" && r.holder.running, { starts: r.starts, closes: fresh?.closes, running: r.holder.running });

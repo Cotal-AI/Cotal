@@ -31,10 +31,10 @@
     {
       "name": "O1 a failed turn closes exactly as a finished one does, which is the state this connector shipped in",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));",
-      "replace": "          eventHolder?.closeRun(Date.now());",
+      "find": "          await eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));",
+      "replace": "          await eventHolder?.closeRun(Date.now());",
       "expectRed": "fail:and that close is RUN_ERROR, not RUN_FINISHED",
-      "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED — THE DEFECT",
+      "cell": "fail:and that close is RUN_ERROR, not RUN_FINISHED \u2014 THE DEFECT",
       "note": "The pre-fix line, restored verbatim. An APIError turn is published as a run that ended, carrying no outcome, and a reader cannot tell it from a turn that succeeded."
     },
     {
@@ -43,8 +43,23 @@
       "find": "interrupted ? undefined : runErrorOf(event.properties.error)",
       "replace": "runErrorOf(event.properties.error)",
       "expectRed": "abort:and THAT close is RUN_FINISHED",
-      "cell": "abort:and THAT close is RUN_FINISHED — a Stop is not a failed turn, and a blanket mapping would fail here",
+      "cell": "abort:and THAT close is RUN_FINISHED \u2014 a Stop is not a failed turn, and a blanket mapping would fail here",
       "note": "The plausible over-reach rather than a contrived one: the guard reads like a special case until you notice a user cancellation arrives on the same event."
+    },
+    {
+      "name": "O3 the error arm returns before the terminal's position read answers",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          await eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));\n",
+      "replace": "          void eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));\n",
+      "expectRed": "barrier:the error arm is still in flight while the terminal's position read is held",
+      "note": "The round-14 defect: the next turn was admitted before the position read answered, and the terminal named the next turn."
+    },
+    {
+      "name": "O4 the idle arm returns before the terminal's position read answers",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          await eventsFor(sessionID)?.closeRun(Date.now());\n",
+      "replace": "          void eventsFor(sessionID)?.closeRun(Date.now());\n",
+      "expectRed": "barrier:the idle arm is still in flight while the terminal's position read is held"
     }
   ]
 }

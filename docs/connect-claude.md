@@ -364,8 +364,9 @@ session with no launch material and no required-policy fallback keeps the generi
 
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
-before it re-establishes the plane, one second at first and doubling to a minute while the failure
-repeats; the delay returns to one second once a read and publish has gone through. The re-establish
+before it re-establishes the plane: at once after a failure, then every second while the plane
+stays down, a fixed wait that neither grows nor is capped, so the plane is back within a second
+of the fault clearing. The re-establish
 is a fresh start: it reopens the write-ahead log, settles any frame it left pending, builds the
 mapper from the run the log has open, and reads on from the stored cursor, which is the same
 recovery a connector restart runs. A failed publish or a failed log write is never retried on the

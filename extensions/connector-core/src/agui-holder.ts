@@ -28,10 +28,10 @@ import type { AguiEmitter, HeldTerminal, ReportedTerminal } from "./agui-emitter
  * metadata with nothing reporting why.
  */
 export interface AguiEmitterHolderHooks {
-  /** Where a failure goes, with the delay before the holder re-establishes the plane, or `null`
-   *  when it will not because the holder is closed. Required, and not defaulted to a swallow: the
-   *  holder runs behind a hook that must not throw, so the only way a failure reaches a human is if
-   *  the caller is made to say where it goes. */
+  /** Where a failure goes, with the delay before the holder re-establishes the plane (`0` when it
+   *  does so at once), or `null` when it will not because the holder is closed. Required, and not
+   *  defaulted to a swallow: the holder runs behind a hook that must not throw, so the only way a
+   *  failure reaches a human is if the caller is made to say where it goes. */
   onError: (e: Error, retryInMs: number | null) => void;
   /**
    * The position the adopted source has reached now: its `DurableSource.end`, for the path the
@@ -42,8 +42,8 @@ export interface AguiEmitterHolderHooks {
    * terminal onto the wrong turn (Sol, round 11 of 2026-10-13).
    */
   sourceEnd: (path: string) => Promise<string>;
-  /** The wait before the first re-establish attempt after a failure. Each consecutive failure
-   *  doubles it, up to {@link AguiEmitterHolder.RETRY_BACKOFF_CAP_MS}. Default one second. */
+  /** The wait between re-establish attempts while the plane stays down. The first attempt after
+   *  a failure is at once; this paces the ones after it. Default one second. */
   retryMs?: number;
   /**
    * Told which run {@link AguiEmitterHolder.closeRun} closed, so the connector's own mapper can
@@ -81,19 +81,19 @@ export interface AguiEmitterHolderHooks {
  * The seat never stops for it, on any space. It used to, on a space that requires events, and the
  * harness then restarted the connector on the next tool call: the plane was re-established anyway,
  * once per keystroke, with a dropped mesh connection each time. The holder re-establishes it in
- * process instead, on a backoff, and the seat keeps its connection; the line says when.
+ * process instead, at once, and the seat keeps its connection; the line says when.
  */
 export function eventPlaneStopped(opts: { log: (line: string) => void }): (e: Error, retryInMs: number | null) => void {
   return (e, retryInMs) =>
     opts.log(
       `AG-UI emitter stopped: ${e.message}` +
-        (retryInMs === null ? "" : `; re-establishing the event plane in ${retryInMs}ms`),
+        (retryInMs === null ? "" : retryInMs === 0 ? "; re-establishing the event plane now" : `; re-establishing the event plane in ${retryInMs}ms`),
     );
 }
 
 /**
- * Holds at most one {@link AguiEmitter} at a time, started on first adopt and re-established on a
- * backoff after a failure.
+ * Holds at most one {@link AguiEmitter} at a time, started on first adopt and re-established at
+ * once after a failure.
  *
  * `T` is the connector's source record type; the holder never inspects one. It owns four things —
  * WHEN the emitter starts, that ONE runs at a time, that everything touching it is serialized,
@@ -109,18 +109,22 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    * The failure the plane is down for. While set, this holder starts and pumps nothing; it clears
    * when {@link revive} re-establishes the plane.
    *
-   * The re-establish runs on the holder's own backoff, never on the next hook: a retry paced by
-   * how often the user happens to type would re-run the preflight and the WAL recovery at a rate
-   * nothing chose. It is the same recovery a connector restart runs, so it adds no path the
-   * emitter did not already take, and a pending frame is settled by `start()` before anything new
-   * is read. The failure is still reported, every time, with the delay; a plane that came back on
-   * its own is not a plane that failed silently.
+   * The re-establish runs AT ONCE, off the failing step: a seat whose plane is down is a seat
+   * whose turns are missing from the wire, and nothing is gained by waiting to find out whether
+   * the fault has cleared. While it stays down the attempts follow every `retryMs`, a fixed wait
+   * that neither grows nor is capped: a standing fault costs one start a second, and the plane is
+   * back within that second of the fault clearing, whether or not the agent is doing anything. It
+   * is the same recovery a connector restart runs, so it adds no path the emitter did not already
+   * take, and a pending frame is settled by `start()` before anything new is read. The failure is
+   * still reported, every time, with the delay; a plane that came back on its own is not a plane
+   * that failed silently.
    */
   private dead?: Error;
   /** The first adopt's context, kept so a re-establish starts the emitter as the first start did. */
   private startContext?: StartContext;
-  /** Consecutive failures since the plane was last established. Paces {@link nextRetryDelayMs}. */
-  private retryAttempt = 0;
+  /** True from a failure until a re-establish has gone through in full. A failure under it is the
+   *  plane still down, and the next attempt is paced by `retryMs`; without it, at once. */
+  private retried = false;
   private reviveTimer?: ReturnType<typeof setTimeout>;
   /**
    * The turn terminals held while no emitter can take them: ones that arrived while the plane was
@@ -140,9 +144,6 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    *  held close have all gone through. A terminal that arrives in that window is held, never
    *  queued: a queued close would run after the recovery pump and close whatever run is open then. */
   private reviving = false;
-  /** The ceiling the re-establish backoff grows to. A failure that outlives a few retries is a
-   *  standing one, and retrying it every second forever is a flat load on the broker's preflight. */
-  static readonly RETRY_BACKOFF_CAP_MS = 60_000;
   /**
    * Terminal, and NOT a failure. Set by {@link close} when the owner releases this holder: it never
    * starts, pumps or closes a run again, `failure` stays empty, and `onError` is not called. Kept
@@ -256,11 +257,6 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       if (!emitter || emitter.stopped) return;
       await this.holdForLive();
       await emitter.pump();
-      // A pump that returned is the plane working: it read the source and published what it read.
-      // The backoff resets HERE and not when a start returns, because a start reaches the broker
-      // only for its preflight, so a broker that refuses every publish would pass every start and
-      // the retry would never pace.
-      this.retryAttempt = 0;
     });
   }
 
@@ -478,27 +474,22 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       this.hooks.onError(e, null);
       return;
     }
-    const delay = this.nextRetryDelayMs();
+    // AT ONCE for the first failure, off this step: a transient fault is over by the time the
+    // start runs, and the turns it left unpublished are on the wire before the agent's next
+    // action. A failure under a re-establish is the plane still down, paced by `retryMs`, fixed:
+    // it neither doubles nor caps, so the plane is back within one wait of the fault clearing.
+    const delay = this.retried ? (this.hooks.retryMs ?? 1_000) : 0;
+    this.retried = true;
     this.reviveTimer = setTimeout(() => this.revive(), delay);
     this.hooks.onError(e, delay);
   }
 
-  /** The wait before the next re-establish: `retryMs`, doubling per failure since the last pump
-   *  that returned, up to {@link RETRY_BACKOFF_CAP_MS}. The first wait is `retryMs` itself, so a
-   *  transient failure recovers quickly; only a failure that repeats gets paced. */
-  private nextRetryDelayMs(): number {
-    const base = this.hooks.retryMs ?? 1_000;
-    const delay = Math.min(base * 2 ** this.retryAttempt, AguiEmitterHolder.RETRY_BACKOFF_CAP_MS);
-    this.retryAttempt++;
-    return delay;
-  }
-
   /**
-   * Re-establish the plane after {@link die}'s backoff: clear the failure, drop the emitter, and
-   * queue a start and a pump on the chain. The start is a fresh `startEmitter`, which reopens the
+   * Re-establish the plane after a failure: clear the failure, drop the emitter, and queue a start
+   * and a pump on the chain. The start is a fresh `startEmitter`, which reopens the
    * write-ahead log, settles any frame it left pending, and builds the connector's mapper from the
    * bracket state the log holds, before reading on from the stored cursor. A failure here is
-   * reported and paced like the first.
+   * reported like the first, and the next attempt follows after `retryMs`.
    *
    * THE EMITTER IS DROPPED WHETHER OR NOT IT HALTED. A failure that leaves it running leaves it
    * running with state the log never accepted: a publish that failed on the wire leaves the frame
@@ -510,6 +501,7 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
    * only a start rebuilds the mapper from the log, so the re-establish is a start.
    */
   private revive(): void {
+    if (this.reviveTimer !== undefined) clearTimeout(this.reviveTimer);
     this.reviveTimer = undefined;
     if (this.boundPath === undefined) return;
     const path = this.boundPath;
@@ -546,12 +538,11 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       await emitter.pump();
       // A terminal the pump placed on the run it left open closes it here. A close that fails here
       // holds the terminal again on its way out, so the next re-establish still owes it. The
-      // backoff resets only once the whole re-establish has gone through, owed terminal included: a
-      // terminal that keeps failing to write is a repeating failure and is paced like one, not
-      // retried every second behind a pump that read nothing.
+      // re-establish has gone through only once the whole of it has, owed terminal included: a
+      // terminal that keeps failing to write fails the re-establish, and the next attempt is paced.
       await this.settle(emitter);
       this.reviving = false;
-      this.retryAttempt = 0;
+      this.retried = false;
     });
   }
 

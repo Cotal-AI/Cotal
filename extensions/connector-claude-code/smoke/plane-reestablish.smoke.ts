@@ -251,7 +251,7 @@ function plane(opts: { seedMapper: boolean }) {
   p.assistant();
   await p.flush();
   await p.turnEnd();
-  c("A:the-flush-under-the-fault-is-reported-with-a-delay", p.log.some((l) => l.includes("re-establishing the event plane in")), p.log);
+  c("A:the-flush-under-the-fault-is-reported-with-the-re-establish", p.log.some((l) => l.includes("re-establishing the event plane")), p.log);
   c("A:nothing-published-under-the-fault", p.broker.seq === before, p.broker.seq);
   chmodSync(p.walDir(), 0o700);
   await sleep(250);
@@ -490,10 +490,10 @@ for (const seedMapper of [true, false]) {
   await p.flush();
   chmodSync(p.walDir(), 0o500);
   await p.turnEnd({ message: "rate_limit", code: "rate_limit" });
-  await sleep(300); // 20, 40, 80, 160: four re-establishes, each reading nothing and failing the close again
+  await sleep(300); // at once, then every 20ms: re-establishes, each reading nothing and failing the close again
   await p.holder.settled();
-  const delays = p.log.map((l) => /re-establishing the event plane in (\d+)ms/.exec(l)?.[1]).filter((d): d is string => d !== undefined);
-  c("H:the-delay-DOUBLES-while-the-terminal-write-keeps-failing", delays.slice(0, 3).join(",") === "20,40,80", delays);
+  const delays = p.log.map((l) => /re-establishing the event plane (now|in (\d+)ms)/.exec(l)).filter((m): m is RegExpExecArray => m !== null).map((m) => m[2] ?? "0");
+  c("H:the-first-re-establish-is-at-once-and-the-rest-are-paced-while-the-terminal-write-keeps-failing", delays.slice(0, 3).join(",") === "0,20,20", delays);
   chmodSync(p.walDir(), 0o700);
   await sleep(400);
   await p.holder.settled();
@@ -779,7 +779,7 @@ for (const seedMapper of [true, false]) {
   c("P:CONTROL-the-terminal-write-failed-and-the-plane-is-down", !p.holder.running, p.holder.running);
   p.user(); // the next prompt, written during the outage
   p.assistant(" next-turn");
-  const reestablishes = () => p.log.filter((l) => l.includes("re-establishing the event plane in")).length;
+  const reestablishes = () => p.log.filter((l) => l.includes("re-establishing the event plane")).length;
   await until(() => reestablishes() >= 2, 2_000); // the first re-establish packs the owed error and fails at the log
   c("P:CONTROL-the-first-re-establish-failed-with-the-next-prompt-read-and-nothing-published", reestablishes() >= 2 && !p.holder.running && !p.broker.frames.some((f) => f.runId === "run-3"), { reestablishes: reestablishes(), running: p.holder.running, frames: p.broker.frames.map((f) => f.runId) });
   chmodSync(p.walDir(), 0o700);

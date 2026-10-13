@@ -1374,7 +1374,12 @@ export const cotal: Plugin = async () => {
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
           eventsFor(sessionID)?.flush(sessionID);
-          eventsFor(sessionID)?.closeRun(Date.now());
+          // The close's position read is awaited BEFORE the next turn is admitted: the position is
+          // the session's messages over HTTP, and a next prompt driven in before that read answers
+          // puts the terminal after the next turn's records, which closes that turn with it (Sol,
+          // round 14 of 2026-10-13, through the built plugin: a failed turn closed as a finish and
+          // its successor as the error).
+          await eventsFor(sessionID)?.closeRun(Date.now());
           await safeStatus("idle");
           completeTurn(); // the sole turn-end site: ack-on-surface + drive the next batch
           break;
@@ -1424,7 +1429,8 @@ export const cotal: Plugin = async () => {
           // so a reader can tell it from a turn that finished; an interrupted one closes with no
           // outcome, which says the run ended and does not claim it succeeded. `RUN_ERROR` closes a
           // run by itself, so no second terminal follows it.
-          eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));
+          // Awaited for its position read, as the idle arm does, before the next turn is admitted.
+          await eventHolder?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;

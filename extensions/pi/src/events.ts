@@ -17,8 +17,8 @@ export class PiEvents {
   private closing = false;
 
   /** @param stopped Told of each failure that stopped this seat's event plane, with the delay before
-   *  the holder re-establishes it, or `null` for a failure of this adapter's own that no holder
-   *  retries. */
+   *  the holder re-establishes it (`0` for at once), or `null` for a failure of this adapter's own
+   *  that no holder retries. */
   constructor(
     private readonly mesh: MeshAgent,
     private readonly space: string,

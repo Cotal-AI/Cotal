@@ -86,14 +86,22 @@ function turn(sessionID: string, n: number): unknown[] {
 }
 
 const content = new Map<string, unknown[]>();
+/** While set, every read of the session's messages waits on it: the position read a turn end
+ *  takes is in flight until it is released. */
+let readGate: Promise<void> | undefined;
+let releaseRead: (() => void) | undefined;
+const holdReads = (): void => {
+  readGate = new Promise<void>((r) => (releaseRead = r));
+};
 const oc = createHttpServer((req, res) => {
   if (req.headers.authorization !== auth) return void res.writeHead(401).end();
   req.setEncoding("utf8");
   req.on("data", () => {});
-  req.on("end", () => {
+  req.on("end", async () => {
     if (req.method === "POST" && req.url === "/session")
       return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: A }));
     const m = req.url?.match(/^\/session\/([^/]+)\/message$/);
+    if (req.method === "GET" && m && readGate) await readGate;
     if (req.method === "GET" && m)
       return void res
         .writeHead(200, { "content-type": "application/json" })
@@ -151,10 +159,21 @@ try {
   await sleep(2_000);
 
   await busy(A);
-  await fire({
+  // THE TURN END WAITS BEHIND ITS POSITION READ. The terminal's position is the session's messages
+  // over HTTP; an event arm that returns before that read answers lets the next turn in ahead of
+  // it, and the position then names the next turn (Sol, round 14 of 2026-10-13, through the built
+  // plugin: a failed turn closed as a finish and its successor as the error). The read is held
+  // here, and the arm must still be in flight while it is.
+  holdReads();
+  const errored = fire({
     type: "session.error",
     properties: { sessionID: A, error: { name: "APIError", data: { message: "upstream returned 500", statusCode: 500, isRetryable: true } } },
-  });
+  }).then(() => "returned" as const);
+  const errorArm = await Promise.race([errored, sleep(600).then(() => "in flight" as const)]);
+  check("barrier:the error arm is still in flight while the terminal's position read is held", errorArm === "in flight", errorArm);
+  releaseRead?.();
+  readGate = undefined;
+  await errored;
   await sleep(2_500);
 
   // ---- Turn 2: a real turn, then a USER ABORT. Not a failure, and the control that says so.
@@ -167,6 +186,20 @@ try {
     type: "session.error",
     properties: { sessionID: A, error: { name: "MessageAbortedError", data: { message: "The operation was aborted" } } },
   });
+  await sleep(2_500);
+
+  // ---- Turn 3: a turn that ends on `session.idle`, the same barrier on the other arm.
+  content.set(A, [...turn(A, 1), ...turn(A, 2), ...turn(A, 3)]);
+  await part(A);
+  await sleep(2_000);
+  await busy(A);
+  holdReads();
+  const idled = fire({ type: "session.idle", properties: { sessionID: A } }).then(() => "returned" as const);
+  const idleArm = await Promise.race([idled, sleep(600).then(() => "in flight" as const)]);
+  check("barrier:the idle arm is still in flight while the terminal's position read is held", idleArm === "in flight", idleArm);
+  releaseRead?.();
+  readGate = undefined;
+  await idled;
   await sleep(2_500);
 
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
@@ -209,7 +242,9 @@ try {
   const closesBetween = (from: number, to: number): Ev[] =>
     seen.slice(from + 1, to < 0 ? seen.length : to).filter(isClose);
   const failedTurnCloses = closesBetween(a1, a2);
-  const abortedTurnCloses = closesBetween(a2, -1);
+  const a3 = idx((e) => e.text.includes("answer-3"));
+  const abortedTurnCloses = closesBetween(a2, a3);
+  const idleTurnCloses = closesBetween(a3, -1);
 
   check("fail:the API-error turn closed EXACTLY ONCE — `RUN_ERROR` closes a run, so nothing may follow it",
     failedTurnCloses.length === 1, failedTurnCloses);
@@ -222,9 +257,10 @@ try {
   check("abort:the user-aborted turn closed exactly once", abortedTurnCloses.length === 1, abortedTurnCloses);
   check("abort:and THAT close is RUN_FINISHED — a Stop is not a failed turn, and a blanket mapping would fail here",
     abortedTurnCloses[0]?.type === "RUN_FINISHED", abortedTurnCloses[0]);
+  check("idle:the turn that ended on session.idle closed exactly once, as a finish", a3 >= 0 && idleTurnCloses.length === 1 && idleTurnCloses[0]?.type === "RUN_FINISHED", { a3, idleTurnCloses });
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 7;
+  const EXPECTED = 10;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
