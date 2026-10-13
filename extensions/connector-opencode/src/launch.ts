@@ -54,9 +54,9 @@ const USERNAME = "opencode";
  *  otherwise it is minted per launch. */
 const SECRET = process.env.OPENCODE_SERVER_PASSWORD || randomBytes(24).toString("hex");
 
-/** Run by `/bin/sh -c` as `<script> cotal-serve <record> <command> <args...>`. A record it cannot
- *  write stops it before the command starts. */
-const RECORD_THEN_EXEC = `printf %s "$$" > "$1" && shift && exec "$@"`;
+/** Run by `/bin/sh -c` as `<script> cotal-serve <record> <token> <command> <args...>`. The record
+ *  holds its pid and the launch's token. A record it cannot write stops it before the command starts. */
+const RECORD_THEN_EXEC = `printf '%s %s' "$$" "$2" > "$1" && shift 2 && exec "$@"`;
 
 /** Ask the OS for a free port (bind :0, read it, release) so co-located peers don't collide. */
 async function freePort(): Promise<number> {
@@ -150,8 +150,10 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
 
   // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. The
   // previous launcher removes this record when its serve exits, which can land anywhere in this
-  // check, so a record that vanishes under the read or the removal is no record. A directory is no
-  // record either, but only an empty one is removed: one that holds files is refused, never deleted.
+  // check, so a record that vanishes under the read is no record. A stale record is not removed: a
+  // concurrent launch may have replaced it after the read, and the new serve's record overwrites it.
+  // A directory is no record either, but only an empty one is removed: one that holds files is
+  // refused, never deleted.
   const pidFile = join(agentHome, "serve.pid");
   let recorded: string | undefined;
   try {
@@ -165,10 +167,9 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
   if (recorded !== undefined) {
-    const pid = Number(recorded);
+    const pid = Number(recorded.split(" ")[0]);
     if (isLiveOpencodeServe(pid))
       throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
-    rmSync(pidFile, { force: true });
   }
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
@@ -181,10 +182,11 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the next launch cannot see, so the record has to exist before the serve does: the process writes
   // its own pid and only then becomes the serve, which keeps that pid. Windows has no exec, so there
   // the launcher records it after the spawn.
+  const token = randomBytes(16).toString("hex");
   const serveArgv: [string, ...string[]] = [BIN, "serve", "--hostname", "127.0.0.1", "--port", port];
   const [serveCommand, ...serveArgs]: [string, ...string[]] = process.platform === "win32"
     ? serveArgv
-    : ["/bin/sh", "-c", RECORD_THEN_EXEC, "cotal-serve", pidFile, ...serveArgv];
+    : ["/bin/sh", "-c", RECORD_THEN_EXEC, "cotal-serve", pidFile, token, ...serveArgv];
   const serve = spawn(serveCommand, serveArgs, {
     env: {
       ...process.env,
@@ -197,8 +199,18 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
-  serve.on("exit", () => rmSync(pidFile, { force: true }));
+  const record = `${serve.pid} ${token}`;
+  if (process.platform === "win32") writeFileSync(pidFile, record);
+  // Once the serve is dead, the next launch of this name may already have written its own serve's
+  // record, possibly under a reused pid, so only a record that still holds this launch's token is
+  // removed.
+  serve.on("exit", () => {
+    try {
+      if (readFileSync(pidFile, "utf8") === record) rmSync(pidFile);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+  });
   // A graceful stop signals only this process and can arrive anywhere in the minute-long boot below,
   // so its teardown is installed with the serve. The exit handlers below end this process.
   let tui: ChildProcess | undefined;
