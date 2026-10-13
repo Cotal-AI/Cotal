@@ -601,6 +601,34 @@ Claude process's environment, so share only when you're fine with that teammate 
 the key), and memory adds up, because a heavy server boots once per spawn, multiplied
 across a team, and can starve a small machine.
 
+## Host sessions in one process
+
+A host serving many managed seats can run their MCP servers in one process with the subpath
+`@cotal-ai/connector-claude-code/mcp`, which loads with both `import` and `require`:
+
+```ts
+import { serveClaudeSession } from "@cotal-ai/connector-claude-code/mcp";
+
+const session = await serveClaudeSession({ env, input, output });
+await session.close();
+```
+
+Loading the module only exports it; it serves its own stdio only when run, as `node dist/mcp.cjs`.
+Claude Code pushes `claude/channel` only to a stdio server it launched, so each `claude` still
+launches a stdio command, such as a small relay that pipes its stdio to the host.
+
+- **Managed only.** `env` is the seat's launch env and the session reads no other env. It must
+  carry a mesh identity and the full control pair, or the call rejects before the session joins the
+  mesh. A plain `claude` with no identity is served by `mcp.cjs` run directly.
+- **Streams.** `input` carries JSON-RPC from the client and `output` carries this session's replies
+  and `claude/channel` pushes. The caller owns both streams. When `input` ends, the session closes.
+- **`fatalBind`.** Off by default: a control socket that cannot be bound rejects the call and the
+  host keeps its other sessions. Only a process that is the session turns it on, as `mcp.cjs` does.
+- **Teardown.** `close()` closes the control socket, the wake policy, the AG-UI emitter, the mesh
+  endpoint and the MCP server, and is idempotent. A startup failure closes what was started before
+  the call rejects. A session that ends itself (a manager shutdown frame, the end of `input`, a
+  required event plane stopping) closes and then calls `onShutdown(code)`.
+
 ## Feedback
 
 `cotal_feedback` works out of the box: without a key it posts to the public intake at
