@@ -73,7 +73,9 @@ See [the issuance design](design/user-auth-run-start.md#platform-supervisor-regi
 ## The export surface
 
 Everything below is a real export of a published package, reachable from the package root (each
-package publishes only `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`). Type-only names
+package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
+`@cotal-ai/connector-claude-code` also publishes `./mcp`, which hosts managed Claude Code sessions
+in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)). Type-only names
 are marked; import them with `import type`.
 
 **Daemon runners and lifecycle**
