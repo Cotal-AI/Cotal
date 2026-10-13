@@ -194,7 +194,8 @@ Reasoning is off by default.
   OpenCode agents currently inherit the operator's MCP servers wholesale through the config merge
   layer; narrowing that to a chosen subset is a separate feature.
 - **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
-  OpenCode 2.x yet; spawn with `--no-events`.
+  OpenCode 2.x yet; spawn with `--no-events`. A registration that requires events cannot opt out,
+  so the 2.x connector refuses it with the same message.
 - **On 2.x, `cotal models` is refused.** The 2.x catalog is served by a running opencode
   server, not the CLI, so pass `--model provider/model` directly instead.
 

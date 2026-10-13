@@ -16,7 +16,7 @@
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
   configFromEnv,
-  envFlag,
+  eventPlaneArmed,
   hasIdentity,
   MeshAgent,
   formatInjection,
@@ -92,12 +92,11 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   if (guard.__cotalOpencodeSetup) return; // one agent; a later boot in this process is a no-op
   guard.__cotalOpencodeSetup = true;
 
-  if (envFlag(process.env, "COTAL_EVENTS")) {
+  const config = configFromEnv();
+  if (eventPlaneArmed(config)) {
     log(EVENTS_REFUSAL);
     process.exit(1);
   }
-
-  const config = configFromEnv();
   // Both readers of the launch material have now read it (the same rule as 1.x — see plugin.ts).
   scrubLaunchMaterial();
   config.connector = "opencode";
