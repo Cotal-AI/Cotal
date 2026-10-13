@@ -1269,14 +1269,23 @@ try {
     await em.pump();
     // Two records unread: r1's last answer, a frame of its own, and the next prompt, which finishes r1 and starts r2.
     append(src, { run: "r1", msg: "m1b", text: "last answer" }, { run: "r2", msg: "m2", text: "next prompt" });
+    // The wire gate is WAITED FOR, not slept for: a fixed wait is a race against the log write and
+    // the publish under host load (Gemini, round 9 of 2026-10-13), and a cell that then awaits a
+    // pump nobody releases hangs the suite. The wait is bounded so a mutant that never publishes
+    // reddens instead.
+    const onWire = async (w: { release?: () => void }) => {
+      const deadline = Date.now() + 10_000;
+      while (w.release === undefined && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
+      return w.release !== undefined;
+    };
     const wire: { release?: () => void } = {};
     ep.answers.push(() => new Promise((res) => (wire.release = () => res({ seq: 2, duplicate: false }))), { seq: 3, duplicate: false }, { seq: 4, duplicate: false });
     const pumping = em.pump();
-    await new Promise((r) => setTimeout(r, 30)); // the first frame is on the wire
-    c("owed-late:SETUP-the-first-frame-is-on-the-wire-and-r1-is-still-open", wire.release !== undefined && em.openRunId === "r1" && ep.publishes.length === 2, { held: wire.release !== undefined, open: em.openRunId, publishes: ep.publishes.length });
+    const held = await onWire(wire); // the first frame is on the wire
+    c("owed-late:SETUP-the-first-frame-is-on-the-wire-and-r1-is-still-open", held && em.openRunId === "r1" && ep.publishes.length === 2, { held, open: em.openRunId, publishes: ep.publishes.length });
     em.oweTerminal("r1", { message: "rate_limit", code: "rate_limit" }); // the debt, with the first frame on the wire
     wire.release?.();
-    await pumping;
+    if (held) await pumping;
     const envelope = (p: Call) => { const f = p.parts[0] as unknown as { runId: string; events: AguiEvent[] }; return f.runId + ":" + f.events.map((e) => e.type).join("+"); };
     const after = ep.publishes.slice(1).map(envelope);
     c("owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run", after.join(",") === "r1:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r1:RUN_ERROR,r2:RUN_STARTED" && em.owedRunId === undefined && em.openRunId === "r2", { after, owed: em.owedRunId, open: em.openRunId });
@@ -1288,11 +1297,11 @@ try {
     const wire2: { release?: () => void } = {};
     ep.answers.push({ seq: 5, duplicate: false }, () => new Promise((res) => (wire2.release = () => res({ seq: 6, duplicate: false }))));
     const pumping2 = em.pump();
-    await new Promise((r) => setTimeout(r, 30));
-    c("owed-late:CONTROL-SETUP-the-finishs-frame-is-frozen-and-on-the-wire-so-r3-is-already-the-open-run", wire2.release !== undefined && em.openRunId === "r3" && ep.publishes.length === 6, { held: wire2.release !== undefined, open: em.openRunId, publishes: ep.publishes.length });
+    const held2 = await onWire(wire2);
+    c("owed-late:CONTROL-SETUP-the-finishs-frame-is-frozen-and-on-the-wire-so-r3-is-already-the-open-run", held2 && em.openRunId === "r3" && ep.publishes.length === 6, { held: held2, open: em.openRunId, publishes: ep.publishes.length });
     const frozen = await attempt(async () => em.oweTerminal("r2", { message: "rate_limit" }));
     wire2.release?.();
-    await pumping2;
+    if (held2) await pumping2;
     const tail = ep.publishes.slice(4).map(envelope);
     c("owed-late:CONTROL-a-debt-with-the-finishs-frame-already-frozen-is-refused-and-the-finish-stands", frozen.err !== undefined && /cannot owe/.test(frozen.err.message) && tail.join(",") === "r2:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r3:RUN_FINISHED+RUN_STARTED" && em.owedRunId === undefined && em.openRunId === "r3", { err: frozen.err?.message, tail, owed: em.owedRunId, open: em.openRunId });
     const next = await attempt(async () => em.oweTerminal("r3", { message: "again" }));
