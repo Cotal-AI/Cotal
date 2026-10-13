@@ -76,16 +76,16 @@
     {
       "name": "R6 a terminal that arrives while the plane is down is dropped",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "        if (open !== undefined) this.hold(open, timestamp, error);\n        return;\n",
-      "replace": "        return;\n",
+      "find": "    if (this.dead !== undefined || this.reviving) {\n      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);\n      return;\n    }\n",
+      "replace": "    if (this.dead !== undefined || this.reviving) {\n      return;\n    }\n",
       "expectRed": "revive:a-terminal-held-through-the-outage-closes-its-run-after-the-re-establish",
       "note": "The first cut's rule. The seat stays connected and the plane comes back, so only the close on the fresh emitter can see that the failed turn's run was left open."
     },
     {
       "name": "R7 the held terminal closes whatever run the fresh start comes back with",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "        if (emitter.openRunId === held.runId) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
-      "replace": "        if (emitter.openRunId !== undefined) await this.closeOpenRun(emitter, held.timestamp, held.error);\n",
+      "find": "        if (emitter.openRunId === settle.runId) await this.closeOpenRun(emitter, settle.timestamp, settle.error);\n",
+      "replace": "        if (emitter.openRunId !== undefined) await this.closeOpenRun(emitter, settle.timestamp, settle.error);\n",
       "expectRed": "revive:a-held-terminal-is-DROPPED-when-the-fresh-start-comes-back-with-run-3",
       "note": "A later prompt among the unread records opened its own run; an unmatched close would end it with the earlier turn's terminal and drop the rest of its records."
     },
@@ -116,8 +116,8 @@
     {
       "name": "R11 the backoff resets after the pump, before the held close",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      if (held) {\n        this.heldClose = undefined;\n",
-      "replace": "      this.retryAttempt = 0;\n      if (held) {\n        this.heldClose = undefined;\n",
+      "find": "      const settle = this.heldClose;\n      if (settle) {\n",
+      "replace": "      this.retryAttempt = 0;\n      const settle = this.heldClose;\n      if (settle) {\n",
       "expectRed": "revive:the-delay-DOUBLES-while-the-held-close-keeps-failing",
       "note": "Round 5 of review: a terminal-only write failure held for four seconds was retried five times at one second, behind a pump that read nothing."
     },

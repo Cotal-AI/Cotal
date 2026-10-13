@@ -938,11 +938,16 @@ const B = "/tmp/session-b.jsonl";
   // run the wire had open, and owed to the fresh emitter before its pump.
   let release: (() => void) | undefined;
   let entered = false;
+  // The gate is ARMED right before the retry is due, not keyed on the start number: a mutation that
+  // starts on every flush would otherwise reach the gate from the flush, and a cell that waits on a
+  // gate nobody releases hangs the suite instead of reddening (seen under H1, 2026-10-13).
+  let armed = false;
   const r = rig({
     retryMs: 10,
-    gate: (start) =>
-      start === 2
+    gate: () =>
+      armed
         ? new Promise<void>((res) => {
+            armed = false;
             entered = true;
             release = res;
           })
@@ -959,6 +964,7 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   r.holder.flush(A); // pump 1 fails: down
   await r.holder.settled();
+  armed = true;
   await sleep(40); // the retry fires and the fresh start is held at its gate
   c("CONTROL:the-fresh-start-is-in-flight", entered && r.starts === 2 && !r.holder.running, { entered, starts: r.starts, running: r.holder.running });
   r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the start
