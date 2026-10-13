@@ -7,7 +7,7 @@
  * endpoint). Because description/instructions reach the model, both text fields are bounded
  * here and oversize is **rejected at the write path** — never silently truncated.
  */
-import { Kvm, type KV } from "@nats-io/kv";
+import { Kvm, type KV, type KvEntry } from "@nats-io/kv";
 import { type NatsConnection } from "@nats-io/transport-node";
 import { dialerFor } from "./endpoint.js";
 import { channelBucket, CHANNEL_DEFAULTS_KEY } from "./subjects.js";
@@ -27,33 +27,43 @@ export interface ChannelRegistryFile {
 export const MAX_CHANNEL_DESCRIPTION = 200;
 export const MAX_CHANNEL_INSTRUCTIONS = 2000;
 
-/** Throw if a config is invalid: oversize text (rejected, never clamped — a write past the cap
- *  is a caller bug) or an unparseable `replayWindow`. */
+/** Throw if a config is invalid: an invalid policy field (see {@link validateChannelDefaults}),
+ *  text that is not a string, or oversize text (rejected, never clamped — a write past the cap is
+ *  a caller bug). */
 export function validateChannelConfig(cfg: ChannelConfig): void {
-  if (cfg.description !== undefined && cfg.description.length > MAX_CHANNEL_DESCRIPTION)
-    throw new Error(
-      `channel description too long (${cfg.description.length} > ${MAX_CHANNEL_DESCRIPTION} chars)`,
-    );
-  if (cfg.instructions !== undefined && cfg.instructions.length > MAX_CHANNEL_INSTRUCTIONS)
-    throw new Error(
-      `channel instructions too long (${cfg.instructions.length} > ${MAX_CHANNEL_INSTRUCTIONS} chars)`,
-    );
-  if (cfg.replayWindow !== undefined) parseDuration(cfg.replayWindow); // throws if unparseable
-  if (
-    cfg.deliveryClass !== undefined &&
-    cfg.deliveryClass !== "live" &&
-    cfg.deliveryClass !== "durable"
-  )
-    throw new Error(`invalid deliveryClass "${cfg.deliveryClass}" - expected "live" or "durable"`);
+  validateChannelDefaults(cfg);
+  validateText("description", cfg.description, MAX_CHANNEL_DESCRIPTION);
+  validateText("instructions", cfg.instructions, MAX_CHANNEL_INSTRUCTIONS);
+}
+
+function validateText(field: string, text: string | undefined, max: number): void {
+  if (text === undefined) return;
+  if (typeof text !== "string") throw new Error(`channel ${field} must be a string`);
+  if (text.length > max) throw new Error(`channel ${field} too long (${text.length} > ${max} chars)`);
 }
 
 /** Validate a defaults patch the same way per-channel config is — the space default feeds
  *  {@link effectiveDeliveryClass} as a co-equal input, so a bad value must fail loud here, not
  *  silently become the space-wide effective class. */
 export function validateChannelDefaults(d: ChannelDefaults): void {
+  if (d.replay !== undefined && typeof d.replay !== "boolean")
+    throw new Error(`invalid replay "${d.replay}" - expected true or false`);
   if (d.replayWindow !== undefined) parseDuration(d.replayWindow); // throws if unparseable
   if (d.deliveryClass !== undefined && d.deliveryClass !== "live" && d.deliveryClass !== "durable")
     throw new Error(`invalid deliveryClass "${d.deliveryClass}" - expected "live" or "durable"`);
+}
+
+/** Decode one registry entry and hold it to the checks its writer ran: a raw or foreign put can
+ *  bypass {@link writeChannelConfig}, so a value that does not parse, is not a JSON object, or
+ *  fails {@link validateChannelDefaults} (the defaults key) or {@link validateChannelConfig}
+ *  throws, and every reader drops it as it drops a value that does not parse. */
+export function decodeChannelEntry(e: KvEntry): ChannelConfig | ChannelDefaults {
+  const value: unknown = e.json();
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("not a JSON object");
+  if (e.key === CHANNEL_DEFAULTS_KEY) validateChannelDefaults(value);
+  else validateChannelConfig(value);
+  return value;
 }
 
 /** Parse a duration like `"24h"`, `"30m"`, `"7d"`, `"90s"` into milliseconds. Throws on a bad
@@ -114,12 +124,12 @@ export async function readChannelConfig(
   kv: KV,
   channel: string,
 ): Promise<ChannelConfig | undefined> {
-  return decode<ChannelConfig>(kv, channel);
+  return decode(kv, channel);
 }
 
 /** Read the space-wide defaults (or undefined if unset). */
 export async function readChannelDefaults(kv: KV): Promise<ChannelDefaults | undefined> {
-  return decode<ChannelDefaults>(kv, CHANNEL_DEFAULTS_KEY);
+  return decode(kv, CHANNEL_DEFAULTS_KEY);
 }
 
 /** Privileged write of a channel's config. **Merges** over any existing entry so a partial
@@ -142,11 +152,11 @@ export async function writeChannelDefaults(kv: KV, patch: ChannelDefaults): Prom
   await kv.put(CHANNEL_DEFAULTS_KEY, JSON.stringify(merged));
 }
 
-async function decode<T>(kv: KV, key: string): Promise<T | undefined> {
+async function decode(kv: KV, key: string): Promise<ChannelConfig | ChannelDefaults | undefined> {
   const e = await kv.get(key);
   if (!e || e.operation === "DEL" || e.operation === "PURGE") return undefined;
   try {
-    return e.json<T>();
+    return decodeChannelEntry(e);
   } catch {
     return undefined;
   }
@@ -249,11 +259,11 @@ export async function readChannelRegistry(opts: {
       // ONE pass: this was a `keys()` scan plus a per-key `get()`, so one round trip per channel.
       for (const e of await liveKvEntries(kv)) {
         if (e.key === CHANNEL_DEFAULTS_KEY) {
-          try { defaults = e.json<ChannelDefaults>(); } catch { /* garbled defaults — treat as unset */ }
+          try { defaults = decodeChannelEntry(e); } catch { /* garbled defaults — treat as unset */ }
           continue;
         }
         let cfg: ChannelConfig | undefined;
-        try { cfg = e.json<ChannelConfig>(); } catch { /* skip undecodable */ }
+        try { cfg = decodeChannelEntry(e); } catch { /* skip undecodable */ }
         // Channel tokens such as `__proto__` are valid. Define an own data property instead of
         // invoking Object.prototype setters, while preserving the reader's normal-object shape.
         if (cfg)

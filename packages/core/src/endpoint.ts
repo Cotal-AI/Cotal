@@ -115,6 +115,7 @@ import {
   effectiveDeliveryClass,
   readChannelConfig,
   readChannelDefaults,
+  decodeChannelEntry,
 } from "./channels.js";
 import {
   anycastSubject,
@@ -6437,8 +6438,8 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Watch the channel registry: replay existing keys, then stream updates, into the local
-   *  cache. A failed bind throws out of connect; an entry that does not decode is reported as a
-   *  `warning` and dropped, so its channel resolves to the default policy. */
+   *  cache. A failed bind throws out of connect; an entry that does not decode or validate is
+   *  reported as a `warning` and dropped, so its channel resolves to the default policy. */
   private async startChannelWatch(): Promise<void> {
     if (!this.channelKv) return;
     const iter = await this.channelKv.watch();
@@ -6457,8 +6458,8 @@ export class CotalEndpoint extends EventEmitter {
     else this.channelConfigs.delete(e.key);
     if (e.operation === "DEL" || e.operation === "PURGE") return;
     try {
-      if (isDefaults) this.channelDefaults = e.json<ChannelDefaults>();
-      else this.channelConfigs.set(e.key, e.json<ChannelConfig>());
+      if (isDefaults) this.channelDefaults = decodeChannelEntry(e);
+      else this.channelConfigs.set(e.key, decodeChannelEntry(e));
     } catch (err) {
       this.emitRecoverable(new Error(`dropped channel registry entry for key ${JSON.stringify(e.key)}: ${(err as Error).message}`));
     }

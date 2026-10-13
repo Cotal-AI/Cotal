@@ -284,7 +284,8 @@ one-shot connection.
 Long-lived hosts must also subscribe to the endpoint's `warning` event. It carries conditions the
 endpoint is surviving, including failed credential renewal, reconnect retries, a durable leave
 it keeps retrying after the broker refuses a durable channel's live subscription, and a channel
-registry entry that does not decode. The endpoint drops that entry from its cache and applies the
+registry entry that does not decode to a valid config, such as a raw put of an unknown delivery
+class or of `null` on the defaults key. The endpoint drops that entry from its cache and applies the
 default policy until a valid entry is written. A host may choose
 to ignore warnings for a one-shot endpoint whose awaited operation owns the verdict, but that choice
 should be explicit. An unhandled warning is nonfatal and silent.
