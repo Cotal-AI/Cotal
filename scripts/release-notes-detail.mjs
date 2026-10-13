@@ -23,6 +23,7 @@ import { readFileSync, readdirSync, existsSync, mkdtempSync, mkdirSync, writeFil
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import assert from "node:assert/strict";
+import { marked } from "marked";
 
 const parseVersion = (text) => {
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(text.trim());
@@ -36,42 +37,44 @@ const compareVersions = (a, b) => {
 
 /** Words whose trailing period ends no sentence. */
 const ABBREVIATIONS = /(?:^|[\s(])(?:e\.g|i\.e|etc|vs|cf|Dr|Mr|Mrs|Ms|Prof|St|No)\.$/i;
+/** A sentence mark, with any closing quote or bracket, followed by white space or the end. */
+const SENTENCE_END = /[.!?]["'\u201d\u2019)\]]*(?=\s|$)/g;
+const CLOSING_MARK = /[.!?]["'\u201d\u2019)\]]*$/;
 
 /**
- * The same text with every inline code span and every Markdown link replaced by letters of the
- * same length, so a sentence mark inside one never counts as a sentence end. Lengths are kept so
- * an index into the masked text indexes the original.
- */
-export const maskMarkdown = (line) =>
-  line
-    .replace(/(`+)[\s\S]*?\1/g, (m) => "x".repeat(m.length))
-    .replace(/\[[^\]]*\]\([^)]*\)/g, (m) => "x".repeat(m.length));
-
-/**
- * The sentence a summary opens with: its first paragraph (a changeset wraps a paragraph over
- * indented lines; a blank line ends it) up to the first `.`, `!` or `?` that is followed by white
- * space or the end, with any closing quote or bracket after the mark. A mark inside an inline code
- * span or a Markdown link does not count, nor does the period of a listed abbreviation
- * (`ABBREVIATIONS`), a decimal such as `1.5`, or a dotted name such as `Node.js`, since none of
- * those is followed by white space. What follows the mark is not consulted: a next sentence may
- * start with a digit, a lowercase product name or a non-ASCII letter.
+ * The sentence a summary opens with. The summary is read as Markdown and the first paragraph's
+ * inline tokens are walked in order: a sentence ends at the first mark in plain text that is
+ * followed by white space or the end, or at the close of an emphasis span whose text ends with a
+ * mark, unless the word before the mark is a listed abbreviation (`ABBREVIATIONS`). A mark inside
+ * a code span, a link, an image, an escape or raw HTML belongs to that construct and never ends
+ * the sentence, so a decimal, a dotted name or a link title cannot cut it. What follows the mark
+ * is not consulted: the next sentence may start with a digit, a lowercase product name or a
+ * non-ASCII letter. A summary that does not open with a paragraph is listed by its first line.
  */
 export const firstSentence = (text) => {
-  const paragraph = [];
-  for (const raw of text.split("\n")) {
-    if (raw.trim() === "") break;
-    paragraph.push(raw.trim());
+  const paragraph = marked.lexer(text).find((t) => t.type === "paragraph");
+  if (!paragraph) return text.split("\n")[0].trim();
+  const flat = (s) => s.replace(/\s*\n\s*/g, " ").trim();
+  let out = "";
+  const tokens = paragraph.tokens;
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token.type === "text") {
+      SENTENCE_END.lastIndex = 0;
+      let m;
+      while ((m = SENTENCE_END.exec(token.raw))) {
+        if (ABBREVIATIONS.test(out + token.raw.slice(0, m.index + 1))) continue;
+        return flat(out + token.raw.slice(0, m.index + m[0].length));
+      }
+      out += token.raw;
+      continue;
+    }
+    out += token.raw;
+    const closes = (token.type === "strong" || token.type === "em" || token.type === "del") && CLOSING_MARK.test(token.text);
+    const next = tokens[i + 1];
+    if (closes && (!next || /^\s/.test(next.raw)) && !ABBREVIATIONS.test(token.text.replace(/["'\u201d\u2019)\]]*$/, ""))) return flat(out);
   }
-  const line = paragraph.join(" ");
-  const masked = maskMarkdown(line);
-  const re = /[.!?]["'\u201d\u2019)\]]*(?=\s|$)/g;
-  let m;
-  while ((m = re.exec(masked))) {
-    const end = m.index + m[0].length;
-    if (ABBREVIATIONS.test(masked.slice(0, m.index + 1))) continue;
-    return line.slice(0, end);
-  }
-  return line;
+  return flat(out);
 };
 
 const changelogFiles = (root) => {
@@ -297,6 +300,22 @@ const selfTest = () => {
     for (const next of ["iOS clients also reconnect.", "\u00dcberlong retries no longer occur.", "24 seats can reconnect at once."])
       assert.equal(firstSentence(`Reconnect now works. ${next}`), "Reconnect now works.", `a next sentence starting with ${next.split(" ")[0]} is not consulted`);
     assert.equal(firstSentence("Node.js is read as one word. Then more."), "Node.js is read as one word.", "a dotted name is not a sentence end");
+    assert.equal(
+      firstSentence('Reads [the guide](https://example.invalid/a_(b) "Quick. Start") safely. Details follow.'),
+      'Reads [the guide](https://example.invalid/a_(b) "Quick. Start") safely.',
+      "a link destination with parentheses and a title is one construct",
+    );
+    assert.equal(firstSentence("Reads [nested [v2. Docs] material](https://example.invalid) safely. Details follow."), "Reads [nested [v2. Docs] material](https://example.invalid) safely.", "a nested link label is one construct");
+    assert.equal(
+      firstSentence("Reads [Node.js. Docs][guide] safely. Details follow.\n\n[guide]: https://example.invalid"),
+      "Reads [Node.js. Docs][guide] safely.",
+      "a reference link defined later in the summary is one construct",
+    );
+    assert.equal(firstSentence("The response is **ready.** The next sentence explains the mechanism."), "The response is **ready.**", "a sentence may end inside strong emphasis");
+    assert.equal(firstSentence("The response is *ready.* The next sentence explains the mechanism."), "The response is *ready.*", "a sentence may end inside emphasis");
+    assert.equal(firstSentence("Shows ![a dot. here](img.png) inline. Then more."), "Shows ![a dot. here](img.png) inline.", "an image is one construct");
+    assert.equal(firstSentence("Ends with a period\\. escaped then real. Then more."), "Ends with a period\\. escaped then real.", "an escaped mark does not end the sentence");
+    assert.equal(firstSentence("- not a paragraph. second\n- more"), "- not a paragraph. second", "a summary that opens with a list is listed by its first line");
     assert.throws(() => collectSummaries(root, "v0.81.1"), /not a release version/);
     console.log("release-notes-detail self-test: ok");
   } finally {
