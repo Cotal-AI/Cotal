@@ -199,6 +199,14 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   });
   if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
   serve.on("exit", () => rmSync(pidFile, { force: true }));
+  // A graceful stop signals only this process and can arrive anywhere in the minute-long boot below,
+  // so its teardown is installed with the serve. The exit handlers below end this process.
+  let tui: ChildProcess | undefined;
+  for (const sig of ["SIGINT", "SIGTERM"] as const)
+    process.on(sig, () => {
+      void terminate(serve);
+      if (tui) void terminate(tui);
+    });
 
   // Scan the server's output for the plugin's session handshake; forward boot logs to our stderr
   // until the TUI takes over the terminal (after that, drop them so they can't corrupt its display).
@@ -262,8 +270,6 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // down for real.
   if (process.env.COTAL_SERVE_HEADLESS?.trim() === "1") {
     process.stdout.write(`[cotal-serve] ${JSON.stringify({ port: Number(port), session: id })}\n`);
-    for (const sig of ["SIGINT", "SIGTERM"] as const)
-      process.on(sig, () => void terminate(serve).then(() => process.exit(0)));
     return;
   }
 
@@ -277,13 +283,7 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   for (const k of Object.keys(tuiEnv)) if (k.startsWith("COTAL_")) delete tuiEnv[k];
   attached = true;
   const [command, ...args] = tuiArgv({ url, session: id, line });
-  const tui = spawn(command, args, { env: tuiEnv, stdio: "inherit" });
-
-  for (const sig of ["SIGINT", "SIGTERM"] as const)
-    process.on(sig, () => {
-      tui.kill(sig);
-      serve.kill(sig);
-    });
+  tui = spawn(command, args, { env: tuiEnv, stdio: "inherit" });
   // The server is the seat. A TUI stays up against a server that has gone, so without this the
   // seat's process outlives it and the manager goes on listing a seat that has left the mesh.
   serve.on("exit", () => void terminate(tui));
