@@ -1124,10 +1124,10 @@ function parseTurnNote(raw: string): TurnNote | undefined {
   return { payload: n.payload, deadlineAt: n.deadlineAt, holdEpoch: n.holdEpoch, owner: n.owner, ...(typeof n.holdToken === "string" ? { holdToken: n.holdToken } : {}), ...(typeof n.handoffFrom === "string" ? { handoffFrom: n.handoffFrom } : {}) };
 }
 
-/** A turn relay's key in the manager's maps: the caller triple and goal id the goal plane stores
- *  the turn under, because a goal id is the caller's own (SPEC 13.6 item 1) and two callers may
- *  pick the same one. Every part is a subject token, so the dotted join is unambiguous. */
-function turnKey(ref: GoalRef): string {
+/** A goal's key in the manager's maps: the caller triple and goal id the goal plane stores the
+ *  goal under, because a goal id is the caller's own (SPEC 13.6 item 1) and two callers may pick
+ *  the same one. Every part is a subject token, so the dotted join is unambiguous. */
+function goalKey(ref: GoalRef): string {
   return `${ref.caller.owner}.${ref.caller.actor}.${ref.caller.uid}.${ref.goalId}`;
 }
 
@@ -1340,9 +1340,9 @@ export class Manager {
    *  credential is minted INSIDE {@link registerManagerService}'s run block and stashed here. */
   private sessionLedgerIdentity?: Identity;
   private sessionLedgerCreds?: string;
-  /** The acceptance replied for each in-flight goalId this incarnation accepted, so an
-   *  idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple) without
-   *  a second spawn. Durable cross-incarnation reconstruction rides the goal index; here the
+  /** The acceptance replied for each in-flight goal this incarnation accepted, by {@link goalKey},
+   *  so an idempotent same-goalId retry serves the IDENTICAL acceptance (same allocated name/triple)
+   *  without a second spawn. Durable cross-incarnation reconstruction rides the goal index; here the
    *  live map covers same-incarnation retries, with the committed result fact as the fallback. */
   private goalAcceptances = new Map<string, SpawnAcceptance>();
   /** The boot reconcile of the durable goal index runs ONCE at start (a
@@ -1355,7 +1355,7 @@ export class Manager {
   private agentGoals = new Map<string, GoalRef>();
   /**
    * The turn relay's same-incarnation idempotency map ({@link goalAcceptances}'s twin), by
-   * {@link turnKey}: a same-goal retry serves the identical acceptance; cross-incarnation retries
+   * {@link goalKey}: a same-goal retry serves the identical acceptance; cross-incarnation retries
    * rebuild from the goal-index entry (its acceptance floor + note).
    *
    * One entry per turn this incarnation accepted: the acceptance a duplicate submission is served
@@ -1377,7 +1377,7 @@ export class Manager {
    * window would hear `not-found` again.
    */
   private turnAcceptances = new Map<string, { acceptance: TurnAcceptance; ref?: GoalRef; leftoverSince?: number; settled?: { state: string; at: number } }>();
-  /** Every relayed turn awaiting its seat's yield, by {@link turnKey}. The seat's `turn-pending` pull
+  /** Every relayed turn awaiting its seat's yield, by {@link goalKey}. The seat's `turn-pending` pull
    *  scans it; the deadline sweep drives expiry; a seat reap stamps its entries `seatDiedAt`, which
    *  the deadline terminal carries as `agentDownAt` so the run reads that death as L4002.
    *  Rebuilt at boot from goal-index entries carrying a turn note. */
@@ -8432,7 +8432,8 @@ export class Manager {
       // at a time), so all are reconciled. The `iid` field is the hook the multi-instance sweep
       // filters on (skip a goal whose accepting `iid` is a still-LIVE sibling — never settle its goal).
       for (const entry of entries) {
-        if (this.goalAcceptances.has(entry.ref.goalId) || this.turnAcceptances.has(turnKey(entry.ref))) continue; // never settle a goal THIS incarnation drives
+        const key = goalKey(entry.ref);
+        if (this.goalAcceptances.has(key) || this.turnAcceptances.has(key)) continue; // never settle a goal THIS incarnation drives
         try {
           // A note marks a TURN entry: its relay is rebuilt (the hold is its bounded ending), never
           // settled uncertain — the spawn arm's readiness window is the wrong ending for a relay.
@@ -8558,6 +8559,7 @@ export class Manager {
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
+    const key = goalKey(ref);
     const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
     const epoch = executor.epoch;
     const acceptedAt = Date.now();
@@ -8566,7 +8568,7 @@ export class Manager {
     // re-running the accept path — so a HARD-PINNED retry does not trip the same-name refuse and no
     // name is re-allocated. Same-incarnation rides the live map; the create-only bindGoal in onAccepted
     // still fences a CONCURRENT same-goalId race (the loser aborts and serves the winner's acceptance).
-    const prior = this.goalAcceptances.get(goalId);
+    const prior = this.goalAcceptances.get(key);
     if (prior !== undefined) {
       if (prior.fingerprint !== fingerprint)
         throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" was accepted under a different submission; one goalId never carries two specs (SPEC 13.6)`);
@@ -8676,7 +8678,7 @@ export class Manager {
             throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is already bound to a different submission; one goalId never carries two specs (SPEC 13.6)`);
           // Lost a concurrent same-goalId race: serve the winner's acceptance and abort THIS provision
           // (no second spawn). The throw unwinds to the finally, which releases this attempt's reserve.
-          acceptance = this.goalAcceptances.get(goalId) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
+          acceptance = this.goalAcceptances.get(key) ?? await this.cachedSpawnAcceptance(ref, goalId, fingerprint, executor);
           resolveAccept(acceptance);
           // No claim needed here either. This attempt lost the CAS, so `ownsGoal` is still false and
           // the single check in `onOutcome` refuses it. Before that check existed this site had to
@@ -8700,7 +8702,7 @@ export class Manager {
           readinessDeadlineMs: readinessTimeoutMs,
         });
         acceptance = { name, owner: agentTriple.owner, actor: agentTriple.actor, uid: agentTriple.uid, goalId, fingerprint, readinessDeadlineMs: readinessTimeoutMs, executor };
-        this.goalAcceptances.set(goalId, acceptance);
+        this.goalAcceptances.set(key, acceptance);
         this.agentGoals.set(name, ref); // A despawn of this name mid-goal drives the cancel path
         resolveAccept(acceptance);
         this.emitGoalProgress(ref, epoch, { phase: "handoff" });
@@ -8804,7 +8806,7 @@ export class Manager {
     const goalId = ctx.request.id;
     const { fingerprint } = submissionFingerprint(ctx.request as unknown, ctx.subject);
     const ref = goalRefOf(ctx.subject, goalId);
-    const key = turnKey(ref);
+    const key = goalKey(ref);
     const executor = { lifecycleUid: this.managerInstanceId, epoch: this.serviceServe?.grant.epoch ?? 0 };
     const acceptedAt = Date.now();
 
@@ -9059,7 +9061,7 @@ export class Manager {
     const raw = (ctx.request.args ?? {}) as Record<string, unknown>;
     const goalId = String(raw.goalId);
     const ref = goalRefOf(ctx.subject, goalId);
-    const key = turnKey(ref);
+    const key = goalKey(ref);
     const p = this.pendingTurns.get(key);
     if (p === undefined) {
       const ended = await readGoalResult(gw.ctx, ref);
@@ -9096,7 +9098,7 @@ export class Manager {
   private async commitTurnDeadline(p: PendingTurn): Promise<void> {
     const gw = this.goalWriter;
     if (!gw) return;
-    const key = turnKey(p.ref);
+    const key = goalKey(p.ref);
     if (!this.pendingTurns.delete(key)) return;
     this.markTurnLatchDropped(key);
     const epoch = this.serviceServe?.grant.epoch ?? 0;
@@ -9255,7 +9257,7 @@ export class Manager {
       console.error(`turn reconcile ${p.goalId}: its deadline hold was never minted (the accept crashed before it); left unsettled`);
       return;
     }
-    const key = turnKey(p.ref);
+    const key = goalKey(p.ref);
     this.pendingTurns.set(key, p);
     // THE ACCEPTANCE TOO, or the adopted turn's answer is never remembered: `rememberSettledTurn`
     // writes only against an acceptance this incarnation holds, and adoption rebuilt the pending
