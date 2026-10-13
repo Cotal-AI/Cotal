@@ -76,6 +76,14 @@
       "replace": "      if (!isSettled(r)) break;\n",
       "expectRed": "unsettled:the turn after it is published, so the session is not wedged behind the unfinished part",
       "note": "The round-16 defect: a part still filling when its turn died never gets its end mark and its message never reports completed, so every later read stopped at it and no later turn was published."
+    },
+    {
+      "name": "O7 the session's barrier is the latest turn end alone, not every one still settling",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const settled = Promise.all([turnEnds.get(session), close]).then(() => undefined);\n",
+      "replace": "    const settled = close;\n",
+      "expectRed": "twice:a native prompt is still held while the EARLIER turn end's read is held",
+      "note": "The round-18 defect: a turn that ended twice, by its error and the idle after it, had its barrier replaced by the later turn end, whose read answered first and deleted it while the error's read was still pending."
     }
   ]
 }

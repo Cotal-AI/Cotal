@@ -1157,11 +1157,17 @@ export const cotal: Plugin = async () => {
   const turnEnded = async (session: string | undefined, close: Promise<void> | undefined): Promise<void> => {
     if (!close) return;
     if (session === undefined) return close; // a session-less error names no session for a prompt to wait on
-    const settled = close.finally(() => {
-      if (turnEnds.get(session) === settled) turnEnds.delete(session);
+    // EVERY turn end still settling, not the latest alone: one turn can end twice, by its error and
+    // by the idle that follows, and the later read can answer first. A barrier of the latest alone
+    // was deleted when it answered, while the earlier read was still pending, and a native prompt
+    // went through ahead of the error's position (Sol, round 18 of 2026-10-13, through the built
+    // plugin: the failed turn closed as a finish and its successor as the error).
+    const settled = Promise.all([turnEnds.get(session), close]).then(() => undefined);
+    const barrier = settled.finally(() => {
+      if (turnEnds.get(session) === barrier) turnEnds.delete(session);
     });
-    turnEnds.set(session, settled);
-    await settled;
+    turnEnds.set(session, barrier);
+    await barrier;
   };
 
   /** Native TUI / API prompts enter through OpenCode's chat.message hook before the model loop
