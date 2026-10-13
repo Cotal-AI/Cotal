@@ -489,7 +489,9 @@ proves the frozen gate's holder gone under a complete sweep. The participant rec
 evictor credential nor authority over another instance's records or gate. A clean stop refreshes an
 unhealthy executor before deregistration. A restart verify-evicts its old family, and a manager
 blocked by a foreign governance slot whose holder's gate is still frozen at the slot's stamp asks
-the host to reconcile that holder and retries the registration once.
+the host to reconcile that holder and retries the registration once. The goal-writer and session-ledger
+credentials carry a random `issuance:` tag, so a restart that re-mints them within the second of an
+earlier issuance gets new ledger rows and never re-signs a credential its barrier revoked.
 
 A remote manager can provision only descendants of the same derived owner, and the host
 validates that relation and the current manager grant for every provision. It cannot broaden the

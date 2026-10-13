@@ -15,6 +15,7 @@
  * expiry and renewal owner.
  */
 import { TTL_RECONCILE_CANARY_KEY, ttlBuckets } from "./streams.js";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import {
   decode,
@@ -741,6 +742,16 @@ export interface MintOpts {
   restore?: RestorePermissionScope;
 }
 
+/** The principal tags every user JWT carries, plus one random issuance tag on a goal-writer or
+ *  session-ledger credential. Those two profiles carry no epoch-pinned grant, so two mints for one
+ *  nkey within one second would otherwise sign identical bytes, and their ledger row is keyed by the
+ *  JWT digest: a restart's re-mint would re-sign the credential its barrier just revoked under the
+ *  revoked row's id (SPEC 13.1). */
+function userTags(profile: Profile, pr: MintPrincipal): string[] {
+  const tags = principalTags(pr.owner, pr.actor);
+  return profile === "goal-writer" || profile === "session-ledger" ? [...tags, `issuance:${randomBytes(16).toString("hex")}`] : tags;
+}
+
 /** Compute a minted credential's `{ exp? }` from an explicit override or the centralized matrix
  *  default. Widened to {@link CredentialKind} (not just {@link Profile}) so the bespoke $SYS minters
  *  — `membership-observer` / `connection-evictor`, which are kinds, not profiles — thread the same
@@ -941,7 +952,7 @@ export async function mintCreds(
     // Stamp the principal `tags` so this connection's identity is CONNZ-recoverable by the membership
     // feed — the SAME tags the auth callout stamps (user mode), via core's single-source builder. The
     // JWT `name` stays the profile label (a debug breadcrumb; not a surfaced/queryable CONNZ field).
-    { ...perms, tags: principalTags(pr.owner, pr.actor) },
+    { ...perms, tags: userTags(profile, pr) },
     { signer, ...validDates },
   );
   // Build the credential string FULLY before the fence: nothing fallible may run AFTER a winning
@@ -1063,7 +1074,7 @@ export async function mintPublicUserJwt(
   const validDates = userValidDates(profile, opts);
   if (validDates.exp === undefined) throw new Error(`mintPublicUserJwt: profile "${profile}" must be bounded`);
   const jwt = await encodeUser(profile, fromPublic(publicId), fromPublic(auth.account.pub),
-    { ...perms, tags: principalTags(pr.owner, pr.actor) },
+    { ...perms, tags: userTags(profile, pr) },
     { signer: fromSeed(new TextEncoder().encode(auth.account.signingSeed)), ...validDates });
   // Same composed-credential bound as mintCreds (see MAX_MINTED_JWT_BYTES): this JWT is presented
   // on a real CONNECT line by the remote manager, so it is priced against the same budget before
