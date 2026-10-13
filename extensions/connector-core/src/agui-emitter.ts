@@ -509,10 +509,9 @@ export class AguiEmitter<T> {
       if (owed) {
         const from = frames[k]!.unitFrom;
         const at = units.findIndex((u, i) => i >= from && u.events.some((e) => e.type === AGUI_EVENT_TYPE.RUN_FINISHED && e.runId === owed.runId));
-        if (at >= 0) {
-          const unit = units[at]!;
-          const before = at > from ? units[at - 1]!.cursor : this.wal.frontier.sourceCursor;
-          const split = this.takeOwedTerminal(unit.events, before)!;
+        const unit = at >= 0 ? units[at] : undefined;
+        const split = unit ? this.takeOwedTerminal(unit.events, at > from ? units[at - 1]!.cursor : this.wal.frontier.sourceCursor) : undefined;
+        if (unit && split) {
           const tail: EmitUnit[] = [...units.slice(from, at)];
           if (split.rest.length === 0) tail.push({ ...split.unit, cursor: unit.cursor });
           else tail.push(split.unit, { ...unit, events: split.rest });
