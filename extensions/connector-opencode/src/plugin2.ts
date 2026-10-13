@@ -303,9 +303,13 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     const carried = new Set(surfaced);
     settle();
     await safeStatus("idle");
-    await submitting;
-    if (controller.signal.aborted) return; // teardown began during these waits: a turn driven now would outlive the seat
-    if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+    // Not awaited: the event loop must keep consuming while the POST is unanswered, so a turn that
+    // starts meanwhile sets `busy` and `drive` declines instead of submitting into it.
+    void (async () => {
+      await submitting;
+      if (controller.signal.aborted) return; // teardown began during the wait: a turn driven now would outlive the seat
+      if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
+    })();
   }
 
   // Inbound mesh → drive (never interrupt a running turn). Mirrors plugin.ts's `agent.on`
