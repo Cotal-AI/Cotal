@@ -11,6 +11,8 @@
  * `--self-test` runs the suite at the bottom of this file.
  */
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const DESCRIPTION_LIMIT = 4096;
 
@@ -46,7 +48,23 @@ export const payload = (tag, url, body) => {
   };
 };
 
-const selfTest = () => {
+/** Run this script's CLI with the body written as the given byte chunks and return its stdout. */
+const runCli = (chunks) =>
+  new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "v1.0.0", "u"], { stdio: ["pipe", "pipe", "inherit"] });
+    let out = "";
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (d) => (out += d));
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve(out) : reject(new Error(`exit ${code}`))));
+    const write = (n) => {
+      if (n === chunks.length) return child.stdin.end();
+      child.stdin.write(chunks[n], () => setTimeout(() => write(n + 1), 20));
+    };
+    write(0);
+  });
+
+const selfTest = async () => {
   const body = [
     "**Cotal 0.81.1 is out.**",
     "",
@@ -84,16 +102,22 @@ const selfTest = () => {
 
   assert.throws(() => payload("v1.0.0", "u", "**Cotal 1.0.0 is out.**\n\n## What's Changed\n* a"), /no `## What changed` section/);
   assert.throws(() => payload("v1.0.0", "u", "## What changed\n\n<details>\n- hidden\n</details>"), /lists no change/);
+
+  const bytes = Buffer.from("## What changed\n- Safe reconnect \u{1F504}.\n", "utf8");
+  const cut = bytes.indexOf(Buffer.from([0xf0, 0x9f, 0x94, 0x84])) + 2;
+  const streamed = JSON.parse(await runCli([bytes.subarray(0, cut), bytes.subarray(cut)]));
+  assert.equal(streamed.embeds[0].description, "Upgrade: `npm i -g cotal-ai@1.0.0`\n\n- Safe reconnect \u{1F504}.", "a code point split across stdin chunks decodes whole");
   console.log("release-announcement self-test: ok");
 };
 
 const main = async (argv) => {
-  if (argv[0] === "--self-test") return selfTest();
+  if (argv[0] === "--self-test") return await selfTest();
   const [tag, url] = argv;
   if (!tag || !url) {
     process.stderr.write("usage: release-announcement.mjs <tag> <release url> < release-body.md\n");
     process.exit(1);
   }
+  process.stdin.setEncoding("utf8"); // a multi-byte code point split across chunks decodes whole
   let body = "";
   for await (const chunk of process.stdin) body += chunk;
   process.stdout.write(JSON.stringify(payload(tag, url, body)));

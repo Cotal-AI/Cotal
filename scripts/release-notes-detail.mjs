@@ -35,8 +35,10 @@ const compareVersions = (a, b) => {
 };
 
 /**
- * The sentence a summary opens with: up to the first `.`, `!` or `?` that ends a sentence of its
- * first paragraph (a changeset wraps a paragraph over indented lines; a blank line ends it).
+ * The sentence a summary opens with: its first paragraph (a changeset wraps a paragraph over
+ * indented lines; a blank line ends it) up to the first `.`, `!` or `?` that ends a sentence.
+ * Punctuation inside an inline code span never ends the sentence, a closing quote or bracket after
+ * the mark belongs to it, and a common abbreviation does not end it.
  */
 export const firstSentence = (text) => {
   const paragraph = [];
@@ -45,12 +47,25 @@ export const firstSentence = (text) => {
     paragraph.push(raw.trim());
   }
   const line = paragraph.join(" ");
-  const re = /[.!?](?=\s+[A-Z`"'(]|\s*$)/g;
-  let m;
-  while ((m = re.exec(line))) {
-    const before = line.slice(0, m.index + 1);
-    if (/\b(?:e\.g|i\.e|vs|etc)\.$/i.test(before)) continue;
-    return before;
+  let i = 0;
+  while (i < line.length) {
+    const ch = line[i];
+    if (ch === "`") {
+      const fence = /^`+/.exec(line.slice(i))[0];
+      const close = line.indexOf(fence, i + fence.length);
+      if (close === -1) return line;
+      i = close + fence.length;
+      continue;
+    }
+    if (ch === "." || ch === "!" || ch === "?") {
+      let end = i + 1;
+      while (end < line.length && /["'\u201d\u2019)\]]/.test(line[end])) end += 1;
+      const rest = line.slice(end);
+      const before = line.slice(0, i + 1);
+      const abbreviation = /\b(?:e\.g|i\.e|vs|etc)\.$/i.test(before);
+      if (!abbreviation && (rest === "" || /^\s+[A-Z`"'(\u201c]/.test(rest))) return line.slice(0, end);
+    }
+    i += 1;
   }
   return line;
 };
@@ -256,6 +271,19 @@ const selfTest = () => {
         body.endsWith("\n</details>\n"),
       "the collapsed layer carries the full text",
     );
+    assert.equal(
+      firstSentence("Use `node foo.js. Bar` to inspect state. The next sentence is mechanism."),
+      "Use `node foo.js. Bar` to inspect state.",
+      "punctuation inside an inline code span does not end the sentence",
+    );
+    assert.equal(
+      firstSentence('The command now says "Connected." It reports the actual state.'),
+      'The command now says "Connected."',
+      "a closing quote after the mark belongs to the sentence",
+    );
+    assert.equal(firstSentence("Fails on ``a `b` c``. Then more."), "Fails on ``a `b` c``.", "a double-backtick span closes at its own fence");
+    assert.equal(firstSentence("An unclosed `span never ends. Nor this."), "An unclosed `span never ends. Nor this.", "an unclosed span keeps the whole paragraph");
+    assert.equal(firstSentence("Reads 1.5 MB (e.g. two files) at once. Then stops."), "Reads 1.5 MB (e.g. two files) at once.", "a decimal and an abbreviation do not end the sentence");
     assert.throws(() => collectSummaries(root, "v0.81.1"), /not a release version/);
     console.log("release-notes-detail self-test: ok");
   } finally {

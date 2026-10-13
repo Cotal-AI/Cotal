@@ -219,14 +219,18 @@ jobs:
           # The generated notes are merged-PR *titles* only. Lead with what each change does, from
           # the changeset summaries in the package CHANGELOGs: one sentence per change, then the full
           # text collapsed. The section covers every version since the latest Release, so a version
-          # that was cut but never published is described by the release that first carries it.
-          # Best-effort: the package is already published, so a hiccup in this cosmetic step must
-          # never block cutting the Release (|| true).
-          previous=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>/dev/null | sed 's/^v//' || true)
-          if [ -n "$previous" ]; then
-            detail=$(node scripts/release-notes-detail.mjs "$version" --since "$previous" 2>/dev/null || true)
+          # that was cut but never published is described by the release that first carries it. A
+          # repository with no Release yet reads the cut version's section alone (the lookup answers
+          # 404). Any other lookup failure, or a failed notes script, fails the step rather than
+          # narrowing the range or publishing titles alone: the packages are already on the
+          # registry, and the next push that passes both gates cuts the Release with the same target.
+          if previous=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name 2>"$RUNNER_TEMP/latest-release.err"); then
+            detail=$(node scripts/release-notes-detail.mjs "$version" --since "${previous#v}")
+          elif grep -q 'HTTP 404' "$RUNNER_TEMP/latest-release.err"; then
+            detail=$(node scripts/release-notes-detail.mjs "$version")
           else
-            detail=$(node scripts/release-notes-detail.mjs "$version" 2>/dev/null || true)
+            echo "Cannot read the latest Release to bound the notes: $(cat "$RUNNER_TEMP/latest-release.err")"
+            exit 1
           fi
           {
             printf '**Cotal %s is out.**\n\n' "$version"

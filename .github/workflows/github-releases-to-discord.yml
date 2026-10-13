@@ -2,6 +2,8 @@
 # `## What changed` layer (one sentence per change) under the upgrade command and links to the
 # Release for the full text; scripts/release-announcement.mjs builds it and refuses a body without
 # that layer, so a release the Changesets workflow did not write is not announced as if it were.
+# The checkout is the default branch, not the released tag: the Release tags the oldest commit that
+# carried the version, which may predate the builder, while the event carries the body, tag and url.
 on:
   release:
     types: [published]
@@ -12,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - name: Post the release on Discord
         env:
           WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
