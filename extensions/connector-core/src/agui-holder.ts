@@ -341,17 +341,24 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
     const live = this.emitter;
     const queued = live !== undefined && !live.stopped;
     if (queued) live.queueTerminal(entry);
+    // NO EMITTER YET: the first start is still in flight, waiting on the broker, with the flush
+    // the stop hook queued ahead of this close already on the chain behind it. Queued only by this
+    // step, the terminal would reach the emitter after that flush had read past its position, and
+    // the next prompt among the records read would have closed the failed run as a finish (Sol,
+    // round 16 of 2026-10-13, through the built MCP entry point with the broker unavailable at
+    // SessionStart). It is held, and the start hands it to the emitter before any pump.
+    else this.held.push(entry);
     this.enqueue(async () => {
       const emitter = this.emitter;
       if (this.dead) {
         // A step queued behind the one that took the plane down: held as if it had arrived then,
         // unless the dying emitter already handed it back.
-        if (!queued) this.held.push(entry);
+        if (!queued && !this.held.includes(entry)) this.held.push(entry);
         return;
       }
       if (!emitter || emitter.stopped) return;
       await this.holdForLive();
-      if (!queued) emitter.queueTerminal(entry);
+      if (this.held.includes(entry)) this.handOver(emitter, entry);
       await this.settle(emitter);
     });
     return taken;
@@ -448,6 +455,10 @@ export class AguiEmitterHolder<T, StartContext = undefined> {
       // each keep their own bracket machine and nothing detects the interleave. That is the
       // stated writer-cardinality limit.
       this.emitter = await this.startEmitter(path, this.startContext);
+      // A terminal reported while this first start was in flight goes to the emitter now, before
+      // the flush queued behind the start pumps. A re-establish hands its held terminals over
+      // itself, after seeding the last turn the dying emitter had begun.
+      if (!this.reviving) for (const entry of [...this.held]) this.handOver(this.emitter, entry);
       return this.emitter;
     } catch (e) {
       this.die(e as Error);

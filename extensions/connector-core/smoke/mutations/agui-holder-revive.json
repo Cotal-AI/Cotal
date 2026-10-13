@@ -167,6 +167,21 @@
       "replace": "    const queued = false;\n",
       "expectRed": "live:a-terminal-reported-during-a-flushs-read-closes-its-own-turn-under-the-prompt-the-read-returned",
       "note": "The flush queued ahead of the terminal reads the next prompt the harness wrote in between; queued by its step, the terminal is placed after that prompt closed its turn and opened the next, and closes the next run."
+    },
+    {
+      "name": "R18 a terminal reported before any emitter exists is queued by its own step, behind the flush",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    else this.held.push(entry);\n",
+      "replace": "\n",
+      "expectRed": "first-start:a-terminal-during-the-first-start-is-handed-to-the-emitter-BEFORE-its-first-pump",
+      "note": "The round-16 defect: the flush the stop hook queued ahead of the close read past the terminal's position, the next prompt closed the failed run as a finish and the terminal closed the successor."
+    },
+    {
+      "name": "R19 the first start hands nothing over",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      if (!this.reviving) for (const entry of [...this.held]) this.handOver(this.emitter, entry);\n",
+      "replace": "\n",
+      "expectRed": "first-start:a-terminal-during-the-first-start-is-handed-to-the-emitter-BEFORE-its-first-pump"
     }
   ]
 }

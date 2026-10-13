@@ -136,12 +136,22 @@ export interface OpenCodeSessionSourceOptions {
    * so the divergence is visible instead of silent.
    */
   onVanished?: (cursor: string) => void;
+  /**
+   * The cursor of the session's end when the connector last reported a turn over, if it has. A
+   * record at or before it is settled whatever its own marks say: the turn it belongs to has
+   * ended, so nothing more is coming for it. A part still filling when its turn died never gets
+   * its end mark and its message never reports completed, and with only the marks to go by every
+   * later read stopped at that part and no later turn was ever published (Sol, round 16 of
+   * 2026-10-13, through the built plugin).
+   */
+  endedAt?: () => string | undefined;
 }
 
 export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
   readonly kind = "opencode-session";
   private readonly read0: ReadSessionMessages;
   private readonly onVanished?: (cursor: string) => void;
+  private readonly endedAt?: () => string | undefined;
   /** The last cursor already reported as vanished. A revert leaves the cursor absent on EVERY read
    *  until it advances past the removed region, so reporting per read would turn one divergence
    *  into a log flood and bury the next, different one. */
@@ -150,6 +160,14 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
   constructor(opts: OpenCodeSessionSourceOptions) {
     this.read0 = opts.read;
     this.onVanished = opts.onVanished;
+    this.endedAt = opts.endedAt;
+  }
+
+  /** Settled by its own marks, or by the turn it belongs to having ended. */
+  private settled(record: OpenCodeRecord): boolean {
+    if (isSettled(record)) return true;
+    const ended = this.endedAt?.();
+    return ended !== undefined && ended !== "" && !isAfter(record, parseCursor(ended));
   }
 
   /** The session's records in session order: messages by id (measured monotonic with creation
@@ -211,7 +229,7 @@ export class OpenCodeSessionSource implements DurableSource<OpenCodeRecord> {
   private settledPrefix(records: OpenCodeRecord[]): SourceRead<OpenCodeRecord> {
     const out: { value: OpenCodeRecord; cursor: string }[] = [];
     for (const r of records) {
-      if (!isSettled(r)) break;
+      if (!this.settled(r)) break;
       out.push({ value: r, cursor: cursorOf(r) });
     }
     return { records: out, cursor: out.length ? out[out.length - 1]!.cursor : "" };

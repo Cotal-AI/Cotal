@@ -238,6 +238,8 @@ export const cotal: Plugin = async () => {
    * a managed session.
    */
   let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
+  /** Per session, the cursor of its end when the connector last reported a turn over. */
+  const turnEndedAt = new Map<string, string>();
   /** This principal's event WAL lock, taken by whichever holder started first and held until the
    *  FINAL event teardown. See the assignment site for why a retirement does not release it. */
   let eventLock: PrincipalLock | undefined;
@@ -291,6 +293,9 @@ export const cotal: Plugin = async () => {
           source ??
           (source = await (async () => {
             const session = new OpenCodeSessionSource({
+              // The session's end when its turn was last reported over: a part still filling then
+              // is settled by that, not by marks it will never get.
+              endedAt: () => turnEndedAt.get(id),
               // The SUPPORTED surface. `opencodeApi` is the same authenticated HTTP client the rest
               // of this plugin uses, and `/session/{id}/message` is the endpoint the SDK's
               // `session.messages()` calls. The SQLite store behind it is OpenCode's private
@@ -355,10 +360,15 @@ export const cotal: Plugin = async () => {
         onError: eventPlaneStopped({ log }),
         // The session's end when `session.idle` or `session.error` reports the turn over: what
         // names the turn a terminal held through an outage ends.
-        sourceEnd: (sessionId: string) =>
-          new OpenCodeSessionSource({
+        sourceEnd: async (sessionId: string) => {
+          const end = await new OpenCodeSessionSource({
             read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(sessionId)}/message`, undefined, 30_000),
-          }).end(),
+          }).end();
+          // Recorded for the session's source: every record at or before this end belongs to a
+          // turn that has ended, and is read as settled whatever its own marks say.
+          turnEndedAt.set(sessionId, end);
+          return end;
+        },
         // The turn terminal closes a run the record stream never described, so without this the
         // mapper would still believe that run is open, attribute the next records to it, and have
         // the batch refused. Keyed on the id, so a newer run opened in between is left alone.

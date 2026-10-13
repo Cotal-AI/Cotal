@@ -240,6 +240,17 @@ try {
   await sleep(1_500);
   check("unsettled:the settle read the session a bounded number of times, not without end", reads - before <= 8, { reads: reads - before });
 
+  // ---- Turn 5: a plain turn after the one whose part never finished. The session is not wedged
+  // behind that part: its answer reaches the wire and it closes as a finish (Sol, round 16 of
+  // 2026-10-13, through the built plugin: with the part left unsettled, every later read stopped
+  // at it and no later turn was ever published).
+  content.set(A, [...(content.get(A) as unknown[]), ...turn(A, 5)]);
+  await part(A);
+  await sleep(2_000);
+  await busy(A);
+  await fire({ type: "session.idle", properties: { sessionID: A } });
+  await sleep(2_500);
+
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
@@ -284,7 +295,9 @@ try {
   const abortedTurnCloses = closesBetween(a2, a3);
   const a4i = idx((e) => e.text.includes("answer-4"));
   const idleTurnCloses = closesBetween(a3, a4i);
-  const unsettledTurnCloses = closesBetween(a4i, -1);
+  const a5i = idx((e) => e.text.includes("answer-5"));
+  const unsettledTurnCloses = closesBetween(a4i, a5i);
+  const afterUnsettledCloses = closesBetween(a5i, -1);
 
   check("fail:the API-error turn closed EXACTLY ONCE — `RUN_ERROR` closes a run, so nothing may follow it",
     failedTurnCloses.length === 1, failedTurnCloses);
@@ -302,8 +315,11 @@ try {
   check("unsettled:the turn whose part never finished closed exactly once, as the error, on its own turn",
     a4i >= 0 && unsettledTurnCloses.length === 1 && unsettledTurnCloses[0]?.type === "RUN_ERROR", { a4i, unsettledTurnCloses });
 
+  check("unsettled:the turn after it is published, so the session is not wedged behind the unfinished part",
+    a5i >= 0 && afterUnsettledCloses.length === 1 && afterUnsettledCloses[0]?.type === "RUN_FINISHED", { a5i, afterUnsettledCloses });
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 15;
+  const EXPECTED = 16;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

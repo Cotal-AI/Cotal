@@ -385,7 +385,7 @@ for a turn that has one replaces nothing and is kept for no later turn. A line t
 read, written past that position while the plane was down, does not hold the terminal: the
 re-establish reports the gap and places the terminal after the records before it. A record no read
 answers, such as an OpenCode part still filling when its turn died, holds it no more: the terminal
-is placed after the records before it, and the turn end reads the session once rather than without end. The same placement runs with
+is placed after the records before it, and the turn end reads the session once rather than without end. The OpenCode source reads every record at or before the end it reported at a turn end as settled, so a part left filling by a failed turn does not stop the turns after it from publishing. A terminal reported while the first start is still waiting on the broker reaches the emitter before its first read, so a prompt written in that window does not close the failed turn as a finish. The same placement runs with
 the plane up: a terminal reported while the flush before it is still reading, with the next prompt
 written before that read, closes its own turn in the place of the finish that prompt synthesizes. The seat used to exit on a space that requires events; for Claude Code the
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code

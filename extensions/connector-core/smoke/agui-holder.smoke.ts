@@ -1072,6 +1072,41 @@ const B = "/tmp/session-b.jsonl";
   c("revive:a-failure-after-close-reports-NO-retry", r.delays.length === 1 && r.delays[0] === null, r.delays);
 }
 
+{
+  // A terminal that arrives DURING THE FIRST START, before any emitter exists: the session's first
+  // turn failed while the start was still waiting on the broker, and the next prompt was written
+  // before it returned (Sol, round 16 of 2026-10-13, through the built MCP entry point with the
+  // broker unavailable at SessionStart). The terminal was queued behind the flush already on the
+  // chain, which read past its position: the failed run closed as a finish under the next prompt
+  // and the terminal closed the successor. It must reach the first emitter before its first pump,
+  // as one that arrives during a re-establish's start does.
+  let release: (() => void) | undefined;
+  let entered = false;
+  const r = rig({
+    gate: (start) =>
+      start === 1
+        ? new Promise<void>((res) => {
+            entered = true;
+            release = res;
+          })
+        : Promise.resolve(),
+    make: () => new FakeEmitter(),
+  });
+  r.write("run-1"); // the first prompt, already in the transcript
+  r.holder.adopt(A);
+  await sleep(10);
+  c("CONTROL:the-first-start-is-in-flight", entered && r.starts === 1 && !r.holder.running, { entered, starts: r.starts, running: r.holder.running });
+  r.holder.flush(A); // the stop hook's flush, queued behind the start
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the failed first turn's terminal, during the start
+  r.write("run-2"); // the next prompt, written while the start is in flight
+  release?.();
+  await r.holder.settled();
+  const first = r.made[0];
+  c("first-start:a-terminal-during-the-first-start-is-handed-to-the-emitter-BEFORE-its-first-pump", first?.queued.length === 1 && first.queued[0]?.terminal.error?.code === "rate_limit" && first.queued[0].pumpsBefore === 0 && first.pumpClosed[0]?.runId === "run-1" && first.pumpClosed[0]?.error?.code === "rate_limit", { queued: first?.queued, pumpClosed: first?.pumpClosed });
+  c("first-start:a-terminal-during-the-first-start-does-NOT-close-the-successor-run", first?.closes.length === 0 && first.openRunId === "run-2" && r.holder.running, { closes: first?.closes, open: first?.openRunId, running: r.holder.running });
+  await r.holder.close();
+}
+
 // ---- THE HOOK CONTRACT ----------------------------------------------------------------------
 {
   // adopt/flush run behind a hook that must reply immediately and must not see an exception. These

@@ -68,6 +68,14 @@
       "replace": "      void turnEnds.get(input.sessionID);\n",
       "expectRed": "barrier:a native prompt is held while the terminal's position read is held",
       "note": "The round-15 defect: the driven path waited for the close's position read and the prompt typed into the TUI did not, so a failed turn closed as a finish and its successor as the error."
+    },
+    {
+      "name": "O6 a record at or before the reported turn end is settled only by its own marks",
+      "file": "extensions/connector-opencode/src/agui-source.ts",
+      "find": "      if (!this.settled(r)) break;\n",
+      "replace": "      if (!isSettled(r)) break;\n",
+      "expectRed": "unsettled:the turn after it is published, so the session is not wedged behind the unfinished part",
+      "note": "The round-16 defect: a part still filling when its turn died never gets its end mark and its message never reports completed, so every later read stopped at it and no later turn was published."
     }
   ]
 }
