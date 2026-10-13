@@ -16,6 +16,7 @@ import {
   normalizeIdpUrl,
   revokeIdpSession,
 } from "./login.js";
+import { checkedEviction } from "./barrier-evict.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 import { findInteractiveActor, findManagedActor, grantActor, loadActorLedger, revokeActor, type ActorRow } from "./ledger.js";
@@ -190,6 +191,7 @@ const csv = (s: string | undefined, dflt: string[]): string[] =>
 async function evictRevokedPrincipal(space: string, principal: string): Promise<string> {
   const fallback = (why: string) =>
     `live-connection eviction skipped (${why}) - deny-new is committed and the revoke cannot be re-run; the already-open connection ends at its current bearer's expiry. To evict live connections at revoke time, run \`cotal actor revoke\` from the mesh root (local signer + registry).`;
+  const incomplete = (why: string) => `live-connection eviction INCOMPLETE (${why}) - run \`cotal doctor auth\``;
   const root = findCotalRoot();
   const auth = await getSpaceAuth(workspaceSecretStore(root), space);
   if (!auth) return fallback("no local signer here");
@@ -199,10 +201,9 @@ async function evictRevokedPrincipal(space: string, principal: string): Promise<
     return await withDeliveryAdminEndpoint({ space, server: mesh.server, dataAccount: auth.account }, "supervisor", "revoke-evict", async (ep) => {
       const r = await ep.requestDeliveryAdmin("evictPrincipal", { principal }, 15_000);
       if (!r.ok) return `live-connection eviction refused: ${r.error}`;
-      const d = (r.data ?? {}) as { kicked?: number; remaining?: number; verifiedGone?: boolean };
-      return d.verifiedGone
-        ? `live connections closed now (${d.kicked ?? 0} kicked, verified gone)`
-        : `live-connection eviction INCOMPLETE (${d.kicked ?? 0} kicked, ${d.remaining ?? "?"} still live) - run \`cotal doctor auth\``;
+      const d = checkedEviction(principal, r.data, (_principal, note) => note);
+      if (typeof d === "string") return incomplete(d);
+      return d.verifiedGone ? `live connections closed now (${d.kicked} kicked, verified gone)` : incomplete(`${d.kicked} kicked, ${d.remaining} still live`);
     });
   } catch (e) {
     return fallback(e instanceof Error ? e.message : String(e));

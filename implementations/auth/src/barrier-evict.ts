@@ -25,7 +25,7 @@ import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
 
 /** Accept one daemon eviction result only when it verifiably describes `principal`; anything else
  *  maps to `failClosed`, so it never authorizes. */
-function checkedEviction(principal: string, data: unknown, failClosed: (principal: string, note: string) => EvictionResult): EvictionResult {
+export function checkedEviction<T>(principal: string, data: unknown, failClosed: (principal: string, note: string) => T): EvictionResult | T {
   const d = data as Partial<EvictionResult> | undefined;
   if (
     d === undefined || d === null || d.principal !== principal ||

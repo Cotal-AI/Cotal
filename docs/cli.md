@@ -2305,7 +2305,10 @@ action. `revoke` uses the same retirement before deleting the row, which lets a 
 real successor instead of colliding with a live predecessor. `supervise` is separate from `spawn` and `admin`: it only makes a signed-in
 person eligible for the host-provided closed remote manager-service view; it does not grant
 management of another owner or a general host profile. `revoke` denies the next exchange and
-the next connect with no restart, and evicts the principal's live connections. Managed-agent rows
+the next connect with no restart, and evicts the principal's live connections. It reports
+`verified gone` only when the delivery daemon's eviction result names the principal and shows a
+complete scan with no connection left; any other result prints `live-connection eviction INCOMPLETE`
+with its counts, or with the reason the result was not accepted. Managed-agent rows
 (written by the spawn path) live in a disjoint row space this command never touches. See
 [identity & auth](identity-and-auth.md).
 
