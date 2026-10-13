@@ -97,6 +97,15 @@ const holdReads = (n?: number): void => {
   readGate = new Promise<void>((r) => (releaseRead = r));
   gatedReads = n;
 };
+/** Independent holds: each one catches the next read of the session's messages and is released
+ *  on its own, so two turn ends' position reads can be held and released separately. */
+const holdQueue: { held: Promise<void>; release: () => void }[] = [];
+const holdNextRead = (): (() => void) => {
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  holdQueue.push({ held, release });
+  return release;
+};
 let reads = 0;
 const oc = createHttpServer((req, res) => {
   if (req.headers.authorization !== auth) return void res.writeHead(401).end();
@@ -106,6 +115,7 @@ const oc = createHttpServer((req, res) => {
     if (req.method === "POST" && req.url === "/session")
       return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: A }));
     const m = req.url?.match(/^\/session\/([^/]+)\/message$/);
+    if (req.method === "GET" && m && holdQueue.length) await holdQueue.shift()!.held;
     if (req.method === "GET" && m && readGate && (gatedReads === undefined || gatedReads-- > 0)) await readGate;
     if (req.method === "GET" && m) reads++;
     if (req.method === "GET" && m)
@@ -167,9 +177,8 @@ try {
   await busy(A);
   // THE TURN END WAITS BEHIND ITS POSITION READ. The terminal's position is the session's messages
   // over HTTP; an event arm that returns before that read answers lets the next turn in ahead of
-  // it, and the position then names the next turn (Sol, round 14 of 2026-10-13, through the built
-  // plugin: a failed turn closed as a finish and its successor as the error). The read is held
-  // here, and the arm must still be in flight while it is.
+  // it, and the position then names the next turn: a failed turn closed as a finish and its
+  // successor as the error. The read is held here, and the arm must still be in flight while it is.
   holdReads();
   const errored = fire({
     type: "session.error",
@@ -179,8 +188,7 @@ try {
   check("barrier:the error arm is still in flight while the terminal's position read is held", errorArm === "in flight", errorArm);
   // A NATIVE PROMPT waits behind the same read. OpenCode awaits the prompt hook before it saves the
   // user message, so a hook that returns here lets the next turn's records land ahead of the
-  // position (Sol, round 15 of 2026-10-13, through the built plugin: the driven path waited and the
-  // typed one did not).
+  // position: the driven path waited and the typed one did not.
   const typed = (hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> })["chat.message"]({ sessionID: A }, { parts: [{ type: "text", text: "next prompt" }] }).then(() => "returned" as const);
   const promptHook = await Promise.race([typed, sleep(600).then(() => "in flight" as const)]);
   check("barrier:a native prompt is held while the terminal's position read is held", promptHook === "in flight", promptHook);
@@ -256,11 +264,8 @@ try {
   await sleep(2_500);
 
   // ---- Turn 6: TWO turn ends for one turn, the error's position read held and the idle's
-  // answering first. The barrier for the session was the latest turn end alone, so the idle's
-  // read answering deleted it while the error's was still pending, and a native prompt went
-  // through ahead of the error's position (Sol, round 18 of 2026-10-13, through the built
-  // plugin: the failed turn closed as a finish and its successor as the error). The barrier is
-  // every turn end still settling.
+  // answering first. The barrier is every turn end still settling, so a native prompt typed in
+  // that window waits for the error's read as well as the idle's.
   content.set(A, [...(content.get(A) as unknown[]), ...turn(A, 6)]);
   await part(A);
   await sleep(2_000);
@@ -286,6 +291,37 @@ try {
   await erroredTwice;
   await idledTwice;
   check("twice:the native prompt goes through once the error's read has answered", (await Promise.race([typedTwice, sleep(2_000).then(() => "stuck" as const)])) === "returned");
+  await sleep(2_500);
+
+  // ---- Turn 7: the native prompt arrives BETWEEN the two turn ends. It is already waiting on the
+  // error's barrier when the idle replaces that entry, with the idle's own position read held
+  // independently. A prompt that waited on the entry it first found goes through once the error's
+  // read answers, ahead of the idle's position; it must follow each replacement until none remains.
+  content.set(A, [...(content.get(A) as unknown[]), ...turn(A, 7)]);
+  await part(A);
+  await sleep(2_000);
+  await busy(A);
+  const releaseErrorRead = holdNextRead();
+  const erroredEarly = fire({
+    type: "session.error",
+    properties: { sessionID: A, error: { name: "APIError", data: { message: "upstream reset", statusCode: 502, isRetryable: true } } },
+  }).then(() => "returned" as const);
+  await sleep(300);
+  const typedEarly = (hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> })["chat.message"]({ sessionID: A }, { parts: [{ type: "text", text: "between the ends" }] }).then(() => "returned" as const);
+  await sleep(300);
+  const releaseIdleRead = holdNextRead();
+  const idledEarly = fire({ type: "session.idle", properties: { sessionID: A } }).then(() => "returned" as const);
+  await sleep(600);
+  check("early:the prompt that arrived before the second turn end is held while both reads are held",
+    (await Promise.race([typedEarly, sleep(100).then(() => "in flight" as const)])) === "in flight" && holdQueue.length === 0, { unclaimedHolds: holdQueue.length });
+  releaseErrorRead();
+  check("early:the error arm returns once its own read answers", (await Promise.race([erroredEarly, sleep(2_000).then(() => "stuck" as const)])) === "returned");
+  await sleep(600);
+  check("early:the prompt is STILL held behind the idle's read that replaced the barrier it first found",
+    (await Promise.race([typedEarly, sleep(100).then(() => "in flight" as const)])) === "in flight" && (await Promise.race([idledEarly, sleep(100).then(() => "in flight" as const)])) === "in flight");
+  releaseIdleRead();
+  await idledEarly;
+  check("early:the prompt goes through once every turn end has settled", (await Promise.race([typedEarly, sleep(2_000).then(() => "stuck" as const)])) === "returned");
   await sleep(2_500);
 
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
@@ -336,7 +372,9 @@ try {
   const unsettledTurnCloses = closesBetween(a4i, a5i);
   const a6i = idx((e) => e.text.includes("answer-6"));
   const afterUnsettledCloses = closesBetween(a5i, a6i);
-  const twiceCloses = closesBetween(a6i, -1);
+  const a7i = idx((e) => e.text.includes("answer-7"));
+  const twiceCloses = closesBetween(a6i, a7i);
+  const earlyCloses = closesBetween(a7i, -1);
 
   check("fail:the API-error turn closed EXACTLY ONCE — `RUN_ERROR` closes a run, so nothing may follow it",
     failedTurnCloses.length === 1, failedTurnCloses);
@@ -360,8 +398,11 @@ try {
   check("twice:the turn with two turn ends closed exactly once, as the error",
     a6i >= 0 && twiceCloses.length === 1 && twiceCloses[0]?.type === "RUN_ERROR", { a6i, twiceCloses });
 
+  check("early:the turn whose prompt arrived between its two ends closed exactly once, as the error",
+    a7i >= 0 && earlyCloses.length === 1 && earlyCloses[0]?.type === "RUN_ERROR", { a7i, earlyCloses });
+
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 20;
+  const EXPECTED = 25;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

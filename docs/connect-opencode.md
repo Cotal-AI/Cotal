@@ -177,6 +177,10 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
   read ACL. A turn **you** stopped is not a failure and is not published as one: a user cancellation
   arrives on the same event, and it closes the run as an ordinary end. A failed turn also re-arms
   the wake it carried, so a focus @mention whose turn failed is driven again after the retry delay.
+  A prompt you type while a turn end is still settling waits until the position read of every
+  pending turn end on that session has answered, a turn that ended twice included, before OpenCode
+  saves it, so the close keeps its own turn. The wait covers that read, not the publication of the
+  close on the events channel.
 
 Reasoning is off by default.
 

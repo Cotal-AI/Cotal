@@ -83,7 +83,15 @@
       "find": "    const settled = Promise.all([turnEnds.get(session), close]).then(() => undefined);\n",
       "replace": "    const settled = close;\n",
       "expectRed": "twice:a native prompt is still held while the EARLIER turn end's read is held",
-      "note": "The round-18 defect: a turn that ended twice, by its error and the idle after it, had its barrier replaced by the later turn end, whose read answered first and deleted it while the error's read was still pending."
+      "note": "A turn that ended twice, by its error and the idle after it, had its barrier replaced by the later turn end, whose read answered first and deleted it while the error's read was still pending."
+    },
+    {
+      "name": "O8 a native prompt waits on the barrier it first found, not on each replacement",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      for (let barrier = turnEnds.get(input.sessionID); barrier !== undefined; barrier = turnEnds.get(input.sessionID))\n        await barrier;\n",
+      "replace": "      await turnEnds.get(input.sessionID);\n",
+      "expectRed": "early:the prompt is STILL held behind the idle's read that replaced the barrier it first found",
+      "note": "A prompt already awaiting the error's barrier when the idle replaced it went through once the error's read answered, ahead of the idle's position, and the idle's close landed on the prompt's successor."
     }
   ]
 }
