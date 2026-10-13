@@ -64,10 +64,10 @@
     {
       "name": "O5 a native prompt passes the turn end still settling",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      await turnEnds.get(input.sessionID);\n",
+      "find": "      for (let barrier = turnEnds.get(input.sessionID); barrier !== undefined; barrier = turnEnds.get(input.sessionID))\n        await barrier;\n",
       "replace": "      void turnEnds.get(input.sessionID);\n",
       "expectRed": "barrier:a native prompt is held while the terminal's position read is held",
-      "note": "The round-15 defect: the driven path waited for the close's position read and the prompt typed into the TUI did not, so a failed turn closed as a finish and its successor as the error."
+      "note": "The driven path waited for the close's position read and the prompt typed into the TUI did not, so a failed turn closed as a finish and its successor as the error."
     },
     {
       "name": "O6 a record at or before the reported turn end is settled only by its own marks",
