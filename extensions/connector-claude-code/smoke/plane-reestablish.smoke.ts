@@ -98,9 +98,29 @@ function plane(opts: { seedMapper: boolean }) {
   let mapper: ReturnType<typeof createClaudeMapper> | undefined;
   let walDir = "";
   let starts = 0;
+  let gate: Promise<void> | undefined;
+  let entered = false;
+  /** Hold the NEXT start at its startup boundary until released: the window in which the failed
+   *  emitter is dropped and the fresh one has not returned. */
+  const holdNextStart = () => {
+    let release!: () => void;
+    entered = false;
+    gate = new Promise<void>((r) => (release = r));
+    return {
+      entered: () => entered,
+      release: () => {
+        gate = undefined;
+        release();
+      },
+    };
+  };
   const holder = new AguiEmitterHolder<ClaudeEntry, unknown>(
     async (path: string, sessionSource: unknown) => {
       starts++;
+      if (gate) {
+        entered = true;
+        await gate;
+      }
       const boundSource = (source ??= await createBoundClaudeTranscriptSource(path, sessionSource));
       const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot: root, space, principal, threadId: basename(path, ".jsonl") });
       walDir = join(walPath, "..");
@@ -134,7 +154,7 @@ function plane(opts: { seedMapper: boolean }) {
     chmodSync(walDir, 0o700);
     rmSync(root, { recursive: true, force: true });
   };
-  return { holder, broker, log, transcript, threadId, user, assistant, flush, turnEnd, wal, walDir: () => walDir, starts: () => starts, close };
+  return { holder, broker, log, transcript, threadId, user, assistant, flush, turnEnd, wal, walDir: () => walDir, starts: () => starts, holdNextStart, close };
 }
 
 // ---- A. the WAL directory becomes unwritable during a flush ------------------------------------
@@ -389,6 +409,45 @@ for (const seedMapper of [true, false]) {
   await sleep(400);
   await p.holder.settled();
   c("H:the-terminal-is-published-once-the-write-goes-through", p.broker.frames.some((f) => f.runId === "run-1" && JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && p.holder.running, { frames: p.broker.frames.length, running: p.holder.running });
+  await p.close();
+}
+
+// ---- I. the terminal arrives while the fresh start is in flight ---------------------------------
+{
+  // As B, with the failed turn's terminal delivered while the re-establish's fresh start is held at
+  // its startup boundary, and the next prompt and its answer already written. The terminal must
+  // close the FAILED run, in a frame of its own, and the successor must open clean (Sol, round 7,
+  // through a real broker: the failed run got the synthesized finish and the successor the error).
+  // G is the control for the same terminal delivered before the retry starts.
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush(); // run-2 open and acknowledged
+  p.broker.failNext = 1;
+  p.assistant(" lost");
+  await p.flush(); // the publish fails after the frame is frozen: down
+  c("I:CONTROL-the-plane-is-down-with-run-2-open-and-a-frame-pending", !p.holder.running && p.wal().pending === "sent_unacked", { running: p.holder.running, wal: p.wal() });
+  const start = p.holdNextStart();
+  await sleep(60); // the retry fires; the fresh start is held
+  c("I:CONTROL-the-fresh-start-is-in-flight", start.entered() && !p.holder.running, { entered: start.entered(), running: p.holder.running });
+  p.user(); // the next prompt and its answer, written while the start is in flight
+  p.assistant(" next-turn");
+  p.holder.closeRun(Date.now(), { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the start
+  start.release();
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const errorFrames = p.broker.frames.filter((f) => JSON.stringify(f.parts).includes('"type":"RUN_ERROR"'));
+  const run3 = p.broker.frames.filter((f) => f.runId === "run-3");
+  c("I:the-failed-run-is-closed-with-RUN_ERROR-in-a-frame-of-its-own", errorFrames.length === 1 && errorFrames[0]!.runId === "run-2" && !finished(wire, "run-2") && p.holder.running, { errors: errorFrames.map((f) => f.runId), finished: finished(wire, "run-2"), running: p.holder.running });
+  c("I:the-successor-run-is-open-and-carries-no-error", run3.length > 0 && run3.some((f) => JSON.stringify(f.parts).includes("next-turn")) && run3.every((f) => !JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')) && !finished(wire, "run-3"), { run3: run3.length, finished: finished(wire, "run-3") });
+  await p.turnEnd();
+  const last = p.broker.frames[p.broker.frames.length - 1]!;
+  c("I:the-successor-runs-own-terminal-closes-it-as-a-finish", last.runId === "run-3" && finished(JSON.stringify(last.parts), "run-3"), { last: last.runId });
   await p.close();
 }
 

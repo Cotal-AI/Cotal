@@ -138,8 +138,9 @@ class FakeEmitter {
   closeCalls = 0;
   /** Every terminal owed to this emitter, with the pump count when it was owed. */
   owed: { runId: string; error: { message: string; code?: string }; pumpsBefore: number }[] = [];
-  /** When set, a pump that finds a terminal owed closes that run itself (as the real emitter does
-   *  when the unread records hold the next prompt) and opens this run instead. */
+  /** When set, the unread records hold the next prompt: a pump closes the open run itself (with
+   *  the owed terminal if one is owed, as a finish otherwise, as the real emitter does) and opens
+   *  this run instead. */
   nextPromptOpens: string | undefined;
   oweTerminal(runId: string, error: { message: string; code?: string }): void {
     this.owed.push({ runId, error, pumpsBefore: this.pumps });
@@ -147,7 +148,7 @@ class FakeEmitter {
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
     if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
-    if (this.nextPromptOpens !== undefined && this.owed.length > 0) this.openRunId = this.nextPromptOpens;
+    if (this.nextPromptOpens !== undefined) this.openRunId = this.nextPromptOpens;
     return { frames: 1, events: 1 };
   }
   async closeRun(o: { timestamp: number; error?: { message: string; code?: string } }): Promise<string | null> {
@@ -163,7 +164,17 @@ class FakeEmitter {
 /** A holder plus the instruments around it. `starts` is the count that most cells turn on.
  *  `make` hands each start its own emitter, as a real factory does; without it every start
  *  returns the one shared `emitter`. */
-const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; retryMs?: number; make?: (start: number) => FakeEmitter }) => {
+const rig = (opts?: {
+  fail?: Error;
+  failTimes?: number;
+  /** The 1-based starts that fail on their own, with the others succeeding. */
+  failStarts?: Set<number>;
+  emitter?: FakeEmitter;
+  retryMs?: number;
+  make?: (start: number) => FakeEmitter;
+  /** Awaited inside the start, by start number: a start held here is IN FLIGHT until released. */
+  gate?: (start: number) => Promise<void>;
+}) => {
   const errors: Error[] = [];
   const delays: (number | null)[] = [];
   const paths: string[] = [];
@@ -178,6 +189,8 @@ const rig = (opts?: { fail?: Error; failTimes?: number; emitter?: FakeEmitter; r
       contexts.push(context);
       // `failTimes` fails the first N starts and lets the rest succeed; `fail` alone fails every one.
       if (opts?.fail && (opts.failTimes === undefined || starts <= opts.failTimes)) throw opts.fail;
+      if (opts?.failStarts?.has(starts)) throw new Error(`start ${starts} failed: the broker preflight was refused`);
+      if (opts?.gate) await opts.gate(starts);
       const e = opts?.make ? opts.make(starts) : emitter;
       made.push(e);
       return e as unknown as AguiEmitter<unknown>;
@@ -914,6 +927,75 @@ const B = "/tmp/session-b.jsonl";
   release!();
   await holder.settled();
   c("waitlive:after-the-shared-release-every-flush-still-pumped", r.emitter.pumps === 3, r.emitter.pumps);
+}
+
+{
+  // A terminal that arrives WHILE THE FRESH START IS IN FLIGHT. The failed emitter is dropped and
+  // the fresh one has not returned, so there is no emitter to ask; and the unread records hold the
+  // next prompt. A close queued behind the recovery would run after the pump had read that prompt,
+  // and close the SUCCESSOR run with the failed run's error (Sol, round 7 of 2026-10-13, through a
+  // real broker with the start held at its startup boundary). It must be held at the hook, for the
+  // run the wire had open, and owed to the fresh emitter before its pump.
+  let release: (() => void) | undefined;
+  let entered = false;
+  const r = rig({
+    retryMs: 10,
+    gate: (start) =>
+      start === 2
+        ? new Promise<void>((res) => {
+            entered = true;
+            release = res;
+          })
+        : Promise.resolve(),
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      else e.nextPromptOpens = "run-3"; // the unread records hold the next prompt
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // pump 1 fails: down
+  await r.holder.settled();
+  await sleep(40); // the retry fires and the fresh start is held at its gate
+  c("CONTROL:the-fresh-start-is-in-flight", entered && r.starts === 2 && !r.holder.running, { entered, starts: r.starts, running: r.holder.running });
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the failed turn's terminal, during the start
+  release?.();
+  await r.holder.settled();
+  const fresh = r.made[1];
+  c("revive:a-terminal-during-an-in-flight-start-is-owed-to-the-fresh-emitter-BEFORE-its-pump", fresh?.owed.length === 1 && fresh.owed[0]?.runId === "run-2" && fresh.owed[0].pumpsBefore === 0, { owed: fresh?.owed });
+  c("revive:a-terminal-during-an-in-flight-start-does-NOT-close-the-successor-run", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId, running: r.holder.running });
+  await r.holder.close();
+}
+
+{
+  // A terminal that arrives while the plane is down AFTER a re-establish start FAILED. The failed
+  // start left no emitter to ask, so the run the wire had open is carried from the first failure of
+  // the outage, and the terminal is held for it until a start goes through.
+  const r = rig({
+    retryMs: 20,
+    failStarts: new Set([2]),
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // pump 1 fails: down
+  await r.holder.settled();
+  await sleep(35); // the first retry at 20ms: start 2 fails, the plane is down again with no emitter
+  c("CONTROL:the-re-establish-start-failed-and-the-plane-is-down-with-no-emitter", r.starts === 2 && r.errors.length === 2 && !r.holder.running, { starts: r.starts, errors: r.errors.length });
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // the terminal, while down after the failed start
+  await sleep(80); // the second retry at 40ms more: start 3 goes through
+  await r.holder.settled();
+  const fresh = r.made[1]; // start 2 made nothing
+  c("revive:a-terminal-while-down-after-a-FAILED-re-establish-start-is-held-for-the-down-run", r.starts === 3 && fresh?.closes.length === 1 && fresh.closes[0]?.error?.code === "rate_limit" && r.holder.running, { starts: r.starts, closes: fresh?.closes, running: r.holder.running });
+  await r.holder.close();
 }
 
 console.log(`agui-holder smoke: ${ok} passed, ${fail} failed`);

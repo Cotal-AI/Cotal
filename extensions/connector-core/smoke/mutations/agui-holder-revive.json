@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/agui-holder.smoke.ts"
   ],
-  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane",
+  "guard": "after a failure the holder re-establishes the plane itself on a doubling, capped backoff, by a fresh start that replaces the emitter whether or not it halted; the backoff resets only after a pump returns; close cancels a pending re-establish; the seat never stops for the plane; a terminal that arrives while the fresh start is in flight, or while down after a failed start, is held for the run the wire had open",
   "command": "pnpm smoke:agui-holder",
   "completionMarker": "agui-holder smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-holder-revive.json",
@@ -120,6 +120,22 @@
       "replace": "      this.retryAttempt = 0;\n      if (held) {\n        this.heldClose = undefined;\n",
       "expectRed": "revive:the-delay-DOUBLES-while-the-held-close-keeps-failing",
       "note": "Round 5 of review: a terminal-only write failure held for four seconds was retried five times at one second, behind a pump that read nothing."
+    },
+    {
+      "name": "R12 a terminal during an in-flight start is queued behind the recovery instead of held",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (this.dead !== undefined || this.reviving) {\n      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);\n      return;\n    }\n",
+      "replace": "    if (this.dead !== undefined) {\n      if (this.downRun !== undefined) this.hold(this.downRun, timestamp, error);\n      return;\n    }\n",
+      "expectRed": "revive:a-terminal-during-an-in-flight-start-does-NOT-close-the-successor-run",
+      "note": "The round-7 defect: the queued close runs after the recovery pump has read the next prompt, and closes the successor run with the failed run's error."
+    },
+    {
+      "name": "R13 the down run is not carried across a failed re-establish start",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "    if (this.emitter !== undefined) this.downRun = this.emitter.openRunId;\n",
+      "replace": "    this.downRun = this.emitter?.openRunId;\n",
+      "expectRed": "revive:a-terminal-while-down-after-a-FAILED-re-establish-start-is-held-for-the-down-run",
+      "note": "A failed start has no emitter, so the run the wire had open is forgotten and the terminal that arrives next is dropped."
     }
   ]
 }

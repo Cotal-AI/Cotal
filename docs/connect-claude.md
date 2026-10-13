@@ -498,9 +498,11 @@ open when the session stopped is closed rather than left dangling.
 
 A delayed initial connection or a broker reconnect pauses event publication without closing MCP.
 The recorder waits for both the mesh binding and its transport; unpublished records stay in the
-transcript until the connection recovers. Stopping the connector cancels that wait. Recording errors,
-including a conflicting transcript or damaged event state, still stop a session whose policy requires
-recording.
+transcript until the connection recovers. Stopping the connector cancels that wait. A recording error,
+including a conflicting transcript or damaged event state, stops the publishing plane and not the
+session: it is reported with the delay before the next re-establish, on every space, and the seat keeps
+its mesh connection. A second transcript path offered to a bound recorder is refused the same way, and
+the first path stays bound.
 
 One channel carries **every session of one agent**, because it is named after the principal and not
 after the session. Alongside the per-session logs the connector keeps one small record per principal,
