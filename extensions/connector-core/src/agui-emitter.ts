@@ -651,10 +651,19 @@ export class AguiEmitter<T> {
       );
     }
     const first = ahead.records[0]?.cursor;
-    // No record after the position, and the read from it ends where this read ends: what lies
-    // between is lines the source could not read, which this read stepped over. The terminal is
-    // after every record this read holds; held for a record past the gap, it would wait forever.
-    if (first === undefined) return ahead.cursor === read.cursor ? read.records.length : undefined;
+    // No record after the position: every record this read holds is before it. What lies between
+    // this read's end and the position is either lines the source stepped over, when the read
+    // from the position ends where this read ends, or a record no read answers yet: a part still
+    // filling when the turn died, which the source's end counts and its reads stop before. Either
+    // way a read from this read's end answers nothing, and the terminal is after every record this
+    // read holds; held for a record that never comes, it would wait forever, and a settle that
+    // pumps for it would read the source without end (Sol, round 15 of 2026-10-13: 934 reads of
+    // an OpenCode session in 500 ms). A read that does answer is before the position, so the
+    // terminal waits for the pump that consumes it.
+    if (first === undefined) {
+      if (ahead.cursor === read.cursor) return read.records.length;
+      return (await this.source.read(read.cursor)).records.length === 0 ? read.records.length : undefined;
+    }
     const i = read.records.findIndex((r) => r.cursor === first);
     if (i >= 0) return i;
     if ((await this.source.read(read.cursor)).records.some((r) => r.cursor === first)) return undefined;

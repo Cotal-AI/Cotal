@@ -133,10 +133,18 @@
     {
       "name": "O14 a terminal ahead of a gap the read stepped over is held for a record that never comes",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    if (first === undefined) return ahead.cursor === read.cursor ? read.records.length : undefined;\n",
-      "replace": "    if (first === undefined) return undefined;\n",
+      "find": "      if (ahead.cursor === read.cursor) return read.records.length;\n      return (await this.source.read(read.cursor)).records.length === 0 ? read.records.length : undefined;\n",
+      "replace": "      return undefined;\n",
       "expectRed": "gap:a-terminal-reported-ahead-of-a-torn-line-is-placed-on-the-run-the-records-before-it-opened",
       "note": "The round-13 defect: a torn line written past the position a terminal was reported at, while the plane was down, left the terminal waiting after the re-establish; the settle pumped without end and the run was never closed."
+    },
+    {
+      "name": "O15 a terminal past a record no read answers is held for that record",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      return (await this.source.read(read.cursor)).records.length === 0 ? read.records.length : undefined;\n",
+      "replace": "      return undefined;\n",
+      "expectRed": "gap:a-terminal-reported-past-a-record-no-read-answers-is-placed-on-the-run-the-records-before-it-opened",
+      "note": "The round-15 defect: an OpenCode part still filling when the turn died is counted by the source's end and answered by no read, so the terminal reported past it waited for a record that never came and the settle read the session without end."
     }
   ]
 }

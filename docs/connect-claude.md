@@ -383,7 +383,9 @@ transcript has reached at the hook names the turn, including a turn the connecto
 such as a task notification, which takes its terminal and publishes nothing. A terminal repeated
 for a turn that has one replaces nothing and is kept for no later turn. A line the connector cannot
 read, written past that position while the plane was down, does not hold the terminal: the
-re-establish reports the gap and places the terminal after the records before it. The same placement runs with
+re-establish reports the gap and places the terminal after the records before it. A record no read
+answers, such as an OpenCode part still filling when its turn died, holds it no more: the terminal
+is placed after the records before it, and the turn end reads the session once rather than without end. The same placement runs with
 the plane up: a terminal reported while the flush before it is still reading, with the next prompt
 written before that read, closes its own turn in the place of the finish that prompt synthesizes. The seat used to exit on a space that requires events; for Claude Code the
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code

@@ -117,7 +117,7 @@ import {
   packUnits,
   type EmitUnit,
 } from "../src/agui-emitter.js";
-import { JsonlFileSource } from "../src/durable-source.js";
+import { JsonlFileSource, type DurableSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
 import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 
@@ -1222,6 +1222,40 @@ try {
     c("gap:a-terminal-reported-ahead-of-a-blank-line-is-placed-the-same-way",
       pumped2.err === undefined && gaps2.length === 0 && em2.waitingTerminals === 0 && owed2?.terminal.error?.code === "overloaded",
       { err: pumped2.err?.message, gaps2, waiting: em2.waitingTerminals, owed2 });
+    // A record the source counts in its end but answers in no read: an OpenCode part still filling
+    // when the turn died never gets its end mark, the source's reads stop before it, and a terminal
+    // reported past it waited for a read that never came while the settle pumped without end (Sol,
+    // round 15 of 2026-10-13: 934 reads of the session in 500 ms). The source here is the shape,
+    // not the file: a read answers the settled records after its cursor and stops at the first
+    // that is not, and the end counts them all.
+    const u = await fresh("gap-terminal-unsettled");
+    const rows: { value: Rec; settled: boolean }[] = [];
+    const pending: DurableSource<Rec> = {
+      kind: "memory",
+      async read(cursor) {
+        if (cursor === undefined) return { records: [], cursor: rows.length ? String(rows.length - 1) : "" };
+        const records: { value: Rec; cursor: string }[] = [];
+        for (let i = cursor === "" ? 0 : Number(cursor) + 1; i < rows.length && rows[i]!.settled; i++) records.push({ value: rows[i]!.value, cursor: String(i) });
+        return { records, cursor: records.length ? records[records.length - 1]!.cursor : cursor };
+      },
+      async end() { return rows.length ? String(rows.length - 1) : ""; },
+    };
+    const ep3 = new FakeEndpoint();
+    ep3.answers = [{ seq: 1, duplicate: false }];
+    const em3 = await AguiEmitter.start({ endpoint: ep3, wal: u.wal, subjectFrontier: memorySubjectFrontier(), source: pending, map: open, onUnreadable: () => {} });
+    await em3.pump(); // adopt
+    rows.push({ value: { run: "r1", msg: "m1", text: "open" }, settled: true });
+    await em3.pump();
+    c("gap:SETUP-r1-is-open-on-the-unsettled-source", em3.openRunId === "r1", em3.openRunId);
+    rows.push({ value: { run: "r1", msg: "m1", text: "still filling" }, settled: false });
+    const at3 = pending.end();
+    await at3;
+    em3.queueTerminal({ terminal: { timestamp: 11, error: { message: "stream closed", code: "stream_closed" } }, at: at3 });
+    const pumped3 = await attempt(() => em3.pump());
+    const owed3 = em3.takeOwed("r1");
+    c("gap:a-terminal-reported-past-a-record-no-read-answers-is-placed-on-the-run-the-records-before-it-opened",
+      pumped3.err === undefined && em3.waitingTerminals === 0 && owed3?.terminal.error?.code === "stream_closed",
+      { err: pumped3.err?.message, waiting: em3.waitingTerminals, owed3 });
   });
   await block("A SOURCE GAP WITH NO REPORTER REFUSES BEFORE THE FRONTIER MOVES", async () => {
     const { wal, src, source } = await fresh("gap-unreported");
