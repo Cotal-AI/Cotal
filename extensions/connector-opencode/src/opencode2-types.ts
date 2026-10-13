@@ -12,6 +12,9 @@
 export interface OpenCode2Event {
   id?: string;
   type: string;
+  /** The event's position in its aggregate's durable log, on every durable event (the
+   *  `session.execution.*` lifecycle included, keyed by session). */
+  durable?: { aggregateID: string; seq: number };
   data?: Record<string, unknown>;
 }
 

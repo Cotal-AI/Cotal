@@ -525,7 +525,7 @@ try {
       await sleep(100);
     }
     const bootyId = watcher2.getRoster().find((p) => p.card.name === "Booty2")?.card.id;
-    ctxA.feed({ type: "session.execution.succeeded", data: { sessionID: SID2 } });
+    ctxA.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 1 }, data: { sessionID: SID2 } });
     await sleep(300);
     await watcher2.unicast(bootyId!, "a DM after the boot turn");
     await waitForPrompts2(2);

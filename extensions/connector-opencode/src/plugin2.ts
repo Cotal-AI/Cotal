@@ -26,7 +26,7 @@ import {
   WORKFLOW_STEER,
 } from "@cotal-ai/connector-core";
 import { modelRefusalSentence, computeInjection, settleWithin } from "./plugin.js";
-import type { OpenCode2Context } from "./opencode2-types.js";
+import type { OpenCode2Context, OpenCode2Event } from "./opencode2-types.js";
 import { buildCotalTools2 } from "./tools.js";
 
 function log(msg: string): void {
@@ -153,7 +153,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let primed = false; // persona goes out as `system` on the first connector-submitted turn, once
   let briefed = false; // channel briefing goes out once, same rule as 1.x
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
-  let endedBy: string | undefined; // id of the event that ended the last turn, so a replay of it ends nothing
+  let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
    *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
@@ -275,12 +275,19 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  as 1.x's `completeTurn` does. The incoming handler and the boot task decline while a turn runs,
    *  so nothing else would. The carried batch is left out of the wake count: after a failed turn it
    *  is still in the inbox, and driving it again here would loop a turn that keeps failing. It goes
-   *  out with the next drive or when the broker redelivers it. An end with no turn running, or a
-   *  replay of the one that ended the last turn, closes nothing: acting on it would resubmit a
-   *  failed batch, or settle the batch driven below before its turn ran. */
-  async function completeTurn(eventId: string | undefined, settle: () => void): Promise<void> {
-    if (!busy || (eventId !== undefined && eventId === endedBy)) return;
-    endedBy = eventId;
+   *  out with the next drive or when the broker redelivers it. An end with no turn running, or one
+   *  at or before the last turn's end in the same session's durable log (a replay), closes nothing:
+   *  acting on it would resubmit a failed batch, or settle the batch driven below before its turn
+   *  ran. 2.x gives every execution event that position, so an end without one cannot be told from
+   *  a replay and is refused. */
+  async function completeTurn(ev: OpenCode2Event, settle: () => void): Promise<void> {
+    const at = ev.durable;
+    if (!at) {
+      log(`${ev.type} carries no durable log position; ignored`);
+      return;
+    }
+    if (!busy || (at.aggregateID === ended?.aggregateID && at.seq <= ended.seq)) return;
+    ended = at;
     busy = false;
     const carried = new Set(surfaced);
     settle();
@@ -363,17 +370,17 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           }
           case "session.execution.succeeded": {
             if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev.id, ackSurfaced); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
+            await completeTurn(ev, ackSurfaced); // our driven turn ended cleanly: ack the surfaced batch (the sole ack site)
             break;
           }
           case "session.execution.failed": {
             if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev.id, abandonSurfaced); // leave the inbox unacked so the batch can retry on a later safe turn
+            await completeTurn(ev, abandonSurfaced); // leave the inbox unacked so the batch can retry on a later safe turn
             break;
           }
           case "session.execution.interrupted": {
             if (sessionID && data.sessionID !== sessionID) break;
-            await completeTurn(ev.id, ackSurfaced); // explicit user Stop: treat the surfaced batch as dismissed, not failed
+            await completeTurn(ev, ackSurfaced); // explicit user Stop: treat the surfaced batch as dismissed, not failed
             break;
           }
           case "permission.asked": {
