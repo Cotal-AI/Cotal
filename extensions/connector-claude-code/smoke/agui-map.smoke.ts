@@ -209,6 +209,8 @@ import { fileURLToPath } from "node:url";
 import { AguiBrackets, reasoningMessageContent, type AguiEvent } from "../../connector-core/src/agui.js";
 import { JsonlFileSource } from "../../connector-core/src/durable-source.js";
 import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "../src/agui-map.js";
+/** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
+const unitOf = (r: ReturnType<ReturnType<typeof createClaudeMapper>["map"]>) => (r !== null && "runId" in r ? r : null);
 
 let pass = 0;
 let fail = 0;
@@ -458,7 +460,7 @@ const OPENER: ClaudeEntry = {
 // The mapper's open run, read through `map` alone. An assistant record neither opens nor closes a
 // run, so it maps under the open run, or to nothing when none is open.
 const openRunOf = (m: ClaudeMapper): string | null =>
-  m.map({ type: "assistant", uuid: "open-run-probe", message: { content: [{ type: "text", text: "probe" }] } })?.runId ?? null;
+  unitOf(m.map({ type: "assistant", uuid: "open-run-probe", message: { content: [{ type: "text", text: "probe" }] } }))?.runId ?? null;
 
 const asSpecified = createClaudeMapper({ threadId: THREAD, mintRunId: mint, now: () => 0 });
 const asSpecifiedUnits = entries.map((e) => asSpecified.map(e)).filter((u) => u !== null);
@@ -567,12 +569,12 @@ c("split:a-tool-result-opens-NO-run", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   const before = openRunOf(m);
-  const unit = m.map({
+  const unit = unitOf(m.map({
     type: "user",
     uuid: "tool-result-entry",
     timestamp: "2026-08-14T21:00:02.000Z",
     message: { content: [{ type: "tool_result", tool_use_id: "toolu_never_started", content: "x" }] },
-  } as ClaudeEntry);
+  } as ClaudeEntry));
   return before === null && openRunOf(m) === null && unit === null;
 })());
 
@@ -582,34 +584,34 @@ c("split:a-tool-result-opens-NO-run", (() => {
 // mid-run halt dropped the rest of the turn and the next prompt's RUN_STARTED was refused).
 c("resume:a-mapper-seeded-with-the-log's-open-run-attributes-assistant-records-to-it", (() => {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-from-log", now: () => 0 });
-  const unit = m.map({
+  const unit = unitOf(m.map({
     type: "assistant",
     uuid: "after-outage",
     timestamp: "2026-10-12T21:55:00.000Z",
     message: { id: "m1", role: "assistant", content: [{ type: "text", text: "pong" }] },
-  } as ClaudeEntry);
+  } as ClaudeEntry));
   return openRunOf(m) === "run-from-log" && unit?.runId === "run-from-log" && unit.events.length > 0;
 })());
 c("resume:the-next-prompt-CLOSES-the-log's-run-before-opening-its-own", (() => {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", resumeRunId: "run-from-log", now: () => 0 });
-  const unit = m.map({
+  const unit = unitOf(m.map({
     type: "user",
     uuid: "next-prompt",
     timestamp: "2026-10-12T21:56:00.000Z",
     origin: { kind: "human" },
     message: { role: "user", content: "ping" },
-  } as ClaudeEntry);
+  } as ClaudeEntry));
   const kinds = unit?.events.map((e) => e.type) ?? [];
   return kinds[0] === "RUN_FINISHED" && (unit?.events[0] as { runId?: string }).runId === "run-from-log" && kinds[1] === "RUN_STARTED" && openRunOf(m) === "run-new";
 })());
 c("resume:CONTROL-an-unseeded-mapper-drops-the-same-assistant-record", (() => {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "run-new", now: () => 0 });
-  const unit = m.map({
+  const unit = unitOf(m.map({
     type: "assistant",
     uuid: "after-outage",
     timestamp: "2026-10-12T21:55:00.000Z",
     message: { id: "m1", role: "assistant", content: [{ type: "text", text: "pong" }] },
-  } as ClaudeEntry);
+  } as ClaudeEntry));
   return unit === null && openRunOf(m) === null;
 })());
 
@@ -622,7 +624,7 @@ if (OPENERS > 0) c("split:every-run-opened-came-from-an-ATTRIBUTABLE-record", ((
   let opens = 0;
   for (const e of entries) {
     const was = openRunOf(m);
-    m.map(e);
+    unitOf(m.map(e));
     const now2 = openRunOf(m);
     if (now2 !== null && now2 !== was) {
       opens += 1;
@@ -665,14 +667,14 @@ if (OPENERS > 0) c("split:every-run-opened-came-from-an-ATTRIBUTABLE-record", ((
 c("split:a-task-notification-opens-NO-run", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  const unit = m.map({
+  const unit = unitOf(m.map({
     type: "user",
     uuid: "task-notification-entry",
     timestamp: "2026-08-14T21:00:05.000Z",
     origin: { kind: "task-notification" },
     promptSource: "system",
     message: { content: "harness plumbing" },
-  } as ClaudeEntry);
+  } as ClaudeEntry));
   return unit === null && openRunOf(m) === null;
 })());
 
@@ -681,7 +683,7 @@ c("mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   // Carries `promptSource` AND an attributable origin, so the run-opening test would admit it. This
   // is the future the marker exists for: a harness that starts stamping compaction records.
-  const unit = m.map({
+  const unit = unitOf(m.map({
     type: "user",
     uuid: "stamped-compaction",
     timestamp: "2026-08-14T21:00:04.000Z",
@@ -689,7 +691,7 @@ c("mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not
     promptSource: "system",
     isCompactSummary: true,
     message: { content: "a compaction summary the harness stamped" },
-  } as ClaudeEntry);
+  } as ClaudeEntry));
   return unit === null && openRunOf(m) === null;
 })());
 
@@ -697,7 +699,7 @@ c("mechanism:the-compaction-marker-ALONE-excludes-a-record-promptSource-does-not
 if (OPENERS > 0) c("split:every-RUN_STARTED-carries-a-cotal.turnSource", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  const starts = entries.flatMap((e) => m.map(e)?.events ?? []).filter((e) => e.type === "RUN_STARTED");
+  const starts = entries.flatMap((e) => unitOf(m.map(e))?.events ?? []).filter((e) => e.type === "RUN_STARTED");
   return starts.length > 0 && starts.every((s) => typeof (s as { cotal?: { turnSource?: string } }).cotal?.turnSource === "string");
 })());
 
@@ -708,7 +710,7 @@ c("split:an-unseen-origin.kind-REFUSES-rather-than-guessing", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   try {
-    m.map({ ...OPENER, uuid: "future-harness", origin: { kind: "telepathy" } } as ClaudeEntry);
+    unitOf(m.map({ ...OPENER, uuid: "future-harness", origin: { kind: "telepathy" } } as ClaudeEntry));
     return false;
   } catch (err) {
     return /unrecognised origin\.kind/.test((err as Error).message);
@@ -718,7 +720,7 @@ c("control:a-KNOWN-origin.kind-on-the-same-path-does-NOT-refuse", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
   try {
-    return m.map({ ...OPENER, uuid: "known-origin", origin: { kind: "channel" } } as ClaudeEntry) !== null;
+    return unitOf(m.map({ ...OPENER, uuid: "known-origin", origin: { kind: "channel" } } as ClaudeEntry)) !== null;
   } catch {
     return false;
   }
@@ -731,7 +733,7 @@ c("control:a-KNOWN-origin.kind-on-the-same-path-does-NOT-refuse", (() => {
 c("UNMEASURED:a-spec-shaped-human-prompt-opens-a-run-attributed-human", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  const unit = m.map(OPENER);
+  const unit = unitOf(m.map(OPENER));
   const start = unit?.events.find((e) => e.type === "RUN_STARTED");
   return (start as { cotal?: { turnSource?: string } } | undefined)?.cotal?.turnSource === "human";
 })());
@@ -754,7 +756,7 @@ const originLess = (promptSource: string | undefined, extra?: Partial<ClaudeEntr
 const mapOnce = (e: ClaudeEntry) => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
-  return { unit: m.map(e), mapper: m };
+  return { unit: unitOf(m.map(e)), mapper: m };
 };
 
 const turnSourceOf = (unit: { events: AguiEvent[] } | null): string | undefined =>
@@ -837,7 +839,7 @@ const run = (opts?: { reasoning?: boolean }): { runId: string; events: AguiEvent
     now: () => 0,
     ...(opts?.reasoning ? { reasoning: true } : {}),
   });
-  return entries.map((e) => m.map(e)).filter((u): u is { runId: string; events: AguiEvent[] } => u !== null);
+  return entries.map((e) => unitOf(m.map(e))).filter((u): u is { runId: string; events: AguiEvent[] } => u !== null);
 };
 
 // ⚠️ A SESSION WITH NO RUN-OPENING RECORD STILL CANNOT ASSERT PART 3 — but this is no longer the
@@ -961,7 +963,7 @@ if (HEAD.tool_use + HEAD.tool_result + HEAD.thinking > 0) {
     let n = 0;
     const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0, reasoning: true });
     let emitted = 0;
-    for (let i = 0; i < FIRST_RUN_AT; i += 1) emitted += m.map(entries[i]!)?.events.length ?? 0;
+    for (let i = 0; i < FIRST_RUN_AT; i += 1) emitted += unitOf(m.map(entries[i]!))?.events.length ?? 0;
     return emitted === 0 && openRunOf(m) === null;
   })(), { firstRunAt: FIRST_RUN_AT, head: HEAD });
 } else {
@@ -1068,8 +1070,8 @@ c("real:no-signature-KEY-is-emitted-by-any-event-of-a-real-session", (() => {
 c("real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0, reasoning: true });
-  m.map(OPENER);
-  const unit = m.map({
+  unitOf(m.map(OPENER));
+  const unit = unitOf(m.map({
     type: "assistant",
     uuid: "signed-thinking",
     timestamp: "2026-08-14T21:00:01.000Z",
@@ -1078,7 +1080,7 @@ c("real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature", 
     // at all: §3.5 says the field is never read here, and the type says so too. The cast is what
     // lets this cell put on the wire the thing a real session puts there, and then assert it does
     // not come off. Narrowing the cast would delete the input the cell exists to test.
-  } as unknown as ClaudeEntry);
+  } as unknown as ClaudeEntry));
   const ev = unit?.events ?? [];
   return ev.some((e) => e.type === "REASONING_MESSAGE_CONTENT") && signatureKeys(ev) === 0;
 })());
@@ -1088,8 +1090,8 @@ c("real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature", 
 c("real:the-non-conversational-record-types-map-to-nothing", (() => {
   const dropped = ["attachment", "queue-operation", "ai-title", "last-prompt", "mode"];
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: mint, now: () => 0 });
-  m.map(OPENER);
-  return entries.filter((e) => dropped.includes(String(e.type))).every((e) => m.map(e) === null);
+  unitOf(m.map(OPENER));
+  return entries.filter((e) => dropped.includes(String(e.type))).every((e) => unitOf(m.map(e)) === null);
 })(), { types: [...typeHist] });
 
 // WHAT THIS CELL USED TO ASSERT AND WHY IT NO LONGER DOES. It required a MAJORITY of the session to
@@ -1104,10 +1106,10 @@ c("real:the-non-conversational-record-types-map-to-nothing", (() => {
 // invisible to a count of nulls because it is not a null.
 c("real:the-drop-path-runs-and-no-record-produces-an-EMPTY-unit", (() => {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: mint, now: () => 0 });
-  m.map(OPENER);
+  unitOf(m.map(OPENER));
   let nulls = 0;
   for (const e of entries) {
-    const unit = m.map(e);
+    const unit = unitOf(m.map(e));
     if (unit === null) { nulls += 1; continue; }
     if (unit.events.length === 0) return false;
     if (typeof unit.runId !== "string" || unit.runId.length === 0) return false;
@@ -1119,7 +1121,7 @@ c("real:the-drop-path-runs-and-no-record-produces-an-EMPTY-unit", (() => {
 // report can land after a newer run opened, so only the run it names is forgotten.
 {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => "r-close", now: () => 0 });
-  m.map(OPENER);
+  unitOf(m.map(OPENER));
   m.forgetOpenRun("some-other-run");
   c("seam:forgetOpenRun-keyed-on-a-DIFFERENT-id-leaves-the-open-run-alone", openRunOf(m) === "r-close");
   m.forgetOpenRun("r-close");
@@ -1131,7 +1133,7 @@ c("real:the-drop-path-runs-and-no-record-produces-an-EMPTY-unit", (() => {
 c("real:the-mapper-ALONE-leaves-the-LAST-run-open-at-EOF", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `r-${(n += 1)}`, now: () => 0 });
-  for (const e of entries) m.map(e);
+  for (const e of entries) unitOf(m.map(e));
   return openRunOf(m) !== null;
 })());
 

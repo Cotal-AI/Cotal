@@ -22,16 +22,16 @@
     {
       "name": "O1 the owed terminal is never applied: the synthesized finish is published as mapped",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    const owed = this.owed;\n    if (!owed) return undefined;\n",
-      "replace": "    const owed = this.owed;\n    if (!owed || owed) return undefined;\n",
+      "find": "    if (this.owed.size === 0) return undefined;\n",
+      "replace": "    if (this.owed.size >= 0) return undefined;\n",
       "expectRed": "owed:the-owed-error-is-published-in-place-of-the-synthesized-finish",
       "note": "The round-5 defect as the wire saw it: one RUN_FINISHED for the failed run and no RUN_ERROR."
     },
     {
       "name": "O2 a close does not settle the debt",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "    if (this.owed?.runId === runId) this.owed = undefined;\n",
-      "replace": "    void runId;\n",
+      "find": "    this.owed.delete(runId);\n    this.unclaimedTurns = [];\n",
+      "replace": "    this.unclaimedTurns = [];\n",
       "expectRed": "owed:a-close-settles-the-debt",
       "note": "A debt that outlives its run would be refused as a second debt on the next failed turn, or applied to a finish of a run it was never owed to."
     },
@@ -54,10 +54,42 @@
     {
       "name": "O5 a debt that arrives after the mapping is never applied to the unpublished tail",
       "file": "extensions/connector-core/src/agui-emitter.ts",
-      "find": "      const owed = this.owed;\n      if (owed) {\n        const from = frames[k]!.unitFrom;\n",
-      "replace": "      const owed = this.owed;\n      if (owed && !owed) {\n        const from = frames[k]!.unitFrom;\n",
+      "find": "      if (this.owed.size > 0) {\n        const from = frames[k]!.unitFrom;\n",
+      "replace": "      if (this.owed.size < 0) {\n        const from = frames[k]!.unitFrom;\n",
       "expectRed": "owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run",
       "note": "The round-8 defect as the wire saw it with the first recovery publish paused: the finish published and the error dropped."
+    },
+    {
+      "name": "O6 a queued terminal is never paired with the turn the wire begins",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      if (turn !== null) this.owed.set(turn, terminal);\n",
+      "replace": "      void turn;\n      void terminal;\n",
+      "expectRed": "queued:the-notification-turn-took-the-finish-and-the-run-after-it-is-owed-its-own-error",
+      "note": "The round-10 defect as the emitter would reproduce it: the second turn's run is never owed its terminal."
+    },
+    {
+      "name": "O7 a turn that opened no run is not counted as a turn",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      if (mapped !== null && \"turn\" in mapped) {\n        turns.push(null);\n",
+      "replace": "      if (mapped !== null && \"turn\" in mapped) {\n",
+      "expectRed": "queued:the-notification-turn-took-the-finish-and-the-run-after-it-is-owed-its-own-error",
+      "note": "Counted on runs, the notification turn's finish lands on the run after it and that run's own error is lost."
+    },
+    {
+      "name": "O8 a terminal owed to a run does not claim that run's turn",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    const at = this.unclaimedTurns.lastIndexOf(runId);\n    if (at >= 0) this.unclaimedTurns = this.unclaimedTurns.slice(at + 1);\n",
+      "replace": "",
+      "expectRed": "queued:the-open-runs-debt-closes-it-and-the-next-run-opens-clean",
+      "note": "The open run's own turn takes the next queued terminal and overwrites the owed error with it."
+    },
+    {
+      "name": "O9 a live close leaves the turns before it for a later queued terminal",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    this.owed.delete(runId);\n    this.unclaimedTurns = [];\n",
+      "replace": "    this.owed.delete(runId);\n",
+      "expectRed": "queued:CONTROL-a-live-close-settles-the-turns-before-it-so-a-later-terminal-pairs-with-the-turn-after",
+      "note": "A terminal queued after many live turns would pair with the oldest of them."
     }
   ]
 }

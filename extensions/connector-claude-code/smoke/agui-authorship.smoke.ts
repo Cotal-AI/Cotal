@@ -30,6 +30,8 @@
  * Run: npx tsx extensions/connector-claude-code/smoke/agui-authorship.smoke.ts
  */
 import { createClaudeMapper, type ClaudeEntry } from "../src/agui-map.js";
+/** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
+const unitOf = (r: ReturnType<ReturnType<typeof createClaudeMapper>["map"]>) => (r !== null && "runId" in r ? r : null);
 
 let pass = 0;
 let fail = 0;
@@ -68,7 +70,7 @@ const mapAll = (entries: ClaudeEntry[]) => {
   const m = createClaudeMapper({ threadId: "thread-hostile", mintRunId: () => `run-${++n}` });
   const events: Record<string, unknown>[] = [];
   for (const e of entries) {
-    const out = m.map(e);
+    const out = unitOf(m.map(e));
     if (out) events.push(...(out.events as unknown as Record<string, unknown>[]));
   }
   return { events, mapper: m };

@@ -96,7 +96,7 @@
  * failure, which means a green total names nothing and cannot show that a NEW cell ran at all.
  */
 import { AguiEmitterHolder } from "../src/agui-holder.js";
-import type { AguiEmitter } from "../src/agui-emitter.js";
+import type { AguiEmitter, HeldTerminal } from "../src/agui-emitter.js";
 
 let ok = 0,
   fail = 0;
@@ -132,25 +132,72 @@ class FakeEmitter {
   /** The run a close would close now, as the real emitter reports it. */
   openRunId: string | undefined;
   /** Every close, in order, with the pump count when it ran. */
-  closes: { pumpsBefore: number; error?: { message: string; code?: string } }[] = [];
+  closes: { pumpsBefore: number; runId?: string; error?: { message: string; code?: string } }[] = [];
   /** The 1-based close calls that fail before anything is written, leaving the run open. */
   failClose = new Set<number>();
   closeCalls = 0;
   /** Every terminal owed to this emitter, with the pump count when it was owed and whether a pump
-   *  was in progress. */
-  owed: { runId: string; error: { message: string; code?: string }; pumpsBefore: number; duringPump: boolean }[] = [];
+   *  was in progress. A log: the debts held now are `debts`. */
+  owed: { runId: string; terminal: HeldTerminal; pumpsBefore: number; duringPump: boolean }[] = [];
+  /** Every terminal queued for the next turn, logged the same way; the ones still waiting are
+   *  `waiting`. */
+  queued: { terminal: HeldTerminal; pumpsBefore: number; duringPump: boolean }[] = [];
+  debts = new Map<string, HeldTerminal>();
+  waiting: HeldTerminal[] = [];
+  /** The turns the wire began and no terminal claimed, as the real emitter keeps them. */
+  unclaimedTurns: (string | null)[] = [];
+  seeded: (string | null)[] | undefined;
+  /** Every run a pump closed itself, under the next prompt, with the owed error if one was owed. */
+  pumpClosed: { runId: string; error?: { message: string; code?: string } }[] = [];
   /** Awaited at the top of the next pump, once: that pump is IN PROGRESS until released. */
   pumpGate: Promise<void> | undefined;
   inPump = false;
-  get owedRunId(): string | undefined {
-    return this.owed[this.owed.length - 1]?.runId;
-  }
   /** When set, the unread records hold the next prompt: a pump closes the open run itself (with
    *  the owed terminal if one is owed, as a finish otherwise, as the real emitter does) and opens
    *  this run instead. */
   nextPromptOpens: string | undefined;
-  oweTerminal(runId: string, error: { message: string; code?: string }): void {
-    this.owed.push({ runId, error, pumpsBefore: this.pumps, duringPump: this.inPump });
+  /** The turns the unread records begin after that one, in order: a run each opens, or `null`
+   *  for a turn that opens none. Consumed by the next pump. */
+  nextTurns: (string | null)[] = [];
+  oweTerminal(runId: string, terminal: HeldTerminal): void {
+    if (this.openRunId !== runId) throw new Error(`cannot owe a terminal to run "${runId}"`);
+    if (this.debts.has(runId)) throw new Error(`a terminal is already owed to run "${runId}"`);
+    this.debts.set(runId, terminal);
+    this.owed.push({ runId, terminal, pumpsBefore: this.pumps, duringPump: this.inPump });
+    const at = this.unclaimedTurns.lastIndexOf(runId);
+    if (at >= 0) this.unclaimedTurns = this.unclaimedTurns.slice(at + 1);
+  }
+  owes(runId: string): boolean {
+    return this.debts.has(runId);
+  }
+  takeOwed(runId: string): HeldTerminal | undefined {
+    const t = this.debts.get(runId);
+    this.debts.delete(runId);
+    return t;
+  }
+  queueTerminal(terminal: HeldTerminal): void {
+    this.waiting.push(terminal);
+    this.queued.push({ terminal, pumpsBefore: this.pumps, duringPump: this.inPump });
+    this.pair();
+  }
+  unsettled(): { terminals: { runId?: string; terminal: HeldTerminal }[]; turns: (string | null)[] } {
+    const terminals: { runId?: string; terminal: HeldTerminal }[] = [];
+    for (const [runId, terminal] of this.debts) terminals.push(runId === this.openRunId ? { runId, terminal } : { terminal });
+    for (const terminal of this.waiting) terminals.push({ terminal });
+    return { terminals, turns: this.unclaimedTurns.map((t) => (t === this.openRunId ? t : null)) };
+  }
+  seedUnclaimedTurns(turns: (string | null)[]): void {
+    this.seeded = turns;
+    this.unclaimedTurns = turns.map((t) => (t === this.openRunId ? t : null));
+  }
+  private pair(): void {
+    for (const [runId] of this.debts) if (runId !== this.openRunId) this.debts.delete(runId);
+    this.unclaimedTurns = this.unclaimedTurns.map((t) => (t === this.openRunId ? t : null));
+    while (this.waiting.length > 0 && this.unclaimedTurns.length > 0) {
+      const terminal = this.waiting.shift()!;
+      const turn = this.unclaimedTurns.shift()!;
+      if (turn !== null) this.debts.set(turn, terminal);
+    }
   }
   async pump(): Promise<{ frames: number; events: number }> {
     this.pumps++;
@@ -162,7 +209,23 @@ class FakeEmitter {
         await gate;
       }
       if (this.failOn.has(this.pumps)) throw new Error(`pump ${this.pumps} failed: a frame is still pending`);
-      if (this.nextPromptOpens !== undefined) this.openRunId = this.nextPromptOpens;
+      const turns = [...(this.nextPromptOpens === undefined ? [] : [this.nextPromptOpens]), ...this.nextTurns];
+      this.nextPromptOpens = undefined;
+      this.nextTurns = [];
+      for (const turn of turns) {
+        if (turn !== null) {
+          // The next prompt closes the open run: with its owed error, or as a finish.
+          const open = this.openRunId;
+          if (open !== undefined) {
+            const owed = this.debts.get(open);
+            this.debts.delete(open);
+            this.pumpClosed.push({ runId: open, ...(owed?.error ? { error: owed.error } : {}) });
+          }
+          this.openRunId = turn;
+        }
+        this.unclaimedTurns.push(turn);
+        this.pair();
+      }
       return { frames: 1, events: 1 };
     } finally {
       this.inPump = false;
@@ -172,7 +235,9 @@ class FakeEmitter {
     this.closeCalls++;
     if (this.failClose.has(this.closeCalls)) throw new Error(`close ${this.closeCalls} failed: the log directory is not writable`);
     const run = this.openRunId;
-    this.closes.push({ pumpsBefore: this.pumps, ...(o.error ? { error: o.error } : {}) });
+    this.closes.push({ pumpsBefore: this.pumps, ...(run === undefined ? {} : { runId: run }), ...(o.error ? { error: o.error } : {}) });
+    if (run !== undefined) this.debts.delete(run);
+    this.unclaimedTurns = [];
     this.openRunId = undefined;
     return run ?? null;
   }
@@ -625,9 +690,78 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
-  // THE FIRST TERMINAL FOR A RUN WINS. A stop failure followed by a stop for the same run, both
-  // while the plane is down, is the connector repeating itself (the live seat does this); the
-  // later finish must not replace the earlier failure (Sol, review of 2026-10-13).
+  // EVERY TURN THAT ENDS WHILE THE PLANE IS DOWN KEEPS ITS OWN TERMINAL. The connector reports one
+  // terminal per turn, in turn order: the first is the open run's, and each later one belongs to
+  // the next turn the source begins, which the fresh emitter's pump finds in the unread records.
+  // Held for the one run that was open when the plane went down, the second turn's terminal was
+  // dropped as a repeat of the first, and the next prompt closed that failed turn as a finish
+  // (Sol, round 10 of 2026-10-13, through the built MCP entry point).
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      else e.nextPromptOpens = "run-3"; // the unread records hold the next prompt and its answer
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // down
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // run-2's turn fails
+  r.holder.closeRun(8, { message: "overloaded", code: "overloaded" }); // the next turn fails too
+  await r.holder.settled();
+  await sleep(40);
+  await r.holder.settled();
+  const fresh = r.made[1];
+  c("revive:the-first-terminal-of-the-outage-closes-the-run-that-was-open", fresh?.pumpClosed.length === 1 && fresh.pumpClosed[0]?.runId === "run-2" && fresh.pumpClosed[0]?.error?.code === "rate_limit", fresh?.pumpClosed);
+  c("revive:the-second-terminal-of-the-outage-closes-the-NEXT-turns-run-with-its-own-error", fresh?.closes.length === 1 && fresh.closes[0]?.runId === "run-3" && fresh.closes[0]?.error?.code === "overloaded" && fresh.openRunId === undefined && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId });
+  await r.holder.close();
+}
+
+{
+  // A TURN THAT OPENS NO RUN STILL TAKES ITS TERMINAL. Three turns end while the plane is down: the
+  // open run's, one the source begins and the mapper opens no run for (a harness notification
+  // the connector deliberately does not publish), and a third that opens a run. The second
+  // terminal, a finish, pairs with the turn that opened nothing and does nothing, as a close with
+  // no run open does live; the third closes the third turn's run with its own error. Counted on
+  // runs instead of turns, the finish would land on the third run and its error would be lost.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      else {
+        e.nextPromptOpens = "run-3";
+        e.nextTurns = [null, "run-4"];
+      }
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // down
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" }); // run-2's turn
+  r.holder.closeRun(8); // run-3's turn finishes
+  r.holder.closeRun(9); // the turn that opens no run finishes
+  r.holder.closeRun(10, { message: "overloaded", code: "overloaded" }); // run-4's turn fails
+  await r.holder.settled();
+  await sleep(40);
+  await r.holder.settled();
+  const fresh = r.made[1];
+  c("revive:the-pump-closes-each-earlier-run-with-its-own-terminal", fresh?.pumpClosed.map((p) => p.runId + ":" + (p.error?.code ?? "finish")).join(",") === "run-2:rate_limit,run-3:finish", fresh?.pumpClosed);
+  c("revive:a-turn-that-opened-no-run-takes-its-terminal-and-the-run-after-it-gets-its-own", fresh?.closes.length === 1 && fresh.closes[0]?.runId === "run-4" && fresh.closes[0]?.error?.code === "overloaded" && fresh.waiting.length === 0 && r.holder.running, { closes: fresh?.closes, waiting: fresh?.waiting });
+  await r.holder.close();
+}
+
+{
+  // A terminal whose turn the recovery pump has NOT read yet stays queued at the emitter, and the
+  // next pump pairs it: the terminal arrived after the recovery read, for a turn whose records were
+  // written after it. Nothing is lost and nothing is closed early.
   const r = rig({
     retryMs: 10,
     make: (start) => {
@@ -641,13 +775,48 @@ const B = "/tmp/session-b.jsonl";
   await r.holder.settled();
   r.holder.flush(A); // down
   await r.holder.settled();
-  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" });
-  r.holder.closeRun(8); // the repeated terminal, a finish
-  await r.holder.settled();
+  r.holder.closeRun(7); // run-2's turn finishes
+  r.holder.closeRun(8, { message: "overloaded", code: "overloaded" }); // the next turn, whose records are not written yet
   await sleep(40);
   await r.holder.settled();
   const fresh = r.made[1];
-  c("revive:a-repeated-terminal-while-down-keeps-the-FIRST", fresh?.closes.length === 1 && fresh.closes[0]?.error?.code === "rate_limit", fresh?.closes);
+  c("CONTROL:the-recovery-closed-run-2-as-a-finish-and-the-next-turns-terminal-is-waiting", fresh?.closes.length === 1 && fresh.closes[0]?.runId === "run-2" && fresh.closes[0]?.error === undefined && fresh.waiting.length === 1 && fresh.openRunId === undefined, { closes: fresh?.closes, waiting: fresh?.waiting });
+  if (fresh) fresh.nextPromptOpens = "run-3"; // the next turn's records arrive
+  r.holder.flush(A);
+  await r.holder.settled();
+  c("revive:a-terminal-queued-ahead-of-its-turn-closes-that-turns-run-when-a-later-pump-reads-it", fresh?.closes.length === 2 && fresh.closes[1]?.runId === "run-3" && fresh.closes[1]?.error?.code === "overloaded" && fresh.waiting.length === 0 && r.holder.running, { closes: fresh?.closes });
+  await r.holder.close();
+}
+
+{
+  // A TERMINAL A DYING EMITTER STILL HELD IS CARRIED TO THE FRESH ONE. The recovery handed the
+  // next turn's terminal to the fresh emitter, whose pump then failed before reading that turn:
+  // the holder takes the terminal back from the emitter it drops, and the re-establish after that
+  // hands it on again.
+  const r = rig({
+    retryMs: 10,
+    make: (start) => {
+      const e = new FakeEmitter();
+      e.openRunId = "run-2";
+      if (start === 1) e.failOn.add(1);
+      if (start === 2) e.failOn.add(1); // the recovery pump fails again
+      if (start === 3) e.nextPromptOpens = "run-3";
+      return e;
+    },
+  });
+  r.holder.adopt(A);
+  await r.holder.settled();
+  r.holder.flush(A); // down
+  await r.holder.settled();
+  r.holder.closeRun(7, { message: "rate_limit", code: "rate_limit" });
+  r.holder.closeRun(8, { message: "overloaded", code: "overloaded" });
+  await sleep(40);
+  await r.holder.settled();
+  c("CONTROL:the-second-re-establish-took-both-terminals-and-its-pump-failed", r.made[1]?.owed.length === 1 && r.made[1]?.queued.length === 1 && r.errors.length === 2, { owed: r.made[1]?.owed, queued: r.made[1]?.queued, errors: r.errors.length });
+  await sleep(60);
+  await r.holder.settled();
+  const third = r.made[2];
+  c("revive:the-terminals-a-dying-emitter-held-reach-the-next-one-in-order", third?.pumpClosed[0]?.runId === "run-2" && third.pumpClosed[0]?.error?.code === "rate_limit" && third.closes[0]?.runId === "run-3" && third.closes[0]?.error?.code === "overloaded" && r.holder.running, { pumpClosed: third?.pumpClosed, closes: third?.closes, starts: r.starts });
   await r.holder.close();
 }
 
@@ -702,7 +871,7 @@ const B = "/tmp/session-b.jsonl";
   await sleep(40);
   await r.holder.settled();
   const fresh = r.made[1];
-  c("revive:a-held-ERROR-is-owed-to-the-fresh-emitter-BEFORE-the-pump", fresh?.owed.length === 1 && fresh.owed[0]?.runId === "run-2" && fresh.owed[0]?.error.code === "rate_limit" && fresh.owed[0]?.pumpsBefore === 0, fresh?.owed);
+  c("revive:a-held-ERROR-is-owed-to-the-fresh-emitter-BEFORE-the-pump", fresh?.owed.length === 1 && fresh.owed[0]?.runId === "run-2" && fresh.owed[0]?.terminal.error?.code === "rate_limit" && fresh.owed[0]?.pumpsBefore === 0, fresh?.owed);
   c("revive:a-run-the-pump-closed-with-the-owed-terminal-is-not-closed-again", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId });
   r.holder.closeRun(9); // the next run's own terminal, with the plane up
   await r.holder.settled();
@@ -728,7 +897,7 @@ const B = "/tmp/session-b.jsonl";
   r.holder.closeRun(7);
   await sleep(40);
   await r.holder.settled();
-  c("revive:a-held-FINISH-owes-nothing-and-closes-after-the-pump", r.made[1]?.owed.length === 0 && r.made[1]?.closes.length === 1 && r.made[1]?.closes[0]?.error === undefined, { owed: r.made[1]?.owed, closes: r.made[1]?.closes });
+  c("revive:a-held-FINISH-is-owed-too-and-closes-the-run-after-the-pump", r.made[1]?.owed.length === 1 && r.made[1]?.owed[0]?.terminal.error === undefined && r.made[1]?.closes.length === 1 && r.made[1]?.closes[0]?.error === undefined, { owed: r.made[1]?.owed, closes: r.made[1]?.closes });
   await r.holder.close();
 }
 
@@ -1034,11 +1203,11 @@ const B = "/tmp/session-b.jsonl";
 }
 
 {
-  // THE FIRST TERMINAL WINS AT THE HOOK TOO. A finish held while the plane was down, then a failure
-  // delivered while the recovery pump is in progress: the hold keeps the finish, so the debt owed
-  // to the emitter at the hook must be the HELD terminal, which owes nothing, not the incoming
-  // error (Sol, round 9 of 2026-10-13, through the built MCP entry point: the error was owed over
-  // the held finish and the first run closed as a failure).
+  // A LATER TERMINAL NEVER REPLACES THE ONE HELD BEFORE IT. A finish held while the plane was down,
+  // then a failure delivered while the recovery pump is in progress: the finish is the open run's
+  // and the failure the next turn's, queued at the emitter for the turn the pump is reading (Sol,
+  // round 9 of 2026-10-13, through the built MCP entry point: the error was owed over the held
+  // finish and the first run closed as a failure).
   let release: (() => void) | undefined;
   let armed = false;
   const r = rig({
@@ -1063,12 +1232,12 @@ const B = "/tmp/session-b.jsonl";
   armed = true;
   await sleep(40); // the retry fires and the fresh emitter's pump is held at its gate
   const fresh = r.made[1];
-  c("CONTROL:a-finish-is-held-and-the-recovery-pump-is-in-progress", r.starts === 2 && fresh?.inPump === true && fresh.owed.length === 0, { starts: r.starts, inPump: fresh?.inPump, owed: fresh?.owed });
-  r.holder.closeRun(8, { message: "rate_limit", code: "rate_limit" }); // a failure for the same run, during the pump
-  c("revive:a-failure-after-a-held-finish-owes-NOTHING-at-the-hook-the-first-terminal-wins", fresh?.owed.length === 0, { owed: fresh?.owed });
+  c("CONTROL:a-finish-is-owed-and-the-recovery-pump-is-in-progress", r.starts === 2 && fresh?.inPump === true && fresh.owed.length === 1 && fresh.owed[0]?.terminal.error === undefined && fresh.queued.length === 0, { starts: r.starts, inPump: fresh?.inPump, owed: fresh?.owed });
+  r.holder.closeRun(8, { message: "rate_limit", code: "rate_limit" }); // the next turn's failure, during the pump
+  c("revive:a-failure-after-a-held-finish-is-queued-for-the-next-turn-and-replaces-nothing", fresh?.owed.length === 1 && fresh.owed[0]?.terminal.error === undefined && fresh.queued.length === 1 && fresh.queued[0]?.duringPump === true, { owed: fresh?.owed, queued: fresh?.queued });
   release?.();
   await r.holder.settled();
-  c("revive:the-pump-closes-the-run-as-the-finish-the-next-prompt-synthesizes-and-nothing-else-closes-it", fresh?.closes.length === 0 && fresh.openRunId === "run-3" && r.holder.running, { closes: fresh?.closes, open: fresh?.openRunId, running: r.holder.running });
+  c("revive:the-pump-closes-the-first-run-as-the-finish-and-the-failure-closes-the-next-turns-run", fresh?.pumpClosed.length === 1 && fresh.pumpClosed[0]?.runId === "run-2" && fresh.pumpClosed[0]?.error === undefined && fresh.closes.length === 1 && fresh.closes[0]?.runId === "run-3" && fresh.closes[0]?.error?.code === "rate_limit" && r.holder.running, { pumpClosed: fresh?.pumpClosed, closes: fresh?.closes, running: r.holder.running });
   await r.holder.close();
 }
 

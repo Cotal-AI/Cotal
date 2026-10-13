@@ -13,6 +13,8 @@ import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
 import { wrapped } from "./src/wrap.js";
 import { createPiMapper } from "./src/agui-map.js";
+/** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
+const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
 import { PiSessionSource } from "./src/agui-source.js";
 
 let checks = 0;
@@ -162,7 +164,7 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     const read = await source.read("pi:first-file");
     ok(read.records.length === 6, "first-file sentinel reads complete native JSONL lines but not trailing partial line");
     const map = createPiMapper("native");
-    const events = read.records.flatMap(({ value }) => map(value)?.events ?? []);
+    const events = read.records.flatMap(({ value }) => unitOf(map(value))?.events ?? []);
     ok(events.map((event) => event.type).join() ===
       "RUN_STARTED,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,TOOL_CALL_START,TOOL_CALL_END,TEXT_MESSAGE_START,TEXT_MESSAGE_CONTENT,TEXT_MESSAGE_END,RUN_FINISHED",
       "native assistant and tool records produce ordered, balanced AG-UI events without invented compaction turns");
@@ -173,14 +175,14 @@ const tick = (): Promise<void> => new Promise((resolve) => setImmediate(resolve)
     ok(boundaryMap({ type: "message", id: "orphan", message: { role: "toolResult", toolCallId: "old-call" } }) === null,
       "a result for a call before the adopted boundary is not emitted as an orphan tool end");
     const failedMap = createPiMapper("failed");
-    const failure = failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
+    const failure = unitOf(failedMap({ type: "message", id: "error-call", timestamp: "2026-01-01T00:00:00.000Z", message: {
       role: "assistant", timestamp: 1_767_225_600_000, content: [{ type: "toolCall", id: "err-tool", name: "bash" }], stopReason: "error",
-    } });
+    } }));
     ok(failure?.events.map((event) => event.type).join() === "RUN_STARTED,TOOL_CALL_START,TOOL_CALL_END,RUN_ERROR",
       "failed assistant closes native tool brackets before the run error");
-    const recovered = failedMap({ type: "message", id: "later", timestamp: "2026-01-01T00:00:01.000Z", message: {
+    const recovered = unitOf(failedMap({ type: "message", id: "later", timestamp: "2026-01-01T00:00:01.000Z", message: {
       role: "assistant", timestamp: 1_767_225_601_000, content: [{ type: "text", text: "later answer" }], stopReason: "stop",
-    } });
+    } }));
     ok(recovered?.events[0]?.type === "RUN_STARTED" && recovered.events.at(-1)?.type === "RUN_FINISHED",
       "a native error does not silence the next completed turn");
   } finally {

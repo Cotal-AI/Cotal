@@ -1216,10 +1216,10 @@ try {
     append(src, { run: "r1", msg: "m1", text: "open" });
     await em.pump();
     c("owed:SETUP-r1-is-open-on-the-wire", em.openRunId === "r1", em.openRunId);
-    const wrongRun = await attempt(async () => em.oweTerminal("r9", { message: "rate_limit" }));
+    const wrongRun = await attempt(async () => em.oweTerminal("r9", { timestamp: 9, error: { message: "rate_limit" } }));
     c("owed:a-terminal-cannot-be-owed-to-a-run-that-is-not-open", wrongRun.err !== undefined && /cannot owe/.test(wrongRun.err.message), wrongRun.err?.message);
-    em.oweTerminal("r1", { message: "rate_limit", code: "rate_limit" });
-    const second = await attempt(async () => em.oweTerminal("r1", { message: "again" }));
+    em.oweTerminal("r1", { timestamp: 9, error: { message: "rate_limit", code: "rate_limit" } });
+    const second = await attempt(async () => em.oweTerminal("r1", { timestamp: 9, error: { message: "again" } }));
     c("owed:a-second-debt-is-refused", second.err !== undefined && /already owed/.test(second.err.message), second.err?.message);
     append(src, { run: "r2", msg: "m2", text: "next prompt" });
     await em.pump();
@@ -1233,11 +1233,11 @@ try {
     const envelopes = frames.map((f) => f.runId + ":" + f.events.map((e) => e.type).join("+"));
     c("owed:the-error-frame-NAMES-the-failed-run-and-the-next-runs-frame-carries-only-its-own", envelopes.join(",") === "r1:RUN_STARTED,r1:RUN_ERROR,r2:RUN_STARTED", envelopes);
     c("owed:the-published-error-carries-the-fixed-egress-message", published.some((e) => e.type === "RUN_ERROR" && (e as { message: string }).message === RUN_ERROR_EGRESS_MESSAGE), published.find((e) => e.type === "RUN_ERROR"));
-    c("owed:the-debt-is-settled-once-published", em.owedRunId === undefined && em.openRunId === "r2", { owed: em.owedRunId, open: em.openRunId });
+    c("owed:the-debt-is-settled-once-published", !em.owes("r1") && em.openRunId === "r2", { owed: em.owes("r1"), open: em.openRunId });
     // A close settles a debt too: owe to r2, close r2 as a finish, and a new debt to the next run is not refused as a second one.
-    em.oweTerminal("r2", { message: "rate_limit" });
+    em.oweTerminal("r2", { timestamp: 9, error: { message: "rate_limit" } });
     const closed = await em.closeRun({ timestamp: 4 });
-    c("owed:a-close-settles-the-debt", closed === "r2" && em.owedRunId === undefined, { closed, owed: em.owedRunId });
+    c("owed:a-close-settles-the-debt", closed === "r2" && !em.owes("r2"), { closed, owed: em.owes("r2") });
   });
 
   await block("owed-late", async () => {
@@ -1283,12 +1283,12 @@ try {
     const pumping = em.pump();
     const held = await onWire(wire); // the first frame is on the wire
     c("owed-late:SETUP-the-first-frame-is-on-the-wire-and-r1-is-still-open", held && em.openRunId === "r1" && ep.publishes.length === 2, { held, open: em.openRunId, publishes: ep.publishes.length });
-    em.oweTerminal("r1", { message: "rate_limit", code: "rate_limit" }); // the debt, with the first frame on the wire
+    em.oweTerminal("r1", { timestamp: 9, error: { message: "rate_limit", code: "rate_limit" } }); // the debt, with the first frame on the wire
     wire.release?.();
     if (held) await pumping;
     const envelope = (p: Call) => { const f = p.parts[0] as unknown as { runId: string; events: AguiEvent[] }; return f.runId + ":" + f.events.map((e) => e.type).join("+"); };
     const after = ep.publishes.slice(1).map(envelope);
-    c("owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run", after.join(",") === "r1:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r1:RUN_ERROR,r2:RUN_STARTED" && em.owedRunId === undefined && em.openRunId === "r2", { after, owed: em.owedRunId, open: em.openRunId });
+    c("owed-late:a-debt-before-the-finishs-frame-is-frozen-takes-its-place-in-a-frame-of-the-failed-run", after.join(",") === "r1:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r1:RUN_ERROR,r2:RUN_STARTED" && !em.owes("r1") && em.openRunId === "r2", { after, owed: em.owes("r1"), open: em.openRunId });
     c("owed-late:the-log-agrees-with-the-wire-after-the-re-pack", wal.pending === null && wal.frontier.seq === 4 && wal.frontier.lastSubjectSeq === 4, wal.frontier);
     // CONTROL: the debt arrives with the FINISH'S OWN frame on the wire. The freeze is the commit
     // and the bracket state moved with it: the run is closed, the debt is refused as naming a closed
@@ -1299,13 +1299,92 @@ try {
     const pumping2 = em.pump();
     const held2 = await onWire(wire2);
     c("owed-late:CONTROL-SETUP-the-finishs-frame-is-frozen-and-on-the-wire-so-r3-is-already-the-open-run", held2 && em.openRunId === "r3" && ep.publishes.length === 6, { held: held2, open: em.openRunId, publishes: ep.publishes.length });
-    const frozen = await attempt(async () => em.oweTerminal("r2", { message: "rate_limit" }));
+    const frozen = await attempt(async () => em.oweTerminal("r2", { timestamp: 9, error: { message: "rate_limit" } }));
     wire2.release?.();
     if (held2) await pumping2;
     const tail = ep.publishes.slice(4).map(envelope);
-    c("owed-late:CONTROL-a-debt-with-the-finishs-frame-already-frozen-is-refused-and-the-finish-stands", frozen.err !== undefined && /cannot owe/.test(frozen.err.message) && tail.join(",") === "r2:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r3:RUN_FINISHED+RUN_STARTED" && em.owedRunId === undefined && em.openRunId === "r3", { err: frozen.err?.message, tail, owed: em.owedRunId, open: em.openRunId });
-    const next = await attempt(async () => em.oweTerminal("r3", { message: "again" }));
-    c("owed-late:CONTROL-the-next-runs-debt-is-not-refused-as-a-second-one", next.err === undefined && em.owedRunId === "r3", { err: next.err?.message, owed: em.owedRunId });
+    c("owed-late:CONTROL-a-debt-with-the-finishs-frame-already-frozen-is-refused-and-the-finish-stands", frozen.err !== undefined && /cannot owe/.test(frozen.err.message) && tail.join(",") === "r2:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END,r3:RUN_FINISHED+RUN_STARTED" && !em.owes("r2") && em.openRunId === "r3", { err: frozen.err?.message, tail, owed: em.owes("r2"), open: em.openRunId });
+    const next = await attempt(async () => em.oweTerminal("r3", { timestamp: 9, error: { message: "again" } }));
+    c("owed-late:CONTROL-the-next-runs-debt-is-not-refused-as-a-second-one", next.err === undefined && em.owes("r3"), { err: next.err?.message, owed: em.owes("r3") });
+  });
+
+  await block("queued", async () => {
+    // TERMINALS HELD THROUGH AN OUTAGE PAIR WITH THE TURNS THE SOURCE BEGINS, IN ORDER. The run open
+    // on the wire takes its own terminal as a debt; every later terminal is queued, and the pump
+    // pairs each with the next turn it publishes, including a turn that opened no run, which takes
+    // its terminal and does nothing with it (Sol, round 10 of 2026-10-13, through the built MCP
+    // entry point: a second turn ending during one outage lost its terminal, and the next prompt
+    // closed that failed run as a finish).
+    const { src, wal, source } = await fresh("queued");
+    const ep = new FakeEndpoint();
+    let openRun: string | undefined;
+    const turns = (r: Rec) => {
+      if ("skip" in r) return null;
+      if (r.text === "notification") return { turn: true as const }; // a turn the mapper opens no run for
+      if (r.text === "open") {
+        openRun = r.run;
+        return { runId: r.run, events: [runStarted({ threadId: THREAD, runId: r.run, timestamp: 1 })] };
+      }
+      if (r.text === "next prompt") {
+        const prev = openRun as string;
+        openRun = r.run;
+        return { runId: r.run, events: [runFinished({ threadId: THREAD, runId: prev, timestamp: 5 }), runStarted({ threadId: THREAD, runId: r.run, timestamp: 6 })] };
+      }
+      return { runId: r.run, events: [textMessageStart({ messageId: r.msg, timestamp: 2, role: "assistant" }), textMessageContent({ messageId: r.msg, delta: r.text, timestamp: 3 }), textMessageEnd({ messageId: r.msg, timestamp: 4 })] };
+    };
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: turns });
+    await em.pump(); // adopt
+    ep.answers.push({ seq: 1, duplicate: false });
+    append(src, { run: "r1", msg: "m1", text: "open" });
+    await em.pump();
+    // The outage: r1's turn fails, a notification turn finishes, r2's turn fails, all before the
+    // plane reads any of it. r1's terminal is the open run's debt; the other two are queued.
+    em.oweTerminal("r1", { timestamp: 7, error: { message: "rate_limit", code: "rate_limit" } });
+    em.queueTerminal({ timestamp: 8 });
+    em.queueTerminal({ timestamp: 9, error: { message: "overloaded", code: "overloaded" } });
+    append(src, { run: "r1", msg: "m1b", text: "last answer" }, { run: "n", msg: "n1", text: "notification" }, { run: "r2", msg: "m2", text: "next prompt" }, { run: "r2", msg: "m2b", text: "answer" });
+    ep.answers.push({ seq: 2, duplicate: false }, { seq: 3, duplicate: false });
+    await em.pump();
+    const envelope = (p: Call) => { const f = p.parts[0] as unknown as { runId: string; events: AguiEvent[] }; return f.runId + ":" + f.events.map((e) => e.type).join("+"); };
+    const after = ep.publishes.slice(1).map(envelope);
+    c("queued:the-open-runs-debt-closes-it-and-the-next-run-opens-clean", after.join(",") === "r1:TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END+RUN_ERROR,r2:RUN_STARTED+TEXT_MESSAGE_START+TEXT_MESSAGE_CONTENT+TEXT_MESSAGE_END" && em.openRunId === "r2", { after, open: em.openRunId });
+    const owedToR2 = em.takeOwed("r2");
+    c("queued:the-notification-turn-took-the-finish-and-the-run-after-it-is-owed-its-own-error", owedToR2?.error?.code === "overloaded" && owedToR2.timestamp === 9 && !em.owes("r2"), { owedToR2, left: em.unsettled() });
+    // The run's own close carries the terminal taken back, as the holder does once the pump has read on.
+    ep.answers.push({ seq: 4, duplicate: false });
+    const closed = await em.closeRun({ timestamp: owedToR2!.timestamp, error: owedToR2!.error });
+    const last = envelope(ep.publishes[ep.publishes.length - 1]!);
+    c("queued:the-taken-terminal-closes-the-run-as-a-failure", closed === "r2" && last === "r2:RUN_ERROR", { closed, last });
+    // CONTROL: counted on runs instead of turns, the finish would have closed r2 and the error
+    // would be waiting for a run that never comes.
+    c("queued:CONTROL-nothing-is-left-waiting", em.unsettled().terminals.length === 0, em.unsettled());
+    // A terminal queued for a turn the source has not begun stays queued, and the NEXT pump pairs it.
+    em.queueTerminal({ timestamp: 10, error: { message: "server_error", code: "server_error" } });
+    c("queued:a-terminal-ahead-of-its-turn-waits", em.unsettled().terminals.length === 1 && em.unsettled().terminals[0]?.runId === undefined, em.unsettled());
+    append(src, { run: "r3", msg: "m3", text: "open" });
+    ep.answers.push({ seq: 5, duplicate: false });
+    await em.pump();
+    c("queued:the-next-pump-pairs-it-with-the-turn-it-begins", em.owes("r3") && em.unsettled().terminals[0]?.runId === "r3", em.unsettled());
+    // CONTROL: a terminal applied live accounts for every turn before it, so the turns the wire
+    // began are not left for a later queued terminal to be paired with. r4's turn begins with no
+    // terminal queued and is closed live; a terminal queued after r5 begins is r5's.
+    ep.answers.push({ seq: 6, duplicate: false });
+    await em.closeRun({ timestamp: 11 });
+    append(src, { run: "r4", msg: "m4", text: "open" });
+    ep.answers.push({ seq: 7, duplicate: false });
+    await em.pump();
+    ep.answers.push({ seq: 8, duplicate: false });
+    await em.closeRun({ timestamp: 12 });
+    append(src, { run: "r5", msg: "m5", text: "open" });
+    ep.answers.push({ seq: 9, duplicate: false });
+    await em.pump();
+    em.queueTerminal({ timestamp: 13, error: { message: "again", code: "again" } });
+    c("queued:CONTROL-a-live-close-settles-the-turns-before-it-so-a-later-terminal-pairs-with-the-turn-after", em.owes("r5") && !em.owes("r4") && !em.owes("r3"), em.unsettled());
+    // The dying emitter hands back what it holds: the open run's debt by run, the rest unbound,
+    // and the turns no terminal claimed.
+    em.queueTerminal({ timestamp: 14 });
+    const left = em.unsettled();
+    c("queued:unsettled-hands-back-the-open-runs-debt-by-run-and-the-rest-unbound", left.terminals.map((t) => (t.runId ?? "-") + ":" + t.terminal.timestamp).join(",") === "r5:13,-:14" && left.turns.length === 0, left);
   });
 
   await block("owed-cursor", async () => {
@@ -1326,7 +1405,7 @@ try {
     append(src, { run: "r1", msg: "m1", text: "open" });
     await em.pump();
     const beforePrompt = wal.frontier.sourceCursor;
-    em.oweTerminal("r1", { message: "rate_limit" });
+    em.oweTerminal("r1", { timestamp: 9, error: { message: "rate_limit" } });
     append(src, { run: "r2", msg: "m2", text: "next prompt" });
     ep.answers.push(new Error("network: reset before the owed frame was accepted"));
     const failed = await attempt(() => em.pump());

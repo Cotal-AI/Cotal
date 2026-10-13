@@ -375,8 +375,10 @@ open is closed with that terminal, a failure as a failure, rather than left open
 prompt to close as a finish. That holds when the next prompt was already written before the plane
 came back: the failure is published after the failed turn's own records and before the next run
 opens, in a frame of the failed run, since a run error names no run and the frame is its only
-attribution. The first terminal kept for a run is the one published; a stop that follows a stop failure
-for the same run does not replace it. The seat used to exit on a space that requires events; for Claude Code the
+attribution. Every turn that ends while the plane is down keeps its own terminal: the first is the
+open run's, and each later one belongs to the next turn the transcript begins, including a turn the
+connector opens no run for, such as a task notification, which takes its terminal and publishes
+nothing. The seat used to exit on a space that requires events; for Claude Code the
 connector is the MCP server, so that exit showed as the server disconnecting, and Claude Code
 restarted it on the next tool call.
 

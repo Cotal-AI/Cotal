@@ -28,6 +28,8 @@ import { fileURLToPath } from "node:url";
 import { AguiBrackets, type AguiEvent } from "@cotal-ai/connector-core";
 import { createCodexMapper, type CodexRecord } from "../src/agui-map.js";
 
+/** The unit a record mapped to, or `null`: a turn the mapper opens no run for maps to none. */
+const unitOf = <U extends { runId: string }>(r: U | { turn: true } | null): U | null => (r !== null && "runId" in r ? r : null);
 let pass = 0;
 let fail = 0;
 /** A cell COUNTS and continues. It does not throw.
@@ -69,7 +71,7 @@ function replay(recs: CodexRecord[]): {
   const runs: string[] = [];
   let bracketError: string | null = null;
   for (const r of recs) {
-    const out = mapper.map(r);
+    const out = unitOf(mapper.map(r));
     perRecord.push(out);
     if (out === null) continue;
     if (!runs.includes(out.runId)) runs.push(out.runId);
@@ -177,27 +179,27 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
     resumeRunId: "persisted-run",
   });
   const ts = "2026-08-18T15:00:00.000Z";
-  const toolResult = mapper.map({
+  const toolResult = unitOf(mapper.map({
     timestamp: ts,
     type: "response_item",
     payload: { type: "function_call_output", call_id: "call-resumed", output: "resumed output" },
-  });
+  }));
   c("resume:records before the terminal stay on the WAL's existing run", toolResult?.runId === "persisted-run", toolResult?.runId);
-  const terminal = mapper.map({
+  const terminal = unitOf(mapper.map({
     timestamp: ts,
     type: "event_msg",
     payload: { type: "task_complete", turn_id: "native-turn-not-persisted", error: null },
-  });
+  }));
   c(
     "resume:a task_complete after process recovery closes the WAL's existing run",
     terminal?.runId === "persisted-run" && terminal.events.some((e) => (e as { type: string }).type === "RUN_FINISHED"),
     terminal,
   );
-  const next = mapper.map({
+  const next = unitOf(mapper.map({
     timestamp: ts,
     type: "event_msg",
     payload: { type: "task_started", turn_id: "next-native-turn" },
-  });
+  }));
   c("resume:the next native turn starts a NEW run after the persisted one closed", next?.runId === "new-run-1", next?.runId);
 }
 

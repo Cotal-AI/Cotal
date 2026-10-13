@@ -402,7 +402,10 @@ export function createClaudeMapper(opts: ClaudeMapperOptions): ClaudeMapper {
       //
       // Anything not enumerated FAILS LOUD — including a value a future harness adds.
       const turnSource = runOpeningAttribution(entry);
-      if (turnSource === null) return null;
+      // A turn that opens no run is still a turn the harness ends with a terminal: reported as one,
+      // so the emitter counts it when it pairs terminals held through an outage with the turns the
+      // source shows, and the terminal of such a turn does not land on the next run that opens.
+      if (turnSource === null) return { turn: true as const };
 
       const prior = open;
       const runId = opts.mintRunId();

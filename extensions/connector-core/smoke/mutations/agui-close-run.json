@@ -99,8 +99,8 @@
     {
       "name": "K7 the holder drops the reason on the way to the emitter, so a reported failure closes as a finish",
       "file": "extensions/connector-core/src/agui-holder.ts",
-      "find": "      runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}), ...(error ? { error } : {}) });\n",
-      "replace": "      runId = await emitter.closeRun({ timestamp, ...(cotal ? { cotal } : {}) });\n",
+      "find": "      runId = await emitter.closeRun({ timestamp: terminal.timestamp, ...(cotal ? { cotal } : {}), ...(terminal.error ? { error: terminal.error } : {}) });\n",
+      "replace": "      runId = await emitter.closeRun({ timestamp: terminal.timestamp, ...(cotal ? { cotal } : {}) });\n",
       "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
       "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-fixed-message-and-no-code",
       "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."
