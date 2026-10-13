@@ -621,6 +621,8 @@ export class AguiEmitter<T> {
    * when the terminal was reported past the read. The position is compared through the source
    * itself, never by reading the cursor: the first record after the position is the one a read
    * from it answers, and the cursor it carries is the same string this read gave that record. A
+   * read from the position that answers no record and ends where this read ends covers only lines
+   * the source could not read, so the terminal is after every record this read holds. A
    * position whose read could not be taken, or that this emitter had already read past (a terminal
    * is reported before anything after its position is read, so that position is never behind a
    * read), drops the terminal and fails this pump, once: the plane reports it and the next pump
@@ -638,9 +640,9 @@ export class AguiEmitter<T> {
       );
     }
     if (at === read.cursor) return read.records.length;
-    let first: string | undefined;
+    let ahead: SourceRead<T>;
     try {
-      first = (await this.source.read(at)).records[0]?.cursor;
+      ahead = await this.source.read(at);
     } catch (e) {
       this.queued = this.queued.filter((q) => q !== entry);
       throw new Error(
@@ -648,7 +650,11 @@ export class AguiEmitter<T> {
           `the source could not be read from the position it was reported at (${(e as Error).message})`,
       );
     }
-    if (first === undefined) return undefined;
+    const first = ahead.records[0]?.cursor;
+    // No record after the position, and the read from it ends where this read ends: what lies
+    // between is lines the source could not read, which this read stepped over. The terminal is
+    // after every record this read holds; held for a record past the gap, it would wait forever.
+    if (first === undefined) return ahead.cursor === read.cursor ? read.records.length : undefined;
     const i = read.records.findIndex((r) => r.cursor === first);
     if (i >= 0) return i;
     if ((await this.source.read(read.cursor)).records.some((r) => r.cursor === first)) return undefined;

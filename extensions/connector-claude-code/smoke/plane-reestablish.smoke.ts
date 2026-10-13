@@ -871,5 +871,46 @@ for (const seedMapper of [true, false]) {
   await p.close();
 }
 
+// ---- S. a line the transcript cannot read lands after a terminal reported while down ----------
+{
+  // The seat's turn ends while the plane is down, so the terminal is reported at the transcript's
+  // end; then a torn line is written past it before the fault clears, the shape a full disk leaves.
+  // The re-establish's read steps over the torn line and reaches no record after the position, so
+  // the terminal was held for a pump that reads nothing: the settle pumped without end and run-2
+  // was never closed (Sol, round 13 of 2026-10-13, through the built MCP entry point). The
+  // terminal is placed after the records before its position, and the open run is closed with it.
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush(); // run-2 open and acknowledged
+  chmodSync(p.walDir(), 0o500);
+  p.assistant(" under");
+  await p.flush(); // the WAL cannot be written: down
+  c("S:CONTROL-the-plane-is-down-with-run-2-open", !p.holder.running && p.broker.frames[p.broker.frames.length - 1]!.runId === "run-2", { running: p.holder.running });
+  await p.turnEnd({ message: "rate_limit", code: "rate_limit" }); // reported at the end, while down
+  appendFileSync(p.transcript, 'X"PRIVATE"\n'); // a torn line past the position
+  chmodSync(p.walDir(), 0o700);
+  await sleep(250);
+  const settled = await Promise.race([p.holder.settled().then(() => true), sleep(3000).then(() => false)]);
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  const errorFrames = p.broker.frames.filter((f) => f.runId === "run-2" && JSON.stringify(f.parts).includes('"type":"RUN_ERROR"')).length;
+  c("S:the-terminal-reported-ahead-of-the-torn-line-closes-run-2-after-the-re-establish", settled && p.holder.running && p.wal().pending === "none" && p.log.some((l) => l.startsWith("gap ")) && errorFrames === 1 && !wire.includes("PRIVATE"), { settled, running: p.holder.running, wal: p.wal(), gap: p.log.filter((l) => l.startsWith("gap ")), errorFrames });
+  if (settled) {
+    p.user();
+    p.assistant(" next-turn");
+    await p.flush();
+    const wire2 = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+    c("S:the-next-prompt-opens-run-3-and-closes-run-2-no-second-time", !finished(wire2, "run-2") && (wire2.match(/"runId":"run-2"/g) ?? []).length === (wire.match(/"runId":"run-2"/g) ?? []).length && p.broker.frames[p.broker.frames.length - 1]!.runId === "run-3" && p.wal().seq === p.broker.seq, { labels: p.broker.frames.map((f) => f.runId), wal: p.wal(), broker: p.broker.seq });
+    await p.close();
+  } else {
+    chmodSync(p.walDir(), 0o700);
+  }
+}
+
 console.log(`claude-plane-reestablish smoke: ${ok} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

@@ -129,6 +129,14 @@
       "replace": "      last.cursor = rec.cursor;\n",
       "expectRed": "trailing:the-last-turn-handed-back-is-the-notification-the-frozen-frame-consumed",
       "note": "The round-12 defect: a fold refused after the ack left the last turn at the human run while the log was past the notification, and the notification's stop closed that run as a finish on the next emitter."
+    },
+    {
+      "name": "O14 a terminal ahead of a gap the read stepped over is held for a record that never comes",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "    if (first === undefined) return ahead.cursor === read.cursor ? read.records.length : undefined;\n",
+      "replace": "    if (first === undefined) return undefined;\n",
+      "expectRed": "gap:a-terminal-reported-ahead-of-a-torn-line-is-placed-on-the-run-the-records-before-it-opened",
+      "note": "The round-13 defect: a torn line written past the position a terminal was reported at, while the plane was down, left the terminal waiting after the re-establish; the settle pumped without end and the run was never closed."
     }
   ]
 }

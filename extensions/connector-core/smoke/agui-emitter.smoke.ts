@@ -1178,6 +1178,33 @@ try {
       { err: pumped.err?.message, gaps, publishes: ep.publishes.length });
     c("gap:the-frontier-moved-past-the-gap", Number(wal.frontier.sourceCursor?.split(":")[2]) === Buffer.byteLength(torn) + 1 + Buffer.byteLength(JSON.stringify({ run: "r1", msg: "m1", text: "after the gap" })) + 1, wal.frontier.sourceCursor);
   });
+  // A terminal reported at the source's end, with a line the source cannot read landing past it
+  // before the next pump: the shape a full disk leaves when the seat's turn ends during the outage.
+  // The gap is past the position, so the terminal is placed after every record before it, on the
+  // run those records opened; it is not held for a record after the gap that never comes (Sol,
+  // round 13 of 2026-10-13, through the built MCP entry point: the owed error was never published
+  // and the settle pumped without end).
+  await block("A TERMINAL REPORTED AHEAD OF A GAP IS PLACED, NOT HELD", async () => {
+    const { wal, src, source } = await fresh("gap-terminal");
+    const ep = new FakeEndpoint();
+    ep.answers = [{ seq: 1, duplicate: false }];
+    const gaps: { offset: number; bytes: number; reason: string }[] = [];
+    const open = (r: Rec) => ("skip" in r ? null : { runId: r.run, events: [runStarted({ threadId: THREAD, runId: r.run, timestamp: 1 })] });
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: open, onUnreadable: (g) => gaps.push(g) });
+    await em.pump(); // adopt
+    append(src, { run: "r1", msg: "m1", text: "open" });
+    await em.pump();
+    c("gap:SETUP-r1-is-open-on-the-wire", em.openRunId === "r1", em.openRunId);
+    const at = source.end();
+    await at;
+    em.queueTerminal({ terminal: { timestamp: 9, error: { message: "rate_limit", code: "rate_limit" } }, at });
+    appendFileSync(src, 'X"cut"\n'); // a line the source cannot read, past the position
+    const pumped = await attempt(() => em.pump());
+    const owed = em.takeOwed("r1");
+    c("gap:a-terminal-reported-ahead-of-a-torn-line-is-placed-on-the-run-the-records-before-it-opened",
+      pumped.err === undefined && gaps.length === 1 && em.waitingTerminals === 0 && owed?.terminal.error?.code === "rate_limit",
+      { err: pumped.err?.message, gaps, waiting: em.waitingTerminals, owed });
+  });
   await block("A SOURCE GAP WITH NO REPORTER REFUSES BEFORE THE FRONTIER MOVES", async () => {
     const { wal, src, source } = await fresh("gap-unreported");
     const ep = new FakeEndpoint();
