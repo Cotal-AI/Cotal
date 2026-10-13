@@ -79,19 +79,20 @@ in-process plugin does everything.
   not-yet-built feature (see [Limits](#limits)).
 - **Per-agent database.** The session SQLite DB is moved per agent
   (`.cotal/opencode/<name>/opencode.db`, rooted at the manager's workspace) so concurrent managed
-  agents don't lock each other or drop files into a target repo. A launch checks the agent's
-  `serve.pid` before it starts a server. A record that the previous launcher removes during that
-  check counts as no record, and so does a recorded server that exits during it. An empty
-  directory at that path also counts as no record and is removed, and one that vanishes before
-  that removal still counts as no record. The launch refuses a directory that holds files and
-  leaves it in place. The server's process writes its own pid and a token minted for that launch to
-  `serve.pid` before it becomes the server, so a launcher killed right after starting it still
-  leaves a record that refuses the next launch. Windows has no `exec`, so there the launcher writes
-  the record after the start. When the server exits, its launcher removes the record only if it
-  still holds that token, since the next launch of the name may already have written its own. A
-  launch that finds a record naming a server that is gone leaves it for the new server's record to
-  overwrite. A SIGINT or SIGTERM to the launcher stops the server from the moment it starts, and
-  the TUI once it runs, so a stop during the boot does not leave a server on the database.
+  agents don't lock each other or drop files into a target repo. Each launch records its server in
+  a file of its own in that directory, `serve.<token>.pid` with a token minted for the launch, and
+  checks every record there before it starts a server, including a `serve.pid` an earlier version
+  wrote. A record that the previous launcher removes during that check counts as no record, and so
+  does a recorded server that exits during it. A record naming a server that is gone is removed. An
+  empty directory at a record's path also counts as no record and is removed, and one that vanishes
+  before that removal still counts as no record. The launch refuses a directory that holds files and
+  leaves it in place. The server's process writes its own pid to its record before it becomes the
+  server, so a launcher killed right after starting it still leaves a record that refuses the next
+  launch. Windows has no `exec`, so there the launcher writes the record after the start. When the
+  server exits, its launcher removes its own record, which no other launch writes, so an exit handled
+  late cannot remove the record of a server the next launch started. A SIGINT or SIGTERM to the
+  launcher stops the server from the moment it starts, and the TUI once it runs, so a stop during
+  the boot does not leave a server on the database.
 - **The visible TUI.** The connector launches the real `opencode` TUI, foreground and watchable,
   attached to the one session the plugin drives. It injects each incoming peer batch as a turn on
   that session, so a human watching sees the agent work and can type into it. Presence is derived

@@ -24,7 +24,7 @@ import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import { opencodeLine } from "./opencode-line.js";
 
@@ -54,9 +54,9 @@ const USERNAME = "opencode";
  *  otherwise it is minted per launch. */
 const SECRET = process.env.OPENCODE_SERVER_PASSWORD || randomBytes(24).toString("hex");
 
-/** Run by `/bin/sh -c` as `<script> cotal-serve <record> <token> <command> <args...>`. The record
- *  holds its pid and the launch's token. A record it cannot write stops it before the command starts. */
-const RECORD_THEN_EXEC = `printf '%s %s' "$$" "$2" > "$1" && shift 2 && exec "$@"`;
+/** Run by `/bin/sh -c` as `<script> cotal-serve <record> <command> <args...>`. A record it cannot
+ *  write stops it before the command starts. */
+const RECORD_THEN_EXEC = `printf %s "$$" > "$1" && shift && exec "$@"`;
 
 /** Ask the OS for a free port (bind :0, read it, release) so co-located peers don't collide. */
 async function freePort(): Promise<number> {
@@ -148,28 +148,37 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   const agentHome = join(dataRoot, ".cotal", "opencode", name);
   const dbPath = join(agentHome, "opencode.db");
 
-  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. The
-  // previous launcher removes this record when its serve exits, which can land anywhere in this
-  // check, so a record that vanishes under the read is no record. A stale record is not removed: a
-  // concurrent launch may have replaced it after the read, and the new serve's record overwrites it.
-  // A directory is no record either, but only an empty one is removed: one that holds files is
+  // Two serves on one agent DB share the SQLite file and stall each other — refuse up front. Each
+  // launch records its serve at a path of its own, and `serve.pid` is the record of a serve an
+  // earlier version started, so nothing rewrites a record once its serve is gone and the check
+  // removes it. The previous launcher removes its record when its serve exits, which can land
+  // anywhere in this check, so a record that vanishes under the read or the removal is no record. A
+  // directory is no record either, but only an empty one is removed: one that holds files is
   // refused, never deleted.
-  const pidFile = join(agentHome, "serve.pid");
-  let recorded: string | undefined;
+  let records: string[] = [];
   try {
-    try {
-      recorded = readFileSync(pidFile, "utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
-      rmdirSync(pidFile);
-    }
+    records = readdirSync(agentHome).filter((file) => /^serve(?:\.[0-9a-f]{32})?\.pid$/.test(file));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
-  if (recorded !== undefined) {
-    const pid = Number(recorded.split(" ")[0]);
+  for (const file of records) {
+    const record = join(agentHome, file);
+    let recorded: string | undefined;
+    try {
+      try {
+        recorded = readFileSync(record, "utf8");
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EISDIR") throw e;
+        rmdirSync(record);
+      }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+    if (recorded === undefined) continue;
+    const pid = Number(recorded);
     if (isLiveOpencodeServe(pid))
       throw new Error(`agent "${name}" is already running (opencode serve pid ${pid}) — kill it first`);
+    rmSync(record, { force: true });
   }
 
   // Detect the OpenCode line (1.x opencode-ai vs 2.x @opencode/cli) once, before any spawn, so the
@@ -182,11 +191,11 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
   // the next launch cannot see, so the record has to exist before the serve does: the process writes
   // its own pid and only then becomes the serve, which keeps that pid. Windows has no exec, so there
   // the launcher records it after the spawn.
-  const token = randomBytes(16).toString("hex");
+  const pidFile = join(agentHome, `serve.${randomBytes(16).toString("hex")}.pid`);
   const serveArgv: [string, ...string[]] = [BIN, "serve", "--hostname", "127.0.0.1", "--port", port];
   const [serveCommand, ...serveArgs]: [string, ...string[]] = process.platform === "win32"
     ? serveArgv
-    : ["/bin/sh", "-c", RECORD_THEN_EXEC, "cotal-serve", pidFile, token, ...serveArgv];
+    : ["/bin/sh", "-c", RECORD_THEN_EXEC, "cotal-serve", pidFile, ...serveArgv];
   const serve = spawn(serveCommand, serveArgs, {
     env: {
       ...process.env,
@@ -199,18 +208,8 @@ export async function launch(tuiArgv: TuiArgv, serveEnv?: ServeEnv): Promise<voi
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const record = `${serve.pid} ${token}`;
-  if (process.platform === "win32") writeFileSync(pidFile, record);
-  // Once the serve is dead, the next launch of this name may already have written its own serve's
-  // record, possibly under a reused pid, so only a record that still holds this launch's token is
-  // removed.
-  serve.on("exit", () => {
-    try {
-      if (readFileSync(pidFile, "utf8") === record) rmSync(pidFile);
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-    }
-  });
+  if (process.platform === "win32") writeFileSync(pidFile, String(serve.pid));
+  serve.on("exit", () => rmSync(pidFile, { force: true }));
   // A graceful stop signals only this process and can arrive anywhere in the minute-long boot below,
   // so its teardown is installed with the serve. The exit handlers below end this process.
   let tui: ChildProcess | undefined;
