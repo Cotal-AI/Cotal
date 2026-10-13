@@ -1506,6 +1506,45 @@ try {
     const envelopes = ep.publishes.map(envelopeOf);
     c("freeze:the-next-pump-publishes-the-owed-error-in-the-finishs-place", envelopes.join(",") === "r1:RUN_STARTED,r1:RUN_ERROR,r2:RUN_STARTED" && em.unsettled().terminals.length === 0, { envelopes, left: em.unsettled() });
   });
+  await block("trailing", async () => {
+    // A TRAILING TURN RIDES ON THE FRAME THAT CONSUMES IT. A notification turn after the run's last
+    // answer maps to no unit; its cursor folds onto that answer's frame, and so must the turn: the
+    // frame freezes and the publish fails after it. The emitter dies with the frozen frame past the
+    // notification; the last turn it hands back must be the notification, or the fresh emitter
+    // places the notification's terminal on the run before it and closes that run (Sol, round 12
+    // of 2026-10-13, through the built MCP entry point: a log fold refused once after the frame
+    // was acknowledged, another failure after the freeze, made the notification's stop publish
+    // RUN_FINISHED for the human run).
+    const { src, wal, walPath, source } = await fresh("trailing");
+    const ep = new FakeEndpoint();
+    const turns = (r: Rec) => {
+      if ("skip" in r) return null;
+      if (r.text === "notification") return { turn: true as const };
+      if (r.text === "open") return { runId: r.run, events: [runStarted({ threadId: THREAD, runId: r.run, timestamp: 1 })] };
+      return { runId: r.run, events: [textMessageStart({ messageId: r.msg, timestamp: 2, role: "assistant" }), textMessageContent({ messageId: r.msg, delta: r.text, timestamp: 3 }), textMessageEnd({ messageId: r.msg, timestamp: 4 })] };
+    };
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: turns });
+    await em.pump(); // adopt
+    ep.answers.push({ seq: 1, duplicate: false });
+    append(src, { run: "r1", msg: "m1", text: "open" });
+    await em.pump();
+    append(src, { run: "r1", msg: "m1b", text: "last answer" }, { run: "n", msg: "n1", text: "notification" });
+    // The frame freezes, and the publish fails on the wire after it.
+    ep.answers.push(new Error("network: reset after the frame was frozen"));
+    const failed = await attempt(() => em.pump());
+    c("trailing:SETUP-the-frame-carrying-the-notification-froze-and-failed-after", failed.err !== undefined && wal.pending?.state === "sent_unacked", { err: failed.err?.message, pending: wal.pending?.state });
+    c("trailing:the-last-turn-handed-back-is-the-notification-the-frozen-frame-consumed", em.unsettled().lastTurn === null, em.unsettled());
+    // The fresh emitter settles the acked frame, is seeded with that turn, and the notification's
+    // terminal reported before any record is consumed by it: r1 owes nothing and stays open.
+    const wal2 = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
+    ep.answers.push({ seq: 2, duplicate: false }); // the start republishes the frozen frame
+    const em2 = await AguiEmitter.start({ endpoint: ep, wal: wal2, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: turns });
+    em2.seedLastTurn(em.unsettled().lastTurn);
+    em2.queueTerminal({ terminal: { timestamp: 9 }, at: source.end() });
+    await em2.pump();
+    c("trailing:the-notifications-terminal-is-consumed-and-the-run-before-it-stays-open-owing-nothing", em2.openRunId === "r1" && em2.takeOwed("r1") === undefined && em2.unsettled().terminals.length === 0 && wal2.pending === null, { open: em2.openRunId, left: em2.unsettled(), pending: wal2.pending });
+  });
+
   await block("settle", async () => {
     // THE DEBT A FREEZE SETTLES IS THE RUN THE TERMINAL CLOSES, not the run the frame is labelled
     // with. The finish the next prompt synthesizes for its predecessor travels in the successor's

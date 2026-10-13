@@ -20,7 +20,8 @@
  * turn the transcript had begun when its hook fired: the connector reports a turn's terminal once
  * that turn's records are written and before the next turn's are, and every scenario writes in
  * that order. Q is the same race with no outage at all: a live flush still reading when the next
- * prompt lands.
+ * prompt lands. R fails a publish AFTER its frame is frozen, with a notification turn riding on
+ * that frame.
  *
  * Each cell asks the one question that matters: once the fault is gone, does the plane publish
  * what was written during and after the outage, under the run the log has open?
@@ -830,6 +831,43 @@ for (const seedMapper of [true, false]) {
   await p.turnEnd();
   const last = p.broker.frames[p.broker.frames.length - 1]!;
   c("Q:the-next-runs-own-terminal-closes-it-as-a-finish-and-the-log-agrees", last.runId === "run-3" && finished(JSON.stringify(last.parts), "run-3") && p.wal().pending === "none" && p.wal().seq === p.broker.seq, { last: last.runId, wal: p.wal(), broker: p.broker.seq });
+  await p.close();
+}
+
+// ---- R. the publish fails after a frame carrying a trailing notification is frozen ------------
+{
+  // Run-2 is open and acknowledged. Its last answer and a task notification are written and
+  // flushed: one frame, run-2's, whose cursor covers the notification the mapper opens no run for.
+  // The frame freezes and the publish fails after it, so the plane goes down with the frozen frame
+  // past the notification. The notification's stop arrives while down. The re-establish settles the
+  // frozen frame; the stop must be consumed by the notification turn and close nothing, not publish
+  // a finish for run-2 (Sol, round 12 of 2026-10-13, through the built MCP entry point with the
+  // log's fold refused once after the acknowledgement, another failure after the freeze: the
+  // notification's stop published RUN_FINISHED for the human run).
+  const p = plane({ seedMapper: true });
+  p.holder.adopt(p.transcript, "startup");
+  p.user();
+  p.assistant();
+  await p.flush();
+  await p.turnEnd();
+  p.user();
+  p.assistant(" acked");
+  await p.flush(); // run-2 open and acknowledged
+  p.assistant(" last");
+  p.notification();
+  p.broker.failNext = 1;
+  await p.flush(); // the frame is frozen and its publish fails: down
+  c("R:CONTROL-the-frame-covering-the-notification-is-frozen-and-the-plane-is-down", !p.holder.running && !p.broker.frames.some((f) => JSON.stringify(f.parts).includes("last")) && p.wal().pending === "sent_unacked", { running: p.holder.running, wal: p.wal() });
+  await p.turnEnd(); // the notification's stop, while down
+  await sleep(250);
+  await p.holder.settled();
+  const wire = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  c("R:the-notifications-stop-closes-nothing-and-run-2-stays-open-after-the-re-establish", p.holder.running && p.wal().pending === "none" && wire.includes("last") && !finished(wire, "run-2") && !wire.includes('"type":"RUN_ERROR"'), { running: p.holder.running, wal: p.wal(), finished: finished(wire, "run-2") });
+  p.user(); // the next prompt closes run-2 as its finish and opens run-3
+  p.assistant(" next-turn");
+  await p.flush();
+  const wire2 = p.broker.frames.map((f) => JSON.stringify(f.parts)).join("");
+  c("R:the-next-prompt-closes-run-2-once-and-opens-run-3", finished(wire2, "run-2") && (wire2.match(/"type":"RUN_FINISHED","threadId":"[^"]+","runId":"run-2"/g) ?? []).length === 1 && p.broker.frames[p.broker.frames.length - 1]!.runId === "run-3" && p.wal().seq === p.broker.seq, { labels: p.broker.frames.map((f) => f.runId), wal: p.wal(), broker: p.broker.seq });
   await p.close();
 }
 

@@ -73,9 +73,13 @@ export interface EmitUnit {
   runId: string;
   events: AguiEvent[];
   cursor: string;
-  /** The turns the source began at or just before this unit, in source order: the run each one
-   *  opened, or `null` for a turn that opened none. Committed as the last turn begun when the frame
-   *  carrying the unit is frozen, see {@link AguiEmitter.queueTerminal}. */
+  /** The turns the source began at or just before this unit, and by the dropped records whose
+   *  cursor folded onto it after, in source order: the run each one opened, or `null` for a turn
+   *  that opened none. Committed as the last turn begun when the frame carrying the unit is frozen,
+   *  see {@link AguiEmitter.queueTerminal}: every turn a frame's cursor covers is committed with
+   *  that frame, trailing ones included, or a failure after the freeze would carry a stale last
+   *  turn to the next emitter while the log had advanced past them (Sol, round 12 of 2026-10-13,
+   *  through the built MCP entry point: a notification's terminal closed the run before it). */
   turns?: (string | null)[];
 }
 
@@ -482,19 +486,28 @@ export class AguiEmitter<T> {
     const units: EmitUnit[] = [];
     // Turns begun by records since the last unit, carried on the next unit so they are committed
     // when its frame is frozen and never before: a turn a batch that failed had begun is read
-    // again by the next pump.
+    // again by the next pump. A dropped record folds its cursor onto the unit before it, and the
+    // turns begun since fold onto that unit with it: they are committed by the freeze that
+    // consumes the record, as its cursor is.
     let turns: (string | null)[] = [];
+    const fold = (rec: SourceRead<T>["records"][number]) => {
+      const last = units[units.length - 1];
+      if (!last) return;
+      last.cursor = rec.cursor;
+      if (turns.length > 0) {
+        (last.turns ??= []).push(...turns);
+        turns = [];
+      }
+    };
     for (const [i, rec] of read.records.entries()) {
       const m = mapped[i]!;
       if (m !== null && "turn" in m) {
         turns.push(null);
-        const last = units[units.length - 1];
-        if (last) last.cursor = rec.cursor;
+        fold(rec);
         continue;
       }
       if (m === null || m.events.length === 0) {
-        const last = units[units.length - 1];
-        if (last) last.cursor = rec.cursor;
+        fold(rec);
         continue;
       }
       // An owed terminal becomes a unit OF ITS OWN RUN, ahead of this record's. `RUN_ERROR` names no
@@ -512,8 +525,7 @@ export class AguiEmitter<T> {
       const events = applyAguiEgressPolicy(owedUnit ? owedUnit.rest : m.events);
       for (const e of m.events) if (e.type === AGUI_EVENT_TYPE.RUN_STARTED) turns.push(e.runId);
       if (events.length === 0) {
-        const last = units[units.length - 1];
-        if (last) last.cursor = rec.cursor;
+        fold(rec);
         continue;
       }
       units.push({ runId: m.runId, events, cursor: rec.cursor, ...(turns.length > 0 ? { turns } : {}) });
@@ -575,8 +587,8 @@ export class AguiEmitter<T> {
       events += frame.events.length;
     }
 
-    // Records the mapper dropped AFTER the last unit have no frame to ride on, so their cursor is
-    // advanced on its own: the same cursor-only rule, applied to the tail of the batch.
+    // Records the mapper dropped AFTER the last unit rode on its frame: their cursor and the turns
+    // they began were committed with it, so nothing is left to advance or commit here.
     if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
     this.committed([], turns);
 

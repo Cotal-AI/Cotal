@@ -22,7 +22,8 @@
     "the one its turn has. O9 owes a terminal to a run the wire has closed. O10 settles the successor's",
     "debt when the frame carrying its predecessor's finish freezes. O11 takes the debt at the mapping,",
     "so a frame that fails before the freeze takes the error with it. O12 advances the brackets before",
-    "the freeze, so a run whose first frame never froze is reported open (Sol, round 11)."
+    "the freeze, so a run whose first frame never froze is reported open (Sol, round 11).",
+    "O13 commits a trailing turn only after every publish, so a failure after the freeze carries a stale last turn (Sol, round 12)."
   ],
   "mutations": [
     {
@@ -120,6 +121,14 @@
       "replace": "    this.brackets = next;\n    await this.wal.beginSend({ id, E, seq: frame.seq, sourceCursor: cursor, body, brackets });\n",
       "expectRed": "freeze:a-run-whose-start-never-froze-is-not-open-on-the-wire",
       "note": "The round-11 defect: a first turn whose frame never froze was reported open, its terminal held for a run the fresh start never had, and dropped."
+    },
+    {
+      "name": "O13 a trailing turn is committed only after every publish, not with the frame that consumes it",
+      "file": "extensions/connector-core/src/agui-emitter.ts",
+      "find": "      last.cursor = rec.cursor;\n      if (turns.length > 0) {\n        (last.turns ??= []).push(...turns);\n        turns = [];\n      }\n",
+      "replace": "      last.cursor = rec.cursor;\n",
+      "expectRed": "trailing:the-last-turn-handed-back-is-the-notification-the-frozen-frame-consumed",
+      "note": "The round-12 defect: a fold refused after the ack left the last turn at the human run while the log was past the notification, and the notification's stop closed that run as a finish on the next emitter."
     }
   ]
 }
