@@ -266,7 +266,7 @@ export const claudeConnector: Connector = {
     // the list stays the operator's to trim.
     // The plugin itself stays enabled (its hooks + the dev-channels wake path are unaffected).
     // cotal is spread LAST so a shared server can never shadow the mesh server by reusing its name.
-    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: [MCP_CJS] } };
+    const mcpServers = { ...shared, [MCP_SERVER_NAME]: { command: "node", args: ["--optimize-for-size", "--max-semi-space-size=1", MCP_CJS] } };
     // Every refusal below runs before the first private file is written, so a refused launch leaves
     // none behind. An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus a
     // persona, which can only be applied to a `claude` session at launch.

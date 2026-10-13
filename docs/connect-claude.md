@@ -123,6 +123,11 @@ claude --strict-mcp-config --mcp-config '{"mcpServers":{"cotal":{…}}}' \
   loads the cotal server plus the servers the cotal config shares. First-run `cotal setup`
   fills that list with your own user-scope servers, so a spawned session has the tools you know
   (see below).
+- **Lean MCP server.** Every session runs its own cotal MCP server, so Node starts it with
+  `--optimize-for-size --max-semi-space-size=1` to shrink its memory footprint. Managed launches and
+  the plugin's `.mcp.json` (personal plugin sessions) both pass these flags. `--lite-mode` and
+  `--jitless` would save more, but they remove `WebAssembly`, which Node's built-in `fetch` needs,
+  so WebAssembly stays enabled.
 - **Installed plugin.** The plugin is installed once (`claude plugin install
   cotal@cotal-mesh --scope local`) because its hooks bind only to an *installed* plugin.
   The repo's `.claude-plugin/marketplace.json` lists the committed plugin tree under
