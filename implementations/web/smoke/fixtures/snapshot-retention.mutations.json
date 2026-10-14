@@ -100,6 +100,13 @@
       "expectRed": "5.4 a 500 whose body is JSON does NOT become the space name"
     },
     {
+      "name": "W14b a refused space read is swallowed into a stand-in value, so the tab title is drawn from a space the wire never named (the old 5.5: a refusal does not change the document title)",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "read: () => api.meta(),",
+      "replace": "read: () => api.meta().catch(() => ({ space: undefined as unknown as string, pid: 0 })),",
+      "expectRed": "5.5 a refused space read does not change the document title"
+    },
+    {
       "name": "W15 the bootstrap roster is applied even after the live feed has spoken, so an older snapshot read before the feed opened reverts the roster the feed just announced",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "        { name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
