@@ -51,7 +51,7 @@
       "expectRed": "3.2 a stale set NAMES its sources"
     },
     {
-      "name": "W8 the open channel's history refusal is handed on as an empty history, which is the wipe behind the OPEN channel: the order machine settles on nothing, the view empties, and no note or mark says the read was refused",
+      "name": "W8 the controller swallows a refused open-channel history into an empty one, so the view empties, the order machine settles on nothing, and no note or mark says the read was refused (the HTTP status gate itself is Task 7's, in api/http.ts)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      msgs = await api.history(key, 200);\n",
       "replace": "      msgs = await api.history(key, 200).catch(() => []);\n",
@@ -93,7 +93,7 @@
       "expectRed": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line"
     },
     {
-      "name": "W14 the space read stops refusing: a refused meta read is handed on as a value, which is the same refusal-as-data defect as the rest of this change on the one read that used to have no later poll to correct it",
+      "name": "W14 the controller swallows a refused space read and applies a stand-in value, so the header loses the last good name and nothing marks the space stale (the HTTP status gate itself is Task 7's, in api/http.ts)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "read: () => api.meta(),",
       "replace": "read: () => api.meta().catch(() => ({ space: undefined as unknown as string, pid: 0 })),",

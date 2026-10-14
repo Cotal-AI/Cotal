@@ -12,7 +12,8 @@
  * controller.ts`), built over a fake `Api` and driven through its methods (§12 to §14). Nothing is
  * restated here, so no cell can pass against a version that no longer ships. Two things still read
  * the old page, because they are not the controller's: the startup that calls `refresh()` (§13.1,
- * §13.2) and the notice the views draw (§15). They move with the boot and the shell.
+ * §13.2), which Task 7's boot re-homes, and the notice the views draw (§15, fixtures O18 to O20),
+ * which Task 8's shell re-homes.
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
  * goes live, and only then surfaces retained history (`SPEC.md` orders the join that way, and the
@@ -425,7 +426,7 @@ console.log("event-order smoke");
   // reconnect flap repeats it.
   {
     // The structural half: the two call sites this race needs both exist in the shipped page. They
-    // are the startup's, not the controller's, and move with it.
+    // are the startup's, not the controller's, and Task 7's boot re-homes them.
     const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
     const startup = /\n\s*refresh\(\);\n\s*connect\(\);/.test(appSrc);
     const onOpen = /addEventListener\("open",[\s\S]{0,120}?refresh\(\);/.test(appSrc);
@@ -524,9 +525,9 @@ console.log("event-order smoke");
 // to remove, one layer up, and it is also what decides whether treating a failed read as an empty
 // history is an honest degrade or a quiet one.
 //
-// STILL THE OLD PAGE'S. Drawing is not the controller's job: the controller keeps `orderNotes` in the
-// store, and the views that draw them arrive with the shell. Until then these cells read the page that
-// ships the notice.
+// STILL THE OLD PAGE'S, UNTIL TASK 8. Drawing is not the controller's job: the controller keeps
+// `orderNotes` in the store, and the views that draw them arrive with the shell in Task 8, which
+// re-homes these cells and fixtures O18 to O20. Until then they read the page that ships the notice.
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
   const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);

@@ -23,8 +23,9 @@
  * WHAT THIS SUITE DRIVES. `client/src/lib/snapshot.ts` is imported as the client bundle imports it,
  * and the dashboard controller (`client/src/state/controller.ts`), which reads every source through
  * it, is built over a fake `Api` and driven through its methods (§3.6, §4, §5). Nothing is restated.
- * The structural cells on the old pages (§3.3 to §3.11, §5.3) stay on those pages until the boot and
- * the shell replace them.
+ * The structural cells on the old pages stay on those pages until their replacements land: Task 7
+ * (the boot and `api/http.ts`) re-homes §3.11 and §5.3, and Task 8 (the shell) re-homes §3.3 to
+ * §3.5 and §3.7.
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -203,9 +204,11 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   // header read `· undefined` for the rest of the session. 3.10e executes the two-line form.
   const rawJson = new RegExp(`fetch${ARGS}\\s*\\)\\s*\\.json\\(\\)|fetch${ARGS}\\s*\\.then\\(\\s*\\(?r\\)?\\s*=>\\s*r\\.json\\(\\)`, "g");
   // The console page's reads are the controller's now, and it holds no `fetch` at all: every read
-  // goes through the injected `Api`, so there is no body here to consume unguarded.
+  // goes through the injected `Api`. That is all this cell proves, and it is true by design, so it
+  // does not guard the status check. The HTTP status gate moves to api/http.ts in Task 7, which adds
+  // a cell over httpApi(fakeFetch) for every route and a mutation that drops readJson.
   const controllerJs = codeOnly(readFileSync(join(here, "..", "client", "src", "state", "controller.ts"), "utf8"));
-  ok("3.8 no unguarded `fetch(...).json()` survives on the console page",
+  ok("3.8 the controller holds no fetch; every read goes through the injected Api",
     !/\bfetch\s*\(/.test(controllerJs) && (controllerJs.match(rawJson) ?? []).length === 0, controllerJs.match(rawJson));
   ok("3.9 no unguarded `fetch(...).json()` survives on the graph page", (graphJs.match(rawJson) ?? []).length === 0, graphJs.match(rawJson));
   // CONTROL for 3.8/3.9: the pattern must be able to find the shape it is looking for.
@@ -347,10 +350,15 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
 // the next line, so a 500 with a JSON body arrived as data and the header showed `· undefined` with
 // no later poll to correct it. The controller reads it on every poll through `refreshAll`, and the
 // header and the document title are both drawn from `space`, so `space` is what is graded.
+//
+// TWO RENDER GUARANTEES ARE NOT PINNED HERE, because there is no renderer yet. The old 5.5 ("nor the
+// document title") is folded into 5.4, which checks `space`, the value the title is drawn from. The
+// old W12 mutation proved that recovery CLEARS the marker's label and tooltip rather than only hiding
+// the element. The shell (Task 8) re-pins both against what it renders.
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-  // The gate itself lives where the read is made. On the old page that is this line; the client's
-  // `Api` wraps every route in `readJson` when it lands.
+  // The gate itself lives where the read is made. On the old page that is this line, and Task 7
+  // re-homes this cell onto `api/http.ts`, whose `Api` wraps every route in `readJson`.
   ok("5.3 and it reads through the gate rather than consuming the body directly",
     /readJson\(await fetch\("\/api\/meta"\)/.test(appSrc));
 
