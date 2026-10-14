@@ -397,8 +397,8 @@ const UNPINNED_PATH = join(ROOT, "bin", "smoke", "unpinned-suites.txt");
 const UNPINNED_DIGEST = "8d7a911e3c2411715048ab2f4cfd196fbbf82bba1cae07a133288aa7e9cfd842";
 const SUITE_FILE = /(?:^|\s)["']?([\w./-]+\.(?:ts|tsx|mts|mjs|js|cjs))["']?(?=\s|$)/g;
 const PIN_NAME = /^EXPECTED(?:_[A-Z0-9]+)*$/;
-/** Members of an array that read it without changing its length. */
-const ARRAY_READS = ["length", "at", "every", "filter", "find", "forEach", "includes", "indexOf", "join", "map", "slice", "some"];
+/** Members of an array that read it without changing its length. One that takes a callback hands that callback the array. */
+const ARRAY_READS = ["length", "at", "includes", "indexOf", "join", "slice"];
 /** `==` and `!=` coerce, so a tally of "2" matches a pin of 2. */
 const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken];
 
@@ -938,12 +938,17 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     seen.add(p);
     return callersOf(sf, p).some(([s]) => countedAfter(s, parts, seen));
   };
-  // Whether a function the file passes to a call counts a cell: the call can run it at any time from then on, after the comparison too.
-  const countedLater = (parts: Map<ts.Symbol, boolean>) =>
-    findIn(sf, isInvocation, true).some((c) => argumentsOf(c).some((a) => [...valuesOf(sf, a)].some((v) => ts.isFunctionLike(v) && counts(v, parts))));
+  // Whether a cell can be counted after the comparison `s` by a function the file passes to a call, which the call can
+  // run at any time from then on, or by an async function outside `s` it calls without `await`, whose body resumes later.
+  const countedLater = (s: ts.Node, parts: Map<ts.Symbol, boolean>) =>
+    findIn(sf, isInvocation, true).some((c) => {
+      const callees = ts.isAwaitExpression(c.parent) ? [] : [...valuesOf(sf, calleeOf(c))].filter((v) =>
+        ts.isFunctionLike(v) && ts.getCombinedModifierFlags(v as ts.Declaration) & ts.ModifierFlags.Async && !ts.findAncestor(s, (a) => a === v));
+      return [...callees, ...argumentsOf(c).flatMap((a) => [...valuesOf(sf, a)])].some((v) => ts.isFunctionLike(v) && counts(v, parts));
+    });
   return findIn(sf, (n): n is ts.Statement => ts.isIfStatement(n) || ts.isExpressionStatement(n), true).some((s) => {
     const tally = failsOnMismatch(s);
-    return !!tally && runsTo(sf, s) && !countedAfter(s, partsOf(tally)) && !countedLater(partsOf(tally));
+    return !!tally && runsTo(sf, s) && !countedAfter(s, partsOf(tally)) && !countedLater(s, partsOf(tally));
   });
 }
 
@@ -1065,6 +1070,8 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin a later push to its array follows is unpinned", !pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); failures.push(1);`)],
   ["a pin a callback scheduled before it can count past is unpinned", !pinsWith(`setTimeout(() => { ran++; }, 10); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin on an array an alias can grow is unpinned", !pinsWith(`const failures = []; const alias = failures; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); alias.push(1);`)],
+  ["a pin on an array a read callback can grow is unpinned", !pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); failures.map((f, i, all) => all.push(f));`)],
+  ["a pin an unawaited async function counts past is unpinned", !pinsWith(`async function extra() { await 0; ran++; } extra(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin after a spread whose iterator exits 0 is unpinned", !pinsWith(`const args = { *[Symbol.iterator]() { process.exit(0); } }; f(...args); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin whose array is only read later is pinned", pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); console.log(failures.join(", "));`)],
   ["a pin after every cell that only reads the count later is pinned", pinsWith(`const cell = () => { ran++; }; cell(); if (ran !== EXPECTED_CELLS) process.exit(1); console.log(ran);`)],

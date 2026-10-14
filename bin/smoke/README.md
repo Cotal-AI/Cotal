@@ -98,10 +98,12 @@ forms below, because a form it cannot follow to the exit status can hide either 
   when it cannot end the run. No cell can be counted after the comparison: a later statement of its
   block or of a block around it, a `finally` after it, the rest of a loop around it, or a statement
   after a call of the function it is in, that writes a counter of the tally or uses its array for
-  anything but `for of` or a read such as `length`, `join` or `map`, directly or through a function
-  of the file it calls or passes, makes the comparison too early to pin anything. So does a function
-  of the file passed to a call anywhere, such as a timer callback, that counts a cell, since the call
-  can run it after the comparison.
+  anything but `for of` or a read such as `length` or `join`, directly or through a function of the
+  file it calls or passes, makes the comparison too early to pin anything. A method that takes a
+  callback, such as `map`, is no read, since it hands the callback the array. A function of the file
+  passed to a call anywhere, such as a timer callback, that counts a cell also makes it too early,
+  since the call can run it after the comparison, and so does an async function outside the
+  comparison called anywhere without `await` that counts a cell, since its body resumes later.
 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
 keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's

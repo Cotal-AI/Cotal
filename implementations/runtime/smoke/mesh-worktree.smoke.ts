@@ -412,9 +412,12 @@ const spawnSeat = async (handler: MeshHandler, tag: string, persona = "builder")
   console.log("  ! spawn did not yield a handle:", JSON.stringify(got));
   return undefined;
 };
+/** Start one spawn with a worktree through the handler under test. It counts no cell, so a cell can hold it unawaited. */
+const spawnCall = (handler: MeshHandler, tag: string, worktree: string, persona = "builder"): Promise<unknown> =>
+  safe(handler.spawn({ persona, worktree } as never, stepCtx(token(tag)).ctx));
 /** Spawn one seat with a worktree through the handler under test. */
 const spawnInto = async (handler: MeshHandler, tag: string, worktree: string, persona = "builder"): Promise<unknown> =>
-  await withDeadline(safe(handler.spawn({ persona, worktree } as never, stepCtx(token(tag)).ctx)), 20_000, `the ${persona} spawn into ${worktree}`);
+  await withDeadline(spawnCall(handler, tag, worktree, persona), 20_000, `the ${persona} spawn into ${worktree}`);
 const isHandle = (v: unknown): v is { agent: string; persona: string; worktree?: string } =>
   v !== null && typeof v === "object" && typeof (v as { agent?: unknown }).agent === "string";
 
@@ -507,7 +510,7 @@ let holder: { agent: string; persona: string } | undefined;
   console.log("• 6 — an accepted spawn holds its tree before its seat exists");
   const h6 = mk("wt-6");
   spawnTerminalHoldMs = 1_500;
-  const first = spawnInto(h6, "k", "wt-e");
+  const first = spawnCall(h6, "k", "wt-e");
   await wait(400); // accepted; no presence row and no terminal yet
   spawnTerminalHoldMs = 0;
   const second = await spawnInto(h6, "l", "wt-e", "intruder");
@@ -515,7 +518,7 @@ let holder: { agent: string; persona: string } | undefined;
     (second as { code?: string } | undefined)?.code === "L4008"
       && String((second as { message?: string }).message).includes("still bringing one up"),
     JSON.stringify(second));
-  const got = await first;
+  const got = await withDeadline(first, 20_000, "the builder spawn into wt-e");
   c("and the first spawn goes on to its handle", isHandle(got) && got.worktree === "wt-e", JSON.stringify(got));
 }
 
@@ -630,7 +633,7 @@ await parallel({
       external: { goalId: token("u"), name: "gone-w", owner: "local", actor: "gonew", uid: wUid },
     },
   ] as unknown as JournalEntry[]);
-  const [x, y] = await Promise.all([spawnInto(h11, "v", "wt-h", "first"), spawnInto(h11, "w", "wt-h", "second")]);
+  const [x, y] = (await withDeadline(Promise.all([spawnCall(h11, "v", "wt-h", "first"), spawnCall(h11, "w", "wt-h", "second")]), 20_000, "the two spawns into wt-h")) ?? [];
   const handles = [x, y].filter(isHandle).length;
   const refusals = [x, y].filter((r) => (r as { code?: string } | undefined)?.code === "L4008").length;
   c("exactly one of the two is admitted and the other is L4008: the claim is re-read after the wait, not assumed",
