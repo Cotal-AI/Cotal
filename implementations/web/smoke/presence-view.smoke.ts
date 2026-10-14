@@ -31,7 +31,7 @@ const appJs = readFileSync(join(webSrc, "web/app.js"), "utf8");
 const graphJs = readFileSync(join(webSrc, "web/graph.js"), "utf8");
 const webTs = readFileSync(join(webSrc, "web.ts"), "utf8");
 
-ok("0.1 the server maps /app.js and /graph.js in PAGE (a module no route reaches is a module no page runs)",
+ok("0.1 the server maps /app.js and /graph.js in LEGACY_PAGE_FILES (a module no route reaches is a module no page runs)",
   /"\/app\.js": \{ path: join\(here, "web\/app\.js"/.test(webTs)
     && /"\/graph\.js": \{ path: join\(here, "web\/graph\.js"/.test(webTs));
 

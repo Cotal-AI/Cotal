@@ -300,7 +300,7 @@ const gateInit = stmts[2] !== undefined && ts.isVariableStatement(stmts[2])
 // STRUCTURAL, not an enumeration of route syntax. Two earlier versions of this cell were beaten by
 // the same move: the first compared the gate against ONE named route (`/feed`), and the second
 // against every `if (path === "` / `if (path.startsWith("` dispatch — which silently omitted the
-// SHIPPED STATIC DISPATCH (`PAGE[path]` then `if (file)`), so moving that block above the gate left
+// SHIPPED STATIC DISPATCH (`client.get(path)` then `if (file)`), so moving that block above the gate left
 // `/`, `/graph` and every asset unauthenticated with all 68 cells green.
 //
 // A list of route shapes can always omit one, and the omission is invisible. So this asserts the

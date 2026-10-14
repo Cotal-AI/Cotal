@@ -16,7 +16,7 @@
  *
  * WHAT IT DRIVES. Both files are READ OFF DISK and evaluated in a `vm` context with a stub `window`,
  * exactly as classic `<script>`s run, in the same context and the same order the pages load them.
- * The route table is the REAL `PAGE` export. Nothing is restated, so no cell can pass against a
+ * The route table is the REAL `LEGACY_PAGE_FILES` export. Nothing is restated, so no cell can pass against a
  * version that no longer ships.
  *
  * WHAT IT DOES NOT CLAIM. It does not open a browser and asserts no DOM. `app.js` renders through
@@ -31,7 +31,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
-import { PAGE } from "../src/web.js";
+import { LEGACY_PAGE_FILES } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -164,7 +164,7 @@ ok("a frame between text parts is drawn in place, neighbours intact",
 // ── REACH: a renderer no page loads is dead code that passes every cell above ────────────────────
 // The route table is the real exported map, so a missing row fails here exactly as the browser
 // would 404 — and a 404 is invisible in these vm cells, which is precisely why this is asserted.
-const served = PAGE["/agui-frame.js"];
+const served = LEGACY_PAGE_FILES["/agui-frame.js"];
 ok("web.ts SERVES /agui-frame.js from its allow-list (a missing row is a 404 for both pages)",
   Boolean(served) && served.type.startsWith("text/javascript"), { served: served ?? null });
 ok("and the row points at the file this suite just evaluated",

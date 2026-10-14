@@ -135,8 +135,9 @@ try {
     ok("the extension `web` command serves the dashboard", page.status === 200, webErr.slice(-400));
     const html = await page.text();
     ok("dashboard page is the real asset (packaged via files:[dist])", /<html|<!doctype/i.test(html) && html.length > 200, html.slice(0, 120));
-    const appJs = await fetch(`http://127.0.0.1:${WEB_PORT}/app.js`, { headers: authed });
-    ok("static asset /app.js serves", appJs.status === 200);
+    const script = /(?:src)="(\/assets\/[^"]+\.js)"/.exec(html)?.[1];
+    const asset = script === undefined ? undefined : await fetch(`http://127.0.0.1:${WEB_PORT}${script}`, { headers: authed });
+    ok("the page's script under /assets/ serves as JavaScript", asset?.status === 200 && (asset.headers.get("content-type") ?? "").startsWith("text/javascript"), { script, status: asset?.status });
     const meta = (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: authed })).json()) as { space?: string; pid?: number };
     const foregroundPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
     ok("live /api/meta answers with the mesh's space and serving pid", meta.space === SPACE && meta.pid === foregroundPid && alive(foregroundPid), meta);

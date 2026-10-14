@@ -9,7 +9,7 @@
  *
  * WHAT IT DRIVES. `event-order.js` is READ OFF DISK and evaluated in a `vm` context with a stub
  * `window`, exactly as the classic `<script>` runs in the page, and the route table it is served
- * through is the REAL `PAGE` export. Nothing is restated here, so no cell can pass against a version
+ * through is the REAL `LEGACY_PAGE_FILES` export. Nothing is restated here, so no cell can pass against a version
  * that no longer ships.
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
@@ -40,7 +40,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { PAGE } from "../src/web.js";
+import { LEGACY_PAGE_FILES } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -139,7 +139,7 @@ console.log("event-order smoke");
 
 // ── 1. the seam: served, loaded, registered, and loaded before its consumer ───────────────────────
 {
-  const row = PAGE["/event-order.js"];
+  const row = LEGACY_PAGE_FILES["/event-order.js"];
   ok("1.1 the machine is served by the real route table", row !== undefined);
   ok("1.2 the served path is the file this suite drove", row?.path === join(webSrc, "event-order.js"));
   ok("1.3 served as javascript", typeof row?.type === "string" && row.type.includes("javascript"));

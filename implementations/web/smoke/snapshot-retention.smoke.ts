@@ -22,7 +22,7 @@
  *
  * WHAT THIS SUITE DRIVES. `snapshot.js` is READ OFF DISK and evaluated in a `vm` context with a stub
  * `window`, exactly as the classic `<script>` runs in the page, and it is reached through the REAL
- * `PAGE` export, so a module the server does not serve fails here. Nothing is restated.
+ * `LEGACY_PAGE_FILES` export, so a module the server does not serve fails here. Nothing is restated.
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -36,7 +36,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { PAGE } from "../src/web.js";
+import { LEGACY_PAGE_FILES } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -60,8 +60,8 @@ interface Api {
 /** The file as the page runs it: a classic script against a bare `window`, reached through the route
  *  table the server serves it from rather than through a path this suite spells itself. */
 function load(): Api {
-  const route = PAGE["/snapshot.js"];
-  ok("0.1 the server serves /snapshot.js (a module no route reaches is a module no page runs)", Boolean(route), Object.keys(PAGE));
+  const route = LEGACY_PAGE_FILES["/snapshot.js"];
+  ok("0.1 the server serves /snapshot.js (a module no route reaches is a module no page runs)", Boolean(route), Object.keys(LEGACY_PAGE_FILES));
   const ctx: { window: Record<string, unknown> } = { window: {} };
   const c = createContext(ctx);
   runInContext(readFileSync(route.path, "utf8"), c, { filename: "snapshot.js" });
@@ -193,8 +193,8 @@ const res = (status: number, body: unknown) => ({
 const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
 {
-  const indexHtml = readFileSync(PAGE["/"].path, "utf8");
-  const graphHtml = readFileSync(PAGE["/graph"].path, "utf8");
+  const indexHtml = readFileSync(LEGACY_PAGE_FILES["/"].path, "utf8");
+  const graphHtml = readFileSync(LEGACY_PAGE_FILES["/graph"].path, "utf8");
   const appJs = codeOnly(readFileSync(join(webSrc, "app.js"), "utf8"));
   const graphJs = codeOnly(readFileSync(join(webSrc, "graph.js"), "utf8"));
   ok("3.3 the console page loads it", indexHtml.includes('<script src="/snapshot.js"></script>'));

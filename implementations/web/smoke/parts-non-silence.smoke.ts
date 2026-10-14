@@ -18,7 +18,7 @@
  * READ OFF DISK AND EVALUATED — the actual `src/web/parts.js` the browser is served, in a `vm`
  * context with a stub `window`, exactly as a classic `<script>` would run it. Nothing here
  * re-declares the renderer, so a cell cannot pass against a version of the function that no longer
- * exists. The route table is likewise the REAL `PAGE` export from `web.ts`, not a copy of its keys.
+ * exists. The route table is likewise the REAL `LEGACY_PAGE_FILES` export from `web.ts`, not a copy of its keys.
  *
  * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path, the fallbacks `parts.js` takes
  * for a kind nothing has taught it, and that is now a precondition rather than the only case, since
@@ -43,7 +43,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
-import { PAGE } from "../src/web.js";
+import { LEGACY_PAGE_FILES } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -157,7 +157,7 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
 // all, so the only occurrence of that word was the sentence claiming it. Both tables below are
 // fixed literals and their lengths are checked before the loops run, so a table that lost an entry
 // fails instead of quietly iterating fewer times.
-const served = PAGE["/parts.js"];
+const served = LEGACY_PAGE_FILES["/parts.js"];
 ok("web.ts SERVES /parts.js from its allow-list (a missing row is a 404 for both pages)",
   Boolean(served) && served.type.startsWith("text/javascript"), { served });
 ok("and the row points at the file this suite just evaluated",

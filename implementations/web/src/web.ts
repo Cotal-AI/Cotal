@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { closeSync, fchmodSync, fstatSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fchmodSync, fstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import {
   CotalEndpoint,
   deliveryOf,
@@ -267,20 +267,18 @@ function releasePid(path: string): void {
   }
 }
 
-// Message bodies render markdown via marked + DOMPurify (parse + sanitize). Their browser builds are
-// copied into dist/web/vendor at build time (scripts/copy-vendor.mjs) and served from the dashboard's
-// OWN files, so a published/seeded copy is self-contained and never reaches into node_modules at
-// runtime — which is what lets web ship as a bundled first-party extension, seeded like the connectors.
+// Content type of the legacy scripts listed in `LEGACY_PAGE_FILES`.
 const jsType = "text/javascript; charset=utf-8";
 
 /** The one condition name for "the membership read did not answer", shared by the HTTP body and the
  *  SSE event so a browser matches ONE token and a test asserts the same token the server emits.
- *  Exported for the same reason `PAGE` is: a test that restates it only agrees with itself. */
+ *  Exported so a test asserts the token the server emits rather than a restated copy. */
 export const MEMBERSHIP_READ_FAILED = "membership-read-failed";
 
-/** Exported so a test can resolve what the browser is actually served, rather than restating the
- *  route table in its own source and agreeing with itself. */
-export const PAGE: Record<string, { path: string; type: string }> = {
+/** The pre-React pages and scripts, kept only so the smokes that lift code out of them still find
+ *  the files. The server does not serve from it: the client build is served through
+ *  `clientAssets`. Deleted in Task 9 together with `src/web/`. */
+export const LEGACY_PAGE_FILES: Record<string, { path: string; type: string }> = {
   "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
   "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
   // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
@@ -308,6 +306,44 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   "/vendor/marked.umd.js": { path: join(here, "web/vendor/marked.umd.js"), type: jsType },
   "/vendor/purify.min.js": { path: join(here, "web/vendor/purify.min.js"), type: jsType },
 };
+
+
+/** Content types for the files a client build contains. A file of any other type is not served,
+ *  so a stray file dropped into the build directory never becomes a route. */
+const CLIENT_TYPES: Record<string, string> = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".woff2": "font/woff2",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+};
+
+/** One servable file of the client build. `immutable` marks a content-hashed asset, which a
+ *  browser may cache forever because a new build gives it a new name. */
+export interface ClientFile { path: string; type: string; immutable: boolean }
+
+/** The answer when the client build is missing: the server keeps serving the API and says how to
+ *  build the page instead of serving nothing. */
+export const CLIENT_NOT_BUILT = "the dashboard client is not built: run `pnpm --filter @cotal-ai/web build`";
+
+/** The client build as an allow-list, read once at startup: the page at `/` (and `/graph`, so an
+ *  old link opens the app) plus the files directly inside `assets/`. Nothing else under `dir` is
+ *  reachable, and no request path is ever joined onto the filesystem. */
+export function clientAssets(dir: string): Map<string, ClientFile> {
+  const routes = new Map<string, ClientFile>();
+  const index = join(dir, "index.html");
+  if (!existsSync(index)) return routes;
+  const page: ClientFile = { path: index, type: "text/html; charset=utf-8", immutable: false };
+  routes.set("/", page);
+  routes.set("/graph", page);
+  const assets = join(dir, "assets");
+  if (!existsSync(assets)) return routes;
+  for (const entry of readdirSync(assets, { withFileTypes: true })) {
+    const type = entry.isFile() ? CLIENT_TYPES[extname(entry.name)] : undefined;
+    if (type) routes.set(`/assets/${entry.name}`, { path: join(assets, entry.name), type, immutable: true });
+  }
+  return routes;
+}
 
 /** What the two backfill routes need from an endpoint. Narrow on purpose: it is the seam the filter
  *  is measured through, and a mock satisfying six methods it never calls would prove less. */
@@ -897,6 +933,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   for (const plane of ["chat", "inst", "svc"])
     ep.tap(onTap, { subject: `${spacePrefix(space)}.${plane}.>` });
 
+  const client = clientAssets(join(here, "web"));
+
   const gate = makeAuthGate(port, host);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -1106,14 +1144,18 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
 
-    const file = PAGE[path];
+    const file = client.get(path);
     if (file) {
-      // no-cache: always revalidate so a `cotal` upgrade's new dashboard code is picked up on
-      // reload — a stale cached graph.js silently runs old behavior (e.g. pre-fix filters).
-      res.writeHead(200, { "content-type": file.type, "cache-control": "no-cache" });
+      // The page revalidates on every load so a `cotal` upgrade's new client is picked up; the
+      // hashed assets never change under their name, so they cache for good.
+      res.writeHead(200, {
+        "content-type": file.type,
+        "cache-control": file.immutable ? "public, max-age=31536000, immutable" : "no-cache",
+      });
       res.end(readFileSync(file.path));
       return;
     }
+    if (client.size === 0 && (path === "/" || path === "/graph")) return json(res, { error: CLIENT_NOT_BUILT }, 503);
     res.writeHead(404).end("not found");
   };
 
