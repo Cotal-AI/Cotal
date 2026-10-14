@@ -1,7 +1,7 @@
 /** The rolling message rate: hits inside the window ending at `now` count, scaled to per second.
  *  `now` is an argument, so no cell waits on a clock. */
 import { strict as assert } from "node:assert";
-import { createRate } from "../client/src/lib/rate.js";
+import { createRate, MAX_HITS } from "../client/src/lib/rate.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -19,12 +19,6 @@ for (const ts of [9_100, 9_300, 9_600, 9_900]) four.hit(ts);
 ok("4 hits within the last second give 4", four.perSecond(10_000) === 4, four.perSecond(10_000));
 ok("asking twice gives the same answer", four.perSecond(10_000) === four.perSecond(10_000));
 
-const edge = createRate();
-edge.hit(9_000);
-edge.hit(9_001);
-edge.hit(10_000);
-ok("a hit exactly one window before now is out and a hit at now is in", edge.perSecond(10_000) === 2, edge.perSecond(10_000));
-
 const aged = createRate();
 aged.hit(0);
 aged.hit(100);
@@ -32,6 +26,12 @@ ok("hits older than the window are dropped", aged.perSecond(5_000) === 0, aged.p
 aged.hit(4_800);
 ok("a fresh hit counts after old ones are dropped", aged.perSecond(5_000) === 1, aged.perSecond(5_000));
 ok("the rate falls as the window slides past a hit", aged.perSecond(6_000) === 0, aged.perSecond(6_000));
+
+const edge = createRate();
+edge.hit(9_000);
+edge.hit(9_001);
+edge.hit(10_000);
+ok("a hit exactly one window before now is out and a hit at now is in", edge.perSecond(10_000) === 2, edge.perSecond(10_000));
 
 const future = createRate();
 future.hit(10_500);
@@ -49,6 +49,22 @@ const stale = createRate();
 stale.hit(10_000);
 stale.hit(9_000);
 ok("an out of order hit that is already a full window old does not count", stale.perSecond(10_000) === 1, stale.perSecond(10_000));
+
+const dated = createRate();
+dated.hit(9_100);
+dated.hit(10_500);
+ok("a hit dated after now does not evict an older hit still inside the window", dated.perSecond(10_000) === 1, dated.perSecond(10_000));
+
+const capped = createRate(100_000);
+for (let i = 1; i <= MAX_HITS + 5; i++) capped.hit(i);
+ok("the oldest hits past the cap are gone", capped.perSecond(5) === 0, capped.perSecond(5));
+ok("the cap holds and the newest hits are the ones counted", capped.perSecond(MAX_HITS + 5) === (MAX_HITS * 1000) / 100_000, capped.perSecond(MAX_HITS + 5));
+
+const nan = createRate();
+nan.hit(Number.NaN);
+nan.hit(Number.POSITIVE_INFINITY);
+nan.hit(9_500);
+ok("a hit with a non-finite time is ignored", nan.perSecond(10_000) === 1 && nan.perSecond(20_000) === 0, nan.perSecond(10_000));
 
 const wide = createRate(2_000);
 for (const ts of [8_100, 8_900, 9_500, 9_900]) wide.hit(ts);

@@ -22,8 +22,8 @@
     {
       "name": "perSecond stops dropping aged hits",
       "file": "implementations/web/client/src/lib/rate.ts",
-      "find": "    perSecond(now) {\n      dropUpTo(now - windowMs);\n",
-      "replace": "    perSecond(now) {\n",
+      "find": "      if (i > 0) hits = hits.slice(i);\n",
+      "replace": "",
       "expectRed": "hits older than the window are dropped"
     },
     {
@@ -53,6 +53,41 @@
       "find": "if (!Number.isFinite(windowMs) || windowMs <= 0) throw",
       "replace": "if (false) throw",
       "expectRed": "a window of 0 ms is refused"
+    },
+    {
+      "name": "hit evicts by its own timestamp again",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (hits.length > MAX_HITS) hits.shift();",
+      "replace": "if (hits.length > MAX_HITS) hits.shift();\n      while (hits.length > 0 && hits[0]! <= ts - windowMs) hits.shift();",
+      "expectRed": "a hit dated after now does not evict an older hit still inside the window"
+    },
+    {
+      "name": "the cap is removed",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (hits.length > MAX_HITS) hits.shift();",
+      "replace": "",
+      "expectRed": "the oldest hits past the cap are gone"
+    },
+    {
+      "name": "the cap drops the newest hit",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (hits.length > MAX_HITS) hits.shift();",
+      "replace": "if (hits.length > MAX_HITS) hits.pop();",
+      "expectRed": "the oldest hits past the cap are gone"
+    },
+    {
+      "name": "the cap drops one hit too many",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "hits.length > MAX_HITS",
+      "replace": "hits.length >= MAX_HITS",
+      "expectRed": "the cap holds and the newest hits are the ones counted"
+    },
+    {
+      "name": "a hit with a non-finite time is stored",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (!Number.isFinite(ts)) return;",
+      "replace": "",
+      "expectRed": "a hit with a non-finite time is ignored"
     }
   ]
 }
