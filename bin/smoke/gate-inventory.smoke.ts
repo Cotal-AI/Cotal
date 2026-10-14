@@ -519,9 +519,10 @@ const nameKey = (name: ts.Node | undefined): string | undefined =>
 const memberKey = (n: ts.Node): string | undefined => (ts.isPropertyAccessExpression(n) ? n.name.text : ts.isElementAccessExpression(n) ? nameKey(n.argumentExpression) : undefined);
 
 /** One pass over a suite: a checker that resolves a name to the declaration it binds, the way the
- *  language scopes it, the writes to each variable and to `process.exitCode`, and every value the file
- *  binds to each property key, on any object. `returns` caches what each call resolved so far returns. */
-type SuiteIndex = { checker: ts.TypeChecker; writes: Map<ts.Symbol, ts.Node[]>; exitCodeWrites: ts.Node[]; keyed: Map<string, ts.Node[]>; returns: Map<ts.Node, ts.Node[]> };
+ *  language scopes it, the writes to each variable and to `process.exitCode`, every value the file
+ *  binds to each property key, on any object, and every value it binds to a computed key it does not
+ *  spell, such as `[Symbol.iterator]`. `returns` caches what each call resolved so far returns. */
+type SuiteIndex = { checker: ts.TypeChecker; writes: Map<ts.Symbol, ts.Node[]>; exitCodeWrites: ts.Node[]; keyed: Map<string, ts.Node[]>; unkeyed: ts.Node[]; returns: Map<ts.Node, ts.Node[]> };
 const suiteIndexes = new WeakMap<ts.SourceFile, SuiteIndex>();
 function indexSuite(sf: ts.SourceFile): SuiteIndex {
   const cached = suiteIndexes.get(sf);
@@ -529,7 +530,7 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
   const host = ts.createCompilerHost({});
   host.getSourceFile = (f) => (f === sf.fileName ? sf : undefined);
   const checker = ts.createProgram([sf.fileName], { noLib: true, noResolve: true, allowJs: true, types: [] }, host).getTypeChecker();
-  const ix: SuiteIndex = { checker, writes: new Map(), exitCodeWrites: [], keyed: new Map(), returns: new Map() };
+  const ix: SuiteIndex = { checker, writes: new Map(), exitCodeWrites: [], keyed: new Map(), unkeyed: [], returns: new Map() };
   // Cached before the walk, which resolves `process` through this checker.
   suiteIndexes.set(sf, ix);
   const visit = (n: ts.Node) => {
@@ -545,6 +546,7 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
       : ts.isBinaryExpression(n) && isAssignment(n.operatorToken.kind) ? [memberKey(unwrap(n.left)), n.right]
       : [];
     if (key !== undefined && value) (ix.keyed.get(key) ?? ix.keyed.set(key, []).get(key)!).push(value);
+    if (key === undefined && value && (!ts.isBinaryExpression(n) || ts.isElementAccessExpression(unwrap(n.left)))) ix.unkeyed.push(value);
     ts.forEachChild(n, visit);
   };
   visit(sf);
@@ -665,12 +667,21 @@ const chainsPromise = (sf: ts.SourceFile, callee: ts.Node): callee is ts.Propert
   const key = memberKey(callee);
   return key !== undefined && PROMISE_METHODS.includes(key) && (!indexSuite(sf).keyed.has(key) || isPromise(sf, callee.expression));
 };
-/** The exits running `n` can make, directly, through the calls, `new` and tagged templates it makes, and through
- *  the functions it passes to them, which can call them at any time from then on. */
+/** Where running `n` iterates a value: a spread, `for of`, an array destructuring or `yield*`, each of which calls
+ *  its `[Symbol.iterator]` and then `next` and `return`, or a call, which can iterate what it is passed. */
+const iteratesIn = (n: ts.Node) =>
+  findIn(n, (m): m is ts.Node =>
+    isInvocation(m) || ts.isSpreadElement(m) || ts.isForOfStatement(m) || ts.isArrayBindingPattern(m) || (ts.isYieldExpression(m) && !!m.asteriskToken) || (ts.isArrayLiteralExpression(m) && !!writeOf(m)));
+/** The exits running `n` can make, directly, through the calls, `new` and tagged templates it makes, through
+ *  the functions it passes to them, which can call them at any time from then on, and through the iterator
+ *  protocol when the file binds a computed key it does not spell, which `[Symbol.iterator]` can be. */
 function exitsIn(sf: ts.SourceFile, n: ts.Node, seen = new Set<ts.Node>()): Exit[] {
   // A call written as a whole statement drops what it returns.
   const called = findIn(n, isInvocation).flatMap((c) => exitsOfCall(sf, calleeOf(c), c, argumentsOf(c)[0], seen, !ts.isExpressionStatement(wrapped(c).parent)));
-  return [...called, ...findIn(n, isInvocation).flatMap((c) => argumentsOf(c).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen, !chainsPromise(sf, unwrap(calleeOf(c))))))];
+  const { unkeyed, keyed } = indexSuite(sf);
+  const protocol = unkeyed.length ? [...unkeyed, ...(keyed.get("next") ?? []), ...(keyed.get("return") ?? [])] : [];
+  const iterated = protocol.length ? iteratesIn(n).flatMap((i) => protocol.flatMap((m) => exitsOfCall(sf, m, i, undefined, seen))) : [];
+  return [...called, ...findIn(n, isInvocation).flatMap((c) => argumentsOf(c).flatMap((a) => exitsOfCall(sf, a, c, undefined, seen, !chainsPromise(sf, unwrap(calleeOf(c)))))), ...iterated];
 }
 /** Whether running `n` can exit 0, or leave behind a function that can when called later, during an `await`. */
 const canExitZero = (sf: ts.SourceFile, n: ts.Node) => exitsIn(sf, n).some((e) => !failingStatus(e.status));
@@ -843,8 +854,9 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
   };
   // A count of the cells that ran, read in the comparison itself, so it cannot equal the pin by construction and misses
   // no cell counted before it: a sum of counters, each a `let` that starts at 0 and is written only by `++` or `+=` a
-  // literal, or the `length` of a `const` that starts as `[]` when no `length` is declared or written. A `const` copy,
-  // an alias of the pin, a literal or a call is no count.
+  // literal, or the `length` of a `const` that starts as `[]`, named only to `push` to it, read one of `ARRAY_READS`
+  // or iterate it with `for of`, when no `length` is declared or written. Any other use can hand it to code that grows
+  // it under another name. A `const` copy, an alias of the pin, a literal or a call is no count.
   const isTally = (n: ts.Node): boolean => {
     const e = unwrap(n);
     if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return isTally(e.left) && isTally(e.right);
@@ -858,7 +870,12 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
           ((ts.isPrefixUnaryExpression(w) || ts.isPostfixUnaryExpression(w)) && w.operator === ts.SyntaxKind.PlusPlusToken) ||
           (ts.isBinaryExpression(w) && w.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken && ts.isNumericLiteral(unwrap(w.right))));
     // `keyed` holds the values bound to `length`; `++`, `--`, `delete` and a destructuring write one too.
-    return !!array && ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") && !findIn(sf, (m): m is ts.Expression => memberKey(m) === "length" && !!writeOf(m), true).length;
+    const sym = checker.getSymbolAtLocation(array ?? e);
+    const named = (id: ts.Identifier) =>
+      id === found.decl.name || checker.getSymbolAtLocation(id) !== sym || (ts.isForOfStatement(id.parent) && id.parent.expression === id) ||
+      (ts.isPropertyAccessExpression(id.parent) && id.parent.expression === id && [...ARRAY_READS, "push"].includes(id.parent.name.text));
+    return !!array && ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") && !findIn(sf, (m): m is ts.Expression => memberKey(m) === "length" && !!writeOf(m), true).length &&
+      findIn(sf, ts.isIdentifier, true).every(named);
   };
   // For a pin comparison, the tally it reads and whether `cond` is true on a mismatch.
   const comparison = (cond: ts.Node): { tally: ts.Node; mismatch: boolean } | undefined => {
@@ -921,9 +938,12 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     seen.add(p);
     return callersOf(sf, p).some(([s]) => countedAfter(s, parts, seen));
   };
+  // Whether a function the file passes to a call counts a cell: the call can run it at any time from then on, after the comparison too.
+  const countedLater = (parts: Map<ts.Symbol, boolean>) =>
+    findIn(sf, isInvocation, true).some((c) => argumentsOf(c).some((a) => [...valuesOf(sf, a)].some((v) => ts.isFunctionLike(v) && counts(v, parts))));
   return findIn(sf, (n): n is ts.Statement => ts.isIfStatement(n) || ts.isExpressionStatement(n), true).some((s) => {
     const tally = failsOnMismatch(s);
-    return !!tally && runsTo(sf, s) && !countedAfter(s, partsOf(tally));
+    return !!tally && runsTo(sf, s) && !countedAfter(s, partsOf(tally)) && !countedLater(partsOf(tally));
   });
 }
 
@@ -1043,6 +1063,9 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin a later cell follows is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exit(1); ran++;`)],
   ["a pin a later call that counts a cell follows is unpinned", !pinsWith(`const cell = () => { ran++; }; if (ran !== EXPECTED_CELLS) process.exit(1); cell();`)],
   ["a pin a later push to its array follows is unpinned", !pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); failures.push(1);`)],
+  ["a pin a callback scheduled before it can count past is unpinned", !pinsWith(`setTimeout(() => { ran++; }, 10); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin on an array an alias can grow is unpinned", !pinsWith(`const failures = []; const alias = failures; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); alias.push(1);`)],
+  ["a pin after a spread whose iterator exits 0 is unpinned", !pinsWith(`const args = { *[Symbol.iterator]() { process.exit(0); } }; f(...args); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a pin whose array is only read later is pinned", pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); console.log(failures.join(", "));`)],
   ["a pin after every cell that only reads the count later is pinned", pinsWith(`const cell = () => { ran++; }; cell(); if (ran !== EXPECTED_CELLS) process.exit(1); console.log(ran);`)],
 ];
