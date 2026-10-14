@@ -10,77 +10,88 @@
       "file": "implementations/web/client/src/lib/names.ts",
       "find": "  if (typeof x === \"object\") return displayNameOf(x.id, idx);",
       "replace": "  if (typeof x === \"object\") return (x as { name?: string }).name ?? displayNameOf(x.id, idx);",
-      "expectRed": "3.2 displayNameOf resolves an object by its id, never its payload .name"
+      "expectRed": "3.2 displayNameOf resolves an object by its id, never its payload .name",
+      "cell": "3.2 displayNameOf resolves an object by its id, never its payload .name"
     },
     {
       "name": "the stale roster mark loses its observer wording, so the header no longer says which watch went silent or since when",
       "file": "implementations/web/client/src/lib/roster.ts",
       "find": "observer presence watch silent since",
       "replace": "roster stale",
-      "expectRed": "1.1 Monitor: a stale view marks the roster source, not a peer"
+      "expectRed": "1.1 Monitor: a stale view marks the roster source, not a peer",
+      "cell": "1.1 Monitor: a stale view marks the roster source, not a peer"
     },
     {
       "name": "waiting and working swap places in STATUS_ORDER, so the Agents view stops leading with who needs a human",
       "file": "implementations/web/client/src/lib/roster.ts",
       "find": "export const STATUS_ORDER: Status[] = [\"waiting\", \"working\", \"idle\", \"offline\"];",
       "replace": "export const STATUS_ORDER: Status[] = [\"working\", \"waiting\", \"idle\", \"offline\"];",
-      "expectRed": "2.7 rows sort waiting first, then working, then idle, each by name"
+      "expectRed": "2.7 rows sort waiting first, then working, then idle, each by name",
+      "cell": "2.7 rows sort waiting first, then working, then idle, each by name (the old working-first order is replaced on purpose)"
     },
     {
       "name": "rosterRows includes offline peers by default, so the online-only sidebar grays rows into the list",
       "file": "implementations/web/client/src/lib/roster.ts",
       "find": "    .filter((p) => opts.includeOffline || p.status !== \"offline\")",
       "replace": "    .filter(() => true)",
-      "expectRed": "2.6 the sidebar rows are online-only by default"
+      "expectRed": "2.6 the sidebar rows are online-only by default",
+      "cell": "2.6 the sidebar rows are online-only by default (this change does not gray rows out)"
     },
     {
       "name": "oldestLiveBeat counts offline rows, so a long-gone peer's age fills the golden-signal slot",
       "file": "implementations/web/client/src/lib/roster.ts",
       "find": "rows.filter((r) => r.status !== \"offline\" && typeof r.ts === \"number\")",
       "replace": "rows.filter((r) => typeof r.ts === \"number\")",
-      "expectRed": "2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one"
+      "expectRed": "2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one",
+      "cell": "2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one"
     },
     {
       "name": "statusLabel drops the unknown-progress wording, so a working peer reads as plainly working",
       "file": "implementations/web/client/src/lib/roster.ts",
       "find": "? \"working · progress unknown\" : p.status;",
       "replace": "? \"working\" : p.status;",
-      "expectRed": "2.14 statusLabel writes honest progress text only for working with unknown progress"
+      "expectRed": "2.14 statusLabel writes honest progress text only for working with unknown progress",
+      "cell": "2.14 statusLabel writes honest progress text only for working with unknown progress"
     },
     {
       "name": "an unknown principal's actor is cut to 8 characters, so the short form no longer matches the 6 character rule",
       "file": "implementations/web/client/src/lib/names.ts",
       "find": "principal[2]!.slice(0, 6)",
       "replace": "principal[2]!.slice(0, 8)",
-      "expectRed": "3.5 an unknown owner.actor principal with an actor of 32+ characters is cut to 6 plus an ellipsis"
+      "expectRed": "3.5 an unknown owner.actor principal with an actor of 32+ characters is cut to 6 plus an ellipsis",
+      "cell": "3.5 an unknown owner.actor principal with an actor of 32+ characters is cut to 6 plus an ellipsis"
     },
     {
       "name": "a peer missing from the roster is reported idle instead of offline, so a stranger in a DM reads as present",
       "file": "implementations/web/client/src/lib/dms.ts",
       "find": "byId.get(id)?.status ?? \"offline\"",
       "replace": "byId.get(id)?.status ?? \"idle\"",
-      "expectRed": "3.7 dmPeers names, roles and statuses come from the roster by id, never the payload"
+      "expectRed": "3.7 dmPeers names, roles and statuses come from the roster by id, never the payload",
+      "cell": "3.7 dmPeers names, roles and statuses come from the roster by id, never the payload"
     },
     {
       "name": "a message a peer sent to itself becomes a conversation, so the roll-up grows a thread with nobody",
       "file": "implementations/web/client/src/lib/dms.ts",
       "find": "if (!from || !to || from === to) continue;",
       "replace": "if (!from || !to) continue;",
-      "expectRed": "3.8 dmPeers rolls pairs up per peer"
+      "expectRed": "3.8 dmPeers rolls pairs up per peer",
+      "cell": "3.8 dmPeers rolls pairs up per peer: only pairs that talked, a self-DM is not a conversation, newest first"
     },
     {
       "name": "a poll drops the observer-view mark, so the next refresh tells the reader the roster is current while the presence watch is still silent",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      if (rosterView && !stale.some((s) => s.name === \"roster\")) stale.push(rosterView);\n",
       "replace": "",
-      "expectRed": "2.5 a poll cannot erase the observer-view mark"
+      "expectRed": "2.5 a poll cannot erase the observer-view mark",
+      "cell": "2.5 a poll cannot erase the observer-view mark: a refresh keeps the roster entry"
     },
     {
       "name": "the controller stores a presence-view verdict without marking the roster source, so a blind observer shows last-known rows as though they were current",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      markStale(\"roster\", presenceViewMark(view));\n",
       "replace": "",
-      "expectRed": "2.1 the client applies presence-view events"
+      "expectRed": "2.1 the client applies presence-view events",
+      "cell": "2.1 the client applies presence-view events: a stale view keeps the last-known rows and marks the roster source"
     }
   ]
 }

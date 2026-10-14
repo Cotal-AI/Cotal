@@ -6,203 +6,232 @@
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "      stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(r.error) });\n      continue;\n",
       "replace": "      stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(r.error) });\n      sources[i].apply([]);\n      continue;\n",
-      "expectRed": "2.1 a refused source's apply is NEVER called"
+      "expectRed": "2.1 a refused source's apply is NEVER called",
+      "cell": "2.1 a refused source's apply is NEVER called, so its last good value cannot be overwritten"
     },
     {
       "name": "W2 the refusal stops being reported, so the page keeps its last good snapshot and never says so: the reader is shown stale data as though it were current",
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "      stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(r.error) });\n",
       "replace": "",
-      "expectRed": "2.3 the refusal is REPORTED, by source name"
+      "expectRed": "2.3 the refusal is REPORTED, by source name",
+      "cell": "2.3 the refusal is REPORTED, by source name"
     },
     {
       "name": "W3 the status gate is dropped, so a 500 body parses and is handed back AS DATA, which is exactly how the shipped pages stored a refusal as a snapshot",
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "  if (!res.ok) {",
       "replace": "  if (false) {",
-      "expectRed": "1.1 a 500 whose body is valid JSON is a REFUSAL, not a value"
+      "expectRed": "1.1 a 500 whose body is valid JSON is a REFUSAL, not a value",
+      "cell": "1.1 a 500 whose body is valid JSON is a REFUSAL, not a value"
     },
     {
       "name": "W4 the refusal loses the server's own error text, so the one line naming WHY the refresh did not land says only that something returned a status",
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "      if (body && typeof body.error === \"string\") detail = `: ${body.error}`;",
       "replace": "      if (false) detail = `: ${body.error}`;",
-      "expectRed": "1.3 and carries the server's own error text"
+      "expectRed": "1.3 and carries the server's own error text",
+      "cell": "1.3 and carries the server's own error text, so a caller that only logs it still says something true"
     },
     {
       "name": "W5 the reads go back to running one after another, so on a slow link every source waits for the slowest and a page with four sources pays four link costs to draw one screen",
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "  const settled = await Promise.all(\n    sources.map(async (s): Promise<{ value: unknown } | { error: unknown }> => {\n      try {\n        return { value: await s.read() };\n      } catch (e) {\n        return { error: e };\n      }\n    }),\n  );",
       "replace": "  const settled: ({ value: unknown } | { error: unknown })[] = [];\n  for (const s of sources) {\n    try {\n      settled.push({ value: await s.read() });\n    } catch (e) {\n      settled.push({ error: e });\n    }\n  }",
-      "expectRed": "2.11 all three reads are in flight together"
+      "expectRed": "2.11 all three reads are in flight together",
+      "cell": "2.11 all three reads are in flight together"
     },
     {
       "name": "W6 the boot is chained again, so the live feed is guaranteed to run but not to run soon",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return { controller, stop: stopFeed };",
       "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
-      "expectRed": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap"
+      "expectRed": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap",
+      "cell": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap (the wipe was `load().then(connect)`)"
     },
     {
       "name": "W7 the stale marker stops naming anything, so the page keeps its data and the reader is never told which half of it is old",
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "  if (refused.length) parts.push(`stale: ${refused.join(\", \")}`);",
       "replace": "  if (refused.length) parts.push(\"stale\");",
-      "expectRed": "3.2 a stale set NAMES its sources"
+      "expectRed": "3.2 a stale set NAMES its sources",
+      "cell": "3.2 a stale set NAMES its sources"
     },
     {
       "name": "W8 the controller swallows a refused open-channel history into an empty one, so the view empties, the order machine settles on nothing, and no note or mark says the read was refused (the HTTP status gate is api/http.ts's, graded in smoke:web-http-api)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      msgs = await api.history(key, 200);\n",
       "replace": "      msgs = await api.history(key, 200).catch(() => []);\n",
-      "expectRed": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed"
+      "expectRed": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed",
+      "cell": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed"
     },
     {
       "name": "W9 a refused history goes back to an empty batch, so the channel the reader is looking at is emptied once per poll on a link where that read keeps missing",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      msgs = held;\n",
       "replace": "      msgs = [];\n",
-      "expectRed": "4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes"
+      "expectRed": "4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes",
+      "cell": "4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes"
     },
     {
       "name": "W10 retention stops being per channel, so switching to a channel whose read is refused shows the PREVIOUS channel's messages under the new channel's name, which is worse than the empty view it replaced",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "    const held = cur?.channel === key ? cur.messages : [];",
       "replace": "    const held = cur ? cur.messages : [];",
-      "expectRed": "4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)"
+      "expectRed": "4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)",
+      "cell": "4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)"
     },
     {
       "name": "W11 marking one source overwrites the whole set again, so a refused channel history erases the poll's own findings and the reader is told about one stale source instead of all of them",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      const rest = s.stale.filter((m) => m.name !== name);",
       "replace": "      const rest: StaleMark[] = [];",
-      "expectRed": "4.11 a refused channel history does not erase the poll's other marks"
+      "expectRed": "4.11 a refused channel history does not erase the poll's other marks",
+      "cell": "4.11 a refused channel history does not erase the poll's other marks"
     },
     {
       "name": "W12 recovery stops clearing the mark: a read that lands leaves the previous marks in place, so the reader is told a source is stale that recovered long ago",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      return { stale: entry ? [...rest, entry] : rest };",
       "replace": "      return { stale: entry ? [...rest, entry] : s.stale };",
-      "expectRed": "4.9 and a read that lands clears it"
+      "expectRed": "4.9 and a read that lands clears it",
+      "cell": "4.9 and a read that lands clears it"
     },
     {
       "name": "W13 the structural guard stops allowing whitespace before `.then`, which is exactly how it went green over a live unguarded read: the console page's space name was fetched on one line and consumed on the next, so the class the cell exists to forbid could not reach it",
       "file": "implementations/web/smoke/snapshot-retention.smoke.ts",
       "find": "  const rawJson = new RegExp(`fetch${ARGS}\\\\s*\\\\)\\\\s*\\\\.json\\\\(\\\\)|fetch${ARGS}\\\\s*\\\\.then\\\\(\\\\s*\\\\(?r\\\\)?\\\\s*=>\\\\s*r\\\\.json\\\\(\\\\)`, \"g\");",
       "replace": "  const rawJson = new RegExp(`fetch${ARGS}\\\\s*\\\\)\\\\s*\\\\.json\\\\(\\\\)|fetch${ARGS}\\\\.then\\\\(\\\\s*\\\\(?r\\\\)?\\\\s*=>\\\\s*r\\\\.json\\\\(\\\\)`, \"g\");",
-      "expectRed": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line"
+      "expectRed": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line",
+      "cell": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line (the shape that hid the space-name read)"
     },
     {
       "name": "W14 the controller swallows a refused space read and applies a stand-in value, so the header loses the last good name and nothing marks the space stale (the HTTP status gate is api/http.ts's, graded in smoke:web-http-api)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "read: () => api.meta(),",
       "replace": "read: () => api.meta().catch(() => ({ space: undefined as unknown as string, pid: 0 })),",
-      "expectRed": "5.4 a 500 whose body is JSON does NOT become the space name"
+      "expectRed": "5.4 a 500 whose body is JSON does NOT become the space name",
+      "cell": "5.4 a 500 whose body is JSON does NOT become the space name"
     },
     {
       "name": "W14b a refused space read is swallowed into a stand-in value, so the tab title is drawn from a space the wire never named (the old 5.5: a refusal does not change the document title)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "read: () => api.meta(),",
       "replace": "read: () => api.meta().catch(() => ({ space: undefined as unknown as string, pid: 0 })),",
-      "expectRed": "5.5 a refused space read does not change the document title"
+      "expectRed": "5.5 a refused space read does not change the document title",
+      "cell": "5.5 a refused space read does not change the document title"
     },
     {
       "name": "W15 the bootstrap roster is applied even after the live feed has spoken, so an older snapshot read before the feed opened reverts the roster the feed just announced",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "        { name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
       "replace": "        { name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) },",
-      "expectRed": "6.1 a roster event that lands before the bootstrap roster read resolves wins"
+      "expectRed": "6.1 a roster event that lands before the bootstrap roster read resolves wins",
+      "cell": "6.1 a roster event that lands before the bootstrap roster read resolves wins"
     },
     {
       "name": "W16 a bootstrap membership refusal is applied even after the live feed delivered a snapshot, so the pill reports the mesh unreadable on the strength of one older read",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
       "replace": "      const stale: StaleMark[] = refused;",
-      "expectRed": "6.3 a live membership snapshot outranks a bootstrap refusal that lands after it"
+      "expectRed": "6.3 a live membership snapshot outranks a bootstrap refusal that lands after it",
+      "cell": "6.3 a live membership snapshot outranks a bootstrap refusal that lands after it"
     },
     {
       "name": "W17 a bootstrap membership snapshot is applied even after the live feed refused, so an older successful read erases the feed's own report that membership is unreadable",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "apply: supersededByFeed(\"membership\", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) }]),",
       "replace": "apply: (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } }) }]),",
-      "expectRed": "6.4 a live membership refusal outranks a bootstrap snapshot that lands after it"
+      "expectRed": "6.4 a live membership refusal outranks a bootstrap snapshot that lands after it",
+      "cell": "6.4 a live membership refusal outranks a bootstrap snapshot that lands after it"
     },
     {
       "name": "W18 a poll reads membership even after the feed has spoken for it, so every poll costs a broker call whose value is thrown away",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "        ...(liveApplied.has(\"membership\")\n",
       "replace": "        ...(false\n",
-      "expectRed": "6.8 after the feed has spoken for membership, a poll does NOT read it again"
+      "expectRed": "6.8 after the feed has spoken for membership, a poll does NOT read it again",
+      "cell": "6.8 after the feed has spoken for membership, a poll does NOT read it again, and the old refusal's mark is gone"
     },
     {
       "name": "W19 a refusal of a membership read the feed outranked in flight is marked stale, so the header calls membership stale beside a pill the feed keeps live",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
       "replace": "      const stale: StaleMark[] = refused;",
-      "expectRed": "6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark"
+      "expectRed": "6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark",
+      "cell": "6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark"
     },
     {
       "name": "W20 the space read stops going through the HTTP status gate, so a 500 with a JSON body is handed back as the space",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "    meta: () => get<Meta>(\"/api/meta\", \"space\"),",
       "replace": "    meta: async () => (await fetchImpl(\"/api/meta\")).json() as Promise<Meta>,",
-      "expectRed": "5.3 and it reads through the gate rather than consuming the body directly"
+      "expectRed": "5.3 and it reads through the gate rather than consuming the body directly",
+      "cell": "5.3 and it reads through the gate rather than consuming the body directly"
     },
     {
       "name": "W21 the shell stops drawing the stale line from the marks, so the poll keeps its last good snapshot and the reader is never told which half of it is old",
       "file": "implementations/web/client/src/App.tsx",
       "find": "  const view = staleView(stale);",
       "replace": "  const view = { hidden: true, text: \"\", title: \"\" };",
-      "expectRed": "3.3 the shell draws its stale line through staleView"
+      "expectRed": "3.3 the shell draws its stale line through staleView",
+      "cell": "3.3 the shell draws its stale line through staleView, which says what staleLabel says"
     },
     {
       "name": "W22 the stale line reads its marks from somewhere other than the store the controller writes, so a refusal the controller recorded is never drawn",
       "file": "implementations/web/client/src/App.tsx",
       "find": "  const stale = useStore(store, (s) => s.stale);",
       "replace": "  const stale: StaleMark[] = [];",
-      "expectRed": "3.4 and the marks it draws are the store's"
+      "expectRed": "3.4 and the marks it draws are the store's",
+      "cell": "3.4 and the marks it draws are the store's, which the controller writes"
     },
     {
       "name": "W23 the stale element is no longer hidden by the view, so a recovered poll leaves an empty marker standing in the header",
       "file": "implementations/web/client/src/App.tsx",
       "find": "<p id=\"stale\" hidden={view.hidden} title={view.title}>",
       "replace": "<p id=\"stale\" title={view.title}>",
-      "expectRed": "3.5 the shell carries the stale marker element it drives"
+      "expectRed": "3.5 the shell carries the stale marker element it drives",
+      "cell": "3.5 the shell carries the stale marker element it drives: hidden, tooltip and text all come from the view"
     },
     {
       "name": "W12b recovery stops clearing the claim: the line is hidden but its label and tooltip are left from the last stale set, so the next thing to unhide it names a source that recovered long ago",
       "file": "implementations/web/client/src/lib/shellText.ts",
       "find": "  return { hidden: !text, text, title: stale.map((s) => `${s.name}: ${s.reason}`).join(\"\\n\") };",
       "replace": "  const title = stale.map((s) => `${s.name}: ${s.reason}`).join(\"\\n\");\n  const g = globalThis as { __held?: { text: string; title: string } };\n  if (!text) return { hidden: true, text: g.__held?.text ?? \"\", title: g.__held?.title ?? \"\" };\n  g.__held = { text, title };\n  return { hidden: false, text, title };",
-      "expectRed": "3.12e and CLEARS its label rather than only hiding it"
+      "expectRed": "3.12e and CLEARS its label rather than only hiding it",
+      "cell": "3.12e and CLEARS its label rather than only hiding it"
     },
     {
       "name": "W24 the tooltip stops carrying the reasons, so the header says a source is stale and never why",
       "file": "implementations/web/client/src/lib/shellText.ts",
       "find": "  return { hidden: !text, text, title: stale.map((s) => `${s.name}: ${s.reason}`).join(\"\\n\") };",
       "replace": "  return { hidden: !text, text, title: \"\" };",
-      "expectRed": "3.12b and its tooltip carries each source's reason"
+      "expectRed": "3.12b and its tooltip carries each source's reason",
+      "cell": "3.12b and its tooltip carries each source's reason, one per line"
     },
     {
       "name": "W25 the title is drawn without asking whether a space has been read, so the tab reads `Cotal · null` until the first poll lands",
       "file": "implementations/web/client/src/lib/shellText.ts",
       "find": "  return space === null ? \"Cotal\" : `Cotal · ${space}`;",
       "replace": "  return `Cotal · ${space}`;",
-      "expectRed": "5.5c before any read lands the title is the bare name"
+      "expectRed": "5.5c before any read lands the title is the bare name",
+      "cell": "5.5c before any read lands the title is the bare name, not `Cotal · null`"
     },
     {
       "name": "W26 the shell stops setting the document title from the space, so the tab never says which space it watches",
       "file": "implementations/web/client/src/App.tsx",
       "find": "    document.title = documentTitle(space);",
       "replace": "    document.title = \"Cotal\";",
-      "expectRed": "5.10 the shell sets document.title from the store's space through documentTitle"
+      "expectRed": "5.10 the shell sets document.title from the store's space through documentTitle",
+      "cell": "5.10 the shell sets document.title from the store's space through documentTitle"
     },
     {
       "name": "W27 http.ts consumes a response body itself instead of handing it to readJson, so a 500 with a JSON body is returned as data on that route",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "readJson<T>(await fetchImpl(url), what);",
       "replace": "(await fetchImpl(url)).json() as Promise<T>;",
-      "expectRed": "3.9 http.ts consumes no response body itself"
+      "expectRed": "3.9 http.ts consumes no response body itself",
+      "cell": "3.9 http.ts consumes no response body itself (every read goes through readJson), and feed.ts and boot.ts hold no fetch"
     }
   ],
   "suite": [

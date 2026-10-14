@@ -7,84 +7,96 @@
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return { controller, stop: stopFeed };",
       "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
-      "expectRed": "1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected"
+      "expectRed": "1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected",
+      "cell": "1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected"
     },
     {
       "name": "G2 the feed is never opened at all, the older shape where a refused read left the page permanently disconnected",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "  const stopFeed = deps.openFeed(handlers);\n",
       "replace": "  const stopFeed = () => undefined;\n",
-      "expectRed": "1.4 control: the feed was opened exactly once, not re-opened per read"
+      "expectRed": "1.4 control: the feed was opened exactly once, not re-opened per read",
+      "cell": "1.4 control: the feed was opened exactly once, not re-opened per read"
     },
     {
       "name": "G3 the roster bootstrap stops deferring to the live feed, so an older /api/roster snapshot is applied after a live roster event and reverts the agent the feed just announced",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "        { name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
       "replace": "        { name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) },",
-      "expectRed": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE ROSTER after every bootstrap read has applied"
+      "expectRed": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE ROSTER after every bootstrap read has applied",
+      "cell": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE ROSTER after every bootstrap read has applied"
     },
     {
       "name": "G4 the membership bootstrap stops deferring to the live feed, so an older /api/membership snapshot replaces the membership the live feed had just established",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "apply: supersededByFeed(\"membership\", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) }]),",
       "replace": "apply: (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } }) }]),",
-      "expectRed": "3.3 the membership PILL still reports the live feed, not the older bootstrap's stale snapshot"
+      "expectRed": "3.3 the membership PILL still reports the live feed, not the older bootstrap's stale snapshot",
+      "cell": "3.3 the membership PILL still reports the live feed, not the older bootstrap's stale snapshot"
     },
     {
       "name": "G6 a live membership REFUSAL stops marking its source live, so the successful bootstrap read issued before it applies on top and the pill drops the refusal it had already reported",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "    onMembershipFailed(reason) {\n      liveApplied.add(\"membership\");\n",
       "replace": "    onMembershipFailed(reason) {\n",
-      "expectRed": "5.2 AND THE REFUSAL SURVIVES the older successful bootstrap read landing on top of it"
+      "expectRed": "5.2 AND THE REFUSAL SURVIVES the older successful bootstrap read landing on top of it",
+      "cell": "5.2 AND THE REFUSAL SURVIVES the older successful bootstrap read landing on top of it"
     },
     {
       "name": "G7 the bootstrap's own membership refusal stops deferring to the live feed, so one read that could not answer overrules a live snapshot that did and the pill calls the whole source unreadable",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
       "replace": "      const stale: StaleMark[] = refused;",
-      "expectRed": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read"
+      "expectRed": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read",
+      "cell": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read"
     },
     {
       "name": "G8 the feed's open stops marking the dashboard connected, so the pill stays at connecting after the feed is up",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "      store.set({ connected: true });\n",
       "replace": "",
-      "expectRed": "6.1 a feed open marks the dashboard connected"
+      "expectRed": "6.1 a feed open marks the dashboard connected",
+      "cell": "6.1 a feed open marks the dashboard connected"
     },
     {
       "name": "G9 a feed error stops marking the dashboard disconnected, so a dropped feed still reads connected",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "    error: () => store.set({ connected: false }),",
       "replace": "    error: () => undefined,",
-      "expectRed": "6.3 a feed error marks it disconnected"
+      "expectRed": "6.3 a feed error marks it disconnected",
+      "cell": "6.3 a feed error marks it disconnected"
     },
     {
       "name": "G10 stop() no longer closes the feed, so a stopped dashboard keeps a live connection",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "  return { controller, stop: stopFeed };",
       "replace": "  return { controller, stop: () => undefined };",
-      "expectRed": "6.5 stop() closes the feed it opened, once"
+      "expectRed": "6.5 stop() closes the feed it opened, once",
+      "cell": "6.5 stop() closes the feed it opened, once"
     },
     {
       "name": "G11 the live membership refusal is not wired to the controller, so a refusal the server announced never reaches the pill",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "    membershipFailed: controller.onMembershipFailed,",
       "replace": "    membershipFailed: () => undefined,",
-      "expectRed": "5.1 the live REFUSAL reaches the pill at once, so 5.2 has something to survive with"
+      "expectRed": "5.1 the live REFUSAL reaches the pill at once, so 5.2 has something to survive with",
+      "cell": "5.1 the live REFUSAL reaches the pill at once, so 5.2 has something to survive with"
     },
     {
       "name": "G12 a feed open stops running the bootstrap again, so a reconnect never makes up the events it missed",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "      store.set({ connected: true });\n      refresh();\n",
       "replace": "      store.set({ connected: true });\n",
-      "expectRed": "6.2 and runs the bootstrap again, because a reconnect may have missed events"
+      "expectRed": "6.2 and runs the bootstrap again, because a reconnect may have missed events",
+      "cell": "6.2 and runs the bootstrap again, because a reconnect may have missed events"
     },
     {
       "name": "G13 the boot calls refresh() without a catch again, so a defect that rejects it is an unhandled rejection that nothing on the page reports",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "    void controller.refresh().catch((err) => console.error(\"dashboard refresh failed:\", err));",
       "replace": "    void controller.refresh();",
-      "expectRed": "8.2 a refresh that rejects reaches the console"
+      "expectRed": "8.2 a refresh that rejects reaches the console",
+      "cell": "8.2 a refresh that rejects reaches the console, with the defect's own message"
     }
   ],
   "suite": [

@@ -6,21 +6,24 @@
       "file": "implementations/web/client/src/lib/aguiFrame.ts",
       "find": "        emit(lines, RESULT_PREFIX, CONT, str(e.content) ?? \"(no content)\");",
       "replace": "        emit(lines, RESULT_PREFIX, CONT, str(e.content) || \"(no content)\");",
-      "expectRed": "parity: empty strings where the default is non-empty"
+      "expectRed": "parity: empty strings where the default is non-empty",
+      "cell": "parity: empty strings where the default is non-empty"
     },
     {
       "name": "P2 the browser copy stops flushing an unterminated tool call, so a turn that was cut off mid-call is indistinguishable from one that never made it, on one surface only",
       "file": "implementations/web/client/src/lib/aguiFrame.ts",
       "find": "  for (const id of [...toolName.keys()]) {\n    emit(lines, TOOL_PREFIX, CONT, `${toolName.get(id) ?? \"?\"}(${toolArgs.get(id) ?? \"\"}) …`);\n  }",
       "replace": "",
-      "expectRed": "parity: an unterminated tool call (tail flush, the third path)"
+      "expectRed": "parity: an unterminated tool call (tail flush, the third path)",
+      "cell": "parity: an unterminated tool call (tail flush, the third path)"
     },
     {
       "name": "P3 the node renderer alone changes its continuation prefix, so the two surfaces indent multi-line payload differently: a one-character edit on one side that no cell in either package can see",
       "file": "extensions/connector-core/src/agui-render.ts",
       "find": "const CONT = \"  · \";",
       "replace": "const CONT = \"  > \";",
-      "expectRed": "parity: reasoning, which uses a different continuation prefix from text"
+      "expectRed": "parity: reasoning, which uses a different continuation prefix from text",
+      "cell": "parity: reasoning, which uses a different continuation prefix from text"
     }
   ],
   "suite": [

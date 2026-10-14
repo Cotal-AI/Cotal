@@ -1,8 +1,4 @@
 {
-  "bin/smoke/fixtures/agui-render-parity.mutations.json": {
-    "sha256": "f16aebbd95796a88dd1ead2bdeb282810123203d004eb86f3bd411675ffec04a",
-    "refusal": "mutation \"P1 the browser copy goes back to falsiness on the tool result, which is the divergence this pair actually shipped with: an empty result printed (no content) in the dashboard and nothing in the console, for the same frame\" is missing \"cell\""
-  },
   "bin/smoke/fixtures/mutation-fixtures.mutations.json": {
     "sha256": "124fea3753d0ce6a17aa3bda465f9ccedbc7bd638ca76212b194695419d6f1f1",
     "refusal": "mutation \"an anchor goes dead - the source moved and the find no longer matches\" targets scripts/mutations/restore-mtime.json, which none of [bin/smoke/mutation-fixtures.smoke.ts] imports by source path, reaches through a declared assembled tree, nor reaches through a declared subprocess entrypoint. A by-name import resolves that package to dist. Use a suite in scripts/mutations that reaches into ../src, declare the copied source tree in \"assembles\", declare the spawned repo entrypoint in \"executes\" with the target package built by the command, or record the mutation as unkillable with its reason."
@@ -607,10 +603,6 @@
     "sha256": "1941ffefb75a18d7abc2118fc1cbd57cb45400dff055c137abce0fc29a4a91f0",
     "refusal": "mutation \"the refusal returns to one rail-blind sentence, with the question and the --local remedy on every rail\" is missing \"cell\""
   },
-  "implementations/web/smoke/fixtures/agui-frame-dispatch.mutations.json": {
-    "sha256": "a7adfd0ba36dba3f02cd87ebdf744c9cf54cee8ccb923fba29885e3bfc23c28d",
-    "refusal": "mutation \"D1 the own-property guard is dropped, so a part whose kind is an inherited method name resolves Object.prototype.toString as its renderer and the body draws [object Window] with no kind named and no failure reported\" is missing \"cell\""
-  },
   "implementations/web/smoke/fixtures/body-cap.mutations.json": {
     "sha256": "19a44ba7e3f4c47d4ef3aee56986614610a8b8436b84b7a10cfb8b6c0d92bfb5",
     "refusal": "mutation \"C1 the streaming count stops refusing, so the cap holds only for a caller that honestly declares an oversized body and stops nothing for one that declares nothing at all\" is missing \"cell\""
@@ -623,29 +615,13 @@
     "sha256": "5bb3479c848fe2c5dc8a8f4d4dc48248254b2a610b01201a1a696a11ae699d20",
     "refusal": "mutation \"A1 the history route stops asking whether the name is the one the wire uses, so a bidi-altered name reads the channel it aliases onto and the dashboard reports back the name that was typed\" is missing \"cell\""
   },
-  "implementations/web/smoke/fixtures/channel-authority.mutations.json": {
-    "sha256": "786a66e3739f5038b577be8b87fc2c94290e8707bd4c224e78c899adc11d716b",
-    "refusal": "mutation \"A1 the graph page's activity source stops handing its read to the backfill, which is the link between the page's own boot and the attribution loop the rest of this suite drives: the loop would still be correct and would no longer be reached by anything a browser does\" is missing \"cell\""
-  },
   "implementations/web/smoke/fixtures/echo-escaping.mutations.json": {
     "sha256": "858cd78f1c0b097c9bc119dd481adff6100aa90603174966197666aa65ecc50d",
     "refusal": "mutation \"E1 the quoter stops escaping anything and becomes the bare `JSON.stringify` that shipped, so DEL, the C1 controls, the bidi marks and the line/paragraph separators go back to arriving raw in the value an operator reads\" is missing \"cell\""
   },
-  "implementations/web/smoke/fixtures/event-order.mutations.json": {
-    "sha256": "d64eec7afb91e62ac98c1c75de60b5f5f092cc4e116ee66f51ddd1f3c3bb784d",
-    "refusal": "mutation \"O1 the baseline is taken from the batch's first row instead of its minimum, so a history batch sorted by timestamp rather than by seq baselines on whichever frame the producer stamped earliest and manufactures a gap beneath it\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/graph-boot.mutations.json": {
-    "sha256": "4b65c5484f8737ef38b17295179772ad3a53583c6fd3a3df7a156e4e7df6580a",
-    "refusal": "mutation \"G1 the feed goes back to being chained behind the bootstrap, so it is guaranteed to RUN but not to run SOON and the pill reads disconnected for the whole load window on a slow link\" is missing \"cell\""
-  },
   "implementations/web/smoke/fixtures/history-limit.mutations.json": {
     "sha256": "28d69d5ccaa70d2a43fea08078820a1951c6695e331f00307a93cc767aed3726",
     "refusal": "mutation \"H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/snapshot-retention.mutations.json": {
-    "sha256": "f99685c00f7c5e7347da9524b6de7233102a04d0fa7a88ea59dedecf8dac22f0",
-    "refusal": "mutation \"W1 the state-retention is reverted: a refused read applies anyway, with an empty value standing in for the snapshot it could not fetch, which is the wipe the issue reports written as a fallback\" is missing \"cell\""
   },
   "implementations/web/smoke/fixtures/web-events-filter.mutations.json": {
     "sha256": "294cebdc274e69b63d33ed9982db4f6f3baea12e8a74cbe302d7d2074934ce3f",

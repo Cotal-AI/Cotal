@@ -10,91 +10,104 @@
       "file": "implementations/web/client/src/api/http.ts",
       "find": "    meta: () => get<Meta>(\"/api/meta\", \"space\"),",
       "replace": "    meta: async () => (await fetchImpl(\"/api/meta\")).json() as Promise<Meta>,",
-      "expectRed": "1.1a meta REJECTS a 500 rather than resolving with its body as data"
+      "expectRed": "1.1a meta REJECTS a 500 rather than resolving with its body as data",
+      "cell": "1.1a meta REJECTS a 500 rather than resolving with its body as data"
     },
     {
       "name": "H2 the roster read drops the gate",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "    roster: () => get<RosterEntry[]>(\"/api/roster\", \"peers\"),",
       "replace": "    roster: async () => (await fetchImpl(\"/api/roster\")).json() as Promise<RosterEntry[]>,",
-      "expectRed": "1.2a roster REJECTS a 500 rather than resolving with its body as data"
+      "expectRed": "1.2a roster REJECTS a 500 rather than resolving with its body as data",
+      "cell": "1.2a roster REJECTS a 500 rather than resolving with its body as data"
     },
     {
       "name": "H3 the channel history read (the one behind the open channel) drops the gate",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "    history: (channel, limit) =>\n      get<CotalMessage[]>(`/api/channels/${encodeURIComponent(channel)}/history?limit=${limit}`, `#${channel} history`),",
       "replace": "    history: async (channel, limit) =>\n      (await fetchImpl(`/api/channels/${encodeURIComponent(channel)}/history?limit=${limit}`)).json() as Promise<CotalMessage[]>,",
-      "expectRed": "1.6a history REJECTS a 500 rather than resolving with its body as data"
+      "expectRed": "1.6a history REJECTS a 500 rather than resolving with its body as data",
+      "cell": "1.6a history REJECTS a 500 rather than resolving with its body as data"
     },
     {
       "name": "H4 the membership read drops the gate",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "    membership: () => get<MembershipSnapshot>(\"/api/membership\", \"membership\"),",
       "replace": "    membership: async () => (await fetchImpl(\"/api/membership\")).json() as Promise<MembershipSnapshot>,",
-      "expectRed": "1.7a membership REJECTS a 500 rather than resolving with its body as data"
+      "expectRed": "1.7a membership REJECTS a 500 rather than resolving with its body as data",
+      "cell": "1.7a membership REJECTS a 500 rather than resolving with its body as data"
     },
     {
       "name": "H5 the channel delete (the one POST) drops the gate, so a refused delete resolves as though it purged",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "      return readJson<{ ok: true; channel: string; purged: number }>(res, `delete #${channel}`);",
       "replace": "      return res.json() as Promise<{ ok: true; channel: string; purged: number }>;",
-      "expectRed": "1.8a deleteChannel REJECTS a 500 rather than resolving with its body as data"
+      "expectRed": "1.8a deleteChannel REJECTS a 500 rather than resolving with its body as data",
+      "cell": "1.8a deleteChannel REJECTS a 500 rather than resolving with its body as data"
     },
     {
       "name": "H6 the direct-messages read names itself something else, so its refusal no longer says which read failed",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "`/api/dms?limit=${limit}`, \"direct messages\")",
       "replace": "`/api/dms?limit=${limit}`, \"dms\")",
-      "expectRed": "1.5b dms names the read it refused"
+      "expectRed": "1.5b dms names the read it refused",
+      "cell": "1.5b dms names the read it refused"
     },
     {
       "name": "H7 the history channel is no longer encoded, so a name with a slash, a space or a hash changes the route it asks for",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "/api/channels/${encodeURIComponent(channel)}/history?limit=${limit}`, `#${channel} history`)",
       "replace": "/api/channels/${channel}/history?limit=${limit}`, `#${channel} history`)",
-      "expectRed": "4.3 history ENCODES the channel with encodeURIComponent"
+      "expectRed": "4.3 history ENCODES the channel with encodeURIComponent",
+      "cell": "4.3 history ENCODES the channel with encodeURIComponent, so a name with a slash, a space or a hash cannot change the route"
     },
     {
       "name": "H8 the activity read stops forwarding the limit the controller asked for",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "`/api/activity?limit=${limit}`",
       "replace": "`/api/activity?limit=200`",
-      "expectRed": "4.1 the reads hit their own routes, with the limits the controller asked for"
+      "expectRed": "4.1 the reads hit their own routes, with the limits the controller asked for",
+      "cell": "4.1 the reads hit their own routes, with the limits the controller asked for"
     },
     {
       "name": "H9 the delete is sent as a PUT, so the server's POST route is never reached",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "        method: \"POST\",",
       "replace": "        method: \"PUT\",",
-      "expectRed": "4.5 deleteChannel is a POST to /api/channel/delete"
+      "expectRed": "4.5 deleteChannel is a POST to /api/channel/delete",
+      "cell": "4.5 deleteChannel is a POST to /api/channel/delete"
     },
     {
       "name": "H10 the delete stops declaring a JSON body, so the server reads no channel out of it",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "        headers: { \"content-type\": \"application/json\" },",
       "replace": "        headers: {},",
-      "expectRed": "4.6 it declares a JSON body"
+      "expectRed": "4.6 it declares a JSON body",
+      "cell": "4.6 it declares a JSON body"
     },
     {
       "name": "H11 the delete body is the bare channel name rather than {\"channel\": ...}",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "        body: JSON.stringify({ channel }),",
       "replace": "        body: channel,",
-      "expectRed": "4.7 and the body is exactly"
+      "expectRed": "4.7 and the body is exactly",
+      "cell": "4.7 and the body is exactly {\"channel\":...}"
     },
     {
       "name": "H12 the default fetch is captured when httpApi is built, so a page that swaps its fetch afterwards is not the one that answers",
       "file": "implementations/web/client/src/api/http.ts",
       "find": "(input, init) => globalThis.fetch(input, init)",
       "replace": "globalThis.fetch",
-      "expectRed": "5.1 with no fetch passed, a request goes through the global fetch as it is when the request is made"
+      "expectRed": "5.1 with no fetch passed, a request goes through the global fetch as it is when the request is made",
+      "cell": "5.1 with no fetch passed, a request goes through the global fetch as it is when the request is made"
     },
     {
       "name": "H13 the shared status gate is dropped from readJson, so a 500 body parses as data on every route at once",
       "file": "implementations/web/client/src/lib/snapshot.ts",
       "find": "  if (!res.ok) {",
       "replace": "  if (false) {",
-      "expectRed": "1.1a meta REJECTS a 500 rather than resolving with its body as data"
+      "expectRed": "1.1a meta REJECTS a 500 rather than resolving with its body as data",
+      "cell": "1.1a meta REJECTS a 500 rather than resolving with its body as data"
     }
   ],
   "suite": [

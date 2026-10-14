@@ -6,35 +6,40 @@
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "apply: (p: ActivityPage) => { batch = p.entries; activityPage = p; } },",
       "replace": "apply: (p: ActivityPage) => { activityPage = p; } },",
-      "expectRed": "the activity source's apply hands the SERVER'S entries to the backfill the rows below drive"
+      "expectRed": "the activity source's apply hands the SERVER'S entries to the backfill the rows below drive",
+      "cell": "the activity source's apply hands the SERVER'S entries to the backfill the rows below drive"
     },
     {
       "name": "A2 the live ingress overwrites the payload's channel only when the server sent one, which fails open on DMs and anycast: there is no authoritative channel there, so the publisher's forged one survives into routing",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "    msg.channel = e.channel;\n",
       "replace": "    if (e.channel) msg.channel = e.channel;\n",
-      "expectRed": "controller, live SSE feed (ANYCAST): a FORGED channel on an ANYCAST message is CLEARED"
+      "expectRed": "controller, live SSE feed (ANYCAST): a FORGED channel on an ANYCAST message is CLEARED",
+      "cell": "controller, live SSE feed (ANYCAST): a FORGED channel on an ANYCAST message is CLEARED"
     },
     {
       "name": "A3 the backfill overwrites the payload's channel only when the server tagged the entry with one, so a DM row in the activity page keeps the channel its sender claimed",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      for (const e of batch) if (e?.msg) (e.msg as Wire).channel = (e as { channel?: string }).channel;",
       "replace": "      for (const e of batch) if (e?.msg && (e as { channel?: string }).channel) (e.msg as Wire).channel = (e as { channel?: string }).channel;",
-      "expectRed": "controller, /api/activity backfill: a FORGED channel is CLEARED when nothing authoritative exists"
+      "expectRed": "controller, /api/activity backfill: a FORGED channel is CLEARED when nothing authoritative exists",
+      "cell": "controller, /api/activity backfill: a FORGED channel is CLEARED when nothing authoritative exists"
     },
     {
       "name": "A4 a deleted channel's rows stay in the activity feed, so the feed keeps drawing messages from a channel the steward just purged",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "        activity: s.activity.filter((e) => (e.msg as Wire).channel !== name),\n",
       "replace": "",
-      "expectRed": "and its rows leave the activity feed"
+      "expectRed": "and its rows leave the activity feed",
+      "cell": "and its rows leave the activity feed"
     },
     {
       "name": "A5 deleting the open channel leaves its view open, so the reader keeps looking at a transcript that no longer exists on the server",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      if (store.get().open?.channel === name) close();\n",
       "replace": "",
-      "expectRed": "and the view closes when it was the open one"
+      "expectRed": "and the view closes when it was the open one",
+      "cell": "and the view closes when it was the open one"
     }
   ],
   "suite": [

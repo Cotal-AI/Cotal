@@ -11,6 +11,7 @@
       "find": "          if (p) found.set(p.name, p.root);",
       "replace": "          void p;",
       "expectRed": "bundle-licenses.json names react",
+      "cell": "bundle-licenses.json names react",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
@@ -19,6 +20,7 @@
       "find": ".sort(([a], [b]) => a.localeCompare(b))",
       "replace": ".sort(([a], [b]) => b.localeCompare(a))",
       "expectRed": "bundle-licenses.json is sorted by package",
+      "cell": "bundle-licenses.json is sorted by package",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
@@ -27,6 +29,7 @@
       "find": "assetsDir: \"assets\",",
       "replace": "assetsDir: \"static\",",
       "expectRed": "every asset sits under /assets/",
+      "cell": "every asset sits under /assets/",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]

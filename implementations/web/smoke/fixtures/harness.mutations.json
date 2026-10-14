@@ -10,21 +10,24 @@
       "file": "implementations/web/client/src/lib/harness.ts",
       "find": "    label: \"Claude Code\",",
       "replace": "    label: \"\",",
-      "expectRed": "\"claude\" branding is complete (label, color, glyph, svg)"
+      "expectRed": "\"claude\" branding is complete (label, color, glyph, svg)",
+      "cell": "\"claude\" branding is complete (label, color, glyph, svg)"
     },
     {
       "name": "the pi entry loses its colour, so the canvas graph draws that node with no usable colour",
       "file": "implementations/web/client/src/lib/harness.ts",
       "find": "    color: \"#7dd3fc\",",
       "replace": "    color: \"sky\",",
-      "expectRed": "\"pi\" color is a hex colour the canvas can use directly"
+      "expectRed": "\"pi\" color is a hex colour the canvas can use directly",
+      "cell": "\"pi\" color is a hex colour the canvas can use directly"
     },
     {
       "name": "the codex entry is dropped, so an official connector ships with no dashboard branding",
       "file": "implementations/web/client/src/lib/harness.ts",
       "find": "  codex: {\n    label: \"Codex\",",
       "replace": "  codexx: {\n    label: \"Codex\",",
-      "expectRed": "HARNESS has exactly the six branded connectors"
+      "expectRed": "HARNESS has exactly the six branded connectors",
+      "cell": "HARNESS has exactly the six branded connectors"
     }
   ]
 }

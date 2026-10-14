@@ -10,28 +10,32 @@
       "file": "implementations/web/src/web.ts",
       "find": "if (type) routes.set(",
       "replace": "routes.set(",
-      "expectRed": "a file type the client does not use is not served"
+      "expectRed": "a file type the client does not use is not served",
+      "cell": "a file type the client does not use is not served"
     },
     {
       "name": "a hashed asset is no longer cached as immutable",
       "file": "implementations/web/src/web.ts",
       "find": "immutable: true });",
       "replace": "immutable: false });",
-      "expectRed": "a hashed script is served as JavaScript and cached as immutable"
+      "expectRed": "a hashed script is served as JavaScript and cached as immutable",
+      "cell": "a hashed script is served as JavaScript and cached as immutable"
     },
     {
       "name": "the old /graph link stops opening the app",
       "file": "implementations/web/src/web.ts",
       "find": "routes.set(\"/graph\", page);",
       "replace": "",
-      "expectRed": "/graph serves the same page, so old links still open the app"
+      "expectRed": "/graph serves the same page, so old links still open the app",
+      "cell": "/graph serves the same page, so old links still open the app"
     },
     {
       "name": "a missing build stops answering 503",
       "file": "implementations/web/src/web.ts",
       "find": "if (routes.size === 0 && (path === \"/\" || path === \"/graph\")) return { status: 503, body: { error: CLIENT_NOT_BUILT } };",
       "replace": "",
-      "expectRed": "an empty map gives 503 with the not-built message for / and /graph"
+      "expectRed": "an empty map gives 503 with the not-built message for / and /graph",
+      "cell": "an empty map gives 503 with the not-built message for / and /graph"
     }
   ]
 }

@@ -11,6 +11,7 @@
       "find": "  \".css\": \"text/css; charset=utf-8\",\n",
       "replace": "",
       "expectRed": "every file the built page references is served",
+      "cell": "every file the built page references is served",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]
