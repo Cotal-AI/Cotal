@@ -1,0 +1,2 @@
+# The theme choice survives blocked browser storage and reaches the root element.
+smoke:web-client-theme

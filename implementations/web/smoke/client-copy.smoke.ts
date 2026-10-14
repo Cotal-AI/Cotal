@@ -91,4 +91,11 @@ const unknown = [...new Set([...app.matchAll(/var\((--[\w-]+)/g)].map((m) => m[1
 ok("every var() in app.css names a token", unknown.length === 0, unknown);
 const literals = app.split("\n").filter((l) => !/mask-image/.test(l) && /#[0-9a-f]{3,8}\b|\brgba?\(/i.test(l));
 ok("app.css holds no colour literal, only tokens", literals.length === 0, literals);
+const scoped = app.split("\n").filter((l) => /(^|[\s,>+~])\.v3(?![\w-])/.test(l));
+ok("app.css has no .v3 scope: no element has to carry a root class", scoped.length === 0, scoped);
+
+const touchesBrowser = /\b(window|document|localStorage|sessionStorage)\b|\bfetch\s*\(|new\s+EventSource\s*\(/;
+const impure = lines.filter((l) => /^(lib|state)\//.test(l.rel) && l.rel !== "lib/md.ts" && isCode(l.text) && touchesBrowser.test(l.text));
+ok("lib/ and state/ stay free of window, document, storage, fetch and EventSource, except lib/md.ts",
+  impure.length === 0, impure.map((l) => `${l.rel}:${l.line}: ${l.text.trim()}`));
 console.log(`client-copy: ${n} checks passed`);

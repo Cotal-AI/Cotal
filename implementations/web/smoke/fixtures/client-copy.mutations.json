@@ -15,15 +15,15 @@
     {
       "name": "the space name gains positive letter-spacing",
       "file": "implementations/web/client/src/styles/app.css",
-      "find": ".v3 .ui-space { font-size: 16px; }",
-      "replace": ".v3 .ui-space { font-size: 16px; letter-spacing: 0.02em; }",
+      "find": ".ui-space { font-size: 16px; }",
+      "replace": ".ui-space { font-size: 16px; letter-spacing: 0.02em; }",
       "expectRed": "no letter-spacing above 0"
     },
     {
       "name": "the base font becomes Geist",
       "file": "implementations/web/client/src/styles/app.css",
-      "find": ".v3 { color: var(--ink); font: 400 14px/1.5 var(--body); }",
-      "replace": ".v3 { color: var(--ink); font: 400 14px/1.5 Geist, sans-serif; }",
+      "find": "font: 400 14px/1.5 var(--body); font-feature-settings",
+      "replace": "font: 400 14px/1.5 Geist, sans-serif; font-feature-settings",
       "expectRed": "no Geist or Work Sans"
     },
     {
@@ -63,7 +63,7 @@
     },
     {
       "name": "a component calls fetch outside api/",
-      "file": "implementations/web/client/src/lib/theme.ts",
+      "file": "implementations/web/client/src/theme.ts",
       "find": "const KEY = \"cotal.theme\";",
       "replace": "const KEY = \"cotal.theme\"; void fetch(\"/x\");",
       "expectRed": "no fetch( or new EventSource( outside api/"
@@ -81,6 +81,20 @@
       "find": "kind)} \\u2014 no renderer",
       "replace": "kind)} - no renderer",
       "expectRed": "the pinned fallback string is still in lib/parts.ts, once"
+    },
+    {
+      "name": "a rule is scoped under .v3 again",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-me { font: 600 11px/1 var(--body); }",
+      "replace": ".v3 .ui-me { font: 600 11px/1 var(--body); }",
+      "expectRed": "app.css has no .v3 scope"
+    },
+    {
+      "name": "a lib module reaches for document",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "import type { CotalMessage, RosterEntry } from \"../api/types.js\";",
+      "replace": "import type { CotalMessage, RosterEntry } from \"../api/types.js\";\nvoid document;",
+      "expectRed": "lib/ and state/ stay free of window, document, storage, fetch and EventSource"
     }
   ]
 }

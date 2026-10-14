@@ -1,5 +1,7 @@
 /* Product rules for the dashboard, transcribed from the approved mock (design/web/mocks/web.html,
-   the ui-* and v3-* rules). Colours come from tokens.css. The app root carries the class v3.
+   the ui-* and v3-* rules). Colours come from tokens.css. The mock scoped its round 3 rules under a
+   v3 class on the frame; here that prefix is dropped and each rule sits where the mock put it, so the
+   later rule wins a tie as in the mock. The v3 root rule is the body rule below.
    Type rules: no uppercase, no positive letter-spacing, mono only for code, commands, ids and model names. */
 
 * { box-sizing: border-box; }
@@ -7,13 +9,14 @@ html { scroll-behavior: smooth; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 400 14px/1.5 var(--body); font-feature-settings: "cv11", "ss01"; font-optical-sizing: auto; -webkit-font-smoothing: antialiased; }
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
 
-.v3 { color: var(--ink); font: 400 14px/1.5 var(--body); }
-.ui-ic { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* Hugeicons: Stroke Rounded at 1.5. The mock's round 3 blanket size (18) beat the earlier per-context
+   sizes of the space chevron, the section button and the rail button, so those sit here as 18 and 22. */
+.ui-ic { width: 18px; height: 18px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 .ui-mono { font-family: var(--mono); }
-.v3 code { font: 500 12.5px/1 var(--mono); background: var(--code); padding: 2px 5px; border-radius: 5px; }
-.v3 pre { margin: 6px 0 2px; font: 400 12.5px/1.6 var(--mono); background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
-.v3 pre code { background: none; padding: 0; }
-.v3 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+code { font: 500 12.5px/1 var(--mono); background: var(--code); padding: 2px 5px; border-radius: 5px; }
+pre { margin: 6px 0 2px; font: 400 12.5px/1.6 var(--mono); background: var(--code); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 /* ---------- rail ---------- */
 .ui-rail { background: var(--side); color: var(--rail-ink); display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 0; border-right: 1px solid var(--side-line); min-height: 0; }
 .ui-rail-mark { width: 26px; height: 26px; margin-bottom: 12px; }
@@ -21,7 +24,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .ui-rail-btn { width: 36px; height: 36px; border-radius: 9px; display: grid; place-items: center; position: relative; }
 .ui-rail-btn:hover { background: var(--side-hover); }
 .ui-rail-btn[aria-current="page"] { background: var(--side-sel); color: var(--side-ink); }
-.ui-rail-btn .ui-ic { width: 18px; height: 18px; }
+.ui-rail-btn .ui-ic { width: 22px; height: 22px; }
 .ui-rail-dot { position: absolute; top: 6px; right: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--gold); box-shadow: 0 0 0 2px var(--side); }
 .ui-rail-count { position: absolute; top: 2px; right: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; background: var(--gold); color: var(--on-gold); font: 600 10px/16px var(--mono); box-shadow: 0 0 0 2px var(--side); }
 .ui-grow { flex: 1; }
@@ -31,7 +34,7 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .ui-side-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 14px 12px 6px 16px; }
 .ui-space { display: flex; align-items: center; gap: 6px; font: 600 17px/1 var(--body); letter-spacing: -0.01em; padding: 5px 6px; margin-left: -6px; border-radius: 7px; }
 .ui-space:hover { background: var(--side-hover); }
-.ui-space .ui-ic { width: 14px; height: 14px; color: var(--side-dim); }
+.ui-space .ui-ic { color: var(--side-dim); }
 .ui-head-tools { display: flex; gap: 2px; color: var(--side-dim); }
 .ui-head-tools button { width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center; }
 .ui-head-tools button:hover { background: var(--side-hover); }
@@ -54,7 +57,6 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .ui-you { font: 500 10.5px/1 var(--mono); padding: 2px 5px; border-radius: 4px; background: var(--side-hover); color: var(--side-dim); }
 .ui-sec { display: flex; align-items: center; justify-content: space-between; padding: 16px 8px 4px; font: 500 12.5px/1 var(--body); color: var(--side-dim); }
 .ui-sec button { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; }
-.ui-sec .ui-ic { width: 14px; height: 14px; }
 .ui-host { display: flex; align-items: center; gap: 6px; padding: 8px 8px 2px; font: 500 11px/1 var(--mono); color: var(--side-dim); }
 .ui-host .ui-ic { width: 12px; height: 12px; }
 .ui-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 6px 0 4px; }
@@ -266,26 +268,24 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 
 .ui-cnote { font-size: 12px; line-height: 1.4; color: var(--dim); padding: 0 6px; margin-top: -4px; height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ui-cmd button { min-width: 64px; justify-content: center; }
-/* ---------- type rules (.v3), on top of the shared parts ---------- */
-.v3 .ui-row-n, .v3 .ui-tile span, .v3 .ui-hz, .v3 .ui-mh time, .v3 .ui-host, .v3 .ui-att, .v3 .ui-you, .v3 .ui-live, .v3 .ui-mpill,
-.v3 .ui-badge-gold, .v3 .ui-badge-blue, .v3 .ui-rail-count, .v3 .ui-sline small, .v3 .ui-chrow span:last-child, .v3 .ui-mini time,
-.v3 .ui-beat, .v3 .ui-route, .v3 .ui-chip, .v3 .ui-members, .v3 .ui-evt time, .v3 .ui-cmd button {
+/* ---------- type rules, on top of the shared parts ---------- */
+.ui-row-n, .ui-tile span, .ui-hz, .ui-mh time, .ui-host, .ui-att, .ui-you, .ui-live, .ui-mpill,
+.ui-badge-gold, .ui-badge-blue, .ui-rail-count, .ui-sline small, .ui-chrow span:last-child, .ui-mini time,
+.ui-beat, .ui-route, .ui-chip, .ui-members, .ui-evt time, .ui-cmd button {
   font-family: var(--body); font-variant-numeric: tabular-nums; letter-spacing: 0; }
-.v3 .ui-chip { font-size: 12px; font-weight: 500; padding: 4px 8px; }
-.v3 .ui-hz { font-size: 11.5px; font-weight: 500; padding: 2px 6px; }
-.v3 .ui-mh time, .v3 .ui-evt time, .v3 .ui-mini time { font-size: 12px; font-weight: 400; }
-.v3 .ui-row-n, .v3 .ui-live, .v3 .ui-mpill, .v3 .ui-sline small { font-size: 12px; font-weight: 400; }
-.v3 .ui-badge-gold, .v3 .ui-badge-blue { font-size: 11.5px; font-weight: 600; padding: 2px 7px; }
-.v3 .ui-route { font-size: 12px; }
-.v3 .ui-sline small { padding-left: 24px; }
-.v3 .ui-num, .ui-num { font-variant-numeric: tabular-nums; }
-.v3 .ui-space { font-size: 16px; }
-/* Hugeicons: Stroke Rounded at 1.5, sizes 22 rail, 18 sidebar and header, 16 inline status */
-.v3 .ui-ic { width: 18px; height: 18px; stroke-width: 1.5; }
-.v3 .ui-rail-btn .ui-ic { width: 22px; height: 22px; }
-.v3 .ui-ic.ui-ic16, .v3 .ui-pick .ui-ic, .v3 .ui-host .ui-ic { width: 16px; height: 16px; }
-.v3 .ui-cmd button .ui-ic { width: 14px; height: 14px; }
-.v3 .ui-rail-btn { width: 38px; height: 38px; }
+.ui-chip { font-size: 12px; font-weight: 500; padding: 4px 8px; }
+.ui-hz { font-size: 11.5px; font-weight: 500; padding: 2px 6px; }
+.ui-mh time, .ui-evt time, .ui-mini time { font-size: 12px; font-weight: 400; }
+.ui-row-n, .ui-live, .ui-mpill, .ui-sline small { font-size: 12px; font-weight: 400; }
+.ui-badge-gold, .ui-badge-blue { font-size: 11.5px; font-weight: 600; padding: 2px 7px; }
+.ui-route { font-size: 12px; }
+.ui-sline small { padding-left: 24px; }
+.ui-num { font-variant-numeric: tabular-nums; }
+.ui-space { font-size: 16px; }
+/* Hugeicons sizes: 22 rail, 18 sidebar and header (the .ui-ic rule above), 16 inline status */
+.ui-ic.ui-ic16, .ui-pick .ui-ic, .ui-host .ui-ic { width: 16px; height: 16px; }
+.ui-cmd button .ui-ic { width: 14px; height: 14px; }
+.ui-rail-btn { width: 38px; height: 38px; }
 
 /* status colours: shape (the icon) plus colour, never colour alone */
 .v3-s-waiting { color: var(--gold-ink); } .v3-s-working { color: var(--any-ink); }
@@ -333,10 +333,10 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .v3-mrow .v3-mname span { color: var(--dim); font-size: 12.5px; margin-left: 6px; }
 .v3-mrow .ui-ic { width: 16px; height: 16px; }
 .v3-arow > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; }
-.v3 .ui-sline > .v3-spill { flex: none; }
-.v3 .ui-cmd { padding-left: 8px; }
-.v3 .ui-mpill { font-size: 12px; }
-.v3 .ui-me { font: 600 11px/1 var(--body); }
+.ui-sline > .v3-spill { flex: none; }
+.ui-cmd { padding-left: 8px; }
+.ui-mpill { font-size: 12px; }
+.ui-me { font: 600 11px/1 var(--body); }
 /* sent receipt on the operator's own message (auth mesh) */
 .ui-sent { display: inline-flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 12px; color: var(--dim); }
 /* partial banner */
@@ -344,8 +344,8 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .s-banner .ui-ic { color: var(--gold-ink); margin-top: 1px; }
 .s-banner b { font: 600 12.5px/1.4 var(--mono); }
 .s-banner span { color: var(--dim); }
-.v3 .ui-stale b { font: 600 12px/1.4 var(--mono); }
-.v3 .ui-stale .ui-ic { width: 16px; height: 16px; }
+.ui-stale b { font: 600 12px/1.4 var(--mono); }
+.ui-stale .ui-ic { width: 16px; height: 16px; }
 .s-lastseen .v3-arow { opacity: .62; }
 /* phone bottom tab bar */
 .v3-tabbar { height: 60px; flex: none; display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); background: var(--bg); }
@@ -353,4 +353,4 @@ button { font: inherit; color: inherit; background: none; border: 0; padding: 0;
 .v3-tabbar button .ui-ic { width: 22px; height: 22px; }
 .v3-tabbar button[aria-current="page"] { color: var(--ink); font-weight: 500; }
 .v3-tabbar .ui-badge-gold { position: absolute; top: 6px; left: calc(50% + 6px); font-size: 10.5px; padding: 1px 5px; }
-.v3 .ui-dialog { height: 300px; }
+.ui-dialog { height: 300px; }
