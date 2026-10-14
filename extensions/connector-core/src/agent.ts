@@ -2659,6 +2659,15 @@ export class MeshAgent extends EventEmitter {
     await this.ep.setStatus(status);
   }
 
+  /** Change only the activity line. Routing it through `setStatus` with the current status read the
+   *  status before queued writes settled, then wrote that stale value back over them. */
+  async setActivity(activity: string): Promise<void> {
+    await this.inOrder(async () => {
+      await this.requireConnected();
+      await this.ep.setActivity(activity);
+    });
+  }
+
   /** Relay a harness-reported condition into presence, or clear it. */
   async setCondition(condition: PresenceCondition | null): Promise<void> {
     await this.inOrder(() => this.ep.setCondition(condition));

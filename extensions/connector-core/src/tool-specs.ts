@@ -1144,7 +1144,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       async run(agent, _config, { status, attention, activity }: { status?: PresenceStatus; attention?: "open" | "dnd" | "focus"; activity?: string }) {
         try {
           if (status) await agent.setStatus(status, activity);
-          else if (activity !== undefined) await agent.setStatus(agent.status, activity);
+          else if (activity !== undefined) await agent.setActivity(activity);
           if (attention) await agent.setAttention(attention);
           const lines: string[] = [];
           if (status || activity !== undefined)

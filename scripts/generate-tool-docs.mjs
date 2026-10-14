@@ -70,7 +70,8 @@ const ANNOTATIONS = {
   cotal_status: {
     effect: "updates your own presence / attention",
     availability: "always",
-    notes: "With no arguments it just reports the current values.",
+    notes:
+      "With no arguments it just reports the current values. An activity with no status changes only the activity line; your status and any condition stay as they are.",
   },
   cotal_channel_info: {
     effect: "read-only",

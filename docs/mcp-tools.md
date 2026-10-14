@@ -160,7 +160,7 @@ Set your presence status (what you're doing, so peers can see) and/or your atten
 
 - **Side-effect:** updates your own presence / attention.
 - **Available:** always.
-- With no arguments it just reports the current values.
+- With no arguments it just reports the current values. An activity with no status changes only the activity line; your status and any condition stay as they are.
 
 | Argument | Type | Required | Meaning |
 |---|---|---|---|
