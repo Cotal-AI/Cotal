@@ -24,9 +24,10 @@
  * and the dashboard controller (`client/src/state/controller.ts`), which reads every source through
  * it, is built over a fake `Api` and driven through its methods (§3.6, §4, §5). Nothing is restated.
  * The boot and the HTTP gate are driven the same way: `startDashboard` (`state/boot.ts`) and
- * `httpApi` (`api/http.ts`) are imported, so §3.7, §3.9, §3.11 and §5.3 read what ships. The
- * structural cells on the old pages stay on those pages until the shell replaces them: Task 8 re-homes
- * §3.3 to §3.5.
+ * `httpApi` (`api/http.ts`) are imported, so §3.7, §3.9, §3.11 and §5.3 read what ships. What the
+ * stale line and the document title SAY is driven (`staleView` and `documentTitle` in
+ * `client/src/lib/shellText.ts`, §3.12 and §5.5 to §5.5d); that the shell draws them is read off
+ * `client/src/App.tsx` (§3.3 to §3.5, §5.10).
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -38,8 +39,8 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LEGACY_PAGE_FILES } from "../src/web.js";
-import { readJson, refreshAll, staleLabel, type Source } from "../client/src/lib/snapshot.js";
+import { readJson, refreshAll, staleLabel, type Source, type StaleMark } from "../client/src/lib/snapshot.js";
+import { documentTitle, staleView } from "../client/src/lib/shellText.js";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { httpApi } from "../client/src/api/http.js";
 import type { Api } from "../client/src/state/controller.js";
@@ -49,7 +50,6 @@ import { initialState } from "../client/src/state/types.js";
 import { bootReads, gate, harness, page } from "./controller-harness.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const webSrc = join(here, "..", "src", "web");
 
 let cells = 0;
 let failed = 0;
@@ -186,12 +186,13 @@ const res = (status: number, body: unknown): Response => ({
 const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
 {
-  const indexHtml = readFileSync(LEGACY_PAGE_FILES["/"].path, "utf8");
-  const graphHtml = readFileSync(LEGACY_PAGE_FILES["/graph"].path, "utf8");
-  const graphJs = codeOnly(readFileSync(join(webSrc, "graph.js"), "utf8"));
-  ok("3.3 the console page loads it", indexHtml.includes('<script src="/snapshot.js"></script>'));
-  ok("3.4 the graph page loads it", graphHtml.includes('<script src="/snapshot.js"></script>'));
-  ok("3.5 both pages carry the stale marker element it drives", indexHtml.includes('id="stale"') && graphHtml.includes('id="stale"'));
+  const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
+  ok("3.3 the shell draws its stale line through staleView, which says what staleLabel says",
+    /\bstaleView\(/.test(appSrc) && staleView([{ kind: "refused", name: "peers", reason: "x" }]).text === staleLabel([{ kind: "refused", name: "peers", reason: "x" }]));
+  ok("3.4 and the marks it draws are the store's, which the controller writes",
+    /useStore\(store, \(s\) => s\.stale\)/.test(appSrc));
+  ok("3.5 the shell carries the stale marker element it drives: hidden, tooltip and text all come from the view",
+    /id="stale"/.test(appSrc) && /hidden=\{view\.hidden\}/.test(appSrc) && /title=\{view\.title\}/.test(appSrc) && /\{view\.text\}/.test(appSrc));
   // The boot reads every source through the controller, and the controller through `refreshAll`:
   // `startDashboard` holds no read of its own, and `httpApi` wraps every route in `readJson` (each
   // route is driven in `smoke:web-http-api`). What is asserted here is the wiring between them.
@@ -224,10 +225,13 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   const controllerJs = codeOnly(readFileSync(join(here, "..", "client", "src", "state", "controller.ts"), "utf8"));
   ok("3.8 the controller holds no fetch; every read goes through the injected Api",
     !/\bfetch\s*\(/.test(controllerJs) && (controllerJs.match(rawJson) ?? []).length === 0, controllerJs.match(rawJson));
-  ok("3.9 no unguarded `fetch(...).json()` survives in the client's I/O modules (http.ts, feed.ts, boot.ts)",
-    [httpJs, feedJs, bootJs].every((src) => (src.match(rawJson) ?? []).length === 0),
-    [httpJs, feedJs, bootJs].map((src) => src.match(rawJson)));
-  // CONTROL for 3.8/3.9: the pattern must be able to find the shape it is looking for.
+  // `http.ts` makes its requests through `fetchImpl`, so the fetch-shaped pattern below cannot match
+  // it. What is true of it, and what this cell asserts, is that it consumes no body of its own: every
+  // response goes to `readJson`, which is the status gate. `feed.ts` and `boot.ts` make no request.
+  ok("3.9 http.ts consumes no response body itself (every read goes through readJson), and feed.ts and boot.ts hold no fetch",
+    !/\.json\s*\(/.test(httpJs) && /\breadJson\b/.test(httpJs) && [feedJs, bootJs].every((src) => !/\bfetch\s*\(/.test(src) && (src.match(rawJson) ?? []).length === 0),
+    { httpJson: httpJs.match(/\.json\s*\(/), feed: feedJs.match(rawJson), boot: bootJs.match(rawJson) });
+  // CONTROL for 3.8: the pattern must be able to find the shape it is looking for.
   ok("3.10 CONTROL: that pattern DOES match the shape it forbids",
     ('const x = await (await fetch("/api/roster")).json();'.match(rawJson) ?? []).length === 1);
   ok("3.10b CONTROL: and the comment stripper does not eat code (a scan over an empty string finds nothing)",
@@ -278,6 +282,27 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     chained.openedWhileHeld === 0, chained);
   ok("3.11c CONTROL: and the source pattern 3.11 forbids matches the shape it names",
     /\.then\(\s*\(\)\s*=>[^)]*openFeed/.test("void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });"));
+}
+
+// -- 3.12 WHAT THE STALE LINE SAYS ----------------------------------------------------------------
+// The line is a function of the marks and nothing else, so it is driven here in Node. It names every
+// source with its reason in the tooltip, and a recovered poll leaves nothing behind (the old W12).
+{
+  const marks: StaleMark[] = [
+    { kind: "refused", name: "peers", reason: "peers refused with HTTP 500: timeout" },
+    { kind: "partial", name: "activity", reason: "1 of 2 sources answered within 8000ms" },
+  ];
+  const view = staleView(marks);
+  ok("3.12 the line is shown and names every stale source", !view.hidden && /peers/.test(view.text) && /activity/.test(view.text), view);
+  ok("3.12b and its tooltip carries each source's reason, one per line",
+    view.title === "peers: peers refused with HTTP 500: timeout\nactivity: 1 of 2 sources answered within 8000ms", view.title);
+  ok("3.12c and it is the same words as the label, which 3.1 to 3.2 pin", view.text === staleLabel(marks), view.text);
+  // THE OLD W12, against the helper. Recovery has to ERASE the claim, not park it: hidden text and a
+  // hidden tooltip come back the moment anything unhides the element, naming a source that recovered.
+  const recovered = staleView([]);
+  ok("3.12d recovery hides the line", recovered.hidden === true, recovered);
+  ok("3.12e and CLEARS its label rather than only hiding it", recovered.text === "", recovered);
+  ok("3.12f and its tooltip", recovered.title === "", recovered);
 }
 
 // The console page's poll is the controller's `refresh()`. Every one of its six sources refusing at
@@ -395,12 +420,10 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
 // no later poll to correct it. The controller reads it on every poll through `refreshAll`, and the
 // header and the document title are both drawn from `space`, so `space` is what is graded.
 //
-// TWO RENDER GUARANTEES ARE NOT PINNED HERE, because there is no renderer yet. The old 5.5 ("nor the
-// document title") is folded into 5.4, which checks `space`, the value the title is drawn from. The
-// old W12 mutation proved that recovery CLEARS the marker's label and tooltip rather than only hiding
-// the element. The shell (Task 8) re-pins both against what it renders.
+// THE TITLE IS DRAWN FROM `space`, so a refusal that leaves `space` alone leaves the title alone.
+// What the title says is `documentTitle` (`client/src/lib/shellText.ts`), driven below (5.5 to 5.5d);
+// that the shell sets it is read off `App.tsx` (5.10).
 {
-  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
   // The gate itself lives where the read is made, which is `httpApi`: a 500 whose body is JSON on
   // `/api/meta` must reach the caller as a refusal naming the read, never as a value. Driven here
   // for the space; every route is driven in `smoke:web-http-api`.
@@ -434,6 +457,32 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ok("5.8 CONTROL: a read that LANDS replaces the name, so 5.4 is retention and not a stub",
       h.store.get().space === "cotal-next" && h.store.get().stale.length === 0,
       { space: h.store.get().space, stale: h.store.get().stale });
+  }
+  // THE OLD 5.5: "NOR THE DOCUMENT TITLE". A refusal must not change it, and in particular must not
+  // write `Cotal · undefined`, which is what the page did when it consumed the 500 body as the space.
+  {
+    const landed = harness({ ...bootReads, meta: async () => ({ space: "cotal-main", pid: 1 }) });
+    await landed.ctl.refresh();
+    const before = documentTitle(landed.store.get().space);
+    const failing = harness({ ...bootReads, meta: async () => { throw new Error("space refused with HTTP 500: timeout"); } });
+    await failing.ctl.refresh();
+    ok("5.5 a refused space read does not change the document title", before === "Cotal \u00b7 cotal-main" && !/undefined/.test(documentTitle(failing.store.get().space)),
+      { before, after: documentTitle(failing.store.get().space) });
+    // The same controller, first landing and then refusing, so the title is the LAST GOOD one.
+    let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1 });
+    const both = harness({ ...bootReads, meta: () => meta() });
+    await both.ctl.refresh();
+    meta = async () => { throw new Error("space refused with HTTP 500: timeout"); };
+    await both.ctl.refresh();
+    ok("5.5b and one that landed first keeps the last good title through the refusal",
+      documentTitle(both.store.get().space) === "Cotal \u00b7 cotal-main", documentTitle(both.store.get().space));
+  }
+  ok("5.5c before any read lands the title is the bare name, not `Cotal \u00b7 null`", documentTitle(null) === "Cotal", documentTitle(null));
+  ok("5.5d CONTROL: a space the wire named is in the title", documentTitle("cotal-next") === "Cotal \u00b7 cotal-next", documentTitle("cotal-next"));
+  {
+    const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
+    ok("5.10 the shell sets document.title from the store's space through documentTitle",
+      /document\.title = documentTitle\(space\)/.test(appSrc) && /useStore\(store, \(s\) => s\.space\)/.test(appSrc));
   }
 }
 

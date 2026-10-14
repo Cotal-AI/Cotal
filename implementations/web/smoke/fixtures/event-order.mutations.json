@@ -121,25 +121,25 @@
       "expectRed": "17.9 a hole between two BUFFERED frames is a gap"
     },
     {
-      "name": "O18 the all-activity view stops drawing the notice, so the machine detects a missing frame and the surface the reader is actually looking at says nothing",
-      "file": "implementations/web/src/web/app.js",
-      "find": "    ${orderNoticeHtml()}\n    <div class=\"feed\">",
-      "replace": "    <div class=\"feed\">",
-      "expectRed": "15.8 the all-activity view draws it"
+      "name": "O18 the shell stops drawing the notice, so the machine detects a missing frame and the surface the reader is actually looking at says nothing",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "      {notice && <p id=\"order-notice\" role={notice.fault ? \"alert\" : \"status\"}>{notice.text}</p>}\n",
+      "replace": "",
+      "expectRed": "15.8 the shell draws it from the store's notes"
     },
     {
-      "name": "O19 the channel view stops drawing it, so a reader who opened one channel to look at its frames is the one reader who cannot be told a frame is missing from it",
-      "file": "implementations/web/src/web/app.js",
-      "find": "    ${orderNoticeHtml()}\n    <div class=\"clist\">",
-      "replace": "    <div class=\"clist\">",
-      "expectRed": "15.9 the channel view draws it"
+      "name": "O19 the notice is drawn only while a channel is open, so a reader on no channel is the one reader who cannot be told a frame is missing from the feed",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "      <StatusLines />\n",
+      "replace": "      {open && <StatusLines />}\n",
+      "expectRed": "15.9 and outside the channel pane, so it shows with no channel open"
     },
     {
       "name": "O20 the unattributable start-up hole stops being drawn, so the page reports the one thing it could not find out as though it had found nothing wrong",
-      "file": "implementations/web/src/web/app.js",
+      "file": "implementations/web/client/src/lib/shellText.ts",
       "find": "  if (races.length) parts.push(`${races.length} possible ordering race${races.length === 1 ? \"\" : \"s\"} at start-up, unconfirmed`);\n",
       "replace": "",
-      "expectRed": "15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss"
+      "expectRed": "15.5 an unattributable start-up hole is drawn as unconfirmed"
     },
     {
       "name": "O21 the exported wire kind is changed, so the machine looks for a part kind no emitter publishes and every real frame passes through unordered with no gap ever reported",
@@ -149,16 +149,23 @@
       "expectRed": "1.6 the wire kind is the frame kind"
     },
     {
+      "name": "O22 a gap stops being flagged as a fault, so the one note that must never be ignored reads like the retention note and the view cannot mark it",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "  return { text: parts.join(\" · \"), fault: gaps.length > 0 };",
+      "replace": "  return { text: parts.join(\" · \"), fault: false };",
+      "expectRed": "15.7 a fault is marked as one"
+    },
+    {
       "name": "O-B1 the startup stops calling refresh() after it opens the feed, so the dashboard shows nothing until a feed open happens to run the bootstrap",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  void controller.refresh();\n  return { controller, stop: stopFeed };",
+      "find": "  refresh();\n  return { controller, stop: stopFeed };",
       "replace": "  return { controller, stop: stopFeed };",
       "expectRed": "13.1 the shipped startup opens the feed and then calls refresh()"
     },
     {
       "name": "O-B2 the feed's open handler stops calling refresh(), so a reconnect never re-reads what the feed missed while it was down",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      store.set({ connected: true });\n      void controller.refresh();\n",
+      "find": "      store.set({ connected: true });\n      refresh();\n",
       "replace": "      store.set({ connected: true });\n",
       "expectRed": "13.2 and the feed's open handler calls refresh() again"
     }

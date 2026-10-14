@@ -27,15 +27,12 @@
  * `events.*` filter is still separate, unbuilt work: the console's filter lives in `MeshView`, which
  * these pages do not use. Nothing here says how a frame should be drawn.
  *
- * AND THE EXACT EDGE OF THE REACH CLAIM, because it moved once already and could be overread again.
- * Three things are checked and they are not the same thing: the shared renderer is SERVED and LOADED
- * before its consumers; each consumer's own declaration, executed, RETURNS the marker; and each
- * consumer is actually CALLED downstream. That last cell exists because a review replaced all five
- * downstream calls with "" and the executed-declaration cells stayed green — a correct helper nobody
- * invokes. What is still NOT measured is the last hop: `bodyBlock`/`MD.render` in `app.js` and
- * `recentRows` in `graph.js` turn that text into DOM, and no cell here opens a browser or asserts
- * rendered HTML. So these cells prove the marker is produced and the producer is wired in — not that
- * it survives to the pixels.
+ * AND THE EXACT EDGE OF THE REACH CLAIM. Two things are checked and they are not the same thing: the
+ * renderer RETURNS the marker, and the shell CALLS it. That last cell exists because a review replaced
+ * all five downstream calls with "" and the cells over the declaration stayed green: a correct helper
+ * nobody invokes. What is NOT measured is the last hop, where the shell turns that text into DOM: no
+ * cell here opens a browser or asserts rendered HTML. So these cells prove the marker is produced
+ * and the producer is wired in, not that it survives to the pixels.
  */
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -44,7 +41,6 @@ import { fileURLToPath } from "node:url";
 import { partsToText } from "../client/src/lib/parts.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const webSrc = join(here, "..", "src", "web");
 
 let cells = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {
@@ -142,25 +138,19 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
   render([]) === "" && partsToText(undefined) === "");
 
 // ── REACH ─────────────────────────────────────────────────────────────────────────────────────────
-// The "web.ts serves /parts.js" cells are gone: the client bundle orders and ships its modules, so
-// there is no route row to assert. The two HTML load-order cells below describe the legacy pages and
-// stay until those pages are deleted.
-// Both pages must load it, and load it BEFORE the script that calls it: a classic script reading a
-// global defined by a LATER script gets `undefined` and throws in the browser only.
-const PAGES = [["index.html", "app.js"], ["graph.html", "graph.js"]] as const;
-ok("both pages are covered (a short table would silently check fewer)", PAGES.length === 2, { n: PAGES.length });
-for (const [page, consumer] of PAGES) {
-  const html = readFileSync(join(webSrc, page), "utf8");
-  const partsAt = html.indexOf('src="/parts.js"');
-  const consumerAt = html.indexOf(`src="/${consumer}"`);
-  ok(`${page} loads /parts.js`, partsAt !== -1, { partsAt });
-  ok(`${page} loads /parts.js BEFORE ${consumer} (later would leave the global undefined)`,
-    partsAt !== -1 && consumerAt !== -1 && partsAt < consumerAt, { partsAt, consumerAt });
+// The old pages loaded `/parts.js` ahead of their scripts and the cells here checked that order; the
+// client bundle orders its own modules, so there is no load order to assert. What is left to prove
+// is that the shell, which draws message bodies, renders them through the shared renderer. A correct
+// helper nobody invokes is the defect this cell exists for.
+//
+// This is a regex over `client/src/App.tsx`, and phase 2 moves it to `MessageRow.tsx`, where the
+// message bodies are drawn. It proves the producer is wired in, not that its text survives to the
+// pixels: no cell here opens a browser.
+{
+  const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
+  ok("the shell renders message bodies through partsToText", /\bpartsToText\(/.test(appSrc), { found: appSrc.match(/.*partsToText.*/g) });
+  ok("and imports it from the shared renderer rather than declaring its own",
+    /import \{[^}]*\bpartsToText\b[^}]*\} from "\.\/lib\/parts\.js"/.test(appSrc) && !/(?:const|function) partsToText\b/.test(appSrc));
 }
-
-// ── The copies are actually GONE ──────────────────────────────────────────────────────────────────
-// moved to the shell in Task 8: the cells that lift `const bodyText = ...;` out of `app.js` and
-// `const partsText = ...;` out of `graph.js`, execute them against the renderer, and count their
-// downstream calls. They move to the shell, where message bodies render through `partsToText`.
 
 console.log(`\n${cells} cells green`);

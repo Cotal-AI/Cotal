@@ -5,7 +5,7 @@
     {
       "name": "G1 the feed goes back to being chained behind the bootstrap, so it is guaranteed to RUN but not to run SOON and the pill reads disconnected for the whole load window on a slow link",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  const stopFeed = deps.openFeed(handlers);\n  void controller.refresh();\n  return { controller, stop: stopFeed };",
+      "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return { controller, stop: stopFeed };",
       "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
       "expectRed": "1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected"
     },
@@ -75,9 +75,16 @@
     {
       "name": "G12 a feed open stops running the bootstrap again, so a reconnect never makes up the events it missed",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      store.set({ connected: true });\n      void controller.refresh();\n",
+      "find": "      store.set({ connected: true });\n      refresh();\n",
       "replace": "      store.set({ connected: true });\n",
       "expectRed": "6.2 and runs the bootstrap again, because a reconnect may have missed events"
+    },
+    {
+      "name": "G13 the boot calls refresh() without a catch again, so a defect that rejects it is an unhandled rejection that nothing on the page reports",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    void controller.refresh().catch((err) => console.error(\"dashboard refresh failed:\", err));",
+      "replace": "    void controller.refresh();",
+      "expectRed": "8.2 a refresh that rejects reaches the console"
     }
   ],
   "suite": [

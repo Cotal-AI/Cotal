@@ -39,7 +39,7 @@
     {
       "name": "W6 the boot is chained again, so the live feed is guaranteed to run but not to run soon",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  const stopFeed = deps.openFeed(handlers);\n  void controller.refresh();\n  return { controller, stop: stopFeed };",
+      "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return { controller, stop: stopFeed };",
       "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
       "expectRed": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap"
     },
@@ -140,6 +140,62 @@
       "find": "    meta: () => get<Meta>(\"/api/meta\", \"space\"),",
       "replace": "    meta: async () => (await fetchImpl(\"/api/meta\")).json() as Promise<Meta>,",
       "expectRed": "5.3 and it reads through the gate rather than consuming the body directly"
+    },
+    {
+      "name": "W21 the shell stops drawing the stale line from the marks, so the poll keeps its last good snapshot and the reader is never told which half of it is old",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "  const view = staleView(stale);",
+      "replace": "  const view = { hidden: true, text: \"\", title: \"\" };",
+      "expectRed": "3.3 the shell draws its stale line through staleView"
+    },
+    {
+      "name": "W22 the stale line reads its marks from somewhere other than the store the controller writes, so a refusal the controller recorded is never drawn",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "  const stale = useStore(store, (s) => s.stale);",
+      "replace": "  const stale: StaleMark[] = [];",
+      "expectRed": "3.4 and the marks it draws are the store's"
+    },
+    {
+      "name": "W23 the stale element is no longer hidden by the view, so a recovered poll leaves an empty marker standing in the header",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "<p id=\"stale\" hidden={view.hidden} title={view.title}>",
+      "replace": "<p id=\"stale\" title={view.title}>",
+      "expectRed": "3.5 the shell carries the stale marker element it drives"
+    },
+    {
+      "name": "W12b recovery stops clearing the claim: the line is hidden but its label and tooltip are left from the last stale set, so the next thing to unhide it names a source that recovered long ago",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "  return { hidden: !text, text, title: stale.map((s) => `${s.name}: ${s.reason}`).join(\"\\n\") };",
+      "replace": "  const title = stale.map((s) => `${s.name}: ${s.reason}`).join(\"\\n\");\n  const g = globalThis as { __held?: { text: string; title: string } };\n  if (!text) return { hidden: true, text: g.__held?.text ?? \"\", title: g.__held?.title ?? \"\" };\n  g.__held = { text, title };\n  return { hidden: false, text, title };",
+      "expectRed": "3.12e and CLEARS its label rather than only hiding it"
+    },
+    {
+      "name": "W24 the tooltip stops carrying the reasons, so the header says a source is stale and never why",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "  return { hidden: !text, text, title: stale.map((s) => `${s.name}: ${s.reason}`).join(\"\\n\") };",
+      "replace": "  return { hidden: !text, text, title: \"\" };",
+      "expectRed": "3.12b and its tooltip carries each source's reason"
+    },
+    {
+      "name": "W25 the title is drawn without asking whether a space has been read, so the tab reads `Cotal · null` until the first poll lands",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "  return space === null ? \"Cotal\" : `Cotal · ${space}`;",
+      "replace": "  return `Cotal · ${space}`;",
+      "expectRed": "5.5c before any read lands the title is the bare name"
+    },
+    {
+      "name": "W26 the shell stops setting the document title from the space, so the tab never says which space it watches",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "    document.title = documentTitle(space);",
+      "replace": "    document.title = \"Cotal\";",
+      "expectRed": "5.10 the shell sets document.title from the store's space through documentTitle"
+    },
+    {
+      "name": "W27 http.ts consumes a response body itself instead of handing it to readJson, so a 500 with a JSON body is returned as data on that route",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "readJson<T>(await fetchImpl(url), what);",
+      "replace": "(await fetchImpl(url)).json() as Promise<T>;",
+      "expectRed": "3.9 http.ts consumes no response body itself"
     }
   ],
   "suite": [

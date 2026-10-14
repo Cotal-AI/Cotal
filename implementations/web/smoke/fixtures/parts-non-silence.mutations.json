@@ -25,6 +25,13 @@
       "find": "  if (encoded !== undefined) return `[${kind}] ${encoded}`;",
       "replace": "  if (encoded !== undefined) return `[${kind}]`;",
       "expectRed": "a data-bearing extension keeps its data (it was visible before; dropping it is a regression)"
+    },
+    {
+      "name": "the shell stops rendering message bodies through the shared renderer, so a message part renders as the shell's own expression again, which is the blank the renderer exists to remove",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "{partsToText(m.parts)}",
+      "replace": "{\"\"}",
+      "expectRed": "the shell renders message bodies through partsToText"
     }
   ]
 }

@@ -17,12 +17,19 @@ export function startDashboard(deps: {
 }): { controller: Controller; stop(): void } {
   const { store } = deps;
   const controller = createController(store, deps.api);
+  // A read that is refused never rejects `refresh()`: `refreshAll` turns it into a stale mark. What
+  // does reject it is a defect (an `apply` or a store subscriber that throws), and that is not a
+  // fact about the link, so it must not become a stale mark that blames the network. It is made
+  // visible on the console instead of being left as an unhandled rejection.
+  const refresh = () => {
+    void controller.refresh().catch((err) => console.error("dashboard refresh failed:", err));
+  };
   const handlers: FeedHandlers = {
     // EVERY open runs the bootstrap again, a reconnect included: events published while the feed was
     // down are not replayed, so the reads are what makes up the difference.
     open() {
       store.set({ connected: true });
-      void controller.refresh();
+      refresh();
     },
     error: () => store.set({ connected: false }),
     roster: controller.onRoster,
@@ -32,6 +39,6 @@ export function startDashboard(deps: {
     message: controller.onMessage,
   };
   const stopFeed = deps.openFeed(handlers);
-  void controller.refresh();
+  refresh();
   return { controller, stop: stopFeed };
 }

@@ -1,8 +1,8 @@
 {
   "expected": {
-    "total": 529,
+    "total": 530,
     "honest-text": 36,
-    "presence-only-glyph/count": 58,
+    "presence-only-glyph/count": 59,
     "command-ack": 12,
     "non-render/control": 423
   },
@@ -3867,6 +3867,13 @@
       "anchor": "`${what} refused with HTTP ${res.status}${detail}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/art/characters.js",
+      "kind": "status-token",
+      "anchor": "'offline'",
+      "class": "presence-only-glyph/count",
+      "rationale": "Selects the offline face (shut eyes, flat mouth) for a character; a presence expression that makes no textual progress claim."
     }
   ]
 }

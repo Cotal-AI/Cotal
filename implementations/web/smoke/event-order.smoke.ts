@@ -12,8 +12,8 @@
  * controller.ts`), built over a fake `Api` and driven through its methods (§12 to §14). Nothing is
  * restated here, so no cell can pass against a version that no longer ships. The startup that calls
  * `refresh()` (§13.1, §13.2) is `startDashboard` (`client/src/state/boot.ts`), driven the same way.
- * One thing still reads the old page, because it is not the controller's: the notice the views draw
- * (§15, fixtures O18 to O20), which Task 8's shell re-homes.
+ * What the notice says (§15) is `orderNotice` (`client/src/lib/shellText.ts`), driven the same way;
+ * that the shell draws it is read off `client/src/App.tsx` (fixtures O18 to O20).
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
  * goes live, and only then surfaces retained history (`SPEC.md` orders the join that way, and the
@@ -41,9 +41,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createContext, runInContext } from "node:vm";
-import ts from "typescript";
 import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type EventOrder, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
+import { orderNotice } from "../client/src/lib/shellText.js";
 import type { FeedMessage } from "../client/src/api/types.js";
 import type { FeedHandlers } from "../client/src/api/feed.js";
 import { startDashboard } from "../client/src/state/boot.js";
@@ -52,7 +51,6 @@ import { initialState } from "../client/src/state/types.js";
 import { bootReads, harness, page, unusedApi } from "./controller-harness.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const webSrc = join(here, "..", "src", "web");
 
 let cells = 0;
 let failed = 0;
@@ -543,48 +541,42 @@ console.log("event-order smoke");
 // to remove, one layer up, and it is also what decides whether treating a failed read as an empty
 // history is an honest degrade or a quiet one.
 //
-// STILL THE OLD PAGE'S, UNTIL TASK 8. Drawing is not the controller's job: the controller keeps
-// `orderNotes` in the store, and the views that draw them arrive with the shell in Task 8, which
-// re-homes these cells and fixtures O18 to O20. Until then they read the page that ships the notice.
+// WHAT IS DRIVEN, AND WHAT IS READ. What the notice SAYS is `orderNotice` (`client/src/lib/
+// shellText.ts`), a pure function of the notes, driven here in Node. THAT THE SHELL DRAWS IT is read
+// off `client/src/App.tsx`, because there is no DOM here: the controller keeps `orderNotes` in the
+// store and the shell's `StatusLines` component turns them into a line. Cell 15.10 of the old page
+// (the page styles it) has no home until phase 2 styles the line.
 {
-  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-  const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  let notice: string | undefined;
-  sf.forEachChild((n) => {
-    if (ts.isFunctionDeclaration(n) && n.name?.text === "orderNoticeHtml") notice = appSrc.slice(n.getStart(sf), n.end);
-  });
-  ok("15.0 the shipped notice function is extractable", notice !== undefined);
-  {
-    const c = createContext({ orderNotes: [] as Note[] });
-    runInContext(notice ?? "", c);
-    const html = (notes: Note[]) => {
-      (c as unknown as { orderNotes: Note[] }).orderNotes = notes;
-      return runInContext("orderNoticeHtml()", c) as string;
-    };
-    ok("15.1 an ordinary feed draws no notice", html([]) === "");
-    const gapHtml = html([{ type: "gap", expected: 4, got: 7, missing: 3 }]);
-    ok("15.2 a gap is drawn, and says how many frames are missing", /\b3\b/.test(gapHtml) && /missing/.test(gapHtml), gapHtml);
-    const prefixHtml = html([{ type: "prefix-incomplete", baseline: 900 }]);
-    ok("15.3 an evicted prefix is drawn too", prefixHtml !== "" && /not retained/.test(prefixHtml), prefixHtml);
-    // THE ONE THAT ALWAYS HAPPENS ON A LATE JOIN MUST NOT READ LIKE THE ONE THAT MUST NEVER BE
-    // IGNORED. Collapsing them into one banner would spend the reader's attention on retention.
-    ok("15.4 and the two are not the same statement", gapHtml !== prefixHtml && !/missing/.test(prefixHtml));
-    const straddleHtml = html([{ type: "boundary-hole", expected: 4, got: 5, missing: 1 }]);
-    ok("15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss", /unconfirmed/.test(straddleHtml) && !/missing/.test(straddleHtml), straddleHtml);
-    const failHtml = html([{ type: "backfill-failed" } as Note]);
-    ok("15.6 a failed history read is drawn, so the empty-batch settle is not a silent degrade", /history unavailable/.test(failHtml), failHtml);
-    ok("15.7 a fault is marked as one, and not by colour alone", /order-notice fault/.test(gapHtml) && !/fault/.test(prefixHtml));
+  const notice = (notes: Note[]) => orderNotice(notes);
+  const say = (notes: Note[]) => notice(notes)?.text ?? "";
+  ok("15.0 the shipped notice function is exported", typeof orderNotice === "function");
+  ok("15.1 an ordinary feed draws no notice", notice([]) === undefined);
+  const gapText = say([{ type: "gap", expected: 4, got: 7, missing: 3 }]);
+  ok("15.2 a gap is drawn, and says how many frames are missing", /\b3\b/.test(gapText) && /missing/.test(gapText), gapText);
+  const prefixText = say([{ type: "prefix-incomplete", baseline: 900 }]);
+  ok("15.3 an evicted prefix is drawn too", prefixText !== "" && /not retained/.test(prefixText), prefixText);
+  // THE ONE THAT ALWAYS HAPPENS ON A LATE JOIN MUST NOT READ LIKE THE ONE THAT MUST NEVER BE
+  // IGNORED. Collapsing them into one banner would spend the reader's attention on retention.
+  ok("15.4 and the two are not the same statement", gapText !== prefixText && !/missing/.test(prefixText));
+  const straddleText = say([{ type: "boundary-hole", expected: 4, got: 5, missing: 1 }]);
+  ok("15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss", /unconfirmed/.test(straddleText) && !/missing/.test(straddleText), straddleText);
+  const failText = say([{ type: "backfill-failed" }]);
+  ok("15.6 a failed history read is drawn, so the empty-batch settle is not a silent degrade", /history unavailable/.test(failText), failText);
+  // A fault is a flag the shell can act on, and it is also in the words ("missing"), so it is not
+  // carried by colour alone.
+  ok("15.7 a fault is marked as one, and not by colour alone",
+    notice([{ type: "gap", expected: 4, got: 7, missing: 3 }])?.fault === true && /missing/.test(gapText)
+      && notice([{ type: "prefix-incomplete", baseline: 900 }])?.fault === false);
 
-    // The rendering half: the feed views actually call it. Without this the function could be dead.
-    const drawn = new Set<string>();
-    sf.forEachChild((n) => {
-      if (ts.isFunctionDeclaration(n) && n.name && /^render(AllActivity|Channel)$/.test(n.name.text))
-        if (appSrc.slice(n.getStart(sf), n.end).includes("orderNoticeHtml()")) drawn.add(n.name.text);
-    });
-    ok("15.8 the all-activity view draws it", drawn.has("renderAllActivity"), [...drawn]);
-    ok("15.9 the channel view draws it", drawn.has("renderChannel"), [...drawn]);
-    ok("15.10 and the page styles it", readFileSync(join(webSrc, "index.html"), "utf8").includes(".order-notice"));
-  }
+  // The rendering half: the shell actually calls it. Without this the function could be dead.
+  const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
+  const statusLines = /function StatusLines\(\)[\s\S]*?\n}\n/.exec(appSrc)?.[0] ?? "";
+  ok("15.8 the shell draws it from the store's notes",
+    /\borderNotice\(/.test(statusLines) && /useStore\(store, \(s\) => s\.orderNotes\)/.test(statusLines)
+      && /id="order-notice"/.test(statusLines) && /\{notice\.text\}/.test(statusLines), statusLines);
+  // The feed lane's notes are the feed's, not a channel's, so the line is drawn with NO channel open.
+  ok("15.9 and outside the channel pane, so it shows with no channel open",
+    /^\s*<StatusLines \/>\s*$/m.test(appSrc), appSrc.match(/.*<StatusLines.*/g));
 }
 
 // ── 16. A HOLE INSIDE THE RETAINED BATCH, which no live arrival will ever reveal ─────────────────

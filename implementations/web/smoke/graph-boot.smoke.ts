@@ -39,7 +39,7 @@ import { pillState } from "../client/src/lib/membership.js";
 import { startDashboard } from "../client/src/state/boot.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
-import { gate, page } from "./controller-harness.js";
+import { bootReads, gate, page, unusedApi } from "./controller-harness.js";
 
 let cells = 0, failed = 0;
 function ok(name: string, cond: boolean, detail?: unknown) {
@@ -224,12 +224,12 @@ async function main() {
   d1.deliver("message", { mode: "unicast", msg: { id: "u", ts: Date.now(),
     from: { id: "local.Y", name: "zz" }, to: ABSENT, parts: [{ kind: "text", text: "hi" }] } as never });
   ok("4.1 the handler survives a recipient no roster has ever introduced", d1.thrown.length === thrownBefore, d1.thrown.slice(thrownBefore));
-  ok("4.2 and the unknown recipient did NOT enter the roster", JSON.stringify(d1.store.get().roster) === rosterBefore
+  ok("4.2 (roster half; the node half returns in phase 2 Task 7) and the unknown recipient did NOT enter the roster", JSON.stringify(d1.store.get().roster) === rosterBefore
     && !d1.store.get().roster.some((r) => r.card.id === ABSENT), d1.store.get().roster);
   // CONTROL: the SAME id, announced by a roster, IS on the roster. So 4.2 goes red when an entry is
   // invented, rather than passing because an id could never have been there in the first place.
   d1.deliver("roster", [{ card: { id: ABSENT, kind: "agent" }, status: "waiting", ts: 1 }] as never);
-  ok("4.3 control: that same id, once a roster announces it, IS on the roster",
+  ok("4.3 (roster half; the node half returns in phase 2 Task 7) control: that same id, once a roster announces it, IS on the roster",
     d1.store.get().roster.some((r) => r.card.id === ABSENT), d1.store.get().roster);
 
   // ── 5. THE MEMBERSHIP SOURCE SPEAKS TWICE, AND BOTH SENTENCES OBEY THE ORDERING RULE ─────────
@@ -298,6 +298,38 @@ async function main() {
     ok("7.1 CONTROL: a log where the feed opens AFTER the reads is not feed-first", !feedFirst(chained), chained);
     ok("7.2 CONTROL: a log where the feed is never opened is not feed-first either", !feedFirst(["read:meta"]));
     ok("7.3 CONTROL: and the shipped boot's log is", feedFirst(d1.log), d1.log);
+  }
+
+  // `refresh()` does not reject on a refused read (`refreshAll` turns it into a stale mark), so what
+  // can reject it is a defect: an `apply` or a store subscriber that throws. The boot calls it
+  // without awaiting, so that rejection would be unhandled. It has to be visible instead.
+  console.log("8. a refresh that rejects is made visible and is not left unhandled");
+  {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (e: unknown) => { unhandled.push(e); };
+    process.on("unhandledRejection", onUnhandled);
+    const logged: unknown[][] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => { logged.push(args); };
+    const quiet = () => new Promise<void>((r) => setTimeout(r, 20));
+    const boot = (space: string) => {
+      const store = createStore<DashboardState>(structuredClone(initialState));
+      store.subscribe(() => { if (store.get().space === "boom") throw new Error("a subscriber that throws"); });
+      startDashboard({ store, api: { ...unusedApi, ...bootReads, meta: async () => ({ space, pid: 1 }) }, openFeed: () => () => undefined });
+    };
+    try {
+      boot("fine");
+      await quiet();
+      ok("8.1 CONTROL: a healthy boot logs nothing and rejects nothing", logged.length === 0 && unhandled.length === 0, { logged, unhandled });
+      boot("boom");
+      await quiet();
+      ok("8.2 a refresh that rejects reaches the console, with the defect's own message",
+        logged.length >= 1 && logged.some((a) => a.some((x) => x instanceof Error && /a subscriber that throws/.test(x.message))), logged);
+      ok("8.3 and is not left as an unhandled rejection", unhandled.length === 0, unhandled.map(String));
+    } finally {
+      console.error = realError;
+      process.off("unhandledRejection", onUnhandled);
+    }
   }
 }
 
