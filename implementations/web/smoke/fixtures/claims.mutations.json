@@ -10,56 +10,64 @@
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "if (msg.replyTo === anycastId) return",
       "replace": "if (msg) return",
-      "expectRed": "later messages that reply to nothing give no claim"
+      "expectRed": "later messages that reply to nothing give no claim",
+      "cell": "later messages that reply to nothing give no claim"
     },
     {
       "name": "a reply to another message counts as a claim",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "if (msg.replyTo === anycastId) return",
       "replace": "if (msg.replyTo !== undefined) return",
-      "expectRed": "a reply to another message is ignored"
+      "expectRed": "a reply to another message is ignored",
+      "cell": "a reply to another message is ignored"
     },
     {
       "name": "the last reply wins",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "of later) {",
       "replace": "of [...later].reverse()) {",
-      "expectRed": "the first of two replies wins"
+      "expectRed": "the first of two replies wins",
+      "cell": "the first of two replies wins"
     },
     {
       "name": "the payload from.id outranks the authenticated senderId",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "return senderId ?? msg.from.id;",
       "replace": "return msg.from.id ?? senderId;",
-      "expectRed": "the authenticated senderId wins over the payload's from.id"
+      "expectRed": "the authenticated senderId wins over the payload's from.id",
+      "cell": "the authenticated senderId wins over the payload's from.id"
     },
     {
       "name": "a missing senderId stops falling back to from.id",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "return senderId ?? msg.from.id;",
       "replace": "return senderId;",
-      "expectRed": "from.id answers only when senderId is absent"
+      "expectRed": "from.id answers only when senderId is absent",
+      "cell": "from.id answers only when senderId is absent"
     },
     {
       "name": "the claimer is returned as a display name",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "return senderId ?? msg.from.id;",
       "replace": "return msg.from.name;",
-      "expectRed": "a reply whose replyTo is the id gives its sender"
+      "expectRed": "a reply whose replyTo is the id gives its sender",
+      "cell": "a reply whose replyTo is the id gives its sender"
     },
     {
       "name": "the blank id guard is removed",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "if (!anycastId) return undefined;",
       "replace": "",
-      "expectRed": "an empty anycast id claims nothing, even for a reply to \"\""
+      "expectRed": "an empty anycast id claims nothing, even for a reply to \"\"",
+      "cell": "an empty anycast id claims nothing, even for a reply to \"\""
     },
     {
       "name": "the blank id guard only covers the empty string",
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "if (!anycastId) return undefined;",
       "replace": "if (anycastId === \"\") return undefined;",
-      "expectRed": "an undefined anycast id claims nothing"
+      "expectRed": "an undefined anycast id claims nothing",
+      "cell": "an undefined anycast id claims nothing"
     }
   ]
 }

@@ -10,84 +10,96 @@
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "windowMs = 1000)",
       "replace": "windowMs = 2000)",
-      "expectRed": "4 hits within the last second give 4"
+      "expectRed": "4 hits within the last second give 4",
+      "cell": "4 hits within the last second give 4"
     },
     {
       "name": "a hit exactly one window old still counts",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "hits[i]! <= cutoff",
       "replace": "hits[i]! < cutoff",
-      "expectRed": "a hit exactly one window before now is out and a hit at now is in"
+      "expectRed": "a hit exactly one window before now is out and a hit at now is in",
+      "cell": "a hit exactly one window before now is out and a hit at now is in"
     },
     {
       "name": "perSecond stops dropping aged hits",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "      if (i > 0) hits = hits.slice(i);\n",
       "replace": "",
-      "expectRed": "hits older than the window are dropped"
+      "expectRed": "hits older than the window are dropped",
+      "cell": "hits older than the window are dropped"
     },
     {
       "name": "a hit after now is counted",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (ts <= now) inWindow++;",
       "replace": "inWindow++;",
-      "expectRed": "a hit after now is not counted yet"
+      "expectRed": "a hit after now is not counted yet",
+      "cell": "a hit after now is not counted yet"
     },
     {
       "name": "an out of order hit is left unsorted",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (out) hits.sort((a, b) => a - b);",
       "replace": "",
-      "expectRed": "an out of order hit that is already a full window old does not count"
+      "expectRed": "an out of order hit that is already a full window old does not count",
+      "cell": "an out of order hit that is already a full window old does not count"
     },
     {
       "name": "the count is not scaled to per second",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "return (inWindow * 1000) / windowMs;",
       "replace": "return inWindow;",
-      "expectRed": "a 2 second window scales 4 hits to 2 per second"
+      "expectRed": "a 2 second window scales 4 hits to 2 per second",
+      "cell": "a 2 second window scales 4 hits to 2 per second"
     },
     {
       "name": "a non-positive window is accepted",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (!Number.isFinite(windowMs) || windowMs <= 0) throw",
       "replace": "if (false) throw",
-      "expectRed": "a window of 0 ms is refused"
+      "expectRed": "a window of 0 ms is refused",
+      "cell": "a window of 0 ms is refused"
     },
     {
       "name": "hit evicts by its own timestamp again",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (hits.length > MAX_HITS) hits.shift();",
       "replace": "if (hits.length > MAX_HITS) hits.shift();\n      while (hits.length > 0 && hits[0]! <= ts - windowMs) hits.shift();",
-      "expectRed": "a hit dated after now does not evict an older hit still inside the window"
+      "expectRed": "a hit dated after now does not evict an older hit still inside the window",
+      "cell": "a hit dated after now does not evict an older hit still inside the window"
     },
     {
       "name": "the cap is removed",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (hits.length > MAX_HITS) hits.shift();",
       "replace": "",
-      "expectRed": "the oldest hits past the cap are gone"
+      "expectRed": "the oldest hits past the cap are gone",
+      "cell": "the oldest hits past the cap are gone"
     },
     {
       "name": "the cap drops the newest hit",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (hits.length > MAX_HITS) hits.shift();",
       "replace": "if (hits.length > MAX_HITS) hits.pop();",
-      "expectRed": "the oldest hits past the cap are gone"
+      "expectRed": "the oldest hits past the cap are gone",
+      "cell": "the oldest hits past the cap are gone"
     },
     {
       "name": "the cap drops one hit too many",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "hits.length > MAX_HITS",
       "replace": "hits.length >= MAX_HITS",
-      "expectRed": "the cap holds and the newest hits are the ones counted"
+      "expectRed": "the cap holds and the newest hits are the ones counted",
+      "cell": "the cap holds and the newest hits are the ones counted"
     },
     {
       "name": "a hit with a non-finite time is stored",
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "if (!Number.isFinite(ts)) return;",
       "replace": "",
-      "expectRed": "a hit with a non-finite time is ignored"
+      "expectRed": "a hit with a non-finite time is ignored",
+      "cell": "a hit with a non-finite time is ignored"
     }
   ]
 }

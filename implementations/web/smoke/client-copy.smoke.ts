@@ -3,7 +3,7 @@
  *  network call outside api/, and a token file that defines both palettes. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const src = join(dirname(fileURLToPath(import.meta.url)), "..", "client", "src");
@@ -13,11 +13,11 @@ const ok = (name: string, cond: unknown, detail?: unknown) => {
   console.log(`  ok ${++n} ${name}`);
 };
 
-const files = (dir: string): string[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
-    e.isDirectory() ? files(join(dir, e.name)) : /\.(tsx?|css)$/.test(e.name) ? [join(dir, e.name)] : []);
 const read = (path: string) => readFileSync(path, "utf8");
-const sources = files(src).map((path) => ({ rel: relative(src, path).split("\\").join("/"), text: read(path) }));
+const sources: { rel: string; text: string }[] = [];
+for (const entry of readdirSync(src, { recursive: true }) as string[]) {
+  if (/\.(tsx?|css)$/.test(entry)) sources.push({ rel: entry.split("\\").join("/"), text: readFileSync(join(src, entry), "utf8") });
+}
 const lines = sources.flatMap((f) => f.text.split("\n").map((text, i) => ({ rel: f.rel, line: i + 1, text })));
 /** Every line that matches, as `file:line: text`, so a failure names the place. */
 const hits = (re: RegExp, only = (_rel: string) => true) =>

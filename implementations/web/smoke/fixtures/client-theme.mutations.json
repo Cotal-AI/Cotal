@@ -10,28 +10,32 @@
       "file": "implementations/web/client/src/theme.ts",
       "find": "  } catch {\n    return \"system\";\n  }",
       "replace": "  } finally {\n  }",
-      "expectRed": "readTheme returns system when storage throws"
+      "expectRed": "readTheme returns system when storage throws",
+      "cell": "readTheme returns system when storage throws"
     },
     {
       "name": "writeTheme stops catching a blocked storage",
       "file": "implementations/web/client/src/theme.ts",
       "find": "  } catch {\n    // Blocked storage is a browser setting, not a fault: the choice then lasts until the page closes.\n  }",
       "replace": "  } finally {\n  }",
-      "expectRed": "writeTheme does not throw when storage throws"
+      "expectRed": "writeTheme does not throw when storage throws",
+      "cell": "writeTheme does not throw when storage throws"
     },
     {
       "name": "readTheme accepts any stored string as a theme",
       "file": "implementations/web/client/src/theme.ts",
       "find": "return THEMES.find((t) => t === saved) ?? \"system\";",
       "replace": "return (saved as Theme | null) ?? \"system\";",
-      "expectRed": "a saved value that is not a theme reads as system"
+      "expectRed": "a saved value that is not a theme reads as system",
+      "cell": "a saved value that is not a theme reads as system"
     },
     {
       "name": "applyTheme writes to a different attribute",
       "file": "implementations/web/client/src/theme.ts",
       "find": "document.documentElement.dataset.theme = t;",
       "replace": "document.documentElement.dataset.mode = t;",
-      "expectRed": "applyTheme sets data-theme on the root element"
+      "expectRed": "applyTheme sets data-theme on the root element",
+      "cell": "applyTheme sets data-theme on the root element"
     }
   ]
 }

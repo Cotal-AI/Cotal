@@ -10,70 +10,80 @@
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "if (wide || channels.has(channel))",
       "replace": "if (channels.has(channel))",
-      "expectRed": "a > reader is a member of team.backend"
+      "expectRed": "a > reader is a member of team.backend",
+      "cell": "a > reader is a member of team.backend"
     },
     {
       "name": "the wildcard rule stops flagging a whole-breadth pattern as wide",
       "file": "implementations/web/client/src/lib/membership.ts",
       "find": "      wide = true;\n      continue;",
       "replace": "      continue;",
-      "expectRed": "a > reader is a member of alerts"
+      "expectRed": "a > reader is a member of alerts",
+      "cell": "a > reader is a member of alerts"
     },
     {
       "name": "a bounded wildcard matches its bare prefix",
       "file": "implementations/web/client/src/lib/membership.ts",
       "find": "return i < s.length;",
       "replace": "return i <= s.length;",
-      "expectRed": "a bounded wildcard does not match the bare prefix"
+      "expectRed": "a bounded wildcard does not match the bare prefix",
+      "cell": "a bounded wildcard does not match the bare prefix"
     },
     {
       "name": "the channel asked about is no longer treated as known",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "[...knownChannels, channel]",
       "replace": "knownChannels",
-      "expectRed": "a wildcard still matches a channel the known list lacks"
+      "expectRed": "a wildcard still matches a channel the known list lacks",
+      "cell": "a wildcard still matches a channel the known list lacks"
     },
     {
       "name": "the last snapshot of an unreadable feed is still believed",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "if (feedAuthoritative(membership)) {",
       "replace": "if (membership.snapshot) {",
-      "expectRed": "an unreadable feed that still holds the last snapshot gives the distinct senders of the channel's posts"
+      "expectRed": "an unreadable feed that still holds the last snapshot gives the distinct senders of the channel's posts",
+      "cell": "an unreadable feed that still holds the last snapshot gives the distinct senders of the channel's posts"
     },
     {
       "name": "an authoritative feed with nobody in the channel is topped up from traffic",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "    return out;\n  }\n  for (const p of posts)",
       "replace": "  }\n  for (const p of posts)",
-      "expectRed": "an authoritative feed with nobody in the channel gives nobody, whatever was posted"
+      "expectRed": "an authoritative feed with nobody in the channel gives nobody, whatever was posted",
+      "cell": "an authoritative feed with nobody in the channel gives nobody, whatever was posted"
     },
     {
       "name": "posts to other channels name members",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "if (p.msg.channel === channel)",
       "replace": "if (p.msg)",
-      "expectRed": "posts to other channels name no member"
+      "expectRed": "posts to other channels name no member",
+      "cell": "posts to other channels name no member"
     },
     {
       "name": "the payload from.id outranks the authenticated senderId",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "p.senderId ?? p.msg.from.id",
       "replace": "p.msg.from.id ?? p.senderId",
-      "expectRed": "a post names its sender by senderId, not by the payload's from.id"
+      "expectRed": "a post names its sender by senderId, not by the payload's from.id",
+      "cell": "a post names its sender by senderId, not by the payload's from.id"
     },
     {
       "name": "a member listed twice is listed twice",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "if (!id || seen.has(id)) return;",
       "replace": "if (!id) return;",
-      "expectRed": "a member listed twice in the snapshot appears once"
+      "expectRed": "a member listed twice in the snapshot appears once",
+      "cell": "a member listed twice in the snapshot appears once"
     },
     {
       "name": "a blank sender id becomes a member",
       "file": "implementations/web/client/src/lib/members.ts",
       "find": "if (!id || seen.has(id)) return;",
       "replace": "if (seen.has(id as string)) return;",
-      "expectRed": "a blank sender id is not a member"
+      "expectRed": "a blank sender id is not a member",
+      "cell": "a blank sender id is not a member"
     }
   ]
 }
