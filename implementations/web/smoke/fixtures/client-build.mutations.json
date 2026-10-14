@@ -1,14 +1,24 @@
 {
   "command": "pnpm smoke:web-client-build",
-  "suite": ["implementations/web/smoke/client-build.smoke.ts"],
+  "suite": [
+    "implementations/web/smoke/client-build.smoke.ts"
+  ],
   "progressPattern": "^  ok ",
   "mutations": [
     {
-      "name": "a CSS-only package drops out of the license manifest",
+      "name": "the manifest stops reading the module ids of the bundled chunks",
       "file": "implementations/web/client/vite.config.ts",
-      "find": "bundleLicenses([\"@fontsource-variable/inter\"])",
-      "replace": "bundleLicenses([])",
-      "expectRed": "bundle-licenses.json names @fontsource-variable/inter",
+      "find": "          if (p) found.set(p.name, p.root);",
+      "replace": "          void p;",
+      "expectRed": "bundle-licenses.json names react",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the manifest is no longer sorted by package",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": ".sort(([a], [b]) => a.localeCompare(b))",
+      "replace": ".sort(([a], [b]) => b.localeCompare(a))",
+      "expectRed": "bundle-licenses.json is sorted by package",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
