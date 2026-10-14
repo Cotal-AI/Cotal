@@ -140,6 +140,13 @@
       "find": "  if (races.length) parts.push(`${races.length} possible ordering race${races.length === 1 ? \"\" : \"s\"} at start-up, unconfirmed`);\n",
       "replace": "",
       "expectRed": "15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss"
+    },
+    {
+      "name": "O21 the exported wire kind is changed, so the machine looks for a part kind no emitter publishes and every real frame passes through unordered with no gap ever reported",
+      "file": "implementations/web/client/src/lib/eventOrder.ts",
+      "find": "export const KIND = \"ag-ui.frame\";",
+      "replace": "export const KIND = \"ag-ui.frames\";",
+      "expectRed": "1.6 the wire kind is the frame kind"
     }
   ],
   "suite": [

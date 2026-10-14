@@ -77,7 +77,7 @@ const frame = (
     channel: opts.channel ?? "events.local.alice",
     parts: [
       {
-        kind: KIND,
+        kind: "ag-ui.frame",
         protocol: "ag-ui/0.0.57",
         threadId: opts.thread ?? "T1",
         runId: "R1",
@@ -123,7 +123,7 @@ console.log("event-order smoke");
   // module-scope initialisation is concerned, and `app.js` calls `create()` at module scope.
   ok("1.5 loaded BEFORE app.js, which calls create() at module scope", orderAt !== -1 && appAt !== -1 && orderAt < appAt);
 
-  ok("1.6 the wire kind is the frame kind", API.KIND === KIND);
+  ok("1.6 the wire kind is the frame kind", API.KIND === "ag-ui.frame");
   ok("1.7 the first published seq is 1", API.FIRST_SEQ === 1);
 }
 
