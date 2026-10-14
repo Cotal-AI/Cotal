@@ -131,6 +131,7 @@
     "smoke:web-client-build": "pnpm --filter @cotal-ai/web... build && tsx implementations/web/smoke/client-build.smoke.ts",
     "smoke:web-client-copy": "tsx implementations/web/smoke/client-copy.smoke.ts",
     "smoke:web-client-theme": "tsx implementations/web/smoke/client-theme.smoke.ts",
+    "smoke:web-route": "tsx implementations/web/smoke/route.smoke.ts",
     "smoke:web-proxy-order": "tsx implementations/web/smoke/slow-link-serialization.probe.ts",
     "smoke:codex-installed": "pnpm --filter cotal-ai... build && tsx extensions/connector-codex/smoke/codex-installed.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",

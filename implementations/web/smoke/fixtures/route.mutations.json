@@ -1,0 +1,65 @@
+{
+  "command": "pnpm smoke:web-route",
+  "suite": [
+    "implementations/web/smoke/route.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "the /graph path stops mapping to topology",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return fromHash(hash) ?? (path === \"/graph\" ? TOPOLOGY : DEFAULT_ROUTE);",
+      "replace": "return fromHash(hash) ?? DEFAULT_ROUTE;",
+      "expectRed": "the /graph path with an empty hash gives topology"
+    },
+    {
+      "name": "the path wins over a known hash",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return fromHash(hash) ?? (path === \"/graph\" ? TOPOLOGY : DEFAULT_ROUTE);",
+      "replace": "return (path === \"/graph\" ? TOPOLOGY : undefined) ?? fromHash(hash) ?? DEFAULT_ROUTE;",
+      "expectRed": "a known hash wins over the /graph path"
+    },
+    {
+      "name": "an undecodable name stops being caught",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "  } catch {\n    return undefined;\n  }",
+      "replace": "  } finally {\n  }",
+      "expectRed": "an undecodable channel name does not throw"
+    },
+    {
+      "name": "the bare agents hash stops defaulting to status",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "if (a === undefined || a === \"status\") return",
+      "replace": "if (a === \"status\") return",
+      "expectRed": "the bare agents hash defaults to the status group"
+    },
+    {
+      "name": "a dm route drops its second id",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return other ? { view: \"dm\", peer, with: other } : undefined;",
+      "replace": "return other ? { view: \"dm\", peer } : undefined;",
+      "expectRed": "a dm hash with two ids gives peer and with"
+    },
+    {
+      "name": "a hash with surplus segments is accepted",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "if (extra.length > 0) return undefined;",
+      "replace": "",
+      "expectRed": "a dm hash with three ids gives the default route"
+    },
+    {
+      "name": "formatRoute stops encoding the channel name",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return `#/channel/${encodeURIComponent(r.channel)}`;",
+      "replace": "return `#/channel/${r.channel}`;",
+      "expectRed": "formatRoute encodes the channel name with encodeURIComponent"
+    },
+    {
+      "name": "formatRoute writes the host group as status",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return r.group === \"status\" ? \"#/agents\" : `#/agents/${r.group}`;",
+      "replace": "return \"#/agents\";",
+      "expectRed": "parseRoute reads back formatRoute for {\"view\":\"agents\",\"group\":\"host\"}"
+    }
+  ]
+}
