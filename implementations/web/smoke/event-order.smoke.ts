@@ -4,13 +4,13 @@
  *
  * WHY THIS SUITE IS THE ONLY PLACE GAP DETECTION MAY BE CLAIMED FROM. The claim "the dashboard can
  * tell that a frame is missing" is a claim about ORDER, and every part of the machinery that could
- * make it true is in `event-order.js`. Until these cells run, nothing in this tree is entitled to say
+ * make it true is in `client/src/lib/eventOrder.ts`. Until these cells run, nothing in this tree is entitled to say
  * a gap would be noticed, and the build order this lane follows says so explicitly.
  *
- * WHAT IT DRIVES. `event-order.js` is READ OFF DISK and evaluated in a `vm` context with a stub
- * `window`, exactly as the classic `<script>` runs in the page, and the route table it is served
- * through is the REAL `LEGACY_PAGE_FILES` export. Nothing is restated here, so no cell can pass against a version
- * that no longer ships.
+ * WHAT IT DRIVES. `client/src/lib/eventOrder.ts` is imported as the client bundle imports it. The
+ * cells that lift code out of `app.js` hand that code the same module through a stub
+ * `window.COTAL_EVENT_ORDER` until the shell replaces `app.js` (Task 6). Nothing is restated here,
+ * so no cell can pass against a version that no longer ships.
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
  * goes live, and only then surfaces retained history (`SPEC.md` orders the join that way, and the
@@ -40,7 +40,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { LEGACY_PAGE_FILES } from "../src/web.js";
+import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type EventOrder, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -54,37 +54,13 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 
-const KIND = "ag-ui.frame";
+type Note = OrderNote;
+type Order = EventOrder;
 
-type Note = { type: string; key?: string; baseline?: number; expected?: number; got?: number; missing?: number };
-type Result = { emit: unknown[]; held?: boolean; notes: Note[] };
-interface Order {
-  live(entry: unknown): Result;
-  backfill(batch: unknown): Result;
-  readonly settled: boolean;
-  readonly pendingCount: number;
-  state(key: string): { baseline?: number; next?: number; prefixIncomplete: boolean; faulted: boolean } | undefined;
-  readonly chainKeys: string[];
-}
-interface Api {
-  KIND: string;
-  FIRST_SEQ: number;
-  frameOf(entry: unknown): unknown;
-  chainKey(entry: unknown, frame: unknown): string;
-  create(): Order;
-}
-
-/** The file as the page runs it: a classic script against a bare `window`. */
-function load(): Api {
-  const ctx: { window: Record<string, unknown> } = { window: {} };
-  const c = createContext(ctx);
-  runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
-  const api = ctx.window.COTAL_EVENT_ORDER as Api | undefined;
-  assert.ok(api, "event-order.js must register window.COTAL_EVENT_ORDER");
-  return api;
-}
-
-const API = load();
+/** What the cells below call, and what a lifted `app.js` fragment sees as `window.COTAL_EVENT_ORDER`
+ *  until Task 6 retires it. */
+const API = { KIND, FIRST_SEQ, frameOf, chainKey, create: createEventOrder };
+const winOrder = (): Record<string, unknown> => ({ COTAL_EVENT_ORDER: API });
 
 let idSeq = 0;
 /** A feed entry carrying one frame, in the all-activity shape. */
@@ -137,13 +113,8 @@ const straddles = (notes: Note[]) => notes.filter((n) => n.type === "boundary-ho
 
 console.log("event-order smoke");
 
-// ── 1. the seam: served, loaded, registered, and loaded before its consumer ───────────────────────
+// ── 1. the seam: loaded before its consumer, and the constants it publishes ──────────────────────
 {
-  const row = LEGACY_PAGE_FILES["/event-order.js"];
-  ok("1.1 the machine is served by the real route table", row !== undefined);
-  ok("1.2 the served path is the file this suite drove", row?.path === join(webSrc, "event-order.js"));
-  ok("1.3 served as javascript", typeof row?.type === "string" && row.type.includes("javascript"));
-
   const html = readFileSync(join(webSrc, "index.html"), "utf8");
   const orderAt = html.indexOf("/event-order.js");
   const appAt = html.indexOf("/app.js");
@@ -364,7 +335,7 @@ console.log("event-order smoke");
   for (const h of hostile) {
     try {
       API.frameOf(h);
-      o.live(h);
+      o.live(h as FeedEntryLike);
     } catch (e) {
       threw = `${String((e as Error).message)} on ${JSON.stringify(h)}`;
     }
@@ -464,12 +435,11 @@ console.log("event-order smoke");
       roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
       dmSel: null, selected: "*", unread: new Map(), channelMsgs: [] as unknown[],
       orderNotes: [] as { type: string }[], isDemo: false, loadSeq: 0,
-      window: {} as Record<string, unknown>,
+      window: winOrder(),
       feedOrder: undefined as unknown, channelOrder: undefined as unknown,
       __p: undefined as Promise<void> | undefined, __E: undefined as unknown,
     };
     const c = createContext(ctx);
-    runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
     // Keep-last-good + the refusal guard, READ OFF DISK like the order machine beside it: `refresh()`
     // reads every source through it, so a restatement here would let these cells pass against a
     // version that no longer ships.
