@@ -2,8 +2,9 @@
 // write the page makes (deleting a channel). It reads only through the injected `Api` and writes
 // only to the store, so the smoke suites drive it in Node over a fake `Api`.
 //
-// Ported from the old pages: `refresh()`, `select()`, `onMessage()` and `deleteChannel()` in
-// `app.js`, and the rule from `graph.js` that a live feed outranks a bootstrap read issued before it.
+// Ported from the old plain-JS pages: `refresh()`, `select()`, `onMessage()` and `deleteChannel()`
+// from the console page, and the rule from the graph page that a live feed outranks a bootstrap
+// read issued before it.
 import type { ActivityEntry, ActivityPage, ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, Meta, PresenceView, RosterEntry } from "../api/types.js";
 import { createEventOrder, type EventOrder, type FeedEntryLike, type OrderNote } from "../lib/eventOrder.js";
 import { presenceViewMark } from "../lib/roster.js";

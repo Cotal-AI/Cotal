@@ -178,6 +178,14 @@
       "cell": "15.7 a fault is marked as one, and not by colour alone"
     },
     {
+      "name": "O23 the shell draws the notice with a constant role, so a missing frame is announced as politely as a retention note and an assistive reader is never interrupted for it",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "role={notice.fault ? \"alert\" : \"status\"}",
+      "replace": "role=\"status\"",
+      "expectRed": "15.8 the shell draws it from the store's notes",
+      "cell": "15.8 the shell draws it from the store's notes"
+    },
+    {
       "name": "O-B1 the startup stops calling refresh() after it opens the feed, so the dashboard shows nothing until a feed open happens to run the bootstrap",
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "  refresh();\n  return { controller, stop: stopFeed };",

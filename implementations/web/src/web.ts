@@ -267,46 +267,10 @@ function releasePid(path: string): void {
   }
 }
 
-// Content type of the legacy scripts listed in `LEGACY_PAGE_FILES`.
-const jsType = "text/javascript; charset=utf-8";
-
 /** The one condition name for "the membership read did not answer", shared by the HTTP body and the
  *  SSE event so a browser matches ONE token and a test asserts the same token the server emits.
  *  Exported so a test asserts the token the server emits rather than a restated copy. */
 export const MEMBERSHIP_READ_FAILED = "membership-read-failed";
-
-/** The pre-React pages and scripts, kept only so the smokes that lift code out of them still find
- *  the files. The server does not serve from it: the client build is served through
- *  `clientAssets`. Deleted in Task 9 together with `src/web/`. */
-export const LEGACY_PAGE_FILES: Record<string, { path: string; type: string }> = {
-  "/": { path: join(here, "web/index.html"), type: "text/html; charset=utf-8" },
-  "/harness.js": { path: join(here, "web/harness.js"), type: jsType },
-  // Shared message-part renderer for both pages. This map is an allow-list, so a page script that
-  // depends on this file is broken until it has a row here, whatever the HTML requests.
-  "/parts.js": { path: join(here, "web/parts.js"), type: jsType },
-  // Registers an `ag-ui.frame` renderer into the map `parts.js` consults. Served to both pages: a
-  // frame is as likely to arrive on the graph's detail row as in the console body, and a kind that
-  // draws on one page and shows a marker on the other is worse than one that shows a marker on both.
-  "/agui-frame.js": { path: join(here, "web/agui-frame.js"), type: jsType },
-  // The shape-B bootstrap: this page taps live before it reads history, so a frame's `seq` order has
-  // to be imposed by the consumer. Served to `/` only. The graph page reads the backfill into
-  // transient glow and "recently active" buffers and keeps no feed a live arrival appends to, so it
-  // has no merge to order; giving it the machine anyway would imply an ordering guarantee on a
-  // surface where nothing consumes one.
-  "/event-order.js": { path: join(here, "web/event-order.js"), type: jsType },
-  // Keep-last-good + the refusal guard, shared by BOTH pages so they cannot disagree about what a
-  // failed poll does to what is already on screen. Served to `/` and `/graph` alike: the wipe was
-  // measured on the graph page and the corrupted feed on the console page, and one page keeping its
-  // snapshot while the other drops it is the state this file exists to prevent.
-  "/snapshot.js": { path: join(here, "web/snapshot.js"), type: jsType },
-  "/md.js": { path: join(here, "web/md.js"), type: jsType },
-  "/app.js": { path: join(here, "web/app.js"), type: jsType },
-  "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
-  "/graph.js": { path: join(here, "web/graph.js"), type: jsType },
-  "/vendor/marked.umd.js": { path: join(here, "web/vendor/marked.umd.js"), type: jsType },
-  "/vendor/purify.min.js": { path: join(here, "web/vendor/purify.min.js"), type: jsType },
-};
-
 
 /** Content types for the files a client build contains. A file of any other type is not served,
  *  so a stray file dropped into the build directory never becomes a route. */
@@ -374,7 +338,7 @@ export interface ActivitySource {
  * WHY AN AGENT'S EVENT CHANNEL IS NOT ONE OF THEM. `listChannels()` derives a row from every
  * retained concrete subject and the chat stream caps per subject rather than by age, so the list
  * grows by one row per agent that has ever run and those rows never age out. Unfiltered, the channel
- * sidebar is buried under machine streams, the graph page grows a hub node for each, and
+ * sidebar is buried under machine streams, the client's graph grows a hub node for each, and
  * `/api/activity` merges every event channel into a global top-N that a human reading chat did not
  * ask for, and pays to move those messages across the link first. That is a cost that scales with
  * the number of agents ever run, which is the wrong axis entirely.
@@ -835,9 +799,9 @@ async function connectWithoutSeed(
 }
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
- *  observer endpoint (invisible to peers) feeds the page presence, channel history,
- *  and a live message stream — no manager required. Bound to loopback unless the operator opts in
- *  to a different host explicitly. */
+ *  observer endpoint (invisible to peers) feeds the React client in `dist/web` presence, channel
+ *  history and a live message stream, with no manager required. Bound to loopback unless the
+ *  operator opts in to a different host explicitly. */
 export async function web(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; host?: string; port?: string; "no-open"?: boolean; detach?: boolean; creds?: string };
   // Validate the exposure coordinates before connecting to the broker or claiming local artifacts.
@@ -882,7 +846,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   await ep.start();
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
-  // both browser renderers can say so honestly without deriving progress from the heartbeat.
+  // the client can say so honestly without deriving progress from the heartbeat.
   const rosterSnapshot = () => ep.getRoster().map((presence) => ({
     ...presence,
     progress: presence.status === "working" ? progressSignal(undefined, Date.now()) : undefined,
@@ -1098,8 +1062,8 @@ export async function web(args: ParsedArgs): Promise<void> {
       // named 503 lets the open channel keep the messages it already has and say they are stale,
       // which beats a page that arrives after the reader gave up. Measured on a modelled link
       // before this existed: 11360ms here, on a link where `/api/dms` already refused at 8005ms.
-      // The console page re-reads this route on every poll, so an unbounded read here is one slow
-      // channel holding the view open indefinitely.
+      // The client re-reads this route for the open channel on every poll, so an unbounded read
+      // here is one slow channel holding the view open indefinitely.
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
         const page = await within(
@@ -1118,7 +1082,8 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
     // Delete a channel and its content. The only write path on this otherwise read-only
-    // dashboard, so it's POST-gated and guarded by a confirm in the UI. Purges with the
+    // dashboard, so it's POST-gated, and the client reaches it only through the controller's
+    // `deleteChannel`, which its UI calls after the operator confirms. Purges with the
     // channel-purger cred minted at startup (auth mode), the connection creds (open / --creds) or a
     // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
     // channel is a 400.

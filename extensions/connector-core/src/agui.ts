@@ -200,7 +200,8 @@ export const AGUI_PROTOCOL = "ag-ui/0.0.57";
  *
  *   - **3 ADOPTED IT** — `connector-core/src/agent.ts`, `cli/src/commands/join.ts`,
  *     `cli/src/view/mesh-view.ts`. These now render a marker naming the kind.
- *   - **4 DID NOT** — `implementations/web/src/web/app.js`, `.../graph.js`,
+ *   - **4 DID NOT**: the web dashboard's two plain-JS pages (since replaced by a client whose
+ *     `implementations/web/client/src/lib/parts.ts` names the kind),
  *     `examples/02-self-improving-console/harness/observer.ts`,
  *     `examples/04-frontier-faces/tools/studio.mjs`. The two stringify-form copies still leave a
  *     stray separator; the two filter-form ones still leave no trace at all.

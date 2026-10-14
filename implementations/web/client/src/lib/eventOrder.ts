@@ -1,6 +1,6 @@
 // The bootstrap ordering this surface needs because it taps live BEFORE it reads history.
 //
-// THE RACE IS THIS PAGE'S, NOT A HYPOTHETICAL. `app.js` opens the SSE feed and only then calls
+// THE RACE IS THIS CLIENT'S, NOT A HYPOTHETICAL. The boot opens the SSE feed and only then calls
 // `refresh()`, so `onMessage` is already appending live traffic while the backfill fetch is still in
 // flight. For ordinary chat that is harmless: entries carry `ts`, the feed is a window, and a
 // duplicate is caught by message id. For an event frame it is not harmless, because a frame's

@@ -23,7 +23,7 @@
  * cell measures a wall clock.
  *
  * THE OLD GRAPH PAGE'S SCRIPT TRIPWIRE IS GONE. The page's cell 0.1 pinned the list of `<script>`
- * files graph.html named, because the old harness executed them in a vm. There are no page scripts
+ * files the old graph page named, because the old harness executed them in a vm. There are no page scripts
  * any more, so that list has nothing to pin.
  *
  * NOT CARRIED OVER: cells 4.2/4.3 asserted that a unicast naming an unknown recipient does not draw

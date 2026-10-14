@@ -419,7 +419,7 @@ check("…and EXECUTION STOPS for the replayed link as well", rp.routeReached ==
 // `path === "/graph"` therefore stayed green while the ACTUAL printed launch URL is `/`, which would
 // have burned the token, served the page, and never set a session cookie. The one path that matters
 // most was the one path not driven.
-for (const exPath of ["/", "/graph", "/app.js"]) {
+for (const exPath of ["/", "/graph", "/assets/index.js"]) {
   const e = runGateBlock({ exchange: "SESSIONVALUE" }, exPath);
   check(`an exchange on ${exPath} sets the cookie and redirects THERE (the printed launch URL is "/")`,
     e.status === 302 && (e.headers["set-cookie"] ?? "").includes("SESSIONVALUE") && e.headers.location === exPath,
@@ -449,7 +449,7 @@ check("…and EXECUTION STOPS after the redirect (the exchange answers; it does 
 // predicate with `path === "/api/roster"` therefore refused exactly the cases the suite drove and
 // let `/feed`, the static assets and the channel-delete POST fall straight through, surviving 49/49.
 // A gate is worthless if it is a gate for one path.
-const ROUTE_PATHS = ["/", "/feed", "/app.js", "/api/meta", "/api/roster", "/api/channel/delete"];
+const ROUTE_PATHS = ["/", "/feed", "/assets/index.js", "/api/meta", "/api/roster", "/api/channel/delete"];
 check("NON-VACUITY: the refusal sweep covers several paths INCLUDING the destructive one",
   ROUTE_PATHS.length > 1 && ROUTE_PATHS.includes("/api/channel/delete"), ROUTE_PATHS);
 // STRUCTURAL INDEPENDENCE, because a sweep is a SAMPLE and a sample can always be evaded — the path

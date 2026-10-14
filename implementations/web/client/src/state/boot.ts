@@ -3,8 +3,9 @@
 // says outranks a read issued before it: the controller drops a bootstrap value for a source the
 // feed has already spoken for.
 //
-// Ported from the end of `app.js` (`refresh(); connect();` and the `open` handler that calls
-// `refresh()` again) and the boot of `graph.js`, which used to chain the feed behind the bootstrap.
+// Ported from the end of the old plain-JS console page (`refresh(); connect();` and the `open`
+// handler that calls `refresh()` again) and the boot of the old graph page, which used to chain the
+// feed behind the bootstrap.
 import type { FeedHandlers } from "../api/feed.js";
 import { createController, type Api, type Controller } from "./controller.js";
 import type { Store } from "./store.js";

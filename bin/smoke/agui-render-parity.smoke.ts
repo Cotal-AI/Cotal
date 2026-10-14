@@ -34,8 +34,8 @@
  *
  * ── WHAT THIS DOES NOT CLAIM ─────────────────────────────────────────────────────────────────────
  * It proves the two renderers produce identical text for the same frame. It does NOT open a browser,
- * does not assert rendered HTML, and does not prove the file is served — `web`'s own suite owns the
- * route table, the script order, and the dispatch through `parts.js`. Parity of the text is not
+ * does not assert rendered HTML, and does not prove the module is bundled. `web`'s own suites own
+ * the served routes and the dispatch through `parts.ts`. Parity of the text is not
  * delivery of the pixels, and the two failures look nothing alike.
  *
  * Run: pnpm smoke:agui-render-parity
@@ -140,7 +140,7 @@ const CORPUS: { name: string; part: unknown }[] = [
 
   // THE MAP-VERSUS-OBJECT DIVERGENCE, both halves. With plain-object accumulators the browser would
   // flush these in ascending NUMERIC order while the node Maps flush in INSERTION order. This cell
-  // is the reason `agui-frame.js` uses Map, and it fails the moment someone "simplifies" it back.
+  // is the reason `aguiFrame.ts` uses Map, and it fails the moment someone "simplifies" it back.
   { name: "unterminated streams with INTEGER-LIKE ids (object keys would reorder them)", part: frame(
     { type: T.TEXT_MESSAGE_START, messageId: "10" },
     { type: T.TEXT_MESSAGE_CONTENT, messageId: "10", delta: "ten" },
@@ -245,8 +245,9 @@ ok("CONTROL: the divergence report carries NO content from either string",
 // ── The line-start invariant, on the BROWSER's output ─────────────────────────────────────────────
 // The predicate is IMPORTED from the node renderer rather than restated, so both surfaces are held
 // to one definition of "safe" and a change to it cannot pass here while failing there. This matters
-// on the browser specifically: `app.js` pipes the body through marked, so a payload line starting
-// `- ` or `# ` opens a markdown block and payload restructures the frame's own scaffolding.
+// on the browser specifically: message bodies are meant for the client's markdown renderer
+// (`lib/md.ts`, over marked), so a payload line starting `- ` or `# ` would open a markdown block
+// and payload would restructure the frame's own scaffolding.
 let checkedLines = 0;
 for (const { name, part } of CORPUS) {
   const out = browser(part);
@@ -291,8 +292,8 @@ ok("every event type the emitter defines is exercised by the parity corpus",
 console.log(`
 ── what this suite does NOT establish ──────────────────────────────────────────
   · It compares TEXT. It does not open a browser, does not assert rendered DOM,
-    and does not prove agui-frame.js is served or loaded. The web package's own
-    suite owns the route table, the script order and dispatch through parts.js.
+    and does not prove aguiFrame.ts is bundled or loaded. The web package's own
+    suites own the served routes and dispatch through parts.ts.
   · The corpus is SYNTHETIC. It covers every event type the emitter enumerates
     (measured above, not promised here), but it cannot cover a SHAPE nobody
     thought of — an ordering, a field combination, a payload no cell describes.

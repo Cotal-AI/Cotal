@@ -242,7 +242,7 @@ check("endpoint.ts declares the read's channel derivation in one extractable sta
 // with the server-derived value, and the cell requires the verified value to win. A cell that only
 // checked "did not throw", or that the field is non-empty, would pass on the defect.
 //
-// The cells used to lift `onMessage` and the backfill loop out of `app.js` and `graph.js` with
+// The cells used to lift `onMessage` and the backfill loop out of the old console and graph pages with
 // TypeScript's parser, and a long run of controls proved the lift could not be fooled by a decoy in
 // a comment, a string, a hashbang or a `<!--`. The controller is imported, not lifted, so there is
 // no extractor left for a decoy to fool and those controls retired with it.

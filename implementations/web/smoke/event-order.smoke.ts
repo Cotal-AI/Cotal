@@ -123,7 +123,7 @@ console.log("event-order smoke");
 
 // ── 1. the seam: armed before its consumer, and the constants it publishes ──────────────────────
 {
-  // The page used to load the machine as a classic script ahead of `app.js`, which called
+  // The old page used to load the machine as a classic script ahead of its console script, which called
   // `create()` at module scope. The controller imports it, and arms the feed's machine when it is
   // built, so an arrival before the first bootstrap is held by a machine rather than drawn
   // unordered or thrown on.
@@ -568,12 +568,14 @@ console.log("event-order smoke");
     notice([{ type: "gap", expected: 4, got: 7, missing: 3 }])?.fault === true && /missing/.test(gapText)
       && notice([{ type: "prefix-incomplete", baseline: 900 }])?.fault === false);
 
-  // The rendering half: the shell actually calls it. Without this the function could be dead.
+  // The rendering half: the shell actually calls it. Without this the function could be dead. The
+  // line's role must follow the fault flag, so a missing frame is announced and a retention note is not.
   const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
   const statusLines = /function StatusLines\(\)[\s\S]*?\n}\n/.exec(appSrc)?.[0] ?? "";
   ok("15.8 the shell draws it from the store's notes",
     /\borderNotice\(/.test(statusLines) && /useStore\(store, \(s\) => s\.orderNotes\)/.test(statusLines)
-      && /id="order-notice"/.test(statusLines) && /\{notice\.text\}/.test(statusLines), statusLines);
+      && /id="order-notice"/.test(statusLines) && /\{notice\.text\}/.test(statusLines)
+      && /notice\.fault/.test(statusLines), statusLines);
   // The feed lane's notes are the feed's, not a channel's, so the line is drawn with NO channel open.
   ok("15.9 and outside the channel pane, so it shows with no channel open",
     /^\s*<StatusLines \/>\s*$/m.test(appSrc), appSrc.match(/.*<StatusLines.*/g));

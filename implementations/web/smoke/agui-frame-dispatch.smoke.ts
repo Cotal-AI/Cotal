@@ -70,7 +70,7 @@ ok("the run is bracketed — started and finished both visible",
   drawn.includes("started") && drawn.includes("finished"), { len: drawn.length });
 
 // A frame carries NO text part by design, so this is the whole point of the file: content that was
-// unreachable through `parts.js` alone is now reachable.
+// unreachable through `parts.ts` alone is now reachable.
 ok("REGRESSION ORACLE: the frame carries no `text` part, so nothing else could have shown this",
   !("text" in FRAME) && (FRAME as { data?: unknown }).data === undefined);
 

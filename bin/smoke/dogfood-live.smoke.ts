@@ -8,7 +8,8 @@
  *     proves it); help + <TAB> list `web` from the manifest cache.
  *  C. `cotal up --detach` (JWT auth), then foreground and detached `cotal web`: the dashboard
  *     refuses an unauthenticated request, exchanges its single-use launch link for a session, and
- *     over that session serves /, /app.js (packaged assets), and /api/meta against the live mesh.
+ *     over that session serves /, the page's script under /assets/ (packaged assets), and /api/meta
+ *     against the live mesh.
  *     Detached launch is PID-bound, root-pinned, logged, ready before return, and owned by `down`.
  *  D. `ext remove @cotal-ai/web`; `web` is unknown again.
  *

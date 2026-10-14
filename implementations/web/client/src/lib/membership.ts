@@ -1,6 +1,6 @@
 // The membership model: what the header pill says about the mesh's membership feed, and how an
-// agent's subscriptions expand into channel spokes. Ported from `graph.js` (`setFeed`,
-// `feedAuthoritative`, `memberChannels`, `patternMatches`). Pure: no window, no document, no I/O.
+// agent's subscriptions expand into channel spokes. Ported from the old plain-JS graph page
+// (`setFeed`, `feedAuthoritative`, `memberChannels`, `patternMatches`). Pure: no window, no document, no I/O.
 import type { DashboardState } from "../state/types.js";
 
 /** A snapshot older than this is stale. The daemon polls well inside it, so an older `asOf` means

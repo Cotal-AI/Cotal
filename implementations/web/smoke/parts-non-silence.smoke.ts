@@ -1,7 +1,7 @@
 /**
  * The dashboard must never render a message part as nothing.
  *
- * `app.js` and `graph.js` each carried
+ * The old console and graph pages each carried
  *   (msg.parts || []).map((p) => (p.kind === "text" ? p.text : JSON.stringify(p.data))).join(" ")
  * and `JSON.stringify(undefined)` returns the VALUE `undefined`, which `join` coerces to "". So a
  * part with no `data` field vanished, and its KIND was never named. A data-BEARING extension part
@@ -9,9 +9,9 @@
  * replace it with a marker.
  *
  * The downstream consequence differed by surface, and saying "both showed a blank line" was wrong:
- * `app.js` renders through `MD.render(text || "")`, so an empty rendering really is a blank body,
- * while `graph.js`'s detail row renders `esc(m.text).slice(0, 160) || "—"` and showed a visible dash
- * in a row still carrying mode, sender and channel. Both failed to name the kind; only one looked
+ * the console page rendered through `MD.render(text || "")`, so an empty rendering really was a
+ * blank body, while the graph page's detail row rendered `esc(m.text).slice(0, 160) || "—"` and
+ * showed a visible dash in a row still carrying mode, sender and channel. Both failed to name the kind; only one looked
  * like nothing had arrived.
  *
  * WHAT THESE CELLS DRIVE, AND WHY IT IS NOT A RESTATEMENT OF THE FIX. The renderer under test is
@@ -19,13 +19,13 @@
  * here re-declares the renderer, so a cell cannot pass against a version of the function that no
  * longer exists.
  *
- * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path, the fallbacks `parts.js` takes
+ * WHAT THEY DO NOT CLAIM. These cells measure the NO-RENDERER path, the fallbacks `parts.ts` takes
  * for a kind nothing has taught it, and that is now a precondition rather than the only case, since
- * `parts.js` consults a renderer registry and `agui-frame.js` registers into it. The precondition is
+ * `parts.ts` consults a renderer registry and `aguiFrame.ts` registers into it. The precondition is
  * asserted below, not assumed. Frame RENDERING and its parity with the node renderer belong to
  * `agui-frame-dispatch.smoke.ts` and `bin/smoke/agui-render-parity.smoke.ts`. The dashboard's
  * `events.*` filter is still separate, unbuilt work: the console's filter lives in `MeshView`, which
- * these pages do not use. Nothing here says how a frame should be drawn.
+ * the dashboard client does not use. Nothing here says how a frame should be drawn.
  *
  * AND THE EXACT EDGE OF THE REACH CLAIM. Two things are checked and they are not the same thing: the
  * renderer RETURNS the marker, and the shell CALLS it. That last cell exists because a review replaced
