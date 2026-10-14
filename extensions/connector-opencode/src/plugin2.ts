@@ -154,6 +154,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
+  const controller = new AbortController(); // aborted when teardown begins
 
   /** Create the session this agent owns and announce its id to the serve shim, exactly as
    *  plugin.ts's `sessionReady` does (the shim scans stderr for this exact line to find which
@@ -218,10 +219,11 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  a running turn (busy), matching 1.x's coalesce-avoidance. `override` is a bare nudge body (a
    *  focus @mention pull); it surfaces nothing to ack. */
   async function drive(override?: string): Promise<void> {
-    if (busy || submitting) return;
+    // A turn driven once teardown has begun would outlive the seat, and its batch would never be acked.
+    if (busy || submitting || controller.signal.aborted) return;
     const id = await ensureSession();
     if (!id) return; // no visible session yet — the boot task above retries via sessionReady
-    if (busy || submitting) return; // rechecked after the await, same reason as plugin.ts's `drive`
+    if (busy || submitting || controller.signal.aborted) return; // rechecked after the await, same reason as plugin.ts's `drive`
     // The floor: while boot text exists and its gate is closed, nothing else goes out (the 1.x
     // boot floor in `drive` without the `pendingWake` slot, which 2.x does not have).
     const boot = bootPending() ? bootPrompt : undefined;
@@ -306,7 +308,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     // starts meanwhile sets `busy` and `drive` declines instead of submitting into it.
     void (async () => {
       await submitting;
-      if (controller.signal.aborted) return; // teardown began during the wait: a turn driven now would outlive the seat
       if (ended !== ev.durable) return; // a later turn ended during the wait: only its task leaves out the batch that turn failed
       if (bootPending() || agent.pendingWake((item) => carried.has(item.recvKey)) > 0) void drive();
     })();
@@ -361,7 +362,6 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   // The event stream — a detached loop, never awaited here (setup must return). Maps the measured
   // event names (fx105/measurements.md) to presence and turn-end/ack the same way plugin.ts's own
   // event switch does, trimmed to this adapter's single-session scope (no swap, no `/new` reset).
-  const controller = new AbortController();
   const eventLoop = (async () => {
     try {
       for await (const ev of ctx.event.subscribe({ signal: controller.signal })) {
