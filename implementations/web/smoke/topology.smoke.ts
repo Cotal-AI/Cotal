@@ -61,7 +61,15 @@ const ROSTER = [agent("A", "ana", "working", { meta: { connector: "claude" } }),
   ok("an agent with no subscription has no link", !m.links.some((l) => l.source === "C"), m.links);
   ok("every membership link is cold when nothing flowed", m.links.every((l) => !l.hot), m.links);
   const stale = model({ roster: ROSTER, channels: [chan("alerts")], membership: { ...feed([entry("A", ["alerts"])]), unreadable: "read failed" } });
-  ok("an unreadable feed keeps the links of the last snapshot it held", stale.links.length === 1 && stale.links[0]!.kind === "member", stale.links);
+  ok("an unreadable feed draws no membership overlay", stale.links.length === 0, stale.links);
+  const heldWide = model({ roster: ROSTER, channels: [chan("alerts")], membership: { ...feed([entry("A", [">"]), entry("B", ["solo"])]), unreadable: "read failed" } });
+  const absent = model({ roster: ROSTER, channels: [chan("alerts")], membership: {} });
+  ok("an unreadable feed holding a snapshot yields the same nodes and links as an absent feed", JSON.stringify(heldWide) === JSON.stringify(absent), heldWide);
+  ok("an unreadable feed marks no wide badge and draws no channel of its own", node(heldWide, "A")?.wide !== true && !heldWide.nodes.some((n) => n.label === "solo"), heldWide.nodes);
+  const staleGhost = model({ roster: ROSTER, membership: { ...feed([entry("Z", ["alerts"])]), unreadable: "read failed" } });
+  ok("an unreadable feed brings in no member the roster lacks", node(staleGhost, "Z") === undefined, staleGhost.nodes);
+  const staleChat = model({ roster: ROSTER, membership: { ...feed([entry("A", ["alerts"])]), unreadable: "read failed" }, recent: [chat("alerts", "A")] });
+  ok("chat still draws under an unreadable feed, as a traffic link", staleChat.links.length === 1 && staleChat.links[0]!.kind === "traffic", staleChat.links);
   const unlisted = model({ roster: ROSTER, membership: feed([entry("A", ["solo"])]) });
   ok("a concrete subscription to an unlisted channel still draws its channel", unlisted.nodes.some((n) => n.kind === "channel" && n.label === "solo") && unlisted.links.length === 1, unlisted);
   const ghost = model({ roster: ROSTER, membership: feed([entry("Z", ["alerts"])]) });

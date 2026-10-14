@@ -40,8 +40,9 @@ export const channelNodeId = (channel: string): string => `#${channel}`;
  *
  *  Agent nodes are keyed by roster id and labelled by roster name. A chat message may add its sender
  *  and its channel. A unicast or an anycast adds nothing, and a message payload's own name is never a
- *  label. A channel node comes from the channel list, a chat message or a membership subscription.
- *  `recent` is the caller's bounded window of messages; each entry's `ts` is what `now` is measured against. */
+ *  label. A channel node comes from the channel list, a chat message or a membership subscription,
+ *  never from a unicast or an anycast. An unreadable membership feed contributes no links, no wide
+ *  badges and no channels; the roster, chat and the channel list still draw. `recent` is the caller's bounded window of messages; each entry's `ts` is what `now` is measured against. */
 export function topologyModel(input: {
   roster: RosterEntry[];
   channels: ChannelInfo[];
@@ -74,7 +75,8 @@ export function topologyModel(input: {
   for (const c of chats) hubs.add(c.channel);
 
   // A subscriber the roster never announced has no presence behind it, so it reads as offline.
-  const members = (membership.snapshot?.members ?? []).filter((m) => m.id);
+  // An unreadable feed draws no membership overlay: its last snapshot is no longer what is.
+  const members = (membership.unreadable === undefined ? membership.snapshot?.members ?? [] : []).filter((m) => m.id);
   for (const m of members) {
     for (const ch of memberChannels(m.live ?? [], m.durable ?? [], []).channels.keys()) hubs.add(ch);
   }
