@@ -1,6 +1,7 @@
 {
   "command": "pnpm smoke:web-presence-view",
   "suite": [
+    "implementations/web/smoke/controller-harness.ts",
     "implementations/web/smoke/presence-view.smoke.ts"
   ],
   "mutations": [
@@ -66,6 +67,20 @@
       "find": "if (!from || !to || from === to) continue;",
       "replace": "if (!from || !to) continue;",
       "expectRed": "3.8 dmPeers rolls pairs up per peer"
+    },
+    {
+      "name": "a poll drops the observer-view mark, so the next refresh tells the reader the roster is current while the presence watch is still silent",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if (rosterView && !stale.some((s) => s.name === \"roster\")) stale.push(rosterView);\n",
+      "replace": "",
+      "expectRed": "2.5 a poll cannot erase the observer-view mark"
+    },
+    {
+      "name": "the controller stores a presence-view verdict without marking the roster source, so a blind observer shows last-known rows as though they were current",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      markStale(\"roster\", presenceViewMark(view));\n",
+      "replace": "",
+      "expectRed": "2.1 the client applies presence-view events"
     }
   ]
 }

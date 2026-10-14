@@ -36,8 +36,9 @@ import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
-import ts from "typescript";
 import { assertValidChannel, chatSubject, parseSubject, spacePrefix } from "@cotal-ai/core";
+import type { FeedMessage } from "../client/src/api/types.js";
+import { bootReads, harness, page, type Harness } from "./controller-harness.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -235,726 +236,230 @@ check("endpoint.ts declares the read's channel derivation in one extractable sta
     /not a chat subject/.test(String((threw as { message?: string })?.message)), { threw: String(threw) });
 }
 
-// All four browser ingresses. Each shipped statement is executed against a payload whose claim
-// DISAGREES with the server-derived value, and the cell requires the verified value to win. A cell
-// that only checked "did not throw", or that the field is non-empty, would pass on the defect.
+// The browser ingresses. The Monitor and the Graph both read the dashboard controller now, so there
+// are two ingresses, not four: the live feed (`onMessage`) and the `/api/activity` backfill
+// (`refresh`). Each is driven through the shipped controller with a payload whose claim DISAGREES
+// with the server-derived value, and the cell requires the verified value to win. A cell that only
+// checked "did not throw", or that the field is non-empty, would pass on the defect.
 //
-// EACH PATTERN IS ANCHORED ON SOMETHING UNIQUE TO ITS STATEMENT, AND THAT IS NOT FUSSINESS — it was
-// measured. A looser `for (const e of activity) if (…` matched app.js:218, an unrelated name-cache
-// loop, because `exec` returns the FIRST match. **The extraction cell passed on that wrong statement
-// and the EXECUTION cell is what went red**, which is the whole argument for executing rather than
-// matching: a text-only suite would have been green while measuring a line that has nothing to do
-// with channel authority. The assignment half is left loose on purpose, so a mutation that keeps the
-// shape but writes the wrong field is caught by behaviour rather than by spelling.
+// The cells used to lift `onMessage` and the backfill loop out of `app.js` and `graph.js` with
+// TypeScript's parser, and a long run of controls proved the lift could not be fooled by a decoy in
+// a comment, a string, a hashbang or a `<!--`. The controller is imported, not lifted, so there is
+// no extractor left for a decoy to fool and those controls retired with it.
 const CLAIMED = "attacker-claimed";
 const VERIFIED = "policed-channel";
-
-// ── EXTRACTING A STATEMENT IS A PARSE, AND A REGEX IS THE WRONG PARSER ───────────────────────────
-// This helper exists because the previous form of these two SSE cells SURVIVED a real mutation, and
-// the survival is the whole argument for the rewrite.
-//
-// The pattern was `/^ *(?:if \([^)]*\) )?msg\.channel = entry\.channel;/m` — an optional one-line
-// guard in front of the assignment. Rewrite the shipped guard with BRACES:
-//     if (entry.channel) {
-//       msg.channel = entry.channel;
-//     }
-// and the inner assignment sits alone on its own line, so the pattern matches it with the optional
-// group ABSENT. The cell then executes a bare unconditional assignment — which is exactly the
-// correct behaviour — while the shipped file does the opposite. Positive cell green, hostile cell
-// green, 63/63, rc=0, with a fail-open surface shipped. MEASURED, not reasoned: reproduced by
-// bracing both live ingresses and re-running this suite.
-//
-// So the rule earned here: **anchoring a pattern is not the same as capturing a statement.** The
-// earlier hardening added the optional-guard prefix and claimed "capture the whole statement"; that
-// claim was FALSE the moment the control-flow context was a block rather than a line, because a
-// guard's own body is a syntactically complete statement that behaves correctly in isolation.
-// Any fix that stays in regex-space has the same hole one reformat away.
-//
-// The answer is to stop extracting a statement at all and execute the whole CONTAINING FUNCTION, so
-// every guard around the assignment is inside the code under test by construction. Brace-matching
-// from the function header is a structural parse: it cannot return a fragment.
-//
-// ⚠️ BUT "NOT A FRAGMENT" IS NOT "IS CODE", AND THAT DISTINCTION COST THIS SUITE A SECOND FALSE
-// GREEN. `indexOf` takes the FIRST textual occurrence of the header, and a copy of the function
-// sitting inside a COMMENT is a first occurrence. MEASURED: with a commented copy of the safe
-// function placed above the real one, and the real one regressed to the guarded (vulnerable) clear,
-// `node --check` passed and this suite printed **82 checks passed, rc=0** — grading the comment
-// while the shipped page was exploitable. A positive control proves a pattern CAN match something;
-// it does NOT prove what it matched is CODE.
-//
-// ⚠️ AND THE FIRST REMEDY FOR THAT WAS ITSELF DEFEATED — TWICE. It counted raw `/*` and `*/`
-// before the header and required one exact textual spelling. Both halves were exploitable:
-//   - a plain `const x = "*/";` in ordinary source makes the raw counts BALANCE at a header that
-//     really is inside a comment, so the "not in a comment" check returns false for a commented
-//     copy; and
-//   - the uniqueness pin was tied to one spelling, so changing the REAL declaration to
-//     `function onMessage (entry) {` (one space) left the expected header occurring exactly once —
-//     inside the comment.
-// Together: `node --check` valid, both anchor cells green, **101 checks passed, rc=0**, and the
-// shipped handler still retaining `victim-channel` on non-chat messages.
-//
-// THE DEFENCE OF "NOT A FULL TOKENIZER" DID NOT HOLD, AND THAT IS THE LESSON. Counting raw
-// delimiters IS a partial tokenizer — one that silently mis-reads ordinary JavaScript strings. The
-// choice was never "heuristic vs tokenizer"; it was "an unreliable tokenizer I wrote vs a correct
-// one already in the toolchain". A REMEDY IS NOT EXEMPT FROM THE CLASS IT REMEDIES, and the third
-// version of this guard is the first that stops guessing.
-//
-// So: use TypeScript's own parser, which is already a dependency. Comments are NOT AST nodes, so a
-// commented copy is invisible here BY CONSTRUCTION rather than by a check that can be balanced out;
-// string contents are tokenized properly; and the match is on the DECLARATION, so whitespace
-// spelling is irrelevant. This cannot return a fragment, a comment, or a string.
-function findDeclarations(src: string, file: string, name: string): { text: string; start: number }[] {
-  // Same refusal as the backfill finder, and for the same measured reason — see HTML_COMMENT_FORM.
-  if (HTML_COMMENT_FORM.test(src)) return [];
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const found: { text: string; start: number }[] = [];
-  const visit = (n: ts.Node): void => {
-    if (ts.isFunctionDeclaration(n) && n.name?.text === name) found.push({ text: src.slice(n.getStart(sf), n.end), start: n.getStart(sf) });
-    ts.forEachChild(n, visit);
-  };
-  visit(sf);
-  return found;
-}
-
-/** The one executable `onMessage` in `file`. `undefined` if absent OR ambiguous — never a guess. */
-function extractFunction(src: string, file: string): string | undefined {
-  const all = findDeclarations(src, file, "onMessage");
-  return all.length === 1 ? all[0].text : undefined;
-}
-
-// (The header-string constants that used to live here are gone. Anchoring on an exact spelling was
-// itself an exploited defect: changing the real declaration to `function onMessage (entry) {` moved
-// the only textual match into a commented decoy. The parser matches the DECLARATION, so there is no
-// spelling to vary.)
-
-/** Every `for (… of activity)` loop in `src` that assigns one `.channel` from another — the backfill
- *  ingress, identified STRUCTURALLY rather than by pattern.
- *
- *  This replaced a regex searched over comment-blanked text, and the reason is the whole lesson of
- *  this file: **blanking comments is a list of trivia forms, and a list is never finished.** The
- *  text approach was defeated three times, each time by a form the previous fix had not enumerated —
- *  a plain block comment, a `*&#47;` inside an ordinary string, and finally a leading `#!` hashbang
- *  plus the classic-script `<!--` form, both of which the browser accepts and neither of which is a
- *  comment range. Trivia cannot produce a `ForOfStatement`, so no form of it — enumerated or not —
- *  can be mistaken for this. The refusal is the same as `extractFunction`'s: absent OR ambiguous
- *  yields `undefined`, never a guess. */
-/** The one form a parser cannot rescue: the classic-script `<!--` comment.
- *
- *  MEASURED, and it is worse than a blanking gap. TypeScript parses the text after `<!--` as CODE;
- *  the BROWSER, which loads these files as classic scripts, treats it as a comment. **The suite's
- *  model of what is code is then not the page's**, and no amount of AST work reconciles that — a
- *  safe copy hidden behind `<!--`, with the real overwrite DELETED, is found as the single match
- *  and graded as though it ran, while the shipped page performs no overwrite at all.
- *
- *  So its presence is a REFUSAL, not something to blank or to enumerate. The match is deliberately
- *  crude and unanchored: a false positive (the sequence inside a string) refuses and costs a red
- *  cell, while a false negative grades a page that does not exist. Those are not symmetric, and the
- *  cheap direction is the safe one. The shipped files contain none — asserted below, not assumed. */
-const HTML_COMMENT_FORM = /<!--|-->/;
-
-function isBackfillLoop(n: ts.Node): boolean {
-  const assignsChannelFromChannel = (root: ts.Node): boolean => {
-    let hit = false;
-    const walk = (x: ts.Node): void => {
-      if (
-        ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isPropertyAccessExpression(x.left) && x.left.name.text === "channel" &&
-        ts.isPropertyAccessExpression(x.right) && x.right.name.text === "channel"
-      ) hit = true;
-      ts.forEachChild(x, walk);
-    };
-    walk(root);
-    return hit;
-  };
-  return ts.isForOfStatement(n) && ts.isIdentifier(n.expression) && n.expression.text === "activity" &&
-    assignsChannelFromChannel(n.statement);
-}
-
-function findBackfillLoops(src: string, file: string): string[] {
-  if (HTML_COMMENT_FORM.test(src)) return [];
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const assignsChannelFromChannel = (root: ts.Node): boolean => {
-    let hit = false;
-    const walk = (x: ts.Node): void => {
-      if (
-        ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-        ts.isPropertyAccessExpression(x.left) && x.left.name.text === "channel" &&
-        ts.isPropertyAccessExpression(x.right) && x.right.name.text === "channel"
-      ) hit = true;
-      ts.forEachChild(x, walk);
-    };
-    walk(root);
-    return hit;
-  };
-  const out: string[] = [];
-  const visit = (n: ts.Node): void => {
-    if (
-      ts.isForOfStatement(n) && ts.isIdentifier(n.expression) && n.expression.text === "activity" &&
-      assignsChannelFromChannel(n.statement)
-    ) out.push(src.slice(n.getStart(sf), n.end));
-    ts.forEachChild(n, visit);
-  };
-  visit(sf);
-  return out;
-}
-
-/** The one backfill loop in `file`. `undefined` if absent OR ambiguous — never a guess. */
-function extractBackfill(src: string, file: string): string | undefined {
-  const all = findBackfillLoops(src, file);
-  return all.length === 1 ? all[0] : undefined;
-}
-
-/** The FUNCTION that contains the backfill loop, whole.
- *
- *  Identifying the loop is not the same as identifying a LIVE loop, and slicing the loop alone
- *  discards the control flow that decides whether it runs. Measured: prefixing the shipped loop
- *  with five characters — `if(0)` — left the finder returning one match, the suite executing the
- *  stripped loop, and all 109 cells green while the live page kept the forgery. Deadness INSIDE the
- *  slice was visible; deadness AROUND it was not.
- *
- *  Carrying just the enclosing statement is not enough either, and that was measured too: in
- *  `app.js` the loop sits in the `else` arm of a live four-way chain, so the enclosing statement is
- *  real page logic containing `await`. The honest unit is therefore the whole function — the same
- *  move already made for `onMessage`, and it covers the class rather than enumerating it: `if(0)`,
- *  `while(0)`, an early `return`, or any future spelling of "this never runs" all fail the same
- *  behaviour cell, because the function is executed rather than inspected. */
-function extractBackfillFunction(src: string, file: string): string | undefined {
-  if (HTML_COMMENT_FORM.test(src)) return undefined;
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const found: string[] = [];
-  const visit = (n: ts.Node): void => {
-    if (isBackfillLoop(n)) {
-      let p: ts.Node | undefined = n;
-      while (p !== undefined && !ts.isFunctionDeclaration(p)) p = p.parent;
-      if (p !== undefined && ts.isFunctionDeclaration(p)) found.push(src.slice(p.getStart(sf), p.end));
-    }
-    ts.forEachChild(n, visit);
-  };
-  visit(sf);
-  return found.length === 1 ? found[0] : undefined;
-}
-
-/** Executes an extracted async backfill function by its own CALL EXPRESSION and returns the entry
- *  list it mutated. A call expression rather than a bare name because the two shipped surfaces do
- *  not take the batch the same way: `app.js` fetches it inside `refresh()`, while `graph.js` seeds
- *  from a batch handed in. Both are still the shipped function, driven.
- *  The stubs are deliberately inert: every one of them is a no-op or an empty collection, so the
- *  only thing that can put a channel on a message is the shipped code under test. */
-async function runBackfillFunction(code: string, call: string, file: string, entries: unknown[]) {
-  // `/api/activity` answers a bounded PAGE; the entries under test ride inside it, exactly as the
-  // server sends them. `entries` is still the array the shipped code mutates, so the cells that read
-  // it back are unaffected.
-  const json = (u: string): unknown =>
-    u.includes("/api/activity")
-      ? { entries, partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }
-      : u.includes("/api/membership") ? { members: [] } : [];
-  const ctx: Record<string, unknown> = {
-    // `ok: true` is part of the stub, not decoration: shipped code that checks the status before
-    // trusting the body reads `r.ok`, and a response object without it is a stub that reports every
-    // fetch as failed. That drives the refusal arm of a caller this suite is not testing.
-    fetch: async (u: string) => ({ ok: true, json: async () => json(u) }),
-    __entries: entries,
-    // app.js
-    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {}, setStale() {},
-    roster: [], channels: null, dms: [], activity: [], agentSel: null, dmSel: null, selected: "*",
-    // graph.js
-    $: () => ({ textContent: "" }), ensureHub: () => ({}), updateRoster() {}, applyMembership() {},
-    membershipUnreadable() {},
-    agents: new Map(), chatHit() {}, dmHit() {}, now: () => 0, recent: [] as unknown[],
-    partsText: () => "", shortId: (x: unknown) => x, physics() {}, fitTarget: () => ({ x: 0, y: 0, scale: 1 }),
-    cam: { x: 0, y: 0, scale: 1 }, alpha: 0,
-    __p: undefined,
-    // `app.js`'s `refresh()` re-arms the shape-B ordering machine before it fetches, so the machine
-    // is a collaborator of the BACKFILL path too. Loaded from the shipped file, not stubbed, for the
-    // same reason as the live path: the entry list this function returns is the one the shipped merge
-    // produced, and a stub would let a broken merge report a correct channel.
-    window: {} as Record<string, unknown>,
-    feedOrder: undefined, channelOrder: undefined, orderNotes: [] as unknown[],
-    noteOrder() {},
-    // The poll reads the space name as a source, and its apply writes the document title. An apply
-    // that throws aborts the whole poll, so a page-like context has to supply the page globals the
-    // shipped code uses or every cell here measures the harness rather than the backfill.
-    document: { title: "" },
-  };
-  const c = createContext(ctx);
-  runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
-  // Keep-last-good + the refusal guard: both backfill paths read every source through it, so it is a
-  // collaborator here for the same reason the order machine is, and it is READ OFF DISK rather than
-  // stubbed so a change to what a refused read does cannot pass unnoticed.
-  runInContext(read("../src/web/snapshot.js"), c, { filename: "snapshot.js" });
-  if (file.includes("app.js")) {
-    // The single-flight state the shipped backfill reads. TAKEN FROM THE FILE, not restated here: one
-    // bootstrap must pair with one settle, so coalescing overlapping callers is part of the backfill
-    // path, and a hand-written stand-in would let this harness keep running after the real declaration
-    // changed underneath it.
-    const decls = read("../src/web/app.js").match(/^let (?:refreshing|selecting|staleNow) = .*$/gm) ?? [];
-    assert.equal(decls.length, 3, "app.js must declare the single-flight and stale-source state this harness runs");
-    runInContext(decls.join("\n"), c, { filename: "app.js (state)" });
-  }
-  runInContext(`${code}\n__p = ${call};`, c, { filename: file });
-  await (ctx.__p as Promise<void>);
-  // `entries` is returned rather than `ctx.activity` ON PURPOSE. In `app.js` the backfill assigns
-  // to a page-global and the two are the same array; in `graph.js` `activity` is a LOCAL from a
-  // destructured `Promise.all`, so `ctx.activity` would never be touched and every cell reading it
-  // would pass vacuously on the untouched empty default. The entries array is the object the
-  // shipped code actually mutates in both.
-  return entries as { msg?: { channel?: string } }[];
-}
-
 const VICTIM = "victim-channel";
 
-// ⚠️ FRESH PER RUN — THESE ARE FACTORIES, AND THAT IS LOAD-BEARING, NOT STYLE.
-// The behaviour under test is that the whole `onMessage` MUTATES the payload it is handed: clearing
+const live = (entry: unknown) => {
+  const h = harness({});
+  h.ctl.onMessage(entry as FeedMessage);
+  return h;
+};
+const backfilled = async (entries: unknown[]) => {
+  const h = harness({ ...bootReads, activity: async () => page(entries) });
+  await h.ctl.refresh();
+  return h;
+};
+const channelOf = (h: Harness) => (h.store.get().activity[0]?.msg as { channel?: string } | undefined)?.channel;
+
+// ⚠️ FRESH PER RUN. THESE ARE FACTORIES, AND THAT IS LOAD-BEARING, NOT STYLE.
+// The behaviour under test is that the ingress MUTATES the payload it is handed: clearing
 // `msg.channel` IS the fix. So a module-scope hostile object is sanitized by its own first
 // execution, and every later cell then asserts against a payload that no longer carries the
-// forgery — passing for the wrong reason, on code that never had to defend anything.
-//
-// MEASURED, not reasoned. With shared objects, executing the shipped `onMessage` twice gave:
-//     before any run   msg.channel = "victim-channel"
-//     after run #1     msg.channel = undefined
-// and the destination block below was the THIRD use, because the hostile loop also evaluated
-// `ing.run` twice (once for the condition, once to build `{got}`). All three named destination
-// cells were therefore vacuous. Build a new payload for every execution, and evaluate each `run`
-// EXACTLY ONCE into a variable.
-const hostileDm = () => ({ mode: "unicast", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
-const hostileDmGraph = () => ({ mode: "unicast", senderId: "s-1", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
+// forgery, passing for the wrong reason on code that never had to defend anything. Measured on the
+// old page: executing its `onMessage` twice over one shared payload took `msg.channel` from
+// "victim-channel" to undefined after the first run, and three destination cells were vacuous.
+const hostileDm = () => ({ mode: "unicast", senderId: "s-1", channel: undefined, msg: { id: "dm-1", channel: VICTIM } });
 
 // ⚠️ ANYCAST IS THE SECOND PLANE WITH NO AUTHORITATIVE CHANNEL, AND DRIVING ONLY `unicast` LEFT A
 // REAL EXPLOIT UNCOVERED. The server taps three planes (`web.ts`: chat / inst / svc) and `svc.rest`
-// is the ROUTE, not a channel — so anycast reaches the same fail-open case as a DM. Every hostile
-// vector here used to be hard-coded `mode:"unicast"`.
-//
-// MEASURED: mutating the shipped clear to `if (mode !== "anycast") msg.channel = entry.channel;`
-// left this suite at **82 checks passed, rc=0** while a forged anycast payload created the victim
-// channel and landed in its transcript (`channels:["victim-channel"], transcript:1`). The identical
-// hole existed on graph. Non-equivalent, surface-visible, and invisible to a unicast-only table.
-const hostileAnycast = () => ({ mode: "anycast", channel: undefined, msg: { id: "svc-1", toService: "reviewer", channel: VICTIM } });
-const hostileAnycastGraph = () => ({ mode: "anycast", senderId: "s-1", channel: undefined, msg: { id: "svc-1", toService: "reviewer", channel: VICTIM } });
+// is the ROUTE, not a channel, so anycast reaches the same fail-open case as a DM. Measured on the
+// old page: an `if (mode !== "anycast")` guard on the clear left the suite green while a forged
+// anycast payload created the victim channel and landed in its transcript.
+const hostileAnycast = () => ({ mode: "anycast", senderId: "s-1", channel: undefined, msg: { id: "svc-1", toService: "reviewer", channel: VICTIM } });
 
-/**
- * Drive the WHOLE shipped `app.js` `onMessage` over real collections, and return what it did.
- *
- * `selected` is a PARAMETER because the transcript cell is only discriminating when the victim
- * channel is the one on screen. Hardcoding `"*"` left the named "does NOT reach the victim
- * transcript" cell green on the original guarded vulnerability.
- */
-function runAppOnMessage(code: string, entry: unknown, selected = "*") {
-  const ctx = {
-    __entry: entry,
-    activity: [] as { msg: { id?: string; channel?: string } }[],
-    dms: [] as { id?: string }[],
-    channels: new Map<string, { messages?: number }>(),
-    channelMsgs: [] as unknown[],
-    unread: new Map<string, number>(),
-    selected,
-    dmSel: null,
-    renderDMs() {}, renderChannels() {}, renderCenter() {},
-    // The shipped `onMessage` now routes every arrival through the shape-B ordering machine, so the
-    // machine is a collaborator this context has to supply. It is loaded from the REAL
-    // `event-order.js` below rather than stubbed, for the reason this whole file exists: a stub that
-    // returned `{emit:[entry]}` would satisfy every cell here while the shipped page held the entry
-    // forever, and the ingress trust rule would be graded against a merge that does not ship.
-    window: {} as Record<string, unknown>,
-    feedOrder: undefined as unknown,
-    channelOrder: undefined as unknown,
-    orderNotes: [] as unknown[],
-    noteOrder(notes: unknown[]) { for (const n of notes) ctx.orderNotes.push(n); },
-  };
-  const c = createContext(ctx);
-  runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
-  // Both machines are settled immediately: these cells drive the LIVE ingress, and an unsettled
-  // machine would legitimately hold a frame, which is the ordering behaviour its own suite measures
-  // and not the trust rule this one does.
-  runInContext(
-    "feedOrder = window.COTAL_EVENT_ORDER.create(); feedOrder.backfill([]);" +
-      "channelOrder = window.COTAL_EVENT_ORDER.create(); channelOrder.backfill([]);",
-    c,
-    { filename: "event-order bootstrap" },
-  );
-  runInContext(`${code}\nonMessage(__entry);`, c, { filename: "app.js" });
-  return ctx;
+// REACHABILITY, NOT JUST THE PREDICATE. The backfill row below passes only if the activity source's
+// read reaches the settle; this names that link on its own, because a source that stopped handing
+// its page to the settle would leave the attribution loop correct and reached by nothing.
+{
+  const h = await backfilled([{ mode: "chat", channel: VERIFIED, msg: { id: "b-1", channel: CLAIMED } }]);
+  const rows = h.store.get().activity;
+  check("the activity source's apply hands the SERVER'S entries to the backfill the rows below drive",
+    rows.length === 1 && (rows[0] as { channel?: string }).channel === VERIFIED, rows);
 }
 
-/** Drive the WHOLE shipped `graph.js` `onMessage`, recording the hubs it decides to create. */
-function runGraphOnMessage(code: string, arg: unknown) {
-  const hubs: unknown[] = [];
-  const ctx = {
-    __arg: arg,
-    hubs,
-    // `filter.paused` keeps the animation branches out of this cell: they are visual, and gating
-    // them off is what lets the routing decision be read on its own.
-    filter: { paused: true, chat: true, unicast: true, anycast: true },
-    ensureAgent: () => null, ensureHub: (c: unknown) => { hubs.push(c); return null; },
-    now: () => 0, tabVisible: () => false, chatHit: () => ({}), dmHit: () => ({}),
-    pushParticle() {}, pushBloom() {}, mk: () => ({}), heatFanOut() {},
-    MODE: { chat: 0, unicast: 1, anycast: 2 },
-    edges: new Map(), agents: new Map(), shortId: (s: unknown) => s,
-    recent: [] as { chan?: string }[], sel: null, renderDetail() {},
-    partsText: () => "",
-  };
-  runInContext(`${code}\nonMessage(__arg);`, createContext(ctx), { filename: "graph.js" });
-  return ctx;
-}
-
-const INGRESS: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
+const INGRESS: { path: string; run(): Promise<unknown> }[] = [
   {
-    file: "app.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, "app.js"),
-    run: (code) => runAppOnMessage(code, { mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } }).activity[0]?.msg.channel,
+    path: "live SSE feed",
+    run: async () => channelOf(live({ mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } })),
   },
   {
-    file: "app.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfillFunction(src, "app.js"),
-    async run(code) {
-      const out = await runBackfillFunction(code, "refresh()", "app.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
-      return out[0]?.msg?.channel;
-    },
-  },
-  {
-    file: "graph.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, "graph.js"),
-    run: (code) => runGraphOnMessage(code, { mode: "chat", senderId: "s-1", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } }).recent[0]?.chan,
-  },
-  {
-    file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfillFunction(src, "graph.js"),
-    async run(code) {
-      const out = await runBackfillFunction(code, "seedActivity(__entries)", "graph.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
-      return out[0]?.msg?.channel;
-    },
+    path: "/api/activity backfill",
+    run: async () => channelOf(await backfilled([{ mode: "chat", channel: VERIFIED, msg: { id: "b-1", channel: CLAIMED } }])),
   },
 ];
 // An empty or short table would make every cell below vacuous, so the count is pinned first.
-check("the ingress table covers all four entry paths (an empty loop would pass vacuously)",
-  INGRESS.length === 4, { length: INGRESS.length });
+check("the ingress table covers both controller entry paths (an empty loop would pass vacuously)",
+  INGRESS.length === 2, { length: INGRESS.length });
 
 for (const ing of INGRESS) {
-  const stmt = ing.extract(read(`../src/web/${ing.file}`));
-  check(`${ing.file} — ${ing.path} — the ingress statement is present and extractable`, Boolean(stmt), { stmt });
-  // ONE evaluation, reused for both the predicate and the diagnostic. Calling `run` a second time
-  // to build `{got}` would execute the shipped function again over a fresh context — and, worse,
-  // over an already-mutated payload — so the value reported would not be the value asserted.
-  const got = await ing.run(stmt!);
-  check(`${ing.file} — ${ing.path} — the VERIFIED channel overwrites the publisher's claim`,
+  // ONE evaluation, reused for both the predicate and the diagnostic.
+  const got = await ing.run();
+  check(`controller, ${ing.path}: the VERIFIED channel overwrites the publisher's claim`,
     got === VERIFIED, { got, claimed: CLAIMED, verified: VERIFIED });
 }
 
-// REACHABILITY, NOT JUST THE PREDICATE, and this suite lost it when the code moved. On the graph page
-// the loop that attributes a channel now lives in `seedActivity`, so the two graph rows above execute
-// THAT function. Executing it proves the rule and says nothing about whether the page's own boot ever
-// reaches it: that half is what a harness silently drops when the code it drives is entered by name
-// instead of by the path a browser takes. `refreshAll` handing a source's read to its `apply` is
-// proven in `smoke:web-snapshot`; the link THIS suite owns is the one from that `apply` to the loop,
-// so the shipped `apply` is lifted and RUN rather than read.
+// The verified SENDER travels with the entry, beside the payload's own `from`, which is the
+// publisher's claim. A reader that needs the sender reads `senderId`, never `msg.from` alone.
 {
-  const graphSrc = read("../src/web/graph.js");
-  const found = graphSrc.match(/apply: \(page\) => \{[^}]*seedActivity\(page\.entries\);[^}]*\}/g) ?? [];
-  check("graph.js activity source: exactly one apply this harness can run", found.length === 1, { found: found.length });
-  // The miss has to be reachable, or the cell above is a pattern that matches whatever it is given.
-  check("CONTROL: the same pattern naming a function the page does not have finds nothing",
-    (graphSrc.match(/apply: \(page\) => \{[^}]*seedNothing\(page\.entries\);[^}]*\}/g) ?? []).length === 0);
-  let seeded: unknown;
-  const applyCtx = createContext({ activityPage: null, seedActivity: (a: unknown) => { seeded = a; }, console });
-  runInContext(
-    `({ ${found[0]} }).apply({ entries: [{ channel: ${JSON.stringify(VERIFIED)}, msg: { channel: ${JSON.stringify(CLAIMED)} } }],`
-      + ` partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 })`,
-    applyCtx, { filename: "graph.js (activity apply)" });
-  const seededEntries = seeded as { channel?: string }[] | undefined;
-  check("graph.js /api/activity backfill: the source's apply hands the SERVER'S entries to the backfill the rows above drive",
-    Array.isArray(seededEntries) && seededEntries.length === 1 && seededEntries[0].channel === VERIFIED, seededEntries);
+  const h = live({ mode: "chat", senderId: "local.SENDER", channel: VERIFIED, msg: { id: "m-2", channel: VERIFIED, from: { id: "local.FORGED", name: "x" } } });
+  check("the live entry keeps the verified senderId beside the payload's from",
+    (h.store.get().activity[0] as FeedMessage | undefined)?.senderId === "local.SENDER", h.store.get().activity[0]);
 }
 
 // ── THE HOSTILE CASE: NO authoritative channel, and a forged one in the payload ──────────────────
 // This is the case the cells above could not see, because they only ever drove an ingress WITH a
 // verified channel. `parseSubject().rest` is a channel only on the chat plane, so on `inst`/`svc`
-// the server sends no channel at all — and `tap()` only JSON-decodes (`packages/core/src/endpoint.ts`),
+// the server sends no channel at all, and `tap()` only JSON-decodes (`packages/core/src/endpoint.ts`),
 // so a DM or anycast payload may carry any `channel` string its sender likes.
 //
 // The first version of these ingresses read `if (entry.channel) msg.channel = entry.channel;` and
 // FAILED OPEN: with nothing authoritative to substitute, the guard was false and the forgery
-// survived into `msg.channel`, which `app.js` consumes with no mode gate to pick the transcript and
-// bump the per-channel count. A sender could appear to post into a channel it holds no publish
-// grant for.
-//
-// A CONDITIONAL TRUST RULE IS NOT A TRUST RULE. "Overwrite when I have something better" leaves the
-// untrusted value in place exactly when the trusted one is missing — so the cell must drive the
-// MISSING case, which is the whole point of this block.
-const HOSTILE: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
-  {
-    file: "app.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, "app.js"),
-    run: (code) => runAppOnMessage(code, hostileDm()).activity[0]?.msg.channel,
-  },
-  {
-    file: "app.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfillFunction(src, "app.js"),
-    async run(code) {
-      const out = await runBackfillFunction(code, "refresh()", "app.js", [{ msg: { channel: CLAIMED } }]);
-      return out[0]?.msg?.channel;
-    },
-  },
-  {
-    file: "graph.js", path: "live SSE feed",
-    extract: (src) => extractFunction(src, "graph.js"),
-    run: (code) => runGraphOnMessage(code, hostileDmGraph()).recent[0]?.chan,
-  },
-  {
-    file: "graph.js", path: "/api/activity backfill",
-    extract: (src) => extractBackfillFunction(src, "graph.js"),
-    async run(code) {
-      const out = await runBackfillFunction(code, "seedActivity(__entries)", "graph.js", [{ msg: { channel: CLAIMED } }]);
-      return out[0]?.msg?.channel;
-    },
-  },
+// survived into `msg.channel`, which the page consumes with no mode gate to pick the transcript and
+// bump the per-channel count. A sender could appear to post into a channel it holds no publish grant
+// for. A CONDITIONAL TRUST RULE IS NOT A TRUST RULE, so the cell must drive the MISSING case.
+const HOSTILE: { path: string; run(): Promise<unknown> }[] = [
+  { path: "live SSE feed", run: async () => channelOf(live(hostileDm())) },
+  { path: "/api/activity backfill", run: async () => channelOf(await backfilled([{ mode: "unicast", msg: { id: "b-2", channel: CLAIMED } }])) },
 ];
-// The live-SSE ingress of each page, driven with an ANYCAST forgery. Only the two live ingresses
-// appear here, and the REASON matters because an earlier version of this comment stated it wrongly.
-//
-// It said `/api/activity` "carries no mode". That is FALSE: `web.ts` explicitly mode-tags backfill
-// entries and emits `mode: "chat"` and `mode: "unicast"`. The correct reason is that the endpoint
-// emits NO ANYCAST HISTORY AT ALL — it merges channel history with DM history and nothing else —
-// while the client's backfill overwrite is mode-INDEPENDENT. So an anycast backfill vector has no
-// production counterpart to represent, which is a different fact from the one first written here
-// and is why the omission is not a coverage gap.
-const HOSTILE_ANYCAST: { file: string; path: string; extract(src: string): string | undefined; run(code: string): unknown }[] = [
-  {
-    file: "app.js", path: "live SSE feed (ANYCAST)",
-    extract: (src) => extractFunction(src, "app.js"),
-    run: (code) => runAppOnMessage(code, hostileAnycast()).activity[0]?.msg.channel,
-  },
-  {
-    file: "graph.js", path: "live SSE feed (ANYCAST)",
-    extract: (src) => extractFunction(src, "graph.js"),
-    run: (code) => runGraphOnMessage(code, hostileAnycastGraph()).recent[0]?.chan,
-  },
+// The live ingress, driven with an ANYCAST forgery. Only the live ingress appears here: the
+// `/api/activity` endpoint emits NO ANYCAST HISTORY AT ALL (it merges channel history with DM history
+// and nothing else), while the backfill overwrite is mode-independent, so an anycast backfill vector
+// has no production counterpart to represent.
+const HOSTILE_ANYCAST: { path: string; run(): Promise<unknown> }[] = [
+  { path: "live SSE feed (ANYCAST)", run: async () => channelOf(live(hostileAnycast())) },
 ];
-check("the anycast hostile table covers both live ingresses", HOSTILE_ANYCAST.length === 2, { length: HOSTILE_ANYCAST.length });
+check("the anycast hostile table covers the live ingress", HOSTILE_ANYCAST.length === 1, { length: HOSTILE_ANYCAST.length });
 for (const ing of HOSTILE_ANYCAST) {
-  const stmt = ing.extract(read(`../src/web/${ing.file}`));
-  check(`${ing.file} — ${ing.path} — the ingress statement is extractable`, Boolean(stmt), { stmt });
-  const got = await ing.run(stmt!);
-  check(`${ing.file} — ${ing.path} — a FORGED channel on an ANYCAST message is CLEARED`,
+  const got = await ing.run();
+  check(`controller, ${ing.path}: a FORGED channel on an ANYCAST message is CLEARED`,
     got === undefined, { got, forged: VICTIM });
 }
 
-// Destination, for anycast, on the page that files messages into channels. Content alone would not
-// have caught the measured mutant: the point is that the forgery never reaches channel routing.
-const appAnycastPayload = hostileAnycast();
-check("app.js — the ANYCAST destination run receives a payload that STILL carries the forgery",
-  appAnycastPayload.msg.channel === VICTIM, { got: appAnycastPayload.msg.channel });
-const appAnycast = runAppOnMessage(extractFunction(read("../src/web/app.js"), "app.js")!, appAnycastPayload, VICTIM);
-check("app.js — a forged ANYCAST message does NOT create the victim channel",
-  appAnycast.channels.has(VICTIM) === false, { keys: [...appAnycast.channels.keys()] });
-check("app.js — a forged ANYCAST message does NOT reach the victim channel's transcript",
-  appAnycast.channelMsgs.length === 0, { n: appAnycast.channelMsgs.length });
+/** The victim channel open on screen, then one forged message delivered live. */
+const forgedOnScreen = async (payload: unknown, onScreen: string) => {
+  const h = harness({ history: async () => [] });
+  await h.ctl.open(onScreen);
+  h.ctl.onMessage(payload as FeedMessage);
+  return h;
+};
 
-const graphAnycastPayload = hostileAnycastGraph();
-const graphAnycast = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), "graph.js")!, graphAnycastPayload);
-check("graph.js — a forged ANYCAST message appears in the recent list with NO channel",
-  graphAnycast.recent.length === 1 && graphAnycast.recent[0].chan === undefined, { recent: graphAnycast.recent });
+// Destination, for anycast. Content alone would not have caught the measured mutant: the point is
+// that the forgery never reaches channel routing.
+const anycastPayload = hostileAnycast();
+check("controller: the ANYCAST destination run receives a payload that STILL carries the forgery",
+  anycastPayload.msg.channel === VICTIM, { got: anycastPayload.msg.channel });
+const anycastRun = await forgedOnScreen(anycastPayload, VICTIM);
+check("controller: a forged ANYCAST message does NOT create the victim channel",
+  !anycastRun.store.get().channels.some((c) => c.channel === VICTIM), { channels: anycastRun.store.get().channels });
+check("controller: a forged ANYCAST message does NOT reach the victim channel's transcript",
+  anycastRun.store.get().open?.messages.length === 0, { open: anycastRun.store.get().open });
+check("controller: a forged ANYCAST message appears in the activity feed with NO channel",
+  anycastRun.store.get().activity.length === 1 && channelOf(anycastRun) === undefined, { activity: anycastRun.store.get().activity });
 
-check("the hostile table covers all four entry paths too", HOSTILE.length === 4, { length: HOSTILE.length });
+check("the hostile table covers both controller entry paths too", HOSTILE.length === 2, { length: HOSTILE.length });
 for (const ing of HOSTILE) {
-  const stmt = ing.extract(read(`../src/web/${ing.file}`));
-  check(`${ing.file} — ${ing.path} — the hostile statement is extractable`, Boolean(stmt), { stmt });
-  // ONE evaluation — see the INGRESS loop. Here it mattered doubly: the second call used to run
-  // against a payload the first call had already sanitized.
-  const got = await ing.run(stmt!);
+  const got = await ing.run();
   // `undefined`, not merely "not the forgery": a non-chat message HAS no channel, and any other
   // value here would be the surface inventing one.
-  check(`${ing.file} — ${ing.path} — a FORGED channel is CLEARED when nothing authoritative exists`,
+  check(`controller, ${ing.path}: a FORGED channel is CLEARED when nothing authoritative exists`,
     got === undefined, { got, forged: VICTIM });
 }
 
 // ── 2c. DESTINATION, NOT JUST CONTENT ───────────────────────────────────────────────────────────
 // `msg.channel === undefined` says the value was cleared. It does not say the message stayed OUT of
-// the victim channel's transcript — that is a separate fact, and it is the one an operator would
-// actually see. So the whole function is driven and the collections it writes are read back.
+// the victim channel's transcript, which is a separate fact and the one an operator would see. So
+// the collections the controller writes are read back.
 //
 // TWO THINGS BELOW ARE GUARDS AGAINST THIS BLOCK GOING VACUOUS, AND BOTH WERE EARNED:
-//   1. The payload is built fresh and its forgery is asserted BEFORE the run. A shared fixture
-//      arrives here pre-sanitized by an earlier execution, and then all three cells below pass
-//      without the production code defending anything.
-//   2. The victim channel is the SELECTED one. With `selected:"*"` the transcript cell is green
-//      even on the original guarded vulnerability, because nothing is ever appended to the
-//      selected-channel transcript regardless of routing — the cell's name would be a lie.
-const appFnSrc = extractFunction(read("../src/web/app.js"), "app.js")!;
-const appHostilePayload = hostileDm();
-check("app.js — the destination run receives a payload that STILL carries the forgery (a shared fixture would arrive pre-sanitized)",
-  appHostilePayload.msg.channel === VICTIM, { got: appHostilePayload.msg.channel, expected: VICTIM });
-const appHostile = runAppOnMessage(appFnSrc, appHostilePayload, VICTIM);
-check("app.js — the victim channel is the SELECTED one, so the transcript cell can actually fail",
-  appHostile.selected === VICTIM, { selected: appHostile.selected });
-check("app.js — a forged DM does NOT create the victim channel in the channel list",
-  appHostile.channels.has(VICTIM) === false, { keys: [...appHostile.channels.keys()] });
-check("app.js — a forged DM does NOT reach the victim channel's transcript",
-  appHostile.channelMsgs.length === 0, { n: appHostile.channelMsgs.length });
-// ⚠️ THE UNREAD CELL NEEDS ITS OWN RUN, AND FIXING THE TRANSCRIPT CELL IS WHAT BROKE IT.
-// Production routes a channel message to EITHER the transcript (when it is the selected channel) OR
-// the unread badge (when it is not) — `app.js`: `if (!dmSel && selected === msg.channel) … else …`.
-// So selecting the victim to make the transcript cell discriminate simultaneously made the unread
-// cell VACUOUS: under the original guarded vulnerability, with the victim selected, unread stays 0
-// and the cell passes on exploitable code. MEASURED both ways — selected=VICTIM gives 0 badges,
-// selected=elsewhere gives 1 on `victim-channel`. One fixture cannot serve both branches, so the
-// unread claim gets an OFF-SCREEN run of its own.
+//   1. The payload is built fresh and its forgery is asserted BEFORE the run.
+//   2. The victim channel is the OPEN one. With nothing open the transcript cell is green even on
+//      the original guarded vulnerability, because nothing is ever appended to an open transcript.
+const dmPayload = hostileDm();
+check("controller: the destination run receives a payload that STILL carries the forgery (a shared fixture would arrive pre-sanitized)",
+  dmPayload.msg.channel === VICTIM, { got: dmPayload.msg.channel, expected: VICTIM });
+const dmRun = await forgedOnScreen(dmPayload, VICTIM);
+check("controller: the victim channel is the OPEN one, so the transcript cell can actually fail",
+  dmRun.store.get().open?.channel === VICTIM, { open: dmRun.store.get().open });
+check("controller: a forged DM does NOT create the victim channel in the channel list",
+  !dmRun.store.get().channels.some((c) => c.channel === VICTIM), { channels: dmRun.store.get().channels });
+check("controller: a forged DM does NOT reach the victim channel's transcript",
+  dmRun.store.get().open?.messages.length === 0, { open: dmRun.store.get().open });
+// ⚠️ THE UNREAD CELL NEEDS ITS OWN RUN. A channel message goes to EITHER the open transcript OR the
+// unread badge, so opening the victim to make the transcript cell discriminate makes the unread cell
+// vacuous: under the guarded vulnerability, with the victim open, no badge is raised. Measured on
+// the old page both ways. So the unread claim gets an OFF-SCREEN run of its own.
 // `string`, not the literal: the cell below compares it with VICTIM on purpose.
 const OFFSCREEN: string = "some-other-channel";
-const appHostileOffscreenPayload = hostileDm();
-check("app.js — the OFF-SCREEN unread run receives a payload that STILL carries the forgery",
-  appHostileOffscreenPayload.msg.channel === VICTIM, { got: appHostileOffscreenPayload.msg.channel });
-const appHostileOffscreen = runAppOnMessage(appFnSrc, appHostileOffscreenPayload, OFFSCREEN);
-check("app.js — the unread run has the victim OFF screen, so the badge branch is the one reached",
-  appHostileOffscreen.selected === OFFSCREEN && OFFSCREEN !== VICTIM, { selected: appHostileOffscreen.selected });
-check("app.js — a forged DM does NOT raise any unread badge",
-  appHostileOffscreen.unread.size === 0, { keys: [...appHostileOffscreen.unread.keys()] });
-// The message must still ARRIVE — a fix that drops DMs would also pass the three cells above, so
-// the surviving-delivery half is asserted too. This is the "refusal must not become a silent
-// no-op" rule applied to routing rather than to sending.
-check("app.js — the forged DM is STILL delivered as a DM (clearing a channel must not drop it)",
-  appHostile.dms.length === 1 && (appHostile.dms[0] as { id?: string }).id === "dm-1", { dms: appHostile.dms });
+const offscreenPayload = hostileDm();
+check("controller: the OFF-SCREEN unread run receives a payload that STILL carries the forgery",
+  offscreenPayload.msg.channel === VICTIM, { got: offscreenPayload.msg.channel });
+const offscreenRun = await forgedOnScreen(offscreenPayload, OFFSCREEN);
+check("controller: the unread run has the victim OFF screen, so the badge branch is the one reached",
+  offscreenRun.store.get().open?.channel === OFFSCREEN && OFFSCREEN !== VICTIM, { open: offscreenRun.store.get().open?.channel });
+// Opening a channel zeroes its own count, so the cell asks for a raised badge, not an empty map.
+const raised = Object.entries(offscreenRun.store.get().unread).filter(([, n]) => n > 0);
+check("controller: a forged DM does NOT raise any unread badge", raised.length === 0, { raised });
+// The message must still ARRIVE: a fix that drops DMs would also pass the cells above.
+check("controller: the forged DM is STILL delivered as a DM (clearing a channel must not drop it)",
+  dmRun.store.get().dms.length === 1 && dmRun.store.get().dms[0].id === "dm-1", { dms: dmRun.store.get().dms });
+check("controller: the forged DM still appears in the activity feed, with no channel",
+  dmRun.store.get().activity.length === 1 && channelOf(dmRun) === undefined, { activity: dmRun.store.get().activity });
 
-const graphHostilePayload = hostileDmGraph();
-check("graph.js — the destination run receives a payload that STILL carries the forgery",
-  graphHostilePayload.msg.channel === VICTIM, { got: graphHostilePayload.msg.channel, expected: VICTIM });
-const graphHostile = runGraphOnMessage(extractFunction(read("../src/web/graph.js"), "graph.js")!, graphHostilePayload);
-// HONEST LABEL: this cell CANNOT redden for the channel-authority fence, and pretending otherwise
-// is the same sin as a vacuous green. `ensureHub` is reachable only from the `mode === "chat"`
-// branch (`graph.js`), so a non-chat forgery cannot create a hub whether or not the channel was
-// cleared — MEASURED: under the original guarded vulnerability with a unicast fixture, hubs = 0.
-// It is kept because it pins the MODE GATE (a refactor that hoisted `ensureHub` above the mode
-// branch would redden it), and it is named for that property rather than for the clear.
-check("graph.js — hub creation stays gated on mode==='chat' (this pins the GATE, NOT the clear)",
-  graphHostile.hubs.length === 0, { hubs: graphHostile.hubs });
-check("graph.js — the forged DM still appears in the recent list, with no channel",
-  graphHostile.recent.length === 1 && graphHostile.recent[0].chan === undefined, { recent: graphHostile.recent });
+// And the benign side, so the cells above cannot be satisfied by a controller that routes nothing.
+const benign = live({ mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } });
+check("controller: a POLICED chat message DOES reach its channel, keyed on the verified name",
+  benign.store.get().channels.some((c) => c.channel === VERIFIED) && !benign.store.get().channels.some((c) => c.channel === CLAIMED),
+  { channels: benign.store.get().channels });
 
-// And the benign side, so the cells above cannot be satisfied by a function that routes nothing.
-const appBenign = runAppOnMessage(extractFunction(read("../src/web/app.js"), "app.js")!,
-  { mode: "chat", channel: VERIFIED, msg: { id: "m-1", channel: CLAIMED } });
-check("app.js — a POLICED chat message DOES reach its channel, keyed on the verified name",
-  appBenign.channels.has(VERIFIED) && !appBenign.channels.has(CLAIMED), { keys: [...appBenign.channels.keys()] });
+// ── 2d. DELETING A CHANNEL ──────────────────────────────────────────────────────────────────────
+// The steward action. The UI confirms first; the controller performs it. On success the channel is
+// gone from the list, its rows from the activity feed, and the view closes if it was open. On a
+// refusal nothing changes and the server's message reaches the caller, so the dialog can show it.
+{
+  const rows = [
+    { mode: "chat", channel: "doomed", msg: { id: "d-1", channel: "doomed" } },
+    { mode: "chat", channel: "kept", msg: { id: "k-1", channel: "kept" } },
+  ];
+  const seeded = () => harness({
+    ...bootReads,
+    channels: async () => [
+      { channel: "doomed", messages: 1, replay: false, deliveryClass: "live" },
+      { channel: "kept", messages: 1, replay: false, deliveryClass: "live" },
+    ],
+    activity: async () => page(rows.map((r) => structuredClone(r))),
+    history: async () => [],
+    deleteChannel: async (channel) => ({ ok: true, channel, purged: 1 }),
+  });
+  const h = seeded();
+  await h.ctl.refresh();
+  await h.ctl.open("doomed");
+  await h.ctl.deleteChannel("doomed");
+  const s = h.store.get();
+  check("a deleted channel leaves the channel list", s.channels.map((c) => c.channel).join(",") === "kept", s.channels);
+  check("and its rows leave the activity feed", s.activity.map((e) => e.msg.id).join(",") === "k-1", s.activity);
+  check("and the view closes when it was the open one", s.open === null, s.open);
 
-// ── 2d. THE BACKFILL FINDER SURVIVES A REWRITE THAT THE PATTERN DID NOT ─────────────────────────
-// The regex this replaced required the loop head and its guard to be CONTIGUOUS, so a braced
-// rewrite made it match nothing. That failed SAFE, but it also meant the behaviour cell was never
-// reached — a fail-open guard was caught as a shape failure rather than as the routing defect it
-// is. The structural finder still identifies the braced form, so the regression is now observable
-// where it actually matters: in what the loop DOES.
-const BRACED_APP = "for (const e of activity) {\n  if (e?.msg) {\n    e.msg.channel = e.channel;\n  }\n}";
-check("a BRACED rewrite of the backfill loop is still identified (the pattern it replaced matched nothing)",
-  findBackfillLoops(BRACED_APP, "synthetic.js").length === 1,
-  { n: findBackfillLoops(BRACED_APP, "synthetic.js").length });
-// A finder that identifies EVERY for-of would also return 1 here for the wrong reason, so the
-// discriminator is driven: a loop over `activity` that does NOT assign a channel is not a backfill.
-check("a for-of over `activity` that assigns no channel is NOT identified (the predicate discriminates)",
-  findBackfillLoops("for (const e of activity) idName.set(e.msg.from.id, e.msg.from.name);", "synthetic.js").length === 0);
-check("a channel assignment OUTSIDE any `activity` loop is NOT identified",
-  findBackfillLoops("msg.channel = entry.channel;", "synthetic.js").length === 0);
-
-// ── 2e. THE EXTRACTOR ITSELF ────────────────────────────────────────────────────────────────────
-// `extractFunction` is load-bearing for every executed cell, so its own failure modes are driven.
-const appFn = extractFunction(read("../src/web/app.js"), "app.js")!;
-const graphFn = extractFunction(read("../src/web/graph.js"), "graph.js")!;
-for (const [label, fn] of [["app.js", appFn], ["graph.js", graphFn]] as const) {
-  check(`the extracted ${label} onMessage is a whole function declaration`,
-    fn.startsWith("function onMessage") && fn.trimEnd().endsWith("}"), { head: fn.slice(0, 40) });
-  // Balanced braces distinguishes a whole function from a fragment of one.
-  let depth = 0;
-  for (const c of fn) { if (c === "{") depth++; else if (c === "}") depth--; }
-  check(`the extracted ${label} onMessage has balanced braces (a fragment would not)`, depth === 0, { depth });
-}
-// A file with no such declaration must yield undefined rather than the next function along.
-check("extractFunction returns undefined when the declaration is absent (negative control)",
-  extractFunction("function somethingElse(a) { return a; }", "synthetic.js") === undefined);
-// AMBIGUITY IS NOT RESOLVED BY GUESSING. Two executable declarations must yield undefined, not the
-// first — otherwise a duplicated handler silently grades whichever one happens to come first.
-check("extractFunction returns undefined when TWO executable declarations exist (never guesses)",
-  extractFunction("function onMessage(a) { return 1; }\nfunction onMessage(b) { return 2; }", "synthetic.js") === undefined);
-
-// ── 2f. THE ANCHOR MUST BE EXECUTABLE CODE, AND ONLY A PARSER CAN SAY SO ─────────────────────────
-// Two successive text-based anchors shipped a false green here. Both are reproduced below as
-// CONTROLS, against the current parser-based extractor, so this section proves the fix rather than
-// asserting it. Each control is the exact exploit that beat the previous version.
-const realApp = read("../src/web/app.js");
-const safeAppFn = extractFunction(realApp, "app.js")!;
-const regressedAppFn = safeAppFn.replace("msg.channel = entry.channel;", "if (entry.channel) msg.channel = entry.channel;");
-check("the regressed handler used by the controls below is genuinely DIFFERENT (non-equivalence)",
-  regressedAppFn !== safeAppFn);
-
-// CONTROL 1 — the simple commented decoy that beat the `indexOf` anchor.
-const decoyed = `/*\n${safeAppFn}\n*/\n${realApp.replace(safeAppFn, regressedAppFn)}`;
-const fromDecoyed = extractFunction(decoyed, "app.js");
-check("a COMMENTED copy of the safe handler is invisible to the parser (it grades the real one)",
-  fromDecoyed !== undefined && fromDecoyed.includes("if (entry.channel)"), { head: fromDecoyed?.slice(0, 50) });
-
-// CONTROL 2 — the exploit that beat the delimiter-counting anchor: a `*/` INSIDE AN ORDINARY STRING
-// balances raw comment counts, and a whitespace change to the real declaration defeats a
-// one-spelling uniqueness pin. Both are neutralised by parsing rather than counting.
-const whitespaceReal = regressedAppFn.replace("function onMessage(entry)", "function onMessage (entry)");
-const balanced = `const commentCloseExample = "*/";\n/*\n${safeAppFn}\n*/\n${whitespaceReal}`;
-const fromBalanced = extractFunction(balanced, "app.js");
-check("a `*/` inside a STRING cannot smuggle a commented handler past the parser",
-  fromBalanced !== undefined && fromBalanced.includes("if (entry.channel)"), { head: fromBalanced?.slice(0, 50) });
-check("a whitespace-varied declaration is still found (the anchor is the DECLARATION, not a spelling)",
-  fromBalanced !== undefined && fromBalanced.startsWith("function onMessage (entry)"), { head: fromBalanced?.slice(0, 50) });
-
-// ── 2g. THE BACKFILL FINDER IGNORES EVERY TRIVIA FORM, INCLUDING THE ONES NOT ENUMERATED ────────
-// Three text-based versions of this guard shipped a false green, each beaten by a trivia form its
-// predecessor had not listed. The last two are the reason the approach changed rather than grew:
-// a leading `#!` hashbang and the classic-script `<!--` form are BOTH accepted by the browser that
-// runs these files, and NEITHER is a comment range, so a comment-blanker leaves them searchable.
-// Enumerating trivia is a losing game; a `ForOfStatement` is not something trivia can be.
-//
-// Each control is built from a SYNTHETIC source rather than the file under test: deriving a control
-// from the file means a mutation to that file changes the control too, which has already happened
-// here — a decoy made a control fire instead of the behaviour cell it exists to protect, masking
-// which cell caught the regression.
-const SYNTH_BF = "for (const e of activity) if (e?.msg) e.msg.channel = e.channel;";
-const SYNTH_REGRESSED = "for (const e of activity) if (e?.msg && e.channel) e.msg.channel = e.channel;";
-for (const [form, decoyed] of [
-  ["a block comment", `/* ${SYNTH_BF} */\n${SYNTH_REGRESSED}`],
-  ["a line comment", `// ${SYNTH_BF}\n${SYNTH_REGRESSED}`],
-  ["a leading #! hashbang", `#! ${SYNTH_BF}\n${SYNTH_REGRESSED}`],
-] as const) {
-  const found = findBackfillLoops(decoyed, "synthetic.js");
-  // EXACTLY ONE, and it must be the REGRESSED loop — not the safe copy hidden in the trivia. A cell
-  // asserting only the count would pass while grading the decoy, which is the defect three times over.
-  check(`${form} cannot hide a safe backfill copy from the finder (it identifies the REAL loop)`,
-    found.length === 1 && found[0].includes("e.channel)"), { n: found.length, head: found[0]?.slice(0, 60) });
-}
-
-// The `<!--` form is handled differently BECAUSE IT IS DIFFERENT, and the distinction was measured
-// rather than assumed. TS parses what follows it as code while the browser does not, so the finder
-// cannot identify "the real loop" — there is no agreement about which loop is real. It REFUSES.
-const htmlDecoyed = `<!-- ${SYNTH_BF}\n${SYNTH_REGRESSED}`;
-check("a classic-script <!-- comment makes the finder REFUSE (parser and browser disagree on what is code)",
-  findBackfillLoops(htmlDecoyed, "synthetic.js").length === 0);
-// THE CASE THAT PROVES WHY REFUSAL AND NOT DEDUPLICATION: with the real overwrite DELETED rather
-// than regressed, the hidden copy is the ONLY structural match. Without the refusal this is a
-// single unambiguous find, executed, green — over a page that performs no overwrite at all.
-const htmlWorst = `<!-- ${SYNTH_BF}\nfor (const e of activity) { const m = e.msg; if (m) renderOnly(m); }`;
-check("a <!--hidden copy with the REAL overwrite deleted also refuses (it would otherwise grade a page that does not exist)",
-  extractBackfill(htmlWorst, "synthetic.js") === undefined);
-// The refusal must not be vacuous: the same source WITHOUT the opener is found normally.
-check("the same source without the <!-- opener IS found (the refusal is not swallowing everything)",
-  findBackfillLoops(htmlWorst.replace("<!-- ", ""), "synthetic.js").length === 1,
-  { n: findBackfillLoops(htmlWorst.replace("<!-- ", ""), "synthetic.js").length });
-// And the shipped files must carry none of it, or the extractors silently return nothing.
-for (const [label, file] of [["app.js", "../src/web/app.js"], ["graph.js", "../src/web/graph.js"]] as const) {
-  check(`${label} — the shipped file contains NO HTML-comment syntax (or every executed cell would refuse)`,
-    HTML_COMMENT_FORM.test(read(file)) === false);
-}
-// AMBIGUITY IS NOT RESOLVED BY GUESSING, exactly as for `extractFunction`. Two real backfill loops
-// must yield undefined rather than whichever comes first.
-check("extractBackfill returns undefined when TWO real backfill loops exist (never guesses)",
-  extractBackfill(`${SYNTH_BF}\n${SYNTH_BF}`, "synthetic.js") === undefined);
-check("extractBackfill returns undefined when the loop is absent (negative control)",
-  extractBackfill("for (const e of activity) idName.set(e.id, e.name);", "synthetic.js") === undefined);
-// And the positive control: the shipped files each yield exactly one, or every cell above is
-// asserting about a finder that never finds anything.
-for (const [label, file] of [["app.js", "../src/web/app.js"], ["graph.js", "../src/web/graph.js"]] as const) {
-  check(`${label} — exactly ONE backfill loop is identified in the shipped file (positive control)`,
-    findBackfillLoops(read(file), label).length === 1, { n: findBackfillLoops(read(file), label).length });
+  let said = "";
+  const refusing = harness({
+    ...bootReads,
+    channels: async () => [{ channel: "doomed", messages: 1, replay: false, deliveryClass: "live" }],
+    deleteChannel: async () => { throw new Error("channel delete refused with HTTP 403: not a steward"); },
+  });
+  await refusing.ctl.refresh();
+  try { await refusing.ctl.deleteChannel("doomed"); } catch (e) { said = (e as Error).message; }
+  check("a refused delete throws the server's message for the dialog", /not a steward/.test(said), said);
+  check("and changes nothing", refusing.store.get().channels.length === 1, refusing.store.get().channels);
 }
 
 // THE FILTER LIST IS THE PROMISE, so a channel name the wire layer would REWRITE has to be refused

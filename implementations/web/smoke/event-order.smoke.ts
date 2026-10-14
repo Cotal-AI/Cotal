@@ -7,10 +7,12 @@
  * make it true is in `client/src/lib/eventOrder.ts`. Until these cells run, nothing in this tree is entitled to say
  * a gap would be noticed, and the build order this lane follows says so explicitly.
  *
- * WHAT IT DRIVES. `client/src/lib/eventOrder.ts` is imported as the client bundle imports it. The
- * cells that lift code out of `app.js` hand that code the same module through a stub
- * `window.COTAL_EVENT_ORDER` until the shell replaces `app.js` (Task 6). Nothing is restated here,
- * so no cell can pass against a version that no longer ships.
+ * WHAT IT DRIVES. `client/src/lib/eventOrder.ts` is imported as the client bundle imports it, and
+ * the bootstrap that arms and settles it is the dashboard controller (`client/src/state/
+ * controller.ts`), built over a fake `Api` and driven through its methods (§12 to §14). Nothing is
+ * restated here, so no cell can pass against a version that no longer ships. Two things still read
+ * the old page, because they are not the controller's: the startup that calls `refresh()` (§13.1,
+ * §13.2) and the notice the views draw (§15). They move with the boot and the shell.
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
  * goes live, and only then surfaces retained history (`SPEC.md` orders the join that way, and the
@@ -41,6 +43,8 @@ import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type EventOrder, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
+import type { FeedMessage } from "../client/src/api/types.js";
+import { bootReads, harness, page } from "./controller-harness.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -57,10 +61,11 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
 type Note = OrderNote;
 type Order = EventOrder;
 
-/** What the cells below call, and what a lifted `app.js` fragment sees as `window.COTAL_EVENT_ORDER`
- *  until Task 6 retires it. */
+/** A feed entry as the controller's `onMessage` takes it. The fixtures carry what ordering reads. */
+const feed = (e: unknown): FeedMessage => e as FeedMessage;
+
+/** What the cells below call. */
 const API = { KIND, FIRST_SEQ, frameOf, chainKey, create: createEventOrder };
-const winOrder = (): Record<string, unknown> => ({ COTAL_EVENT_ORDER: API });
 
 let idSeq = 0;
 /** A feed entry carrying one frame, in the all-activity shape. */
@@ -113,15 +118,18 @@ const straddles = (notes: Note[]) => notes.filter((n) => n.type === "boundary-ho
 
 console.log("event-order smoke");
 
-// ── 1. the seam: loaded before its consumer, and the constants it publishes ──────────────────────
+// ── 1. the seam: armed before its consumer, and the constants it publishes ──────────────────────
 {
-  const html = readFileSync(join(webSrc, "index.html"), "utf8");
-  const orderAt = html.indexOf("/event-order.js");
-  const appAt = html.indexOf("/app.js");
-  ok("1.4 the page loads the machine", orderAt !== -1);
-  // A classic script that loads AFTER its consumer is an absent script as far as the consumer's
-  // module-scope initialisation is concerned, and `app.js` calls `create()` at module scope.
-  ok("1.5 loaded BEFORE app.js, which calls create() at module scope", orderAt !== -1 && appAt !== -1 && orderAt < appAt);
+  // The page used to load the machine as a classic script ahead of `app.js`, which called
+  // `create()` at module scope. The controller imports it, and arms the feed's machine when it is
+  // built, so an arrival before the first bootstrap is held by a machine rather than drawn
+  // unordered or thrown on.
+  const h = harness({});
+  const armedAtBuild = h.orders.filter((o) => o.lane === "feed").length;
+  h.ctl.onMessage(feed(frame(1)));
+  ok("1.4 the controller runs the live feed through the machine", h.store.get().activity.length === 0 && h.last("feed")?.pendingCount === 1,
+    { activity: h.store.get().activity.length, pending: h.last("feed")?.pendingCount });
+  ok("1.5 armed when the controller is built, before any bootstrap read", armedAtBuild === 1, armedAtBuild);
 
   ok("1.6 the wire kind is the frame kind", API.KIND === "ag-ui.frame");
   ok("1.7 the first published seq is 1", API.FIRST_SEQ === 1);
@@ -361,236 +369,175 @@ console.log("event-order smoke");
   ok("11.3 the batch's own order is not disturbed", API.frameOf(settled.emit[0]) === undefined);
 }
 
-// ── 12. THE BOUNDARY PASSES EVEN WHEN THE FETCH FAILS, driven through the SHIPPED functions ──────
+// ── 12. THE BOUNDARY PASSES EVEN WHEN THE FETCH FAILS, driven through the SHIPPED controller ─────
 // Every cell above builds its own inputs, so none of them can see this: `pending` is drained only by
 // `backfill()`, so a rejected history request means the machine never settles and every frame held
 // during it is invisible for the life of the page. That was introduced by the buffering itself, since
 // the code this replaced simply left the live arrivals in place on a failed fetch. So this section
-// runs the REAL `refresh()` and `select()` out of `app.js`, with a fetch that rejects.
+// runs the REAL controller's `refresh()` and `open()` over a fake `Api` whose read rejects.
 //
-// The harness this builds is shared with §13, §14 and §15, which need the same thing: the shipped
-// bootstrap, driven, rather than a restatement of it.
+// The harness records every machine the controller arms, by lane, so a cell can read the one the
+// bootstrap under test armed. §13 and §14 use the same harness.
 {
-  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-  const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  // `markStale` and `renderStale` join the set because `select()` now reports a refused channel
-  // history through them. Extracted rather than stubbed: a stub would let these cells keep passing
-  // against a version that stopped reporting, which is the failure this lane already hit once.
-  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml", "setStale", "markStale", "renderStale"]);
-  // The single-flight state the shipped functions read. TAKEN FROM THE FILE, not restated: a
-  // hand-written `let refreshing = null` here would let the harness keep passing after the real
-  // declaration changed, and a bootstrap that coalesces is the whole of blocker 1.
-  // `shownChannel` and `staleNow` are the state those two read. TAKEN FROM THE FILE for the same
-  // reason as the rest: a hand-written copy here would drift from what ships.
-  const wantedState = new Set(["refreshing", "selecting", "shownChannel", "staleNow"]);
-  const fns: string[] = [];
-  const state: string[] = [];
-  sf.forEachChild((n) => {
-    if (ts.isFunctionDeclaration(n) && n.name && wanted.has(n.name.text)) fns.push(appSrc.slice(n.getStart(sf), n.end));
-    if (ts.isVariableStatement(n))
-      for (const d of n.declarationList.declarations)
-        if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
-  });
-  // Pinned first: a short extraction would make every cell below vacuous.
-  ok("12.1 all eight shipped functions are extractable", fns.length === 8, fns.length);
-  ok("12.1b and the in-flight state they coalesce on, plus the marker state", state.length === 4, state.length);
-
-  type Ctx = Record<string, unknown> & {
-    activity: unknown[];
-    channelMsgs: unknown[];
-    orderNotes: { type: string }[];
-    feedOrder: Order;
-    channelOrder: Order;
-    __p?: Promise<void>;
-  };
-  /** A page-like context running the shipped functions, with `/api/activity` and the per-channel
-   *  history either answering or rejecting. */
-  const page = (mode: "reject" | "resolve"): Ctx => {
-    const ctx = {
-      console,
-      fetch: async (u: string) => {
-        const isBackfill = u.includes("/api/activity") || u.includes("/history");
-        if (isBackfill && mode === "reject") throw new Error("network down");
-        // The channel history read is gated on status now, like every other read on this page, so the
-        // stub answers a Response shape rather than a bare body. `ok: true` is load-bearing: without
-        // it the gate refuses and these cells would be driving the refusal arm they do not test.
-        if (u.includes("/history")) return { ok: true, status: 200, json: async () => [] };
-        // `/api/activity` answers a BOUNDED PAGE, not a bare array, and the stub says so: a stub
-        // that still served the old shape would keep these cells green against a client that could
-        // no longer read what the server sends.
-        if (u.includes("/api/activity"))
-          return { ok: true, json: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }) };
-        return { ok: true, json: async () => [] };
-      },
-      // The stale pill's element, so the shipped `setStale` runs rather than being stubbed out: it is
-      // on the same path as the note this section measures and a missing stub would throw there.
-      // `space` answers for the same reason: the poll reads the space name as a source now, and an
-      // apply that throws takes the whole poll with it, which would make every cell below measure a
-      // missing harness global instead of the rule it names.
-      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => ({ textContent: "" }) }
-        : id === "space" ? { textContent: "" } : null),
-      document: { title: "" },
-      refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, renderChannels() {},
-      renderDMs() {}, renderRoster() {}, renderRail() {}, rosterRows: () => [],
-      roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
-      dmSel: null, selected: "*", unread: new Map(), channelMsgs: [] as unknown[],
-      orderNotes: [] as { type: string }[], isDemo: false, loadSeq: 0,
-      window: winOrder(),
-      feedOrder: undefined as unknown, channelOrder: undefined as unknown,
-      __p: undefined as Promise<void> | undefined, __E: undefined as unknown,
-    };
-    const c = createContext(ctx);
-    // Keep-last-good + the refusal guard, READ OFF DISK like the order machine beside it: `refresh()`
-    // reads every source through it, so a restatement here would let these cells pass against a
-    // version that no longer ships.
-    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
-    runInContext("feedOrder = window.COTAL_EVENT_ORDER.create(); channelOrder = window.COTAL_EVENT_ORDER.create();", c);
-    runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
-    (ctx as Record<string, unknown>).__ctx = c;
-    return ctx as unknown as Ctx;
-  };
-  const drive = async (ctx: Ctx, call: string, entry: unknown) => {
-    const c = (ctx as unknown as { __ctx: ReturnType<typeof createContext> }).__ctx;
-    (ctx as Record<string, unknown>).__E = entry;
-    runInContext(`__p = ${call};`, c);
-    runInContext("onMessage(__E);", c); // a frame arrives live while the request is in flight
-    await (ctx.__p as Promise<void>).catch(() => undefined);
+  const ch = "events.local.alice";
+  const failing = async (): Promise<never> => { throw new Error("network down"); };
+  /** Start `call`, deliver `entry` live while its reads are in flight, and wait for it. */
+  const inFlight = async (h: ReturnType<typeof harness>, call: () => Promise<void>, entry: unknown) => {
+    const p = call();
+    h.ctl.onMessage(entry as FeedMessage);
+    await p.catch(() => undefined);
   };
 
   // The all-activity feed, backfill REJECTING.
   {
-    const ctx = page("reject");
-    await drive(ctx, "refresh()", frame(1));
-    ok("12.2 a frame held during a FAILED backfill still reaches the feed", ctx.activity.length === 1, ctx.activity.length);
-    ok("12.3 nothing is left held", ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
-    ok("12.4 the boundary passed", ctx.feedOrder.settled === true);
-    ok("12.5 and the failure is SURFACED rather than swallowed", ctx.orderNotes.some((n) => n.type === "backfill-failed"), ctx.orderNotes);
-    ok("12.6 the baseline came from the buffered frame", ctx.feedOrder.state(ctx.feedOrder.chainKeys[0])?.baseline === 1);
+    const h = harness({ ...bootReads, activity: failing });
+    await inFlight(h, () => h.ctl.refresh(), frame(1));
+    const feed = h.last("feed")!;
+    ok("12.2 a frame held during a FAILED backfill still reaches the feed", h.store.get().activity.length === 1, h.store.get().activity.length);
+    ok("12.3 nothing is left held", feed.pendingCount === 0, feed.pendingCount);
+    ok("12.4 the boundary passed", feed.settled === true);
+    ok("12.5 and the failure is SURFACED rather than swallowed", h.store.get().orderNotes.some((n) => n.type === "backfill-failed"), h.store.get().orderNotes);
+    ok("12.6 the baseline came from the buffered frame", feed.state(feed.chainKeys[0])?.baseline === 1);
   }
-  // CONTROL: the same harness with the fetch RESOLVING. Without this, 12.2 could be passing because
+  // CONTROL: the same harness with the read RESOLVING. Without this, 12.2 could be passing because
   // the harness never held the frame in the first place.
   {
-    const ctx = page("resolve");
-    await drive(ctx, "refresh()", frame(1));
-    ok("12.7 CONTROL: the same harness with a working fetch also delivers the frame", ctx.activity.length === 1, ctx.activity.length);
-    ok("12.8 CONTROL: and reports no failure note", !ctx.orderNotes.some((n) => n.type === "backfill-failed"));
+    const h = harness(bootReads);
+    await inFlight(h, () => h.ctl.refresh(), frame(1));
+    ok("12.7 CONTROL: the same harness with a working fetch also delivers the frame", h.store.get().activity.length === 1, h.store.get().activity.length);
+    ok("12.8 CONTROL: and reports no failure note", !h.store.get().orderNotes.some((n) => n.type === "backfill-failed"));
   }
-  // The selected-channel view, history REJECTING.
+  // The open channel, history REJECTING.
   {
-    const ctx = page("reject");
-    ctx.selected = "events.local.alice";
-    await drive(ctx, 'select("events.local.alice")', frame(1));
-    ok("12.9 a frame held during a FAILED channel history still reaches that channel's view", ctx.channelMsgs.length === 1, ctx.channelMsgs.length);
-    ok("12.10 nothing is left held on that path either", ctx.channelOrder.pendingCount === 0);
-    ok("12.11 and it too surfaces the failure", ctx.orderNotes.some((n) => n.type === "backfill-failed"));
+    const h = harness({ history: failing });
+    await inFlight(h, () => h.ctl.open(ch), frame(1));
+    ok("12.9 a frame held during a FAILED channel history still reaches that channel's view", h.store.get().open?.messages.length === 1, h.store.get().open);
+    ok("12.10 nothing is left held on that path either", h.last("open")?.pendingCount === 0);
+    ok("12.11 and it too surfaces the failure", h.store.get().orderNotes.some((n) => n.type === "backfill-failed"));
   }
 
   // ── 13. TWO BOOTSTRAPS AT ONCE, which the stock startup performs on every load ──────────────────
   // Arming a machine and settling it are the two ends of ONE bootstrap. When `refresh()` could be
-  // re-entered between them, the second call rebound `feedOrder` and the first machine, holding
+  // re-entered between them, the second call rebound the feed's machine and the first one, holding
   // whatever the tap had delivered in that window, became unreachable: its buffer was never drained
   // and never merged. This is not a hypothetical schedule. The page ends with `refresh(); connect();`
   // and `connect()`'s open handler calls `refresh()` again, so the second call is the norm, and a
   // reconnect flap repeats it.
   {
-    // The structural half: the two call sites this race needs both exist in the shipped file.
+    // The structural half: the two call sites this race needs both exist in the shipped page. They
+    // are the startup's, not the controller's, and move with it.
+    const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
     const startup = /\n\s*refresh\(\);\n\s*connect\(\);/.test(appSrc);
     const onOpen = /addEventListener\("open",[\s\S]{0,120}?refresh\(\);/.test(appSrc);
     ok("13.1 the shipped startup calls refresh() and then connect()", startup);
     ok("13.2 and connect()'s open handler calls refresh() again", onOpen);
   }
   {
-    const ctx = page("resolve");
-    const c = (ctx as unknown as { __ctx: ReturnType<typeof createContext> }).__ctx;
     // Both calls are in flight together, with a frame arriving in between, exactly as the tap would
     // deliver one between the startup call and the open handler's.
-    (ctx as Record<string, unknown>).__E = frame(7);
-    runInContext("__p = refresh();", c);
-    const first = ctx.feedOrder; // the machine the FIRST call armed, captured while it is in flight
-    runInContext("onMessage(__E);", c);
-    runInContext("__p2 = refresh();", c);
-    await (ctx.__p as Promise<void>).catch(() => undefined);
-    await ((ctx as Record<string, unknown>).__p2 as Promise<void>).catch(() => undefined);
-    ok("13.3 the second call did NOT arm a rival machine", ctx.feedOrder === first);
-    ok("13.4 so the frame held by the first one still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
-    ok("13.5 and nothing is left held", ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
+    const h = harness(bootReads);
+    const p = h.ctl.refresh();
+    const first = h.last("feed"); // the machine the FIRST call armed, captured while it is in flight
+    h.ctl.onMessage(feed(frame(7)));
+    const p2 = h.ctl.refresh();
+    await p.catch(() => undefined);
+    await p2.catch(() => undefined);
+    ok("13.3 the second call did NOT arm a rival machine", h.last("feed") === first);
+    ok("13.4 so the frame held by the first one still reaches the feed", h.store.get().activity.length === 1, seqsOf(h.store.get().activity));
+    ok("13.5 and nothing is left held", h.last("feed")!.pendingCount === 0, h.last("feed")!.pendingCount);
   }
   {
-    // The same race on the channel view, which `refresh()` drives itself: it calls `select(selected)`
-    // on every poll, so two bootstraps for the SAME open channel overlap routinely.
-    const ctx = page("resolve");
-    const c = (ctx as unknown as { __ctx: ReturnType<typeof createContext> }).__ctx;
-    ctx.selected = "events.local.alice";
-    (ctx as Record<string, unknown>).__E = frame(7);
-    runInContext('__p = select("events.local.alice");', c);
-    const first = ctx.channelOrder; // armed by the first selection, captured while it is in flight
-    runInContext("onMessage(__E);", c);
-    runInContext('__p2 = select("events.local.alice");', c);
-    await (ctx.__p as Promise<void>).catch(() => undefined);
-    await ((ctx as Record<string, unknown>).__p2 as Promise<void>).catch(() => undefined);
-    ok("13.6 a second selection of the same channel shares the bootstrap", ctx.channelOrder === first);
-    ok("13.7 so its held frame reaches the channel view", ctx.channelMsgs.length === 1, ctx.channelMsgs.length);
-    ok("13.8 and nothing is left held there either", ctx.channelOrder.pendingCount === 0);
-    ok("13.9 CONTROL: the refresh path is what calls select on a poll", /\n\s*select\(selected\);/.test(appSrc));
+    // The same race on the open channel, which `refresh()` drives itself: it re-opens the open
+    // channel on every poll, so two bootstraps for the SAME channel overlap routinely.
+    const h = harness({ history: async () => [] });
+    const p = h.ctl.open(ch);
+    const first = h.last("open"); // armed by the first open, captured while it is in flight
+    h.ctl.onMessage(feed(frame(7)));
+    const p2 = h.ctl.open(ch);
+    await p.catch(() => undefined);
+    await p2.catch(() => undefined);
+    ok("13.6 a second selection of the same channel shares the bootstrap", h.last("open") === first);
+    ok("13.7 so its held frame reaches the channel view", h.store.get().open?.messages.length === 1, h.store.get().open);
+    ok("13.8 and nothing is left held there either", h.last("open")!.pendingCount === 0);
+  }
+  {
+    // The poll re-reads the open channel's history: two history reads, one per bootstrap.
+    let reads = 0;
+    const h = harness({ ...bootReads, history: async () => { reads++; return []; } });
+    await h.ctl.open("team.backend");
+    await h.ctl.refresh();
+    await new Promise((r) => setTimeout(r, 0)); // the poll's re-open is not awaited by refresh()
+    ok("13.9 CONTROL: the refresh path is what calls select on a poll", reads === 2, reads);
   }
 
   // ── 14. THE BOUNDARY PASSES ON EVERY BRANCH, not only on all-activity ──────────────────────────
-  // `feedOrder` is re-armed at the top of `refresh()` unconditionally, and the settle used to live
-  // inside the `selected === "*"` branch. So for a reader sitting on a channel, a DM or an agent
+  // The feed's machine is re-armed at the top of `refresh()` unconditionally, and the settle used to
+  // live inside the all-activity branch. So for a reader sitting on a channel, a DM or an agent
   // drill-down, every live frame was held by a machine that would never settle: absent from the feed,
   // then discarded wholesale by the next poll's re-arm. A `finally` is the only placement that covers
-  // all four branches AND a throw from anything the function calls between the arm and the settle.
+  // every branch AND a throw from anything the function calls between the arm and the settle. The
+  // controller has no DM or agent state: those views show no channel, so they run with `open(null)`.
   for (const branch of ["channel", "dm", "agent"] as const) {
-    const ctx = page("resolve");
-    if (branch === "channel") ctx.selected = "team.backend";
-    if (branch === "dm") ctx.dmSel = { peer: "p", with: "q" };
-    if (branch === "agent") ctx.agentSel = "p";
-    await drive(ctx, "refresh()", frame(9));
-    ok(`14.${branch === "channel" ? 1 : branch === "dm" ? 3 : 5} the boundary passes with a ${branch} open`, ctx.feedOrder.settled === true);
-    ok(`14.${branch === "channel" ? 2 : branch === "dm" ? 4 : 6} and the held frame is not stranded`, ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
+    const h = harness({ ...bootReads, history: async () => [] });
+    await h.ctl.open(branch === "channel" ? "team.backend" : null);
+    await inFlight(h, () => h.ctl.refresh(), frame(9));
+    ok(`14.${branch === "channel" ? 1 : branch === "dm" ? 3 : 5} the boundary passes with a ${branch} open`, h.last("feed")!.settled === true);
+    ok(`14.${branch === "channel" ? 2 : branch === "dm" ? 4 : 6} and the held frame is not stranded`, h.last("feed")!.pendingCount === 0, h.last("feed")!.pendingCount);
   }
   {
     // A THROW BETWEEN THE ARM AND THE SETTLE. This cell used to drive it by rejecting `/api/roster`,
     // the function's first fetch, which was unguarded. Every source read now goes through the
     // keep-last-good helper, which REPORTS a refusal instead of propagating it, so that stimulus no
-    // longer throws at all and the cell it fed became vacuous: it passed whether the settle ran on
-    // every path or only on the normal tail. That is not a reason to drop the rule, because the
-    // renders this function calls once its reads are in can still throw, and the consequence is
-    // unchanged: the frames held during the poll are stranded for the life of the page. So the
-    // stimulus moves to a throw that the current code can actually produce, and 14.7b proves the
-    // stimulus fired rather than leaving the cell to pass on a call that never happened.
-    const ctx = page("resolve");
+    // longer throws at all. The renders this function reaches once its reads are in can still throw:
+    // a store subscriber IS a render. The consequence of missing the settle is unchanged, the frames
+    // held during the poll are stranded for the life of the page, and 14.7b proves the stimulus fired.
+    const h = harness(bootReads);
+    let armed = false;
     let threw = false;
-    (ctx as Record<string, unknown>).renderSidebarNav = () => { threw = true; throw new Error("render blew up"); };
-    await drive(ctx, "refresh()", frame(9));
-    ok("14.7 a throw between the arm and the settle still settles the boundary", ctx.feedOrder.settled === true);
+    h.store.subscribe(() => {
+      if (!armed || threw) return;
+      threw = true;
+      throw new Error("render blew up");
+    });
+    const p = h.ctl.refresh();
+    h.ctl.onMessage(feed(frame(9)));
+    armed = true; // the next render is inside refresh(), after the arm and before the settle
+    await p.catch(() => undefined);
+    ok("14.7 a throw between the arm and the settle still settles the boundary", h.last("feed")!.settled === true);
     ok("14.7b CONTROL: the stimulus really threw (a cell whose throw never fires grades nothing)", (threw as boolean) === true);
-    ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+    ok("14.8 and the frame held during it still reaches the feed", h.store.get().activity.length === 1, seqsOf(h.store.get().activity));
   }
   {
     // THE PATH THAT REPLACED IT, kept as its own cells because it is a DIFFERENT claim: a source read
     // that refuses is absorbed and reported, and the boundary still passes. Nothing throws here, so
     // this pair cannot stand in for 14.7 and is not written as though it could.
-    const ctx = page("resolve");
-    (ctx as Record<string, unknown>).fetch = async (u: string) => {
-      if (u.includes("/api/roster")) throw new Error("network down");
-      if (u.includes("/api/activity"))
-        return { ok: true, json: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }) };
-      return { ok: true, json: async () => [] };
-    };
-    await drive(ctx, "refresh()", frame(9));
-    ok("14.9 a REFUSED source read still settles the boundary", ctx.feedOrder.settled === true);
-    ok("14.10 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+    const h = harness({ ...bootReads, roster: failing, activity: async () => page() });
+    await inFlight(h, () => h.ctl.refresh(), frame(9));
+    ok("14.9 a REFUSED source read still settles the boundary", h.last("feed")!.settled === true);
+    ok("14.10 and the frame held during it still reaches the feed", h.store.get().activity.length === 1, seqsOf(h.store.get().activity));
   }
+}
 
-  // ── 15. THE NOTES ARE DRAWN, which is a different claim from computing them ─────────────────────
-  // The notes were collected into an array nothing read: the machine detected a missing frame and the
-  // page said nothing. A gap that reaches only an unused variable is the same silence this lane exists
-  // to remove, one layer up, and it is also what decides whether treating a failed read as an empty
-  // history is an honest degrade or a quiet one.
+// ── 15. THE NOTES ARE DRAWN, which is a different claim from computing them ─────────────────────
+// The notes were collected into an array nothing read: the machine detected a missing frame and the
+// page said nothing. A gap that reaches only an unused variable is the same silence this lane exists
+// to remove, one layer up, and it is also what decides whether treating a failed read as an empty
+// history is an honest degrade or a quiet one.
+//
+// STILL THE OLD PAGE'S. Drawing is not the controller's job: the controller keeps `orderNotes` in the
+// store, and the views that draw them arrive with the shell. Until then these cells read the page that
+// ships the notice.
+{
+  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
+  const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  let notice: string | undefined;
+  sf.forEachChild((n) => {
+    if (ts.isFunctionDeclaration(n) && n.name?.text === "orderNoticeHtml") notice = appSrc.slice(n.getStart(sf), n.end);
+  });
+  ok("15.0 the shipped notice function is extractable", notice !== undefined);
   {
     const c = createContext({ orderNotes: [] as Note[] });
-    runInContext(fns.find((f) => f.startsWith("function orderNoticeHtml")) as string, c);
+    runInContext(notice ?? "", c);
     const html = (notes: Note[]) => {
       (c as unknown as { orderNotes: Note[] }).orderNotes = notes;
       return runInContext("orderNoticeHtml()", c) as string;

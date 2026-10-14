@@ -59,44 +59,44 @@
     },
     {
       "name": "O9 the activity backfill loses its failure arm, so a refused request degrades the ordering with nothing on screen saying so: the settle still happens, and the reader is told the frames are complete when the half that would have proved it was never read",
-      "file": "implementations/web/src/web/app.js",
-      "find": "    const backfillRefused = stale.find((s) => s.name === \"activity\" && s.kind !== \"partial\");\n    if (backfillRefused) noteOrder([{ type: \"backfill-failed\", reason: backfillRefused.reason }]);\n",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      const backfillRefused = stale.find((s) => s.name === \"activity\" && s.kind !== \"partial\");\n      if (backfillRefused) noteOrder([{ type: \"backfill-failed\", reason: backfillRefused.reason }]);\n",
       "replace": "",
       "expectRed": "12.5 and the failure is SURFACED rather than swallowed"
     },
     {
       "name": "O10 the selected-channel history loses the same arm, so a channel whose history read failed is presented as a channel whose history was empty",
-      "file": "implementations/web/src/web/app.js",
+      "file": "implementations/web/client/src/state/controller.ts",
       "find": "      noteOrder([{ type: \"backfill-failed\", channel: key, reason: refused }]);\n",
       "replace": "",
       "expectRed": "12.11 and it too surfaces the failure"
     },
     {
-      "name": "O11 the feed bootstrap loses its single flight, so the stock startup's second call re-arms the machine while the first is still fetching and the frames the first one is holding become unreachable",
-      "file": "implementations/web/src/web/app.js",
-      "find": "  if (refreshing) return refreshing;\n",
+      "name": "O11 the feed bootstrap loses its single flight, so the startup's second call re-arms the machine while the first is still fetching and the frames the first one is holding become unreachable",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (refreshing) return refreshing;\n",
       "replace": "",
       "expectRed": "13.4 so the frame held by the first one still reaches the feed"
     },
     {
       "name": "O12 the channel bootstrap loses its single flight, so the poll's own repeated select for the SAME open channel supersedes the load in flight and the frames it held are dropped instead of drawn",
-      "file": "implementations/web/src/web/app.js",
+      "file": "implementations/web/client/src/state/controller.ts",
       "find": "    if (selecting && selecting.key === key) return selecting.promise;\n",
       "replace": "",
       "expectRed": "13.7 so its held frame reaches the channel view"
     },
     {
       "name": "O13 the settle goes back inside the all-activity branch while the arm stays unconditional, so a reader sitting on a channel, a DM or an agent holds every live frame in a machine that never settles",
-      "file": "implementations/web/src/web/app.js",
-      "find": "    const settled = feedOrder.backfill(activity);",
-      "replace": "    const settled = selected === \"*\" ? feedOrder.backfill(activity) : { emit: [], notes: [] };",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      const settled = feedOrder.backfill(batch);",
+      "replace": "      const settled = store.get().open === null ? feedOrder.backfill(batch) : { emit: [], notes: [] };",
       "expectRed": "14.1 the boundary passes with a channel open"
     },
     {
       "name": "O14 the settle moves off the failure path and back into the normal tail, so a throw between the arm and the settle leaves the boundary unpassed and every frame held during the poll stranded for the life of the page",
-      "file": "implementations/web/src/web/app.js",
-      "find": "\n  } finally {\n",
-      "replace": "\n  } catch (__e) {\n    throw __e;\n  }\n  {\n",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    } finally {\n      for (const e of batch)",
+      "replace": "    } catch (__e) {\n      throw __e;\n    }\n    {\n      for (const e of batch)",
       "expectRed": "14.7 a throw between the arm and the settle still settles the boundary"
     },
     {
@@ -150,6 +150,7 @@
     }
   ],
   "suite": [
+    "implementations/web/smoke/controller-harness.ts",
     "implementations/web/smoke/event-order.smoke.ts"
   ]
 }

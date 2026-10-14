@@ -5,8 +5,8 @@
  * online-only list by design (David: that stands). So the honest page keeps last-known
  * online rows and marks the roster source stale. These cells drive the shipped
  * `presenceViewMark`, `rosterRows`, `nameIndex`, `displayNameOf` and `dmPeers` from
- * `client/src/lib`, imported as the client bundle imports them, and the server event the
- * page listens for.
+ * `client/src/lib`, imported as the client bundle imports them, the dashboard controller that
+ * applies the verdict, and the server event the page listens for.
  *
  * WHAT THIS DOES NOT CLAIM. No broker, no stall, no pixels. The endpoint verdict lives in
  * `smoke:presence-watch-stall`. This file is the logic: a `presence-view` verdict becomes
@@ -22,6 +22,7 @@ import { dmPeers } from "../client/src/lib/dms.js";
 import { displayNameOf, nameIndex } from "../client/src/lib/names.js";
 import { oldestLiveBeat, presenceViewMark, rosterRows, STATUS_ORDER, statusCounts, statusLabel, waiting } from "../client/src/lib/roster.js";
 import type { CotalMessage, PresenceView, RosterEntry } from "../client/src/api/types.js";
+import { bootReads, harness } from "./controller-harness.js";
 
 const webSrc = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -48,8 +49,29 @@ ok("1.1 Monitor: a stale view marks the roster source, not a peer",
 ok("1.2 Monitor: a fresh view CLEARS that mark (recovery is per source)", marks[1] === undefined, marks[1]);
 ok("1.3 Monitor: the endpoint's unpopulated state marks the roster unknown while its snapshot loads",
   marks[2]?.name === "roster" && /snapshot still loading/.test(marks[2]?.reason ?? ""), marks[2]);
-// moved to controller tests in Task 6: "the client applies presence-view events" and
-// "a stale roster keeps the last-known rows" (the old 2.1 listener and 2.5 setStale cells).
+
+// The controller applies the verdict: the roster it already holds stays, and the mark comes and goes.
+{
+  const known: RosterEntry[] = [{ card: { id: "local.amy", name: "amy", kind: "agent" }, status: "working", ts: 1 }];
+  const h = harness({});
+  h.ctl.onRoster(known);
+  h.ctl.onPresenceView({ state: "stale", fresh: false, staleSince: 1 });
+  const staleMarks = h.store.get().stale.filter((m) => m.name === "roster");
+  ok("2.1 the client applies presence-view events: a stale view keeps the last-known rows and marks the roster source",
+    h.store.get().roster.length === 1 && h.store.get().roster[0].card.id === "local.amy"
+      && staleMarks.length === 1 && /observer presence watch silent since/.test(staleMarks[0].reason),
+    { roster: h.store.get().roster, stale: h.store.get().stale });
+  h.ctl.onPresenceView({ state: "current", fresh: true });
+  ok("2.1b and a current view clears that mark", !h.store.get().stale.some((m) => m.name === "roster"), h.store.get().stale);
+}
+// A poll replaces the stale marks with what it read, and the observer's mark is not one of its reads.
+{
+  const h = harness(bootReads);
+  h.ctl.onPresenceView({ state: "stale", fresh: false, staleSince: 1 });
+  await h.ctl.refresh();
+  ok("2.5 a poll cannot erase the observer-view mark: a refresh keeps the roster entry",
+    h.store.get().stale.some((m) => m.name === "roster"), h.store.get().stale);
+}
 
 ok("2.2 the server broadcasts presence-view from the endpoint event (not a restated poll)",
   /ep\.on\("presence-view"/.test(webTs) && /broadcast\("presence-view"/.test(webTs));

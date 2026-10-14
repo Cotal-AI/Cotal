@@ -20,9 +20,11 @@
  * not enough: the status check without retention converts a silent corruption into a visible wipe,
  * and retention without the status check keeps nothing, because the refusal was never a failure.
  *
- * WHAT THIS SUITE DRIVES. `client/src/lib/snapshot.ts` is imported as the client bundle imports it.
- * The cells that lift code out of `app.js` hand that code the same module through a stub
- * `window.COTAL_SNAPSHOT` until the shell replaces `app.js` (Task 6). Nothing is restated.
+ * WHAT THIS SUITE DRIVES. `client/src/lib/snapshot.ts` is imported as the client bundle imports it,
+ * and the dashboard controller (`client/src/state/controller.ts`), which reads every source through
+ * it, is built over a fake `Api` and driven through its methods (§3.6, §4, §5). Nothing is restated.
+ * The structural cells on the old pages (§3.3 to §3.11, §5.3) stay on those pages until the boot and
+ * the shell replace them.
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -34,10 +36,11 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createContext, runInContext } from "node:vm";
-import ts from "typescript";
 import { LEGACY_PAGE_FILES } from "../src/web.js";
 import { readJson, refreshAll, staleLabel, type Source } from "../client/src/lib/snapshot.js";
+import type { CotalMessage } from "../client/src/api/types.js";
+import type { Api } from "../client/src/state/controller.js";
+import { bootReads, gate, harness } from "./controller-harness.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -52,8 +55,6 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
 };
 
 const SNAP = { readJson, refreshAll, staleLabel };
-/** What a lifted `app.js` fragment sees as `window.COTAL_SNAPSHOT`, until Task 6 retires it. */
-const winSnap = (): Record<string, unknown> => ({ COTAL_SNAPSHOT: SNAP });
 ok("0.2 the module exports its three entry points", typeof readJson === "function" && typeof refreshAll === "function" && typeof staleLabel === "function");
 
 /** A response carrying only the three members `readJson` reads, typed as the `Response` it accepts. */
@@ -181,12 +182,10 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
 {
   const indexHtml = readFileSync(LEGACY_PAGE_FILES["/"].path, "utf8");
   const graphHtml = readFileSync(LEGACY_PAGE_FILES["/graph"].path, "utf8");
-  const appJs = codeOnly(readFileSync(join(webSrc, "app.js"), "utf8"));
   const graphJs = codeOnly(readFileSync(join(webSrc, "graph.js"), "utf8"));
   ok("3.3 the console page loads it", indexHtml.includes('<script src="/snapshot.js"></script>'));
   ok("3.4 the graph page loads it", graphHtml.includes('<script src="/snapshot.js"></script>'));
   ok("3.5 both pages carry the stale marker element it drives", indexHtml.includes('id="stale"') && graphHtml.includes('id="stale"'));
-  ok("3.6 the console page reads every source through it", appJs.includes("SNAP.refreshAll(") && appJs.includes("SNAP.readJson("));
   ok("3.7 the graph page reads every source through it", graphJs.includes("SNAP.refreshAll(") && graphJs.includes("SNAP.readJson("));
   // The shape that caused the wipe, in the files that had it: a response body consumed with no
   // status check. A survivor here is a poll that can still store a refusal as data.
@@ -203,7 +202,11 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   // the next, so the class could not reach it: a 500 whose body is JSON resolved as data and the
   // header read `· undefined` for the rest of the session. 3.10e executes the two-line form.
   const rawJson = new RegExp(`fetch${ARGS}\\s*\\)\\s*\\.json\\(\\)|fetch${ARGS}\\s*\\.then\\(\\s*\\(?r\\)?\\s*=>\\s*r\\.json\\(\\)`, "g");
-  ok("3.8 no unguarded `fetch(...).json()` survives on the console page", (appJs.match(rawJson) ?? []).length === 0, appJs.match(rawJson));
+  // The console page's reads are the controller's now, and it holds no `fetch` at all: every read
+  // goes through the injected `Api`, so there is no body here to consume unguarded.
+  const controllerJs = codeOnly(readFileSync(join(here, "..", "client", "src", "state", "controller.ts"), "utf8"));
+  ok("3.8 no unguarded `fetch(...).json()` survives on the console page",
+    !/\bfetch\s*\(/.test(controllerJs) && (controllerJs.match(rawJson) ?? []).length === 0, controllerJs.match(rawJson));
   ok("3.9 no unguarded `fetch(...).json()` survives on the graph page", (graphJs.match(rawJson) ?? []).length === 0, graphJs.match(rawJson));
   // CONTROL for 3.8/3.9: the pattern must be able to find the shape it is looking for.
   ok("3.10 CONTROL: that pattern DOES match the shape it forbids",
@@ -230,184 +233,207 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     /\.then\(\s*connect\s*\)/.test("load().catch((err) => console.error(err)).then(connect);"));
 }
 
-// -- 4. THE SELECTED CHANNEL'S HISTORY, DRIVEN --------------------------------------------------
+// The console page's poll is the controller's `refresh()`. Every one of its six sources refusing at
+// once is the case the graph page hit: each is named, none is applied, and what was on screen stays.
+{
+  const refuse = (what: string) => async (): Promise<never> => { throw new Error(`${what} refused with HTTP 500: timeout`); };
+  const all = harness({
+    meta: refuse("space"), roster: refuse("peers"), channels: refuse("channels"),
+    dms: refuse("direct messages"), activity: refuse("activity"), membership: refuse("membership"),
+  });
+  const held = [{ card: { id: "local.a", name: "a", kind: "agent" }, status: "idle", ts: 1 }] as never;
+  all.store.set({ roster: held });
+  const before = JSON.stringify(all.store.get().roster);
+  await all.ctl.refresh();
+  const names = all.store.get().stale.map((m) => m.name).sort();
+  ok("3.6 the console page reads every source through it",
+    JSON.stringify(names) === JSON.stringify(["activity", "channels", "direct messages", "membership", "peers", "space"])
+      && JSON.stringify(all.store.get().roster) === before && all.store.get().space === null,
+    { names, roster: all.store.get().roster });
+}
+
+// -- 4. THE OPEN CHANNEL'S HISTORY, DRIVEN ------------------------------------------------------
 // The read behind the OPEN channel, which the structural cells above missed for as long as their
 // pattern could not see a nested paren. It is not on the poll's source table, because `refresh()`
-// reaches it indirectly: it calls `select(selected)` whenever a channel is open, and `select()`
-// clears `channelMsgs` before it fetches. So on a link where this read keeps being refused, the
-// channel the reader is looking at emptied once per poll.
+// reaches it indirectly: it re-opens the open channel on every poll, and `open()` clears the view
+// before it reads. So on a link where this read keeps being refused, the channel the reader is
+// looking at emptied once per poll.
 //
-// Measured on the shipped code before the fix, driving the real `select()` against a 500 whose body
-// is `{"error":"timeout"}`: `channelMsgs` ended `[]`, the last good message was gone, and NO
+// Measured on the old page before the fix, driving its `select()` against a 500 whose body is
+// `{"error":"timeout"}`: the open channel ended `[]`, the last good message was gone, and NO
 // backfill-failed note was raised, because a 500 does not reject and the catch never ran. The same
 // stimulus as a THROW did raise the note. That gap between the two endings is the whole defect.
 //
-// These cells run the SHIPPED function out of the file rather than a restatement of it, for the same
-// reason the sections above read `snapshot.js` off disk.
+// These cells run the SHIPPED controller over a fake `Api`. A 500 reaches it as the throw `readJson`
+// raises for one, so both endings are a rejected `history()` with a different message.
 {
-  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-  const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const wantedFns = new Set(["select", "noteOrder", "markStale", "setStale", "renderStale"]);
-  const wantedState = new Set(["selecting", "loadSeq", "shownChannel", "staleNow"]);
-  const fns: string[] = [];
-  const state: string[] = [];
-  sf.forEachChild((n) => {
-    if (ts.isFunctionDeclaration(n) && n.name && wantedFns.has(n.name.text)) fns.push(appSrc.slice(n.getStart(sf), n.end));
-    if (ts.isVariableStatement(n))
-      for (const d of n.declarationList.declarations)
-        if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
-  });
-  // Pinned first: a short extraction would make every cell below vacuous, which is the failure mode
-  // that let the old structural cell pass.
-  ok("4.1 all five shipped functions are extractable", fns.length === 5, fns.length);
-  ok("4.1b and the four pieces of state they read", state.length === 4, state.length);
-
   type Msg = { id: string; seq: number };
-  type Page = Record<string, unknown> & { channelMsgs: Msg[]; orderNotes: { type: string }[]; __p?: Promise<void> };
-  // Per page, not shared: a marker left over from a previous case would let a cell pass on someone
-  // else's text. `textContent` because that is the property the shipped `renderStale` writes.
-  let label = { textContent: "" };
-  const page = (): { ctx: Page; c: ReturnType<typeof createContext> } => {
-    label = { textContent: "" };
-    const ctx: Record<string, unknown> = {
-      console,
-      fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
-      renderCenter() {}, renderSidebarNav() {}, refreshDerived() {}, renderRoster() {},
-      renderChannels() {}, renderDMs() {}, renderRail() {}, rosterRows: () => [],
-      // The real marker element, so the shipped `renderStale` runs rather than being stubbed: what a
-      // reader is TOLD is half of this rule and a stub would assert only the half that is kept.
-      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => label } : null),
-      isDemo: false, orderNotes: [], channelMsgs: [], channelOrder: undefined, selected: "*",
-      unread: new Map(), agentSel: null, dmSel: null, roster: [], channels: new Map(), dms: [],
-      window: winSnap(), __p: undefined,
-    };
-    const c = createContext(ctx);
-    runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
-    runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
-    return { ctx: ctx as Page, c };
-  };
-  const good = (msgs: Msg[]) => async () => ({ ok: true, status: 200, json: async () => msgs });
-  const refuse500 = async () => ({ ok: false, status: 500, json: async () => ({ error: "timeout" }) });
-  const throws = async () => { throw new Error("network down"); };
-  const drive = async (ctx: Page, c: ReturnType<typeof createContext>, key: string) => {
-    runInContext(`__p = select(${JSON.stringify(key)});`, c);
-    await (ctx.__p as Promise<void>);
+  const msgs = (ms: Msg[]) => ms as unknown as CotalMessage[];
+  const good = (ms: Msg[]) => async () => msgs(ms);
+  const refuse500 = async (): Promise<never> => { throw new Error("#team.backend history refused with HTTP 500: timeout"); };
+  const throws = async (): Promise<never> => { throw new Error("network down"); };
+  const ids = (h: ReturnType<typeof harness>) => (h.store.get().open?.messages ?? []).map((m) => m.id);
+  const label = (h: ReturnType<typeof harness>) => staleLabel(h.store.get().stale);
+  /** One controller whose history read is whatever `next` currently says. */
+  const channelPage = () => {
+    let next: Api["history"] = good([]);
+    const h = harness({ history: (c, n) => next(c, n) });
+    return { h, set: (f: Api["history"]) => { next = f; } };
   };
 
   // A 500 WITH A JSON BODY, on the channel the reader is already looking at.
   {
-    const { ctx, c } = page();
-    ctx.fetch = good([{ id: "m1", seq: 1 }]);
-    await drive(ctx, c, "team.backend");
-    const afterGood = ctx.channelMsgs.map((m) => m.id);
-    ctx.orderNotes = [];
-    ctx.fetch = refuse500;
-    await drive(ctx, c, "team.backend");
+    const { h, set } = channelPage();
+    set(good([{ id: "m1", seq: 1 }]));
+    await h.ctl.open("team.backend");
+    const afterGood = ids(h);
+    set(refuse500);
+    await h.ctl.open("team.backend");
     ok("4.2 a good read puts the channel's history on screen", JSON.stringify(afterGood) === JSON.stringify(["m1"]), afterGood);
-    ok("4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes",
-      ctx.channelMsgs.some((m) => m && m.id === "m1"), ctx.channelMsgs);
+    ok("4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes", ids(h).includes("m1"), ids(h));
     ok("4.4 and the refusal is SURFACED as a backfill failure, not swallowed",
-      ctx.orderNotes.some((n) => n.type === "backfill-failed"), ctx.orderNotes);
-    ok("4.5 and the marker NAMES the channel whose history is stale",
-      label.textContent.includes("team.backend"), label.textContent);
+      h.store.get().orderNotes.some((n) => n.type === "backfill-failed"), h.store.get().orderNotes);
+    ok("4.5 and the marker NAMES the channel whose history is stale", label(h).includes("team.backend"), label(h));
   }
   // CONTROL: the throwing ending must behave the same. Before the fix these two diverged, and that
   // divergence is exactly what a status gate removes.
   {
-    const { ctx, c } = page();
-    ctx.fetch = good([{ id: "m1", seq: 1 }]);
-    await drive(ctx, c, "team.backend");
-    ctx.orderNotes = [];
-    ctx.fetch = throws;
-    await drive(ctx, c, "team.backend");
+    const { h, set } = channelPage();
+    set(good([{ id: "m1", seq: 1 }]));
+    await h.ctl.open("team.backend");
+    set(throws);
+    await h.ctl.open("team.backend");
     ok("4.6 CONTROL: a THROWN refusal keeps it too, so the two endings agree",
-      ctx.channelMsgs.some((m) => m && m.id === "m1") && ctx.orderNotes.some((n) => n.type === "backfill-failed"),
-      { msgs: ctx.channelMsgs, notes: ctx.orderNotes });
+      ids(h).includes("m1") && h.store.get().orderNotes.some((n) => n.type === "backfill-failed"),
+      { msgs: ids(h), notes: h.store.get().orderNotes });
   }
   // THE HAZARD RETENTION CREATES, executed rather than reasoned: keeping the last good messages must
   // never show one channel's history under another channel's name.
   {
-    const { ctx, c } = page();
-    ctx.fetch = good([{ id: "a1", seq: 1 }]);
-    await drive(ctx, c, "chan.A");
-    ctx.fetch = refuse500;
-    await drive(ctx, c, "chan.B");
-    ok("4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)",
-      !ctx.channelMsgs.some((m) => m && m.id === "a1"), ctx.channelMsgs);
+    const { h, set } = channelPage();
+    set(good([{ id: "a1", seq: 1 }]));
+    await h.ctl.open("chan.A");
+    set(refuse500);
+    await h.ctl.open("chan.B");
+    ok("4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)", !ids(h).includes("a1"), ids(h));
   }
   // RECOVERY: the next read that lands replaces the data and clears THIS channel's mark.
   {
-    const { ctx, c } = page();
-    ctx.fetch = good([{ id: "m1", seq: 1 }]);
-    await drive(ctx, c, "team.backend");
-    ctx.fetch = refuse500;
-    await drive(ctx, c, "team.backend");
-    const markedWhileRefused = label.textContent.includes("team.backend");
-    ctx.fetch = good([{ id: "m2", seq: 2 }]);
-    await drive(ctx, c, "team.backend");
-    ok("4.8 the mark is up while the read is refused", markedWhileRefused, label.textContent);
-    ok("4.9 and a read that lands clears it", !label.textContent.includes("team.backend"), label.textContent);
-    ok("4.10 and replaces the data rather than merging the stale copy forward",
-      ctx.channelMsgs.some((m) => m && m.id === "m2"), ctx.channelMsgs);
+    const { h, set } = channelPage();
+    set(good([{ id: "m1", seq: 1 }]));
+    await h.ctl.open("team.backend");
+    set(refuse500);
+    await h.ctl.open("team.backend");
+    const markedWhileRefused = label(h).includes("team.backend");
+    set(good([{ id: "m2", seq: 2 }]));
+    await h.ctl.open("team.backend");
+    ok("4.8 the mark is up while the read is refused", markedWhileRefused, label(h));
+    ok("4.9 and a read that lands clears it", !label(h).includes("team.backend"), label(h));
+    ok("4.10 and replaces the data rather than merging the stale copy forward", ids(h).includes("m2"), ids(h));
   }
-  // ONE SOURCE'S MARK MUST NOT ERASE ANOTHER'S. `refresh()` marks the four polled sources, then calls
-  // `select()`, which marks a fifth. A whole-set write in either place drops the other's findings.
+  // ONE SOURCE'S MARK MUST NOT ERASE ANOTHER'S. `refresh()` marks the polled sources, then re-opens
+  // the open channel, which marks one more. A whole-set write in either place drops the other's findings.
   {
-    const { ctx, c } = page();
-    runInContext(`setStale([{ kind: "refused", name: "peers", reason: "boom" }]);`, c);
-    ctx.fetch = refuse500;
-    await drive(ctx, c, "team.backend");
+    const h = harness({ ...bootReads, roster: async () => { throw new Error("boom"); }, history: refuse500 });
+    await h.ctl.refresh();
+    await h.ctl.open("team.backend");
     ok("4.11 a refused channel history does not erase the poll's other marks",
-      label.textContent.includes("peers") && label.textContent.includes("team.backend"), label.textContent);
+      label(h).includes("peers") && label(h).includes("team.backend"), label(h));
   }
 }
 
 // THE SPACE NAME IS A SOURCE, NOT A ONE-SHOT, and this section exists because the structural guard
 // above was green while it was neither. It was read at boot with a bare fetch whose `.then` sat on
 // the next line, so a 500 with a JSON body arrived as data and the header showed `· undefined` with
-// no later poll to correct it. The shipped source is LIFTED out of `app.js` and run through the
-// shipped `refreshAll`, so what is graded is the page's own entry rather than a restatement of it.
+// no later poll to correct it. The controller reads it on every poll through `refreshAll`, and the
+// header and the document title are both drawn from `space`, so `space` is what is graded.
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-  const found = appSrc.match(/\{\s*name: "space",[\s\S]{0,400}?\n      \}/g) ?? [];
-  ok("5.1 the console page has exactly one space source this harness can run", found.length === 1, found.length);
-  ok("5.2 CONTROL: the same pattern naming a source the page does not have finds nothing",
-    (appSrc.match(/\{\s*name: "spice",[\s\S]{0,400}?\n      \}/g) ?? []).length === 0);
+  // The gate itself lives where the read is made. On the old page that is this line; the client's
+  // `Api` wraps every route in `readJson` when it lands.
   ok("5.3 and it reads through the gate rather than consuming the body directly",
     /readJson\(await fetch\("\/api\/meta"\)/.test(appSrc));
 
-  const header = { textContent: "· cotal-main" };
-  const doc = { title: "Cotal · cotal-main" };
-  const mk = (res: () => Promise<unknown>) => {
-    const ctx: Record<string, unknown> = {
-      console, window: winSnap(), document: doc, fetch: res,
-      $: (id: string) => (id === "space" ? header : null),
-    };
-    const c = createContext(ctx);
-    // The lifted entry reads `SNAP`, a local of the shipped `refresh()`, so the harness has to bind
-    // the same name to the same object. Cells 5.7 and 5.8 are what caught this being absent: without
-    // them a ReferenceError inside `read` looks exactly like the refusal the section is about.
-    runInContext("var SNAP = window.COTAL_SNAPSHOT;", c, { filename: "app.js (refresh scope)" });
-    runInContext(`__src = ${found[0]};`, c, { filename: "app.js (space source)" });
-    return { ctx, c };
-  };
-
+  let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1 });
+  let reads = 0;
+  const h = harness({ ...bootReads, meta: () => { reads++; return meta(); } });
+  await h.ctl.refresh();
+  ok("5.1 the controller reads the space as one of its sources", reads === 1 && h.store.get().space === "cotal-main",
+    { reads, space: h.store.get().space });
   {
-    const { ctx, c } = mk(async () => ({ ok: false, status: 500, json: async () => ({ error: "the space could not be read: timeout" }) }));
-    runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
-    const stale = await (ctx.__p as Promise<{ name: string; reason: string }[]>);
-    ok("5.4 a 500 whose body is JSON does NOT become the space name", header.textContent === "· cotal-main", header.textContent);
-    ok("5.5 nor the document title", doc.title === "Cotal · cotal-main", doc.title);
+    meta = async () => { throw new Error("space refused with HTTP 500: the space could not be read: timeout"); };
+    await h.ctl.refresh();
+    const stale = h.store.get().stale;
+    ok("5.4 a 500 whose body is JSON does NOT become the space name", h.store.get().space === "cotal-main", h.store.get().space);
     ok("5.6 and the refusal is REPORTED, by source name", stale.length === 1 && stale[0].name === "space", stale);
     ok("5.7 carrying the server's own reason", stale[0]?.reason?.includes("the space could not be read"), stale[0]?.reason);
   }
   {
-    const { ctx, c } = mk(async () => ({ ok: true, status: 200, json: async () => ({ space: "cotal-next", pid: 1 }) }));
-    runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
-    const stale = await (ctx.__p as Promise<unknown[]>);
+    meta = async () => ({ space: "cotal-next", pid: 1 });
+    await h.ctl.refresh();
     ok("5.8 CONTROL: a read that LANDS replaces the name, so 5.4 is retention and not a stub",
-      header.textContent === "· cotal-next" && doc.title === "Cotal · cotal-next" && stale.length === 0,
-      { header: header.textContent, title: doc.title, stale });
+      h.store.get().space === "cotal-next" && h.store.get().stale.length === 0,
+      { space: h.store.get().space, stale: h.store.get().stale });
+  }
+}
+
+
+// -- 6. THE BOOTSTRAP MUST NOT OUTRANK THE LIVE FEED ----------------------------------------------
+// Every bootstrap read is ISSUED before its value is applied, so a snapshot is at least as old as the
+// moment the page asked for it, while a feed event is newer than that. The feed opens first, so a
+// live `roster` or `membership` can land while those reads are in flight, and applying the older
+// read afterwards would silently revert it. What is superseded is the SOURCE: a refusal obeys the
+// same rule as a snapshot, in both directions.
+{
+  const amy = [{ card: { id: "local.amy", name: "amy", kind: "agent" }, status: "working", ts: 2 }] as never;
+  const stale = [{ card: { id: "local.old", name: "old", kind: "agent" }, status: "idle", ts: 1 }] as never;
+  {
+    const g = gate<never>();
+    const h = harness({ ...bootReads, roster: () => g.promise });
+    const p = h.ctl.refresh();
+    h.ctl.onRoster(amy);
+    g.resolve(stale);
+    await p;
+    ok("6.1 a roster event that lands before the bootstrap roster read resolves wins",
+      JSON.stringify(h.store.get().roster) === JSON.stringify(amy), h.store.get().roster);
+  }
+  {
+    const h = harness({ ...bootReads, roster: async () => stale });
+    await h.ctl.refresh();
+    ok("6.2 CONTROL: with no live event the bootstrap roster applies", JSON.stringify(h.store.get().roster) === JSON.stringify(stale), h.store.get().roster);
+  }
+  {
+    const g = gate<never>();
+    const h = harness({ ...bootReads, membership: () => g.promise });
+    const p = h.ctl.refresh();
+    h.ctl.onMembership({ asOf: 5, members: [] });
+    g.reject(new Error("membership refused with HTTP 503: membership-read-failed"));
+    await p;
+    ok("6.3 a live membership snapshot outranks a bootstrap refusal that lands after it",
+      h.store.get().membership.unreadable === undefined && h.store.get().membership.snapshot?.asOf === 5, h.store.get().membership);
+  }
+  {
+    const g = gate<never>();
+    const h = harness({ ...bootReads, membership: () => g.promise });
+    const p = h.ctl.refresh();
+    h.ctl.onMembershipFailed("membership read timed out");
+    g.resolve({ asOf: 1, members: [] } as never);
+    await p;
+    ok("6.4 a live membership refusal outranks a bootstrap snapshot that lands after it",
+      h.store.get().membership.unreadable === "membership read timed out" && h.store.get().membership.snapshot === undefined, h.store.get().membership);
+  }
+  {
+    const h = harness({});
+    h.ctl.onMembership({ asOf: 5, members: [] });
+    h.ctl.onMembershipFailed("membership read timed out");
+    ok("6.5 a refusal keeps the last snapshot it cannot replace, and says it is unreadable",
+      h.store.get().membership.snapshot?.asOf === 5 && h.store.get().membership.unreadable === "membership read timed out", h.store.get().membership);
+  }
+  {
+    const h = harness({ ...bootReads, membership: async () => { throw new Error("membership refused with HTTP 503: membership-read-failed"); } });
+    await h.ctl.refresh();
+    ok("6.6 CONTROL: with no live event a bootstrap refusal does mark membership unreadable",
+      /membership-read-failed/.test(h.store.get().membership.unreadable ?? ""), h.store.get().membership);
   }
 }
 

@@ -58,7 +58,8 @@ export type FeedEntryLike = { msg: Record<string, unknown> } | Record<string, un
 
 /** One thing the machine noticed. `gap` and `boundary-hole` carry `expected`, `got` and `missing`;
  *  `prefix-incomplete` carries `baseline`. `backfill-failed` is raised by the page when the history
- *  read refuses, never by the machine, and carries neither. */
+ *  read refuses, never by the machine, and carries neither: it carries the refusal's `reason`, and
+ *  `channel` when the refused read was one channel's history. */
 export interface OrderNote {
   type: "gap" | "boundary-hole" | "prefix-incomplete" | "backfill-failed";
   key?: string;
@@ -66,6 +67,8 @@ export interface OrderNote {
   expected?: number;
   got?: number;
   missing?: number;
+  channel?: string;
+  reason?: string;
 }
 
 /** A chain's observed state, for a surface that wants to mark it and for the suite. */
