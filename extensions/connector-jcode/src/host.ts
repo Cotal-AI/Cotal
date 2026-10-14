@@ -1955,9 +1955,26 @@ export async function runJcodeHost(): Promise<void> {
     // The proof is the orientation tool_done event as it arrives. Waiting for turn_done kills a
     // seat that already called the tool and then kept working (#1440).
     const readinessPrompt = "Call the cotal_orientation tool exactly once now. Do not perform any other work and do not write a response.";
-    const isOrientationName = (name: string) => /(?:^|__)cotal_orientation$/.test(name);
-    const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) =>
-      run.toolCalls.some((call) => isOrientationName(call.name));
+    type ToolCall = Awaited<ReturnType<JcodeClient["run"]>>["toolCalls"][number];
+    // Jcode's deferred MCP surface reaches orientation through `mcp_call`, whose tool_done names
+    // only the wrapper. Its arguments are the call's streamed input, which the Harness API sends
+    // with no call id between that call's tool_start and tool_exec.
+    const deferredOrientationCalls = new Set<string>();
+    let streamingCall: { callId: string; input: string } | undefined;
+    const isDeferredOrientation = (input: string): boolean => {
+      try {
+        const args: unknown = JSON.parse(input);
+        return typeof args === "object" && args !== null && "server" in args && args.server === "cotal" && "tool" in args && args.tool === "cotal_orientation";
+      } catch {
+        return false;
+      }
+    };
+    // Jcode reports an MCP error result as successful output prefixed `Error: `; it proves nothing.
+    const isOrientationCall = (call: ToolCall) =>
+      call.error === undefined &&
+      !call.output.startsWith("Error: ") &&
+      (/(?:^|__)cotal_orientation$/.test(call.name) || deferredOrientationCalls.has(call.callId));
+    const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) => run.toolCalls.some(isOrientationCall);
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
     );
@@ -1974,29 +1991,21 @@ export async function runJcodeHost(): Promise<void> {
     });
     const onReadinessEvent = (event: ApiEvent): void => {
       if (event.ev === "turn_done") readinessTurnOpen = false;
-      if (event.ev !== "tool_done" || !isOrientationName(event.name)) return;
+      if (event.ev === "tool_start") streamingCall = { callId: event.call_id, input: "" };
+      if (event.ev === "tool_input_delta" && streamingCall) streamingCall.input += event.delta;
+      if (event.ev === "tool_exec") {
+        if (event.name === "mcp_call" && streamingCall?.callId === event.call_id && isDeferredOrientation(streamingCall.input))
+          deferredOrientationCalls.add(event.call_id);
+        streamingCall = undefined;
+      }
+      if (event.ev !== "tool_done") return;
+      const call: ToolCall = { callId: event.call_id, name: event.name, output: event.output, error: event.error };
+      if (!isOrientationCall(call)) return;
       observedOrientation = true;
       if (!readiness) {
-        readiness = {
-          text: "",
-          reasoning: "",
-          toolCalls: [
-            {
-              callId: event.call_id,
-              name: event.name,
-              output: event.output,
-              error: event.error,
-            },
-          ],
-          usage: undefined,
-        };
-      } else if (!readiness.toolCalls.some((existing) => isOrientationName(existing.name))) {
-        readiness.toolCalls.push({
-          callId: event.call_id,
-          name: event.name,
-          output: event.output,
-          error: event.error,
-        });
+        readiness = { text: "", reasoning: "", toolCalls: [call], usage: undefined };
+      } else if (!hasOrientation(readiness)) {
+        readiness.toolCalls.push(call);
       }
       resolveOrientation();
     };

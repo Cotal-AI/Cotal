@@ -172,7 +172,9 @@ not explicitly shared. Operator MCP configuration is isolated in the private hom
 configuration is not supported yet.
 
 Before the seat joins the mesh, the host runs a mandatory Jcode turn that calls
-`cotal_orientation`. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
+`cotal_orientation`. The call counts whether Jcode makes it directly or through its deferred
+`mcp_call` tool with server `cotal` and tool `cotal_orientation`. A call that fails, or whose MCP
+result is an error, does not count. Jcode loads MCP tools asynchronously; its first turn can use the pre-MCP tool
 snapshot immediately before Jcode rebuilds that snapshot. The host repeats the identical proof once
 in that case. A second absence fails the launch, so a bridge that never comes up remains a loud
 failure rather than an agent that is present but mute. The persona is already in that transcript as
