@@ -1,0 +1,58 @@
+{
+  "command": "pnpm smoke:web-rate",
+  "suite": [
+    "implementations/web/smoke/rate.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "the default window is no longer one second",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "windowMs = 1000)",
+      "replace": "windowMs = 2000)",
+      "expectRed": "4 hits within the last second give 4"
+    },
+    {
+      "name": "a hit exactly one window old still counts",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "hits[i]! <= cutoff",
+      "replace": "hits[i]! < cutoff",
+      "expectRed": "a hit exactly one window before now is out and a hit at now is in"
+    },
+    {
+      "name": "perSecond stops dropping aged hits",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "    perSecond(now) {\n      dropUpTo(now - windowMs);\n",
+      "replace": "    perSecond(now) {\n",
+      "expectRed": "hits older than the window are dropped"
+    },
+    {
+      "name": "a hit after now is counted",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (ts <= now) inWindow++;",
+      "replace": "inWindow++;",
+      "expectRed": "a hit after now is not counted yet"
+    },
+    {
+      "name": "an out of order hit is left unsorted",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (out) hits.sort((a, b) => a - b);",
+      "replace": "",
+      "expectRed": "an out of order hit that is already a full window old does not count"
+    },
+    {
+      "name": "the count is not scaled to per second",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "return (inWindow * 1000) / windowMs;",
+      "replace": "return inWindow;",
+      "expectRed": "a 2 second window scales 4 hits to 2 per second"
+    },
+    {
+      "name": "a non-positive window is accepted",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (!Number.isFinite(windowMs) || windowMs <= 0) throw",
+      "replace": "if (false) throw",
+      "expectRed": "a window of 0 ms is refused"
+    }
+  ]
+}
