@@ -4,7 +4,7 @@ import { strict as assert } from "node:assert";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { clientAssets, CLIENT_NOT_BUILT } from "../src/web.js";
+import { clientAssets, clientResponse, CLIENT_NOT_BUILT } from "../src/web.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -35,4 +35,14 @@ ok("a file type the client does not use is not served", !routes.has("/assets/not
 ok("a nested directory is not walked", ![...routes.keys()].some((k) => k.includes("nested")));
 ok("files outside assets/ other than the page are not served", !routes.has("/bundle-licenses.json"));
 ok("the not-built message names the build command", CLIENT_NOT_BUILT.includes("pnpm --filter @cotal-ai/web build"));
+const built = clientResponse(routes, "/");
+ok("a built map gives 200 for / and for a hashed asset",
+  built.status === 200 && clientResponse(routes, "/assets/index-abc.js").status === 200);
+const none = clientAssets(mkdtempSync(join(tmpdir(), "cotal-web-client-empty-")));
+const emptyPage = clientResponse(none, "/");
+const emptyGraph = clientResponse(none, "/graph");
+ok("an empty map gives 503 with the not-built message for / and /graph",
+  emptyPage.status === 503 && emptyPage.body.error === CLIENT_NOT_BUILT && emptyGraph.status === 503 && emptyGraph.body.error === CLIENT_NOT_BUILT);
+ok("an empty map gives 404 for /assets/x.js", clientResponse(none, "/assets/x.js").status === 404);
+ok("a built map gives 404 for an unknown path", clientResponse(routes, "/nope").status === 404);
 console.log(`client-serving: ${n} checks passed`);

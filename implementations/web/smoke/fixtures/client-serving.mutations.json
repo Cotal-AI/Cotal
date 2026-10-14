@@ -25,6 +25,13 @@
       "find": "routes.set(\"/graph\", page);",
       "replace": "",
       "expectRed": "/graph serves the same page, so old links still open the app"
+    },
+    {
+      "name": "a missing build stops answering 503",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (routes.size === 0 && (path === \"/\" || path === \"/graph\")) return { status: 503, body: { error: CLIENT_NOT_BUILT } };",
+      "replace": "",
+      "expectRed": "an empty map gives 503 with the not-built message for / and /graph"
     }
   ]
 }

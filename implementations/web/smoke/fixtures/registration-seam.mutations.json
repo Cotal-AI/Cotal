@@ -1,0 +1,17 @@
+{
+  "command": "pnpm smoke:web-registration-seam",
+  "suite": [
+    "implementations/web/smoke/registration-seam.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "the server stops serving stylesheets",
+      "file": "implementations/web/src/web.ts",
+      "find": "  \".css\": \"text/css; charset=utf-8\",\n",
+      "replace": "",
+      "expectRed": "every file the built page references is served",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    }
+  ]
+}

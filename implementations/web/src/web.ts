@@ -345,6 +345,19 @@ export function clientAssets(dir: string): Map<string, ClientFile> {
   return routes;
 }
 
+/** The answer to a static request: the file when the build has it, a 503 naming the build command
+ *  when the build is missing and the page is asked for, otherwise a 404. A pure function of the
+ *  route map and the path, so the 503 is testable without a server. */
+export function clientResponse(
+  routes: Map<string, ClientFile>,
+  path: string,
+): { status: 200; file: ClientFile } | { status: 503; body: { error: string } } | { status: 404 } {
+  const file = routes.get(path);
+  if (file) return { status: 200, file };
+  if (routes.size === 0 && (path === "/" || path === "/graph")) return { status: 503, body: { error: CLIENT_NOT_BUILT } };
+  return { status: 404 };
+}
+
 /** What the two backfill routes need from an endpoint. Narrow on purpose: it is the seam the filter
  *  is measured through, and a mock satisfying six methods it never calls would prove less. */
 export interface ActivitySource {
@@ -1144,8 +1157,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
 
-    const file = client.get(path);
-    if (file) {
+    const answer = clientResponse(client, path);
+    if (answer.status === 200) {
+      const { file } = answer;
       // The page revalidates on every load so a `cotal` upgrade's new client is picked up; the
       // hashed assets never change under their name, so they cache for good.
       res.writeHead(200, {
@@ -1155,7 +1169,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       res.end(readFileSync(file.path));
       return;
     }
-    if (client.size === 0 && (path === "/" || path === "/graph")) return json(res, { error: CLIENT_NOT_BUILT }, 503);
+    if (answer.status === 503) return json(res, answer.body, 503);
     res.writeHead(404).end("not found");
   };
 

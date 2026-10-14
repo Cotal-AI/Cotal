@@ -6,10 +6,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { clientAssets } from "../src/web.js";
 
+let n = 0;
+const ok = (name: string, cond: unknown, detail?: unknown) => {
+  assert.ok(cond, `${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
+  console.log(`  ok ${++n} ${name}`);
+};
+
 const out = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "web");
 const routes = clientAssets(out);
 const html = readFileSync(join(out, "index.html"), "utf8");
 const refs = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)].map((m) => m[1]);
-assert.ok(refs.length > 0, "the built page references no files");
-for (const r of refs) assert.ok(routes.has(r), `the built page references ${r}, which the server does not serve`);
+ok("the built page references files", refs.length > 0, refs);
+ok("the built page references a script and a stylesheet",
+  refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
+const unserved = refs.filter((r) => !routes.has(r));
+ok("every file the built page references is served", unserved.length === 0, unserved);
 console.log(`registration-seam: ${refs.length} references, all served`);
