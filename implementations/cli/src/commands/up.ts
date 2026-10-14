@@ -66,6 +66,7 @@ import {
   findMesh,
   getCurrent,
   loadMeshes,
+  localMeshesForRoot,
   connectionEvictorCredsKey,
   membershipConfigPath,
   membershipObserverCredsKey,
@@ -723,7 +724,12 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // Gated on the ATTEMPT, not on holding the lock. The lock is now always held, and this refuses
     // whenever a journal exists — which is precisely the state a resume re-entry is in, so gating
     // it on the lock would refuse the very resume the lock is here to protect.
-    let server = values.server ?? DEFAULT_SERVER;
+    // Without --server the default URL only seeds a first boot. A first boot that found it taken ran
+    // on a free port, which this root's record keeps; a re-run must start from that URL, or every
+    // lookup below misses its own mesh and the space claim refuses it (#3889).
+    const recordedSpace = values.space ?? resolveSpace(process.cwd());
+    const implicitServer = localMeshesForRoot(cotalRoot()).find((m) => m.space === recordedSpace)?.server ?? DEFAULT_SERVER;
+    let server = values.server ?? implicitServer;
     const host = values.host ?? "127.0.0.1";
     // `--host` is the BIND address; `server` is the URL the readiness probe, the mesh registry, and
     // every later client use. They must name the SAME address. Left independent, `--host <non-loopback>`
@@ -731,7 +737,7 @@ async function runUp(args: ParsedArgs, inheritedLock?: MaintenanceLock, onAdopt?
     // SIGTERM'd a broker that had started perfectly — so `--host` alone could never succeed.
     // Derive the URL from `--host` when no explicit `--server` pins it, and refuse a contradicting
     // pair rather than starting a broker nothing can reach.
-    if (values.host) server = reconcileHostAndServer(values.host, values.server);
+    if (values.host) server = reconcileHostAndServer(values.host, values.server, "--host", "--server", implicitServer);
     // A same-root repair reopens the store the mesh record names, ONCE, before the ordinary-up
     // assertion below reads --store-dir (#2218): an ordinary `up` on a space whose broker died must
     // not silently fall back to the root's default store while the record still names a custom one.
@@ -2937,12 +2943,12 @@ function assertBindableHost(host: string, source: string, urlSource: string): { 
  * They must name the same address. Left independent, `--host <non-loopback>` bound correctly and was
  * then probed at the loopback default: the probe found nothing, timed out, and the caller SIGTERM'd
  * a broker that had started perfectly, so `--host` alone could never succeed. With no explicit URL,
- * derive one from the host (keeping the URL's port); with both, refuse a contradicting pair rather
+ * derive one from the host (keeping the implicit URL's port); with both, refuse a contradicting pair rather
  * than starting a broker that nothing can reach.
  */
-function reconcileHostAndServer(host: string, explicitServer: string | undefined, source = "--host", urlSource = "--server"): string {
-  const url = new URL(explicitServer ?? DEFAULT_SERVER);
-  if (WILDCARD_HOSTS.has(host)) return explicitServer ?? DEFAULT_SERVER;
+function reconcileHostAndServer(host: string, explicitServer: string | undefined, source = "--host", urlSource = "--server", implicitServer = DEFAULT_SERVER): string {
+  const url = new URL(explicitServer ?? implicitServer);
+  if (WILDCARD_HOSTS.has(host)) return explicitServer ?? implicitServer;
   const { literal, hostname } = assertBindableHost(host, source, urlSource);
   if (!explicitServer) return `nats://${literal}:${url.port || "4222"}`;
   // NO parse on this path: `assertBindableHost` just parsed the identical literal above, so the

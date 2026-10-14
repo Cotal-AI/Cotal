@@ -225,7 +225,8 @@ cotal up -f <cotal.yaml> [--dry-run] [--runtime <name>]
 
 `cotal up` boots a local nats-server with JetStream and, in auth mode (the default), JWT auth and
 per-agent ACLs; `--detach` records the mesh so `cotal spawn` from any directory can find it. With no
-`--server`, it auto-selects a free port if the default address is taken; an explicit `--server`
+`--server`, it auto-selects a free port if the default address is taken, and a later `cotal up` of
+the same space from the same folder starts from the URL that mesh recorded; an explicit `--server`
 stays fail-loud on collision. `--detach` also brings up the control plane (delivery daemon in auth
 mode, then the manager). `--no-manager` is the broker-only mode: it boots
 the broker (and the delivery daemon in auth mode) and starts no manager, so there is no manager
