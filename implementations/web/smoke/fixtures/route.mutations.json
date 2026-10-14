@@ -60,6 +60,20 @@
       "find": "return r.group === \"status\" ? \"#/agents\" : `#/agents/${r.group}`;",
       "replace": "return \"#/agents\";",
       "expectRed": "parseRoute reads back formatRoute for {\"view\":\"agents\",\"group\":\"host\"}"
+    },
+    {
+      "name": "formatRoute stops encoding the dm peer",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "encodeURIComponent(r.peer)",
+      "replace": "r.peer",
+      "expectRed": "formatRoute encodes both dm ids with encodeURIComponent"
+    },
+    {
+      "name": "formatRoute stops encoding the dm second id",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "encodeURIComponent(r.with)",
+      "replace": "r.with",
+      "expectRed": "formatRoute encodes both dm ids with encodeURIComponent"
     }
   ]
 }
