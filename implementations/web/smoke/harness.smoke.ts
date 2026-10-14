@@ -1,5 +1,5 @@
 /**
- * Dashboard harness-branding coverage. `harness.js` is a hand-maintained map of connector name →
+ * Dashboard harness-branding coverage. `client/src/lib/harness.ts` is a hand-maintained map of connector name →
  * label/colour/glyph/SVG, and nothing linked it to the actual connector set — so a new connector
  * shipped, was spawnable, appeared in the roster, and rendered with no icon and no label, with
  * every test still green. That is exactly how the codex connector shipped its first build.
@@ -11,9 +11,8 @@
  * Run: pnpm smoke:web-harness
  */
 import { strict as assert } from "node:assert";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { OFFICIAL_CONNECTORS } from "@cotal-ai/workspace";
+import { HARNESS, type Harness } from "../client/src/lib/harness.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -22,23 +21,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-// harness.js is a plain browser script (no module system): it assigns onto `window`. Evaluate it
-// the same way the page does, so this checks the SHIPPED artifact rather than a parallel copy.
-interface Harness {
-  label: string;
-  color: string;
-  glyph: string;
-  svg: string;
-}
-const src = readFileSync(fileURLToPath(new URL("../src/web/harness.js", import.meta.url)), "utf8");
-const win: { COTAL_HARNESS?: Record<string, Harness> } = {};
-new Function("window", src)(win);
-const harness = win.COTAL_HARNESS;
-check("harness.js defines window.COTAL_HARNESS", harness !== undefined);
+const harness: Record<string, Harness> = HARNESS;
+check("harness.ts exports HARNESS", harness !== undefined);
 
 for (const name of Object.keys(OFFICIAL_CONNECTORS)) {
-  const h = harness?.[name];
-  check(`official connector "${name}" has dashboard branding`, h !== undefined, Object.keys(harness ?? {}));
+  const h = harness[name];
+  check(`official connector "${name}" has dashboard branding`, h !== undefined, Object.keys(harness));
   if (!h) continue;
   // Every field is load-bearing on a different surface: the DOM badge uses `svg`, the canvas graph
   // cannot draw inline SVG and falls back to `glyph`, and both use `color` + `label`. A partial

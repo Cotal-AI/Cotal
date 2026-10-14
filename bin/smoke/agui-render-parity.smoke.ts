@@ -3,9 +3,9 @@
  * other surface uses.
  *
  * WHY TWO IMPLEMENTATIONS EXIST, since the repo otherwise refuses duplication.
- * `implementations/web/src/web/*.js` are classic <script> files served to a browser. They cannot
- * import `@cotal-ai/core`, so they cannot reach `extensions/connector-core/src/agui-render.ts`. The
- * constraint is the module system, not a design preference, and no seam removes it. This is the same
+ * `implementations/web/client/src/lib/aguiFrame.ts` is bundled for a browser. The client imports
+ * nothing from `@cotal-ai/*` at runtime, so it cannot reach `extensions/connector-core/src/agui-render.ts`.
+ * The constraint is the tier rule, not a design preference, and no seam removes it. This is the same
  * situation `launch-parity.smoke.ts` documents for the launch grammar — the tier rule forbids the
  * shared import, so parity is enforced HERE, by test — and it lives in `bin/smoke` for the same
  * reason: the composition root is the one place allowed to see both sides.
@@ -14,9 +14,9 @@
  * nothing recomputes. This suite is the recomputation.
  *
  * WHAT IT DRIVES. The node renderer is the REAL exported `aguiFramePartRenderer` — the object core
- * resolves by kind, not a copy of its logic. The browser renderer is READ OFF DISK and evaluated in
- * a `vm` context with a stub `window`, exactly as a `<script>` runs it. Neither side is restated
- * here, so no cell can pass against a version of a function that no longer exists.
+ * resolves by kind, not a copy of its logic. The browser renderer is the REAL exported
+ * `renderAguiFrame`, imported by source path as the client bundle imports it. Neither side is
+ * restated here, so no cell can pass against a version of a function that no longer exists.
  *
  * ── WHAT IT PRINTS ON FAILURE, WHICH IS A DELIBERATE RESTRICTION ─────────────────────────────────
  * An equivalence assertion's natural output is `expected X, got Y`, and the day this corpus is
@@ -42,10 +42,6 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createContext, runInContext } from "node:vm";
 import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
 // BY SOURCE PATH, NOT BY PACKAGE NAME, and that is the difference between grading the tree and
 // grading the last build. `@cotal-ai/connector-core/agui-render` resolves to that package's `dist`,
@@ -54,9 +50,8 @@ import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
 // browser half is already read off disk as bytes; this puts the two halves on equal footing, which
 // is the only way a parity claim means anything.
 import { aguiFramePartRenderer, LINE_START_SAFE } from "../../extensions/connector-core/src/agui-render.js";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const browserFile = join(here, "..", "..", "implementations", "web", "src", "web", "agui-frame.js");
+import { renderAguiFrame } from "../../implementations/web/client/src/lib/aguiFrame.js";
+import { partsToText } from "../../implementations/web/client/src/lib/parts.js";
 
 let cells = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {
@@ -65,20 +60,15 @@ const ok = (name: string, cond: boolean, detail?: unknown) => {
   console.log(`  ok  ${name}`);
 };
 
-// ── The browser renderer, loaded the way the browser loads it ────────────────────────────────────
-// If it ever became an ES module, or stopped registering, this throws HERE with a named cell rather
-// than leaving a later cell to fail for a reason that reads like a rendering bug.
-const browserSource = readFileSync(browserFile, "utf8");
-const sandbox: { window: Record<string, unknown> } = { window: {} };
-runInContext(browserSource, createContext(sandbox), { filename: "agui-frame.js" });
-const registry = sandbox.window.COTAL_PART_RENDERERS as Record<string, (p: unknown) => string> | undefined;
-ok("agui-frame.js registers into window.COTAL_PART_RENDERERS (classic-script contract)",
-  Boolean(registry) && typeof registry![AGUI_FRAME_KIND] === "function",
-  { keys: registry ? Object.keys(registry) : null });
+// ── The browser renderer, imported the way the client bundle imports it ─────────────────────────
+// If the module stopped exporting the renderer, or stopped registering it, this fails HERE with a
+// named cell rather than leaving a later cell to fail for a reason that reads like a rendering bug.
+ok("aguiFrame.ts exports renderAguiFrame", typeof renderAguiFrame === "function");
+const registered = { kind: AGUI_FRAME_KIND, events: [{ type: "RUN_STARTED", runId: "r" }] };
 ok("it registers under EXACTLY the emitter's frame kind, not a hand-typed lookalike",
-  Object.keys(registry!).includes(AGUI_FRAME_KIND), { kind: AGUI_FRAME_KIND });
+  partsToText([registered]) === renderAguiFrame(registered), { kind: AGUI_FRAME_KIND });
 
-const browser = (part: unknown): string => registry![AGUI_FRAME_KIND](part);
+const browser = (part: unknown): string => renderAguiFrame(part as never);
 const node = (part: unknown): string => aguiFramePartRenderer.render(part as never);
 
 // ── Failure reporting: digest and position, never content ────────────────────────────────────────

@@ -20,9 +20,9 @@
  * not enough: the status check without retention converts a silent corruption into a visible wipe,
  * and retention without the status check keeps nothing, because the refusal was never a failure.
  *
- * WHAT THIS SUITE DRIVES. `snapshot.js` is READ OFF DISK and evaluated in a `vm` context with a stub
- * `window`, exactly as the classic `<script>` runs in the page, and it is reached through the REAL
- * `LEGACY_PAGE_FILES` export, so a module the server does not serve fails here. Nothing is restated.
+ * WHAT THIS SUITE DRIVES. `client/src/lib/snapshot.ts` is imported as the client bundle imports it.
+ * The cells that lift code out of `app.js` hand that code the same module through a stub
+ * `window.COTAL_SNAPSHOT` until the shell replaces `app.js` (Task 6). Nothing is restated.
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -37,6 +37,7 @@ import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { LEGACY_PAGE_FILES } from "../src/web.js";
+import { readJson, refreshAll, staleLabel, type Source } from "../client/src/lib/snapshot.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -50,35 +51,20 @@ const ok = (name: string, cond: boolean, detail?: unknown): void => {
   console.log(`  x FAIL  ${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
 };
 
-interface Source { name: string; read(): Promise<unknown>; apply(v: unknown): void }
-interface Api {
-  readJson(res: { ok: boolean; status: number; json(): Promise<unknown> }, what: string): Promise<unknown>;
-  refreshAll(sources: Source[]): Promise<{ name: string; reason: string }[]>;
-  staleLabel(stale: { name: string; reason: string }[]): string;
-}
+const SNAP = { readJson, refreshAll, staleLabel };
+/** What a lifted `app.js` fragment sees as `window.COTAL_SNAPSHOT`, until Task 6 retires it. */
+const winSnap = (): Record<string, unknown> => ({ COTAL_SNAPSHOT: SNAP });
+ok("0.2 the module exports its three entry points", typeof readJson === "function" && typeof refreshAll === "function" && typeof staleLabel === "function");
 
-/** The file as the page runs it: a classic script against a bare `window`, reached through the route
- *  table the server serves it from rather than through a path this suite spells itself. */
-function load(): Api {
-  const route = LEGACY_PAGE_FILES["/snapshot.js"];
-  ok("0.1 the server serves /snapshot.js (a module no route reaches is a module no page runs)", Boolean(route), Object.keys(LEGACY_PAGE_FILES));
-  const ctx: { window: Record<string, unknown> } = { window: {} };
-  const c = createContext(ctx);
-  runInContext(readFileSync(route.path, "utf8"), c, { filename: "snapshot.js" });
-  return ctx.window.COTAL_SNAPSHOT as Api;
-}
-
-const SNAP = load();
-ok("0.2 the file publishes its three entry points on window", Boolean((SNAP as Partial<Api>)?.readJson && (SNAP as Partial<Api>)?.refreshAll && (SNAP as Partial<Api>)?.staleLabel));
-
-const res = (status: number, body: unknown) => ({
+/** A response carrying only the three members `readJson` reads, typed as the `Response` it accepts. */
+const res = (status: number, body: unknown): Response => ({
   ok: status >= 200 && status < 300,
   status,
   json: async () => {
     if (body === undefined) throw new SyntaxError("Unexpected end of JSON input");
     return body;
   },
-});
+}) as unknown as Response;
 
 // ── 1. A REFUSAL IS NOT DATA ────────────────────────────────────────────────────────────────────
 // The exact body the dashboard's own 500 handler writes. It PARSES, which is the whole reason the
@@ -162,7 +148,7 @@ const res = (status: number, body: unknown) => ({
   let entered = 0;
   let release!: () => void;
   const gate = new Promise<void>((r) => (release = r));
-  const mk = (name: string): Source => ({
+  const mk = (name: string): Source<unknown> => ({
     name,
     read: async () => { entered++; if (entered === 3) release(); await gate; return name; },
     apply: () => {},
@@ -182,8 +168,8 @@ const res = (status: number, body: unknown) => ({
 // ── 3. THE LABEL, AND THE WIRING ────────────────────────────────────────────────────────────────
 {
   ok("3.1 nothing stale renders no label at all", SNAP.staleLabel([]) === "");
-  ok("3.2 a stale set NAMES its sources", SNAP.staleLabel([{ name: "peers", reason: "x" }, { name: "activity", reason: "y" }]) === "stale: peers, activity",
-    SNAP.staleLabel([{ name: "peers", reason: "x" }, { name: "activity", reason: "y" }]));
+  ok("3.2 a stale set NAMES its sources", SNAP.staleLabel([{ kind: "refused", name: "peers", reason: "x" }, { kind: "refused", name: "activity", reason: "y" }]) === "stale: peers, activity",
+    SNAP.staleLabel([{ kind: "refused", name: "peers", reason: "x" }, { kind: "refused", name: "activity", reason: "y" }]));
 }
 /** CODE ONLY. These pages document the defect they fixed by quoting the shape that caused it, so a
  *  scan over raw source matches the comment describing the bug and reports the bug as present. That
@@ -293,11 +279,10 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
       $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => label } : null),
       isDemo: false, orderNotes: [], channelMsgs: [], channelOrder: undefined, selected: "*",
       unread: new Map(), agentSel: null, dmSel: null, roster: [], channels: new Map(), dms: [],
-      window: {}, __p: undefined,
+      window: winSnap(), __p: undefined,
     };
     const c = createContext(ctx);
     runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
-    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
     runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
     return { ctx: ctx as Page, c };
   };
@@ -395,11 +380,10 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   const doc = { title: "Cotal · cotal-main" };
   const mk = (res: () => Promise<unknown>) => {
     const ctx: Record<string, unknown> = {
-      console, window: {}, document: doc, fetch: res,
+      console, window: winSnap(), document: doc, fetch: res,
       $: (id: string) => (id === "space" ? header : null),
     };
     const c = createContext(ctx);
-    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
     // The lifted entry reads `SNAP`, a local of the shipped `refresh()`, so the harness has to bind
     // the same name to the same object. Cells 5.7 and 5.8 are what caught this being absent: without
     // them a ReferenceError inside `read` looks exactly like the refusal the section is about.
