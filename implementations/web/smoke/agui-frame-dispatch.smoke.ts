@@ -9,7 +9,7 @@
  *
  * THE SPLIT, because three suites now touch this path and each owns exactly one claim:
  *   · `parts-non-silence.smoke.ts` owns the NO-RENDERER fallbacks (a kind nothing taught this surface).
- *   · `bin/smoke/agui-render-parity.smoke.ts` owns that the text produced here is BYTE-IDENTICAL to
+ *   · `agui-render-parity.smoke.ts` owns that the text produced here is BYTE-IDENTICAL to
  *     the renderer every other surface uses. No parity cell lives in this file.
  *   · this file owns that a frame reaches the renderer at all on this surface.
  * A single suite asserting all three would let one green light stand for three different facts.

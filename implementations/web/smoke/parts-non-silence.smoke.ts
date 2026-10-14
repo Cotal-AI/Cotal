@@ -23,7 +23,7 @@
  * for a kind nothing has taught it, and that is now a precondition rather than the only case, since
  * `parts.ts` consults a renderer registry and `aguiFrame.ts` registers into it. The precondition is
  * asserted below, not assumed. Frame RENDERING and its parity with the node renderer belong to
- * `agui-frame-dispatch.smoke.ts` and `bin/smoke/agui-render-parity.smoke.ts`. The dashboard's
+ * `agui-frame-dispatch.smoke.ts` and `agui-render-parity.smoke.ts`. The dashboard's
  * `events.*` filter is still separate, unbuilt work: the console's filter lives in `MeshView`, which
  * the dashboard client does not use. Nothing here says how a frame should be drawn.
  *
@@ -151,6 +151,14 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
   ok("the shell renders message bodies through partsToText", /\bpartsToText\(/.test(appSrc), { found: appSrc.match(/.*partsToText.*/g) });
   ok("and imports it from the shared renderer rather than declaring its own",
     /import \{[^}]*\bpartsToText\b[^}]*\} from "\.\/lib\/parts\.js"/.test(appSrc) && !/(?:const|function) partsToText\b/.test(appSrc));
+}
+
+// The shell cells above read `App.tsx` as text. Load the module as well, so an edit to the shell
+// reaches this suite by import and not only by a file read (see `load-shell.mjs`). It runs LAST
+// because loading the shell registers the AG-UI renderer, and the cells above need the registry empty.
+{
+  const { shell } = await import("./load-shell.mjs");
+  ok("the shell module loads under Node and exports App", typeof shell.App === "function");
 }
 
 console.log(`\n${cells} cells green`);

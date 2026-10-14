@@ -6,8 +6,8 @@
 // other surface. There is no seam that makes one implementation serve both: the constraint is the
 // tier rule, not a design choice. So the two are kept in step by an equivalence instrument rather
 // than by intent. "We will keep them in sync" was explicitly refused as a plan; a cell that reddens
-// when they diverge is the only version that survives us. That cell is
-// `bin/smoke/agui-render-parity.smoke.ts`, and it earned its place before this file shipped: an
+// when they diverge is the only version that survives us. That cell is in this package's
+// `smoke/agui-render-parity.smoke.ts`, and it earned its place before this file shipped: an
 // earlier draft of this pair used `||` here against `??` there, so an event carrying an empty
 // string for `content`, `runId` or `toolCallName` rendered one way in the console and another way in
 // the browser. Every fallback below therefore keys on `undefined` and never on falsiness, which is

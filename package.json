@@ -437,7 +437,7 @@
     "smoke:agui-conformance": "tsx extensions/connector-core/smoke/agui-conformance.smoke.ts",
     "smoke:event-channel-classify": "tsx packages/core/smoke/event-channel-classify.smoke.ts",
     "smoke:agui-render": "tsx extensions/connector-core/smoke/agui-render.smoke.ts",
-    "smoke:agui-render-parity": "tsx bin/smoke/agui-render-parity.smoke.ts",
+    "smoke:agui-render-parity": "pnpm --filter @cotal-ai/connector-core build && tsx implementations/web/smoke/agui-render-parity.smoke.ts",
     "smoke:agui-frame-dispatch": "tsx implementations/web/smoke/agui-frame-dispatch.smoke.ts",
     "smoke:view-events-filter": "tsx implementations/cli/smoke/view-events-filter.smoke.ts",
     "smoke:event-order": "tsx implementations/web/smoke/event-order.smoke.ts",

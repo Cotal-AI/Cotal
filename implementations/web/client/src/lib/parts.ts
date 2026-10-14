@@ -20,7 +20,7 @@
 // to be found and fixed separately.
 //
 // This mirrors the contract of core's `partsToText`, as a separate implementation because the
-// client imports nothing from `@cotal-ai/*` at runtime. `bin/smoke/agui-render-parity.smoke.ts`
+// client imports nothing from `@cotal-ai/*` at runtime. `smoke/agui-render-parity.smoke.ts`
 // holds the two together rather than anyone's intention. One difference is deliberate and survives:
 // an extension kind carrying `data` renders its JSON here (see below) and goes straight to the
 // marker in core.

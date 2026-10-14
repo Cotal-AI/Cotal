@@ -575,5 +575,12 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   }
 }
 
+// The shell cells above read `App.tsx` as text. Load the module as well, so an edit to the shell
+// reaches this suite by import and not only by a file read (see `load-shell.mjs`).
+{
+  const { shell } = await import("./load-shell.mjs");
+  ok("the shell module loads under Node and exports App", typeof shell.App === "function");
+}
+
 console.log(`\nweb snapshot-retention smoke: ${cells - failed} passed, ${failed} failed`);
 if (failed) process.exit(1);

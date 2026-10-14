@@ -7,8 +7,12 @@
  * nothing from `@cotal-ai/*` at runtime, so it cannot reach `extensions/connector-core/src/agui-render.ts`.
  * The constraint is the tier rule, not a design preference, and no seam removes it. This is the same
  * situation `launch-parity.smoke.ts` documents for the launch grammar — the tier rule forbids the
- * shared import, so parity is enforced HERE, by test — and it lives in `bin/smoke` for the same
- * reason: the composition root is the one place allowed to see both sides.
+ * shared import, so parity is enforced HERE, by test.
+ *
+ * WHY IT LIVES IN THE WEB PACKAGE. The browser half is client source that only this package's suites
+ * can reach by source path, which is what lets a mutation of `aguiFrame.ts` be graded against these
+ * cells. The node half is read through connector-core's built `dist`, and the script builds that
+ * package first, so the cells never grade a stale build.
  *
  * "We will keep them in sync" was explicitly refused as a plan. Sync by intention is a property
  * nothing recomputes. This suite is the recomputation.
@@ -43,15 +47,14 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
-// BY SOURCE PATH, NOT BY PACKAGE NAME, and that is the difference between grading the tree and
-// grading the last build. `@cotal-ai/connector-core/agui-render` resolves to that package's `dist`,
-// so an edit to the node renderer's source would not be seen here until someone rebuilt, and a
-// mutation against it would report SURVIVED for a reason that has nothing to do with the test. The
-// browser half is already read off disk as bytes; this puts the two halves on equal footing, which
-// is the only way a parity claim means anything.
-import { aguiFramePartRenderer, LINE_START_SAFE } from "../../extensions/connector-core/src/agui-render.js";
-import { renderAguiFrame } from "../../implementations/web/client/src/lib/aguiFrame.js";
-import { partsToText } from "../../implementations/web/client/src/lib/parts.js";
+// THE NODE HALF COMES FROM THE BUILD, AND THE BUILD IS FRESH. This package does not depend on
+// connector-core, so its renderer is reached through the built file rather than the package name.
+// `pnpm smoke:agui-render-parity` rebuilds connector-core before it runs this file, so an edit to the
+// node renderer's source is always what these cells compare, and a mutation against it is graded
+// after the same rebuild. The browser half is imported by source path, as the client bundle imports it.
+import { aguiFramePartRenderer, LINE_START_SAFE } from "../../../extensions/connector-core/dist/agui-render.js";
+import { renderAguiFrame } from "../client/src/lib/aguiFrame.js";
+import { partsToText } from "../client/src/lib/parts.js";
 
 let cells = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {

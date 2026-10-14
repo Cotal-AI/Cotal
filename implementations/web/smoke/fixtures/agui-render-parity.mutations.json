@@ -23,10 +23,11 @@
       "find": "const CONT = \"  · \";",
       "replace": "const CONT = \"  > \";",
       "expectRed": "parity: reasoning, which uses a different continuation prefix from text",
-      "cell": "parity: reasoning, which uses a different continuation prefix from text"
+      "cell": "parity: reasoning, which uses a different continuation prefix from text",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     }
   ],
   "suite": [
-    "bin/smoke/agui-render-parity.smoke.ts"
+    "implementations/web/smoke/agui-render-parity.smoke.ts"
   ]
 }

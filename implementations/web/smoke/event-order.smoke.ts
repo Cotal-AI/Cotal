@@ -657,5 +657,12 @@ console.log("event-order smoke");
   ok("17.13 CONTROL: a post-boundary hole is a gap, not an unconfirmed one", gaps(o3.live(frame(12)).notes).length === 1 && straddles(o3.live(frame(20)).notes).length === 0);
 }
 
+// The shell cells above read `App.tsx` as text. Load the module as well, so an edit to the shell
+// reaches this suite by import and not only by a file read (see `load-shell.mjs`).
+{
+  const { shell } = await import("./load-shell.mjs");
+  ok("the shell module loads under Node and exports App", typeof shell.App === "function");
+}
+
 console.log(`event-order smoke: ${cells - failed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
