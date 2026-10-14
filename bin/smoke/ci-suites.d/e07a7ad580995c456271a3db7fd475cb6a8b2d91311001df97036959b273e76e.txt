@@ -1,0 +1,2 @@
+# The dashboard copy and style rules hold across the client source, and both palettes are defined.
+smoke:web-client-copy

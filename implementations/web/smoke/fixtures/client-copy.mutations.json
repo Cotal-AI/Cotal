@@ -1,0 +1,86 @@
+{
+  "command": "pnpm smoke:web-client-copy",
+  "suite": [
+    "implementations/web/smoke/client-copy.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "a section heading is set in uppercase",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".ui-sec { display: flex;",
+      "replace": ".ui-sec { text-transform: uppercase; display: flex;",
+      "expectRed": "no uppercase text-transform"
+    },
+    {
+      "name": "the space name gains positive letter-spacing",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".v3 .ui-space { font-size: 16px; }",
+      "replace": ".v3 .ui-space { font-size: 16px; letter-spacing: 0.02em; }",
+      "expectRed": "no letter-spacing above 0"
+    },
+    {
+      "name": "the base font becomes Geist",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": ".v3 { color: var(--ink); font: 400 14px/1.5 var(--body); }",
+      "replace": ".v3 { color: var(--ink); font: 400 14px/1.5 Geist, sans-serif; }",
+      "expectRed": "no Geist or Work Sans"
+    },
+    {
+      "name": "a colour literal replaces a token in app.css",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "background: var(--gold); color: var(--on-gold); font: 600 10px/16px",
+      "replace": "background: var(--gold); color: #3A2C05; font: 600 10px/16px",
+      "expectRed": "app.css holds no colour literal, only tokens"
+    },
+    {
+      "name": "app.css reads a token that tokens.css does not define",
+      "file": "implementations/web/client/src/styles/app.css",
+      "find": "color: var(--on-gold); font: 600 10px/16px",
+      "replace": "color: var(--on-golden); font: 600 10px/16px",
+      "expectRed": "every var() in app.css names a token"
+    },
+    {
+      "name": "the Night palette loses its data-theme selector",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": ":root[data-theme=\"dark\"] {",
+      "replace": ":root[data-theme=\"darker\"] {",
+      "expectRed": "tokens.css defines the Night palette on :root[data-theme=\"dark\"]"
+    },
+    {
+      "name": "system stops following the OS dark setting",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": "@media (prefers-color-scheme: dark) {",
+      "replace": "@media (prefers-color-scheme: light) {",
+      "expectRed": "tokens.css gives system the Night palette"
+    },
+    {
+      "name": "the system block drifts from the dark block",
+      "file": "implementations/web/client/src/styles/tokens.css",
+      "find": "    --warn-bg: #2C2818; --err-bg: #2E1D1C; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;",
+      "replace": "    --warn-bg: #2C2818; --err-bg: #2E1D1D; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;",
+      "expectRed": "the system block and the dark block carry the same declarations"
+    },
+    {
+      "name": "a component calls fetch outside api/",
+      "file": "implementations/web/client/src/lib/theme.ts",
+      "find": "const KEY = \"cotal.theme\";",
+      "replace": "const KEY = \"cotal.theme\"; void fetch(\"/x\");",
+      "expectRed": "no fetch( or new EventSource( outside api/"
+    },
+    {
+      "name": "a comment gains an em dash",
+      "file": "implementations/web/client/src/icons/Icon.tsx",
+      "find": "Stroke Rounded at stroke 1.5:",
+      "replace": "Stroke Rounded \\u2014 at stroke 1.5:",
+      "expectRed": "no em or en dash anywhere outside the pinned fallback string"
+    },
+    {
+      "name": "the pinned fallback loses its dash",
+      "file": "implementations/web/client/src/lib/parts.ts",
+      "find": "kind)} \\u2014 no renderer",
+      "replace": "kind)} - no renderer",
+      "expectRed": "the pinned fallback string is still in lib/parts.ts, once"
+    }
+  ]
+}

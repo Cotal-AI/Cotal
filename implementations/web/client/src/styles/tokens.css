@@ -1,0 +1,43 @@
+/* Design tokens for the dashboard. Light (Quiet) is :root. Night is chosen by data-theme="dark",
+   or follows the system when data-theme is "system" or unset. data-theme="light" pins Quiet. */
+:root {
+  --body: "Inter Variable", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --multi: #4D69E6; --uni: #E38C6E; --any: #5FA866; --gold: #E5B94E; --red: #E0625A; --idle: #B9B4A6;
+
+  --bg: #FFFFFF; --side: #F7F7F6; --rail-ink: #6B6F80; --side-ink: #1F2430; --side-dim: #6B6F80;
+  --side-hover: #EEEEEC; --side-sel: #E8E8E6; --side-line: #ECECEA;
+  --ink: #1F2430; --dim: #6B6F80; --faint: #A3A6B1; --line: #ECECEA; --hover: #F5F5F4; --soft: #F4F4F3;
+  --card: #FFFFFF; --card-line: #E6E6E4; --card-shadow: 0 1px 2px rgba(20, 24, 33, .04), 0 4px 16px rgba(20, 24, 33, .06);
+  --primary: #1F2430; --primary-ink: #FFFFFF; --code: #F4F4F3; --mention: #FBF4DF; --focus: #4D69E6;
+  --multi-ink: #3651C9; --uni-ink: #B85A3A; --any-ink: #35703E; --gold-ink: #85620A; --red-ink: #B23A32;
+  --warn-bg: #FBF4DF; --err-bg: #FCEDEB; --scrim: rgba(20, 24, 33, .32); --skel: #EFEFED;
+  --shimmer: rgba(255, 255, 255, .55);
+  --toggle-shadow: 0 1px 2px rgba(20, 24, 33, .08);
+  --on-gold: #3A2C05; --on-multi: #FFFFFF; --me-bg: #6B6F80; --me-ink: #FFFFFF;
+  --danger-solid: #B23A32; --danger-solid-ink: #FFFFFF;
+}
+
+:root[data-theme="dark"] {
+  --bg: #16181D; --side: #1B1E24; --rail-ink: #8A90A0; --side-ink: #E4E6EC; --side-dim: #9097A6;
+  --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
+  --ink: #E6E8EE; --dim: #9097A6; --faint: #6E7484; --line: #262A32; --hover: #1C1F25; --soft: #20242B;
+  --card: #1E2128; --card-line: #2E333C; --card-shadow: 0 6px 24px rgba(0, 0, 0, .35);
+  --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --mention: #2C2818; --focus: #8EA2F2;
+  --multi-ink: #8EA2F2; --uni-ink: #EBA48B; --any-ink: #8CC892; --gold-ink: #E5C776; --red-ink: #F08A82;
+  --warn-bg: #2C2818; --err-bg: #2E1D1C; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;
+  --shimmer: rgba(255, 255, 255, .06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #16181D; --side: #1B1E24; --rail-ink: #8A90A0; --side-ink: #E4E6EC; --side-dim: #9097A6;
+    --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
+    --ink: #E6E8EE; --dim: #9097A6; --faint: #6E7484; --line: #262A32; --hover: #1C1F25; --soft: #20242B;
+    --card: #1E2128; --card-line: #2E333C; --card-shadow: 0 6px 24px rgba(0, 0, 0, .35);
+    --primary: #E6E8EE; --primary-ink: #16181D; --code: #20242B; --mention: #2C2818; --focus: #8EA2F2;
+    --multi-ink: #8EA2F2; --uni-ink: #EBA48B; --any-ink: #8CC892; --gold-ink: #E5C776; --red-ink: #F08A82;
+    --warn-bg: #2C2818; --err-bg: #2E1D1C; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;
+    --shimmer: rgba(255, 255, 255, .06);
+  }
+}
