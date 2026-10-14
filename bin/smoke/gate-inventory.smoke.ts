@@ -397,6 +397,8 @@ const UNPINNED_PATH = join(ROOT, "bin", "smoke", "unpinned-suites.txt");
 const UNPINNED_DIGEST = "8d7a911e3c2411715048ab2f4cfd196fbbf82bba1cae07a133288aa7e9cfd842";
 const SUITE_FILE = /(?:^|\s)["']?([\w./-]+\.(?:ts|tsx|mts|mjs|js|cjs))["']?(?=\s|$)/g;
 const PIN_NAME = /^EXPECTED(?:_[A-Z0-9]+)*$/;
+/** Members of an array that read it without changing its length. */
+const ARRAY_READS = ["length", "at", "every", "filter", "find", "forEach", "includes", "indexOf", "join", "map", "slice", "some"];
 /** `==` and `!=` coerce, so a tally of "2" matches a pin of 2. */
 const EQUALITY = [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken];
 
@@ -406,14 +408,18 @@ const parseSuite = (file: string, text: string): ts.SourceFile =>
 /** A class field that is not `static`, whose initializer `new` runs when it builds an object, not where the class is written. */
 const isInstanceField = (n: ts.Node): n is ts.PropertyDeclaration => ts.isPropertyDeclaration(n) && !(ts.getCombinedModifierFlags(n) & ts.ModifierFlags.Static);
 const initializesInstance = (n: ts.Node) => isInstanceField(n.parent) && n.parent.initializer === n;
-/** Every node under `root` matching `pred`, leaving out the bodies of nested functions and the initializers of
- *  instance fields unless `deep`. */
+/** Every node under `root` matching `pred`, leaving out the parameters and bodies of nested functions and the
+ *  initializers of instance fields unless `deep`. */
 function findIn<T extends ts.Node>(root: ts.Node, pred: (n: ts.Node) => n is T, deep = false): T[] {
   const found: T[] = [];
   const visit = (n: ts.Node) => {
     if (!deep && n !== root && initializesInstance(n)) return;
     if (pred(n)) found.push(n);
-    if (!deep && n !== root && ts.isFunctionLike(n)) return;
+    if (!deep && n !== root && ts.isFunctionLike(n)) {
+      // A computed name and the decorators of a function run where it is written, its parameters and body when it is called.
+      ts.forEachChild(n, (c) => { if (!ts.isParameter(c) && c !== (n as ts.FunctionLikeDeclaration).body) visit(c); });
+      return;
+    }
     ts.forEachChild(n, visit);
   };
   visit(root);
@@ -545,7 +551,7 @@ function indexSuite(sf: ts.SourceFile): SuiteIndex {
   return ix;
 }
 
-const isGenerator = (v: ts.Node) => (ts.isFunctionDeclaration(v) || ts.isFunctionExpression(v) || ts.isMethodDeclaration(v)) && !!v.asteriskToken;
+const isGenerator = (v: ts.Node): v is ts.FunctionDeclaration | ts.FunctionExpression | ts.MethodDeclaration => (ts.isFunctionDeclaration(v) || ts.isFunctionExpression(v) || ts.isMethodDeclaration(v)) && !!v.asteriskToken;
 /** A call, a `new` or a tagged template, each of which runs its callee. */
 type Invocation = ts.CallExpression | ts.NewExpression | ts.TaggedTemplateExpression;
 const isInvocation = (n: ts.Node): n is Invocation => ts.isCallOrNewExpression(n) || ts.isTaggedTemplateExpression(n);
@@ -616,11 +622,13 @@ const namesExit = (sf: ts.SourceFile, callee: ts.Node) => [...valuesOf(sf, calle
 type Exit = { site: ts.Node; status: ts.Expression | undefined };
 /** The exits calling `callee` can make, as `site` with first argument `status`: itself when it names
  *  `process.exit`, and those of every function or class of the file it names, each followed once into `seen`.
- *  Only iterating what a generator returns runs its body, so unless that can be `iterated`, it makes none. */
+ *  Calling a generator binds its parameters, defaults included, but only iterating what it returns runs its
+ *  body, so unless that can be `iterated`, only its parameters can exit. */
 function exitsOfCall(sf: ts.SourceFile, callee: ts.Node, site: ts.Node, status: ts.Expression | undefined, seen: Set<ts.Node>, iterated = true): Exit[] {
   return [...valuesOf(sf, callee)].flatMap((v) => {
     if (isExitRef(v)) return [{ site, status }];
-    if (!(ts.isFunctionLike(v) || ts.isClassLike(v)) || (!iterated && isGenerator(v)) || seen.has(v)) return [];
+    if (!(ts.isFunctionLike(v) || ts.isClassLike(v)) || seen.has(v)) return [];
+    if (!iterated && isGenerator(v)) return v.parameters.flatMap((p) => exitsIn(sf, p, seen));
     seen.add(v);
     if (!ts.isClassLike(v)) return exitsIn(sf, v, seen);
     // `new` runs the initializers of the instance fields; the rest of the class ran where it is written.
@@ -852,27 +860,71 @@ function pinsCellCount(sf: ts.SourceFile): boolean {
     // `keyed` holds the values bound to `length`; `++`, `--`, `delete` and a destructuring write one too.
     return !!array && ts.isArrayLiteralExpression(init) && !init.elements.length && !keyed.has("length") && !findIn(sf, (m): m is ts.Expression => memberKey(m) === "length" && !!writeOf(m), true).length;
   };
-  // True when `cond` is true on a mismatch, false when it is true on a match, undefined when it is not a pin comparison.
-  const onMismatch = (cond: ts.Node): boolean | undefined => {
+  // For a pin comparison, the tally it reads and whether `cond` is true on a mismatch.
+  const comparison = (cond: ts.Node): { tally: ts.Node; mismatch: boolean } | undefined => {
     const b = unwrap(cond);
     if (!ts.isBinaryExpression(b) || !EQUALITY.includes(b.operatorToken.kind)) return undefined;
     const [pin, tally] = isPin(b.left) ? [b.left, b.right] : [b.right, b.left];
     if (!isPin(pin) || !isTally(tally)) return undefined;
-    return b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken;
+    return { tally, mismatch: b.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken };
   };
-  const failsOnMismatch = (s: ts.Node): boolean => {
+  // The tally `s` compares when its mismatch side fails the run.
+  const failsOnMismatch = (s: ts.Node): ts.Node | undefined => {
     if (ts.isIfStatement(s)) {
-      const mismatch = onMismatch(s.expression);
-      const arm = mismatch === undefined ? undefined : mismatch ? s.thenStatement : s.elseStatement;
-      return !!arm && armFails(sf, arm);
+      const c = comparison(s.expression);
+      const arm = c && (c.mismatch ? s.thenStatement : s.elseStatement);
+      return arm && armFails(sf, arm) ? c.tally : undefined;
     }
     const e = statementExpr(s);
     const status = isExitCall(e) && e.arguments.length === 1 ? unwrap(e.arguments[0]) : undefined;
-    if (!status || !ts.isConditionalExpression(status)) return false;
-    const mismatch = onMismatch(status.condition);
-    return mismatch !== undefined && failingStatus(mismatch ? status.whenTrue : status.whenFalse);
+    if (!status || !ts.isConditionalExpression(status)) return undefined;
+    const c = comparison(status.condition);
+    return c && failingStatus(c.mismatch ? status.whenTrue : status.whenFalse) ? c.tally : undefined;
   };
-  return findIn(sf, (n): n is ts.Statement => ts.isIfStatement(n) || ts.isExpressionStatement(n), true).some((s) => failsOnMismatch(s) && runsTo(sf, s));
+  // The counters a tally sums, each mapped to false, and the arrays whose length it reads, to true.
+  const partsOf = (tally: ts.Node, parts = new Map<ts.Symbol, boolean>()): Map<ts.Symbol, boolean> => {
+    const e = unwrap(tally);
+    if (ts.isBinaryExpression(e)) return partsOf(e.right, partsOf(e.left, parts));
+    const array = ts.isPropertyAccessExpression(e);
+    return parts.set(checker.getSymbolAtLocation(array ? unwrap(e.expression) : e)!, array);
+  };
+  // Whether `id` can count a cell of `parts`: it writes a counter, or names an array for anything but iterating it
+  // with `for of` or reading one of `ARRAY_READS`.
+  const countsCell = (id: ts.Identifier, parts: Map<ts.Symbol, boolean>): boolean => {
+    const sym = checker.getSymbolAtLocation(id);
+    const array = sym && parts.get(sym);
+    if (array === undefined || (ts.isVariableDeclaration(id.parent) && id.parent.name === id)) return false;
+    const p = id.parent;
+    const reads = (ts.isPropertyAccessExpression(p) && p.expression === id && ARRAY_READS.includes(p.name.text) && !writeOf(p)) || (ts.isForOfStatement(p) && p.expression === id);
+    return array ? !reads : !!writeOf(id);
+  };
+  // Whether running `n` can count a cell, directly or through a function of the file it calls or passes, each followed once into `seen`.
+  const counts = (n: ts.Node, parts: Map<ts.Symbol, boolean>, seen = new Set<ts.Node>()): boolean =>
+    findIn(n, ts.isIdentifier, true).some((id) => countsCell(id, parts)) ||
+    findIn(n, isInvocation, true).some((c) => [calleeOf(c), ...argumentsOf(c)].some((a) => [...valuesOf(sf, a)].some((v) => {
+      if (!ts.isFunctionLike(v) || seen.has(v)) return false;
+      seen.add(v);
+      return counts(v, parts, seen);
+    })));
+  // Whether a cell can be counted once `n` has run: by a later statement of a list around it, the rest of a loop
+  // around it, a `finally` after it, and so on out to the file, or out of a function to after every statement
+  // that calls it. A function declaration runs none of its body.
+  const countedAfter = (n: ts.Node, parts: Map<ts.Symbol, boolean>, seen = new Set<ts.Node>()): boolean => {
+    const p = n.parent;
+    if (ts.isSourceFile(p) || ts.isBlock(p)) {
+      if (p.statements.slice(p.statements.indexOf(n as ts.Statement) + 1).some((s) => !ts.isFunctionDeclaration(s) && counts(s, parts))) return true;
+      if (ts.isSourceFile(p)) return false;
+    }
+    if ((ts.isIterationStatement(p, false) && counts(p, parts)) || (ts.isTryStatement(p) && n !== p.finallyBlock && p.finallyBlock && counts(p.finallyBlock, parts))) return true;
+    if (!ts.isFunctionLike(p)) return countedAfter(p, parts, seen);
+    if (seen.has(p)) return false;
+    seen.add(p);
+    return callersOf(sf, p).some(([s]) => countedAfter(s, parts, seen));
+  };
+  return findIn(sf, (n): n is ts.Statement => ts.isIfStatement(n) || ts.isExpressionStatement(n), true).some((s) => {
+    const tally = failsOnMismatch(s);
+    return !!tally && runsTo(sf, s) && !countedAfter(s, partsOf(tally));
+  });
 }
 
 // Controls: each predicate must red on the defect shape and pass the repaired one, or the census
@@ -986,6 +1038,13 @@ const censusControls: Array<[string, boolean]> = [
   ["a pin after a class whose static field exits 0 is unpinned", !pinsWith(`class Stop { static field = process.exit(0); } if (ran !== EXPECTED_CELLS) process.exit(1);`)],
   ["a catch arm exitCode after a class whose static field can exit 0 fails the run", fails(`class Boot { static mode = skip ? process.exit(0) : 1; } try { f(); } catch { process.exitCode = 1; } finally { process.exit(process.exitCode ?? 0); }`)],
   ["a tagged template in a finally that exits 0 swallows", swallows(`function stop() { process.exit(0); } try { f(); } finally { stop\`cleanup\`; }`)],
+  ["a pin after a generator call whose parameter default exits 0 is unpinned", !pinsWith(`function* skip(x = process.exit(0)) {} skip(); if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin after a class whose computed method name exits 0 is unpinned", !pinsWith(`class Stop { [process.exit(0)]() {} } if (ran !== EXPECTED_CELLS) process.exit(1);`)],
+  ["a pin a later cell follows is unpinned", !pinsWith(`if (ran !== EXPECTED_CELLS) process.exit(1); ran++;`)],
+  ["a pin a later call that counts a cell follows is unpinned", !pinsWith(`const cell = () => { ran++; }; if (ran !== EXPECTED_CELLS) process.exit(1); cell();`)],
+  ["a pin a later push to its array follows is unpinned", !pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); failures.push(1);`)],
+  ["a pin whose array is only read later is pinned", pinsWith(`const failures = []; if (ran + failures.length !== EXPECTED_CELLS) process.exit(1); console.log(failures.join(", "));`)],
+  ["a pin after every cell that only reads the count later is pinned", pinsWith(`const cell = () => { ran++; }; cell(); if (ran !== EXPECTED_CELLS) process.exit(1); console.log(ran);`)],
 ];
 const brokenControls = censusControls.filter(([, ok]) => !ok).map(([name]) => name);
 

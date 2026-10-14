@@ -93,7 +93,11 @@ forms below, because a form it cannot follow to the exit status can hide either 
   writes no other code and every `process.exit` that can follow reads it; the same arm throwing,
   outside any function or `try` with a catch; or `process.exit(ran === EXPECTED_CELLS ? 0 : 1)`. A
   statement before the failing one in the arm counts only where a throw would also escape, and only
-  when it cannot end the run.
+  when it cannot end the run. No cell can be counted after the comparison: a later statement of its
+  block or of a block around it, a `finally` after it, the rest of a loop around it, or a statement
+  after a call of the function it is in, that writes a counter of the tally or uses its array for
+  anything but `for of` or a read such as `length`, `join` or `map`, directly or through a function
+  of the file it calls or passes, makes the comparison too early to pin anything.
 
 A failing status is an integer from 1 to 255, written as a literal or a sum of literals. The process
 keeps only the low eight bits of its status, so `process.exit(256)` exits 0. The `finally` exit's
@@ -117,7 +121,8 @@ body can make such an exit. A `finally` block counts only when its `try` and cat
 such an exit either, since `process.exit` ends the process without running the `finally`. A
 function passed to a call, to `new` or to a tagged template can be called at any time after, such
 as during an `await`, and so can the initializer of a field that is not `static`, which runs when
-`new` builds an object.
+`new` builds an object. The computed name and the decorators of a method, accessor or function run
+where it is written.
 A platform skip that exits 0 before the comparison is such a branch. An async function counts only
 when its call is awaited, because an `await` that never settles ends an unawaited run with exit 0. A
 comparison in a branch, a loop, a callback, a check function, a failure tally or a variable pins
@@ -141,7 +146,7 @@ name with a default, as a parameter or in a destructuring, also stands for the d
 stands for every element, so `list[i]`, `...list` and `const [f] = list` each
 stand for all of them. A generator runs its body only as what its call returns is iterated, so its
 exits count for every call of it except one written as a whole statement, in parentheses or not, or
-a handler of `.then`, `.catch` or `.finally`. Those three, called by name or by a literal key such
+a handler of `.then`, `.catch` or `.finally`. Its parameter defaults run at every call. Those three, called by name or by a literal key such
 as `p["finally"]`, are the promise methods on a promise: `new Promise(...)`, `Promise.resolve(...)`
 and the other static methods that return one, a call of an async function declared once and never
 reassigned, or one of the three called on such a promise. On anything else they are the promise
