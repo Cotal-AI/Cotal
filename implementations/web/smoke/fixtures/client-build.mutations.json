@@ -1,0 +1,23 @@
+{
+  "command": "pnpm smoke:web-client-build",
+  "suite": ["implementations/web/smoke/client-build.smoke.ts"],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "a CSS-only package drops out of the license manifest",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "bundleLicenses([\"@fontsource-variable/inter\"])",
+      "replace": "bundleLicenses([])",
+      "expectRed": "bundle-licenses.json names @fontsource-variable/inter",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the build writes its files outside /assets/",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "assetsDir: \"assets\",",
+      "replace": "assetsDir: \"static\",",
+      "expectRed": "every asset sits under /assets/",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    }
+  ]
+}
