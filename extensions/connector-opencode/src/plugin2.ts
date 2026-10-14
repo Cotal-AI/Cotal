@@ -389,7 +389,8 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
           }
           case "session.execution.started": {
             // A replayed start belongs to a turn whose end already came, so it would hold the session for good.
-            if ((sessionID && data.sessionID !== sessionID) || replayed(ev)) break;
+            // One at or before the last start is a late copy: taking it would let an earlier end pass as this execution's.
+            if ((sessionID && data.sessionID !== sessionID) || replayed(ev) || replayed(ev, started)) break;
             execution = "running";
             started = ev.durable;
             await safeStatus("working");
