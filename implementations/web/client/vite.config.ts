@@ -1,13 +1,11 @@
 /// <reference types="node" />
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const require = createRequire(import.meta.url);
 
 /** The package root and name for a bundled module path, taken from its last `node_modules/`
  *  segment so pnpm's `.pnpm/<name>@<v>/node_modules/<name>` layout resolves to the real package. */
@@ -17,9 +15,9 @@ function packageOf(id: string): { name: string; root: string } | undefined {
 }
 
 /** Writes `bundle-licenses.json`: every third-party package compiled into the client, with the
- *  version and license its own package.json declares. A package with no license fails the build.
- *  `cssOnly` names packages that reach the bundle only through CSS, which module ids do not show. */
-function bundleLicenses(cssOnly: string[]): Plugin {
+ *  version and license its own package.json declares, found from the module ids of the emitted
+ *  chunks (stylesheet imports included). A package with no license fails the build. */
+function bundleLicenses(): Plugin {
   return {
     name: "cotal-bundle-licenses",
     generateBundle(_options, bundle) {
@@ -32,7 +30,6 @@ function bundleLicenses(cssOnly: string[]): Plugin {
           if (p) found.set(p.name, p.root);
         }
       }
-      for (const name of cssOnly) found.set(name, dirname(require.resolve(`${name}/package.json`)));
       const bundled = [...found].sort(([a], [b]) => a.localeCompare(b)).map(([name, root]) => {
         const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string; license?: string };
         if (!meta.version || !meta.license) throw new Error(`bundle-licenses: ${name} declares no version or license`);
@@ -46,7 +43,7 @@ function bundleLicenses(cssOnly: string[]): Plugin {
 export default defineConfig({
   root: here,
   base: "/",
-  plugins: [react(), bundleLicenses(["@fontsource-variable/inter"])],
+  plugins: [react(), bundleLicenses()],
   build: {
     outDir: resolve(here, "../dist/web"),
     emptyOutDir: true,
