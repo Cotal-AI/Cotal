@@ -36,6 +36,7 @@ const renderRoots = [
   join(root, "extensions/connector-core/src"),
   join(root, "implementations/cli/src"),
   join(root, "implementations/web/src"),
+  join(root, "implementations/web/client/src"),
 ];
 const skipDirs = new Set(["dist", "smoke", "test", "tests", "fixtures", "node_modules"]);
 const sourceExt = /\.(?:ts|tsx|js|mjs|mts)$/;
@@ -330,6 +331,7 @@ const connectorRosterProgressAnchor = 'const progress = p.status === "working" ?
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
 const inkRosterProgressAnchor = 'return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";';
 const webMonitorProgressAnchor = 'const progress = p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
+const webStatusLabelAnchor = 'export const statusLabel = (p: Pick<RosterRow, "status" | "progress">): string => p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
 const webGraphProgressAnchor = '<div class="d-status ${sel.status}"><span class="dot"></span>${esc(sel.status === "working" && sel.progress?.kind === "unknown" ? "working · progress unknown" : sel.status)}</div>';
 const proofAnchors = new Map<string, string>([
   ["extensions/connector-core/src/orientation.ts", connectorHonestStatusAnchor],
@@ -337,6 +339,8 @@ const proofAnchors = new Map<string, string>([
   ["implementations/cli/src/ui.ts", sharedStatusBadgeAnchor],
   ["implementations/cli/src/console/ui/Detail.tsx", inkDetailStatusAnchor],
   ["implementations/cli/src/console/ui/Roster.tsx", inkRosterProgressAnchor],
+  ["implementations/web/client/src/lib/roster.ts", webStatusLabelAnchor],
+  // Task 9 removes the two legacy page anchors with the pages.
   ["implementations/web/src/web/app.js", webMonitorProgressAnchor],
   ["implementations/web/src/web/graph.js", webGraphProgressAnchor],
 ]);

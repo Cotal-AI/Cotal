@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 510,
-    "honest-text": 35,
-    "presence-only-glyph/count": 57,
+    "total": 529,
+    "honest-text": 36,
+    "presence-only-glyph/count": 58,
     "command-ack": 12,
-    "non-render/control": 406
+    "non-render/control": 423
   },
   "renderers": [
     {
@@ -3730,6 +3730,143 @@
       "anchor": "ion}${rec.authority === \"offline\" ? c.dim(\" · offline\") :",
       "class": "non-render/control",
       "rationale": "Doctor renewal record: renders how the LAST RENEWAL PASS was authorised, not any agent's presence; the token matches only because the authority is spelled offline."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`${probeUrl}: HTTP ${res.status}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`web dashboard did not become HTTP-ready within ${opts.timeoutMs}ms (pid ${pid})${lastProbe ? `; last probe ${capProbeText(lastProbe)}` : \"\"}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "`; last probe ${capProbeText(lastProbe)}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "capProbeText(lastProbe)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/dms.ts",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": ";\n\nexport type Status = \"working\" | \"waiting\" | \"idle\" | ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "pe Status = \"working\" | \"waiting\" | \"idle\" | \"offline\";\n\n",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "\"working\" | \"waiting\" | \"idle\" | \"offline\";\n\n/** Waiti",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": " | \"waiting\" | \"idle\" | \"offline\";\n\n/** Waiting first: th",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "ATUS_ORDER: Status[] = [\"waiting\", \"working\", \"idle\", \"of",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": " Status[] = [\"waiting\", \"working\", \"idle\", \"offline\"];\n\ne",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": " [\"waiting\", \"working\", \"idle\", \"offline\"];\n\nexport in",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "ng\", \"working\", \"idle\", \"offline\"];\n\nexport interface Ros",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "Offline || p.status !== \"offline\")\n    .sort((a, b) => ST",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "indexed-map",
+      "anchor": "counts[r.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "ter((r) => r.status === \"waiting\");\n\n/** Stalest heartbea",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": "ter((r) => r.status !== \"offline\" && typeof r.ts === \"num",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "status-token",
+      "anchor": " string => p.status === \"working\" && p.progress?.kind ===",
+      "class": "honest-text",
+      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
+      "proof": {
+        "path": "implementations/web/client/src/lib/roster.ts",
+        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/client/src/lib/snapshot.ts",
+      "kind": "derived-output",
+      "anchor": "`${what} refused with HTTP ${res.status}${detail}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     }
   ]
 }

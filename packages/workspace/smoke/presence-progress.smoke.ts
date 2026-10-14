@@ -85,8 +85,7 @@ const cliEndpoints = readFileSync(join(root, "implementations/cli/src/commands/e
 const cliAgents = readFileSync(join(root, "implementations/cli/src/commands/agents.ts"), "utf8");
 const cliRoster = readFileSync(join(root, "implementations/cli/src/console/ui/Roster.tsx"), "utf8");
 const cliDetail = readFileSync(join(root, "implementations/cli/src/console/ui/Detail.tsx"), "utf8");
-const webMonitor = readFileSync(join(root, "implementations/web/src/web/app.js"), "utf8");
-const webGraph = readFileSync(join(root, "implementations/web/src/web/graph.js"), "utf8");
+const webRoster = readFileSync(join(root, "implementations/web/client/src/lib/roster.ts"), "utf8");
 check(
   "connector orientation names unknown progress for a textual working peer",
   /progress unknown/.test(orientation),
@@ -112,15 +111,11 @@ check(
   /progress unknown/.test(cliRoster) && /progress unknown/.test(cliDetail) && /heartbeat/.test(cliDetail),
 );
 check(
-  "web textual agent detail names unknown progress and labels heartbeat separately",
-  /progress unknown/.test(webMonitor) && /heartbeat/.test(webMonitor),
-);
-check(
-  "web graph textual agent detail names unknown progress",
-  /progress unknown/.test(webGraph),
+  "web statusLabel is the one place the dashboard names unknown progress",
+  webRoster.split(/working · progress unknown/).length - 1 === 1,
 );
 
-const EXPECTED = 23;
+const EXPECTED = 22;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
 console.log(`PRESENCE-PROGRESS SMOKE: ${pass} passed, ${fail} failed`);

@@ -1,0 +1,71 @@
+{
+  "command": "pnpm smoke:web-presence-view",
+  "suite": [
+    "implementations/web/smoke/presence-view.smoke.ts"
+  ],
+  "mutations": [
+    {
+      "name": "displayNameOf falls back to the payload's own name before the roster lookup, so a peer can relabel another by sending a forged from.name",
+      "file": "implementations/web/client/src/lib/names.ts",
+      "find": "  if (typeof x === \"object\") return displayNameOf(x.id, idx);",
+      "replace": "  if (typeof x === \"object\") return (x as { name?: string }).name ?? displayNameOf(x.id, idx);",
+      "expectRed": "3.2 displayNameOf resolves an object by its id, never its payload .name"
+    },
+    {
+      "name": "the stale roster mark loses its observer wording, so the header no longer says which watch went silent or since when",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "observer presence watch silent since",
+      "replace": "roster stale",
+      "expectRed": "1.1 Monitor: a stale view marks the roster source, not a peer"
+    },
+    {
+      "name": "waiting and working swap places in STATUS_ORDER, so the Agents view stops leading with who needs a human",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "export const STATUS_ORDER: Status[] = [\"waiting\", \"working\", \"idle\", \"offline\"];",
+      "replace": "export const STATUS_ORDER: Status[] = [\"working\", \"waiting\", \"idle\", \"offline\"];",
+      "expectRed": "2.7 rows sort waiting first, then working, then idle, each by name"
+    },
+    {
+      "name": "rosterRows includes offline peers by default, so the online-only sidebar grays rows into the list",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "    .filter((p) => opts.includeOffline || p.status !== \"offline\")",
+      "replace": "    .filter(() => true)",
+      "expectRed": "2.6 the sidebar rows are online-only by default"
+    },
+    {
+      "name": "oldestLiveBeat counts offline rows, so a long-gone peer's age fills the golden-signal slot",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "rows.filter((r) => r.status !== \"offline\" && typeof r.ts === \"number\")",
+      "replace": "rows.filter((r) => typeof r.ts === \"number\")",
+      "expectRed": "2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one"
+    },
+    {
+      "name": "statusLabel drops the unknown-progress wording, so a working peer reads as plainly working",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "? \"working · progress unknown\" : p.status;",
+      "replace": "? \"working\" : p.status;",
+      "expectRed": "2.14 statusLabel writes honest progress text only for working with unknown progress"
+    },
+    {
+      "name": "an unknown principal's actor is cut to 8 characters, so the short form no longer matches the 6 character rule",
+      "file": "implementations/web/client/src/lib/names.ts",
+      "find": "principal[2]!.slice(0, 6)",
+      "replace": "principal[2]!.slice(0, 8)",
+      "expectRed": "3.5 an unknown owner.actor principal with an actor of 32+ characters is cut to 6 plus an ellipsis"
+    },
+    {
+      "name": "a peer missing from the roster is reported idle instead of offline, so a stranger in a DM reads as present",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "byId.get(id)?.status ?? \"offline\"",
+      "replace": "byId.get(id)?.status ?? \"idle\"",
+      "expectRed": "3.7 dmPeers names, roles and statuses come from the roster by id, never the payload"
+    },
+    {
+      "name": "a message a peer sent to itself becomes a conversation, so the roll-up grows a thread with nobody",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "if (!from || !to || from === to) continue;",
+      "replace": "if (!from || !to) continue;",
+      "expectRed": "3.8 dmPeers rolls pairs up per peer"
+    }
+  ]
+}
