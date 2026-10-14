@@ -23,9 +23,10 @@
  * WHAT THIS SUITE DRIVES. `client/src/lib/snapshot.ts` is imported as the client bundle imports it,
  * and the dashboard controller (`client/src/state/controller.ts`), which reads every source through
  * it, is built over a fake `Api` and driven through its methods (§3.6, §4, §5). Nothing is restated.
- * The structural cells on the old pages stay on those pages until their replacements land: Task 7
- * (the boot and `api/http.ts`) re-homes §3.11 and §5.3, and Task 8 (the shell) re-homes §3.3 to
- * §3.5 and §3.7.
+ * The boot and the HTTP gate are driven the same way: `startDashboard` (`state/boot.ts`) and
+ * `httpApi` (`api/http.ts`) are imported, so §3.7, §3.9, §3.11 and §5.3 read what ships. The
+ * structural cells on the old pages stay on those pages until the shell replaces them: Task 8 re-homes
+ * §3.3 to §3.5.
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -40,8 +41,12 @@ import { fileURLToPath } from "node:url";
 import { LEGACY_PAGE_FILES } from "../src/web.js";
 import { readJson, refreshAll, staleLabel, type Source } from "../client/src/lib/snapshot.js";
 import type { CotalMessage } from "../client/src/api/types.js";
+import { httpApi } from "../client/src/api/http.js";
 import type { Api } from "../client/src/state/controller.js";
-import { bootReads, gate, harness } from "./controller-harness.js";
+import { startDashboard } from "../client/src/state/boot.js";
+import { createStore } from "../client/src/state/store.js";
+import { initialState } from "../client/src/state/types.js";
+import { bootReads, gate, harness, page } from "./controller-harness.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -187,7 +192,16 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   ok("3.3 the console page loads it", indexHtml.includes('<script src="/snapshot.js"></script>'));
   ok("3.4 the graph page loads it", graphHtml.includes('<script src="/snapshot.js"></script>'));
   ok("3.5 both pages carry the stale marker element it drives", indexHtml.includes('id="stale"') && graphHtml.includes('id="stale"'));
-  ok("3.7 the graph page reads every source through it", graphJs.includes("SNAP.refreshAll(") && graphJs.includes("SNAP.readJson("));
+  // The boot reads every source through the controller, and the controller through `refreshAll`:
+  // `startDashboard` holds no read of its own, and `httpApi` wraps every route in `readJson` (each
+  // route is driven in `smoke:web-http-api`). What is asserted here is the wiring between them.
+  const bootJs = codeOnly(readFileSync(join(here, "..", "client", "src", "state", "boot.ts"), "utf8"));
+  const httpJs = codeOnly(readFileSync(join(here, "..", "client", "src", "api", "http.ts"), "utf8"));
+  const feedJs = codeOnly(readFileSync(join(here, "..", "client", "src", "api", "feed.ts"), "utf8"));
+  const ctlSrc = codeOnly(readFileSync(join(here, "..", "client", "src", "state", "controller.ts"), "utf8"));
+  ok("3.7 the boot reads every source through the controller's refresh(), which reads them through refreshAll",
+    bootJs.includes("controller.refresh()") && ctlSrc.includes("refreshAll(") && !/\bfetch\s*\(/.test(bootJs),
+    { boot: bootJs.includes("controller.refresh()"), refreshAll: ctlSrc.includes("refreshAll("), fetch: /\bfetch\s*\(/.test(bootJs) });
   // The shape that caused the wipe, in the files that had it: a response body consumed with no
   // status check. A survivor here is a poll that can still store a refusal as data.
   // BALANCED ARGUMENTS, NOT "ANYTHING BUT A PAREN", and the difference was a live wipe. The first
@@ -205,12 +219,14 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   const rawJson = new RegExp(`fetch${ARGS}\\s*\\)\\s*\\.json\\(\\)|fetch${ARGS}\\s*\\.then\\(\\s*\\(?r\\)?\\s*=>\\s*r\\.json\\(\\)`, "g");
   // The console page's reads are the controller's now, and it holds no `fetch` at all: every read
   // goes through the injected `Api`. That is all this cell proves, and it is true by design, so it
-  // does not guard the status check. The HTTP status gate moves to api/http.ts in Task 7, which adds
-  // a cell over httpApi(fakeFetch) for every route and a mutation that drops readJson.
+  // does not guard the status check. The HTTP status gate is `api/http.ts`'s, and
+  // `smoke:web-http-api` drives httpApi(fakeFetch) for every route, with mutations that drop readJson.
   const controllerJs = codeOnly(readFileSync(join(here, "..", "client", "src", "state", "controller.ts"), "utf8"));
   ok("3.8 the controller holds no fetch; every read goes through the injected Api",
     !/\bfetch\s*\(/.test(controllerJs) && (controllerJs.match(rawJson) ?? []).length === 0, controllerJs.match(rawJson));
-  ok("3.9 no unguarded `fetch(...).json()` survives on the graph page", (graphJs.match(rawJson) ?? []).length === 0, graphJs.match(rawJson));
+  ok("3.9 no unguarded `fetch(...).json()` survives in the client's I/O modules (http.ts, feed.ts, boot.ts)",
+    [httpJs, feedJs, bootJs].every((src) => (src.match(rawJson) ?? []).length === 0),
+    [httpJs, feedJs, bootJs].map((src) => src.match(rawJson)));
   // CONTROL for 3.8/3.9: the pattern must be able to find the shape it is looking for.
   ok("3.10 CONTROL: that pattern DOES match the shape it forbids",
     ('const x = await (await fetch("/api/roster")).json();'.match(rawJson) ?? []).length === 1);
@@ -225,15 +241,43 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ("const x = await (await fetch(`/a/${enc(f(k))}/b`)).json();".match(rawJson) ?? []).length === 1);
   ok("3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line (the shape that hid the space-name read)",
     ('fetch("/api/meta")\n    .then((r) => r.json())'.match(rawJson) ?? []).length === 1);
-  // The graph page's boot must not be able to skip OR DELAY the live feed. This cell used to REQUIRE
-  // `load().catch(...).then(connect)`, the shape that guaranteed `connect` would RUN. The page now
-  // opens the feed FIRST, which guarantees it runs SOON as well, so the old assertion had turned
-  // into a requirement to keep the weaker boot. What survives is the property, restated against the
-  // boot that ships: the feed is opened, and it is chained behind the bootstrap in no spelling.
-  ok("3.11 the graph page opens the live feed WITHOUT waiting for the boot (the wipe was `load().then(connect)`)",
-    /connect\(\);\s*\n\s*load\(\)/.test(graphJs) && !/\.then\(\s*connect\s*\)/.test(graphJs));
-  ok("3.11b CONTROL: the chained shape 3.11 forbids is one this pattern can still see",
-    /\.then\(\s*connect\s*\)/.test("load().catch((err) => console.error(err)).then(connect);"));
+  // The boot must not be able to skip OR DELAY the live feed. This cell used to REQUIRE
+  // `load().catch(...).then(connect)`, the shape that guaranteed `connect` would RUN. The boot now
+  // opens the feed FIRST, which guarantees it runs SOON as well, so the property is what is
+  // asserted, and it is DRIVEN: `startDashboard` over a fake `openFeed` and an `Api` whose reads are
+  // held. The feed is open while every read is still in flight, and the boot's source chains it
+  // behind the bootstrap in no spelling.
+  type BootDeps = Parameters<typeof startDashboard>[0];
+  /** Run `boot` over a feed that counts its opens and reads that are held, and report what is true
+   *  while every read is still in flight. */
+  const whileReadsInFlight = async (boot: (deps: BootDeps) => { controller: { refresh(): Promise<void> } }) => {
+    const held = gate<void>();
+    let opened = 0;
+    const slow = <T>(v: T) => async () => { await held.promise; return v; };
+    const dash = boot({
+      store: createStore(structuredClone(initialState)),
+      api: { ...bootReads, roster: slow([]), channels: slow([]), dms: slow([]), activity: slow(page()) } as unknown as Api,
+      openFeed: () => { opened++; return () => undefined; },
+    });
+    const openedWhileHeld = opened;
+    held.resolve();
+    await dash.controller.refresh();
+    return { openedWhileHeld, openedAfter: opened };
+  };
+  const shipped = await whileReadsInFlight(startDashboard);
+  ok("3.11 the boot opens the live feed WITHOUT waiting for the bootstrap (the wipe was `load().then(connect)`)",
+    shipped.openedWhileHeld === 1 && !/\.then\(\s*\(\)\s*=>[^)]*openFeed/.test(bootJs), { shipped });
+  // CONTROL for 3.11: the old shape, written out over the same recorder, is something the cell can see.
+  // It opens the feed only once the bootstrap has settled.
+  const chained = await whileReadsInFlight((deps) => {
+    const { controller } = startDashboard({ ...deps, openFeed: () => () => undefined });
+    void controller.refresh().then(() => deps.openFeed({} as never));
+    return { controller };
+  });
+  ok("3.11b CONTROL: a boot that chains the feed behind the bootstrap has NOT opened it while the reads are in flight",
+    chained.openedWhileHeld === 0, chained);
+  ok("3.11c CONTROL: and the source pattern 3.11 forbids matches the shape it names",
+    /\.then\(\s*\(\)\s*=>[^)]*openFeed/.test("void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });"));
 }
 
 // The console page's poll is the controller's `refresh()`. Every one of its six sources refusing at
@@ -357,10 +401,18 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
 // the element. The shell (Task 8) re-pins both against what it renders.
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-  // The gate itself lives where the read is made. On the old page that is this line, and Task 7
-  // re-homes this cell onto `api/http.ts`, whose `Api` wraps every route in `readJson`.
-  ok("5.3 and it reads through the gate rather than consuming the body directly",
-    /readJson\(await fetch\("\/api\/meta"\)/.test(appSrc));
+  // The gate itself lives where the read is made, which is `httpApi`: a 500 whose body is JSON on
+  // `/api/meta` must reach the caller as a refusal naming the read, never as a value. Driven here
+  // for the space; every route is driven in `smoke:web-http-api`.
+  {
+    const refused = (async () => ({ ok: false, status: 500, json: async () => ({ error: "the space could not be read" }) })) as unknown as typeof fetch;
+    let threw: Error | undefined;
+    let value: unknown;
+    try { value = await httpApi(refused).meta(); } catch (e) { threw = e as Error; }
+    ok("5.3 and it reads through the gate rather than consuming the body directly",
+      threw !== undefined && /space refused with HTTP 500: the space could not be read/.test(threw.message) && value === undefined,
+      { threw: threw?.message, value });
+  }
 
   let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1 });
   let reads = 0;
@@ -442,6 +494,35 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     await h.ctl.refresh();
     ok("6.6 CONTROL: with no live event a bootstrap refusal does mark membership unreadable",
       /membership-read-failed/.test(h.store.get().membership.unreadable ?? ""), h.store.get().membership);
+  }
+  // ONCE THE FEED HAS SPOKEN FOR MEMBERSHIP, A POLL DOES NOT READ IT AGAIN. Every later read would be
+  // dropped on arrival, so it is a broker call per poll for nothing, and a refusal of it would still
+  // put a stale mark in the header beside a pill the feed keeps live.
+  {
+    let reads = 0;
+    const h = harness({ ...bootReads, membership: async () => { reads++; throw new Error("membership refused with HTTP 503: membership-read-failed"); } });
+    await h.ctl.refresh();
+    const beforeFeed = { reads, marked: h.store.get().stale.some((m) => m.name === "membership") };
+    ok("6.7 CONTROL: before the feed has spoken the poll reads membership, and its refusal is marked",
+      beforeFeed.reads === 1 && beforeFeed.marked, beforeFeed);
+    h.ctl.onMembership({ asOf: 5, members: [] });
+    await h.ctl.refresh();
+    await h.ctl.refresh();
+    ok("6.8 after the feed has spoken for membership, a poll does NOT read it again, and the old refusal's mark is gone",
+      reads === 1 && !h.store.get().stale.some((m) => m.name === "membership") && h.store.get().membership.snapshot?.asOf === 5,
+      { reads, stale: h.store.get().stale });
+  }
+  {
+    // The read that was ALREADY IN FLIGHT when the feed spoke cannot be skipped, so its refusal is
+    // dropped from the marks instead.
+    const g = gate<never>();
+    const h = harness({ ...bootReads, membership: () => g.promise });
+    const p = h.ctl.refresh();
+    h.ctl.onMembership({ asOf: 5, members: [] });
+    g.reject(new Error("membership refused with HTTP 503: membership-read-failed"));
+    await p;
+    ok("6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark",
+      !h.store.get().stale.some((m) => m.name === "membership"), h.store.get().stale);
   }
 }
 

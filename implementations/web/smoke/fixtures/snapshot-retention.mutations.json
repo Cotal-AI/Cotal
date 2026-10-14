@@ -37,11 +37,11 @@
       "expectRed": "2.11 all three reads are in flight together"
     },
     {
-      "name": "the graph page's boot is chained again, so the live feed is guaranteed to run but not to run soon",
-      "file": "implementations/web/src/web/graph.js",
-      "find": "  connect();\n  load().catch((err) => console.error(err));",
-      "replace": "  load().catch((err) => console.error(err)).then(connect);",
-      "expectRed": "3.11 the graph page opens the live feed WITHOUT waiting for the boot"
+      "name": "W6 the boot is chained again, so the live feed is guaranteed to run but not to run soon",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "  const stopFeed = deps.openFeed(handlers);\n  void controller.refresh();\n  return { controller, stop: stopFeed };",
+      "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
+      "expectRed": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap"
     },
     {
       "name": "W7 the stale marker stops naming anything, so the page keeps its data and the reader is never told which half of it is old",
@@ -51,7 +51,7 @@
       "expectRed": "3.2 a stale set NAMES its sources"
     },
     {
-      "name": "W8 the controller swallows a refused open-channel history into an empty one, so the view empties, the order machine settles on nothing, and no note or mark says the read was refused (the HTTP status gate itself is Task 7's, in api/http.ts)",
+      "name": "W8 the controller swallows a refused open-channel history into an empty one, so the view empties, the order machine settles on nothing, and no note or mark says the read was refused (the HTTP status gate is api/http.ts's, graded in smoke:web-http-api)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "      msgs = await api.history(key, 200);\n",
       "replace": "      msgs = await api.history(key, 200).catch(() => []);\n",
@@ -93,7 +93,7 @@
       "expectRed": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line"
     },
     {
-      "name": "W14 the controller swallows a refused space read and applies a stand-in value, so the header loses the last good name and nothing marks the space stale (the HTTP status gate itself is Task 7's, in api/http.ts)",
+      "name": "W14 the controller swallows a refused space read and applies a stand-in value, so the header loses the last good name and nothing marks the space stale (the HTTP status gate is api/http.ts's, graded in smoke:web-http-api)",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "read: () => api.meta(),",
       "replace": "read: () => api.meta().catch(() => ({ space: undefined as unknown as string, pid: 0 })),",
@@ -102,23 +102,44 @@
     {
       "name": "W15 the bootstrap roster is applied even after the live feed has spoken, so an older snapshot read before the feed opened reverts the roster the feed just announced",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
-      "replace": "apply: (roster: RosterEntry[]) => store.set({ roster }) },",
+      "find": "        { name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
+      "replace": "        { name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) },",
       "expectRed": "6.1 a roster event that lands before the bootstrap roster read resolves wins"
     },
     {
       "name": "W16 a bootstrap membership refusal is applied even after the live feed delivered a snapshot, so the pill reports the mesh unreadable on the strength of one older read",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      if (membershipRefused) supersededByFeed(\"membership\", unreadable)(membershipRefused.reason);",
-      "replace": "      if (membershipRefused) unreadable(membershipRefused.reason);",
+      "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
+      "replace": "      const stale: StaleMark[] = refused;",
       "expectRed": "6.3 a live membership snapshot outranks a bootstrap refusal that lands after it"
     },
     {
       "name": "W17 a bootstrap membership snapshot is applied even after the live feed refused, so an older successful read erases the feed's own report that membership is unreadable",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "apply: supersededByFeed(\"membership\", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) },",
-      "replace": "apply: (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } }) },",
+      "find": "apply: supersededByFeed(\"membership\", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) }]),",
+      "replace": "apply: (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } }) }]),",
       "expectRed": "6.4 a live membership refusal outranks a bootstrap snapshot that lands after it"
+    },
+    {
+      "name": "W18 a poll reads membership even after the feed has spoken for it, so every poll costs a broker call whose value is thrown away",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        ...(liveApplied.has(\"membership\")\n",
+      "replace": "        ...(false\n",
+      "expectRed": "6.8 after the feed has spoken for membership, a poll does NOT read it again"
+    },
+    {
+      "name": "W19 a refusal of a membership read the feed outranked in flight is marked stale, so the header calls membership stale beside a pill the feed keeps live",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
+      "replace": "      const stale: StaleMark[] = refused;",
+      "expectRed": "6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark"
+    },
+    {
+      "name": "W20 the space read stops going through the HTTP status gate, so a 500 with a JSON body is handed back as the space",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "    meta: () => get<Meta>(\"/api/meta\", \"space\"),",
+      "replace": "    meta: async () => (await fetchImpl(\"/api/meta\")).json() as Promise<Meta>,",
+      "expectRed": "5.3 and it reads through the gate rather than consuming the body directly"
     }
   ],
   "suite": [

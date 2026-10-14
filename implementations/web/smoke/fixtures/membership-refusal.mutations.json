@@ -3,10 +3,10 @@
     "implementations/web/smoke/membership-refusal.smoke.ts"
   ],
   "command": "pnpm smoke:web-membership-refusal",
-  "guard": "a membership watch that closes after setup reaches the browser as the same membership-read-failed frame a rejected read produces, rather than leaving the graph silently stale",
+  "guard": "a failed membership read is never served or drawn as a successful empty one, on the server and in the client's pill, boot read, feed and ordering rule",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/web/smoke/fixtures/membership-refusal.mutations.json",
   "why": [
-    "This suite runs `tsx` directly over `src`, with no build step and no compiled second copy, so no `afterRestore` is needed on the mutation below."
+    "This suite runs `tsx` directly over `src` and `client/src`, with no build step and no compiled second copy, so no `afterRestore` is needed on any mutation here."
   ],
   "mutations": [
     {
@@ -16,6 +16,76 @@
       "replace": "() => {}",
       "expectRed": "a closed watch reaches the browser as the membership-read-failed frame, byte for byte",
       "cell": "a closed watch reaches the browser as the membership-read-failed frame, byte for byte"
+    },
+    {
+      "name": "MR1 the pill checks `available` before `unreadable`, so a failed read, which arrives with no members, is called traffic-only: a claim about the mesh standing in for a fact about us",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "  if (m.unreadable !== undefined) return \"unreadable\";\n  if (!available(m)) return \"traffic-only\";",
+      "replace": "  if (!available(m)) return \"traffic-only\";\n  if (m.unreadable !== undefined) return \"unreadable\";",
+      "expectRed": "an unreadable feed says so"
+    },
+    {
+      "name": "MR2 the pill stops saying unreadable once a snapshot exists, so a feed that failed after a good read is drawn as live or stale",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "  if (m.unreadable !== undefined) return \"unreadable\";",
+      "replace": "  if (m.unreadable !== undefined && !available(m)) return \"unreadable\";",
+      "expectRed": "an unreadable feed with a fresh snapshot still reads unreadable, not live"
+    },
+    {
+      "name": "MR3 the membership read stops going through the status gate, so a 503 refusal parses as a snapshot and the pill reads traffic-only",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "    membership: () => get<MembershipSnapshot>(\"/api/membership\", \"membership\"),",
+      "replace": "    membership: async () => (await fetchImpl(\"/api/membership\")).json() as Promise<MembershipSnapshot>,",
+      "expectRed": "M4: a 503 refusal reaching the boot path renders 'unreadable', not 'traffic-only'"
+    },
+    {
+      "name": "MR4 a refused bootstrap membership read stops setting `unreadable`, so the refusal is stored nowhere and the pill reads traffic-only",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if (membershipRefused) unreadable(membershipRefused.reason);",
+      "replace": "",
+      "expectRed": "M4: a 503 refusal reaching the boot path renders 'unreadable', not 'traffic-only'"
+    },
+    {
+      "name": "MR5 a membership read that gets no answer at all is turned into an empty snapshot again, the old `.catch(() => ({members: []}))` that manufactured traffic-only out of a dead socket",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "    membership: () => get<MembershipSnapshot>(\"/api/membership\", \"membership\"),",
+      "replace": "    membership: () => get<MembershipSnapshot>(\"/api/membership\", \"membership\").catch((e: Error) => { if (/refused with HTTP/.test(e.message)) throw e; return { members: [] }; }),",
+      "expectRed": "M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only'"
+    },
+    {
+      "name": "MR6 the feed listens on a different name than the server emits for a membership refusal, so the browser never hears it and the pill stays silent",
+      "file": "implementations/web/client/src/api/feed.ts",
+      "find": "const MEMBERSHIP_READ_FAILED = \"membership-read-failed\";",
+      "replace": "const MEMBERSHIP_READ_FAILED = \"membership-failed\";",
+      "expectRed": "the feed registers a listener for the refusal event"
+    },
+    {
+      "name": "MR7 the feed drops the refusal's reason on the way to the handler, so the operator is told THAT membership failed and never WHY",
+      "file": "implementations/web/client/src/api/feed.ts",
+      "find": "handlers.membershipFailed(d.reason)",
+      "replace": "handlers.membershipFailed(\"\")",
+      "expectRed": "and the event's `reason` is what reaches the handler, so the operator sees WHY"
+    },
+    {
+      "name": "MR8 the feed is authoritative while unreadable, so the page keeps asserting a hub is empty from a snapshot it has just disowned",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "  return available(m) && m.unreadable === undefined;",
+      "replace": "  return available(m);",
+      "expectRed": "AN UNREADABLE FEED IS NOT AUTHORITATIVE"
+    },
+    {
+      "name": "MR9 an unreadable feed discards its last snapshot, so the honest record of when it was last read successfully is thrown away with the failure",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "({ membership: { snapshot: s.membership.snapshot, unreadable: reason } })",
+      "replace": "({ membership: { unreadable: reason } })",
+      "expectRed": "an unreadable feed still records WHEN it was last read successfully"
+    },
+    {
+      "name": "MR10 a live membership refusal stops marking its source live, so a late successful bootstrap read clears the refusal it had already reported",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    onMembershipFailed(reason) {\n      liveApplied.add(\"membership\");\n",
+      "replace": "    onMembershipFailed(reason) {\n",
+      "expectRed": "a LATE bootstrap membership() resolve does not clear `unreadable`"
     }
   ]
 }

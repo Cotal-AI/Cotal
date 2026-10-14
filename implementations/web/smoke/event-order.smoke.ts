@@ -10,10 +10,10 @@
  * WHAT IT DRIVES. `client/src/lib/eventOrder.ts` is imported as the client bundle imports it, and
  * the bootstrap that arms and settles it is the dashboard controller (`client/src/state/
  * controller.ts`), built over a fake `Api` and driven through its methods (§12 to §14). Nothing is
- * restated here, so no cell can pass against a version that no longer ships. Two things still read
- * the old page, because they are not the controller's: the startup that calls `refresh()` (§13.1,
- * §13.2), which Task 7's boot re-homes, and the notice the views draw (§15, fixtures O18 to O20),
- * which Task 8's shell re-homes.
+ * restated here, so no cell can pass against a version that no longer ships. The startup that calls
+ * `refresh()` (§13.1, §13.2) is `startDashboard` (`client/src/state/boot.ts`), driven the same way.
+ * One thing still reads the old page, because it is not the controller's: the notice the views draw
+ * (§15, fixtures O18 to O20), which Task 8's shell re-homes.
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
  * goes live, and only then surfaces retained history (`SPEC.md` orders the join that way, and the
@@ -45,7 +45,11 @@ import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
 import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type EventOrder, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
 import type { FeedMessage } from "../client/src/api/types.js";
-import { bootReads, harness, page } from "./controller-harness.js";
+import type { FeedHandlers } from "../client/src/api/feed.js";
+import { startDashboard } from "../client/src/state/boot.js";
+import { createStore } from "../client/src/state/store.js";
+import { initialState } from "../client/src/state/types.js";
+import { bootReads, harness, page, unusedApi } from "./controller-harness.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webSrc = join(here, "..", "src", "web");
@@ -425,13 +429,27 @@ console.log("event-order smoke");
   // and `connect()`'s open handler calls `refresh()` again, so the second call is the norm, and a
   // reconnect flap repeats it.
   {
-    // The structural half: the two call sites this race needs both exist in the shipped page. They
-    // are the startup's, not the controller's, and Task 7's boot re-homes them.
-    const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
-    const startup = /\n\s*refresh\(\);\n\s*connect\(\);/.test(appSrc);
-    const onOpen = /addEventListener\("open",[\s\S]{0,120}?refresh\(\);/.test(appSrc);
-    ok("13.1 the shipped startup calls refresh() and then connect()", startup);
-    ok("13.2 and connect()'s open handler calls refresh() again", onOpen);
+    // The two call sites this race needs, now the boot's (state/boot.ts): the startup calls
+    // `refresh()` once the feed is open, and the feed's `open` handler calls it again. They are
+    // driven through `startDashboard` over a recording feed and a counting `Api`, so the cells read
+    // what the shipped boot does and not what its source says.
+    const log: string[] = [];
+    let handlers: FeedHandlers | undefined;
+    const reads = { ...bootReads, meta: async () => { log.push("read:meta"); return { space: "main", pid: 1 }; } };
+    const store = createStore(structuredClone(initialState));
+    const dash = startDashboard({
+      store,
+      api: { ...unusedApi, ...reads },
+      openFeed: (h) => { log.push("openFeed"); handlers = h; return () => undefined; },
+    });
+    ok("13.1 the shipped startup opens the feed and then calls refresh()", log[0] === "openFeed" && log[1] === "read:meta", log);
+    await dash.controller.refresh();
+    handlers!.open();
+    // COUNTED BEFORE ANYTHING ELSE CALLS refresh(): the reads are issued synchronously, so this is
+    // what the open handler itself did and a later call in this cell cannot stand in for it.
+    const afterOpen = log.filter((e) => e === "read:meta").length;
+    await dash.controller.refresh();
+    ok("13.2 and the feed's open handler calls refresh() again", afterOpen === 2, log);
   }
   {
     // Both calls are in flight together, with a frame arriving in between, exactly as the tap would

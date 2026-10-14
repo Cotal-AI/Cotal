@@ -16,12 +16,13 @@
  * itself failed. This sentence said "two" while three of the four were uncovered — see the passes
  * recorded at the end of this comment.
  *
- * WHAT IS DRIVEN. The shipped statements are EXTRACTED from the files that ship them and EXECUTED —
- * the route block and `json` out of `web.ts`, the pill out of `graph.js`. Neither file can be
- * imported whole (the route closes over a live endpoint; the page drives the DOM at load), so this
- * follows the extraction precedent already in this directory. A substring check would prove a line
- * was TYPED; it goes red on a reformat and stays green on a statement that stopped doing what its
- * name says.
+ * WHAT IS DRIVEN. The server half is EXTRACTED from `web.ts` and EXECUTED: the route block, `json`,
+ * the SSE encoder and broadcaster. `web.ts` cannot be imported whole (the route closes over a live
+ * endpoint), so this follows the extraction precedent already in this directory. The client half is
+ * IMPORTED, as the bundle imports it: `pillState` and `feedAuthoritative` (lib/membership.ts), the
+ * controller (state/controller.ts) over `httpApi` (api/http.ts) and the feed (api/feed.ts). A
+ * substring check would prove a line was TYPED; it goes red on a reformat and stays green on a
+ * statement that stopped doing what its name says.
  *
  * The HTTP status and the response bytes are read off a recording `ServerResponse`, not off the
  * arguments passed to a stubbed helper — the shipped `json` sets the status, so stubbing it would
@@ -66,6 +67,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
+import { httpApi } from "../client/src/api/http.js";
+import { openFeed, type FeedHandlers, type FeedSource } from "../client/src/api/feed.js";
+import { feedAuthoritative, pillState, type Pill } from "../client/src/lib/membership.js";
+import { createController } from "../client/src/state/controller.js";
+import { createStore } from "../client/src/state/store.js";
+import { initialState, type DashboardState } from "../client/src/state/types.js";
 import { MEMBERSHIP_READ_FAILED } from "../src/web.js";
 
 let pass = 0;
@@ -111,16 +118,13 @@ const liftStmt = (src: string, anchor: string, terminator: string, nth = 0): str
 };
 
 const webTs = read("../src/web.ts");
-const graphJs = read("../src/web/graph.js");
 
 const routeBlock = lift(webTs, 'if (path === "/api/membership")');
 const jsonHelper = lift(webTs, "function json(res: ServerResponse");
-const pill = lift(graphJs, "function setFeed()");
 
 // ── NON-VACUITY, before anything executes ───────────────────────────────────────────────────────
 check("the /api/membership route block was lifted out of web.ts", Boolean(routeBlock), { len: routeBlock?.length });
 check("the json helper was lifted out of web.ts", Boolean(jsonHelper), { len: jsonHelper?.length });
-check("the membership pill was lifted out of graph.js", Boolean(pill), { len: pill?.length });
 
 // POSITIVE CONTROL on the lifter: an anchor that is not in the file must come back null, so the
 // three successes above are matches rather than a lifter that cannot miss.
@@ -178,135 +182,125 @@ check("…and different statuses, so a client that checks only the status also c
   failed.status !== okEmpty.status, { failed: failed.status, empty: okEmpty.status });
 
 // ── The browser surface, executed ───────────────────────────────────────────────────────────────
-/** Run the SHIPPED pill against a feed state and return the text the operator reads. */
-const pillText = (feed: Record<string, unknown>): string => {
-  let text = "";
-  const el = { hidden: true, className: "", querySelector: () => ({ set textContent(v: string) { text = v; } }) };
-  const ctx = {
-    feed,
-    FEED_STALE_MS: 45000,
-    now: () => 1700000000000,
-    $: (id: string) => (id === "feed" ? el : null),
-  };
-  runInContext(`${pill}\nsetFeed();`, createContext(ctx), { filename: "graph.js (pill)" });
-  return text;
-};
+/** The pill's clock, and a snapshot stamped on it. */
+const NOW = 1700000000000;
+type Membership = DashboardState["membership"];
+const pill = (m: Membership): Pill => pillState(m, NOW);
 
-check("an unreadable feed says so", pillText({ unreadable: true }) === "membership: unreadable", pillText({ unreadable: true }));
+check("an unreadable feed says so", pill({ unreadable: "x" }) === "unreadable", pill({ unreadable: "x" }));
 check("a mesh with no feed still reads traffic-only (the honest use of that phrase is preserved)",
-  pillText({ available: false }) === "membership: traffic-only", pillText({ available: false }));
+  pill({}) === "traffic-only" && pill({ snapshot: { members: [] } }) === "traffic-only",
+  [pill({}), pill({ snapshot: { members: [] } })]);
 check("a fresh feed still reads live (the pill's other states are not collateral damage)",
-  pillText({ available: true, asOf: 1700000000000 }) === "membership: live", pillText({ available: true, asOf: 1700000000000 }));
+  pill({ snapshot: { asOf: NOW, members: [] } }) === "live", pill({ snapshot: { asOf: NOW, members: [] } }));
+check("an old feed reads stale, and the boundary is the last tick that is still live",
+  pill({ snapshot: { asOf: NOW - 45_000, members: [] } }) === "stale" && pill({ snapshot: { asOf: NOW - 44_999, members: [] } }) === "live");
 
 check("THE PILL DISTINGUISHES 'could not read' FROM 'nothing to read' (the display half of the defect)",
-  pillText({ unreadable: true }) !== pillText({ available: false }));
+  pill({ unreadable: "x" }) !== pill({}));
 // Order matters: `unreadable` arrives with no members, so a pill testing `available` first would
 // report traffic-only for it and this cell is what holds that ordering in place.
 check("an unreadable feed reports unreadable EVEN THOUGH it is also unavailable (ordering is load-bearing)",
-  pillText({ unreadable: true, available: false }) === "membership: unreadable",
-  pillText({ unreadable: true, available: false }));
+  pill({ unreadable: "x", snapshot: undefined }) === "unreadable" && pill({ unreadable: "x", snapshot: { members: [] } }) === "unreadable",
+  [pill({ unreadable: "x" }), pill({ unreadable: "x", snapshot: { members: [] } })]);
+// An unreadable feed that HAS a snapshot is still unreadable, not live: the last reading is what we
+// knew, and the pill must not call it what IS.
+check("an unreadable feed with a fresh snapshot still reads unreadable, not live",
+  pill({ unreadable: "x", snapshot: { asOf: NOW, members: [] } }) === "unreadable");
 
-// ── THE TWO PATHS THIS SUITE ORIGINALLY MISSED ──────────────────────────────────────────────────
+// ── THE PATHS THIS SUITE ORIGINALLY MISSED ──────────────────────────────────────────────────────
 // Both were found by an adversarial reviewer and CONFIRMED BY EXECUTION before these cells existed:
 // each mutation left all 18 earlier cells green, rc=0. They are named here because the cells above
-// look like they cover them and do not — `pillText` injects `{unreadable: true}` by hand, so it
-// proves the pill RENDERS the state and says nothing about anything ever PRODUCING it.
+// look like they cover them and do not: injecting `{unreadable}` by hand proves the pill RENDERS
+// the state and says nothing about anything ever PRODUCING it.
 //
-//   M4  graph.js boot: drop the status gate  -> a 503 body parses as a snapshot -> traffic-only
+//   M4  the boot read: drop the status gate  -> a 503 body parses as a snapshot -> traffic-only
 //   M5  web.ts SSE push: restore `.catch(() => {})` -> the rejection vanishes again
 //
 // A cell that stops one step short of the surface under test is the same defect as the one being
 // fixed: it reports success for a path it never reached.
-// The membership SOURCE as the boot now declares it: `{ name, read, apply }`, where `read` carries
-// the status gate (`readJson`) that used to be spelled inline here. Lifting the whole source rather
-// than the bare fetch keeps this suite on the shipped path after the boot became a source table.
-const bootFetch = lift(graphJs, '{ name: "membership"');
-// The dispatch is an if/else PAIR across two lines, so it is matched as a pair. Lifting to the
-// first newline silently captured the `if` alone — the 200 cases then rendered nothing at all and
-// the empty-snapshot cell reddened. That is what an over-narrow extraction looks like when a cell
-// is watching; the same mistake in a cell nobody checks is a green that measures half a statement.
-const bootDispatch = /if \(stale\.some\(\(s\) => s\.name === "membership"\)\) supersededByFeed\("membership", membershipUnreadable\)\(\);/.exec(graphJs)?.[0] ?? null;
-// The dispatch now routes through the page's ordering rule (a live update outranks a bootstrap read
-// issued before it), so the RULE is lifted and run with it rather than restated here. A copy of it
-// in this file would be a second implementation that cannot drift into view. Nothing in this suite
-// touches the live feed, so `liveApplied` is empty and the bootstrap applies, which is the case
-// every cell below is about; the rule's own two directions are graded in `smoke:web-graph-boot`.
-const orderingRule = [
-  liftStmt(graphJs, "const liveApplied = new Set()", ";"),
-  liftStmt(graphJs, "const supersededByFeed =", ";"),
-];
+
+/** The healthy answer to every route but membership, which a cell supplies. */
+const healthy = (url: string): unknown => {
+  if (url === "/api/meta") return { space: "s", pid: 1 };
+  if (url.startsWith("/api/activity")) return { entries: [], partial: false, read: 1, of: 1, missing: [], reasons: {}, deadlineMs: 8000 };
+  return [];
+};
+type FakeResponse = { ok: boolean; status: number; body: unknown };
+
+/** Drive the SHIPPED boot read end to end: the controller's `refresh()` over `httpApi` over a fetch of
+ *  our choosing, then the SHIPPED pill over the state it wrote. Nothing is hand-seeded.
+ *
+ *  The harness supplies the FETCH, not a response. A fixture that could only resolve left the
+ *  network-failure arm unexecuted, and restoring `{members: []}` there survived every cell. A stub
+ *  that cannot fail cannot test a failure path, and it looks identical to one that can. */
+const bootDashboard = async (membership: () => Promise<FakeResponse>) => {
+  const store = createStore<DashboardState>(structuredClone(initialState));
+  const fetchImpl = (async (url: string) => {
+    if (url === "/api/membership") {
+      const r = await membership();
+      return { ok: r.ok, status: r.status, json: async () => r.body } as unknown as Response;
+    }
+    return { ok: true, status: 200, json: async () => healthy(url) } as unknown as Response;
+  }) as typeof fetch;
+  const ctl = createController(store, httpApi(fetchImpl));
+  await ctl.refresh();
+  return { store, ctl, pill: () => pill(store.get().membership) };
+};
+const bootPill = async (membership: () => Promise<FakeResponse>): Promise<Pill> => (await bootDashboard(membership)).pill();
+
+const refusalBody = JSON.parse(failed.body) as unknown;
+const answers = (ok: boolean, body: unknown): (() => Promise<FakeResponse>) => async () => ({ ok, status: ok ? 200 : 503, body });
+
+check("M4: a 503 refusal reaching the boot path renders 'unreadable', not 'traffic-only'",
+  (await bootPill(answers(false, refusalBody))) === "unreadable",
+  await bootPill(answers(false, refusalBody)));
+check("M4: a 200 empty snapshot still renders traffic-only through the same path",
+  (await bootPill(answers(true, { members: [] }))) === "traffic-only");
+check("M4: a 200 populated snapshot still renders live through the same path",
+  (await bootPill(answers(true, { asOf: NOW, members: [{ id: "a" }] }))) === "live");
+
+// M7. The arm above is reached when the server ANSWERS with a refusal. This one is reached when
+// there is no answer at all: the daemon died, the socket dropped, the page is offline. The old
+// `.catch(() => ({members: []}))` manufactured a snapshot out of that, which is the same defect as
+// the server's, on the client, and it survived every cell until the fixture could reject.
+check("M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only' (no answer is not an empty answer)",
+  (await bootPill(async () => { throw new Error("network down"); })) === "unreadable",
+  await bootPill(async () => { throw new Error("network down"); }));
+
+// THE ORDERING RULE, from the membership side. A refusal the feed announced is NEWER than a read
+// issued before it, so a late bootstrap `membership()` that resolves with a snapshot must not clear
+// `unreadable`. The mirror (a good live snapshot, a late refused read) is held in the same place.
+// The rule's own two directions at the dashboard level are graded in `smoke:web-graph-boot`.
+{
+  let resolveRead!: (r: FakeResponse) => void;
+  const late = new Promise<FakeResponse>((res) => (resolveRead = res));
+  const store = createStore<DashboardState>(structuredClone(initialState));
+  const fetchImpl = (async (url: string) => {
+    if (url === "/api/membership") {
+      const r = await late;
+      return { ok: r.ok, status: r.status, json: async () => r.body } as unknown as Response;
+    }
+    return { ok: true, status: 200, json: async () => healthy(url) } as unknown as Response;
+  }) as typeof fetch;
+  const ctl = createController(store, httpApi(fetchImpl));
+  const boot = ctl.refresh();
+  ctl.onMembershipFailed("membership stream not found");
+  check("the live refusal reaches the pill at once", pill(store.get().membership) === "unreadable");
+  resolveRead({ ok: true, status: 200, body: { asOf: NOW, members: [{ id: "a", live: [], durable: [] }] } });
+  await boot;
+  check("a LATE bootstrap membership() resolve does not clear `unreadable` (the feed spoke after that read was issued)",
+    pill(store.get().membership) === "unreadable" && store.get().membership.unreadable === "membership stream not found",
+    store.get().membership);
+}
+
 const ssePush = liftStmt(webTs, "void ep.readMembership()", ";", 0);
 const sseSeed = liftStmt(webTs, "void ep.readMembership()", ";", 1);
-
-check("the boot fetch expression was lifted out of graph.js", Boolean(bootFetch), { len: bootFetch?.length });
-check("the boot dispatch was lifted out of graph.js", Boolean(bootDispatch), { len: bootDispatch?.length });
-check("the ordering rule the dispatch routes through was lifted too, not restated",
-  orderingRule.every((x) => x !== null), { lens: orderingRule.map((x) => x?.length ?? null) });
 check("the SSE push statement was lifted out of web.ts", Boolean(ssePush), { len: ssePush?.length });
 check("the SSE seed statement was lifted out of web.ts (a DIFFERENT one from the push)",
   Boolean(sseSeed) && sseSeed !== ssePush);
 check("CONTROL: liftStmt on an absent anchor returns null (its miss is reachable)",
-  liftStmt(graphJs, 'fetch("/api/not-a-route")', ",") === null);
-check("CONTROL: lift on an absent source name returns null (its miss is reachable too)",
-  lift(graphJs, '{ name: "not-a-source"') === null);
-
-/** Drive the SHIPPED boot fetch against a response of our choosing, then the SHIPPED dispatch, then
- *  the SHIPPED pill — the whole browser path, end to end, with nothing hand-seeded. */
-// The harness supplies the FETCH, not a response. A fixture that could only resolve left the shipped
-// `.catch` arm — the network-failure arm — unexecuted, and a mutation restoring `{members: []}` there
-// survived all 31 cells. A stub that cannot fail cannot test a failure path, and it looks identical
-// to one that can.
-const bootPill = async (fetchImpl: () => Promise<{ ok: boolean; json: () => unknown }>): Promise<string> => {
-  let text = "";
-  const el = { hidden: true, className: "", querySelector: () => ({ set textContent(v: string) { text = v; } }) };
-  const feed: Record<string, unknown> = { asOf: undefined, available: false };
-  const ctx: Record<string, unknown> = {
-    fetch: fetchImpl,
-    feed,
-    FEED_STALE_MS: 45000,
-    now: () => 1700000000000,
-    $: (id: string) => (id === "feed" ? el : null),
-    // The parts of `applyMembership` that touch the graph are not what is under test here, so the
-    // dispatch is driven with a recording stand-in for it and the REAL `membershipUnreadable`.
-    applyMembership: (snap: { asOf?: number; members?: unknown[] }) => {
-      feed.unreadable = false;
-      feed.asOf = snap?.asOf;
-      feed.available = snap?.asOf !== undefined || (Array.isArray(snap?.members) && snap.members.length > 0);
-      runInContext("setFeed();", ctxRef);
-    },
-    out: undefined,
-  };
-  ctx.window = {};
-  const ctxRef = createContext(ctx);
-  runInContext(readFileSync(fileURLToPath(new URL("../src/web/snapshot.js", import.meta.url)), "utf8"), ctxRef, { filename: "snapshot.js" });
-  runInContext(`${pill}\n${lift(graphJs, "function membershipUnreadable()")}`, ctxRef, { filename: "graph.js" });
-  // The SHIPPED source, run through the SHIPPED `refreshAll`: a read that refuses leaves `apply`
-  // uncalled and lands in `stale`, and the dispatch below reads `stale`. Driving the source without
-  // `refreshAll` would test a fetch and not the retention rule the dispatch depends on.
-  runInContext(`(async () => { const SNAP = window.COTAL_SNAPSHOT; ${orderingRule.join(";\n")};\nconst stale = await SNAP.refreshAll([${bootFetch}]); ${bootDispatch} })()`, ctxRef, { filename: "graph.js (boot)" })
-    ;
-  await new Promise((r) => setImmediate(r));
-  return text;
-};
-
-const refusalBody = JSON.parse(failed.body) as unknown;
-const resolves = (ok: boolean, body: unknown) => async () => ({ ok, json: () => body });
-
-check("M4: a 503 refusal reaching the boot path renders 'unreadable', not 'traffic-only'",
-  (await bootPill(resolves(false, refusalBody))) === "membership: unreadable",
-  await bootPill(resolves(false, refusalBody)));
-check("M4: a 200 empty snapshot still renders traffic-only through the same path",
-  (await bootPill(resolves(true, { members: [] }))) === "membership: traffic-only");
-check("M4: a 200 populated snapshot still renders live through the same path",
-  (await bootPill(resolves(true, { asOf: 1700000000000, members: [{ id: "a" }] }))) === "membership: live");
-
-// M7. The arm above is reached when the server ANSWERS with a refusal. This one is reached when
-// there is no answer at all — the daemon died, the socket dropped, the page is offline. The old
-// `.catch(() => ({members: []}))` manufactured a snapshot out of that, which is the same defect as
-// the server's, on the client, and it survived every cell until the fixture could reject.
-check("M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only' (no answer is not an empty answer)",
-  (await bootPill(async () => { throw new Error("network down"); })) === "membership: unreadable",
-  await bootPill(async () => { throw new Error("network down"); }));
+  liftStmt(webTs, 'fetch("/api/not-a-route")', ",") === null);
 
 const sseSend = liftStmt(webTs, "const send = (res: ServerResponse", ";");
 const sseBroadcast = lift(webTs, "const broadcast = (event: string");
@@ -406,67 +400,64 @@ const noCloseWireBytes = await sseWire(membershipWatchStmt!, {
 check("CONTROL: a watch that never closes writes nothing",
   noCloseWireBytes === "", { noCloseWireBytes });
 
-// ── The client listens on the name the server emits, and nothing checked that before ────────────
-// `graph.js` restates the literal rather than importing it (a classic script cannot import), so the
-// two can drift silently: rename the constant and the browser stops listening, with every other cell
-// still green.
-// Anchored on the handler CALLING `membershipUnreadable`, within a bounded window, rather than on
-// one exact spelling of its body. What this cell asserts is the event NAME, and pinning the body
-// too made an unrelated change to the handler read as the listener having disappeared. The bound
-// keeps it from wandering into a later listener, and `() =>` excludes the `membership` and `roster`
-// handlers, which take the event.
-const listened = /addEventListener\("([a-z-]+)", \(\) =>[\s\S]{0,120}?membershipUnreadable\(\)/.exec(graphJs)?.[1];
-check("graph.js registers a listener for the refusal event", Boolean(listened), { listened });
-check("the listener's event name IS the server's exported constant (a restated literal can drift)",
-  listened === MEMBERSHIP_READ_FAILED, { listened, exported: MEMBERSHIP_READ_FAILED });
-
-// ── The page stops ACTING on a reading it has just disowned ─────────────────────────────────────
-// The pill telling the truth was only half of it. `hide empty` collapses a hub with no visible
-// member, and it was gated on `feed.available`, which an unreadable feed leaves TRUE — so the pill
-// read "unreadable" while the layout went on asserting a hub is empty NOW, from a snapshot the page
-// had just said it could no longer read. Internally inconsistent with one honest half is a strict
-// improvement on consistently false, and a bad place to stop.
-const feedAuth = liftStmt(graphJs, "const feedAuthoritative", ";");
-const isHiddenSrc = liftStmt(graphJs, "const isHidden", ";");
-check("the feed-authority predicate was lifted out of graph.js", feedAuth !== null);
-check("the isHidden expression was lifted out of graph.js", isHiddenSrc !== null);
-
-/** Drive the SHIPPED `isHidden` over a hub that is empty, under a given feed state. */
-const hubHidden = (f: Record<string, unknown>): boolean => {
-  const ctx: Record<string, unknown> = {
-    feed: { asOf: undefined, available: false, unreadable: false, ...f },
-    filter: { hideEmpty: true, hideOffline: false },
-    isOffline: () => false,
-    out: undefined,
+// ── The client listens on the name the server emits, and nothing checked that before ───────────
+// The client restates the literal rather than importing it (it imports nothing from core at runtime),
+// so the two can drift silently: rename the constant and the browser stops listening, with every
+// other cell still green. The feed is driven over a fake source that records what is registered and
+// then delivers the refusal through the registered listener.
+{
+  const listeners = new Map<string, (e: { data: string }) => void>();
+  const source: FeedSource = {
+    addEventListener: (type, fn) => { listeners.set(type, fn as (e: { data: string }) => void); },
+    onopen: null, onerror: null, close: () => {},
   };
-  runInContext(`${feedAuth}\n${isHiddenSrc}\nout = isHidden({ kind: "hub", empty: true });`,
-    createContext(ctx), { filename: "graph.js (isHidden)" });
-  return ctx.out as boolean;
-};
+  const failures: string[] = [];
+  const noop = () => {};
+  const handlers: FeedHandlers = { open: noop, error: noop, roster: noop, presenceView: noop, membership: noop, message: noop, membershipFailed: (r) => { failures.push(r); } };
+  openFeed(handlers, () => source);
+  check("the feed registers a listener for the refusal event", listeners.has(MEMBERSHIP_READ_FAILED), [...listeners.keys()]);
+  check("the listener's event name IS the server's exported constant (a restated literal can drift)",
+    [...listeners.keys()].includes(MEMBERSHIP_READ_FAILED), { registered: [...listeners.keys()], exported: MEMBERSHIP_READ_FAILED });
+  listeners.get(MEMBERSHIP_READ_FAILED)?.({ data: JSON.stringify({ reason: REASON }) });
+  check("and the event's `reason` is what reaches the handler, so the operator sees WHY", failures.length === 1 && failures[0] === REASON, failures);
+  // CONTROL: the ordinary membership event does not take the refusal path.
+  const seen: unknown[] = [];
+  const h2: FeedHandlers = { ...handlers, membership: (m) => { seen.push(m); }, membershipFailed: (r) => { failures.push(`wrong:${r}`); } };
+  const l2 = new Map<string, (e: { data: string }) => void>();
+  openFeed(h2, () => ({ ...source, addEventListener: (t, f) => { l2.set(t, f as (e: { data: string }) => void); } }));
+  l2.get("membership")?.({ data: JSON.stringify({ members: [] }) });
+  check("CONTROL: a `membership` event reaches the snapshot handler and not the refusal handler",
+    seen.length === 1 && failures.length === 1, { seen, failures });
+}
 
-check("CONTROL: an authoritative feed still hides an empty hub (the toggle is not collateral damage)",
-  hubHidden({ available: true, asOf: 1700000000000 }) === true);
-check("CONTROL: with no feed at all an empty hub is still not hidden (traffic-only is unchanged)",
-  hubHidden({ available: false }) === false);
+// ── The dashboard stops ACTING on a reading it has just disowned ────────────────────────────────
+// The pill telling the truth was only half of it. `hide empty` collapses a hub with no visible
+// member, and it was gated on the feed being available, which an unreadable feed leaves TRUE, so the
+// pill read "unreadable" while the layout went on asserting a hub is empty NOW, from a snapshot the
+// dashboard had just said it could no longer read. Internally inconsistent with one honest half is
+// a strict improvement on consistently false, and a bad place to stop. `feedAuthoritative` is the
+// predicate the graph's hide-empty gate reads; the gate itself arrives with the topology model.
+check("CONTROL: an authoritative feed is authoritative (the toggle is not collateral damage)",
+  feedAuthoritative({ snapshot: { asOf: NOW, members: [] } }) === true);
+check("CONTROL: with no feed at all nothing is authoritative (traffic-only is unchanged)",
+  feedAuthoritative({}) === false && feedAuthoritative({ snapshot: { members: [] } }) === false);
 // THE DEFECT, STATED DIRECTLY. A stale snapshot is what we last KNEW, never what IS, and `hide empty`
 // is a claim about now. This is the cell a revert reddens.
-check("AN UNREADABLE FEED IS NOT AUTHORITATIVE: an empty hub is not hidden while the feed cannot be read",
-  hubHidden({ available: true, asOf: 1700000000000, unreadable: true }) === false);
+check("AN UNREADABLE FEED IS NOT AUTHORITATIVE: nothing is asserted empty while the feed cannot be read",
+  feedAuthoritative({ snapshot: { asOf: NOW, members: [] }, unreadable: "x" }) === false);
 
 // The over-correction this could invite is discarding the snapshot, which would throw away a true
 // fact: `asOf` means "when we last read successfully", and that is exactly what it should keep
 // meaning. The same trap the read path already passes, one layer up.
-const unreadableFn = lift(graphJs, "function membershipUnreadable()");
-check("the unreadable transition was lifted out of graph.js", unreadableFn !== null);
-const afterUnreadable = (): Record<string, unknown> => {
-  const feed: Record<string, unknown> = { asOf: 1700000000000, available: true, unreadable: false };
-  runInContext(`${unreadableFn}\nmembershipUnreadable();`,
-    createContext({ feed, setFeed: () => undefined }), { filename: "graph.js (unreadable)" });
-  return feed;
-};
-check("an unreadable feed still records WHEN it was last read successfully (asOf is not discarded)",
-  afterUnreadable().asOf === 1700000000000, afterUnreadable());
-check("...and it does say it is unreadable, so the state is marked rather than erased",
-  afterUnreadable().unreadable === true);
+{
+  const store = createStore<DashboardState>(structuredClone(initialState));
+  const ctl = createController(store, httpApi((async () => { throw new Error("not expected"); }) as typeof fetch));
+  ctl.onMembership({ asOf: NOW, members: [] });
+  ctl.onMembershipFailed(REASON);
+  check("an unreadable feed still records WHEN it was last read successfully (asOf is not discarded)",
+    store.get().membership.snapshot?.asOf === NOW, store.get().membership);
+  check("...and it does say it is unreadable, so the state is marked rather than erased",
+    store.get().membership.unreadable === REASON, store.get().membership);
+}
 
 console.log(`\nMEMBERSHIP REFUSAL SMOKE OK ✅  (${pass} passed, 0 failed)`);
