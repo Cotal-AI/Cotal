@@ -135,6 +135,7 @@
     "smoke:web-claims": "tsx implementations/web/smoke/claims.smoke.ts",
     "smoke:web-rate": "tsx implementations/web/smoke/rate.smoke.ts",
     "smoke:web-members": "tsx implementations/web/smoke/members.smoke.ts",
+    "smoke:web-topology": "tsx implementations/web/smoke/topology.smoke.ts",
     "smoke:web-proxy-order": "tsx implementations/web/smoke/slow-link-serialization.probe.ts",
     "smoke:codex-installed": "pnpm --filter cotal-ai... build && tsx extensions/connector-codex/smoke/codex-installed.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",

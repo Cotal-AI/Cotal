@@ -1,0 +1,219 @@
+{
+  "command": "pnpm smoke:web-topology",
+  "suite": [
+    "implementations/web/smoke/topology.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "G5 a unicast goes through the chat gate and conjures its sender and a channel",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "r.mode === \"chat\" && r.channel",
+      "replace": "r.mode !== \"anycast\"",
+      "expectRed": "a unicast between two known agents adds no node"
+    },
+    {
+      "name": "G5 a unicast from an agent the roster never announced becomes a node",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "r.mode === \"chat\" && r.channel",
+      "replace": "r.mode !== \"anycast\"",
+      "expectRed": "a unicast naming an unknown sender and recipient adds no node"
+    },
+    {
+      "name": "a unicast that names a channel creates it",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "r.mode === \"chat\" && r.channel",
+      "replace": "(r.mode === \"chat\" || r.mode === \"unicast\") && r.channel",
+      "expectRed": "a unicast never creates a channel node"
+    },
+    {
+      "name": "an anycast that names a channel creates it",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "r.mode === \"chat\" && r.channel",
+      "replace": "(r.mode === \"chat\" || r.mode === \"anycast\") && r.channel",
+      "expectRed": "an anycast never creates a channel node"
+    },
+    {
+      "name": "an anycast goes through the chat gate",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "r.mode === \"chat\" && r.channel",
+      "replace": "r.mode !== \"unicast\"",
+      "expectRed": "an anycast adds no node and no link"
+    },
+    {
+      "name": "an endpoint in the roster becomes a node",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "p.card.kind === \"endpoint\" || !p.card.id",
+      "replace": "!p.card.id",
+      "expectRed": "an endpoint in the roster is not a node"
+    },
+    {
+      "name": "a member the roster never announced reads as idle",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "label: displayNameOf(m.id, names), status: \"offline\"",
+      "replace": "label: displayNameOf(m.id, names), status: \"idle\"",
+      "expectRed": "and it reads as offline, since no presence backs it"
+    },
+    {
+      "name": "a concrete subscription stops creating its channel",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": ".channels.keys()) hubs.add(ch);",
+      "replace": ".channels.keys()) void ch;",
+      "expectRed": "a concrete subscription to an unlisted channel still draws its channel"
+    },
+    {
+      "name": "a wildcard expands against nothing",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "const known = [...hubs];",
+      "replace": "const known: string[] = [];",
+      "expectRed": "a bounded wildcard links to the listed channels it matches"
+    },
+    {
+      "name": "a wide reader is not marked wide",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "if (mc.wide) wide.add(m.id);",
+      "replace": "",
+      "expectRed": "a > reader is marked wide"
+    },
+    {
+      "name": "a traffic link replaces the member link of a poster who is a member",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "if (!links.has(key)) links.set(key,",
+      "replace": "links.set(key,",
+      "expectRed": "a poster who is a member keeps its member link, with no second link"
+    },
+    {
+      "name": "a blank sender id becomes an agent node",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "    if (!c.sender) continue;\n    if (!agents.has(c.sender))",
+      "replace": "    if (!agents.has(c.sender))",
+      "expectRed": "a chat with a blank sender id makes no agent node"
+    },
+    {
+      "name": "the last snapshot of an unreadable feed is dropped",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "membership.snapshot?.members ?? []",
+      "replace": "(feedAuthoritative(membership) ? membership.snapshot?.members : undefined) ?? []",
+      "expectRed": "an unreadable feed keeps the links of the last snapshot it held"
+    },
+    {
+      "name": "a link stays hot at the window's edge",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "now - c.ts >= HOT_MS",
+      "replace": "now - c.ts > HOT_MS",
+      "expectRed": "and cold at 2000 ms"
+    },
+    {
+      "name": "the hot window is shorter than 2 seconds",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "HOT_MS = 2000",
+      "replace": "HOT_MS = 1500",
+      "expectRed": "and hot at 1999 ms"
+    },
+    {
+      "name": "a post heats only its own link",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "if (l.target === channelNodeId(c.channel)) l.hot = true;",
+      "replace": "if (l.target === channelNodeId(c.channel) && l.source === c.sender) l.hot = true;",
+      "expectRed": "another member's link on the same channel is hot too, as the post fans out"
+    },
+    {
+      "name": "a post with no sender id heats the channel",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "if (!c.sender || now - c.ts >= HOT_MS) continue;",
+      "replace": "if (now - c.ts >= HOT_MS) continue;",
+      "expectRed": "a post with no sender id heats nothing"
+    },
+    {
+      "name": "hideOffline stops hiding offline agents",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": ".filter((n) => !(hideOffline && n.status === \"offline\"))",
+      "replace": ".filter(() => true)",
+      "expectRed": "an offline agent is hidden when hideOffline is on"
+    },
+    {
+      "name": "a durable-only link of an online agent is no longer hidden by hideOffline",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "hideOffline && (l.kind === \"durable\" || offline(l.source))",
+      "replace": "hideOffline && offline(l.source)",
+      "expectRed": "a durable-only link of an online agent is hidden by hideOffline"
+    },
+    {
+      "name": "hideEmpty hides a channel even when the feed is traffic-only",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "hideEmpty && authoritative && ",
+      "replace": "hideEmpty && ",
+      "expectRed": "a channel with no members is not hidden when the feed is traffic-only"
+    },
+    {
+      "name": "an unreadable feed still counts as authoritative",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "const authoritative = feedAuthoritative(membership);",
+      "replace": "const authoritative = membership.snapshot !== undefined;",
+      "expectRed": "nor when the feed is unreadable, even though it holds the last snapshot"
+    },
+    {
+      "name": "a traffic link counts as a member for hideEmpty",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "if (l.kind !== \"traffic\" && !memberHidden(l)) hasMember.add(l.target);",
+      "replace": "if (!memberHidden(l)) hasMember.add(l.target);",
+      "expectRed": "a link to a hidden channel is dropped with it"
+    },
+    {
+      "name": "an offline member no longer counts as empty under hideOffline",
+      "file": "implementations/web/client/src/lib/topology.ts",
+      "find": "const memberHidden = (l: TopoLink) => hideOffline && ",
+      "replace": "const memberHidden = (l: TopoLink) => false && ",
+      "expectRed": "a channel whose only member is offline is empty while offline agents are hidden"
+    },
+    {
+      "name": "live stops beating durable",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "if (!channels.has(ch)) channels.set(ch, \"durable\");",
+      "replace": "channels.set(ch, \"durable\");",
+      "expectRed": "live beats durable for the same channel"
+    },
+    {
+      "name": "a * pattern is expanded instead of marking wide",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "if (pat === \">\" || pat === \"*\") {",
+      "replace": "if (pat === \">\") {",
+      "expectRed": "a * pattern sets wide and expands to no channel"
+    },
+    {
+      "name": "a > pattern is expanded instead of marking wide",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "if (pat === \">\" || pat === \"*\") {",
+      "replace": "if (pat === \"*\") {",
+      "expectRed": "a > pattern sets wide and expands to no channel"
+    },
+    {
+      "name": "a wildcard no longer expands against the known channels",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "for (const ch of known) if (patternMatches(pat, ch)) channels.set(ch, \"live\");",
+      "replace": "for (const ch of known) if (patternMatches(pat, ch) && false) channels.set(ch, \"live\");",
+      "expectRed": "a bounded wildcard expands against the known channels"
+    },
+    {
+      "name": "a * token matches more than one token",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "if (p[i] === \"*\") continue;",
+      "replace": "if (p[i] === \"*\") return true;",
+      "expectRed": "a * inside a pattern matches exactly one token"
+    },
+    {
+      "name": "a concrete pattern matches a longer subject",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "return p.length === s.length;",
+      "replace": "return true;",
+      "expectRed": "a concrete pattern matches only itself"
+    },
+    {
+      "name": "a trailing > matches the bare prefix",
+      "file": "implementations/web/client/src/lib/membership.ts",
+      "find": "return i < s.length;",
+      "replace": "return i <= s.length;",
+      "expectRed": "a trailing > matches one or more tokens"
+    }
+  ]
+}
