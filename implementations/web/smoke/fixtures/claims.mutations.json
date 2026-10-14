@@ -52,7 +52,14 @@
       "file": "implementations/web/client/src/lib/claims.ts",
       "find": "if (!anycastId) return undefined;",
       "replace": "",
-      "expectRed": "an empty anycast id claims nothing, even for messages with no replyTo"
+      "expectRed": "an empty anycast id claims nothing, even for a reply to \"\""
+    },
+    {
+      "name": "the blank id guard only covers the empty string",
+      "file": "implementations/web/client/src/lib/claims.ts",
+      "find": "if (!anycastId) return undefined;",
+      "replace": "if (anycastId === \"\") return undefined;",
+      "expectRed": "an undefined anycast id claims nothing"
     }
   ]
 }
