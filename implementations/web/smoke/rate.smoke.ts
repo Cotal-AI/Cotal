@@ -50,6 +50,13 @@ stale.hit(10_000);
 stale.hit(9_000);
 ok("an out of order hit that is already a full window old does not count", stale.perSecond(10_000) === 1, stale.perSecond(10_000));
 
+const wide = createRate(2_000);
+for (const ts of [8_100, 8_900, 9_500, 9_900]) wide.hit(ts);
+ok("a 2 second window scales 4 hits to 2 per second", wide.perSecond(10_000) === 2, wide.perSecond(10_000));
+const narrow = createRate(500);
+for (const ts of [9_600, 9_800]) narrow.hit(ts);
+ok("a half second window scales 2 hits to 4 per second", narrow.perSecond(10_000) === 4, narrow.perSecond(10_000));
+
 const dated = createRate();
 dated.hit(9_100);
 dated.hit(10_500);
@@ -65,13 +72,6 @@ nan.hit(Number.NaN);
 nan.hit(Number.POSITIVE_INFINITY);
 nan.hit(9_500);
 ok("a hit with a non-finite time is ignored", nan.perSecond(10_000) === 1 && nan.perSecond(20_000) === 0, nan.perSecond(10_000));
-
-const wide = createRate(2_000);
-for (const ts of [8_100, 8_900, 9_500, 9_900]) wide.hit(ts);
-ok("a 2 second window scales 4 hits to 2 per second", wide.perSecond(10_000) === 2, wide.perSecond(10_000));
-const narrow = createRate(500);
-for (const ts of [9_600, 9_800]) narrow.hit(ts);
-ok("a half second window scales 2 hits to 4 per second", narrow.perSecond(10_000) === 4, narrow.perSecond(10_000));
 
 for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
   const r = attempt(() => createRate(bad));
