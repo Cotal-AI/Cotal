@@ -22,7 +22,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const harness: Record<string, Harness> = HARNESS;
-check("harness.ts exports HARNESS", harness !== undefined);
+check("HARNESS has exactly the six branded connectors",
+  JSON.stringify(Object.keys(harness).sort()) === JSON.stringify(["claude", "codex", "hermes", "jcode", "opencode", "pi"]),
+  Object.keys(harness));
 
 for (const name of Object.keys(OFFICIAL_CONNECTORS)) {
   const h = harness[name];
