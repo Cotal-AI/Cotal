@@ -1973,7 +1973,7 @@ export async function runJcodeHost(): Promise<void> {
     const isOrientationCall = (call: ToolCall) =>
       call.error === undefined &&
       !call.output.startsWith("Error: ") &&
-      (/(?:^|__)cotal_orientation$/.test(call.name) || deferredOrientationCalls.has(call.callId));
+      (/(?:^|__)cotal_orientation$/.test(call.name) || (call.name === "mcp_call" && deferredOrientationCalls.has(call.callId)));
     const hasOrientation = (run: Awaited<ReturnType<JcodeClient["run"]>>) => run.toolCalls.some(isOrientationCall);
     writeJcodeDiagnostic(
       `[cotal-jcode] pre-join readiness: waiting for one cotal_orientation call (bound ${readinessBudgetMs}ms; not on the roster yet)\n`,
@@ -1991,7 +1991,11 @@ export async function runJcodeHost(): Promise<void> {
     });
     const onReadinessEvent = (event: ApiEvent): void => {
       if (event.ev === "turn_done") readinessTurnOpen = false;
-      if (event.ev === "tool_start") streamingCall = { callId: event.call_id, input: "" };
+      if (event.ev === "tool_start") {
+        // A restarted call id names a new call; an earlier call's arguments must not prove it.
+        deferredOrientationCalls.delete(event.call_id);
+        streamingCall = { callId: event.call_id, input: "" };
+      }
       if (event.ev === "tool_input_delta" && streamingCall) streamingCall.input += event.delta;
       if (event.ev === "tool_exec") {
         if (event.name === "mcp_call" && streamingCall?.callId === event.call_id && isDeferredOrientation(streamingCall.input))
