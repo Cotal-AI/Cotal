@@ -707,7 +707,8 @@ try {
     for (let i = 0; i < 50 && prompts2.length < 1; i++) await sleep(100);
     check("2.x: one DM drives exactly one prompt POST with text", prompts2.length === 1 && prompts2[0]?.body.text?.includes("hello via 2.x") === true, prompts2);
 
-    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 1 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.started", durable: { aggregateID: SID2, seq: 1 }, data: { sessionID: SID2 } });
+    ctx2.feed({ type: "session.execution.succeeded", durable: { aggregateID: SID2, seq: 2 }, data: { sessionID: SID2 } });
     await sleep(300);
     await pub2.unicast(otto2Id!, "second turn via 2.x");
     for (let i = 0; i < 50 && prompts2.length < 2; i++) await sleep(100);
