@@ -1,0 +1,2 @@
+# An anycast claimer is named only by a later reply, by id, and the first reply wins.
+smoke:web-claims
