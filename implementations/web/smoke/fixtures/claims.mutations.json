@@ -46,6 +46,13 @@
       "find": "return senderId ?? msg.from.id;",
       "replace": "return msg.from.name;",
       "expectRed": "a reply whose replyTo is the id gives its sender"
+    },
+    {
+      "name": "the blank id guard is removed",
+      "file": "implementations/web/client/src/lib/claims.ts",
+      "find": "if (!anycastId) return undefined;",
+      "replace": "",
+      "expectRed": "an empty anycast id claims nothing, even for messages with no replyTo"
     }
   ]
 }
