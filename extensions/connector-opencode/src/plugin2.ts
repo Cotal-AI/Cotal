@@ -156,6 +156,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
   let briefed = false; // channel briefing goes out once, same rule as 1.x
   let surfaced: string[] = []; // receive keys surfaced into the current turn, acked on completion
   let ended: OpenCode2Event["durable"]; // log position of the event that ended the last turn
+  let started: OpenCode2Event["durable"]; // log position of the running execution's start
   let submitting: Promise<void> | undefined; // the prompt POST in flight; what it carries settles when it answers
   const controller = new AbortController(); // aborted when teardown begins
 
@@ -285,13 +286,13 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
     await submitting;
   }
 
-  /** Whether an execution event is a replay: at or before the last turn's end in the same session's
-   *  durable log. 2.x gives every execution event that position, so one without it cannot be told
+  /** Whether an execution event is a replay: at or before `mark`, by default the last turn's end, in
+   *  the same session's durable log. 2.x gives every execution event that position, so one without it cannot be told
    *  from a replay and is refused. */
-  function replayed(ev: OpenCode2Event): boolean {
+  function replayed(ev: OpenCode2Event, mark = ended): boolean {
     const at = ev.durable;
     if (!at) log(`${ev.type} carries no durable log position; ignored`);
-    return !at || (at.aggregateID === ended?.aggregateID && at.seq <= ended.seq);
+    return !at || (at.aggregateID === mark?.aggregateID && at.seq <= mark.seq);
   }
 
   /** A turn ended: release `execution`, settle the batch it carried, then drive whatever waited
@@ -301,9 +302,10 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
    *  goes out with the next drive or when the broker redelivers it. A replayed end, or one with no
    *  started execution, closes nothing: acting on it would resubmit a failed batch, or settle the
    *  batch driven below before its turn ran. The latter's position is still recorded, so a replay of
-   *  it closes nothing either once an execution is running. */
+   *  it closes nothing either once an execution is running. An end at or before the running
+   *  execution's start belongs to an earlier one, so it is not recorded and closes nothing. */
   async function completeTurn(ev: OpenCode2Event, settle: () => void): Promise<void> {
-    if (replayed(ev)) return;
+    if (replayed(ev) || (execution === "running" && replayed(ev, started))) return;
     ended = ev.durable;
     if (execution !== "running") return;
     execution = undefined;
@@ -389,6 +391,7 @@ export async function setupCotal(ctx: OpenCode2Context): Promise<(() => Promise<
             // A replayed start belongs to a turn whose end already came, so it would hold the session for good.
             if ((sessionID && data.sessionID !== sessionID) || replayed(ev)) break;
             execution = "running";
+            started = ev.durable;
             await safeStatus("working");
             break;
           }
