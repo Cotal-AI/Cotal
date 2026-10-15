@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "bin/smoke/capability-census-live.smoke.ts"
+  ],
+  "guard": "running a mapped command against a real broker and manager compares the endpoint requests it issued with the owner rows, so a row naming another command fails",
+  "command": "pnpm smoke:capability-census:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census-live.json",
+  "why": [
+    "The execution half is what catches a wrong owner the offline grammar accepts; removing its comparison must redden the self-test that feeds it one."
+  ],
+  "mutations": [
+    {
+      "name": "an issued command is no longer compared with its owner",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (!ownedByRun(item)) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${map.owners[item] ?? \"missing\"}`);",
+      "replace": "",
+      "expectRed": "a row that names another command for manager ps fails on the same observation",
+      "cell": "a row that names another command for manager ps fails on the same observation"
+    }
+  ]
+}

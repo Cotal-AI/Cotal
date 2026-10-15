@@ -1,0 +1,38 @@
+{
+  "suite": [
+    "bin/smoke/capability-census.smoke.ts"
+  ],
+  "guard": "every census item needs a well-formed owner row and every row a live item; the extractor reads endpoint input fields at nested depth, so a field added under an existing command fails until mapped; an owner naming an unregistered command or undeclared flag fails",
+  "command": "pnpm smoke:capability-census",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census.json",
+  "why": [
+    "Each mutation removes one check the census relies on and must redden the cell that names it."
+  ],
+  "mutations": [
+    {
+      "name": "an item with no owner row is no longer reported",
+      "file": "bin/smoke/census/owners.ts",
+      "find": "    if (owner === undefined) problems.push(`${id}: no owner row`);",
+      "replace": "    if (owner === undefined) continue;",
+      "expectRed": "a field added under an existing command fails as unowned",
+      "cell": "a field added under an existing command fails as unowned"
+    },
+    {
+      "name": "a current owner is accepted without its command being registered",
+      "file": "bin/smoke/census/owners.ts",
+      "find": "  if (!flags) return `${item}: owner names \"${parsed.command}\", which is not a registered command`;",
+      "replace": "  if (!flags) return undefined;",
+      "expectRed": "an owner naming no registered command fails",
+      "cell": "an owner naming no registered command fails"
+    },
+    {
+      "name": "nested input fields are no longer extracted",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "    if (sub.properties) out.push(...schemaFields(sub, `${prefix}${key}.`));",
+      "replace": "",
+      "expectRed": "endpoint items reach nested input fields and target modes",
+      "cell": "endpoint items reach nested input fields and target modes"
+    }
+  ]
+}

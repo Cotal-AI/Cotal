@@ -127,6 +127,9 @@ importers:
       '@cotal-ai/connector-opencode':
         specifier: workspace:*
         version: link:../extensions/connector-opencode
+      '@cotal-ai/linear':
+        specifier: workspace:*
+        version: link:../implementations/linear
       '@cotal-ai/pi':
         specifier: workspace:*
         version: link:../extensions/pi
