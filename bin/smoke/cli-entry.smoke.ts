@@ -154,7 +154,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("an unknown command is a usage error", cotal(["nope"]), /unknown command: nope - run `cotal help`/);
   refused("a prefix of a command selects nothing", cotal(["spaw"]), /unknown command: spaw/);
   refused("a prefix of an aliased command selects nothing", cotal(["hist"]), /unknown command: hist/);
-  refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /cotal web is not installed yet - run `cotal ext seed`/);
+  refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
 }
 
 // ── Every alias is its command: same help, same refusal, nothing written ─────────────────────────

@@ -94,8 +94,8 @@
     {
       "name": "help for an uninstalled seeded command seeds it",
       "file": "implementations/cli/src/command.ts",
-      "find": "  if (awaitingSeed && (wantsHelp || skipsSeed(word, rest[0], rest)))\n",
-      "replace": "  if (awaitingSeed && skipsSeed(word, rest[0], rest))\n",
+      "find": "isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);\n",
+      "replace": "isSeededCommand(word) && !skipsSeed(word, rest[0], rest);\n",
       "expectRed": "help for a seeded command that is not installed yet seeds nothing",
       "cell": "help for a seeded command that is not installed yet seeds nothing",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

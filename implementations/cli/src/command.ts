@@ -190,11 +190,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   if (word === undefined) return printEntry(commands);
   const wantsHelp = rest.includes("--help") || rest.includes("-h");
   let cmd = findCommand(commands, word);
-  // A seeded package's command (`web`) is known before the first seed installs it, so it seeds and
-  // resolves again; asking for its help seeds nothing. Any other unknown word is a usage error.
-  const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word);
-  if (awaitingSeed && (wantsHelp || skipsSeed(word, rest[0], rest)))
-    usageExit(`cotal ${word} is not installed yet - run \`cotal ext seed\` to install it`);
+  // A seeded package's command (`web`) can be absent only because the first seed has not installed
+  // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
+  // unknown word is a usage error.
+  const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
   if (!cmd && !awaitingSeed) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
