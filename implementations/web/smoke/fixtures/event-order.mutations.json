@@ -139,7 +139,7 @@
     },
     {
       "name": "O18 the shell stops drawing the notice, so the machine detects a missing frame and the surface the reader is actually looking at says nothing",
-      "file": "implementations/web/client/src/App.tsx",
+      "file": "implementations/web/client/src/Shell.tsx",
       "find": "      {notice && <p id=\"order-notice\" role={notice.fault ? \"alert\" : \"status\"}>{notice.text}</p>}\n",
       "replace": "",
       "expectRed": "15.8 the shell draws it from the store's notes",
@@ -147,9 +147,9 @@
     },
     {
       "name": "O19 the notice is drawn only while a channel is open, so a reader on no channel is the one reader who cannot be told a frame is missing from the feed",
-      "file": "implementations/web/client/src/App.tsx",
-      "find": "      <StatusLines />\n",
-      "replace": "      {open && <StatusLines />}\n",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "      <StatusLines store={store} />\n",
+      "replace": "      {open && <StatusLines store={store} />}\n",
       "expectRed": "15.9 and outside the channel pane, so it shows with no channel open",
       "cell": "15.9 and outside the channel pane, so it shows with no channel open"
     },
@@ -179,7 +179,7 @@
     },
     {
       "name": "O23 the shell draws the notice with a constant role, so a missing frame is announced as politely as a retention note and an assistive reader is never interrupted for it",
-      "file": "implementations/web/client/src/App.tsx",
+      "file": "implementations/web/client/src/Shell.tsx",
       "find": "role={notice.fault ? \"alert\" : \"status\"}",
       "replace": "role=\"status\"",
       "expectRed": "15.8 the shell draws it from the store's notes",

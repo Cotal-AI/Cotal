@@ -35,12 +35,9 @@
  * and the producer is wired in, not that it survives to the pixels.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import type { CotalMessage } from "../client/src/api/types.js";
 import { partsToText } from "../client/src/lib/parts.js";
-
-const here = dirname(fileURLToPath(import.meta.url));
+import { renderShell, unescapeHtml } from "./render-shell.js";
 
 let cells = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {
@@ -143,22 +140,18 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
 // is that the shell, which draws message bodies, renders them through the shared renderer. A correct
 // helper nobody invokes is the defect this cell exists for.
 //
-// This is a regex over `client/src/App.tsx`, and phase 2 moves it to `MessageRow.tsx`, where the
-// message bodies are drawn. It proves the producer is wired in, not that its text survives to the
-// pixels: no cell here opens a browser.
+// The shell (`client/src/Shell.tsx`) is rendered on the server with an open channel holding one
+// message, and its HTML is read. Phase 2 moves the body to `MessageRow.tsx`. This proves what the
+// shell draws, not that its text survives to the pixels: no cell here opens a browser. `Shell` does
+// not import `aguiFrame.ts`, so the registry stays empty for the cells above and below.
 {
-  const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
-  ok("the shell renders message bodies through partsToText", /\bpartsToText\(/.test(appSrc), { found: appSrc.match(/.*partsToText.*/g) });
-  ok("and imports it from the shared renderer rather than declaring its own",
-    /import \{[^}]*\bpartsToText\b[^}]*\} from "\.\/lib\/parts\.js"/.test(appSrc) && !/(?:const|function) partsToText\b/.test(appSrc));
-}
-
-// The shell cells above read `App.tsx` as text. Load the module as well, so an edit to the shell
-// reaches this suite by import and not only by a file read (see `load-shell.mjs`). It runs LAST
-// because loading the shell registers the AG-UI renderer, and the cells above need the registry empty.
-{
-  const { shell } = await import("./load-shell.mjs");
-  ok("the shell module loads under Node and exports App", typeof shell.App === "function");
+  const parts = [{ kind: "text", text: "before" }, { kind: "data" }, { kind: "text", text: "after" }];
+  const msg = { id: "m1", from: { id: "alice" }, parts } as unknown as CotalMessage;
+  const html = renderShell({ open: { channel: "general", messages: [msg] } });
+  const body = unescapeHtml(/<main>([\s\S]*?)<\/main>/.exec(html)?.[1] ?? "");
+  ok("the shell renders message bodies through partsToText", body.includes(partsToText(parts)), { body, want: partsToText(parts) });
+  ok("and what it draws is the shared renderer's text, marker included, not a body of its own",
+    body.includes("[empty data part]") && !body.includes("undefined"), { body });
 }
 
 console.log(`\n${cells} cells green`);

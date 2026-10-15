@@ -13,7 +13,8 @@
  * restated here, so no cell can pass against a version that no longer ships. The startup that calls
  * `refresh()` (§13.1, §13.2) is `startDashboard` (`client/src/state/boot.ts`), driven the same way.
  * What the notice says (§15) is `orderNotice` (`client/src/lib/shellText.ts`), driven the same way;
- * that the shell draws it is read off `client/src/App.tsx` (fixtures O18 to O20).
+ * that the shell draws it is checked on `client/src/Shell.tsx` rendered on the server (fixtures O18,
+ * O19, O23).
  *
  * THE SHAPE OF THE RACE, since it decides every assertion below. The transport arms its watermark,
  * goes live, and only then surfaces retained history (`SPEC.md` orders the join that way, and the
@@ -38,19 +39,15 @@
  * Run: pnpm smoke:event-order
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { KIND, FIRST_SEQ, chainKey, createEventOrder, frameOf, type EventOrder, type FeedEntryLike, type OrderNote } from "../client/src/lib/eventOrder.js";
 import { orderNotice } from "../client/src/lib/shellText.js";
+import { paragraph, renderShell } from "./render-shell.js";
 import type { FeedMessage } from "../client/src/api/types.js";
 import type { FeedHandlers } from "../client/src/api/feed.js";
 import { startDashboard } from "../client/src/state/boot.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState } from "../client/src/state/types.js";
 import { bootReads, harness, page, unusedApi } from "./controller-harness.js";
-
-const here = dirname(fileURLToPath(import.meta.url));
 
 let cells = 0;
 let failed = 0;
@@ -542,9 +539,9 @@ console.log("event-order smoke");
 // history is an honest degrade or a quiet one.
 //
 // WHAT IS DRIVEN, AND WHAT IS READ. What the notice SAYS is `orderNotice` (`client/src/lib/
-// shellText.ts`), a pure function of the notes, driven here in Node. THAT THE SHELL DRAWS IT is read
-// off `client/src/App.tsx`, because there is no DOM here: the controller keeps `orderNotes` in the
-// store and the shell's `StatusLines` component turns them into a line. Cell 15.10 of the old page
+// shellText.ts`), a pure function of the notes, driven here in Node. THAT THE SHELL DRAWS IT is
+// checked on the shell's own HTML: `Shell` is rendered with `renderToString` from a store seeded
+// with notes, the way the controller leaves them, and its `StatusLines` turns them into a line. Cell 15.10 of the old page
 // (the page styles it) has no home until phase 2 styles the line.
 {
   const notice = (notes: Note[]) => orderNotice(notes);
@@ -568,17 +565,23 @@ console.log("event-order smoke");
     notice([{ type: "gap", expected: 4, got: 7, missing: 3 }])?.fault === true && /missing/.test(gapText)
       && notice([{ type: "prefix-incomplete", baseline: 900 }])?.fault === false);
 
-  // The rendering half: the shell actually calls it. Without this the function could be dead. The
-  // line's role must follow the fault flag, so a missing frame is announced and a retention note is not.
-  const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
-  const statusLines = /function StatusLines\(\)[\s\S]*?\n}\n/.exec(appSrc)?.[0] ?? "";
+  // The rendering half, drawn by the real shell from a seeded store. Without it the function could
+  // be dead. The line's role must follow the fault flag, so a missing frame is announced as an alert
+  // and a retention note is not.
+  const gapNotes: Note[] = [{ type: "gap", expected: 4, got: 7, missing: 3 }];
+  const retentionNotes: Note[] = [{ type: "prefix-incomplete", baseline: 900 }];
+  const drawnGap = paragraph(renderShell({ orderNotes: gapNotes }), "order-notice");
+  const drawnRetention = paragraph(renderShell({ orderNotes: retentionNotes }), "order-notice");
   ok("15.8 the shell draws it from the store's notes",
-    /\borderNotice\(/.test(statusLines) && /useStore\(store, \(s\) => s\.orderNotes\)/.test(statusLines)
-      && /id="order-notice"/.test(statusLines) && /\{notice\.text\}/.test(statusLines)
-      && /notice\.fault/.test(statusLines), statusLines);
-  // The feed lane's notes are the feed's, not a channel's, so the line is drawn with NO channel open.
+    drawnGap?.text === notice(gapNotes)?.text && drawnGap?.attrs.role === "alert"
+      && drawnRetention?.text === notice(retentionNotes)?.text && drawnRetention?.attrs.role === "status"
+      && paragraph(renderShell(), "order-notice") === undefined, { drawnGap, drawnRetention });
+  // The feed lane's notes are the feed's, not a channel's, so the line is drawn with NO channel open,
+  // and it sits outside the channel pane.
+  const noChannel = renderShell({ orderNotes: gapNotes, open: null });
+  const at = noChannel.indexOf('<p id="order-notice"');
   ok("15.9 and outside the channel pane, so it shows with no channel open",
-    /^\s*<StatusLines \/>\s*$/m.test(appSrc), appSrc.match(/.*<StatusLines.*/g));
+    at >= 0 && at < noChannel.indexOf("<main>"), noChannel);
 }
 
 // ── 16. A HOLE INSIDE THE RETAINED BATCH, which no live arrival will ever reveal ─────────────────
@@ -655,13 +658,6 @@ console.log("event-order smoke");
   const o3 = API.create();
   o3.backfill([frame(10)]);
   ok("17.13 CONTROL: a post-boundary hole is a gap, not an unconfirmed one", gaps(o3.live(frame(12)).notes).length === 1 && straddles(o3.live(frame(20)).notes).length === 0);
-}
-
-// The shell cells above read `App.tsx` as text. Load the module as well, so an edit to the shell
-// reaches this suite by import and not only by a file read (see `load-shell.mjs`).
-{
-  const { shell } = await import("./load-shell.mjs");
-  ok("the shell module loads under Node and exports App", typeof shell.App === "function");
 }
 
 console.log(`event-order smoke: ${cells - failed} passed, ${failed} failed`);

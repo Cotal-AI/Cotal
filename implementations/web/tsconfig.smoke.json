@@ -4,6 +4,9 @@
   // This config exists because the smoke tree was typechecked by nothing: the suites run under
   // tsx, which erases types without checking them.
   "extends": "./tsconfig.json",
-  "compilerOptions": { "noEmit": true, "rootDir": "../.." },
+  // `jsx` (and `.tsx` import paths) because the shell suites render `client/src/Shell.tsx` on the
+  // server. There is still no DOM lib here, so a client module the suites load cannot reach
+  // `window` or `document` and pass.
+  "compilerOptions": { "noEmit": true, "rootDir": "../..", "jsx": "react-jsx", "allowImportingTsExtensions": true },
   "include": ["smoke/**/*.ts"]
 }

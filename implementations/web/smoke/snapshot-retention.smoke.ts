@@ -26,8 +26,8 @@
  * The boot and the HTTP gate are driven the same way: `startDashboard` (`state/boot.ts`) and
  * `httpApi` (`api/http.ts`) are imported, so §3.7, §3.9, §3.11 and §5.3 read what ships. What the
  * stale line and the document title SAY is driven (`staleView` and `documentTitle` in
- * `client/src/lib/shellText.ts`, §3.12 and §5.5 to §5.5d); that the shell draws them is read off
- * `client/src/App.tsx` (§3.3 to §3.5, §5.10).
+ * `client/src/lib/shellText.ts`, §3.12 and §5.5 to §5.5d); that the shell draws them is checked on
+ * `client/src/Shell.tsx` rendered on the server from a seeded store (§3.3 to §3.5, §5.10).
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
@@ -48,6 +48,7 @@ import { startDashboard } from "../client/src/state/boot.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState } from "../client/src/state/types.js";
 import { bootReads, gate, harness, page } from "./controller-harness.js";
+import { paragraph, renderShell } from "./render-shell.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -186,13 +187,20 @@ const res = (status: number, body: unknown): Response => ({
 const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
 
 {
-  const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
+  // The shell's own HTML, rendered on the server from a store seeded the way the controller leaves it.
+  const peers: StaleMark[] = [{ kind: "refused", name: "peers", reason: "HTTP 500 <boom>" }];
+  const two: StaleMark[] = [...peers, { kind: "refused", name: "activity", reason: "timeout" }];
+  const drawnPeers = paragraph(renderShell({ stale: peers }), "stale");
+  const drawnTwo = paragraph(renderShell({ stale: two }), "stale");
+  const drawnNone = paragraph(renderShell({ stale: [] }), "stale");
   ok("3.3 the shell draws its stale line through staleView, which says what staleLabel says",
-    /\bstaleView\(/.test(appSrc) && staleView([{ kind: "refused", name: "peers", reason: "x" }]).text === staleLabel([{ kind: "refused", name: "peers", reason: "x" }]));
+    drawnPeers?.text === staleView(peers).text && drawnPeers?.text === staleLabel(peers), drawnPeers);
   ok("3.4 and the marks it draws are the store's, which the controller writes",
-    /useStore\(store, \(s\) => s\.stale\)/.test(appSrc));
+    drawnTwo?.text === staleLabel(two) && drawnTwo?.text !== drawnPeers?.text, { drawnPeers, drawnTwo });
   ok("3.5 the shell carries the stale marker element it drives: hidden, tooltip and text all come from the view",
-    /id="stale"/.test(appSrc) && /hidden=\{view\.hidden\}/.test(appSrc) && /title=\{view\.title\}/.test(appSrc) && /\{view\.text\}/.test(appSrc));
+    drawnNone !== undefined && "hidden" in drawnNone.attrs && drawnNone.attrs.title === "" && drawnNone.text === ""
+      && drawnTwo !== undefined && !("hidden" in drawnTwo.attrs) && drawnTwo.attrs.title === staleView(two).title,
+    { drawnNone, drawnTwo });
   // The boot reads every source through the controller, and the controller through `refreshAll`:
   // `startDashboard` holds no read of its own, and `httpApi` wraps every route in `readJson` (each
   // route is driven in `smoke:web-http-api`). What is asserted here is the wiring between them.
@@ -422,7 +430,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
 //
 // THE TITLE IS DRAWN FROM `space`, so a refusal that leaves `space` alone leaves the title alone.
 // What the title says is `documentTitle` (`client/src/lib/shellText.ts`), driven below (5.5 to 5.5d);
-// that the shell sets it is read off `App.tsx` (5.10).
+// that the shell titles the document is checked on the rendered shell (5.10).
 {
   // The gate itself lives where the read is made, which is `httpApi`: a 500 whose body is JSON on
   // `/api/meta` must reach the caller as a refusal naming the read, never as a value. Driven here
@@ -480,9 +488,11 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   ok("5.5c before any read lands the title is the bare name, not `Cotal \u00b7 null`", documentTitle(null) === "Cotal", documentTitle(null));
   ok("5.5d CONTROL: a space the wire named is in the title", documentTitle("cotal-next") === "Cotal \u00b7 cotal-next", documentTitle("cotal-next"));
   {
-    const appSrc = readFileSync(join(here, "..", "client", "src", "App.tsx"), "utf8");
-    ok("5.10 the shell sets document.title from the store's space through documentTitle",
-      /document\.title = documentTitle\(space\)/.test(appSrc) && /useStore\(store, \(s\) => s\.space\)/.test(appSrc));
+    const titleOf = (html: string) => /<title>([^<]*)<\/title>/.exec(html)?.[1];
+    const named = titleOf(renderShell({ space: "cotal-main" }));
+    const before = titleOf(renderShell({ space: null }));
+    ok("5.10 the shell titles the document from the store's space through documentTitle",
+      named === documentTitle("cotal-main") && before === documentTitle(null), { named, before });
   }
 }
 
@@ -573,13 +583,6 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ok("6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark",
       !h.store.get().stale.some((m) => m.name === "membership"), h.store.get().stale);
   }
-}
-
-// The shell cells above read `App.tsx` as text. Load the module as well, so an edit to the shell
-// reaches this suite by import and not only by a file read (see `load-shell.mjs`).
-{
-  const { shell } = await import("./load-shell.mjs");
-  ok("the shell module loads under Node and exports App", typeof shell.App === "function");
 }
 
 console.log(`\nweb snapshot-retention smoke: ${cells - failed} passed, ${failed} failed`);
