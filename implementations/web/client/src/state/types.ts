@@ -72,7 +72,8 @@ export interface DashboardState {
   loading: { roster: boolean; channels: boolean };
   /** What the dashboard can post as, null until `/api/meta` answers. */
   post: PostCapability | null;
-  /** The id the operator posts as, from whichever of `/api/meta` and a post's answer says it first. */
+  /** The id the operator posts as. `/api/meta` sets it whenever it reports one, replacing the stored
+   *  id; a post's answer sets it only while none is stored. */
   operatorId: string | null;
   /** By `composeKey`. */
   drafts: Record<string, Draft>;

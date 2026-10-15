@@ -5,14 +5,15 @@
  *
  *  Section 1 calls the modules, section 2 drives the shipped controller over a fake `Api`, section 3
  *  renders the shell over a seeded store, and section 4 mounts it in jsdom and clicks. The server's
- *  answers are the ones `POST /api/send` gives (smoke:web-send pins the route itself). */
+ *  answers are the ones `POST /api/send` gives (smoke:web-send pins the route itself). Section 6 is
+ *  the page learning the operator's id when the operator joins after it loaded. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { createElement, useState } from "react";
 import { renderToString } from "react-dom/server";
-import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry, SendAnswer } from "../client/src/api/types.js";
+import type { ChannelInfo, CotalMessage, MembershipSnapshot, Meta, RosterEntry, SendAnswer } from "../client/src/api/types.js";
 import { httpApi } from "../client/src/api/http.js";
 import { composeKey, composerNote, composeTarget, footerLine, messageRoute, POST_OFF_CREDS as CLIENT_POST_OFF_CREDS, refusalText, SendRefused, sendCommand, shellArg } from "../client/src/lib/compose.js";
 import { displayNameOf, nameIndex } from "../client/src/lib/names.js";
@@ -23,7 +24,7 @@ import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type Draft } from "../client/src/state/types.js";
 import { Compose, Composer, focusComposer } from "../client/src/ui/Composer.tsx";
 import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
-import { gate, harness, page } from "./controller-harness.js";
+import { bootReads, gate, harness, page } from "./controller-harness.js";
 import { mount } from "./mount.js";
 import { renderShell } from "./render-shell.js";
 
@@ -467,6 +468,67 @@ const key = (el: Element, k: string, shiftKey = false) =>
   const why = lineEl ? who.querySelector(`#${lineEl.getAttribute("aria-describedby")}`) : null;
   same("5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone",
     [textOf(lineEl), lineEl?.getAttribute("tabindex"), textOf(why)], ["Read only", "0", POST_OFF_CREDS]);
+}
+
+// ── 6. Learning the operator's id after the page loaded ──────────────────────────────────────────
+// An open mesh's /api/meta names the operator only once its poster has joined, so a page that read it
+// before the first post (or a second tab) has to learn the id when the operator's card arrives.
+const OP_META = { space: "main", pid: 1, post: PARTICIPANT, operatorId: OP };
+{
+  localStorage.clear();
+  const h = harness({ ...quiet, meta: async () => OP_META });
+  h.store.set(seed({ operatorId: null }));
+  const opDm: Route = { view: "dm", peer: "local.rv2", with: OP };
+  const { m } = await rig(h.store, h.ctl, opDm);
+  const footer = () => textOf(m.container.querySelector(".ui-side-foot .ui-who span"));
+  const dock = () => [textOf(m.container.querySelector(".ui-dock .ui-reason")), (m.container.querySelector(".ui-dock textarea") as HTMLTextAreaElement | null)?.placeholder ?? null];
+  const before = [footer(), dock()];
+  await m.run(() => h.ctl.onRoster([...roster, operator]));
+  await m.run(() => undefined);
+  same("6.1 a page that loaded before the operator joined learns its id once the operator's card arrives and /api/meta reports it: the footer turns to On the roster, and the operator's DM with an agent shows the composer, not the between-two-agents line",
+    [before, [footer(), dock()], h.store.get().operatorId],
+    [["Not on the roster", ["This conversation is between two agents.", null]], ["On the roster", ["", "Message reviewer_2"]], OP]);
+  await m.unmount();
+}
+{
+  let reads = 0;
+  const h = harness({ meta: async () => { reads++; return OP_META; } });
+  h.ctl.onRoster(roster);
+  await new Promise((r) => setTimeout(r, 0));
+  const withoutCard = reads;
+  h.ctl.onRoster([...roster, operator]);
+  await new Promise((r) => setTimeout(r, 0));
+  h.ctl.onRoster([...roster, operator]);
+  await new Promise((r) => setTimeout(r, 0));
+  same("6.2 /api/meta is read again only once the operator's card is on the roster, and not again once the id is known",
+    [withoutCard, reads, h.store.get().operatorId], [0, 1, OP]);
+}
+{
+  const gates: ReturnType<typeof gate<Meta>>[] = [];
+  const h = harness({ meta: () => { const g = gate<Meta>(); gates.push(g); return g.promise; } });
+  const noId: Meta = { space: "main", pid: 1, post: PARTICIPANT };
+  h.ctl.onRoster([...roster, operator]);
+  h.ctl.onRoster([...roster, operator]);
+  const inFlight = gates.length;
+  gates[0].resolve(noId);
+  await new Promise((r) => setTimeout(r, 0));
+  const followUp = gates.length;
+  gates[1]?.resolve(noId);
+  await new Promise((r) => setTimeout(r, 0));
+  same("6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read",
+    [inFlight, followUp, gates.length, h.store.get().operatorId], [1, 2, 2, null]);
+}
+{
+  const h = harness({ ...bootReads, meta: async () => OP_META });
+  h.store.set({ operatorId: "local.old" });
+  await h.ctl.refresh();
+  same("6.4 a meta that reports a different operator id replaces the stored one, since a restarted server posts under a new id", h.store.get().operatorId, OP);
+}
+{
+  const h = harness({ ...bootReads, send: async () => answer("m-10") });
+  await h.ctl.send(REVIEW, "x");
+  await h.ctl.refresh();
+  same("6.5 a meta with no operator id keeps the one a post's answer gave", h.store.get().operatorId, OP);
 }
 
 await closeDom();

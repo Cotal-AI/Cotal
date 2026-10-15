@@ -224,7 +224,7 @@
     {
       "name": "K28 a static mesh ignores the operator id /api/meta reports",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "operatorId: s.operatorId ?? meta.operatorId ?? null",
+      "find": "operatorId: meta.operatorId ?? s.operatorId ?? null",
       "replace": "operatorId: s.operatorId ?? null",
       "expectRed": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept",
       "cell": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept"
@@ -724,6 +724,78 @@
       "replace": "      </div>\n    </>",
       "expectRed": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer",
       "cell": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer"
+    },
+    {
+      "name": "K91 a roster bringing the operator's card never re-reads /api/meta",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      answered(true, false);\n      learnOperator();\n",
+      "replace": "      answered(true, false);\n",
+      "expectRed": "6.1 a page that loaded before the operator joined learns its id once the operator's card arrives and /api/meta reports it: the footer turns to On the roster, and the operator's DM with an agent shows the composer, not the between-two-agents line",
+      "cell": "6.1 a page that loaded before the operator joined learns its id once the operator's card arrives and /api/meta reports it: the footer turns to On the roster, and the operator's DM with an agent shows the composer, not the between-two-agents line"
+    },
+    {
+      "name": "K92 the re-read's answer is dropped, so the page never learns the id",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "void api.meta().then(applyMeta, () => undefined)",
+      "replace": "void api.meta().then(() => undefined, () => undefined)",
+      "expectRed": "6.1 a page that loaded before the operator joined learns its id once the operator's card arrives and /api/meta reports it: the footer turns to On the roster, and the operator's DM with an agent shows the composer, not the between-two-agents line",
+      "cell": "6.1 a page that loaded before the operator joined learns its id once the operator's card arrives and /api/meta reports it: the footer turns to On the roster, and the operator's DM with an agent shows the composer, not the between-two-agents line"
+    },
+    {
+      "name": "K93 /api/meta is re-read on every roster, the operator's card or not",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (s.operatorId || !s.roster.some((p) => p.card.name === \"operator\" && p.card.role === \"operator\")) return;\n",
+      "replace": "    if (s.operatorId) return;\n",
+      "expectRed": "6.2 /api/meta is read again only once the operator's card is on the roster, and not again once the id is known",
+      "cell": "6.2 /api/meta is read again only once the operator's card is on the roster, and not again once the id is known"
+    },
+    {
+      "name": "K94 /api/meta is re-read after the id is known",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (s.operatorId || !s.roster.some(",
+      "replace": "    if (!s.roster.some(",
+      "expectRed": "6.2 /api/meta is read again only once the operator's card is on the roster, and not again once the id is known",
+      "cell": "6.2 /api/meta is read again only once the operator's card is on the roster, and not again once the id is known"
+    },
+    {
+      "name": "K95 a second re-read starts while one is in flight",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (metaReading || metaAskedFor === rosterRev) return;\n",
+      "replace": "    if (metaAskedFor === rosterRev) return;\n",
+      "expectRed": "6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read",
+      "cell": "6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read"
+    },
+    {
+      "name": "K96 a roster revision is read for again, so a meta with no id loops",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (metaReading || metaAskedFor === rosterRev) return;\n",
+      "replace": "    if (metaReading) return;\n",
+      "expectRed": "6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read",
+      "cell": "6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read"
+    },
+    {
+      "name": "K97 a roster that came during a re-read is never read for",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      metaReading = false;\n      // A roster that came while this read was in flight was not read for: read for it now.\n      learnOperator();\n",
+      "replace": "      metaReading = false;\n",
+      "expectRed": "6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read",
+      "cell": "6.3 THE RE-READ CANNOT LOOP: one is in flight at most, a roster that came during it is read for once after it, and a meta that still has no id starts no further read"
+    },
+    {
+      "name": "K98 the stored operator id outranks the one /api/meta reports",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "operatorId: meta.operatorId ?? s.operatorId ?? null",
+      "replace": "operatorId: s.operatorId ?? meta.operatorId ?? null",
+      "expectRed": "6.4 a meta that reports a different operator id replaces the stored one, since a restarted server posts under a new id",
+      "cell": "6.4 a meta that reports a different operator id replaces the stored one, since a restarted server posts under a new id"
+    },
+    {
+      "name": "K99 a meta with no operator id wipes the one a post's answer gave",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "operatorId: meta.operatorId ?? s.operatorId ?? null",
+      "replace": "operatorId: meta.operatorId ?? null",
+      "expectRed": "6.5 a meta with no operator id keeps the one a post's answer gave",
+      "cell": "6.5 a meta with no operator id keeps the one a post's answer gave"
     }
   ]
 }

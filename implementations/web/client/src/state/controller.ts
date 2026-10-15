@@ -123,6 +123,32 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     store.set((st) => ({ drafts: Object.fromEntries(Object.entries(st.drafts).map(([k, d]) => [k, { ...d, outgoing: d.outgoing.filter((o) => !delivered(o)) }])) }));
   };
 
+  /** What `/api/meta` says. Its operator id wins over the one stored, because a restarted server posts
+   *  under a new one; a meta with none keeps the stored id, which a post's answer may have given. */
+  const applyMeta = (meta: Meta) => store.set((s) => ({ space: meta.space, post: meta.post, operatorId: meta.operatorId ?? s.operatorId ?? null }));
+  /** Bumped by every roster the feed delivers. */
+  let rosterRev = 0;
+  /** The roster revision the last operator re-read was made for, so no revision is read for twice. */
+  let metaAskedFor = -1;
+  let metaReading = false;
+  /** An open mesh reports the operator's id only once its poster has joined, which can be after this
+   *  page read `/api/meta`: a second tab, or a page open before the first post. So a page with no id
+   *  that sees the operator's card join reads `/api/meta` again. One read in flight at most, and one
+   *  per roster revision, so a meta that still has no id cannot start a loop. A refused read is left
+   *  to the next `refresh()`, which reads `/api/meta` too and marks a refusal stale. */
+  const learnOperator = () => {
+    if (metaReading || metaAskedFor === rosterRev) return;
+    const s = store.get();
+    if (s.operatorId || !s.roster.some((p) => p.card.name === "operator" && p.card.role === "operator")) return;
+    metaAskedFor = rosterRev;
+    metaReading = true;
+    void api.meta().then(applyMeta, () => undefined).finally(() => {
+      metaReading = false;
+      // A roster that came while this read was in flight was not read for: read for it now.
+      learnOperator();
+    });
+  };
+
   /** Close the open channel. A load still in flight no longer owns the view, so it is superseded. */
   const close = () => {
     loadSeq++;
@@ -208,8 +234,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       // A FAILED READ KEEPS WHAT IS ON SCREEN. `refreshAll` reads every source concurrently, applies
       // ONLY the ones that succeeded, and returns what did not land.
       const sources = [
-        // The operator's id is kept from whichever says it first: this read or a post's answer.
-        { name: "space", read: () => api.meta(), apply: (meta: Meta) => store.set((s) => ({ space: meta.space, post: meta.post, operatorId: s.operatorId ?? meta.operatorId ?? null })) },
+        { name: "space", read: () => api.meta(), apply: applyMeta },
         // ONCE THE FEED HAS SPOKEN FOR A SOURCE, ITS READ IS NOT MADE AT ALL. Its value would be
         // dropped on arrival (the feed's snapshot is newer than any read), so it would cost a broker
         // call per poll for nothing, and its refusal would still reach the header as a stale mark.
@@ -349,8 +374,10 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     open,
     onRoster(roster) {
       liveApplied.add("peers");
+      rosterRev++;
       store.set({ roster });
       answered(true, false);
+      learnOperator();
     },
     onPresenceView(view) {
       // The observer's own watch, not a peer. A stale view keeps the last-known rows and names the
