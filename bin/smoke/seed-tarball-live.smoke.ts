@@ -125,6 +125,16 @@ try {
   const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
   check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
   for (const r of refs) check(`the shipped web page's reference /${r} is in the tarball`, listing.includes(`${webBase}/${r}`));
+  // The same payload, packed from the web package directly, the way prepack packs it and the way
+  // `@cotal-ai/web` publishes on its own: the umbrella must carry that package's manifest byte for
+  // byte, not a copy from some other build.
+  const webTgzDir = join(base, "web-tgz");
+  mkdirSync(webTgzDir, { recursive: true });
+  execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { stdio: ["ignore", "ignore", "inherit"] });
+  const webTgz = join(webTgzDir, readdirSync(webTgzDir).find((f) => f.endsWith(".tgz")) ?? "");
+  const standalone = execFileSync("tar", ["xzf", webTgz, "-O", "package/dist/web/bundle-licenses.json"], { encoding: "utf8" });
+  check("the umbrella's web manifest is the one the web package itself packs",
+    standalone === execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }));
 
   console.log("installing the tarball closure into a clean prefix …");
   writeFileSync(join(prefix, "package.json"), JSON.stringify({ name: "tb-host", private: true }));
