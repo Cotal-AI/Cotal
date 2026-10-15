@@ -1,0 +1,21 @@
+name: Diagnose Windows identity
+on:
+  push:
+    branches: [diag/windows-cold-identity]
+permissions:
+  contents: read
+jobs:
+  identity:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+        node: [22, 26]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node scripts/diagnose-win-identity.mjs
