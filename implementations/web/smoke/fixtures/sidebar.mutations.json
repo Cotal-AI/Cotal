@@ -234,8 +234,8 @@
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
       "find": "opener === c.with ? [c.with, peer.id] : [peer.id, c.with]",
       "replace": "[peer.id, c.with]",
-      "expectRed": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
-      "cell": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows"
+      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
+      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first"
     },
     {
       "name": "SB30 a DM row shows the raw id, not the roster's name",

@@ -205,8 +205,8 @@ let m: Mounted = await app("#/channel/review");
   await m.run(() => (pane()!.querySelector('[aria-label="Close panel"]') as HTMLElement).click());
   ok("4.6 and its close button closes it, again without saving", pane() === null && localStorage.getItem(PANEL_KEY) === "1");
   await m.run(() => (m.container.querySelector("main header button.ui-members") as HTMLElement).click());
-  await m.run(() => go("#/activity"));
-  ok("4.7 a new route closes it", pane() === null);
+  await m.run(() => go("#/channel/general"));
+  ok("4.7 a new route closes it, even another channel that has a panel to show", pane() === null && textOf(m.container.querySelector("main header h1")) === "# general");
   await m.run(() => go("#/channel/review"));
 }
 

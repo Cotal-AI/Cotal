@@ -10,8 +10,8 @@
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "  store.set({ loading: { roster: true, channels: true } });\n",
       "replace": "",
-      "expectRed": "1.9 starting the dashboard marks both first reads outstanding before anything lands",
-      "cell": "1.9 starting the dashboard marks both first reads outstanding before anything lands"
+      "expectRed": "1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view",
+      "cell": "1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view"
     },
     {
       "name": "ST2 the centre waits on the roster only",
@@ -58,8 +58,8 @@
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "answered(landed.has(\"peers\"), landed.has(\"channels\"));",
       "replace": "answered(landed.has(\"peers\"), false);",
-      "expectRed": "1.6 a refresh whose roster and channel reads land clears both",
-      "cell": "1.6 a refresh whose roster and channel reads land clears both"
+      "expectRed": "1.4 once both have landed the skeleton goes: the places and the routed view are drawn",
+      "cell": "1.4 once both have landed the skeleton goes: the places and the routed view are drawn"
     },
     {
       "name": "ST8 a roster event leaves the roster wait standing",
@@ -274,8 +274,8 @@
       "file": "implementations/web/client/src/state/boot.ts",
       "find": "if (!wanted || retry !== null) return;",
       "replace": "if (!wanted) return;",
-      "expectRed": "4.3 further store changes while it is pending do not arm a second",
-      "cell": "4.3 further store changes while it is pending do not arm a second"
+      "expectRed": "4.2 a refused read arms one retry, RETRY_MS later",
+      "cell": "4.2 a refused read arms one retry, RETRY_MS later"
     },
     {
       "name": "ST35 a retry that fires reads nothing",
@@ -366,10 +366,10 @@
       "cell": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one"
     },
     {
-      "name": "ST46 the last conversation keeps one party",
+      "name": "ST46 the last conversation is followed with one party",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "dm: { peer: route.peer, with: route.with } };",
-      "replace": "dm: { peer: route.peer } };",
+      "find": "peers.some((p) => p.id === seen.dm?.peer) ? seen.dm :",
+      "replace": "peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm!.peer } :",
       "expectRed": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one",
       "cell": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one"
     },

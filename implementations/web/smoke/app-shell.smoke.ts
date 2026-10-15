@@ -82,6 +82,10 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
     bare[1].attrs.href === undefined && bare[1].attrs["aria-disabled"] === "true"
       && bare[2].attrs.href === undefined && bare[2].attrs["aria-disabled"] === "true", bare.map((i) => i.attrs));
   ok("3.4 and the views that always exist keep their links", bare[0].attrs.href === "#/activity" && bare[3].attrs.href === "#/agents" && bare[4].attrs.href === "#/topology");
+  same("3.5 on the host-grouped Agents view Agents keeps the host grouping",
+    hrefs(renderShell(seed, { view: "agents", group: "host" }))[3], formatRoute({ view: "agents", group: "host" }));
+  same("3.6 on a conversation with a peer that has none yet, Direct messages keeps that address rather than leaving for another peer",
+    hrefs(renderShell(seed, { view: "dm", peer: "local.zz" }))[2], formatRoute({ view: "dm", peer: "local.zz" }));
 }
 
 // ── 4. The grid and the details panel ────────────────────────────────────────────────────────────

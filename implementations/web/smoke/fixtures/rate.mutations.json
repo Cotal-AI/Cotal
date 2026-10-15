@@ -114,8 +114,8 @@
       "file": "implementations/web/client/src/lib/rate.ts",
       "find": "Math.max(now - since, 1000)",
       "replace": "(now - since)",
-      "expectRed": "the time watched is never taken as under a second, so one early message is not a burst",
-      "cell": "the time watched is never taken as under a second, so one early message is not a burst"
+      "expectRed": "three messages in the page's first second read 3 per second, not 0.3 over a ten second window",
+      "cell": "three messages in the page's first second read 3 per second, not 0.3 over a ten second window"
     },
     {
       "name": "the time watched is never capped at the window, so later rates read low",

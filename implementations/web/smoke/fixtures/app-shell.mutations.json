@@ -42,8 +42,8 @@
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "  if (route.view === view) return route;\n",
       "replace": "",
-      "expectRed": "3.1 on a channel route Channels links to that channel",
-      "cell": "3.1 on a channel route Channels links to that channel"
+      "expectRed": "3.5 on the host-grouped Agents view Agents keeps the host grouping",
+      "cell": "3.5 on the host-grouped Agents view Agents keeps the host grouping"
     },
     {
       "name": "A7 an item with nowhere to lead still looks live, so the rail offers a link that does nothing",
@@ -90,16 +90,16 @@
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "const channel = seen.channel !== null && channels.some((c) => c.channel === seen.channel) ? seen.channel : (channels[0]?.channel ?? null);",
       "replace": "const channel = null;",
-      "expectRed": "1.4 each view links to its route hash",
-      "cell": "1.4 each view links to its route hash"
+      "expectRed": "1.3 the five views are links and Settings is a button",
+      "cell": "1.3 the five views are links and Settings is a button"
     },
     {
       "name": "A13 Direct messages never finds a conversation to land on",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": ": peers[0] ? { peer: peers[0].id } : null;",
       "replace": ": null;",
-      "expectRed": "1.4 each view links to its route hash",
-      "cell": "1.4 each view links to its route hash"
+      "expectRed": "1.3 the five views are links and Settings is a button",
+      "cell": "1.3 the five views are links and Settings is a button"
     },
     {
       "name": "A14 every channel in the list reads as the current one",
@@ -194,8 +194,8 @@
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "  if (route.view === view) return route;\n",
       "replace": "  if (route.view === view && view !== \"dm\") return route;\n",
-      "expectRed": "3.2 on a dm route Direct messages links to that conversation",
-      "cell": "3.2 on a dm route Direct messages links to that conversation"
+      "expectRed": "3.6 on a conversation with a peer that has none yet, Direct messages keeps that address rather than leaving for another peer",
+      "cell": "3.6 on a conversation with a peer that has none yet, Direct messages keeps that address rather than leaving for another peer"
     },
     {
       "name": "A26 Settings is live with no handler behind it, so the rail offers a button that does nothing",

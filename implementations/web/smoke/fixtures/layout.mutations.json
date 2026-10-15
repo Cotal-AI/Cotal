@@ -178,8 +178,8 @@
       "file": "implementations/web/client/src/App.tsx",
       "find": "const phone = usePhone();",
       "replace": "const phone = false;",
-      "expectRed": "2.2 on a phone there is no rail and no sidebar column: the centre sits over the tab bar",
-      "cell": "2.2 on a phone there is no rail and no sidebar column: the centre sits over the tab bar"
+      "expectRed": "2.1 the app asks the window whether it is phone width, below 768px",
+      "cell": "2.1 the app asks the window whether it is phone width, below 768px"
     },
     {
       "name": "LY23 the shell ignores the phone flag",
@@ -394,8 +394,8 @@
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
       "find": "    setAt(cur);\n    setPhoneOpen(false);\n",
       "replace": "    setAt(cur);\n",
-      "expectRed": "4.7 a new route closes it",
-      "cell": "4.7 a new route closes it"
+      "expectRed": "4.7 a new route closes it, even another channel that has a panel to show",
+      "cell": "4.7 a new route closes it, even another channel that has a panel to show"
     },
     {
       "name": "LY50 the app does not follow the width as it changes",
