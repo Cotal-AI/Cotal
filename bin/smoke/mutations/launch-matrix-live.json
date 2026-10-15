@@ -1,0 +1,23 @@
+{
+  "suite": [
+    "bin/smoke/launch-matrix-live.smoke.ts"
+  ],
+  "guard": "the command lines Cotal writes for callers that outlive or bypass the public grammar keep the shape the binary accepts: the manager and delivery argv up starts, the owned unit's ExecStart, the delegated seat command, the bearer flag set, completion stubs and container commands",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:launch-matrix:live",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/launch-matrix-live.json",
+  "why": [
+    "An installed completion stub that stops calling the stable completion entry breaks every shell that sourced it; the matrix must notice the generator changing."
+  ],
+  "mutations": [
+    {
+      "name": "installed completion stubs stop calling __complete",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "    '  out=\"$(cotal __complete \"${args[@]}\" 2>/dev/null)\" || return',",
+      "replace": "    '  out=\"$(cotal completion-candidates \"${args[@]}\" 2>/dev/null)\" || return',",
+      "expectRed": "completion install writes a stub that calls `cotal __complete`",
+      "cell": "completion install writes a stub that calls `cotal __complete`",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}
