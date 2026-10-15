@@ -271,6 +271,9 @@ through its managed-agent enrollment. A spawn may be placed on the manager that 
 no other instance. [User-auth run start](design/user-auth-run-start.md)
 records the path.
 
+Run admission accepts canonical space names such as `cotal_cloud` and `u_example-name`
+without rewriting them. Endpoint names keep their separate DNS-label grammar.
+
 A hosted run is **admitted** under the caller that started it. The caller's credential is an
 issuance ([identity and auth](identity-and-auth.md#issued-authority)): its requests ride a
 versioned rail that carries the credential's generation, and the manager resolves that

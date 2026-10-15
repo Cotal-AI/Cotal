@@ -24,7 +24,7 @@ let fail = 0;
 const c = (name: string, ok: boolean, detail?: unknown) => { if (ok) console.log(`  ✓ ${name}`); else { fail++; console.log(`  ✗ FAIL: ${name}`, detail ?? ""); } };
 const outcome = (p: Promise<unknown>) => p.then(() => "admitted", (e: Error) => `refused: ${e.message}`);
 
-const SPACE = "admit";
+const SPACE = "u_admission-test";
 const OWNER = "local";
 const ACCOUNT = `A${"A".repeat(55)}`;
 const SECRET = "suite-proof-secret";

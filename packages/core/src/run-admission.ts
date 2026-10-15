@@ -27,6 +27,7 @@ import {
   AUTHORITY_STORE_IMMUTABLE_FLAGS,
   WRITE_ONCE_PER_KEY,
   assertStoreShape,
+  assertIssuedSpace,
   issuedPermitsPattern,
   issuedPermitsSubject,
   readIssuedSubjectPermissions,
@@ -119,7 +120,7 @@ export function admissionSnapshot(value: unknown): RunAdmission {
   if (typeof raw.space !== "string" || typeof raw.endpoint !== "string" || typeof raw.runId !== "string" || typeof raw.instanceId !== "string"
     || typeof raw.admittedAt !== "number" || !Number.isSafeInteger(raw.admittedAt) || raw.admittedAt <= 0)
     throw new Error("run admission is malformed");
-  endpointToken(raw.space);
+  assertIssuedSpace(raw.space);
   endpointToken(raw.endpoint);
   assertIdToken(raw.runId, "runId");
   const caller = callerSnapshot(raw.caller);
