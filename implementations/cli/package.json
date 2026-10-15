@@ -20,7 +20,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
-    "test": "tsx smoke/manifest.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts && tsx smoke/console-status-row.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/console-render.smoke.tsx",
+    "test": "tsx smoke/manifest.smoke.ts && tsx smoke/backup.smoke.ts && tsx smoke/sparkline.smoke.ts && tsx smoke/topo-membership.smoke.ts && tsx smoke/console-status-row.smoke.ts && tsx smoke/console-managed-rows.smoke.ts && tsx smoke/console-render.smoke.tsx && tsx smoke/cli-pty.smoke.ts",
+    "smoke:cli-pty": "tsx smoke/cli-pty.smoke.ts",
     "smoke:console-attach": "tsx smoke/console-attach.smoke.ts",
     "smoke:console-gaps": "tsx smoke/console-gaps.smoke.ts",
     "smoke:console-control": "tsx smoke/console-control.smoke.ts",
