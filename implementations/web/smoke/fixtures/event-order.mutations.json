@@ -149,7 +149,7 @@
       "name": "O19 the notice is drawn only while a channel is open, so a reader on no channel is the one reader who cannot be told a frame is missing from the feed",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "      <StatusLines store={store} />\n",
-      "replace": "      {open && <StatusLines store={store} />}\n",
+      "replace": "      {route.view === \"channel\" && <StatusLines store={store} />}\n",
       "expectRed": "15.9 and outside the channel pane, so it shows with no channel open",
       "cell": "15.9 and outside the channel pane, so it shows with no channel open"
     },

@@ -266,8 +266,8 @@
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
       "find": ".filter((p): p is string => Boolean(p))",
       "replace": ".filter((p): p is string => p !== \"\")",
-      "expectRed": "4.7 a card with no activity text says only when it was reported",
-      "cell": "4.7 a card with no activity text says only when it was reported"
+      "expectRed": "4.6 a card whose agent reported no time says no time",
+      "cell": "4.6 a card whose agent reported no time says no time"
     },
     {
       "name": "N8 View agent looks live with no Agent tab to open",
@@ -410,8 +410,8 @@
       "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
       "find": "{ label: \"Roles\", mode: \"anycast\" }",
       "replace": "{ label: \"Roles\", mode: \"chat\" }",
-      "expectRed": "6.9 Roles keeps the role requests",
-      "cell": "6.9 Roles keeps the role requests"
+      "expectRed": "6.7 Channels keeps the channel messages",
+      "cell": "6.7 Channels keeps the channel messages"
     },
     {
       "name": "A12 the empty space state shows with agents on the roster",
@@ -458,8 +458,8 @@
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
       "find": "convs.find((c) => c.with === other)",
       "replace": "convs[0]",
-      "expectRed": "7.3 the list holds that conversation only, oldest first",
-      "cell": "7.3 the list holds that conversation only, oldest first"
+      "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
+      "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
     },
     {
       "name": "D7 a verified conversation is marked unverified",

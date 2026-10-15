@@ -99,13 +99,16 @@ const parse = (html: string): HTMLElement => {
 };
 const shellDom = (patch: Partial<DashboardState>, route: Route) => parse(renderShell(patch, route, route.view === "channel"));
 const centre = (el: HTMLElement) => el.querySelector("main.ui-center") as HTMLElement;
+/** An empty element in place of one a view failed to draw, so the cell that wanted it fails on its
+ *  assertion instead of on a null. */
+const none = (): HTMLElement => document.createElement("div");
 const textOf = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
 const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLElement[];
 
 // ── 1. The channel header ────────────────────────────────────────────────────────────────────────
 {
   const c = centre(shellDom(channelSeed(), channelRoute));
-  const bar = c.querySelector("header.ui-bar")!;
+  const bar = c.querySelector("header.ui-bar") ?? none();
   ok("1.1 the header names the channel as # review and shows its topic",
     textOf(bar.querySelector("h1")) === "# review" && textOf(bar.querySelector(".ui-topic")) === "Review requests. Send them to the reviewer role.", textOf(bar));
   same("1.2 a durable channel with a 24h replay shows both chips with the notes' tooltips",
@@ -150,7 +153,7 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
 // ── 2. The message list ──────────────────────────────────────────────────────────────────────────
 {
   const c = centre(shellDom(channelSeed(), channelRoute));
-  const col = c.querySelector(".ui-scroll .ui-col")!;
+  const col = c.querySelector(".ui-scroll .ui-col") ?? none();
   same("2.1 a Today divider opens today's messages", all(col, ".ui-day").map(textOf), ["Today"]);
   const rows = all(col, ".ui-msg");
   same("2.2 consecutive rows from one verified sender collapse, a new sender breaks the run, and a history row never collapses",
@@ -188,7 +191,7 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
     textOf(u).startsWith("reviewer is working · progress unknown") && u?.querySelector(".ui-dots") === null, textOf(u));
   ok("3.4 the line sits in the list, after the last message", (() => {
     const c = centre(shellDom(channelSeed(), channelRoute));
-    const col = c.querySelector(".ui-scroll .ui-col")!;
+    const col = c.querySelector(".ui-scroll .ui-col") ?? none();
     return col.lastElementChild?.classList.contains("ui-typing") === true;
   })());
 }
@@ -196,7 +199,7 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
 // ── 4. The Needs card ────────────────────────────────────────────────────────────────────────────
 {
   const c = centre(shellDom(channelSeed(), channelRoute));
-  const card = c.querySelector(".ui-dock .ui-dock-in .ui-card.ui-needs")!;
+  const card = c.querySelector(".ui-dock .ui-dock-in .ui-card.ui-needs") ?? none();
   ok("4.1 the dock holds the waiting agent's card: reviewer_2 is waiting, with its activity and the time it reported",
     textOf(card.querySelector("b")) === "reviewer_2 is waiting" && textOf(card.querySelector(".ui-nd")) === "Needs approval to run pnpm smoke:ci. Reported 10:49.", textOf(card));
   const buttons = all(card, ".ui-btns > *").map((b) => [b.tagName, textOf(b), b.getAttribute("href")]);
@@ -281,7 +284,7 @@ const activity: DashboardState["activity"] = [
 {
   const el = shellDom({ space: "main", roster, activity, stale: [{ kind: "refused", name: "peers", reason: "HTTP 503" }] }, { view: "activity" });
   const c = centre(el);
-  const bar = c.querySelector("header.ui-bar")!;
+  const bar = c.querySelector("header.ui-bar") ?? none();
   ok("6.1 the Activity header names the view and carries the stale marker", textOf(bar.querySelector("h1")) === "Activity" && textOf(bar.querySelector(".ui-stale b")) === "stale: peers");
   ok("6.2 the header's marker has no id of its own, so the page keeps one #stale", el.querySelectorAll("#stale").length === 1 && bar.querySelector(".ui-stale")?.id === "");
   same("6.3 the filter chips are All, Channels, Direct and Roles, with All pressed",
@@ -305,8 +308,8 @@ const activity: DashboardState["activity"] = [
   await press("All");
   same("6.10 All brings every row back", [shown().length, pressed()], [4, ["All"]]);
   await m.unmount();
-  const none = centre(shellDom({ space: "main", roster, activity: [] }, { view: "activity" }));
-  ok("6.11 with agents and nothing yet sent, the list is empty and the empty-space state is not drawn", none.querySelector(".ui-msg") === null && none.querySelector(".ui-empty") === null);
+  const nothing = centre(shellDom({ space: "main", roster, activity: [] }, { view: "activity" }));
+  ok("6.11 with agents and nothing yet sent, the list is empty and the empty-space state is not drawn", nothing.querySelector(".ui-msg") === null && nothing.querySelector(".ui-empty") === null);
 }
 
 // ── 7. The DM view ───────────────────────────────────────────────────────────────────────────────
@@ -315,20 +318,21 @@ const dmRows: StoredMessage[] = [
   { msg: msg("d2", "local.dav", "Running it now.", at(10, 31), { to: "local.rv2", channel: undefined }), senderId: "local.dav" },
   { msg: msg("d3", "local.rev", "From history.", at(10, 32), { to: "local.dav", channel: undefined }) },
   { msg: msg("d4", "local.rv2", "Later one.", at(10, 33), { to: "local.pln", channel: undefined }), senderId: "local.rv2" },
+  { msg: msg("d5", "local.dav", "A live reply to the history row.", at(10, 34), { to: "local.rev", channel: undefined }), senderId: "local.dav" },
 ];
 {
   same("7.1 a conversation is verified only when every message carries the sender the server checked",
     dmPeers(dmRows, roster).find((p) => p.id === "local.dav")?.conversations.map((c) => [c.with, c.verified]), [["local.rev", false], ["local.rv2", true]]);
   const view = (route: Route) => centre(shellDom({ space: "main", roster, dms: dmRows }, route));
   const c = view({ view: "dm", peer: "local.rv2", with: "local.dav" });
-  const bar = c.querySelector("header.ui-bar")!;
+  const bar = c.querySelector("header.ui-bar") ?? none();
   ok("7.2 the header draws the peer's character, name, role and harness, and who it talks with",
     bar.querySelector(".ui-av svg") !== null && textOf(bar.querySelector("h1")) === "reviewer_2"
       && all(bar, ".ui-topic").map(textOf).join(" | ") === "reviewer · OpenCode | with david", textOf(bar));
   same("7.3 the list holds that conversation only, oldest first", all(c, ".ui-scroll .ui-msg .ui-tx").map(textOf), ["Can you run the gate?", "Running it now."]);
   ok("7.4 a verified conversation carries no unverified mark", bar.querySelector(".ui-unverified") === null);
   same("7.5 a route naming only the peer opens its newest conversation", all(view({ view: "dm", peer: "local.rv2" }), ".ui-scroll .ui-msg .ui-tx").map(textOf), ["Later one."]);
-  const hist = view({ view: "dm", peer: "local.dav", with: "local.rev" }).querySelector("header.ui-bar")!;
+  const hist = view({ view: "dm", peer: "local.dav", with: "local.rev" }).querySelector("header.ui-bar") ?? none();
   ok("7.6 a conversation with a history row says unverified in its header, with the message rows' tooltip",
     (hist.querySelector(".ui-unverified") as HTMLElement | null)?.title === UNVERIFIED, hist.outerHTML.slice(0, 300));
   const lonely = view({ view: "dm", peer: "local.sco" });
@@ -341,7 +345,7 @@ const dmRows: StoredMessage[] = [
 // ── 8. Empty space ───────────────────────────────────────────────────────────────────────────────
 {
   const endpointsOnly = [entry("local.mgr", "manager", "idle", { kind: "endpoint" })];
-  const empty = centre(shellDom({ space: "main", roster: endpointsOnly }, { view: "activity" })).querySelector(".ui-empty")!;
+  const empty = centre(shellDom({ space: "main", roster: endpointsOnly }, { view: "activity" })).querySelector(".ui-empty") ?? none();
   ok("8.1 with no agents on the roster Activity says so in the notes' words",
     textOf(empty.querySelector(":scope > b")) === "No agents on main yet." && textOf(empty.querySelector(":scope > b + span")) === "Start one from your terminal. It shows up here when it joins.", textOf(empty));
   same("8.2 the commands are copyable: cotal spawn, and cotal personas, which lists the others",
