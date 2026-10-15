@@ -3,8 +3,9 @@
  *  order with their icons and counts, hidden empty groups, the rows, the attention badges and their
  *  tooltips, the endpoints, the heartbeat line, the host grouping, the Needs route's focused Waiting
  *  group and the empty space. Section 5 mounts the view in jsdom: the Status and Host toggle and its
- *  saving (with storage blocked too), a row click reaching the caller, a row that moves group keeping
- *  its selection and focus, and the heartbeat ages redrawing on their own and stopping on unmount.
+ *  saving (with storage blocked too), a row click reaching the caller and, in the shell, opening the
+ *  Agent tab on that agent, a row that moves group keeping its selection and focus, and the heartbeat
+ *  ages redrawing on their own and stopping on unmount.
  *
  *  What is pinned, beyond the markup: a status the wire carries outside the four is listed, never
  *  dropped; an offline agent's old heartbeat never counts toward the live agents' oldest; a working
@@ -61,14 +62,14 @@ const HOST_ROUTE: Route = { view: "agents", group: "host" };
 const NEEDS_ROUTE: Route = { view: "needs" };
 
 const seed = (patch: Partial<DashboardState> = {}) => createStore<DashboardState>({ ...initialState, space: "main", roster: ROSTER, ...patch });
-const html = (patch: Partial<DashboardState>, route: Route, selectedAgent: string | null = null): string =>
-  renderToString(createElement(Shell, { store: seed(patch), controller: null, route, paneOpen: false, msgPerSecond: () => 0, clock: () => NOW, selectedAgent }));
+const html = (patch: Partial<DashboardState>, route: Route): string =>
+  renderToString(createElement(Shell, { store: seed(patch), controller: null, route, paneOpen: false, msgPerSecond: () => 0, clock: () => NOW }));
 const parse = (s: string): HTMLElement => {
   const el = document.createElement("div");
   el.innerHTML = s;
   return el;
 };
-const view = (patch: Partial<DashboardState> = {}, route: Route = AGENTS_ROUTE, selectedAgent: string | null = null) => parse(html(patch, route, selectedAgent));
+const view = (patch: Partial<DashboardState> = {}, route: Route = AGENTS_ROUTE) => parse(html(patch, route));
 const without = (...ids: string[]) => ROSTER.filter((p) => !ids.includes(p.card.id));
 const textOf = (el: Element | null | undefined): string => el?.textContent ?? "";
 const gone = (): HTMLElement => document.createElement("div");
@@ -88,6 +89,9 @@ function sections(root: ParentNode): Section[] {
   }
   return out;
 }
+/** The right panel's selected tab, and the name its Agent tab shows, read from the shell's panel. */
+const panelTab = (root: ParentNode): string => textOf(root.querySelector("section.ui-pane [role=tab][aria-selected=true]"));
+const panelAgent = (root: ParentNode): string => textOf(root.querySelector("section.ui-pane .ui-profile h4"));
 const rowByName = (root: ParentNode, name: string): Element => Array.from(root.querySelectorAll(".v3-arow")).find((r) => textOf(r.querySelector("b")) === name) ?? gone();
 const names = (s: Section) => s.rows.map((r) => textOf(r.querySelector("b")));
 const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
@@ -150,8 +154,9 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
   ok("2.14 an offline row is dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && !david.classList.contains("v3-arow-off") && d.querySelector(".v3-arow-off .ui-av-off") !== null);
   const hostless = view({ roster: [entry("local.h", "hollow", "idle", { connector: "pi" })] });
   ok("2.15 an agent that reports no host shows none", rowByName(hostless, "hollow").querySelector(".v3-meta") === null);
-  ok("2.16 the row an address or the panel selected is marked, and no other", rowByName(view({}, AGENTS_ROUTE, "local.rev"), "reviewer").getAttribute("aria-current") === "true"
-    && view({}, AGENTS_ROUTE, "local.rev").querySelectorAll('.v3-arow[aria-current="true"]').length === 1 && david.getAttribute("aria-current") === null);
+  const picked = parse(renderToString(createElement(AgentsView, { store: seed(), selected: "local.rev", clock: () => NOW })));
+  ok("2.16 the row an address or the panel selected is marked, and no other", rowByName(picked, "reviewer").getAttribute("aria-current") === "true"
+    && picked.querySelectorAll('.v3-arow[aria-current="true"]').length === 1 && david.getAttribute("aria-current") === null);
 }
 
 // 3. Endpoints and the heartbeat line
@@ -373,14 +378,15 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   try { await bare.run(() => (rowByName(bare.container, "david") as HTMLButtonElement).click()); } catch (e) { failed = e; }
   ok("9.2 a row with nobody listening still clicks", failed === undefined);
   await bare.unmount();
-  const seam: string[] = [];
-  const shell = await mount(createElement(Shell, { store, controller: null, route: AGENTS_ROUTE, paneOpen: false, msgPerSecond: () => 0, clock: () => NOW, selectedAgent: "local.rev", onPickAgent: (id: string) => seam.push(id) }));
+  const shell = await mount(createElement(Shell, { store, controller: null, route: AGENTS_ROUTE, paneOpen: false, msgPerSecond: () => 0, clock: () => NOW }));
   await shell.run(() => (rowByName(shell.container, "planner") as HTMLButtonElement).click());
-  ok("9.3 the Shell passes the selection down and the pick back up, on the Agents route", seam.join() === "local.pln" && rowByName(shell.container, "reviewer").getAttribute("aria-current") === "true");
+  const marked = Array.from(shell.container.querySelectorAll('.v3-arow[aria-current="true"]')).map((r) => textOf(r.querySelector("b")));
+  same("9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other",
+    [panelTab(shell.container), panelAgent(shell.container), marked], ["Agent", "planner", ["planner"]]);
   await shell.unmount();
-  const needs = await mount(createElement(Shell, { store, controller: null, route: NEEDS_ROUTE, paneOpen: false, msgPerSecond: () => 0, clock: () => NOW, selectedAgent: "local.rev", onPickAgent: (id: string) => seam.push(id) }));
+  const needs = await mount(createElement(Shell, { store, controller: null, route: NEEDS_ROUTE, paneOpen: false, msgPerSecond: () => 0, clock: () => NOW }));
   await needs.run(() => (rowByName(needs.container, "david") as HTMLButtonElement).click());
-  ok("9.4 and on the Needs route", seam.join() === "local.pln,local.dav" && rowByName(needs.container, "reviewer").getAttribute("aria-current") === "true");
+  same("9.4 and on the Needs route", [panelTab(needs.container), panelAgent(needs.container)], ["Agent", "david"]);
   await needs.unmount();
 }
 {

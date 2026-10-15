@@ -272,16 +272,16 @@
     {
       "name": "A34 the Agents route stops handing the selection down",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "group={route.group === \"host\" ? \"host\" : undefined} selected={selectedAgent}",
+      "find": "group={route.group === \"host\" ? \"host\" : undefined} selected={panel.agent}",
       "replace": "group={route.group === \"host\" ? \"host\" : undefined} selected={null}",
-      "expectRed": "2.16 the row an address or the panel selected is marked, and no other",
-      "cell": "2.16 the row an address or the panel selected is marked, and no other"
+      "expectRed": "9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other",
+      "cell": "9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other"
     },
     {
       "name": "A35 the Needs route stops handing the pick back up",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "focusWaiting selected={selectedAgent} onPick={onPickAgent}",
-      "replace": "focusWaiting selected={selectedAgent}",
+      "find": "focusWaiting selected={panel.agent} onPick={panel.selectAgent}",
+      "replace": "focusWaiting selected={panel.agent}",
       "expectRed": "9.4 and on the Needs route",
       "cell": "9.4 and on the Needs route"
     },
@@ -468,6 +468,14 @@
       "replace": "  const empty = agents.length === 0;\n  const [, tickAll] = useState(0);\n  useEffect(() => {\n    const id = setInterval(() => tickAll((n) => n + 1), TICK_MS);\n    return () => clearInterval(id);\n  }, []);",
       "expectRed": "10.5 a view with no heartbeat line to redraw holds no timer",
       "cell": "10.5 a view with no heartbeat line to redraw holds no timer"
+    },
+    {
+      "name": "A59 a row click on the Agents route opens no panel",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "undefined} selected={panel.agent} onPick={panel.selectAgent}",
+      "replace": "undefined} selected={panel.agent}",
+      "expectRed": "9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other",
+      "cell": "9.3 clicking an agent row in #/agents opens the Agent tab for that id, and marks that row and no other"
     }
   ]
 }
