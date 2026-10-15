@@ -7,7 +7,7 @@
  *   internal:<reason>                        machinery that is not a user capability
  *
  * Flags are named by their long form. A current owner's mode must be one its command's usage
- * declares.
+ * declares. An item that more than one entry point issues lists each owner.
  *
  * `internal` is accepted only for environment variables, historical CLI entries and auth HTTP
  * routes. An endpoint command or field, an agent tool argument, or a persona, manifest, config,
@@ -20,12 +20,18 @@ import type { CensusItem } from "./sources.js";
 export const OWNER_MAP_PATH = join(import.meta.dirname, "owner-map.json");
 
 export interface OwnerMap {
-  owners: Record<string, string>;
+  owners: Record<string, string | string[]>;
   checklist: Record<string, string>;
 }
 
 export function readOwnerMap(path = OWNER_MAP_PATH): OwnerMap {
   return JSON.parse(readFileSync(path, "utf8")) as OwnerMap;
+}
+
+/** An item's owners: one, several, or none when it has no row. */
+export function ownersOf(map: OwnerMap, item: string): string[] {
+  const owner = map.owners[item];
+  return owner === undefined ? [] : typeof owner === "string" ? [owner] : owner;
 }
 
 const COMMAND_OWNER = /^(current|pending):([a-z_][a-z0-9_-]*)((?: [a-z][a-z0-9-]*)*)((?: --[a-z][a-z0-9-]*)*)$/;
@@ -89,10 +95,13 @@ export function ownerMapProblems(items: readonly CensusItem[], map: OwnerMap): s
   for (const { id } of items) {
     const owner = map.owners[id];
     if (owner === undefined) problems.push(`${id}: no owner row`);
-    else {
-      const p = ownerProblem(id, owner, registered, live);
-      if (p) problems.push(p);
-    }
+    else if (Array.isArray(owner) && (owner.length < 2 || new Set(owner).size !== owner.length))
+      problems.push(`${id}: an owner list names two or more different owners; write one owner as a string`);
+    else
+      for (const one of ownersOf(map, id)) {
+        const p = ownerProblem(id, one, registered, live);
+        if (p) problems.push(p);
+      }
   }
   for (const id of Object.keys(map.owners)) if (!live.has(id)) problems.push(`${id}: owner row names no census item`);
   for (const [entry, owner] of Object.entries(map.checklist)) {

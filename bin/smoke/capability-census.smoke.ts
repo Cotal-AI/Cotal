@@ -37,7 +37,7 @@ check("auth routes keyed by a module constant are census items", ids.has("auth-h
 const problems = ownerMapProblems(items, map);
 check(`every one of ${items.length} items has a well-formed owner and every row is live`, problems.length === 0, problems);
 
-const withRow = (owners: Record<string, string>): OwnerMap => ({ owners, checklist: map.checklist });
+const withRow = (owners: OwnerMap["owners"]): OwnerMap => ({ owners, checklist: map.checklist });
 const added = [...items, { id: "ep:manager:spawn.addedField", source: "self-test" }];
 check("a field added under an existing command fails as unowned",
   ownerMapProblems(added, map).includes("ep:manager:spawn.addedField: no owner row"));
@@ -55,5 +55,11 @@ check("an owner naming a mode its command does not declare fails",
 check("an endpoint item cannot be marked internal",
   ownerMapProblems(items, withRow({ ...map.owners, "ep:manager:ps": "internal:not a capability" }))
     .includes("ep:manager:ps: a ep item is a user capability and cannot be internal"));
+check("each owner in a list is checked",
+  ownerMapProblems(items, withRow({ ...map.owners, "ep:manager:run-answer": ["current:run answer", "current:run no-such-mode"] }))
+    .includes('ep:manager:run-answer: "run" declares no "no-such-mode" mode'));
+check("a list of one owner fails",
+  ownerMapProblems(items, withRow({ ...map.owners, "ep:manager:ps": ["current:ps"] }))
+    .includes("ep:manager:ps: an owner list names two or more different owners; write one owner as a string"));
 
 finish();

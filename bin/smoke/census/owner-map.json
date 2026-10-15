@@ -1,5 +1,5 @@
 {
- "$comment": "Capability census owner map, read by bin/smoke/capability-census.smoke.ts. One row per item that bin/smoke/census/sources.ts lists. An owner is \"current:<command> [words] [--flag ...]\" for a registered command that performs the item today, \"pending:<command> [words] [--flag ...]\" for the command the CLI redesign adds for it, or \"internal:<reason>\" for machinery that is not a user capability. The checklist covers prose sources the extractor cannot read.",
+ "$comment": "Capability census owner map, read by bin/smoke/capability-census.smoke.ts. One row per item that bin/smoke/census/sources.ts lists. An owner is \"current:<command> [words] [--flag ...]\" for a registered command that performs the item today, \"pending:<command> [words] [--flag ...]\" for the command the CLI redesign adds for it, or \"internal:<reason>\" for machinery that is not a user capability. An item that more than one entry point issues lists each owner. The checklist covers prose sources the extractor cannot read.",
  "owners": {
   "agent-file:agent": "current:personas",
   "agent-file:allowPublish": "current:personas",
@@ -648,7 +648,10 @@
   "ep:manager:attach#ephemeral/manager.lifecycle": "current:attach",
   "ep:manager:attach@any": "current:attach",
   "ep:manager:attach@owner": "current:attach",
-  "ep:manager:cancel": "current:run --local",
+  "ep:manager:cancel": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
   "ep:manager:cancel#ephemeral/manager.lifecycle": "current:run --local",
   "ep:manager:cancel.goalId": "current:run --local",
   "ep:manager:cancel.mode": "current:run --local",
@@ -721,9 +724,12 @@
   "ep:manager:resume-preserved#ephemeral/manager.admin": "current:up --restore",
   "ep:manager:resume-preserved.attemptId": "current:up --restore",
   "ep:manager:resume-preserved.inventory": "current:up --restore",
-  "ep:manager:run-answer": "current:run answer",
+  "ep:manager:run-answer": [
+   "current:run answer",
+   "current:run amend"
+  ],
   "ep:manager:run-answer#ephemeral/manager.run": "current:run",
-  "ep:manager:run-answer.amend": "current:run",
+  "ep:manager:run-answer.amend": "current:run amend",
   "ep:manager:run-answer.artifact": "current:run --artifact",
   "ep:manager:run-answer.endpoint": "current:run --endpoint",
   "ep:manager:run-answer.runId": "current:run",
@@ -788,7 +794,10 @@
   "ep:manager:transcript-receive.source": "current:spawn --resume",
   "ep:manager:transcript-receive.sourceHost": "current:spawn --resume",
   "ep:manager:transcript-receive.title": "current:spawn --resume",
-  "ep:manager:turn": "current:run --local",
+  "ep:manager:turn": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
   "ep:manager:turn#ephemeral/manager.lifecycle": "current:run --local",
   "ep:manager:turn-pending": "pending:run turns",
   "ep:manager:turn-pending#ephemeral/manager.self": "pending:run turns",

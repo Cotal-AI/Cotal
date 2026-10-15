@@ -8,7 +8,7 @@
  */
 import type { NatsConnection } from "@nats-io/transport-node";
 import { spacePrefix } from "@cotal-ai/core";
-import { parseOwner, type OwnerMap } from "./owners.js";
+import { ownersOf, parseOwner, type CommandOwner, type OwnerMap } from "./owners.js";
 
 /** One endpoint request seen on the wire, with its input fields as dotted paths. */
 export interface ObservedRequest {
@@ -99,20 +99,24 @@ const PROTOCOL_COMMANDS = new Set(["describe"]);
  * field whose contract declares no properties (an options map, forwarded tool arguments) is one
  * value: the keys under it are data, not fields.
  *
- * Conversely, of the endpoint-command rows naming this command and mode with flags this invocation
- * passes, the most specific apply: `ps --slots` selects the `ps --slots` row rather than the bare
- * `ps` one. Rows that share one owner are alternatives, so at least one of them must have been
- * issued: `invoke` issues the endpoint command its arguments name, and a step that runs only on
- * refusal (`abort-preservation`) is not issued when the operation succeeds.
+ * Conversely, the invocation selects one owner: its command, its mode and the path flags it passes,
+ * where a path flag is one that a current endpoint-command row of the command names. `ps --slots`
+ * selects `current:ps --slots`, and `run ps --local`, which reads the run stores directly, selects
+ * an owner no row names. The endpoint-command rows of that owner are alternatives, so at least one
+ * of them must have been issued: `invoke` issues the endpoint command its arguments name, and a
+ * step that runs only on refusal (`abort-preservation`) is not issued when the operation succeeds.
+ * An item that more than one entry point issues lists each owner, and each selects it.
  */
 export function executionProblems(run: Invocation, observed: readonly ObservedRequest[], map: OwnerMap, steps: readonly string[] = []): string[] {
   const problems: string[] = [];
   const label = [run.command, ...run.words, ...run.flags].join(" ");
-  const ownerOf = (item: string) => {
-    const owner = map.owners[item];
-    const parsed = owner === undefined ? undefined : parseOwner(owner);
-    return typeof parsed === "object" && parsed.state === "current" ? parsed : undefined;
-  };
+  const current = (item: string) =>
+    ownersOf(map, item).flatMap((owner) => {
+      const parsed = parseOwner(owner);
+      return typeof parsed === "object" && parsed.state === "current" ? [parsed] : [];
+    });
+  const ownedHere = (item: string) => current(item).some((owner) => owner.command === run.command);
+  const shown = (item: string) => ownersOf(map, item).join(" or ") || "missing";
   const structured = new Set<string>();
   for (const key of Object.keys(map.owners))
     if (/^ep:[^@#]+$/.test(key)) for (let i = key.indexOf("."); i !== -1; i = key.indexOf(".", i + 1)) structured.add(key.slice(0, i));
@@ -130,25 +134,19 @@ export function executionProblems(run: Invocation, observed: readonly ObservedRe
     const item = `ep:${req.endpoint}:${req.command}`;
     issued.add(item);
     if (steps.includes(item)) continue;
-    if (ownerOf(item)?.command !== run.command) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${map.owners[item] ?? "missing"}`);
+    if (!ownedHere(item)) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${shown(item)}`);
     for (const field of new Set(req.fields.map((f) => fieldItem(item, f))))
-      if (ownerOf(field)?.command !== run.command)
-        problems.push(`cotal ${label} sent ${req.endpoint} ${req.command} field ${field.slice(item.length + 1)}, whose owner is ${map.owners[field] ?? "missing"}`);
+      if (!ownedHere(field))
+        problems.push(`cotal ${label} sent ${req.endpoint} ${req.command} field ${field.slice(item.length + 1)}, whose owner is ${shown(field)}`);
   }
-  const within = (a: readonly string[], b: readonly string[]) => a.every((x) => b.includes(x));
-  const matching = Object.keys(map.owners).flatMap((item) => {
-    const owner = /^ep:[^:]+:[^.@#]+$/.test(item) ? ownerOf(item) : undefined;
-    const words = owner?.words.join(" ");
-    return owner?.command === run.command && words === run.words.join(" ") && within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];
-  });
-  const alternatives = new Map<string, string[]>();
-  for (const { item, flags } of matching) {
-    if (matching.some((other) => other.flags.length > flags.length && within(flags, other.flags))) continue;
-    const key = [...flags].sort().join(" ");
-    alternatives.set(key, [...(alternatives.get(key) ?? []), item]);
-  }
-  for (const items of alternatives.values())
-    if (!items.some((item) => issued.has(item)))
-      problems.push(`cotal ${label} issued none of the rows owned by ${map.owners[items[0]!]}: ${items.join(", ")}`);
+  const commandRows = Object.keys(map.owners).filter((item) => /^ep:[^:]+:[^.@#]+$/.test(item));
+  const ofCommand = (item: string) => current(item).filter((owner) => owner.command === run.command);
+  const pathFlags = new Set(commandRows.flatMap((item) => ofCommand(item).flatMap((owner) => owner.flags)));
+  const selected = run.flags.filter((flag) => pathFlags.has(flag));
+  const selects = (owner: CommandOwner) =>
+    owner.words.join(" ") === run.words.join(" ") && owner.flags.length === selected.length && selected.every((flag) => owner.flags.includes(flag));
+  const required = commandRows.filter((item) => ofCommand(item).some(selects));
+  if (required.length > 0 && !required.some((item) => issued.has(item)))
+    problems.push(`cotal ${label} issued none of the rows owned by ${["current:" + run.command, ...run.words, ...selected].join(" ")}: ${required.join(", ")}`);
   return problems;
 }

@@ -129,6 +129,16 @@ try {
     executionProblems(invocationOf(["down", "--preserve-state"], map), preserved, map));
   check("a run mode's row is required of that mode",
     executionProblems(invocationOf(["run", "start", "--file", "p"], map), [], map).some((p) => p.includes("ep:manager:run-start")));
+  check("an amend that issued nothing fails on the row it shares with answer",
+    executionProblems(invocationOf(["run", "amend", "r", "s", "--value", "x"], map), [], map)
+      .includes("cotal run amend --value issued none of the rows owned by current:run amend: ep:manager:run-answer"));
+  const turned = [{ endpoint: "manager", command: "turn", fields: [] }];
+  check("a local start that drove a turn passes without run-start",
+    executionProblems(invocationOf(["run", "start", "--local", "--file", "p"], map), turned, map).length === 0,
+    executionProblems(invocationOf(["run", "start", "--local", "--file", "p"], map), turned, map));
+  check("a local read, which issues no endpoint command, passes",
+    executionProblems(invocationOf(["run", "ps", "--local"], map), [], map).length === 0,
+    executionProblems(invocationOf(["run", "ps", "--local"], map), [], map));
   let refused = "";
   try { invocationOf(["spawn", "-f", "cotal.yaml"], map); } catch (e) { refused = e instanceof Error ? e.message : String(e); }
   check("a case written with a short flag is refused", refused.includes("write -f in its long form"), refused);

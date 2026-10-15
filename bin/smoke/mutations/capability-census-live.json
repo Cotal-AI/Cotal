@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/capability-census-live.smoke.ts"
   ],
-  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows: a row naming another command fails, an option map's keys are one value while an undeclared key under a structured field fails, and of the most specific rows the invocation's mode and flags select, each owner's group must have one issued",
+  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows: a row naming another command fails, an option map's keys are one value while an undeclared key under a structured field fails, and the owner the invocation's mode and path flags select must have one of its rows issued, an item that several entry points issue listing each owner",
   "command": "pnpm smoke:capability-census:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census-live.json",
@@ -13,7 +13,7 @@
     {
       "name": "an issued command is no longer compared with its owner",
       "file": "bin/smoke/census/execute.ts",
-      "find": "    if (ownerOf(item)?.command !== run.command) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${map.owners[item] ?? \"missing\"}`);",
+      "find": "    if (!ownedHere(item)) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${shown(item)}`);",
       "replace": "",
       "expectRed": "a row that names another command for manager ps fails on the same observation",
       "cell": "a row that names another command for manager ps fails on the same observation"
@@ -21,7 +21,7 @@
     {
       "name": "an issued input field is no longer compared with its owner",
       "file": "bin/smoke/census/execute.ts",
-      "find": "      if (ownerOf(field)?.command !== run.command)",
+      "find": "      if (!ownedHere(field))",
       "replace": "      if (false)",
       "expectRed": "a field row that names another command fails on the models observation",
       "cell": "a field row that names another command fails on the models observation"
@@ -35,18 +35,18 @@
       "cell": "every request cotal spawn scout --detach --agent claude --opt effort=high issued matches its owner rows"
     },
     {
-      "name": "must-issue applies only to rows naming exactly the invocation's flags",
+      "name": "every flag counts as a path flag",
       "file": "bin/smoke/census/execute.ts",
-      "find": "&& within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];",
-      "replace": "&& owner.flags.length === run.flags.length && within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];",
+      "find": "  const selected = run.flags.filter((flag) => pathFlags.has(flag));",
+      "replace": "  const selected = run.flags;",
       "expectRed": "a models run that issued nothing fails on the row it should have issued",
       "cell": "a models run that issued nothing fails on the row it should have issued"
     },
     {
-      "name": "a less specific row is no longer shadowed by the row the flags select",
+      "name": "path flags no longer select an owner",
       "file": "bin/smoke/census/execute.ts",
-      "find": "    if (matching.some((other) => other.flags.length > flags.length && within(flags, other.flags))) continue;",
-      "replace": "    if (false) continue;",
+      "find": "  const selected = run.flags.filter((flag) => pathFlags.has(flag));",
+      "replace": "  const selected: string[] = [];",
       "expectRed": "every request cotal ps --slots issued matches its owner rows",
       "cell": "every request cotal ps --slots issued matches its owner rows"
     },
@@ -61,8 +61,8 @@
     {
       "name": "rows that share an owner are all required instead of one",
       "file": "bin/smoke/census/execute.ts",
-      "find": "    if (!items.some((item) => issued.has(item)))",
-      "replace": "    if (!items.every((item) => issued.has(item)))",
+      "find": "  if (required.length > 0 && !required.some((item) => issued.has(item)))",
+      "replace": "  if (required.length > 0 && !required.every((item) => issued.has(item)))",
       "expectRed": "an invoke that issued one of the endpoint commands invoke owns passes",
       "cell": "an invoke that issued one of the endpoint commands invoke owns passes"
     },
@@ -73,6 +73,14 @@
       "replace": "      if (id in map.owners) return id;",
       "expectRed": "an undeclared key under a field whose contract lists its properties still fails",
       "cell": "an undeclared key under a field whose contract lists its properties still fails"
+    },
+    {
+      "name": "only an item's first owner selects it",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "  const required = commandRows.filter((item) => ofCommand(item).some(selects));",
+      "replace": "  const required = commandRows.filter((item) => ofCommand(item).slice(0, 1).some(selects));",
+      "expectRed": "an amend that issued nothing fails on the row it shares with answer",
+      "cell": "an amend that issued nothing fails on the row it shares with answer"
     }
   ]
 }
