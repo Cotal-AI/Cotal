@@ -162,7 +162,8 @@ export function usageModes(name: string, usage: string): string[] {
   return [...modes];
 }
 
-/** Registered CLI commands, their declared flags and the subcommand modes their usage declares. */
+/** Registered CLI commands, their declared flags and the subcommand modes their usage or their
+ *  positionals declare. */
 export async function cliItems(): Promise<CensusItem[]> {
   for (const surface of COMMAND_SURFACES) await import(surface);
   const { registry } = await import("@cotal-ai/core");
@@ -170,7 +171,9 @@ export async function cliItems(): Promise<CensusItem[]> {
   for (const cmd of registry.all<import("@cotal-ai/core").Command>("command")) {
     items.push({ id: `cli:${cmd.name}`, source: "command registry" });
     for (const flag of cmd.flags ?? []) items.push({ id: `cli:${cmd.name}--${flag.name}`, source: "command registry" });
-    for (const mode of usageModes(cmd.name, cmd.usage ?? "")) items.push({ id: `cli:${cmd.name} ${mode}`, source: "command usage" });
+    const declared = [cmd.usage ?? "", cmd.positionals === undefined ? "" : `${cmd.name} ${cmd.positionals}`];
+    for (const mode of new Set(declared.flatMap((text) => usageModes(cmd.name, text))))
+      items.push({ id: `cli:${cmd.name} ${mode}`, source: "command usage" });
   }
   return items;
 }
@@ -226,12 +229,13 @@ export function rosterItems(): CensusItem[] {
  *  that share the prefix are not environment variables and do not match. */
 const ENV_SHAPED = String.raw`(env\??\.|env\[["']|["'$]|\$\{)COTAL_[A-Z0-9_]*[A-Z0-9]|COTAL_[A-Z0-9_]*[A-Z0-9]=|(^ *|[{,(] *)COTAL_[A-Z0-9_]*[A-Z0-9]\??:`;
 
-/** COTAL_* environment variables that shipped source reads or sets. */
+/** COTAL_* environment variables that shipped source reads or sets. Smoke and soak scripts and the
+ *  private smoke-kit are test code, not shipped source. */
 export function envItems(): CensusItem[] {
   const out = execFileSync(
     "git",
     ["grep", "-hoE", ENV_SHAPED, "--", "packages", "implementations", "extensions", "bin/cotal.ts", "bin/run.ts",
-      ":!**/smoke/**", ":!**/smoke.ts", ":!**/*.smoke.*", ":!**/test/**", ":!**/*.test.*", ":!**/*.md", ":!**/dist/**", ":!**/claude-plugin/**"],
+      ":!**/smoke/**", ":!**/smoke.ts", ":!**/soak.ts", ":!**/*.smoke.*", ":!packages/smoke-kit/**", ":!**/test/**", ":!**/*.test.*", ":!**/*.md", ":!**/dist/**", ":!**/claude-plugin/**"],
     { cwd: REPO, encoding: "utf8" },
   );
   const names = new Set(out.match(/COTAL_[A-Z0-9_]*[A-Z0-9]/g) ?? []);

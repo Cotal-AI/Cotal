@@ -65,14 +65,21 @@ export interface Invocation {
 /** Flags that pick the target space or connection rather than the capability. */
 const TARGET_FLAGS = new Set(["--space", "--server", "--creds"]);
 
-/** The invocation an argv names: leading bare words are the mode, `--flags` outside the target set. */
-export function invocationOf(argv: readonly string[]): Invocation {
+/**
+ * The invocation an argv names: the longest run of leading bare words that is a mode the command
+ * declares (a `cli:<command> <mode>` row), so positional values are not mode words, and the
+ * `--flags` outside the target set.
+ */
+export function invocationOf(argv: readonly string[], map: OwnerMap): Invocation {
   const [command, ...rest] = argv;
-  const words: string[] = [];
+  const bare: string[] = [];
   for (const token of rest) {
     if (token.startsWith("-")) break;
-    words.push(token);
+    bare.push(token);
   }
+  let words: string[] = [];
+  for (let n = bare.length; n > 0 && words.length === 0; n--)
+    if (`cli:${command} ${bare.slice(0, n).join(" ")}` in map.owners) words = bare.slice(0, n);
   const flags = [...new Set(rest.filter((t) => t.startsWith("--") && !TARGET_FLAGS.has(t)).map((t) => t.split("=", 1)[0]!))];
   return { command: command!, words, flags };
 }
@@ -86,9 +93,13 @@ const PROTOCOL_COMMANDS = new Set(["describe"]);
  * Every issued command and input field must be owned by `current:<command>`, whatever mode or flag
  * the row adds, because a command can send a field on every run (a default) or issue a command as a
  * step of a larger operation. `steps` lists the endpoint commands this invocation issues as
- * resolution for another one (a targeted command looks its target up first); they are exempt.
- * Conversely, every endpoint command whose row names exactly this command, mode and flags must
- * have been issued.
+ * resolution for another one (a targeted command looks its target up first); they are exempt. A
+ * field whose contract declares no properties (an options map, forwarded tool arguments) is one
+ * value: the keys under it are data, not fields.
+ *
+ * Conversely, of the endpoint-command rows naming this command and mode with flags this invocation
+ * passes, the most specific must have been issued: `ps --slots` must issue the `ps --slots` row
+ * rather than the bare `ps` one.
  */
 export function executionProblems(run: Invocation, observed: readonly ObservedRequest[], map: OwnerMap, steps: readonly string[] = []): string[] {
   const problems: string[] = [];
@@ -98,6 +109,17 @@ export function executionProblems(run: Invocation, observed: readonly ObservedRe
     const parsed = owner === undefined ? undefined : parseOwner(owner);
     return typeof parsed === "object" && parsed.state === "current" ? parsed : undefined;
   };
+  const structured = new Set<string>();
+  for (const key of Object.keys(map.owners))
+    if (/^ep:[^@#]+$/.test(key)) for (let i = key.indexOf("."); i !== -1; i = key.indexOf(".", i + 1)) structured.add(key.slice(0, i));
+  const fieldItem = (item: string, path: string) => {
+    const parts = path.split(".");
+    for (let n = 1; n < parts.length; n++) {
+      const id = `${item}.${parts.slice(0, n).join(".")}`;
+      if (id in map.owners && !structured.has(id)) return id;
+    }
+    return `${item}.${path}`;
+  };
   const issued = new Set<string>();
   for (const req of observed) {
     if (PROTOCOL_COMMANDS.has(req.command)) continue;
@@ -105,16 +127,19 @@ export function executionProblems(run: Invocation, observed: readonly ObservedRe
     issued.add(item);
     if (steps.includes(item)) continue;
     if (ownerOf(item)?.command !== run.command) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${map.owners[item] ?? "missing"}`);
-    for (const field of req.fields)
-      if (ownerOf(`${item}.${field}`)?.command !== run.command)
-        problems.push(`cotal ${label} sent ${req.endpoint} ${req.command} field ${field}, whose owner is ${map.owners[`${item}.${field}`] ?? "missing"}`);
+    for (const field of new Set(req.fields.map((f) => fieldItem(item, f))))
+      if (ownerOf(field)?.command !== run.command)
+        problems.push(`cotal ${label} sent ${req.endpoint} ${req.command} field ${field.slice(item.length + 1)}, whose owner is ${map.owners[field] ?? "missing"}`);
   }
-  const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x) => b.includes(x));
-  for (const item of Object.keys(map.owners)) {
-    if (!/^ep:[^:]+:[^.@#]+$/.test(item)) continue;
-    const owner = ownerOf(item);
-    if (owner?.command === run.command && same(owner.words, run.words) && same(owner.flags, run.flags) && !issued.has(item))
-      problems.push(`${item} is owned by current:${label} but cotal ${label} did not issue it`);
+  const within = (a: readonly string[], b: readonly string[]) => a.every((x) => b.includes(x));
+  const matching = Object.keys(map.owners).flatMap((item) => {
+    const owner = /^ep:[^:]+:[^.@#]+$/.test(item) ? ownerOf(item) : undefined;
+    const words = owner?.words.join(" ");
+    return owner?.command === run.command && words === run.words.join(" ") && within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];
+  });
+  for (const { item, flags } of matching) {
+    const shadowed = matching.some((other) => other.flags.length > flags.length && within(flags, other.flags));
+    if (!shadowed && !issued.has(item)) problems.push(`${item} is owned by ${map.owners[item]} but cotal ${label} did not issue it`);
   }
   return problems;
 }

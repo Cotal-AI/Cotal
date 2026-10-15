@@ -83,6 +83,7 @@ try {
     { argv: ["ps"] },
     { argv: ["ps", "--slots"] },
     { argv: ["models", "--agent", "claude", "--refresh"] },
+    { argv: ["spawn", "scout", "--detach", "--agent", "claude", "--opt", "effort=high"] },
   ];
   const observations = new Map<string, ObservedRequest[]>();
   const statuses = new Map<string, number | null | undefined>();
@@ -93,7 +94,7 @@ try {
     observations.set(argv.join(" "), observed);
     statuses.set(argv.join(" "), result?.status);
     check(`${label} issued a manager command`, observed.some((r) => r.endpoint === "manager" && r.command !== "describe"), { observed, output: result?.output });
-    const problems = executionProblems(invocationOf(argv), observed, map, steps);
+    const problems = executionProblems(invocationOf(argv, map), observed, map, steps);
     check(`every request ${label} issued matches its owner rows`, problems.length === 0, problems);
   }
   check("cotal ps against the live manager exits 0", statuses.get("ps") === 0, statuses.get("ps"));
@@ -101,14 +102,24 @@ try {
   check("the models case compared the input fields it sent",
     models.some((r) => r.command === "models" && r.fields.includes("agent") && r.fields.includes("refresh")), models);
   const psObserved = observations.get("ps") ?? [];
+  const spawned = observations.get("spawn scout --detach --agent claude --opt effort=high") ?? [];
+  check("the spawn case sent a key under its options map",
+    spawned.some((r) => r.command === "spawn" && r.fields.includes("launchOptions.effort")), spawned);
+  check("an undeclared key under a field whose contract lists its properties still fails",
+    executionProblems(invocationOf(["spawn", "scout", "--detach"], map), [{ endpoint: "manager", command: "spawn", fields: ["supervise.bogus"] }], map)
+      .includes("cotal spawn --detach sent manager spawn field supervise.bogus, whose owner is missing"));
 
   const wrongField = { ...map, owners: { ...map.owners, "ep:manager:models.agent": "current:ps" } };
   check("a field row that names another command fails on the models observation",
-    executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"]), models, wrongField)
+    executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"], map), models, wrongField)
       .includes("cotal models --agent --refresh sent manager models field agent, whose owner is current:ps"));
   const wrong = { ...map, owners: { ...map.owners, "ep:manager:ps": "current:models" } };
   check("a row that names another command for manager ps fails on the same observation",
-    executionProblems(invocationOf(["ps"]), psObserved, wrong).includes("cotal ps issued manager ps, whose owner is current:models"));
+    executionProblems(invocationOf(["ps"], map), psObserved, wrong).includes("cotal ps issued manager ps, whose owner is current:models"));
+  check("a models run that issued nothing fails on the row it should have issued",
+    executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"], map), [], map)
+      .includes("ep:manager:models is owned by current:models but cotal models --agent --refresh did not issue it"));
+  check("positional values after a mode are not mode words", invocationOf(["send", "dm", "alice", "hi"], map).words.join(" ") === "dm");
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {

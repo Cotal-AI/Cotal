@@ -28,6 +28,8 @@ check("endpoint items reach nested input fields and target modes",
 check("CLI items reach the subcommand modes usage strings declare, repeated forms included",
   ["cli:meshes rm", "cli:clean restore-fallback", "cli:linear account add", "cli:send dm"].every((id) => ids.has(id)),
   [...ids].filter((id) => /^cli:\S+ /.test(id)));
+check("CLI items reach modes declared only in a command's positionals",
+  ["cli:doctor auth", "cli:deliver pending", "cli:run migrate"].every((id) => ids.has(id)));
 check("auth routes keyed by a module constant are census items", ids.has("auth-http:/interactive-lifecycle/retire"));
 
 const problems = ownerMapProblems(items, map);

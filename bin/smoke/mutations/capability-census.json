@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/capability-census.smoke.ts"
   ],
-  "guard": "every census item needs a well-formed owner row and every row a live item; the extractor reads endpoint input fields at nested depth, the subcommand modes usage strings declare and route keys held in constants, so a capability added under an existing command fails until mapped; an owner naming an unregistered command, mode or flag fails",
+  "guard": "every census item needs a well-formed owner row and every row a live item; the extractor reads endpoint input fields at nested depth, the subcommand modes usage strings and positionals declare and route keys held in constants, so a capability added under an existing command fails until mapped; an owner naming an unregistered command, mode or flag fails",
   "command": "pnpm smoke:capability-census",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census.json",
@@ -49,6 +49,14 @@
       "replace": "        const text = ts.isStringLiteral(key) ? key.text : \"\";\n        if (text === undefined) throw",
       "expectRed": "auth routes keyed by a module constant are census items",
       "cell": "auth routes keyed by a module constant are census items"
+    },
+    {
+      "name": "modes declared only in positionals are no longer census items",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "    const declared = [cmd.usage ?? \"\", cmd.positionals === undefined ? \"\" : `${cmd.name} ${cmd.positionals}`];",
+      "replace": "    const declared = [cmd.usage ?? \"\"];",
+      "expectRed": "CLI items reach modes declared only in a command's positionals",
+      "cell": "CLI items reach modes declared only in a command's positionals"
     }
   ]
 }

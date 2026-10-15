@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/capability-census-live.smoke.ts"
   ],
-  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows, so a row naming another command fails",
+  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows: a row naming another command fails, an option map's keys are one value while an undeclared key under a structured field fails, and the most specific row the invocation's mode and flags select must have been issued",
   "command": "pnpm smoke:capability-census:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census-live.json",
@@ -21,10 +21,42 @@
     {
       "name": "an issued input field is no longer compared with its owner",
       "file": "bin/smoke/census/execute.ts",
-      "find": "      if (ownerOf(`${item}.${field}`)?.command !== run.command)",
+      "find": "      if (ownerOf(field)?.command !== run.command)",
       "replace": "      if (false)",
       "expectRed": "a field row that names another command fails on the models observation",
       "cell": "a field row that names another command fails on the models observation"
+    },
+    {
+      "name": "keys under a field with no declared properties are graded as fields",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "      if (id in map.owners && !structured.has(id)) return id;",
+      "replace": "      if (false) return id;",
+      "expectRed": "every request cotal spawn scout --detach --agent claude --opt effort=high issued matches its owner rows",
+      "cell": "every request cotal spawn scout --detach --agent claude --opt effort=high issued matches its owner rows"
+    },
+    {
+      "name": "must-issue applies only to rows naming exactly the invocation's flags",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "&& within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];",
+      "replace": "&& owner.flags.length === run.flags.length && within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];",
+      "expectRed": "a models run that issued nothing fails on the row it should have issued",
+      "cell": "a models run that issued nothing fails on the row it should have issued"
+    },
+    {
+      "name": "a less specific row is no longer shadowed by the row the flags select",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    const shadowed = matching.some((other) => other.flags.length > flags.length && within(flags, other.flags));",
+      "replace": "    const shadowed = false;",
+      "expectRed": "every request cotal ps --slots issued matches its owner rows",
+      "cell": "every request cotal ps --slots issued matches its owner rows"
+    },
+    {
+      "name": "every leading bare word counts as a mode word",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (`cli:${command} ${bare.slice(0, n).join(\" \")}` in map.owners) words = bare.slice(0, n);",
+      "replace": "    words = bare.slice(0, n);",
+      "expectRed": "positional values after a mode are not mode words",
+      "cell": "positional values after a mode are not mode words"
     }
   ]
 }
