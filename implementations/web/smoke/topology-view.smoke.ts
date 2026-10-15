@@ -239,26 +239,44 @@ const DomWheelEvent = (dom.window as unknown as { WheelEvent: typeof WheelEvent 
 {
   const store = seed({ activity: [{ mode: "chat", channel: "alerts", senderId: "A", msg: msgOf("A", NOW) }] });
   let clockNow = NOW + 1000;
-  let reads = 0;
-  const errors = await errorsDuring(async () => {
-    const m = await mount(createElement(TopologyView, { store, clock: () => { reads++; return clockNow; } }));
-    const button = () => [...m.container.querySelectorAll("button")].find((b) => b.textContent === "Hide offline")!;
-    ok("3.18 Hide offline starts pressed, with the offline agent gone", button().getAttribute("aria-pressed") === "true" && !nodeIds(m.container).includes("C"), nodeIds(m.container));
-    await m.run(() => button().click());
-    ok("3.19 pressing it shows the offline agent again", button().getAttribute("aria-pressed") === "false" && nodeIds(m.container).includes("C"), nodeIds(m.container));
-    await m.run(() => button().click());
-    ok("3.20 and pressing it again hides it", button().getAttribute("aria-pressed") === "true" && !nodeIds(m.container).includes("C"));
+  // The view's own redraw timers (every 500 ms while a link is hot, every 5 s otherwise), told apart
+  // from d3's polling interval by their delay, so a cell can ask how many are still running.
+  const timers = new Map<unknown, number>();
+  const realSet = globalThis.setInterval;
+  const realClear = globalThis.clearInterval;
+  globalThis.setInterval = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+    const id = realSet(fn, ms, ...rest);
+    if (ms === 500 || ms === 5000) timers.set(id, ms);
+    return id;
+  }) as typeof setInterval;
+  globalThis.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => {
+    timers.delete(id);
+    return realClear(id);
+  }) as typeof clearInterval;
+  try {
+    const errors = await errorsDuring(async () => {
+      const m = await mount(createElement(TopologyView, { store, clock: () => clockNow }));
+      const button = () => [...m.container.querySelectorAll("button")].find((b) => b.textContent === "Hide offline")!;
+      ok("3.18 Hide offline starts pressed, with the offline agent gone", button().getAttribute("aria-pressed") === "true" && !nodeIds(m.container).includes("C"), nodeIds(m.container));
+      await m.run(() => button().click());
+      ok("3.19 pressing it shows the offline agent again", button().getAttribute("aria-pressed") === "false" && nodeIds(m.container).includes("C"), nodeIds(m.container));
+      await m.run(() => button().click());
+      ok("3.20 and pressing it again hides it", button().getAttribute("aria-pressed") === "true" && !nodeIds(m.container).includes("C"));
 
-    ok("3.21 a link is hot a second after its message", m.container.querySelectorAll(".ui-tl-hot").length > 0);
-    clockNow = NOW + 5000;
-    await m.run(() => sleep(700));
-    ok("3.22 with no other event, the view draws again and the link goes cold on its own", m.container.querySelectorAll(".ui-tl-hot").length === 0, m.container.querySelectorAll(".ui-tl-hot").length);
-    await m.unmount();
-    const after = reads;
-    await sleep(700);
-    ok("3.23 unmounting stops the view's timer", reads === after, { after, now: reads });
-  });
-  ok("3.24 none of it raised a React warning", errors.length === 0, errors);
+      ok("3.21 a link is hot a second after its message", m.container.querySelectorAll(".ui-tl-hot").length > 0);
+      ok("3.22 the view has one redraw timer running, and it is the fast one while a link is hot", [...timers.values()].join() === "500", [...timers.values()]);
+      clockNow = NOW + 5000;
+      await m.run(() => sleep(700));
+      ok("3.23 with no other event, the view draws again and the link goes cold on its own", m.container.querySelectorAll(".ui-tl-hot").length === 0, m.container.querySelectorAll(".ui-tl-hot").length);
+      ok("3.24 and with nothing hot it slows to the idle timer, still one", [...timers.values()].join() === "5000", [...timers.values()]);
+      await m.unmount();
+      ok("3.25 unmounting clears the view's timer", timers.size === 0, [...timers.values()]);
+    });
+    ok("3.26 none of it raised a React warning", errors.length === 0, errors);
+  } finally {
+    globalThis.setInterval = realSet;
+    globalThis.clearInterval = realClear;
+  }
 }
 
 // 4. The layout on its own, with no React and no frames

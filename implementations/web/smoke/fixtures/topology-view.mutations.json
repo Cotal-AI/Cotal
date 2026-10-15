@@ -66,16 +66,16 @@
       "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
       "find": "hot ? 500 : 5000",
       "replace": "hot ? 500000 : 5000",
-      "expectRed": "3.22 with no other event, the view draws again and the link goes cold on its own",
-      "cell": "3.22 with no other event, the view draws again and the link goes cold on its own"
+      "expectRed": "3.22 the view has one redraw timer running, and it is the fast one while a link is hot",
+      "cell": "3.22 the view has one redraw timer running, and it is the fast one while a link is hot"
     },
     {
       "name": "T9 the redraw timer is never cleared",
       "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
       "find": "return () => clearInterval(id);",
       "replace": "return () => void id;",
-      "expectRed": "3.23 unmounting stops the view's timer",
-      "cell": "3.23 unmounting stops the view's timer"
+      "expectRed": "3.25 unmounting clears the view's timer",
+      "cell": "3.25 unmounting clears the view's timer"
     },
     {
       "name": "T10 a message is attributed to the sender id in its payload instead of the verified one",
@@ -268,6 +268,22 @@
       "replace": "return null;",
       "expectRed": "2.24 the shell draws the topology view in its centre on the topology route",
       "cell": "2.24 the shell draws the topology view in its centre on the topology route"
+    },
+    {
+      "name": "T11 the idle redraw timer waits a day, so the pill cannot turn stale on its own",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "hot ? 500 : 5000",
+      "replace": "hot ? 500 : 86400000",
+      "expectRed": "3.24 and with nothing hot it slows to the idle timer, still one",
+      "cell": "3.24 and with nothing hot it slows to the idle timer, still one"
+    },
+    {
+      "name": "T12 the redraw timer runs and redraws nothing, so a hot link never cools",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "setInterval(redraw, hot ? 500 : 5000)",
+      "replace": "setInterval(() => void redraw, hot ? 500 : 5000)",
+      "expectRed": "3.23 with no other event, the view draws again and the link goes cold on its own",
+      "cell": "3.23 with no other event, the view draws again and the link goes cold on its own"
     }
   ]
 }
