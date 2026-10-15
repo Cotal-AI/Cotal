@@ -37,7 +37,7 @@ export function Shell({ store, controller, route, paneOpen }: { store: Store<Das
   const dms = useStore(store, (s) => s.dms);
   const open = useStore(store, (s) => s.open);
   const idx = useMemo(() => nameIndex(roster), [roster]);
-  const peer = useMemo(() => dmPeers(dms.map((d) => d.msg), roster)[0]?.id ?? null, [dms, roster]);
+  const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
   return (
     <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer}>
       <title>{documentTitle(space)}</title>

@@ -108,6 +108,14 @@
       "replace": "  return i;",
       "expectRed": "2.11c rosterRows sorts a status outside the four after every known one, not first",
       "cell": "2.11c rosterRows sorts a status outside the four after every known one, not first"
+    },
+    {
+      "name": "dmPeers files a DM under the sender the payload claims, so a peer that writes another's id has its messages filed under that other peer",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "    const from = m.senderId ?? m.msg.from?.id;",
+      "replace": "    const from = m.msg.from?.id;",
+      "expectRed": "3.9 dmPeers files a live DM under its verified senderId, not the payload's from.id",
+      "cell": "3.9 dmPeers files a live DM under its verified senderId, not the payload's from.id"
     }
   ]
 }

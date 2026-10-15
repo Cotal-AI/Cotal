@@ -1,12 +1,13 @@
 // Direct messages rolled up per peer. Every name, role and status comes from the roster by id: a
 // payload's `from.name` is sender-chosen display text and is never read here.
-import type { CotalMessage, RosterEntry } from "../api/types.js";
+import type { RosterEntry } from "../api/types.js";
+import type { StoredMessage } from "../state/types.js";
 import { displayNameOf, nameIndex } from "./names.js";
 
 export interface DmConversation {
   key: string;
   with: string;
-  messages: CotalMessage[];
+  messages: StoredMessage[];
   last: number;
 }
 
@@ -22,19 +23,22 @@ export interface DmPeer {
 
 const SEP = "\u0001";
 
-/** Group raw DMs into per-peer rows; each peer lists its counterparties (conversations). Work is
+/** Group DMs into per-peer rows; each peer lists its counterparties (conversations). Work is
  *  O(peers with DMs), never the n² pair cross-product: only pairs that actually talked. A peer
- *  absent from the roster is offline with no role. */
-export function dmPeers(dms: CotalMessage[], roster: RosterEntry[]): DmPeer[] {
+ *  absent from the roster is offline with no role.
+ *
+ *  The sender is the verified `senderId` when the row has one, and the payload's `from.id` only for
+ *  a history row, which carries no verified sender. */
+export function dmPeers(dms: StoredMessage[], roster: RosterEntry[]): DmPeer[] {
   const idx = nameIndex(roster);
   const byId = new Map<string, RosterEntry>();
   for (const p of roster) if (p.card?.id) byId.set(p.card.id, p);
   const statusOf = (id: string): string => byId.get(id)?.status ?? "offline";
 
-  const pairs = new Map<string, { parts: [string, string]; messages: CotalMessage[] }>();
+  const pairs = new Map<string, { parts: [string, string]; messages: StoredMessage[] }>();
   for (const m of dms) {
-    const from = m.from?.id;
-    const to = typeof m.to === "string" ? m.to : undefined;
+    const from = m.senderId ?? m.msg.from?.id;
+    const to = typeof m.msg.to === "string" ? m.msg.to : undefined;
     if (!from || !to || from === to) continue;
     const parts = [from, to].sort() as [string, string];
     const key = parts.join(SEP);
@@ -45,8 +49,8 @@ export function dmPeers(dms: CotalMessage[], roster: RosterEntry[]): DmPeer[] {
 
   const peers = new Map<string, { id: string; conversations: DmConversation[]; last: number }>();
   for (const [key, pair] of pairs) {
-    pair.messages.sort((a, b) => a.ts - b.ts);
-    const last = pair.messages[pair.messages.length - 1]?.ts ?? 0;
+    pair.messages.sort((a, b) => a.msg.ts - b.msg.ts);
+    const last = pair.messages[pair.messages.length - 1]?.msg.ts ?? 0;
     for (const id of pair.parts) {
       const other = pair.parts[0] === id ? pair.parts[1] : pair.parts[0];
       let peer = peers.get(id);

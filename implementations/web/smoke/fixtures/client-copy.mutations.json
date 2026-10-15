@@ -104,8 +104,8 @@
     {
       "name": "a lib module reaches for document",
       "file": "implementations/web/client/src/lib/dms.ts",
-      "find": "import type { CotalMessage, RosterEntry } from \"../api/types.js\";",
-      "replace": "import type { CotalMessage, RosterEntry } from \"../api/types.js\";\nvoid document;",
+      "find": "import type { RosterEntry } from \"../api/types.js\";",
+      "replace": "import type { RosterEntry } from \"../api/types.js\";\nvoid document;",
       "expectRed": "lib/ and state/ stay free of window, document, storage, fetch and EventSource",
       "cell": "lib/ and state/ stay free of window, document, storage, fetch and EventSource"
     }

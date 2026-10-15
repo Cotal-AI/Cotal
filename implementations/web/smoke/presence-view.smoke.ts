@@ -22,6 +22,7 @@ import { dmPeers } from "../client/src/lib/dms.js";
 import { displayNameOf, nameIndex } from "../client/src/lib/names.js";
 import { oldestLiveBeat, presenceViewMark, rosterRows, STATUS_ORDER, statusCounts, statusLabel, waiting } from "../client/src/lib/roster.js";
 import type { CotalMessage, PresenceView, RosterEntry } from "../client/src/api/types.js";
+import type { StoredMessage } from "../client/src/state/types.js";
 import { bootReads, harness } from "./controller-harness.js";
 
 const webSrc = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
@@ -161,12 +162,13 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
   ok("3.6 a legacy base32 id of 32+ characters is cut to 6 plus an ellipsis",
     displayNameOf(actor, idx) === "ABCDEF…" && displayNameOf("ABCDEF", idx) === "ABCDEF");
 
-  const dms: CotalMessage[] = [
+  // History rows: no verified sender, so the payload's from.id is all there is to group by.
+  const dms: StoredMessage[] = [
     spoof,
     { ...spoof, id: "s2", ts: spoof.ts + 5, from: { id: "local.bob", name: "mallory" }, to: "local.alice" },
     { ...spoof, id: "s3", ts: spoof.ts + 9, from: { id: "local.alice", name: "x" }, to: "local.zed" },
     { ...spoof, id: "s4", from: { id: "local.alice", name: "x" }, to: "local.alice" },
-  ];
+  ].map((msg) => ({ msg: msg as CotalMessage }));
   const peers = dmPeers(dms, roster);
   const alice = peers.find((p) => p.id === "local.alice");
   ok("3.7 dmPeers names, roles and statuses come from the roster by id, never the payload",
@@ -176,8 +178,17 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
     peers.map((p) => [p.id, p.name, p.role, p.status]));
   ok("3.8 dmPeers rolls pairs up per peer: only pairs that talked, a self-DM is not a conversation, newest first",
     peers.length === 3 && alice?.threads === 2 && alice?.conversations.map((c) => c.with).join() === "local.zed,local.bob"
-      && peers[0]?.last === spoof.ts + 9 && alice?.conversations[1]?.messages.map((m) => m.id).join() === "s1,s2",
+      && peers[0]?.last === spoof.ts + 9 && alice?.conversations[1]?.messages.map((m) => m.msg.id).join() === "s1,s2",
     peers.map((p) => [p.id, p.threads, p.last]));
+  // A live DM carries the publisher the server verified from the subject. The payload's from.id is
+  // the sender's own claim, so a peer that writes another's id must still be filed under itself.
+  const forged: StoredMessage = { msg: { ...spoof, id: "f1", from: { id: "local.alice", name: "alice" }, to: "local.zed" }, senderId: "local.bob" };
+  const verified = dmPeers([forged], roster);
+  ok("3.9 dmPeers files a live DM under its verified senderId, not the payload's from.id",
+    verified.map((p) => p.id).sort().join() === "local.bob,local.zed"
+      && verified.find((p) => p.id === "local.bob")?.conversations[0]?.with === "local.zed"
+      && verified.find((p) => p.id === "local.bob")?.conversations[0]?.messages[0]?.senderId === "local.bob",
+    verified.map((p) => [p.id, p.conversations.map((c) => c.with)]));
 }
 
 console.log(`\nweb presence-view smoke: ${cells - failed} passed, ${failed} failed`);
