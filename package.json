@@ -134,6 +134,7 @@
     "smoke:web-route": "tsx implementations/web/smoke/route.smoke.ts",
     "smoke:web-app-shell": "tsx implementations/web/smoke/app-shell.smoke.ts",
     "smoke:web-claims": "tsx implementations/web/smoke/claims.smoke.ts",
+    "smoke:web-markdown": "tsx implementations/web/smoke/markdown.smoke.ts",
     "smoke:web-rate": "tsx implementations/web/smoke/rate.smoke.ts",
     "smoke:web-members": "tsx implementations/web/smoke/members.smoke.ts",
     "smoke:web-topology": "tsx implementations/web/smoke/topology.smoke.ts",
