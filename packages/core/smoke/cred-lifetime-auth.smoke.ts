@@ -64,6 +64,25 @@ if (process.argv[2] === "expiry-child") {
   await ep.start();
   const nc = (ep as unknown as { nc?: NatsConnection }).nc;
   if (!nc) throw new Error("expiry child started without a NATS connection");
+  const binding = ep as unknown as { stopped: boolean; connectAndBind(): Promise<void> };
+  const connectAndBind = binding.connectAndBind.bind(ep);
+  let stoppedBindAttempts = 0;
+  binding.connectAndBind = async () => {
+    if (binding.stopped) stoppedBindAttempts++;
+    await connectAndBind();
+  };
+  // Broker expiry drives the real supervisor into rebuild. Hold its real old-connection close
+  // so stop wins before the replacement bind, rather than relying on a rejected dial to crash.
+  let enterClose!: () => void;
+  let releaseClose!: () => void;
+  const closeEntered = new Promise<void>((resolve) => { enterClose = resolve; });
+  const closeGate = new Promise<void>((resolve) => { releaseClose = resolve; });
+  const close = nc.close.bind(nc);
+  nc.close = async () => {
+    enterClose();
+    await closeGate;
+    await close();
+  };
   const closed = nc.closed();
   // Observe the policy after Cotal's pre-expiry timer has fired but before the broker's expiry close.
   // This makes the root mechanism itself a deterministic mutation control while the same child keeps
@@ -75,8 +94,18 @@ if (process.argv[2] === "expiry-child") {
     wait(10_000).then(() => "timeout" as const),
   ]);
   if (reason === "timeout") throw new Error("the broker did not close the expired connection");
-  console.log(`EXPIRY_CHILD_CLOSED ${JSON.stringify({ name: reason?.name, message: reason?.message, reconnectDisabled, endpointErrors })}`);
-  await ep.stop();
+  await Promise.race([closeEntered, wait(1000).then(() => { throw new Error("expiry rebuild did not enter the old-connection close"); })]);
+  let stopSettled = false;
+  const stopping = ep.stop().then(
+    () => { stopSettled = true; return { ok: true as const }; },
+    (error: unknown) => { stopSettled = true; return { ok: false as const, error }; },
+  );
+  await wait(0);
+  const stopWaitedForClose = !stopSettled;
+  releaseClose();
+  const stopped = await stopping;
+  if (!stopped.ok) throw stopped.error;
+  console.log(`EXPIRY_CHILD_CLOSED ${JSON.stringify({ name: reason?.name, message: reason?.message, reconnectDisabled, endpointErrors, stoppedBindAttempts, stopWaitedForClose })}`);
   // Let the transport-close continuation and its microtasks settle before the explicit exit. With the
   // reconnect fence removed, nats-core's discarded continuation rejects during this window and Node
   // exits nonzero. No process-level rejection handler is installed.
@@ -192,10 +221,10 @@ try {
   await awaitExit(expiryChild, 12_000);
   if (expiryChild.exitCode === null && expiryChild.signalCode === null) expiryChild.kill("SIGKILL");
   const closeLine = expiryOutput.split("\n").find((line) => line.startsWith("EXPIRY_CHILD_CLOSED "));
-  const closeReason = closeLine ? JSON.parse(closeLine.slice("EXPIRY_CHILD_CLOSED ".length)) as { name?: string; message?: string; reconnectDisabled?: boolean; endpointErrors?: string[] } : undefined;
+  const closeReason = closeLine ? JSON.parse(closeLine.slice("EXPIRY_CHILD_CLOSED ".length)) as { name?: string; message?: string; reconnectDisabled?: boolean; endpointErrors?: string[]; stoppedBindAttempts?: number; stopWaitedForClose?: boolean } : undefined;
   check(
-    "CotalEndpoint disables library reconnect before credential expiry, nc.closed() resolves with the expiry error, and the process stays alive",
-    expiryChild.exitCode === 0 && closeReason?.reconnectDisabled === true && closeReason.name === "UserAuthenticationExpiredError" && closeReason.message === "User Authentication Expired",
+    "CotalEndpoint fences credential expiry and stopped replacement binds while the process stays alive",
+    expiryChild.exitCode === 0 && closeReason?.reconnectDisabled === true && closeReason.name === "UserAuthenticationExpiredError" && closeReason.message === "User Authentication Expired" && closeReason.stoppedBindAttempts === 0 && closeReason.stopWaitedForClose === true,
     { exitCode: expiryChild.exitCode, signal: expiryChild.signalCode, closeReason, output: expiryOutput },
   );
 } finally {
