@@ -36,7 +36,7 @@ export const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0
  *    event, so with no reply there is nothing to say. A claim from a history reply is not verified
  *    and carries the same unverified mark and tooltip as an unverified author.
  *  - A row whose mentions include `mention` (the reader's own name) is highlighted.
- *  - `place`, when given, takes the role's place in the header.
+ *  - `place`, when given (even as null), takes the role's place in the header and drops the harness.
  *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
  *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
  *    a history row ignores `compact` and always draws its header, so its unverified mark is never
@@ -51,9 +51,10 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   compact?: boolean;
   mention?: string;
   claim?: { id: string; verified: boolean };
-  /** Where the message went (`#review`, `to reviewer_2`), drawn where the role goes. The Activity
-   *  view passes it, because there the destination is what tells rows apart. */
-  place?: string;
+  /** Where the message went (`#review`, `to reviewer_2`), drawn where the role goes, with no harness
+   *  chip, as mock B's Activity rows draw it. The Activity view passes it, and passes null for a
+   *  message whose destination the wire did not send, which then shows nothing in that place. */
+  place?: string | null;
 }) {
   const [opened, setOpened] = useState(false);
   const who = senderId ?? msg.from?.id;
@@ -73,9 +74,9 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
           <div className="ui-mh">
             <b>{displayNameOf(senderId ?? msg.from, idx)}</b>
             {senderId === undefined && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
-            {place !== undefined && <span className="ui-role">{place}</span>}
+            {place && <span className="ui-role">{place}</span>}
             {place === undefined && peer?.role && <span className="ui-role">{peer.role}</span>}
-            {peer?.harness && <span className="ui-hz">{harnessName(peer.harness)}</span>}
+            {place === undefined && peer?.harness && <span className="ui-hz">{harnessName(peer.harness)}</span>}
             {at && <time dateTime={at.toISOString()}>{clock(at)}</time>}
           </div>
         )}

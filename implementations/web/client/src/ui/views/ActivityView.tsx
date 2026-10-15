@@ -21,11 +21,12 @@ const FILTERS: { label: string; mode?: Entry["mode"] }[] = [
 ];
 
 /** Where a message went, from the field the wire sets for its mode. A channel is the one the server
- *  took from the subject; a recipient is named from the roster by id. */
-function placeOf(e: Entry, idx: NameIndex): string {
-  if (e.mode === "chat") return `#${e.channel ?? "?"}`;
-  if (e.mode === "anycast") return `to role ${e.msg.toService ?? "?"}`;
-  return `to ${displayNameOf(typeof e.msg.to === "string" ? e.msg.to : undefined, idx)}`;
+ *  took from the subject; a recipient is named from the roster by id. When the wire did not send the
+ *  field there is no destination to show, and none is made up. */
+function placeOf(e: Entry, idx: NameIndex): string | null {
+  if (e.mode === "chat") return typeof e.channel === "string" ? `#${e.channel}` : null;
+  if (e.mode === "anycast") return typeof e.msg.toService === "string" ? `to role ${e.msg.toService}` : null;
+  return typeof e.msg.to === "string" ? `to ${displayNameOf(e.msg.to, idx)}` : null;
 }
 
 /** All activity (the Activity frames of mock section B): the header with the stale marker and the

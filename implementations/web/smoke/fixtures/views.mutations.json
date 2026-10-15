@@ -158,12 +158,12 @@
       "cell": "2.4 a day change draws its own divider, and the divider breaks a run from one sender"
     },
     {
-      "name": "V21 the date's month is off by one",
+      "name": "V21 an older day is written as numbers, the form the reader has to decode",
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "find": "String(d.getMonth() + 1).padStart(2, \"0\")",
-      "replace": "String(d.getMonth()).padStart(2, \"0\")",
-      "expectRed": "2.5 an older day is named by its date",
-      "cell": "2.5 an older day is named by its date"
+      "find": "d.toLocaleDateString(\"en-GB\", thisYear ? ",
+      "replace": "d.toISOString().slice(0, 10) || d.toLocaleDateString(\"en-GB\", thisYear ? ",
+      "expectRed": "2.5 an older day this year is written as its day and month",
+      "cell": "2.5 an older day this year is written as its day and month"
     },
     {
       "name": "V15 another channel's open list is drawn under this name",
@@ -312,8 +312,8 @@
     {
       "name": "N13 reading dismissals touches storage outside the guard",
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
-      "find": "function readDismissed(): string[] {\n  try {",
-      "replace": "function readDismissed(): string[] {\n  void globalThis.localStorage;\n  try {",
+      "find": "function readDismissed(): string[] {\n  let saved: string[] = [];\n  try {",
+      "replace": "function readDismissed(): string[] {\n  let saved: string[] = [];\n  void globalThis.localStorage;\n  try {",
       "expectRed": "5.6 with storage blocked the card still draws, and dismissing it still works for this page",
       "cell": "5.6 with storage blocked the card still draws, and dismissing it still works for this page"
     },
@@ -368,7 +368,7 @@
     {
       "name": "A6 a direct message names its recipient by raw id",
       "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
-      "find": "`to ${displayNameOf(typeof e.msg.to === \"string\" ? e.msg.to : undefined, idx)}`",
+      "find": "`to ${displayNameOf(e.msg.to, idx)}`",
       "replace": "`to ${e.msg.to}`",
       "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
       "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
@@ -376,16 +376,16 @@
     {
       "name": "A7 a role request reads like a direct message",
       "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
-      "find": "`to role ${e.msg.toService ?? \"?\"}`",
-      "replace": "`to ${e.msg.toService ?? \"?\"}`",
+      "find": "`to role ${e.msg.toService}`",
+      "replace": "`to ${e.msg.toService}`",
       "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
       "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
     },
     {
       "name": "A8 a channel row trusts the channel the payload claims",
       "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
-      "find": "`#${e.channel ?? \"?\"}`",
-      "replace": "`#${e.msg.channel ?? \"?\"}`",
+      "find": "`#${e.channel}`",
+      "replace": "`#${e.msg.channel}`",
       "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
       "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
     },
@@ -628,6 +628,94 @@
       "replace": "    el.scrollTop = el.scrollHeight;\n",
       "expectRed": "10.9 and a reader scrolled up stays put",
       "cell": "10.9 and a reader scrolled up stays put"
+    },
+    {
+      "name": "V28 a divider is keyed by its label, so a repeated Today collides",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "key={`day\\u0001${msg.id}\\u0001${senderId ?? \"\"}`}",
+      "replace": "key={`day\\u0001${day}`}",
+      "expectRed": "2.8 a repeated day label draws each divider with no duplicate-key warning",
+      "cell": "2.8 a repeated day label draws each divider with no duplicate-key warning"
+    },
+    {
+      "name": "V29 a day in another year drops its year",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "thisYear ? { day: \"numeric\", month: \"long\" } :",
+      "replace": "true ? { day: \"numeric\", month: \"long\" } :",
+      "expectRed": "2.5b a day in another year carries its year",
+      "cell": "2.5b a day in another year carries its year"
+    },
+    {
+      "name": "N15 a dismissal is not kept for the page, so with storage blocked it ends at the next view switch",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "    thisPage.add(key);\n",
+      "replace": "",
+      "expectRed": "5.8 and the dismissal outlives a view switch that unmounts the card, though nothing could be stored",
+      "cell": "5.8 and the dismissal outlives a view switch that unmounts the card, though nothing could be stored"
+    },
+    {
+      "name": "N16 the page's own dismissals are not read back",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "return [...new Set([...saved, ...thisPage])];",
+      "replace": "return saved;",
+      "expectRed": "5.8 and the dismissal outlives a view switch that unmounts the card, though nothing could be stored",
+      "cell": "5.8 and the dismissal outlives a view switch that unmounts the card, though nothing could be stored"
+    },
+    {
+      "name": "A13 a channel row with no channel reads #?",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "typeof e.channel === \"string\" ? `#${e.channel}` : null",
+      "replace": "`#${e.channel ?? \"?\"}`",
+      "expectRed": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one",
+      "cell": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one"
+    },
+    {
+      "name": "A14 a role request with no role reads to role ?",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "typeof e.msg.toService === \"string\" ? `to role ${e.msg.toService}` : null",
+      "replace": "`to role ${e.msg.toService ?? \"?\"}`",
+      "expectRed": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one",
+      "cell": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one"
+    },
+    {
+      "name": "A15 a direct message with no recipient reads to ?",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "typeof e.msg.to === \"string\" ? `to ${displayNameOf(e.msg.to, idx)}` : null",
+      "replace": "`to ${displayNameOf(typeof e.msg.to === \"string\" ? e.msg.to : undefined, idx)}`",
+      "expectRed": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one",
+      "cell": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one"
+    },
+    {
+      "name": "M1 the harness chip comes back on Activity rows",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{place === undefined && peer?.harness && <span className=\"ui-hz\">",
+      "replace": "{peer?.harness && <span className=\"ui-hz\">",
+      "expectRed": "6.13 Activity rows carry no harness chip, as mock B draws them: the name, where it went and the time",
+      "cell": "6.13 Activity rows carry no harness chip, as mock B draws them: the name, where it went and the time"
+    },
+    {
+      "name": "M2 a missing destination draws an empty slot",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{place && <span className=\"ui-role\">{place}</span>}",
+      "replace": "{place !== undefined && <span className=\"ui-role\">{place}</span>}",
+      "expectRed": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one",
+      "cell": "6.12 a row whose destination the wire did not send shows none, rather than a made-up one"
+    },
+    {
+      "name": "R4 a reopen holds a copy of the list instead of the list itself",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "store.set({ open: { channel: key, messages: held } });",
+      "replace": "store.set({ open: { channel: key, messages: held.slice() } });",
+      "expectRed": "10.5 while it loaded, the view held the previous list itself, not a copy of it",
+      "cell": "10.5 while it loaded, the view held the previous list itself, not a copy of it"
+    },
+    {
+      "name": "R5 every open applies its result, so a slow read of a channel the reader left lands over the one they are on",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "if (seq === loadSeq) {",
+      "replace": "if (true) {",
+      "expectRed": "10.10 a slow read of a channel the reader left lands nowhere: the view still shows the channel they are on",
+      "cell": "10.10 a slow read of a channel the reader left lands nowhere: the view still shows the channel they are on"
     }
   ]
 }

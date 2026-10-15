@@ -25,8 +25,9 @@ export interface StoredMessage {
 }
 
 /** The live feed's state as the pill says it. `connecting` until the feed first opens, `connected`
- *  while it is open, and `reconnecting` after it dropped, while the browser retries. */
-export type Connection = "connecting" | "connected" | "reconnecting";
+ *  while it is open, `reconnecting` after it dropped while the browser retries, and `closed` once the
+ *  browser has failed it for good and will not retry. */
+export type Connection = "connecting" | "connected" | "reconnecting" | "closed";
 
 export interface DashboardState {
   space: string | null;

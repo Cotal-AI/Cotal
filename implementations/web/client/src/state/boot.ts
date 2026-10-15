@@ -38,6 +38,8 @@ export function startDashboard(deps: {
     // A failed first attempt has dropped nothing, so it is still connecting; an error after an open
     // is a drop, and the browser's EventSource retries it.
     error: () => store.set((s) => ({ connection: s.connection === "connecting" ? "connecting" : "reconnecting" })),
+    // Final: nothing reopens a feed the browser gave up on, so no later event can undo it.
+    closed: () => store.set({ connection: "closed" }),
     roster: controller.onRoster,
     presenceView: controller.onPresenceView,
     membership: controller.onMembership,

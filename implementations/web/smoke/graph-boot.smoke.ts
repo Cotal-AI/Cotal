@@ -33,7 +33,7 @@
  *
  * Run: pnpm smoke:web-graph-boot
  */
-import type { FeedHandlers } from "../client/src/api/feed.js";
+import { openFeed, type FeedHandlers, type FeedSource } from "../client/src/api/feed.js";
 import type { Api } from "../client/src/state/controller.js";
 import { pillState } from "../client/src/lib/membership.js";
 import { startDashboard } from "../client/src/state/boot.js";
@@ -290,8 +290,28 @@ async function main() {
     await d.dash.controller.refresh();
     ok("6.4 and a reconnect marks it connected again, and reads again",
       d.store.get().connection === "connected" && readsAfterReconnect === readsBefore + 2, { connection: d.store.get().connection, readsAfterReconnect, readsBefore });
+    d.deliver("closed");
+    ok("6.6 a feed the browser closed for good marks the dashboard closed", d.store.get().connection === "closed", d.store.get().connection);
     d.dash.stop();
     ok("6.5 stop() closes the feed it opened, once", d.stats().closed === 1, d.stats());
+
+    // The browser's one `error` event covers a drop it will retry and a refusal it will not, and only
+    // the source's readyState tells them apart.
+    const fired: string[] = [];
+    const source = (readyState: number): FeedSource => ({ readyState, addEventListener: () => undefined, onopen: null, onerror: null, close: () => undefined });
+    const record: FeedHandlers = {
+      open: () => void fired.push("open"), error: () => void fired.push("error"), closed: () => void fired.push("closed"),
+      roster: () => undefined, presenceView: () => undefined, membership: () => undefined, membershipFailed: () => undefined, message: () => undefined,
+    };
+    const retrying = source(0);
+    openFeed(record, () => retrying);
+    retrying.onerror?.();
+    ok("6.7 an error while the source is still connecting is a drop the browser retries: error, not closed", fired.join() === "error", fired);
+    fired.length = 0;
+    const refused = source(2);
+    openFeed(record, () => refused);
+    refused.onerror?.();
+    ok("6.8 an error with the source closed is final: closed, not error", fired.join() === "closed", fired);
   }
 
   // CONTROL for 1.2: the chained shape the old page had, `load().then(connect)`, written as a log.

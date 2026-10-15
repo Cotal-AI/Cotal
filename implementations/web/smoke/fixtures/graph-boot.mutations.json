@@ -121,6 +121,38 @@
       "replace": "s.connection === \"connected\" ? \"reconnecting\" : \"connecting\"",
       "expectRed": "6.3b and a second error while it retries is still reconnecting",
       "cell": "6.3b and a second error while it retries is still reconnecting"
+    },
+    {
+      "name": "G18 the closed handler does nothing, so a feed the browser gave up on still reads as connected",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    closed: () => store.set({ connection: \"closed\" }),",
+      "replace": "    closed: () => undefined,",
+      "expectRed": "6.6 a feed the browser closed for good marks the dashboard closed",
+      "cell": "6.6 a feed the browser closed for good marks the dashboard closed"
+    },
+    {
+      "name": "G19 a closed feed is mapped to reconnecting, the false promise the closed state exists to retract",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    closed: () => store.set({ connection: \"closed\" }),",
+      "replace": "    closed: () => store.set({ connection: \"reconnecting\" }),",
+      "expectRed": "6.6 a feed the browser closed for good marks the dashboard closed",
+      "cell": "6.6 a feed the browser closed for good marks the dashboard closed"
+    },
+    {
+      "name": "G20 the feed reads every error as a drop the browser retries",
+      "file": "implementations/web/client/src/api/feed.ts",
+      "find": "es.onerror = () => (es.readyState === CLOSED ? handlers.closed() : handlers.error());",
+      "replace": "es.onerror = () => handlers.error();",
+      "expectRed": "6.8 an error with the source closed is final: closed, not error",
+      "cell": "6.8 an error with the source closed is final: closed, not error"
+    },
+    {
+      "name": "G21 the feed reads every error as final",
+      "file": "implementations/web/client/src/api/feed.ts",
+      "find": "es.onerror = () => (es.readyState === CLOSED ? handlers.closed() : handlers.error());",
+      "replace": "es.onerror = () => handlers.closed();",
+      "expectRed": "6.7 an error while the source is still connecting is a drop the browser retries: error, not closed",
+      "cell": "6.7 an error while the source is still connecting is a drop the browser retries: error, not closed"
     }
   ],
   "suite": [

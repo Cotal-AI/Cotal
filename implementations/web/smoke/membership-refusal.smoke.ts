@@ -409,11 +409,11 @@ check("CONTROL: a watch that never closes writes nothing",
   const listeners = new Map<string, (e: { data: string }) => void>();
   const source: FeedSource = {
     addEventListener: (type, fn) => { listeners.set(type, fn as (e: { data: string }) => void); },
-    onopen: null, onerror: null, close: () => {},
+    readyState: 1, onopen: null, onerror: null, close: () => {},
   };
   const failures: string[] = [];
   const noop = () => {};
-  const handlers: FeedHandlers = { open: noop, error: noop, roster: noop, presenceView: noop, membership: noop, message: noop, membershipFailed: (r) => { failures.push(r); } };
+  const handlers: FeedHandlers = { open: noop, error: noop, closed: noop, roster: noop, presenceView: noop, membership: noop, message: noop, membershipFailed: (r) => { failures.push(r); } };
   openFeed(handlers, () => source);
   check("the feed registers a listener for the refusal event", listeners.has(MEMBERSHIP_READ_FAILED), [...listeners.keys()]);
   check("the listener's event name IS the server's exported constant (a restated literal can drift)",

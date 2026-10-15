@@ -382,7 +382,7 @@
       "cell": "1.1 the head names the space"
     },
     {
-      "name": "SB44 the reconnecting pill says it is connecting for the first time",
+      "name": "SB49 the reconnecting pill says it is connecting for the first time",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
       "find": "reconnecting: { text: \"Reconnecting\", title: \"Reconnecting to cotal web\" },",
       "replace": "reconnecting: { text: \"Reconnecting\", title: \"Connecting to cotal web\" },",
@@ -390,7 +390,7 @@
       "cell": "6.4 a feed that dropped reads Reconnecting, never Connected"
     },
     {
-      "name": "SB45 the first connection reads Reconnecting, as if the page had already dropped a feed",
+      "name": "SB50 the first connection reads Reconnecting, as if the page had already dropped a feed",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
       "find": "connecting: { text: \"Connecting\", title: \"Connecting to cotal web\" },",
       "replace": "connecting: { text: \"Reconnecting\", title: \"Reconnecting to cotal web\" },",
@@ -398,7 +398,7 @@
       "cell": "6.4b before the feed first opens it reads Connecting, with its tooltip, and not Reconnecting"
     },
     {
-      "name": "SB46 a conversation holding a history row reads as verified",
+      "name": "SB51 a conversation holding a history row reads as verified",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
       "find": "{!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}",
       "replace": "",
@@ -406,7 +406,7 @@
       "cell": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one"
     },
     {
-      "name": "SB47 the DM grouping treats every conversation as verified",
+      "name": "SB52 the DM grouping treats every conversation as verified",
       "file": "implementations/web/client/src/lib/dms.ts",
       "find": "const verified = pair.messages.every((m) => m.senderId !== undefined);",
       "replace": "const verified = true;",
@@ -420,6 +420,14 @@
       "replace": "    void controller.refresh().then(() => store.get().activity.forEach(() => deps.onArrival?.())).catch(",
       "expectRed": "8.4 the bootstrap's activity page, the DM read and a channel's history are not arrivals: the rate counts only live messages",
       "cell": "8.4 the bootstrap's activity page, the DM read and a channel's history are not arrivals: the rate counts only live messages"
+    },
+    {
+      "name": "SB53 a feed the browser gave up on reads Reconnecting, promising a retry that will not come",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "closed: { text: \"Disconnected\", title: \"The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started.\" },",
+      "replace": "closed: { text: \"Reconnecting\", title: \"Reconnecting to cotal web\" },",
+      "expectRed": "6.4d a feed the browser closed for good reads Disconnected, says why and what to do, and keeps the down shape",
+      "cell": "6.4d a feed the browser closed for good reads Disconnected, says why and what to do, and keeps the down shape"
     }
   ]
 }

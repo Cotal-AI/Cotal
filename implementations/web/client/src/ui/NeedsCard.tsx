@@ -16,18 +16,25 @@ const DISMISS = "Dismiss until the status changes";
  *  moves `statusSince`, so the same agent waiting again is a new key and its card comes back. */
 export const needsKey = (row: Pick<RosterRow, "id" | "statusSince">): string => `${row.id} ${row.statusSince ?? ""}`;
 
-/** The saved dismissals, or none when storage is blocked or holds something else. */
+/** Every dismissal made since the page loaded. Storage may be blocked, so this is what keeps a
+ *  dismissal for the life of the page, across view switches that unmount the card. */
+const thisPage = new Set<string>();
+
+/** The saved dismissals plus this page's own, the saved ones read as none when storage is blocked or
+ *  holds something else. */
 function readDismissed(): string[] {
+  let saved: string[] = [];
   try {
-    const saved: unknown = JSON.parse(globalThis.localStorage?.getItem(KEY) ?? "[]");
-    return Array.isArray(saved) ? saved.filter((k): k is string => typeof k === "string") : [];
+    const raw: unknown = JSON.parse(globalThis.localStorage?.getItem(KEY) ?? "[]");
+    if (Array.isArray(raw)) saved = raw.filter((k): k is string => typeof k === "string");
   } catch {
-    return [];
+    // Blocked storage is a browser setting, not a fault: this page's own dismissals still count.
   }
+  return [...new Set([...saved, ...thisPage])];
 }
 
 /** Save the dismissals. When the browser blocks storage nothing is saved, and a dismissal then lasts
- *  until the page closes. */
+ *  until the page closes, held by `thisPage`. */
 function writeDismissed(keys: string[]): void {
   try {
     globalThis.localStorage?.setItem(KEY, JSON.stringify(keys.slice(-KEPT)));
@@ -43,6 +50,7 @@ export function useDismissed(): [ReadonlySet<string>, (key: string) => void] {
   const [keys, setKeys] = useState<string[]>([]);
   useLayoutEffect(() => setKeys(readDismissed()), []);
   const dismiss = (key: string) => {
+    thisPage.add(key);
     const next = [...keys.filter((k) => k !== key), key];
     setKeys(next);
     writeDismissed(next);

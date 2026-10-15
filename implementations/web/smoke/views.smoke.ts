@@ -164,7 +164,9 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   same("2.4 a day change draws its own divider, and the divider breaks a run from one sender",
     [all(two, ".ui-day").map(textOf), all(two, ".ui-msg").map((r) => r.classList.contains("ui-msg-cont"))], [["Yesterday", "Today"], [false, false]]);
   const week = centre(shellDom(channelSeed({ open: { channel: "review", messages: [{ msg: msg("w1", "local.dav", "x", new Date(2026, 0, 5, 9).getTime()), senderId: "local.dav" }] } }), channelRoute));
-  same("2.5 an older day is named by its date", all(week, ".ui-day").map(textOf), ["2026-01-05"]);
+  same("2.5 an older day this year is written as its day and month", all(week, ".ui-day").map(textOf), [new Date().getFullYear() === 2026 ? "5 January" : "5 January 2026"]);
+  const lastYear = centre(shellDom(channelSeed({ open: { channel: "review", messages: [{ msg: msg("w0", "local.dav", "x", new Date(new Date().getFullYear() - 1, 9, 14, 9).getTime()), senderId: "local.dav" }] } }), channelRoute));
+  same("2.5b a day in another year carries its year", all(lastYear, ".ui-day").map(textOf), [`14 October ${new Date().getFullYear() - 1}`]);
   const store = createStore<DashboardState>({ ...initialState, ...channelSeed({ open: { channel: "review", messages: [{ msg: msg("long", "local.dav", "x".repeat(400), at(10, 1)), senderId: "local.dav" }] } }) });
   const m = await mount(createElement(ChannelView, { store, channel: "review" }));
   const more = m.container.querySelector(".ui-more") as HTMLButtonElement | null;
@@ -173,6 +175,18 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   ok("2.6 a long body clamps with Show more, and Show more opens it in the view",
     clampedBefore && more !== null && textOf(more) === "Show more" && m.container.querySelector(".ui-clamp") === null && m.container.querySelector(".ui-more") === null);
   await m.unmount();
+  // A sender whose clock is a day behind lands between two of today's rows, so "Today" is drawn twice.
+  const skewed: StoredMessage[] = [
+    { msg: msg("k1", "local.dav", "today", at(10, 0)), senderId: "local.dav" },
+    { msg: msg("k2", "local.rev", "skewed", at(10, 1, 1)), senderId: "local.rev" },
+    { msg: msg("k3", "local.dav", "today again", at(10, 2)), senderId: "local.dav" },
+  ];
+  const skewStore = createStore<DashboardState>({ ...initialState, ...channelSeed({ open: { channel: "review", messages: skewed } }) });
+  let skewMount: Awaited<ReturnType<typeof mount>> | undefined;
+  const skewErrors = await errorsDuring(async () => { skewMount = await mount(createElement(ChannelView, { store: skewStore, channel: "review" })); });
+  same("2.8 a repeated day label draws each divider with no duplicate-key warning",
+    [all(skewMount!.container, ".ui-day").map(textOf), skewErrors.filter((e) => /same key/i.test(e)).length], [["Today", "Yesterday", "Today"], 0]);
+  await skewMount?.unmount();
   const elsewhere = centre(shellDom(channelSeed({ open: { channel: "general", messages: reviewMessages } }), channelRoute));
   ok("2.7 the view draws only the open channel's messages: another channel's list is not shown under this name", all(elsewhere, ".ui-msg").length === 0);
 }
@@ -251,7 +265,9 @@ const cardName = (root: Element) => textOf(root.querySelector(".ui-needs b"));
   const real = Object.getOwnPropertyDescriptor(g, "localStorage");
   Object.defineProperty(g, "localStorage", { configurable: true, get() { throw new DOMException("The operation is insecure.", "SecurityError"); } });
   try {
-    const store = createStore<DashboardState>({ ...initialState, ...channelSeed({ roster: twoWaiting }) });
+    // New status times, so the dismissals the cells above made on this page do not apply here.
+    const later = twoWaiting.map((p) => (p.status === "waiting" ? { ...p, statusSince: (p.statusSince ?? 0) + 60_000 } : p));
+    const store = createStore<DashboardState>({ ...initialState, ...channelSeed({ roster: later }) });
     let m: Awaited<ReturnType<typeof mount>> | undefined;
     let crashed: unknown;
     const errors = await errorsDuring(async () => {
@@ -266,6 +282,10 @@ const cardName = (root: Element) => textOf(root.querySelector(".ui-needs b"));
       crashed === undefined && m !== undefined && cardName(m.container) === "reviewer_2 is waiting" && errors.length === 0, { name: m && cardName(m.container), errors, crashed: String(crashed) });
     ok("5.7 and a server render with no storage at all draws the card", textOf(parse(renderToString(createElement(ChannelView, { store, channel: "review" }))).querySelector(".ui-needs b")) === "helper is waiting");
     await m?.unmount();
+    const back = await mount(createElement(ChannelView, { store, channel: "review" }));
+    ok("5.8 and the dismissal outlives a view switch that unmounts the card, though nothing could be stored",
+      cardName(back.container) === "reviewer_2 is waiting", cardName(back.container));
+    await back.unmount();
   } finally {
     if (real) Object.defineProperty(g, "localStorage", real);
   }
@@ -308,6 +328,16 @@ const activity: DashboardState["activity"] = [
   await press("All");
   same("6.10 All brings every row back", [shown().length, pressed()], [4, ["All"]]);
   await m.unmount();
+  const bare: DashboardState["activity"] = [
+    { mode: "chat", senderId: "local.dav", msg: msg("b1", "local.dav", "no channel", at(10, 50), { channel: undefined }) } as FeedMessage,
+    { mode: "anycast", senderId: "local.dav", msg: msg("b2", "local.dav", "no role", at(10, 51), { channel: undefined }) } as FeedMessage,
+    { mode: "unicast", senderId: "local.dav", msg: msg("b3", "local.dav", "no recipient", at(10, 52), { channel: undefined }) } as FeedMessage,
+  ];
+  const blank = centre(shellDom({ space: "main", roster, activity: bare }, { view: "activity" }));
+  ok("6.12 a row whose destination the wire did not send shows none, rather than a made-up one",
+    all(blank, ".ui-scroll .ui-msg").length === 3 && all(blank, ".ui-scroll .ui-msg .ui-mh .ui-role").length === 0 && !textOf(blank.querySelector(".ui-scroll")).includes("?"), textOf(blank.querySelector(".ui-scroll")));
+  ok("6.13 Activity rows carry no harness chip, as mock B draws them: the name, where it went and the time",
+    all(c, ".ui-scroll .ui-msg .ui-hz").length === 0 && all(c, ".ui-scroll .ui-msg .ui-mh time").length === 4);
   const nothing = centre(shellDom({ space: "main", roster, activity: [] }, { view: "activity" }));
   ok("6.11 with agents and nothing yet sent, the list is empty and the empty-space state is not drawn", nothing.querySelector(".ui-msg") === null && nothing.querySelector(".ui-empty") === null);
 }
@@ -381,6 +411,7 @@ const dmRows: StoredMessage[] = [
   await h.ctl.open("review");
   const before = h.store.get().open!.messages;
   const reopen = h.ctl.open("review");
+  const whileLoading = h.store.get().open!.messages;
   ok("10.1 while a reopen's history loads, the channel keeps the messages it had", h.store.get().open?.channel === "review" && h.store.get().open!.messages.map((m) => m.msg.id).join() === "h1,h2", h.store.get().open);
   const live: FeedMessage = { mode: "chat", channel: "review", senderId: "local.rv2", msg: msg("l1", "local.rv2", "live", at(10, 3)) };
   h.ctl.onMessage(live);
@@ -394,7 +425,22 @@ const dmRows: StoredMessage[] = [
   ok("10.4 opening a different channel still starts empty: retention is per channel", h.store.get().open?.channel === "general" && h.store.get().open!.messages.length === 0);
   pending.resolve([]);
   await sw;
-  ok("10.5 the held list was the previous one, not a copy that a live message could have forked", before.length === 2);
+  ok("10.5 while it loaded, the view held the previous list itself, not a copy of it", whileLoading === before);
+
+  // ONLY THE LATEST OPEN APPLIES ITS RESULT. A slow read of a channel the reader has left must not
+  // land over the channel they are on.
+  const slowA = gate<CotalMessage[]>();
+  const q = harness({ history: async (key: string) => (key === "a" ? slowA.promise : [msg("b1", "local.dav", "in b", at(10, 7), { channel: "b" })]) });
+  q.store.set({ roster, channels: [{ channel: "a", messages: 1 }, { channel: "b", messages: 1 }] });
+  const qm = await mount(createElement(ChannelView, { store: q.store, channel: "b" }));
+  let openA!: Promise<void>;
+  await qm.run(() => { openA = q.ctl.open("a"); });
+  await qm.run(() => q.ctl.open("b"));
+  slowA.resolve([msg("a1", "local.rev", "in a", at(10, 6), { channel: "a" })]);
+  await qm.run(() => openA);
+  same("10.10 a slow read of a channel the reader left lands nowhere: the view still shows the channel they are on",
+    [q.store.get().open?.channel, all(qm.container, ".ui-msg .ui-tx").map(textOf)], ["b", ["in b"]]);
+  await qm.unmount();
 
   // The rendered half: the view mounted over the real controller, during a reopen that hangs.
   pending = gate<CotalMessage[]>();

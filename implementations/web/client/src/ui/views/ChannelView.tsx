@@ -53,8 +53,11 @@ function dayLabel(ts: number, now: number): string {
   const that = day(ts);
   if (that === today) return "Today";
   if (that === day(today - 12 * 3_600_000)) return "Yesterday";
+  // One written form for every reader ("14 October"), with the year only when it is not this one.
+  // The locale is fixed so the label does not change with the browser's language.
   const d = new Date(ts);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const thisYear = d.getFullYear() === new Date(now).getFullYear();
+  return d.toLocaleDateString("en-GB", thisYear ? { day: "numeric", month: "long" } : { day: "numeric", month: "long", year: "numeric" });
 }
 
 /** A list of messages as the channel and DM views draw it: a divider at each new day, and a run of
@@ -68,7 +71,9 @@ export function MessageList({ messages, idx, peers }: { messages: StoredMessage[
   messages.forEach(({ msg, senderId }, i) => {
     const day = Number.isFinite(msg.ts) ? dayLabel(msg.ts, now) : undefined;
     const newDay = day !== undefined && day !== lastDay;
-    if (newDay) out.push(<div key={`day\u0001${day}`} className="ui-day">{day}</div>);
+    // Keyed by the row it opens, not by its label: a sender whose clock is skewed can make one label
+    // come round twice, and two "Today" keys would collide.
+    if (newDay) out.push(<div key={`day\u0001${msg.id}\u0001${senderId ?? ""}`} className="ui-day">{day}</div>);
     if (day !== undefined) lastDay = day;
     const prev = messages[i - 1];
     const compact = !newDay && prev !== undefined && senderId !== undefined && prev.senderId === senderId;

@@ -21,11 +21,12 @@ const RATE_TICK_MS = 1000;
 /** A channel the runtime writes a run's events to (`run.build-0412`). */
 const isEventChannel = (channel: string): boolean => channel.startsWith("run.");
 
-/** The pill while the feed is not open. Neither state says the page is disconnected for good: the
- *  browser's EventSource keeps retrying, so the page says what it is doing. */
+/** The pill while the feed is not open. Only `closed` says Disconnected: there the browser has failed
+ *  the feed for good, while in the other two it is still trying, and the pill says what it is doing. */
 const PILL: Record<Exclude<Connection, "connected">, { text: string; title: string }> = {
   connecting: { text: "Connecting", title: "Connecting to cotal web" },
   reconnecting: { text: "Reconnecting", title: "Reconnecting to cotal web" },
+  closed: { text: "Disconnected", title: "The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started." },
 };
 
 /** One link row: `to` is the route it opens and `here` whether that route is the page now. */

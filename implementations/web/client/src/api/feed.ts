@@ -5,7 +5,11 @@ import type { FeedMessage, MembershipSnapshot, PresenceView, RosterEntry } from 
 
 export interface FeedHandlers {
   open(): void;
+  /** The connection failed and the browser is retrying it. */
   error(): void;
+  /** The browser failed the connection for good (a non-200 answer, such as the gate's 401 after a
+   *  restart or an expired session) and will not retry. */
+  closed(): void;
   roster(r: RosterEntry[]): void;
   presenceView(v: PresenceView): void;
   membership(m: MembershipSnapshot): void;
@@ -16,6 +20,8 @@ export interface FeedHandlers {
 /** The part of `EventSource` the feed uses, so a smoke can supply a source of its own. */
 export interface FeedSource {
   addEventListener(type: string, fn: (e: MessageEvent) => void): void;
+  /** `EventSource.readyState`: 0 connecting (a retry is coming), 1 open, 2 closed for good. */
+  readonly readyState: number;
   onopen: (() => void) | null;
   onerror: (() => void) | null;
   close(): void;
@@ -26,6 +32,9 @@ export interface FeedSource {
  *  `smoke:web-membership-refusal` pins it to the server's exported constant. */
 const MEMBERSHIP_READ_FAILED = "membership-read-failed";
 
+/** `EventSource.CLOSED`, restated so the module reads no browser global at load. */
+const CLOSED = 2;
+
 /** The browser's `EventSource`. Its `onopen` takes the event, which the feed does not read, so the
  *  property types differ and TypeScript will not see it as a `FeedSource` without the cast. */
 const nativeSource = (url: string): FeedSource => new EventSource(url) as unknown as FeedSource;
@@ -34,7 +43,9 @@ const nativeSource = (url: string): FeedSource => new EventSource(url) as unknow
 export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSource = nativeSource): () => void {
   const es = make("/feed");
   es.onopen = () => handlers.open();
-  es.onerror = () => handlers.error();
+  // The same `error` event covers both outcomes, and only `readyState` tells them apart: a network
+  // drop leaves it at CONNECTING because the browser retries, a refused answer leaves it CLOSED.
+  es.onerror = () => (es.readyState === CLOSED ? handlers.closed() : handlers.error());
   const on = <T>(type: string, fn: (data: T) => void) => es.addEventListener(type, (e) => fn(JSON.parse(e.data) as T));
   on<RosterEntry[]>("roster", (d) => handlers.roster(d));
   on<PresenceView>("presence-view", (d) => handlers.presenceView(d));

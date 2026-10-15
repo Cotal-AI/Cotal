@@ -204,7 +204,11 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   const first = pill(foot(renderShell({ roster })));
   ok("6.4b before the feed first opens it reads Connecting, with its tooltip, and not Reconnecting",
     first?.[4] === "Connecting" && titleOf(first) === "Connecting to cotal web" && first[1] === "ui-live ui-live-down", first?.[0]);
-  ok("6.4c the page never claims a disconnection it cannot know is final", !/Disconnected|Not connected/.test(foot(renderShell({ roster })) + foot(renderShell({ roster, connection: "reconnecting" }))));
+  ok("6.4c while the browser is still trying, the page does not say it is disconnected", !/Disconnected|Not connected|will not retry/.test(foot(renderShell({ roster })) + foot(renderShell({ roster, connection: "reconnecting" }))));
+  const gone = pill(foot(renderShell({ roster, connection: "closed" })));
+  ok("6.4d a feed the browser closed for good reads Disconnected, says why and what to do, and keeps the down shape",
+    gone?.[4] === "Disconnected" && gone[1] === "ui-live ui-live-down"
+      && titleOf(gone) === "The live feed closed and will not retry. Reload the page, or open the link cotal web printed when it started.", gone?.[0]);
   ok("6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here",
     !/On the roster|Not on the roster|Read only/.test(up), strip(up));
 }
