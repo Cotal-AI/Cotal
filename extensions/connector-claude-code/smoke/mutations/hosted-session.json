@@ -1,0 +1,48 @@
+{
+  "command": "pnpm smoke:claude-hosted-session",
+  "progressPattern": "^(?:PASS|FAIL) ",
+  "minTicks": 1,
+  "suite": ["extensions/connector-claude-code/smoke/hosted-session.smoke.ts"],
+  "mutations": [
+    {
+      "name": "propagate automatic teardown rejection",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "        opts.onShutdown?.(1);",
+      "replace": "        throw e;",
+      "expectRed": "hosted_failure_lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "retain the ended input listener",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "      opts.input.off(\"end\", onInputClose);",
+      "replace": "      void onInputClose;",
+      "expectRed": "hosted_explicit_lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "retain the closed input listener",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "      opts.input.off(\"close\", onInputClose);",
+      "replace": "      void onInputClose;",
+      "expectRed": "hosted_explicit_lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "miss input closure without EOF",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  opts.input.once(\"close\", onInputClose);",
+      "replace": "  // Mutation: ignore input closure without EOF.",
+      "expectRed": "hosted_destroy_lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "miss EOF during the control bind",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  if (opts.input.readableEnded || opts.input.destroyed)\n    throw new Error(\"hosted MCP input ended before startup completed\");",
+      "replace": "  // Mutation: accept input that ended during the asynchronous control bind.",
+      "expectRed": "hosted_startup-eof_lifecycle",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    }
+  ]
+}

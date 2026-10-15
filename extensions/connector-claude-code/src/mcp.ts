@@ -96,7 +96,7 @@ export interface ClaudeSessionOptions {
   /** Exit the process when the control socket cannot be bound. A host serving several sessions
    *  leaves it off, and the call rejects instead. */
   fatalBind?: boolean;
-  /** A shutdown frame or the end of `input` ended the session. Called once after teardown;
+  /** A shutdown frame or the end or closure of `input` ended the session. Called once after teardown;
    *  `code` is 1 if teardown failed, or the requested exit code otherwise. */
   onShutdown?: (code: number) => void;
 }
@@ -301,10 +301,11 @@ async function startSession(
   let mcp: McpServer | undefined;
   let stopping: Promise<void> | undefined;
   let shuttingDown = false;
-  const onInputEnd = () => shutdown();
+  const onInputClose = () => shutdown();
   const close = (): Promise<void> =>
     (stopping ??= (async () => {
-      opts.input.off("end", onInputEnd);
+      opts.input.off("end", onInputClose);
+      opts.input.off("close", onInputClose);
       eventWaitStop.abort();
       try {
         controlServer?.close();
@@ -391,7 +392,8 @@ async function startSession(
   // A client ends a stdio session by closing our stdin, and so does a harness that dies. The mesh
   // connection would keep this process alive past it, heartbeating a presence no session backs,
   // which every peer's roster reads as a live agent (#544).
-  opts.input.once("end", onInputEnd);
+  opts.input.once("end", onInputClose);
+  opts.input.once("close", onInputClose);
 
   // Is this session consuming us as a channel? Decided once the client finishes the handshake,
   // after its `initialize` has carried its capabilities: `connect()` resolves as soon as stdio is
