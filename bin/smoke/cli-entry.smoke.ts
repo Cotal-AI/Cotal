@@ -86,6 +86,9 @@ function refused(name: string, r: Run, reason: RegExp): void {
   check(name, r.status === 1 && reason.test(r.stderr) && r.wrote.length === 0, shown(r));
 }
 
+/** Skips the connector seed, for runs whose question is not whether they seed. */
+const noSeed = { COTAL_SKIP_CONNECTOR_SEED: "1" };
+
 const commands = registry.all<Command>("command");
 const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ alias, cmd })));
 
@@ -129,7 +132,6 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help of a hidden internal command is a usage error", cotal(["help", "__complete"]), /unknown command: __complete/);
   // A subcommand alias reaches the command as its canonical word. The seed is skipped by env so the
   // run reaches `ext remove` quickly; it refuses because nothing is installed.
-  const noSeed = { COTAL_SKIP_CONNECTOR_SEED: "1" };
   const removeByAlias = cotal(["x", "rm", "not-installed"], undefined, noSeed);
   check(
     "ext rm runs ext remove",
@@ -157,19 +159,22 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   refused("help for a seeded command that is not installed yet seeds nothing", cotal(["web", "--help"]), /unknown command: web - run `cotal help`/);
 }
 
-// ── Every alias is its command: same help, same refusal, nothing written ─────────────────────────
+// ── Every alias is its command: same help, same refusal ───────────────────────────────────────────
+// The refusal pairs skip the seed by env. Whether an alias's usage error writes anything is the
+// `sp --bogus` cell below; a seed in every pair would make a proof of the seed order outrun its budget.
 check("the binary registers the aliases this cut ships", ["sp:spawn", "a:attach", "s:status", "r:run", "x:ext", "h:history"].every((pair) => aliases.some(({ alias, cmd }) => `${alias}:${cmd.name}` === pair)), aliases.map(({ alias, cmd }) => `${alias}:${cmd.name}`));
 for (const { alias, cmd } of aliases) {
   check(`${alias} --help prints ${cmd.name}'s help`, same(cotal([alias, "--help"]), cotal([cmd.name, "--help"])));
   if (cmd.rawArgs) continue;
-  const viaAlias = cotal([alias, "--not-a-flag"]);
-  refused(`${alias} --not-a-flag is refused before any effect`, viaAlias, /Unknown option '--not-a-flag'/);
-  check(`${alias} --not-a-flag is refused as ${cmd.name} refuses it`, same(viaAlias, cotal([cmd.name, "--not-a-flag"])), shown(viaAlias));
+  const viaAlias = cotal([alias, "--not-a-flag"], undefined, noSeed);
+  refused(`${alias} --not-a-flag is refused`, viaAlias, /Unknown option '--not-a-flag'/);
+  check(`${alias} --not-a-flag is refused as ${cmd.name} refuses it`, same(viaAlias, cotal([cmd.name, "--not-a-flag"], undefined, noSeed)), shown(viaAlias));
 }
 
 // ── Usage errors are refused before the seed; a valid command seeds ──────────────────────────────
 {
   refused("an unknown flag writes no seed store", cotal(["spawn", "--bogus"]), /Unknown option '--bogus'/);
+  refused("an alias's unknown flag writes no seed store", cotal(["sp", "--bogus"]), /Unknown option '--bogus'/);
   refused("an undeclared subcommand writes no seed store", cotal(["ext", "bogus"]), /cotal ext has no subcommand "bogus"/);
   refused("a missing flag value writes no seed store", cotal(["spawn", "--space"]), /--space/);
   const control = cotal(["ext", "list"]);
