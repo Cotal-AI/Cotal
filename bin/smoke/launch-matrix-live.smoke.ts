@@ -25,7 +25,8 @@ import { join } from "node:path";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox } from "@cotal-ai/smoke-kit";
 
 const WT = join(import.meta.dirname, "..", "..");
-const TSX = join(WT, "node_modules", ".bin", "tsx");
+// tsx's own loader, by file URL, so the child resolves it from any working directory on any platform.
+const TSX_LOADER = import.meta.resolve("tsx");
 const BIN = join(WT, "bin", "cotal.ts");
 const home = mkdtempSync(join(tmpdir(), "cotal-launch-matrix-home-"));
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}launch-matrix-root-`));
@@ -61,7 +62,7 @@ function cotal(args: string[], opts: { cwd?: string; extraEnv?: NodeJS.ProcessEn
   const cwd = opts.cwd ?? root;
   const options = { cwd, env: { ...env, ...opts.extraEnv }, encoding: "utf8" as const, timeout: opts.timeout ?? 120_000 };
   assertSmokeSandboxDown(anchors.get(cwd), args, options);
-  return spawnSync(TSX, [BIN, ...args], options);
+  return spawnSync(process.execPath, ["--import", TSX_LOADER, BIN, ...args], options);
 }
 const out = (r: ReturnType<typeof cotal>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 const portOpen = (port: number) => new Promise<boolean>((res) => {
@@ -180,7 +181,7 @@ try {
 
   // ---- A foreground `up` in an operator unit ---------------------------------------------------------
   const fgServer = `nats://127.0.0.1:${FG_PORT}`;
-  const fg = spawnProc(TSX, [BIN, "up", "--open", "--space", FG_SPACE, "--server", fgServer], { cwd: fgRoot, env, stdio: "ignore" });
+  const fg = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, "up", "--open", "--space", FG_SPACE, "--server", fgServer], { cwd: fgRoot, env, stdio: "ignore" });
   started.push(fg);
   let fgServing = false;
   for (let i = 0; i < 60 && !fgServing; i++) {
