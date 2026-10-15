@@ -198,7 +198,9 @@ try {
   console.log("5. the poster's lazy start");
   // Every operator start is counted and its id recorded, and the next one can be made to fail
   // before it touches the broker, the way a refused connect fails.
-  const starts = { n: 0, last: "", failNext: false, failedId: "" };
+  const starts = { n: 0, last: "", failNext: false, failAfterConnect: false, failedId: "" };
+  /** How long the stop of a start that failed after connecting is held back. */
+  const STOP_DELAY_MS = 1500;
   const realStart = CotalEndpoint.prototype.start;
   CotalEndpoint.prototype.start = function (this: InstanceType<typeof CotalEndpoint>) {
     if (this.card.name === "operator") {
@@ -208,6 +210,15 @@ try {
         starts.failNext = false;
         starts.failedId = this.card.id;
         return Promise.reject(new Error("injected start failure"));
+      }
+      if (starts.failAfterConnect) {
+        // Connected and registered, then failed, and its stop held back: if the retry does not wait
+        // for that stop, the offline record lands after the retried operator's online one.
+        starts.failAfterConnect = false;
+        starts.failedId = this.card.id;
+        const realStop = this.stop.bind(this);
+        this.stop = async () => { await wait(STOP_DELAY_MS); return realStop(); };
+        return realStart.call(this).then(() => { throw new Error("injected failure after connect"); });
       }
     }
     return realStart.call(this);
@@ -262,9 +273,23 @@ try {
   await closing.stop();
   const closingId = starts.last;
   const outcome = await pending;
-  const notOnline = await until(() => !watcher.getRoster().some((p) => p.card.id === closingId && p.status !== "offline"));
+  const wentOffline = await until(() => watcher.getRoster().some((p) => p.card.id === closingId && p.status === "offline"));
   ok("5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
-    outcome === POSTER_STOPPED && notOnline, { outcome, roster: watcher.getRoster().filter((p) => p.card.id === closingId).map((p) => p.status) });
+    outcome === POSTER_STOPPED && wentOffline, { outcome, roster: watcher.getRoster().filter((p) => p.card.id === closingId).map((p) => p.status) });
+
+  const late = operatorPoster({ space: "postopen", server: OPEN, tls: false }, undefined);
+  starts.failAfterConnect = true;
+  const lateFirst = await late.ensure().then(() => "resolved", (e: Error) => e.message);
+  const lateSecond = await late.ensure().then((e) => e.card.id, (e: Error) => `rejected: ${e.message}`);
+  const lateId = late.operatorId();
+  const lateJoined = await until(() => watcher.getRoster().some((p) => p.card.id === lateId && p.status !== "offline"));
+  // Past the held-back stop, and well inside the 5 s heartbeat that would mask a stray offline record.
+  await wait(STOP_DELAY_MS + 700);
+  const lateStatus = watcher.getRoster().find((p) => p.card.id === lateId)?.status;
+  ok("5.13 a start that fails after connecting is stopped before the retry starts, so its offline record cannot land over the retried operator's online one",
+    lateFirst === "injected failure after connect" && lateSecond === lateId && lateId === starts.failedId && lateJoined
+    && lateStatus !== undefined && lateStatus !== "offline", { lateFirst, lateSecond, lateId, failedId: starts.failedId, lateJoined, lateStatus });
+  await late.stop();
   await watcher.stop();
 
   const operator = await mintOperatorCred(auth);

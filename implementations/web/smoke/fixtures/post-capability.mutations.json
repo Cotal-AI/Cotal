@@ -164,6 +164,22 @@
       "replace": "",
       "expectRed": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
       "cell": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online"
+    },
+    {
+      "name": "P21 a start still in flight when the poster stops is refused but never stopped, so the endpoint it started stays online after the dashboard has gone",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (closed) {\n      await e.stop();\n",
+      "replace": "    if (closed) {\n",
+      "expectRed": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
+      "cell": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online"
+    },
+    {
+      "name": "P22 a failed start is stopped without waiting, so the retry starts its successor first and the failed one's offline record lands over the successor's online one under the same id",
+      "file": "implementations/web/src/web.ts",
+      "find": "      await e.stop().catch(() => undefined);\n",
+      "replace": "      void e.stop().catch(() => undefined);\n",
+      "expectRed": "5.13 a start that fails after connecting is stopped before the retry starts, so its offline record cannot land over the retried operator's online one",
+      "cell": "5.13 a start that fails after connecting is stopped before the retry starts, so its offline record cannot land over the retried operator's online one"
     }
   ]
 }
