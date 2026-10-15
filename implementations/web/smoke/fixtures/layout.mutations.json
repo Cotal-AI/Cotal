@@ -226,8 +226,8 @@
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "(phone ? { open: sheetOpen, show: () => setSheetAt(here) } : null)",
       "replace": "null",
-      "expectRed": "4.1 the channel header opens with the menu button, and the sheet starts closed",
-      "cell": "4.1 the channel header opens with the menu button, and the sheet starts closed"
+      "expectRed": "3.6 the header's panel button, titled Open agent panel as in mock F, opens it too",
+      "cell": "3.6 the header's panel button, titled Open agent panel as in mock F, opens it too"
     },
     {
       "name": "LY34 the menu button never says it is expanded",
@@ -250,8 +250,8 @@
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "    tabbable()[0]?.focus();\n",
       "replace": "",
-      "expectRed": "4.3 focus moves into the sheet, to its first place",
-      "cell": "4.3 focus moves into the sheet, to its first place"
+      "expectRed": "3.3 focus moves into it",
+      "cell": "3.3 focus moves into it"
     },
     {
       "name": "LY37 Tab from the last item leaves the trap",
@@ -274,8 +274,8 @@
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "        escape.current();\n",
       "replace": "",
-      "expectRed": "4.6 Escape closes the sheet and puts focus back on the menu button",
-      "cell": "4.6 Escape closes the sheet and puts focus back on the menu button"
+      "expectRed": "3.4 Escape closes it, and the wide layout's saved choice is untouched",
+      "cell": "3.4 Escape closes it, and the wide layout's saved choice is untouched"
     },
     {
       "name": "LY40 focus is not handed back when the trap goes",
