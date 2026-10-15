@@ -1,0 +1,2 @@
+# The app shell: the rail lists the five views and Settings in order, the active item follows the route, the panel's absence is the no-pane class, and a route change reaches the controller.
+smoke:web-app-shell
