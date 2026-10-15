@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+/// <reference lib="dom.iterable" />
 /** The theme choice survives a browser that blocks storage: reading falls back to "system", writing
  *  does nothing, and neither throws. With working storage a choice round-trips, and applying one
  *  sets data-theme on the root element, which tokens.css reads. */
