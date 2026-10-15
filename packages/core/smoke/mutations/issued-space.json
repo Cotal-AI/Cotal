@@ -2,7 +2,7 @@
   "suite": [
     "packages/core/smoke/issued-space.smoke.ts"
   ],
-  "guard": "Issued-authority space coordinates use the canonical routing-token grammar without rewriting input. Endpoint names retain their DNS grammar.",
+  "guard": "Issued-authority and run-admission space coordinates use the canonical routing-token grammar without rewriting input. Endpoint names retain their DNS grammar.",
   "command": "pnpm smoke:issued-space",
   "completionMarker": "ISSUED SPACE SMOKE",
   "progressPattern": "  \u2713 ",
@@ -39,6 +39,30 @@
       "replace": "  if (typeof space !== \"string\" || space.length === 0)",
       "expectRed": "issued reference rejects wildcard separator whitespace and malformed spaces",
       "cell": "issued reference rejects wildcard separator whitespace and malformed spaces"
+    },
+    {
+      "name": "run admission regresses to the DNS endpoint grammar for its space",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  assertIssuedSpace(raw.space);\n  endpointToken(raw.endpoint);",
+      "replace": "  endpointToken(raw.space);\n  endpointToken(raw.endpoint);",
+      "expectRed": "run admission preserves canonical spaces without endpoint DNS restrictions",
+      "cell": "run admission preserves canonical spaces without endpoint DNS restrictions"
+    },
+    {
+      "name": "run admission accepts a noncanonical space",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  assertIssuedSpace(raw.space);\n  endpointToken(raw.endpoint);",
+      "replace": "  endpointToken(raw.endpoint);",
+      "expectRed": "run admission rejects noncanonical spaces instead of sanitizing them",
+      "cell": "run admission rejects noncanonical spaces instead of sanitizing them"
+    },
+    {
+      "name": "run admission stops validating its endpoint",
+      "file": "packages/core/src/run-admission.ts",
+      "find": "  assertIssuedSpace(raw.space);\n  endpointToken(raw.endpoint);",
+      "replace": "  assertIssuedSpace(raw.space);",
+      "expectRed": "run admission still enforces the distinct endpoint DNS grammar",
+      "cell": "run admission still enforces the distinct endpoint DNS grammar"
     }
   ]
 }

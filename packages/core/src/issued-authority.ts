@@ -39,7 +39,7 @@ import type { IssuedCaller } from "./endpoint-subjects.js";
 import { subjectMatches, token } from "./subjects.js";
 
 /** Issued coordinates carry a canonical space token, never a lossy display-name rewrite. */
-function assertIssuedSpace(space: string): void {
+export function assertIssuedSpace(space: string): void {
   if (typeof space !== "string" || space.length === 0 || token(space) !== space)
     throw new Error("issued space must be a nonempty canonical subject token ([A-Za-z0-9_-])");
 }

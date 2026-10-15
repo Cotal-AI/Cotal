@@ -4,6 +4,7 @@ import {
   openIssuedStore, type IssuedAuthorityRef, type IssuedSourceRef,
 } from "../src/issued-authority.js";
 import { endpointToken } from "../src/endpoint-subjects.js";
+import { admissionSnapshot, type RunAdmission } from "../src/run-admission.js";
 import { token } from "../src/subjects.js";
 import type { KV } from "@nats-io/kv";
 import type { JetStreamManager } from "@nats-io/jetstream";
@@ -75,6 +76,26 @@ check("endpoint DNS grammar remains distinct from canonical space grammar", () =
   assert.equal(endpointToken("com.example.endpoint"), "com_example_endpoint");
   for (const name of [space, "UPPER", "_", "-leading", "trailing-", "a".repeat(65), "*", ">", "a/b"])
     assert.throws(() => endpointToken(name));
+});
+const caller = { owner: ref.owner, actor: ref.actor, uid: ref.uid, generation: ref.generation };
+const admission = (name: string, endpoint = "manager"): RunAdmission => ({
+  version: 1, space: name, endpoint, runId: `run-${"c".repeat(32)}`, instanceId: "d".repeat(26),
+  caller,
+  ceiling: { publish: { allow: { mode: "none" }, deny: [] }, subscribe: { allow: { mode: "none" }, deny: [] } },
+  provenance: { kind: "issued", ref: { ...ref, space: name }, resolvedRevision: 1 }, admittedAt: 1,
+});
+check("run admission preserves canonical spaces without endpoint DNS restrictions", () => {
+  for (const name of [space, "cotal_cloud", "main", "UPPER_01", "_", "-leading", "trailing-", "a".repeat(65)])
+    assert.equal(admissionSnapshot(admission(name)).space, name);
+});
+check("run admission rejects noncanonical spaces instead of sanitizing them", () => {
+  for (const name of ["", "*", ">", "a.b", "a/b", "a\\b", "a:b", " main", "main ", "a b", "a\n", "a\0", "é", 1, null, ["main"]])
+    assert.throws(() => admissionSnapshot(admission(name as string)));
+});
+check("run admission still enforces the distinct endpoint DNS grammar", () => {
+  assert.equal(admissionSnapshot(admission("main", "com.example.endpoint")).endpoint, "com.example.endpoint");
+  for (const name of [space, "UPPER", "_", "-leading", "trailing-", "a".repeat(65), "*", ">", "a/b"])
+    assert.throws(() => admissionSnapshot(admission("main", name)));
 });
 console.log(`ISSUED SPACE SMOKE (${passed} passed, ${failed} failed)`);
 emitSentinel({ passed, failed });
