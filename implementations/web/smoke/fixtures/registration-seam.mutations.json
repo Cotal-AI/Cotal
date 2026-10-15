@@ -13,6 +13,15 @@
       "expectRed": "every file the built page references is served",
       "cell": "every file the built page references is served",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the server stops serving fonts, so the stylesheet's url(...) to the Inter woff2 files is a 404",
+      "file": "implementations/web/src/web.ts",
+      "find": "  \".woff2\": \"font/woff2\",\n",
+      "replace": "",
+      "expectRed": "every file in dist/web/assets is served",
+      "cell": "every file in dist/web/assets is served",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]
 }
