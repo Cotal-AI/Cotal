@@ -51,7 +51,8 @@ function PartialBanner({ banner }: { banner: NonNullable<ReturnType<typeof parti
  *  filter chips, then every message the dashboard holds, newest first, each saying where it went. A
  *  row the live feed delivered carries its verified sender; a backfill row does not, and MessageRow
  *  says so. While the roster has no agents the empty space state sits above the list. While the
- *  activity read is partial a banner heads the list and says what the page is missing. */
+ *  activity read is partial a banner heads the list and says what the page is missing, and the header
+ *  drops its copy of the marker, as mock B's partial frame does: the sidebar and the banner say it. */
 export function ActivityView({ store }: { store: Store<DashboardState> }) {
   const activity = useStore(store, (s) => s.activity);
   const roster = useStore(store, (s) => s.roster);
@@ -75,7 +76,7 @@ export function ActivityView({ store }: { store: Store<DashboardState> }) {
     <>
       <header className="ui-bar">
         <h1>Activity</h1>
-        <StaleMarker store={store} id={null} />
+        {!partial && <StaleMarker store={store} id={null} />}
         <span className="ui-sp" />
         <span className="v3-toggle" role="group" aria-label="Show">
           {FILTERS.map((f) => (

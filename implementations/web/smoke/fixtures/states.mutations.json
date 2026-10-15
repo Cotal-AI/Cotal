@@ -256,15 +256,15 @@
     {
       "name": "ST32 a refused read arms no retry",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "    if (!wanted || retry !== null) return;\n",
-      "replace": "    return;\n",
+      "find": "    if (retry !== null) return;\n    retry = timer.set(",
+      "replace": "    return;\n    retry = timer.set(",
       "expectRed": "4.2 a refused read arms one retry, RETRY_MS later",
       "cell": "4.2 a refused read arms one retry, RETRY_MS later"
     },
     {
       "name": "ST33 the retry fires at once",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "    }, RETRY_MS);",
+      "find": "    }, wait);",
       "replace": "    }, 0);",
       "expectRed": "4.2 a refused read arms one retry, RETRY_MS later",
       "cell": "4.2 a refused read arms one retry, RETRY_MS later"
@@ -272,24 +272,24 @@
     {
       "name": "ST34 every store change arms another retry",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "if (!wanted || retry !== null) return;",
-      "replace": "if (!wanted) return;",
+      "find": "    if (retry !== null) return;\n",
+      "replace": "",
       "expectRed": "4.2 a refused read arms one retry, RETRY_MS later",
       "cell": "4.2 a refused read arms one retry, RETRY_MS later"
     },
     {
       "name": "ST35 a retry that fires reads nothing",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      retry = null;\n      refresh();\n",
-      "replace": "      retry = null;\n",
+      "find": "      wait = Math.min(wait * 2, RETRY_MAX_MS);\n      refresh();\n",
+      "replace": "      wait = Math.min(wait * 2, RETRY_MAX_MS);\n",
       "expectRed": "4.4 when it fires the dashboard reads again, and a read still refused arms the next retry",
       "cell": "4.4 when it fires the dashboard reads again, and a read still refused arms the next retry"
     },
     {
       "name": "ST36 a retry stays pending after the read lands",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "    if (!wanted && retry !== null) {\n      timer.clear(retry);\n      retry = null;\n    }\n",
-      "replace": "",
+      "find": "      if (retry !== null) timer.clear(retry);\n      retry = null;\n      wait = RETRY_MS;\n",
+      "replace": "      wait = RETRY_MS;\n",
       "expectRed": "4.5 a retry that lands clears the mark and arms nothing more",
       "cell": "4.5 a retry that lands clears the mark and arms nothing more"
     },
@@ -304,8 +304,8 @@
     {
       "name": "ST38 stopping leaves the retry pending",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      if (retry !== null) timer.clear(retry);\n",
-      "replace": "",
+      "find": "      unsubscribe();\n      if (retry !== null) timer.clear(retry);\n",
+      "replace": "      unsubscribe();\n",
       "expectRed": "4.8 stopping the dashboard cancels the pending retry",
       "cell": "4.8 stopping the dashboard cancels the pending retry"
     },
@@ -428,6 +428,46 @@
       "replace": "agent: panel.tab === \"agent\" ? panel.agent : null",
       "expectRed": "6.7 a closed panel marks nothing",
       "cell": "6.7 a closed panel marks nothing"
+    },
+    {
+      "name": "ST54 the wait never grows",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "wait = Math.min(wait * 2, RETRY_MAX_MS);",
+      "replace": "wait = Math.min(wait, RETRY_MAX_MS);",
+      "expectRed": "4.10 while a read stays refused the wait doubles from 5 s to the 60 s cap: 5, 10, 20, 40, 60, 60",
+      "cell": "4.10 while a read stays refused the wait doubles from 5 s to the 60 s cap: 5, 10, 20, 40, 60, 60"
+    },
+    {
+      "name": "ST55 the wait grows without a cap",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "Math.min(wait * 2, RETRY_MAX_MS)",
+      "replace": "wait * 2",
+      "expectRed": "4.10 while a read stays refused the wait doubles from 5 s to the 60 s cap: 5, 10, 20, 40, 60, 60",
+      "cell": "4.10 while a read stays refused the wait doubles from 5 s to the 60 s cap: 5, 10, 20, 40, 60, 60"
+    },
+    {
+      "name": "ST56 a read that lands leaves the wait where it was",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "      wait = RETRY_MS;\n      return;",
+      "replace": "      return;",
+      "expectRed": "4.11 a read that lands cancels the pending retry and resets the wait, so the next refusal waits 5 s again",
+      "cell": "4.11 a read that lands cancels the pending retry and resets the wait, so the next refusal waits 5 s again"
+    },
+    {
+      "name": "ST57 the Activity header keeps its marker while the page is partial",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{!partial && <StaleMarker store={store} id={null} />}",
+      "replace": "<StaleMarker store={store} id={null} />",
+      "expectRed": "3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it",
+      "cell": "3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it"
+    },
+    {
+      "name": "ST58 the Activity header drops its marker on a refusal too",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{!partial && ",
+      "replace": "{false && ",
+      "expectRed": "3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it",
+      "cell": "3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it"
     }
   ]
 }

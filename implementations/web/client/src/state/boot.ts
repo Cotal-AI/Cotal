@@ -11,8 +11,12 @@ import { createController, type Api, type Controller } from "./controller.js";
 import type { Store } from "./store.js";
 import type { DashboardState } from "./types.js";
 
-/** How long after a refused read the dashboard reads again, while the refusal stands. */
+/** How long after a refused read the dashboard first reads again, while the refusal stands. Each
+ *  retry that is still refused doubles the wait, up to `RETRY_MAX_MS`. */
 export const RETRY_MS = 5000;
+
+/** The longest wait between two retries. */
+export const RETRY_MAX_MS = 60_000;
 
 /** The timer the retry runs on: `setTimeout` and `clearTimeout` unless a suite passes its own. */
 export interface RetryTimer {
@@ -34,8 +38,9 @@ const retryable = (s: DashboardState): boolean => s.stale.some((m) => m.kind ===
  *
  *  The first roster and channel reads are marked outstanding before anything is read, so the page
  *  draws its skeleton rows until they land. While any read stands refused the dashboard reads again
- *  every `RETRY_MS` (on `timer`), which is what the stale marker's "Retrying." promises; `stop()`
- *  cancels a pending retry along with the feed. */
+ *  (on `timer`), which is what the stale marker's "Retrying." promises: first after `RETRY_MS`, then
+ *  after twice the last wait, up to `RETRY_MAX_MS`, and from `RETRY_MS` again once the refusals have
+ *  cleared. `stop()` cancels a pending retry along with the feed. */
 export function startDashboard(deps: {
   store: Store<DashboardState>;
   api: Api;
@@ -79,19 +84,25 @@ export function startDashboard(deps: {
   // One retry pending at most, and pending exactly while the store holds a retryable refusal, by
   // whichever read left it there (a refresh or a channel's history). It fires one refresh, which
   // reopens the open channel too. A read that lands clears the mark, and with it the pending retry,
-  // which an earlier write in the same refresh may have armed while the old mark still stood.
+  // which an earlier write in the same refresh may have armed while the old mark still stood, and
+  // the wait goes back to its first length. Each retry that fires doubles the next wait, to the cap,
+  // so a server that stays down is not asked every five seconds for as long as the page is open.
   let retry: unknown = null;
+  let wait = RETRY_MS;
   const armRetry = () => {
     const wanted = retryable(store.get());
-    if (!wanted && retry !== null) {
-      timer.clear(retry);
+    if (!wanted) {
+      if (retry !== null) timer.clear(retry);
       retry = null;
+      wait = RETRY_MS;
+      return;
     }
-    if (!wanted || retry !== null) return;
+    if (retry !== null) return;
     retry = timer.set(() => {
       retry = null;
+      wait = Math.min(wait * 2, RETRY_MAX_MS);
       refresh();
-    }, RETRY_MS);
+    }, wait);
   };
   const unsubscribe = store.subscribe(armRetry);
   const stopFeed = deps.openFeed(handlers);

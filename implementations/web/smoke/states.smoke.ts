@@ -20,7 +20,7 @@ import { formatRoute, type Route } from "../client/src/lib/route.js";
 import type { StaleMark } from "../client/src/lib/snapshot.js";
 import type { RouteHost } from "../client/src/routeWatch.js";
 import { Shell } from "../client/src/Shell.tsx";
-import { RETRY_MS, startDashboard, type RetryTimer } from "../client/src/state/boot.js";
+import { RETRY_MAX_MS, RETRY_MS, startDashboard, type RetryTimer } from "../client/src/state/boot.js";
 import { createController, type Api, type Controller } from "../client/src/state/controller.js";
 import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
@@ -206,6 +206,10 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
     banner([]) === null && banner([{ kind: "refused", name: "activity", reason: "x" }]) === null);
   const first = parse(renderShell({ roster, stale: [dm] }, { view: "activity" })).querySelector("section.ui-view .ui-col")?.firstElementChild;
   ok("3.5 the banner heads the list, above the rows", first?.classList.contains("s-banner") === true, first?.className);
+  const bar = (marks: StaleMark[]) => parse(renderShell({ roster, stale: marks }, { view: "activity" })).querySelector("section.ui-view header.ui-bar");
+  ok("3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it",
+    bar([dm])?.querySelector(".ui-stale") === null && textOf(bar([dm])?.querySelector("h1")) === "Activity"
+      && bar([{ kind: "refused", name: "peers", reason: "x" }])?.querySelector(".ui-stale") !== null);
 }
 
 // ── 4. The boot: a closed feed stays closed, and refused reads are retried ───────────────────────
@@ -260,6 +264,41 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   ok("4.8 stopping the dashboard cancels the pending retry", pending.size === 0 && cleared.includes(armed), { pending: pending.size, cleared });
   flaky.set({ stale: [{ kind: "refused", name: "channels", reason: "z" }] });
   ok("4.9 and a stopped dashboard arms nothing", pending.size === 0, pending.size);
+
+  // The backoff: each retry still refused doubles the wait, to a cap, and a read that lands resets it.
+  const waits: number[] = [];
+  const queue = new Map<number, () => void>();
+  let id = 0;
+  const backoff: RetryTimer = { set: (fn, ms) => (waits.push(ms), queue.set(++id, fn), id), clear: (h) => void queue.delete(h as number) };
+  const fireNext = async () => {
+    const [[key, fn]] = [...queue];
+    queue.delete(key);
+    fn();
+    await settle();
+    await settle();
+  };
+  let ok2 = false;
+  const down = createStore<DashboardState>(structuredClone(initialState));
+  const slow = startDashboard({
+    store: down,
+    api: { ...unusedApi, ...bootReads, channels: async () => { if (!ok2) throw new Error("channels refused with HTTP 503"); return []; } } as Api,
+    openFeed: () => () => undefined,
+    timer: backoff,
+  });
+  await settle();
+  await settle();
+  for (let i = 0; i < 5; i++) await fireNext();
+  same("4.10 while a read stays refused the wait doubles from 5 s to the 60 s cap: 5, 10, 20, 40, 60, 60",
+    [waits, RETRY_MS, RETRY_MAX_MS], [[5000, 10000, 20000, 40000, 60000, 60000], 5000, 60000]);
+  ok2 = true;
+  await fireNext();
+  ok2 = false;
+  await slow.controller.refresh();
+  await settle();
+  same("4.11 a read that lands cancels the pending retry and resets the wait, so the next refusal waits 5 s again",
+    [waits.at(-1), queue.size], [5000, 1]);
+  slow.stop();
+  ok("4.12 stopping clears the one pending retry", queue.size === 0, queue.size);
 }
 
 // ── 5. The rail: disabled items, their titles, and the last place visited ────────────────────────

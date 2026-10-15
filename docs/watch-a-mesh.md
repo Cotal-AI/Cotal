@@ -200,8 +200,9 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
 **When a read does not land.** A poll that fails never blanks the page. The dashboard keeps the
 last values it actually read and marks them stale in the header, naming which source is stale and
 why (`stale: peers, activity`, with the server's own reason on hover), and when the data on screen
-was last read. While a refusal stands the dashboard reads again every five seconds, and the next
-successful read replaces the data and clears the mark.
+was last read. While a refusal stands the dashboard reads again, first after five seconds, then
+after twice the last wait, up to a minute. The next successful read replaces the data, clears the
+mark, and starts the wait at five seconds again.
 
 **When the observer itself goes deaf.** Presence liveness is derived from heartbeat timestamps, so
 a watch that hears nothing for longer than the TTL used to flip every peer `offline` at once. The
