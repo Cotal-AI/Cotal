@@ -24,8 +24,8 @@ export interface ChannelInfo {
 }
 
 export type ActivityEntry =
-  | { mode: "chat"; channel: string; msg: CotalMessage }
-  | { mode: "unicast"; msg: CotalMessage };
+  | { mode: "chat"; channel: string; msg: CotalMessage; arrivedAt?: number }
+  | { mode: "unicast"; msg: CotalMessage; arrivedAt?: number };
 
 /** One bounded read of `/api/activity`: what landed, and which sources did not and why. */
 export interface ActivityPage {
@@ -43,5 +43,7 @@ export interface Meta {
   pid: number;
 }
 
-/** A frame on the live `/feed` stream. */
-export type FeedMessage = { mode: "chat" | "unicast" | "anycast"; senderId?: string; channel?: string; msg: CotalMessage };
+/** A frame on the live `/feed` stream. `arrivedAt` is not on the wire: the controller stamps it, from
+ *  its own clock, when the frame reaches this page, so a view can say how long ago a message flowed
+ *  without trusting the sender's clock. Entries read from history carry none. */
+export type FeedMessage = { mode: "chat" | "unicast" | "anycast"; senderId?: string; channel?: string; msg: CotalMessage; arrivedAt?: number };

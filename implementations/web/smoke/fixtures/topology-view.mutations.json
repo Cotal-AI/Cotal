@@ -6,12 +6,12 @@
   "progressPattern": "^  ok ",
   "mutations": [
     {
-      "name": "T1 the view measures a message's age from the epoch, so no link is ever hot",
+      "name": "T1 the view reads the sender's own ts, so a clock an hour behind never heats a link",
       "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
-      "find": "ts: a.msg.ts,",
-      "replace": "ts: 0,",
-      "expectRed": "2.5 a link is hot within 2 seconds of a message on its channel",
-      "cell": "2.5 a link is hot within 2 seconds of a message on its channel"
+      "find": "ts: a.arrivedAt ?? Number.NEGATIVE_INFINITY,",
+      "replace": "ts: a.msg.ts,",
+      "expectRed": "2.5 a link is hot within 2 seconds of a message arriving, whatever the sender's own clock says",
+      "cell": "2.5 a link is hot within 2 seconds of a message arriving, whatever the sender's own clock says"
     },
     {
       "name": "T2 an empty channel is no longer hidden under an authoritative feed",
@@ -90,8 +90,8 @@
       "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "find": "hot ? \"ui-tl-hot\" : \"\"",
       "replace": "\"\"",
-      "expectRed": "2.5 a link is hot within 2 seconds of a message on its channel",
-      "cell": "2.5 a link is hot within 2 seconds of a message on its channel"
+      "expectRed": "2.5 a link is hot within 2 seconds of a message arriving, whatever the sender's own clock says",
+      "cell": "2.5 a link is hot within 2 seconds of a message arriving, whatever the sender's own clock says"
     },
     {
       "name": "G2 an offline agent's links are drawn solid",
@@ -292,6 +292,94 @@
       "replace": "return () => void id;",
       "expectRed": "3.24 and with nothing hot it slows to the idle timer, still one",
       "cell": "3.24 and with nothing hot it slows to the idle timer, still one"
+    },
+    {
+      "name": "T14 an entry with no arrival stamp falls back to the sender's ts, so history reads as hot",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "?? Number.NEGATIVE_INFINITY,",
+      "replace": "?? a.msg.ts,",
+      "expectRed": "2.27 an entry read from history is never hot, however fresh its own ts",
+      "cell": "2.27 an entry read from history is never hot, however fresh its own ts"
+    },
+    {
+      "name": "T15 a sender clock ahead of ours keeps a link hot past its arrival window",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "ts: a.arrivedAt ?? Number.NEGATIVE_INFINITY,",
+      "replace": "ts: Math.max(a.arrivedAt ?? Number.NEGATIVE_INFINITY, a.msg.ts),",
+      "expectRed": "2.26 a sender clock an hour ahead keeps a link hot for 2 seconds of arrival time and no longer",
+      "cell": "2.26 a sender clock an hour ahead keeps a link hot for 2 seconds of arrival time and no longer"
+    },
+    {
+      "name": "C1 the controller stops stamping live frames",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    e.arrivedAt = now();\n",
+      "replace": "",
+      "expectRed": "5.2 a live frame is stamped with the controller's clock, and its own ts is not what is stamped",
+      "cell": "5.2 a live frame is stamped with the controller's clock, and its own ts is not what is stamped"
+    },
+    {
+      "name": "C2 the controller stamps from the wall clock and ignores the one it was given",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "opts.clock ?? Date.now",
+      "replace": "Date.now",
+      "expectRed": "5.2 a live frame is stamped with the controller's clock, and its own ts is not what is stamped",
+      "cell": "5.2 a live frame is stamped with the controller's clock, and its own ts is not what is stamped"
+    },
+    {
+      "name": "C3 the bootstrap stamps the history it reads",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "(e.msg as Wire).channel = (e as { channel?: string }).channel;",
+      "replace": "{ (e.msg as Wire).channel = (e as { channel?: string }).channel; (e as { arrivedAt?: number }).arrivedAt = now(); }",
+      "expectRed": "5.1 an entry read from history carries no arrival stamp",
+      "cell": "5.1 an entry read from history carries no arrival stamp"
+    },
+    {
+      "name": "P4 the stale pill loses its tooltip",
+      "file": "implementations/web/client/src/ui/MembershipPill.tsx",
+      "find": "title: \"The daemon's last report is older than 45 seconds, or has no time on it\"",
+      "replace": "title: undefined",
+      "expectRed": "2.18b and the stale pill says what stale means",
+      "cell": "2.18b and the stale pill says what stale means"
+    },
+    {
+      "name": "P5 the unreadable pill drops the reason",
+      "file": "implementations/web/client/src/ui/MembershipPill.tsx",
+      "find": "`the read failed: ${reason}`",
+      "replace": "\"the read failed\"",
+      "expectRed": "2.20b the unreadable pill's tooltip carries the reason the read gave",
+      "cell": "2.20b the unreadable pill's tooltip carries the reason the read gave"
+    },
+    {
+      "name": "T16 the view stops handing the pill the reason",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": " reason={membership.unreadable}",
+      "replace": "",
+      "expectRed": "2.20b the unreadable pill's tooltip carries the reason the read gave",
+      "cell": "2.20b the unreadable pill's tooltip carries the reason the read gave"
+    },
+    {
+      "name": "T17 the legend forgets the offline links",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "  { cls: \"ui-lg-offline\", label: \"Offline agent\" },\n",
+      "replace": "",
+      "expectRed": "2.21 the legend names each line kind and the badge",
+      "cell": "2.21 the legend names each line kind and the badge"
+    },
+    {
+      "name": "T18 the offline swatch is drawn as the durable one",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "{ cls: \"ui-lg-offline\", label: \"Offline agent\" }",
+      "replace": "{ cls: \"ui-lg-durable\", label: \"Offline agent\" }",
+      "expectRed": "2.21b durable and offline links have their own swatch and their own line class",
+      "cell": "2.21b durable and offline links have their own swatch and their own line class"
+    },
+    {
+      "name": "L7 the layout leaves d3's own timer running, so the layout moves and cools by itself",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": ".force(\"y\", forceY<Body>(height / 2).strength(0.04))\n      .stop();",
+      "replace": ".force(\"y\", forceY<Body>(height / 2).strength(0.04));",
+      "expectRed": "4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools",
+      "cell": "4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools"
     }
   ]
 }

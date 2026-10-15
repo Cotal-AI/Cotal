@@ -273,7 +273,8 @@ pre code { background: none; padding: 0; }
 .ui-topo-svg { cursor: grab; touch-action: none; }
 .ui-topo-svg:active { cursor: grabbing; }
 .ui-tl { stroke: var(--faint); stroke-width: 1.4; opacity: .45; }
-.ui-tl-durable, .ui-tl-off { stroke-dasharray: 4 4; }
+.ui-tl-durable { stroke-dasharray: 4 4; }
+.ui-tl-off { stroke-dasharray: 1.5 4; stroke-linecap: round; }
 .ui-tl-traffic { stroke: var(--any); stroke-dasharray: 6 5; opacity: .75; }
 .ui-tl-hot { stroke: var(--multi); stroke-width: 2; opacity: 1; }
 .ui-tn rect { fill: var(--card); stroke: var(--card-line); stroke-width: 1.4; }
@@ -286,6 +287,7 @@ pre code { background: none; padding: 0; }
 .ui-wide-key { font: 500 10px/1 var(--body); color: var(--dim); background: var(--soft); border: 1px solid var(--card-line); border-radius: 6px; padding: 2px 6px; }
 .ui-lg-member { background: var(--faint); opacity: .7; }
 .ui-lg-durable { background: repeating-linear-gradient(90deg, var(--faint) 0 4px, transparent 4px 8px); }
+.ui-lg-offline { background: repeating-linear-gradient(90deg, var(--faint) 0 2px, transparent 2px 5px); }
 .ui-lg-traffic { background: repeating-linear-gradient(90deg, var(--any) 0 6px, transparent 6px 11px); }
 .ui-lg-hot { background: var(--multi); }
 .ui-col-wide { max-width: 1040px; }

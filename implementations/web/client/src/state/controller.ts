@@ -39,6 +39,8 @@ export interface Controller {
  *  default is `createEventOrder`; the suites pass a factory that records what was armed. */
 export interface ControllerOptions {
   createOrder?: (lane: "feed" | "open") => EventOrder;
+  /** The time a live frame is stamped with when it arrives. Defaults to `Date.now`. */
+  clock?: () => number;
 }
 
 type Entry = ActivityEntry | FeedMessage;
@@ -51,6 +53,7 @@ const NOTES_CAP = 50;
 
 export function createController(store: Store<DashboardState>, api: Api, opts: ControllerOptions = {}): Controller {
   const createOrder = opts.createOrder ?? (() => createEventOrder());
+  const now = opts.clock ?? Date.now;
 
   // One machine per bootstrap, re-armed BEFORE its fetch starts, so frames arriving during the fetch
   // are held rather than ordered against a baseline that has not been established yet. The feed's
@@ -231,6 +234,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
 
   function onMessage(e: FeedMessage): void {
     const msg = e.msg as Wire;
+    // Stamped on arrival, before the order machine can hold the frame, so a held frame keeps the time it came.
+    e.arrivedAt = now();
     // TRUST IS DECIDED ONCE, HERE, AND UNCONDITIONALLY. The server sends the channel it took from the
     // SUBJECT, which the publish grant covers; `msg.channel` is the publisher's claim. A guarded
     // overwrite fails open on DMs and anycast, where there is no authoritative channel and the

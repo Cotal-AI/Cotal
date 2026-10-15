@@ -11,6 +11,7 @@ import { MembershipPill } from "../MembershipPill.tsx";
 const LEGEND: { cls: string; label: string }[] = [
   { cls: "ui-lg-member", label: "Member" },
   { cls: "ui-lg-durable", label: "Durable member" },
+  { cls: "ui-lg-offline", label: "Offline agent" },
   { cls: "ui-lg-traffic", label: "Posted here" },
   { cls: "ui-lg-hot", label: "Active now" },
 ];
@@ -32,7 +33,9 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
   const activity = useStore(store, (s) => s.activity);
   const [hideOffline, setHideOffline] = useState(initialHideOffline);
 
-  // A message's own `ts` is when it was sent, which is when it flows. The store caps the window.
+  // A link is hot from the time a message ARRIVED here, stamped by the controller from this page's own
+  // clock. The message's `ts` is the sender's clock and is not used. Entries read from history carry
+  // no stamp, so they draw nodes and links and are never hot. The store caps the window.
   const recent = useMemo(
     () =>
       activity.map((a) => ({
@@ -40,7 +43,7 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
         ...("channel" in a && a.channel !== undefined ? { channel: a.channel } : {}),
         ...("senderId" in a && a.senderId !== undefined ? { senderId: a.senderId } : {}),
         msg: a.msg,
-        ts: a.msg.ts,
+        ts: a.arrivedAt ?? Number.NEGATIVE_INFINITY,
       })),
     [activity],
   );
@@ -59,7 +62,7 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
       <header className="ui-bar">
         <h1>Topology</h1>
         <span className="ui-sp" />
-        <MembershipPill state={pillState(membership, now)} />
+        <MembershipPill state={pillState(membership, now)} reason={membership.unreadable} />
         <button type="button" className="ui-btn ui-btn-sm" aria-pressed={hideOffline} onClick={() => setHideOffline(!hideOffline)}>
           Hide offline
         </button>

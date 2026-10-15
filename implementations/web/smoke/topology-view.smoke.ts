@@ -12,11 +12,13 @@ import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
 import { topologyModel, type TopoModel } from "../client/src/lib/topology.js";
 import type { Route } from "../client/src/lib/route.js";
+import { createController } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 import { ForceLayout } from "../client/src/ui/graph/layout.js";
 import { TopologyGraph } from "../client/src/ui/graph/TopologyGraph.tsx";
 import { TopologyView } from "../client/src/ui/views/TopologyView.tsx";
+import { bootReads, page, unusedApi } from "./controller-harness.js";
 import { renderShell } from "./render-shell.js";
 import { errorsDuring, mount } from "./mount.js";
 
@@ -84,9 +86,11 @@ const text = (root: ParentNode, sel: string) => [...root.querySelectorAll(sel)].
     d.querySelector('[data-node="C"]')!.classList.contains("ui-ta-off") && !d.querySelector('[data-node="A"]')!.classList.contains("ui-ta-off"));
   ok("2.4 nothing is hot with no message", lines(d, "ui-tl-hot") === 0 && d.querySelectorAll(".ui-tn-hot").length === 0);
 
-  const entry = (ts: number) => ({ activity: [{ mode: "chat" as const, channel: "alerts", senderId: "A", msg: msgOf("A", ts) }] });
+  // A live entry as the controller leaves it: stamped with the arrival time on this page's clock. Its
+  // own `ts` is the sender's clock, and by default it reads an hour behind this one.
+  const entry = (arrivedAt: number, msgTs = NOW - 3_600_000) => ({ activity: [{ mode: "chat" as const, channel: "alerts", senderId: "A", msg: msgOf("A", msgTs), arrivedAt }] });
   const within = parse(view(entry(NOW - 1999), { initialHideOffline: false }));
-  ok("2.5 a link is hot within 2 seconds of a message on its channel", lines(within, "ui-tl-hot") >= 1, lines(within, "ui-tl-hot"));
+  ok("2.5 a link is hot within 2 seconds of a message arriving, whatever the sender's own clock says", lines(within, "ui-tl-hot") >= 1, lines(within, "ui-tl-hot"));
   ok("2.6 and the channel's pill shows it", within.querySelector('[data-node="#alerts"]')!.classList.contains("ui-tn-hot") && !within.querySelector('[data-node="#ops"]')!.classList.contains("ui-tn-hot"));
   const after = parse(view(entry(NOW - 2000), { initialHideOffline: false }));
   ok("2.7 and cold after 2 seconds", lines(after, "ui-tl-hot") === 0 && after.querySelectorAll(".ui-tn-hot").length === 0);
@@ -114,18 +118,31 @@ const text = (root: ParentNode, sel: string) => [...root.querySelectorAll(sel)].
   ok("2.17 the pill reads Membership: live for a fresh feed, with the daemon tooltip",
     pill({})?.textContent === "Membership: live" && pill({})?.getAttribute("title") === "From broker membership, served by the delivery daemon" && pill({})?.classList.contains("ui-mpill-live") === true);
   ok("2.18 stale for an old one", pill({ membership: feed([member("A", ["alerts"])], NOW - 60_000) })?.textContent === "Membership: stale" && pill({ membership: feed([], NOW - 60_000) })?.classList.contains("ui-mpill-stale") === true);
+  ok("2.18b and the stale pill says what stale means", pill({ membership: feed([member("A", ["alerts"])], NOW - 60_000) })?.getAttribute("title") === "The daemon's last report is older than 45 seconds, or has no time on it");
   ok("2.19 traffic-only for no feed, with its tooltip",
     pill({ membership: {} })?.textContent === "Membership: traffic-only" && pill({ membership: {} })?.getAttribute("title") === "No delivery daemon on an open mesh, so members come from who has posted"
       && pill({ membership: {} })?.classList.contains("ui-mpill-traffic") === true);
   ok("2.20 unreadable for a failed read", pill({ membership: { unreadable: "x" } })?.textContent === "Membership: unreadable" && pill({ membership: { unreadable: "x" } })?.classList.contains("ui-mpill-unread") === true);
 
-  ok("2.21 the legend names each line kind and the badge", text(dflt, ".ui-legend span").join("|") === "Member|Durable member|Posted here|Active now|all channelsReads every channel", text(dflt, ".ui-legend span"));
+  ok("2.20b the unreadable pill's tooltip carries the reason the read gave", pill({ membership: { unreadable: "permissions violation" } })?.getAttribute("title") === "the read failed: permissions violation");
+  ok("2.20c and the other pills never claim a failure", pill({})?.getAttribute("title")?.includes("failed") === false);
+  ok("2.21 the legend names each line kind and the badge", text(dflt, ".ui-legend span").join("|") === "Member|Durable member|Offline agent|Posted here|Active now|all channelsReads every channel", text(dflt, ".ui-legend span"));
+  ok("2.21b durable and offline links have their own swatch and their own line class", [...dflt.querySelectorAll(".ui-legend i")].map((e) => e.className).join() === "ui-lg-member,ui-lg-durable,ui-lg-offline,ui-lg-traffic,ui-lg-hot"
+    && d.querySelector("line.ui-tl-durable:not(.ui-tl-off)") !== null && d.querySelector("line.ui-tl-off:not(.ui-tl-durable)") !== null);
   ok("2.22 the graph is one labelled image", dflt.querySelectorAll('svg[role="img"][aria-label="Mesh topology"]').length === 1 && dflt.querySelector("h1")?.textContent === "Topology");
   ok("2.23 the first draw is at rest and reproducible: one model renders to the same markup twice", view() === view());
 
   const shell = parse(renderShell({ roster: ROSTER, channels: CHANNELS, membership: MEMBERS }, { view: "topology" } as Route));
   ok("2.24 the shell draws the topology view in its centre on the topology route", shell.querySelector("main.ui-center svg.ui-topo-svg") !== null && shell.querySelector("main.ui-center h1")?.textContent === "Topology");
   ok("2.25 and on no other route", parse(renderShell({ roster: ROSTER }, { view: "agents" } as Route)).querySelector("svg.ui-topo-svg") === null);
+
+  const future = NOW + 3_600_000;
+  const skewed = (arrivedAt: number) => parse(view(entry(arrivedAt, future), { initialHideOffline: false }));
+  ok("2.26 a sender clock an hour ahead keeps a link hot for 2 seconds of arrival time and no longer",
+    lines(skewed(NOW - 1999), "ui-tl-hot") >= 1 && lines(skewed(NOW - 2000), "ui-tl-hot") === 0, [lines(skewed(NOW - 1999), "ui-tl-hot"), lines(skewed(NOW - 2000), "ui-tl-hot")]);
+  const hist = parse(view({ membership: {}, activity: [{ mode: "chat", channel: "solo", senderId: "A", msg: msgOf("A", NOW) }] }, { initialHideOffline: false }));
+  ok("2.27 an entry read from history is never hot, however fresh its own ts", lines(hist, "ui-tl-hot") === 0 && hist.querySelectorAll(".ui-tn-hot").length === 0);
+  ok("2.28 and it still draws its channel and its traffic link", nodeIds(hist).includes("#solo") && hist.querySelector('line.ui-tl-traffic[data-link="A>#solo"]') !== null, nodeIds(hist));
 }
 
 // 3. Mounted: the frame loop, the zoom, the clock and unmounting
@@ -237,7 +254,7 @@ const DomWheelEvent = (dom.window as unknown as { WheelEvent: typeof WheelEvent 
 
 // The view, mounted: the toggle and the clock
 {
-  const store = seed({ activity: [{ mode: "chat", channel: "alerts", senderId: "A", msg: msgOf("A", NOW) }] });
+  const store = seed({ activity: [{ mode: "chat", channel: "alerts", senderId: "A", msg: msgOf("A", NOW), arrivedAt: NOW }] });
   let clockNow = NOW + 1000;
   // The view's own redraw timers (every 500 ms while a link is hot, every 5 s otherwise), told apart
   // from d3's polling interval by their delay, so a cell can ask how many are still running.
@@ -295,6 +312,27 @@ const DomWheelEvent = (dom.window as unknown as { WheelEvent: typeof WheelEvent 
   ok("4.4 a node already placed keeps its place when another joins", JSON.stringify(one.at("A")) === JSON.stringify(placed), { before: placed, after: one.at("A") });
   ok("4.5 and the one that joined has a place", one.at("D") !== undefined && Number.isFinite(one.at("D")!.x));
   ok("4.6 the layout has no place for an id it was not given", one.at("nobody") === undefined);
+  // d3-force starts its own timer when a simulation is built. The layout stops it, so the only ticks are the caller's.
+  const alone = new ForceLayout(400, 420);
+  alone.sync(model());
+  const resting = JSON.stringify([alone.at("A"), alone.at("B"), alone.at("#alerts")]);
+  await sleep(200);
+  ok("4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools",
+    JSON.stringify([alone.at("A"), alone.at("B"), alone.at("#alerts")]) === resting && !alone.settled, { resting, now: [alone.at("A"), alone.at("B")] });
+}
+
+// 5. The controller stamps when a live frame arrives
+{
+  const frame = (id: string, ts: number) => ({ mode: "chat" as const, channel: "alerts", senderId: "A", msg: msgOf("A", ts, { id, channel: "alerts" }) });
+  const store = createStore<DashboardState>(structuredClone(initialState));
+  let t = 5_000;
+  const ctl = createController(store, { ...unusedApi, ...bootReads, activity: async () => page([{ mode: "chat", channel: "alerts", msg: msgOf("A", 1, { id: "old", channel: "alerts" }) }]) }, { clock: () => t });
+  await ctl.refresh();
+  ok("5.1 an entry read from history carries no arrival stamp", store.get().activity.length === 1 && store.get().activity[0].arrivedAt === undefined, store.get().activity);
+  t = 9_000;
+  ctl.onMessage(frame("live", 99_999_999_999));
+  const live = store.get().activity.find((a) => a.msg.id === "live");
+  ok("5.2 a live frame is stamped with the controller's clock, and its own ts is not what is stamped", live?.arrivedAt === 9_000, live);
 }
 
 await closeDom();
