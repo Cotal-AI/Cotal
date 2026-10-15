@@ -34,7 +34,6 @@ ok("the font is served as font/woff2", routes.get("/assets/inter-latin.woff2")?.
 ok("a file type the client does not use is not served", !routes.has("/assets/notes.txt"));
 ok("a nested directory is not walked", ![...routes.keys()].some((k) => k.includes("nested")));
 ok("files outside assets/ other than the page are not served", !routes.has("/bundle-licenses.json"));
-ok("the not-built message names the build command", CLIENT_NOT_BUILT.includes("pnpm --filter @cotal-ai/web build"));
 const built = clientResponse(routes, "/");
 ok("a built map gives 200 for / and for a hashed asset",
   built.status === 200 && clientResponse(routes, "/assets/index-abc.js").status === 200);
@@ -43,6 +42,13 @@ const emptyPage = clientResponse(none, "/");
 const emptyGraph = clientResponse(none, "/graph");
 ok("an empty map gives 503 with the not-built message for / and /graph",
   emptyPage.status === 503 && emptyPage.body.error === CLIENT_NOT_BUILT && emptyGraph.status === 503 && emptyGraph.body.error === CLIENT_NOT_BUILT);
+// What the 503 says, read off the answer itself. Two readers meet it: a source checkout that has
+// not built the page, and an installed package, which always ships its page, so for it the install
+// is broken.
+const said = emptyPage.status === 503 ? emptyPage.body.error : "";
+ok("the not-built message names the build command", said.includes("pnpm --filter @cotal-ai/web build"), said);
+ok("the not-built message tells an installed package it is a broken install and how to reinstall it",
+  said.includes("broken install") && said.includes("`cotal ext seed --force`"), said);
 ok("an empty map gives 404 for /assets/x.js", clientResponse(none, "/assets/x.js").status === 404);
 ok("a built map gives 404 for an unknown path", clientResponse(routes, "/nope").status === 404);
 console.log(`client-serving: ${n} checks passed`);

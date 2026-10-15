@@ -286,9 +286,13 @@ const CLIENT_TYPES: Record<string, string> = {
  *  browser may cache forever because a new build gives it a new name. */
 export interface ClientFile { path: string; type: string; immutable: boolean }
 
-/** The answer when the client build is missing: the server keeps serving the API and says how to
- *  build the page instead of serving nothing. */
-export const CLIENT_NOT_BUILT = "the dashboard client is not built: run `pnpm --filter @cotal-ai/web build`";
+/** The answer when the client build is missing: the server keeps serving the API and says what to
+ *  do instead of serving nothing. It speaks to both readers who can meet it: in a source checkout
+ *  the page has not been built yet, while an installed package always ships its page, so there the
+ *  install itself is broken. */
+export const CLIENT_NOT_BUILT =
+  "the dashboard client is not built. In a source checkout, run `pnpm --filter @cotal-ai/web build`. " +
+  "An installed @cotal-ai/web always ships its client, so this is a broken install: reinstall it with `cotal ext seed --force`.";
 
 /** The client build as an allow-list, read once at startup: the page at `/` (and `/graph`, so an
  *  old link opens the app) plus the files directly inside `assets/`. Nothing else under `dir` is

@@ -36,6 +36,14 @@
       "replace": "",
       "expectRed": "an empty map gives 503 with the not-built message for / and /graph",
       "cell": "an empty map gives 503 with the not-built message for / and /graph"
+    },
+    {
+      "name": "the not-built message speaks only to a source checkout again, so a customer whose install lost its page is told to run a pnpm command they cannot run",
+      "file": "implementations/web/src/web.ts",
+      "find": "  \"An installed @cotal-ai/web always ships its client, so this is a broken install: reinstall it with `cotal ext seed --force`.\";",
+      "replace": "  \"\";",
+      "expectRed": "the not-built message tells an installed package it is a broken install and how to reinstall it",
+      "cell": "the not-built message tells an installed package it is a broken install and how to reinstall it"
     }
   ]
 }
