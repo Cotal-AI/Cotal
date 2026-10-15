@@ -35,6 +35,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--space`/`--server`/`--creds` (2026-09): after disk reconciliation, `update` reports the
   // selected running manager's custody generation. A legacy manager is not a hot update.
   update: { flags: [...TARGET, "self:boolean"], positionals: false },
+  // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
+  help: { flags: ["all:boolean"], positionals: true },
+  version: { flags: [], positionals: false },
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",

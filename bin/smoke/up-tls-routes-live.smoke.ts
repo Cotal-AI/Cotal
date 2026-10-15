@@ -531,6 +531,13 @@ async function main(): Promise<void> {
       const up = cotal(["up", "--detach", "--open", "--server", `nats://127.0.0.1:${port}`,
         "--tls-cert", pkiFiles.cert, "--tls-key", pkiFiles.key], home, cwd);
       assert.equal(up.status, 0, `TLS mesh must start for the ${command} cell:\n${up.out}`);
+      // `web` is an extension and this sandbox skips the connector seed, so install it here. Without
+      // it the cell ran an unknown command, whose refusal printed the command list, and "down" in
+      // that list satisfied the reason check below.
+      if (command === "web") {
+        const added = cotal(["ext", "add", join(import.meta.dirname, "..", "..", "implementations", "web")], home, cwd);
+        assert.equal(added.status, 0, `web cell setup: the web extension must install:\n${added.out}`);
+      }
       const tlsInfo = await serverInfo(port);
       assert.equal(tlsInfo?.tls_required, true, `${command} cell setup: broker must be TLS-required`);
 
@@ -590,6 +597,8 @@ async function main(): Promise<void> {
             `GATE FAILED (status Recorded Meshes): still printed green "reachable" for a ` +
             `tlsRequired mesh against a plaintext substitute:\n${result.out}`);
         }
+        assert.doesNotMatch(result.out, /unknown command/,
+          `${command} was never run, so its refusal says nothing about TLS:\n${result.out}`);
         assert.match(result.out, /tls|TLS|no mesh running|stale registry|unreachable|down/,
           `${command} refused, but for none of the transport/reachability reasons — assert on the ` +
           `REASON, or this passes for any startup failure:\n${result.out}`);
