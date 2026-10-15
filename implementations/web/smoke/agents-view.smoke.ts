@@ -12,7 +12,7 @@
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { HourglassIcon, Loading03Icon, Moon02Icon, NotificationOff01Icon, Plug01Icon, ServerStack01Icon, Target02Icon, UnavailableIcon } from "@hugeicons/core-free-icons";
-import { createElement } from "react";
+import { createElement, useState } from "react";
 import { renderToString } from "react-dom/server";
 import type { RosterEntry } from "../client/src/api/types.js";
 import { Icon } from "../client/src/icons/Icon.tsx";
@@ -131,6 +131,10 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
     [activity(rowByName(quiet, "quill")), activity(rowByName(quiet, "pell"))], ["Working", "Working · progress unknown"]);
   ok("2.9 a waiting agent that reported nothing says so too, never an invented reason", activity(rowByName(quiet, "wade")) === "No current activity", activity(rowByName(quiet, "wade")));
 
+  const unsure = view({ roster: [entry("local.u", "ursa", "working", { connector: "codex", activity: "Reviewing the diff", progress: { kind: "unknown" } }), entry("local.k", "kit", "working", { connector: "codex", activity: "Editing the spec" })] });
+  same("2.17 a working agent with activity and no progress to report says so after the activity, and one that reports progress does not",
+    [activity(rowByName(unsure, "ursa")), activity(rowByName(unsure, "kit"))], ["Reviewing the diff · progress unknown", "Editing the spec"]);
+
   const dnd = rowByName(d, "reviewer_2").querySelector(".v3-meta[title]");
   const focus = rowByName(d, "planner").querySelector(".v3-meta[title]");
   same("2.10 Do not disturb shows its icon, its words and the tooltip that says what it does",
@@ -206,6 +210,12 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
   ok("4.10 an agent that reports no host is in a last group of its own", hostless.at(-1)?.label === "No host reported" && names(hostless.at(-1)!).join() === "hollow" && hostless.length === 3, hostless.map((x) => x.label));
   ok("4.11 an offline agent stays under its host, dimmed", rowByName(d, "scout").classList.contains("v3-arow-off") && activity(rowByName(d, "scout")) === "Last heartbeat 09:12");
   ok("4.12 the toggle says which grouping is on", Array.from(d.querySelectorAll(".v3-toggle button")).map((b) => `${textOf(b)}=${b.getAttribute("aria-pressed")}`).join() === "Status=false,Host=true");
+}
+
+{
+  const unsure = view({ roster: [entry("local.u", "ursa", "working", { connector: "codex", host: "h1", activity: "Reviewing the diff", progress: { kind: "unknown" } })] }, HOST_ROUTE);
+  same("4.13 the host grouping leaves the activity as the agent wrote it, since its status word already says progress unknown",
+    [activity(rowByName(unsure, "ursa")), textOf(unsure.querySelector(".v3-spill"))], ["Reviewing the diff", "Working · progress unknown"]);
 }
 
 // 5. The Needs route
@@ -311,7 +321,39 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     await plain.unmount();
     const empty = await mount(createElement(AgentsView, { store: seed({ roster: without("local.rv2") }), group: "status", focusWaiting: true, clock: () => NOW }));
     ok("8.4 with nobody waiting there is nothing to scroll to", scrolled.length === 0);
+    const lateStore = seed({ roster: without("local.rv2") });
     await empty.unmount();
+    const later = await mount(createElement(AgentsView, { store: lateStore, group: "status", focusWaiting: true, clock: () => NOW }));
+    const toggle = later.container.querySelector(".v3-toggle button") as HTMLButtonElement;
+    toggle.focus();
+    await later.run(() => lateStore.set({ roster: ROSTER }));
+    ok("8.5 an agent that starts waiting after the arrival neither scrolls nor takes the reader's focus", scrolled.length === 0 && document.activeElement === toggle && sections(later.container)[0].label === "Waiting", { scrolled: scrolled.length, active: document.activeElement?.tagName });
+    await later.run(() => lateStore.set({ roster: [] }));
+    await later.run(() => lateStore.set({ roster: ROSTER }));
+    ok("8.6 nor does a roster that empties and fills again", scrolled.length === 0 && document.activeElement !== sections(later.container)[0].head, scrolled.length);
+    await later.unmount();
+
+    const loadStore = seed({ roster: [] });
+    const loading = await mount(createElement(AgentsView, { store: loadStore, group: "status", focusWaiting: true, clock: () => NOW }));
+    await loading.run(() => loadStore.set({ roster: ROSTER }));
+    const loadedHead = sections(loading.container)[0].head;
+    ok("8.7 a roster still loading when the Needs route opens is waited for: the Waiting group is focused once it arrives", scrolled.length === 1 && scrolled[0].on === loadedHead && document.activeElement === loadedHead, scrolled.length);
+    await loading.unmount();
+
+    let setOn: (on: boolean) => void = () => undefined;
+    const reentry = createStore<DashboardState>({ ...initialState, space: "main", roster: ROSTER });
+    const Flip = () => {
+      const [on, set] = useState(true);
+      setOn = set;
+      return createElement(AgentsView, { store: reentry, group: "status", focusWaiting: on, clock: () => NOW });
+    };
+    scrolled.length = 0;
+    const flipped = await mount(createElement(Flip));
+    await flipped.run(() => setOn(false));
+    (flipped.container.querySelector(".v3-toggle button") as HTMLButtonElement).focus();
+    await flipped.run(() => setOn(true));
+    ok("8.8 leaving the route and arriving on it again focuses the Waiting group again", scrolled.length === 2 && document.activeElement === sections(flipped.container)[0].head, scrolled.length);
+    await flipped.unmount();
   } finally {
     delete proto.scrollIntoView;
   }
@@ -374,6 +416,12 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
     ok("10.3 the view holds a timer while mounted", live.size > 0, live.size);
     await m.unmount();
     ok("10.4 and unmounting stops every timer it started", live.size === 0, live.size);
+    const offline = await mount(createElement(AgentsView, { store: seed({ roster: ROSTER.filter((p) => p.status === "offline" || p.card.kind !== "agent") }), clock: () => clock }));
+    ok("10.5 a view with no heartbeat line to redraw holds no timer", live.size === 0 && line(offline.container) === "", live.size);
+    await offline.unmount();
+    const host = await mount(createElement(AgentsView, { store: seed(), group: "host", clock: () => clock }));
+    ok("10.6 nor does the host grouping, which draws none", live.size === 0, live.size);
+    await host.unmount();
   } finally {
     globalThis.setInterval = realSet;
     globalThis.clearInterval = realClear;

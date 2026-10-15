@@ -1,7 +1,7 @@
 {
   "expected": {
-    "total": 461,
-    "honest-text": 35,
+    "total": 463,
+    "honest-text": 37,
     "presence-only-glyph/count": 37,
     "command-ack": 12,
     "non-render/control": 377
@@ -3088,7 +3088,7 @@
       "kind": "derived-output",
       "anchor": "word(status)",
       "class": "presence-only-glyph/count",
-      "rationale": "Group header word beside the group's count: it names the status and claims no progress. The rows under it carry the honest text."
+      "rationale": "Group header word beside the group's count: it names the status and claims no progress. Progress is said by each row, through activityText and statusLabel, not by the header."
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -3107,7 +3107,29 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
-      "anchor": "\"working\"",
+      "anchor": ") return row.status === \"working\" && grouping === \"status",
+      "class": "honest-text",
+      "rationale": "Under the status grouping a working agent's activity line ends with statusLabel's words, so progress that is unknown is said on the row.",
+      "proof": {
+        "path": "implementations/web/client/src/lib/roster.ts",
+        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "`${activity}${statusLabel(row).slice(row.status.length)}`",
+      "class": "honest-text",
+      "rationale": "The activity line is the agent's text followed by statusLabel's own suffix, so working with unknown progress reads · progress unknown.",
+      "proof": {
+        "path": "implementations/web/client/src/lib/roster.ts",
+        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "  return row.status === \"working\" ? word(statusLabel(row)",
       "class": "honest-text",
       "rationale": "A working agent with no activity text says its status through statusLabel, so progress that is unknown reads Working · progress unknown and never No current activity.",
       "proof": {

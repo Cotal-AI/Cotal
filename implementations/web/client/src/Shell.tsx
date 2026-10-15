@@ -1,16 +1,13 @@
 import { useMemo, type ReactNode } from "react";
 import { dmPeers } from "./lib/dms.js";
 import type { Route } from "./lib/route.js";
-import { rosterRows } from "./lib/roster.js";
 import { documentTitle, orderNotice } from "./lib/shellText.js";
 import type { Controller } from "./state/controller.js";
 import { useStore } from "./state/hooks.js";
 import type { Store } from "./state/store.js";
 import type { DashboardState } from "./state/types.js";
 import { AppShell } from "./ui/AppShell.tsx";
-import { Avatar } from "./ui/Avatar.tsx";
 import { Sidebar } from "./ui/Sidebar.tsx";
-import { StatusWord } from "./ui/Status.tsx";
 import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
@@ -29,11 +26,10 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
   );
 }
 
-/** The view the centre draws for a route, or null where that view is not built yet and the phase 1
- *  roster list still stands in. The Agents route draws the Agents view in the grouping its address
- *  names, and the Needs route draws it by status with the Waiting group in focus. `clock` is the time
- *  the topology view measures hot links against and the Agents view measures heartbeats against.
- *  `selectedAgent` and `onPickAgent` are the Agents view's seam to the details panel. */
+/** The view the centre draws for a route. The Agents route draws the Agents view in the grouping its
+ *  address names, and the Needs route draws it by status with the Waiting group in focus. `clock` is
+ *  the time the topology view measures hot links against and the Agents view measures heartbeats
+ *  against. `selectedAgent` and `onPickAgent` are the Agents view's seam to the details panel. */
 function centreView(
   store: Store<DashboardState>,
   route: Route,
@@ -54,8 +50,6 @@ function centreView(
       return <AgentsView store={store} group={route.group === "host" ? "host" : undefined} selected={selectedAgent} onPick={onPickAgent} clock={clock} />;
     case "needs":
       return <AgentsView store={store} group="status" focusWaiting selected={selectedAgent} onPick={onPickAgent} clock={clock} />;
-    default:
-      return null;
   }
 }
 
@@ -65,8 +59,7 @@ function centreView(
  *  `clock` is the topology view's clock, `Date.now` unless a caller passes its own.
  *
  *  The sidebar is the places and the stale marker, and the panel is an empty frame. The centre draws
- *  the view for the route (`centreView`) inside a section that says which view it is; the routes
- *  whose views are not built yet keep the phase 1 roster list. */
+ *  the view for the route (`centreView`) inside a section that says which view it is. */
 export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, selectedAgent = null, onPickAgent }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -83,28 +76,13 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const channels = useStore(store, (s) => s.channels);
   const roster = useStore(store, (s) => s.roster);
   const dms = useStore(store, (s) => s.dms);
-  const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
   const view = centreView(store, route, clock, selectedAgent, onPickAgent);
   return (
     <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}>
       <title>{documentTitle(space)}</title>
       <StatusLines store={store} />
-      {view ? (
-        <section className="ui-view" data-view={route.view}>{view}</section>
-      ) : (
-        <section className="ui-view ui-interim" data-view={route.view}>
-          <div aria-label="Roster">
-            {rows.filter((r) => r.status !== "offline").map((r) => (
-              <div key={r.id} className="v3-mrow">
-                <Avatar vendor={r.harness} status={r.status} size={28} />
-                <span className="v3-mname">{r.name}{r.role && <span>{r.role}</span>}</span>
-                <StatusWord row={r} />
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      <section className="ui-view" data-view={route.view}>{view}</section>
     </AppShell>
   );
 }

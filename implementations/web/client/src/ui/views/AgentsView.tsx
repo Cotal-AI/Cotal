@@ -88,14 +88,16 @@ const roleLine = (row: RosterRow): string => [row.role, row.harness === undefine
 
 /** What a row says under the name. An offline agent says when its last heartbeat was. A waiting one
  *  in the status grouping says what it reported and when, as its Needs card does (and so names no
- *  one it waits for and no duration). Anyone else says its own activity text. An agent with no
+ *  one it waits for and no duration). Anyone else says its own activity text, and under the status
+ *  grouping a working agent whose progress is unknown says that after it, in `statusLabel`'s words
+ *  (the host grouping's status word says it already). An agent with no
  *  activity says so, except a working one, which says its status through `statusLabel`, so
  *  progress that is unknown is never read as "no activity". */
 function activityText(row: RosterRow, grouping: Grouping): string {
   if (row.status === "offline") return `Last heartbeat ${clockTime(new Date(row.ts))}`;
   if (row.status === "waiting" && grouping === "status") return needsDetail(row) || "No current activity";
   const activity = row.activity?.trim();
-  if (activity) return activity;
+  if (activity) return row.status === "working" && grouping === "status" ? `${activity}${statusLabel(row).slice(row.status.length)}` : activity;
   return row.status === "working" ? word(statusLabel(row)) : "No current activity";
 }
 
@@ -153,6 +155,23 @@ function Endpoints({ rows }: { rows: RosterRow[] }) {
   );
 }
 
+/** The heartbeat line under the status groups: how old the stalest live heartbeat is, counted from
+ *  `clock`. It owns the timer that redraws the age every second, since nothing else would while every
+ *  agent is silent, so only a view that draws the line pays for it and the rest of the view is not
+ *  redrawn. */
+function HeartbeatLine({ beat, clock }: { beat: number; clock: () => number }) {
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  useEffect(() => {
+    const id = setInterval(redraw, TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="v3-eprow" style={{ paddingLeft: 66, fontSize: 12.5 }}>
+      Oldest heartbeat among live agents: <span className="ui-num">{ageText(clock() - beat)}</span> ago
+    </div>
+  );
+}
+
 /** The Agents view (mock section A1 and the Agents frame of section D): the agents grouped by status,
  *  Waiting first and empty groups hidden, or by host, with the Status and Host toggle in the header;
  *  the endpoints below; and, in the status grouping, how old the stalest live heartbeat is.
@@ -161,8 +180,8 @@ function Endpoints({ rows }: { rows: RosterRow[] }) {
  *  - `group` is the grouping the address asks for. Without one the viewer's saved grouping is used,
  *    read once the page is drawn so a server render never touches storage, and a toggle click is
  *    saved for next time. Blocked storage costs only the saving.
- *  - `focusWaiting` (the Needs route) scrolls the Waiting section into view and marks it, when there
- *    is one.
+ *  - `focusWaiting` (the Needs route) marks the Waiting section, and once per arrival on the route,
+ *    when the roster first has agents, scrolls it into view and focuses it, if there is one then.
  *  - `selected` is the agent the details panel shows (`aria-current` on its row) and `onPick` is
  *    called with the id of a row the reader opens. The view holds neither, so a row that moves to
  *    another group when its agent changes status stays selected. It keeps keyboard focus too, because
@@ -184,13 +203,8 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
   const space = useStore(store, (s) => s.space);
   const stale = useStore(store, (s) => s.stale);
   const [grouping, setGrouping] = useState<Grouping>(group ?? "status");
-  const [, redraw] = useReducer((n: number) => n + 1, 0);
   const waitingHead = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => setGrouping(group ?? readGrouping() ?? "status"), [group]);
-  useEffect(() => {
-    const id = setInterval(redraw, TICK_MS);
-    return () => clearInterval(id);
-  }, []);
 
   const split = useMemo(() => {
     const isAgent = (p: RosterEntry) => p.card.kind === "agent";
@@ -198,25 +212,33 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
   }, [roster]);
   const { agents, endpoints } = split;
   const sections = grouping === "status" ? sectionsByStatus(agents) : sectionsByHost(agents);
+  const empty = agents.length === 0;
   const hasWaiting = sections.some((s) => s.key === "waiting") && grouping === "status";
 
+  // The Needs route moves focus once per arrival on it: at the first draw that has agents, so a roster
+  // still loading is waited for, and never again, so a later agent starting to wait cannot pull focus
+  // from where the reader is. Leaving the route clears the mark for the next arrival.
+  const arrived = useRef(false);
   useLayoutEffect(() => {
-    if (!focusWaiting || !hasWaiting) return;
-    const head = waitingHead.current as unknown as Reached | null;
+    if (!focusWaiting) {
+      arrived.current = false;
+      return;
+    }
+    if (empty || arrived.current) return;
+    arrived.current = true;
+    const head = hasWaiting ? (waitingHead.current as unknown as Reached | null) : null;
     head?.focus({ preventScroll: true });
     head?.scrollIntoView?.({ block: "start" });
-  }, [focusWaiting, hasWaiting]);
+  }, [focusWaiting, empty]);
 
   const choose = (next: Grouping) => {
     setGrouping(next);
     saveGrouping(next);
   };
 
-  const now = clock();
   const live = agents.filter((r) => r.status !== "offline").length;
   const lastSeen = stale.some((m) => m.name === "roster");
   const beat = oldestLiveBeat(agents);
-  const empty = agents.length === 0;
   return (
     <>
       <header className="ui-bar">
@@ -267,9 +289,7 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
                 ];
               })}
               {grouping === "status" && !lastSeen && beat !== undefined && Number.isFinite(beat) && (
-                <div className="v3-eprow" style={{ paddingLeft: 66, fontSize: 12.5 }}>
-                  Oldest heartbeat among live agents: <span className="ui-num">{ageText(now - beat)}</span> ago
-                </div>
+                <HeartbeatLine beat={beat} clock={clock} />
               )}
             </div>
           )}

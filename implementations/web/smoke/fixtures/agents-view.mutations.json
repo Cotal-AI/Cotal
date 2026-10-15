@@ -152,8 +152,8 @@
     {
       "name": "A19 the heartbeat age counts the wrong way",
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "ageText(now - beat)",
-      "replace": "ageText(beat - now)",
+      "find": "ageText(clock() - beat)",
+      "replace": "ageText(beat - clock())",
       "expectRed": "3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock",
       "cell": "3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock"
     },
@@ -412,6 +412,62 @@
       "replace": "waiting: Moon02Icon,",
       "expectRed": "1.2 each header draws its own status icon: hourglass, loading spokes, moon, struck circle",
       "cell": "1.2 each header draws its own status icon: hourglass, loading spokes, moon, struck circle"
+    },
+    {
+      "name": "A52 a working agent with unknown progress says nothing of it after its activity",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "`${activity}${statusLabel(row).slice(row.status.length)}`",
+      "replace": "activity",
+      "expectRed": "2.17 a working agent with activity and no progress to report says so after the activity, and one that reports progress does not",
+      "cell": "2.17 a working agent with activity and no progress to report says so after the activity, and one that reports progress does not"
+    },
+    {
+      "name": "A53 the host grouping repeats progress unknown on the activity line",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "row.status === \"working\" && grouping === \"status\" ?",
+      "replace": "row.status === \"working\" ?",
+      "expectRed": "4.13 the host grouping leaves the activity as the agent wrote it, since its status word already says progress unknown",
+      "cell": "4.13 the host grouping leaves the activity as the agent wrote it, since its status word already says progress unknown"
+    },
+    {
+      "name": "A54 the Needs route refocuses every time an agent starts to wait",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "    if (empty || arrived.current) return;\n    arrived.current = true;\n    const head = hasWaiting ? (waitingHead.current as unknown as Reached | null) : null;\n    head?.focus({ preventScroll: true });\n    head?.scrollIntoView?.({ block: \"start\" });\n  }, [focusWaiting, empty]);",
+      "replace": "    if (!hasWaiting) return;\n    const head = waitingHead.current as unknown as Reached | null;\n    head?.focus({ preventScroll: true });\n    head?.scrollIntoView?.({ block: \"start\" });\n  }, [focusWaiting, hasWaiting]);",
+      "expectRed": "8.5 an agent that starts waiting after the arrival neither scrolls nor takes the reader's focus",
+      "cell": "8.5 an agent that starts waiting after the arrival neither scrolls nor takes the reader's focus"
+    },
+    {
+      "name": "A55 the Needs route gives up before the roster has loaded",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "if (empty || arrived.current) return;",
+      "replace": "if (arrived.current) return;",
+      "expectRed": "8.7 a roster still loading when the Needs route opens is waited for: the Waiting group is focused once it arrives",
+      "cell": "8.7 a roster still loading when the Needs route opens is waited for: the Waiting group is focused once it arrives"
+    },
+    {
+      "name": "A56 a roster that empties and fills again refocuses",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "if (empty || arrived.current) return;",
+      "replace": "if (empty) return;",
+      "expectRed": "8.6 nor does a roster that empties and fills again",
+      "cell": "8.6 nor does a roster that empties and fills again"
+    },
+    {
+      "name": "A57 leaving the Needs route does not clear the arrival",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "      arrived.current = false;\n      return;",
+      "replace": "      return;",
+      "expectRed": "8.8 leaving the route and arriving on it again focuses the Waiting group again",
+      "cell": "8.8 leaving the route and arriving on it again focuses the Waiting group again"
+    },
+    {
+      "name": "A58 the whole view redraws every second, with or without a heartbeat line",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "  const empty = agents.length === 0;",
+      "replace": "  const empty = agents.length === 0;\n  const [, tickAll] = useState(0);\n  useEffect(() => {\n    const id = setInterval(() => tickAll((n) => n + 1), TICK_MS);\n    return () => clearInterval(id);\n  }, []);",
+      "expectRed": "10.5 a view with no heartbeat line to redraw holds no timer",
+      "cell": "10.5 a view with no heartbeat line to redraw holds no timer"
     }
   ]
 }

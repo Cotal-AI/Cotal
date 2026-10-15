@@ -401,7 +401,6 @@ pre code { background: none; padding: 0; }
 /* A view fills the centre with the mock's bar, scroll and dock. The phase 1 roster list that still
    stands in for the views not built yet scrolls with padding. */
 .ui-center > .ui-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.ui-center > .ui-interim { display: block; overflow-y: auto; padding: 16px 20px; }
 /* The Needs card's Message button is a link to the DM view, drawn as the mock's button. */
 a.ui-btn { text-decoration: none; }
 /* The member stack and View agent wait for the right panel; until then they do not answer a hover. */
