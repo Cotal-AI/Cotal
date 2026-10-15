@@ -32,7 +32,8 @@ for (const want of ["react", "react-dom", "@fontsource-variable/inter"])
   ok(`bundle-licenses.json names ${want}`, names.includes(want), names);
 ok("every bundled package carries a version and a license",
   licenses.bundled.every((b) => b.version && b.license), licenses.bundled);
-ok("bundle-licenses.json is sorted by package", names.join() === [...names].sort().join());
+// The same plain comparison the build sorts with (vite.config.ts), so the two cannot disagree.
+ok("bundle-licenses.json is sorted by package", names.join() === [...names].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)).join());
 
 const assets = readdirSync(join(out, "assets"));
 ok("the font ships as a local woff2 file", assets.some((a) => a.endsWith(".woff2")), assets);

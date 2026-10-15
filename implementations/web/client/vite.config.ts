@@ -30,7 +30,9 @@ function bundleLicenses(): Plugin {
           if (p) found.set(p.name, p.root);
         }
       }
-      const bundled = [...found].sort(([a], [b]) => a.localeCompare(b)).map(([name, root]) => {
+      // Code-unit order, the same plain comparison the client-build suite checks with: a
+      // locale-aware sort could order two names differently on another machine.
+      const bundled = [...found].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, root]) => {
         const meta = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string; license?: string };
         if (!meta.version || !meta.license) throw new Error(`bundle-licenses: ${name} declares no version or license`);
         return { package: name, version: meta.version, license: meta.license };
