@@ -51,8 +51,8 @@ test('only the fixed package pins and lock-only lifecycle flags are shipped', ()
   assert.equal(source.includes("run('pnpm', command)"), true);
   assert.equal(source.includes('await import('), false);
 });
-test('the manual acquisition excludes all eight ordinary CI jobs including always aggregate', () => {
-  const ordinary = ['unit', 'smoke', 'live', 'seat-native-linux-x64', 'seat-native-linux-arm64', 'seat-pack', 'seat-linux-arm64', 'ci-ok'];
+test('the manual acquisition excludes all nine ordinary CI jobs including always aggregate', () => {
+  const ordinary = ['unit', 'smoke', 'live', 'platforms', 'seat-native-linux-x64', 'seat-native-linux-arm64', 'seat-pack', 'seat-linux-arm64', 'ci-ok'];
   assert.deepEqual(Object.keys(workflow.jobs).sort(), [...ordinary, 'validator-lock-acquisition'].sort());
   assert.deepEqual(Object.keys(workflow.on).sort(), ['pull_request', 'push', 'workflow_dispatch']);
   assert.deepEqual(workflow.on.workflow_dispatch, { inputs: { acquisition: {
