@@ -96,14 +96,15 @@ export interface ClaudeSessionOptions {
   /** Exit the process when the control socket cannot be bound. A host serving several sessions
    *  leaves it off, and the call rejects instead. */
   fatalBind?: boolean;
-  /** The session ended itself (shutdown frame, end of `input`, a required event plane stopping)
-   *  and is already closed. `code` is the exit code `mcp.cjs` uses. */
+  /** A shutdown frame or the end of `input` ended the session. Called once after teardown;
+   *  `code` is 1 if teardown failed, or the requested exit code otherwise. */
   onShutdown?: (code: number) => void;
 }
 
 export interface ClaudeSession {
   name: string;
-  /** Leave the mesh and stop serving. Idempotent. The streams stay open; the caller owns them. */
+  /** Leave the mesh and stop serving. Idempotent; may reject if teardown fails.
+   *  The streams stay open; the caller owns them. */
   close(): Promise<void>;
 }
 
@@ -125,6 +126,8 @@ async function startSession(
   setClose: (close: () => Promise<void>) => void,
 ): Promise<ClaudeSession> {
   const { env } = opts;
+  if (opts.input.readableEnded || opts.input.destroyed)
+    throw new Error("hosted MCP input is already ended or destroyed");
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
    *  iff COTAL_EVENTS is on (buildLaunch sets it for managed sessions; a personal session never
    *  publishes). This replaces the `tr-<name>` transcript mirror, which is gone. */
@@ -297,8 +300,11 @@ async function startSession(
   let controlServer: ReturnType<typeof startControlServer> | undefined;
   let mcp: McpServer | undefined;
   let stopping: Promise<void> | undefined;
+  let shuttingDown = false;
+  const onInputEnd = () => shutdown();
   const close = (): Promise<void> =>
     (stopping ??= (async () => {
+      opts.input.off("end", onInputEnd);
       eventWaitStop.abort();
       try {
         controlServer?.close();
@@ -313,7 +319,17 @@ async function startSession(
         await mcp?.close().catch(() => {});
       }
     })());
-  const shutdown = (code = 0) => void close().finally(() => opts.onShutdown?.(code));
+  const shutdown = (code = 0): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    void close().then(
+      () => opts.onShutdown?.(code),
+      (e) => {
+        process.stderr.write(`[cotal-connector] session shutdown failed: ${String(e)}\n`);
+        opts.onShutdown?.(1);
+      },
+    );
+  };
   setClose(close);
   controlServer = startControlServer(
     agent,
@@ -325,6 +341,8 @@ async function startSession(
     controlServer!.once("listening", resolve);
     controlServer!.once("error", reject);
   });
+  if (opts.input.readableEnded || opts.input.destroyed)
+    throw new Error("hosted MCP input ended before startup completed");
   agent.start(); // custody is claimed before background broker connect, after control bind
 
   const server = new McpServer(
@@ -373,7 +391,7 @@ async function startSession(
   // A client ends a stdio session by closing our stdin, and so does a harness that dies. The mesh
   // connection would keep this process alive past it, heartbeating a presence no session backs,
   // which every peer's roster reads as a live agent (#544).
-  opts.input.once("end", () => void shutdown());
+  opts.input.once("end", onInputEnd);
 
   // Is this session consuming us as a channel? Decided once the client finishes the handshake,
   // after its `initialize` has carried its capabilities: `connect()` resolves as soon as stdio is

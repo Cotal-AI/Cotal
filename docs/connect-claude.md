@@ -658,13 +658,16 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
   carry a mesh identity and the full control pair, or the call rejects before the session joins the
   mesh. A plain `claude` with no identity is served by `mcp.cjs` run directly.
 - **Streams.** `input` carries JSON-RPC from the client and `output` carries this session's replies
-  and `claude/channel` pushes. The caller owns both streams. When `input` ends, the session closes.
+  and `claude/channel` pushes. The caller owns both streams. An ended or destroyed input rejects
+  startup. When an active session's `input` ends, the session closes.
 - **`fatalBind`.** Off by default: a control socket that cannot be bound rejects the call and the
   host keeps its other sessions. Only a process that is the session turns it on, as `mcp.cjs` does.
 - **Teardown.** `close()` closes the control socket, the wake policy, the AG-UI emitter, the mesh
-  endpoint and the MCP server, and is idempotent. A startup failure closes what was started before
-  the call rejects. A session that ends itself (a manager shutdown frame, the end of `input`, a
-  required event plane stopping) closes and then calls `onShutdown(code)`.
+  endpoint and the MCP server, and is idempotent. It removes its input listener without closing the
+  caller's streams. The returned promise rejects if teardown fails. A startup failure closes what
+  was started before the call rejects. A manager shutdown frame or the end of `input` closes the
+  session and then calls `onShutdown(code)` once. A teardown failure is logged and reported with
+  code 1, without becoming an unhandled rejection in the host.
 
 ## Feedback
 
