@@ -376,8 +376,8 @@
     {
       "name": "L7 the layout leaves d3's own timer running, so the layout moves and cools by itself",
       "file": "implementations/web/client/src/ui/graph/layout.ts",
-      "find": ".force(\"y\", forceY<Body>(height / 2).strength(0.04))\n      .stop();",
-      "replace": ".force(\"y\", forceY<Body>(height / 2).strength(0.04));",
+      "find": ".force(\"y\", forceY<Body>())\n      .stop();",
+      "replace": ".force(\"y\", forceY<Body>());",
       "expectRed": "4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools",
       "cell": "4.7 a layout moves only when it is ticked: left alone, it neither moves nor cools"
     }

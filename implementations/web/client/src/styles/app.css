@@ -403,8 +403,24 @@ pre code { background: none; padding: 0; }
 .ui-center > .ui-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 /* The Needs card's Message button is a link to the DM view, drawn as the mock's button. */
 a.ui-btn { text-decoration: none; }
-/* The member stack and View agent wait for the right panel; until then they do not answer a hover. */
+/* A member stack drawn with no panel to open is disabled and does not answer a hover. */
 .ui-members:disabled { cursor: default; }
 .ui-members:disabled:hover { background: none; }
 /* The Activity header's copy of the stale marker sits in the bar, not under the space name. */
 .ui-bar .ui-stale { margin: 0; padding: 5px 8px; }
+/* ---------- right panel ---------- */
+/* The Agent tab draws the character at 76px; the mock's frame drew it at 72. */
+.ui-big { width: 76px; height: 76px; }
+/* A tab with nothing to show (Members off a channel, Agent before a pick) does not answer a hover. */
+.ui-tab:disabled { opacity: .45; cursor: default; }
+.ui-tab:disabled:hover { background: none; }
+/* The attach and stop rows lead with their icon, dimmed as the mock draws it. */
+.ui-cmd > .ui-ic { color: var(--dim); flex: none; }
+/* A message's avatar and name open the sender's Agent tab. */
+.ui-who { display: inline-flex; border-radius: 6px; }
+.ui-who:hover b { text-decoration: underline; }
+/* The delete dialog's field is a real input, focused as the mock's focused field. */
+input.ui-field { width: 100%; outline: none; }
+input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+/* A refusal sits in the dialog's own row, so the dialog keeps its size. */
+.ui-dialog-err { color: var(--red-ink); font-size: 12.5px; overflow: hidden; }

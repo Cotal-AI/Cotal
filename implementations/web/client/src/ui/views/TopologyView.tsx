@@ -16,17 +16,12 @@ const LEGEND: { cls: string; label: string }[] = [
   { cls: "ui-lg-hot", label: "Active now" },
 ];
 
-/** The topology view: the mesh as a graph from the rail. The header holds the membership pill
- *  and the "Hide offline" button (on by default, as the old graph had it), the graph fills the page
- *  and the legend sits under it.
- *
- *  The graph is a function of the store and of `clock`, the one place time comes in: a link is hot
- *  for two seconds after a message flows, and `clock` says what time it is. A suite passes a fixed
- *  clock. The view draws again every half second while a link is hot, so it goes cold on its own,
- *  and every five seconds otherwise, so the membership pill can turn stale on its own.
- *
- *  `initialHideOffline` is where the toggle starts (hidden, unless a caller says otherwise). */
-export function TopologyView({ store, clock = Date.now, initialHideOffline = true }: { store: Store<DashboardState>; clock?: () => number; initialHideOffline?: boolean }) {
+/** The graph's model and the clock it is drawn against, for the topology view and the panel's Topology
+ *  tab alike. A link is hot for two seconds after a message flows, and `clock` says what time it is.
+ *  The caller draws again every half second while a link is hot, so it goes cold on its own, and every
+ *  five seconds otherwise, so the membership pill can turn stale on its own. `initialHideOffline` is
+ *  where the Hide offline toggle starts. */
+export function useTopology(store: Store<DashboardState>, clock: () => number, initialHideOffline: boolean) {
   const roster = useStore(store, (s) => s.roster);
   const channels = useStore(store, (s) => s.channels);
   const membership = useStore(store, (s) => s.membership);
@@ -57,6 +52,19 @@ export function TopologyView({ store, clock = Date.now, initialHideOffline = tru
     return () => clearInterval(id);
   }, [hot]);
 
+  return { model, membership, now, hideOffline, setHideOffline };
+}
+
+/** The topology view: the mesh as a graph from the rail. The header holds the membership pill
+ *  and the "Hide offline" button (on by default, as the old graph had it), the graph fills the page
+ *  and the legend sits under it.
+ *
+ *  The graph is a function of the store and of `clock`, the one place time comes in (`useTopology`).
+ *  A suite passes a fixed clock.
+ *
+ *  `initialHideOffline` is where the toggle starts (hidden, unless a caller says otherwise). */
+export function TopologyView({ store, clock = Date.now, initialHideOffline = true }: { store: Store<DashboardState>; clock?: () => number; initialHideOffline?: boolean }) {
+  const { model, membership, now, hideOffline, setHideOffline } = useTopology(store, clock, initialHideOffline);
   return (
     <>
       <header className="ui-bar">

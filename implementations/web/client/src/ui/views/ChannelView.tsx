@@ -1,5 +1,7 @@
+import { SidebarRightIcon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
+import { Icon } from "../../icons/Icon.tsx";
 import { claimedBy } from "../../lib/claims.js";
 import { channelMembers } from "../../lib/members.js";
 import { nameIndex, type NameIndex } from "../../lib/names.js";
@@ -135,13 +137,17 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    working, with the honest progress text from `statusLabel`. Unknown progress draws no moving dots.
  *  - The dock holds the card for the first waiting agent this browser has not dismissed, and is not
  *    drawn at all when there is none. Phase 3 adds the composer under it.
- *  - `onMembers` and `onViewAgent` open the Members and Agent tabs. The panel that has them is not
- *    built yet, so the shell passes neither and their buttons are disabled. */
-export function ChannelView({ store, channel, onMembers, onViewAgent }: {
+ *  - `onMembers` and `onViewAgent` open the Members and Agent tabs. Without them (a view drawn with
+ *    no panel) their buttons are disabled.
+ *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
+ *    who closed the panel can bring it back. */
+export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen = false, onTogglePanel }: {
   store: Store<DashboardState>;
   channel: string;
   onMembers?: () => void;
   onViewAgent?: (id: string) => void;
+  panelOpen?: boolean;
+  onTogglePanel?: () => void;
 }) {
   const open = useStore(store, (s) => s.open);
   const channels = useStore(store, (s) => s.channels);
@@ -178,6 +184,11 @@ export function ChannelView({ store, channel, onMembers, onViewAgent }: {
           </span>
           {count}
         </button>
+        {onTogglePanel && (
+          <button type="button" className="ui-tool" title="Toggle panel" aria-label="Toggle panel" aria-pressed={panelOpen} onClick={onTogglePanel}>
+            <Icon icon={SidebarRightIcon} className="ui-ic" />
+          </button>
+        )}
       </header>
       <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
         <div className="ui-col">

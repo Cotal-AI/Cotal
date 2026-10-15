@@ -40,3 +40,36 @@ export function channelMembers(
   for (const p of posts) if (p.msg.channel === channel) add(p.senderId ?? p.msg.from.id, "traffic");
   return out;
 }
+
+/** The channels one agent is in, decided the way `channelMembers` decides a channel's members: from
+ *  the broker's membership when its feed is authoritative, else the channels it has posted in.
+ *  `wide` is a reader of every channel (`>` or `*`), which lists no channel one by one. `modes` are
+ *  the agent's own per-channel modes from its presence; a channel it has a mode on is listed even
+ *  when nothing else names it. Only `quiet` and `muted` are modes; anything else the wire carries is
+ *  dropped rather than shown. Channels come sorted by name. */
+export function agentChannels(
+  id: string,
+  membership: DashboardState["membership"],
+  knownChannels: string[],
+  posts: { senderId?: string; msg: CotalMessage }[],
+  modes: Record<string, string> | undefined,
+): { channels: { channel: string; mode?: "quiet" | "muted" }[]; wide: boolean } {
+  const names = new Set<string>();
+  let wide = false;
+  const authoritative = feedAuthoritative(membership);
+  if (authoritative) {
+    const me = membership.snapshot!.members.find((m) => m.id === id);
+    if (me) {
+      const mine = memberChannels(me.live ?? [], me.durable ?? [], knownChannels);
+      wide = mine.wide;
+      for (const ch of mine.channels.keys()) names.add(ch);
+    }
+  } else {
+    for (const p of posts) if ((p.senderId ?? p.msg.from?.id) === id && typeof p.msg.channel === "string") names.add(p.msg.channel);
+  }
+  const moded = new Map<string, "quiet" | "muted">();
+  for (const [ch, mode] of Object.entries(modes ?? {})) if (mode === "quiet" || mode === "muted") moded.set(ch, mode);
+  for (const ch of moded.keys()) names.add(ch);
+  const channels = [...names].sort().map((channel) => (moded.has(channel) ? { channel, mode: moded.get(channel)! } : { channel }));
+  return { channels, wide };
+}

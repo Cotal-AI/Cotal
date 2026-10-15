@@ -1,0 +1,443 @@
+/** The right panel (mock section D, the panel; section B, the delete dialog and the agent states):
+ *  its tabs and their defaults, the Members tab with its pill and channel details, the Agent tab with
+ *  its fields and commands, the delete dialog, the Topology tab at panel size, and the one picker,
+ *  `selectAgent`, that every view calls. Each cell renders the real shell or a tab over a seeded store,
+ *  on the server or mounted in jsdom when it needs a click, and reads the DOM it drew.
+ *
+ *  What is pinned, beyond the markup: Model says "not reported" when the card has none; only Do not
+ *  disturb and Focus show; the heartbeat is labelled as a heartbeat ("Heartbeat 2s ago"); the delete
+ *  button waits for the exact name and a refusal stays in the dialog; the panel's open state survives
+ *  a reload and blocked storage; and a graph honours a new size on the same mount. */
+import { closeDom, dom } from "./dom-globals.js";
+import { strict as assert } from "node:assert";
+import { createElement, useState } from "react";
+import { renderToString } from "react-dom/server";
+import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
+import { ago } from "../client/src/lib/ago.js";
+import { formatRoute, type Route } from "../client/src/lib/route.js";
+import { topologyModel, type TopoModel } from "../client/src/lib/topology.js";
+import { Shell } from "../client/src/Shell.tsx";
+import type { Controller } from "../client/src/state/controller.js";
+import { createStore } from "../client/src/state/store.js";
+import { initialState, type DashboardState, type StoredMessage } from "../client/src/state/types.js";
+import { ForceLayout } from "../client/src/ui/graph/layout.js";
+import { TopologyGraph } from "../client/src/ui/graph/TopologyGraph.tsx";
+import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
+import { DeleteChannelDialog } from "../client/src/ui/panel/DeleteChannelDialog.tsx";
+import { PANEL_KEY } from "../client/src/ui/panel/RightPanel.tsx";
+import { TopologyTab } from "../client/src/ui/panel/TopologyTab.tsx";
+import { errorsDuring, mount, type Mounted } from "./mount.js";
+import { renderShell } from "./render-shell.js";
+
+const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+let n = 0;
+const ok = (name: string, cond: unknown, detail?: unknown) => {
+  assert.ok(cond, `${name}${detail === undefined ? "" : `: ${JSON.stringify(detail)}`}`);
+  console.log(`  ok ${++n} ${name}`);
+};
+const same = (name: string, got: unknown, want: unknown) => ok(name, JSON.stringify(got) === JSON.stringify(want), { got, want });
+
+// ── Fixtures ─────────────────────────────────────────────────────────────────────────────────────
+const NOW = Date.now();
+const at = (h: number, m: number) => {
+  const d = new Date(NOW);
+  d.setHours(h, m, 0, 0);
+  return d.getTime();
+};
+type Extra = {
+  connector?: string; role?: string; activity?: string; statusSince?: number; model?: string; host?: string;
+  attention?: string; ts?: number; progress?: { kind: "unknown" }; channelModes?: Record<string, string>; skills?: string[];
+};
+const entry = (id: string, name: string, status: RosterEntry["status"], x: Extra = {}): RosterEntry =>
+  ({
+    card: {
+      id, name, kind: "agent", role: x.role,
+      meta: { ...(x.connector ? { connector: x.connector } : {}), ...(x.model ? { model: x.model } : {}), ...(x.host ? { host: x.host } : {}) },
+      ...(x.skills ? { skills: x.skills.map((s) => ({ id: `skill-${s}`, name: s })) } : {}),
+    },
+    status,
+    ts: x.ts ?? NOW - 2000,
+    activity: x.activity,
+    statusSince: x.statusSince,
+    attention: x.attention,
+    progress: x.progress,
+    channelModes: x.channelModes,
+  }) as RosterEntry;
+const roster: RosterEntry[] = [
+  entry("local.dav", "david", "working", { connector: "claude-code", role: "engineer", activity: "Editing packages/core/src/presence.ts" }),
+  entry("local.rev", "reviewer", "working", {
+    connector: "codex", role: "reviewer", activity: "Reviewing the presence TTL diff", statusSince: at(10, 43), model: "gpt-5.5-codex", host: "build-box",
+    attention: "dnd", channelModes: { general: "quiet", ops: "loud" }, skills: ["code-review", "typescript", "spec"],
+  }),
+  entry("local.rv2", "reviewer_2", "waiting", { connector: "opencode", role: "reviewer", activity: "Needs approval to run pnpm smoke:ci", statusSince: at(10, 49), host: "build-box" }),
+  entry("local.pln", "planner", "idle", { connector: "pi", role: "planner", attention: "focus" }),
+  entry("local.sco", "scout", "offline", { connector: "gemini", role: "researcher" }),
+];
+const msg = (id: string, from: string, text: string, ts: number, channel = "review"): CotalMessage =>
+  ({ id, ts, space: "main", from: { id: from, name: "mallory" }, channel, parts: [{ kind: "text", text }] }) as unknown as CotalMessage;
+const review: ChannelInfo = { channel: "review", messages: 9, description: "Review requests. Send them to the reviewer role.", replay: true, replayWindow: "24h", deliveryClass: "durable" };
+const general: ChannelInfo = { channel: "general", messages: 1, replay: false, deliveryClass: "live" };
+const snapshot = (members: { id: string; live?: string[]; durable?: string[] }[]): MembershipSnapshot =>
+  ({ asOf: NOW, members: members.map((m) => ({ live: [], durable: [], observedAt: 1, ...m })) }) as unknown as MembershipSnapshot;
+const reviewMembers = snapshot([
+  { id: "local.rev", live: ["review"] },
+  { id: "local.dav", durable: ["review"] },
+  { id: "local.rv2", live: ["review"] },
+  { id: "local.pln", live: ["general"] },
+]);
+const reviewMessages: StoredMessage[] = [
+  { msg: msg("m1", "local.dav", "Pushed the presence TTL change.", at(10, 42)), senderId: "local.dav" },
+  { msg: msg("m3", "local.rev", "This fails on empty input.", at(10, 44)), senderId: "local.rev" },
+  { msg: msg("m4", "local.rev", "Read from history.", at(10, 45)) },
+  { msg: msg("m5", "local.rev", "Also from history.", at(10, 46)) },
+];
+const seed = (patch: Partial<DashboardState> = {}): Partial<DashboardState> => ({
+  space: "main",
+  roster,
+  channels: [review, general],
+  membership: { snapshot: reviewMembers },
+  open: { channel: "review", messages: reviewMessages },
+  ...patch,
+});
+const inReview: Route = { view: "channel", channel: "review" };
+
+const parse = (html: string): HTMLElement => {
+  const el = document.createElement("div");
+  el.innerHTML = html;
+  return el;
+};
+/** An empty element in place of one that failed to draw, so the cell fails on its assertion. */
+const none = (): HTMLElement => document.createElement("div");
+const textOf = (el: Element | null | undefined) => (el?.textContent ?? "").replace(/\s+/g, " ").trim();
+const all = (el: ParentNode, sel: string) => [...el.querySelectorAll(sel)] as HTMLElement[];
+const pane = (el: ParentNode) => (el.querySelector("section.ui-pane") as HTMLElement | null) ?? none();
+const tabs = (el: ParentNode) => all(pane(el), ".ui-tabs [role=tab]").map((t) => [textOf(t), t.getAttribute("aria-selected"), (t as HTMLButtonElement).disabled]);
+const kv = (el: ParentNode) => all(el, "dl.ui-kv dt").map((dt) => [textOf(dt), textOf(dt.nextElementSibling)]);
+const storeOf = (patch: Partial<DashboardState> = {}) => createStore<DashboardState>({ ...initialState, ...seed(patch) });
+const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: string | null = "review") =>
+  parse(renderToString(createElement(AgentTab, { store: storeOf(patch), id, channel, clock: () => NOW })));
+
+// ── 1. The panel in the shell and its tab defaults ───────────────────────────────────────────────
+{
+  const open = parse(renderShell(seed(), inReview, true));
+  same("1.1 beside a channel the panel opens on Members, with Agent disabled until someone is picked",
+    tabs(open), [["Members", "true", false], ["Agent", "false", true], ["Topology", "false", false]]);
+  ok("1.2 its body is the Members tab for the route's channel", textOf(pane(open).querySelector(".v3-mhead > span")) === "#review · 3 members", textOf(pane(open).querySelector(".v3-mhead")));
+  const close = pane(open).querySelector(".ui-tabs button.ui-tool") as HTMLElement | null;
+  ok("1.3 the tab bar ends with the Close panel button", close?.getAttribute("aria-label") === "Close panel" && close.title === "Close panel", close?.outerHTML);
+  const off = parse(renderShell(seed(), { view: "activity" }, false));
+  ok("1.4 off a channel, with nobody picked, there is no panel and the grid drops its column",
+    off.querySelector("section.ui-pane") === null && (off.querySelector(".ui-app")?.className ?? "").split(" ").includes("no-pane"));
+  const toggle = open.querySelector("header.ui-bar button[title='Toggle panel']");
+  ok("1.5 the channel header carries Toggle panel, pressed while the panel is open", toggle?.getAttribute("aria-pressed") === "true", toggle?.outerHTML);
+}
+
+// ── 2. The Members tab ───────────────────────────────────────────────────────────────────────────
+{
+  const members = (patch: Partial<DashboardState>) => pane(parse(renderShell(seed(patch), inReview, true)));
+  const rows = (p: HTMLElement) => all(p, "button.v3-mrow").map((r) => [r.dataset.member, r.dataset.source]);
+  const live = members({});
+  same("2.1 an authoritative feed gives the channel's members from membership, in roster order, waiting first",
+    rows(live), [["local.rv2", "membership"], ["local.dav", "membership"], ["local.rev", "membership"]]);
+  const pill = live.querySelector(".ui-mpill") as HTMLElement;
+  same("2.2 the pill reads Membership: live with the notes' tooltip", [textOf(pill), pill?.title], ["Membership: live", "From broker membership, served by the delivery daemon"]);
+  same("2.3 each row is the character, the name and role, and the status word",
+    all(live, "button.v3-mrow").map((r) => [textOf(r.querySelector(".v3-mname")), textOf(r.querySelector(".v3-spill")), r.querySelector(".ui-av .ui-st") !== null]),
+    [["reviewer_2reviewer", "Waiting", true], ["davidengineer", "Working", true], ["reviewerreviewer", "Working", true]]);
+  const traffic = members({ membership: {} });
+  same("2.4 with no membership feed the members are who posted here, from traffic", rows(traffic), [["local.dav", "traffic"], ["local.rev", "traffic"]]);
+  const tp = traffic.querySelector(".ui-mpill") as HTMLElement;
+  same("2.5 and the pill says traffic-only with its tooltip", [textOf(tp), tp?.title], ["Membership: traffic-only", "No delivery daemon on an open mesh, so members come from who has posted"]);
+  const unread = members({ membership: { snapshot: reviewMembers, unreadable: "403 permissions violation" } });
+  const up = unread.querySelector(".ui-mpill") as HTMLElement;
+  same("2.6 an unreadable feed says so with the reason, and falls back to traffic",
+    [textOf(up), up?.title, rows(unread).map((r) => r[1])], ["Membership: unreadable", "the read failed: 403 permissions violation", ["traffic", "traffic"]]);
+  const stranger = members({ membership: { snapshot: snapshot([{ id: "local.zzz", live: ["review"] }, { id: "local.rv2", live: ["review"] }]) } });
+  same("2.7 a member the roster does not know is listed last by its id, with no status to show",
+    all(stranger, "button.v3-mrow").map((r) => [textOf(r.querySelector(".v3-mname")), r.querySelector(".v3-spill") === null]), [["reviewer_2reviewer", false], ["local.zzz", true]]);
+  const one = members({ membership: { snapshot: snapshot([{ id: "local.rv2", live: ["review"] }]) } });
+  ok("2.8 one member reads 1 member", textOf(one.querySelector(".v3-mhead > span")) === "#review · 1 member", textOf(one.querySelector(".v3-mhead > span")));
+  same("2.9 the channel's details are its topic, its delivery and its message count", kv(live),
+    [["Topic", "Review requests. Send them to the reviewer role."], ["Delivery", "durable, replay 24h"], ["Messages", "9"]]);
+  const plain = pane(parse(renderShell(seed({ channels: [{ ...general, channel: "review" }] }), inReview, true)));
+  same("2.10 a live channel with replay off reads live, and with no topic has no Topic row", kv(plain), [["Delivery", "live"], ["Messages", "1"]]);
+  const bare = pane(parse(renderShell(seed({ channels: [{ channel: "review", messages: 4 }] as ChannelInfo[] }), inReview, true)));
+  same("2.11 a channel whose policy the server has not sent says nothing about delivery", kv(bare), [["Messages", "4"]]);
+  const del = live.querySelector("button.ui-btn-danger") as HTMLElement | null;
+  ok("2.12 Delete channel closes the tab, and no dialog is drawn until it is clicked", textOf(del) === "Delete channel" && live.querySelector("[role=dialog]") === null, del?.outerHTML);
+}
+
+// ── 3. The Agent tab ─────────────────────────────────────────────────────────────────────────────
+{
+  const rev = agentTab("local.rev");
+  same("3.1 the profile is the name and role · harness", [textOf(rev.querySelector(".ui-profile h4")), textOf(rev.querySelector(".ui-profile .ui-sub"))], ["reviewer", "reviewer · Codex"]);
+  const big = rev.querySelector(".ui-big .ui-av") as HTMLElement | null;
+  ok("3.2 the character is drawn at 76px with no status dot", big?.getAttribute("style")?.includes("--s:76px") === true && big.querySelector(".ui-st") === null, big?.outerHTML.slice(0, 120));
+  const sline = rev.querySelector(".ui-sline") ?? none();
+  same("3.3 the status line is the status word, the activity, and when it reported",
+    [textOf(sline.querySelector(".v3-spill")), textOf(sline.querySelector(":scope > span:not(.v3-spill)")), textOf(sline.querySelector("small"))],
+    ["Working", "Reviewing the presence TTL diff", "Reported 10:43"]);
+  const message = rev.querySelector(".ui-actions a.ui-btn-primary") as HTMLAnchorElement | null;
+  same("3.4 Message opens the DM view with this agent", [textOf(message), message?.getAttribute("href")], ["Message", formatRoute({ view: "dm", peer: "local.rev" })]);
+  same("3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
+    all(rev, ".ui-actions .ui-cmd").map((c) => [c.firstElementChild?.tagName, textOf(c.querySelector("code"))]), [["svg", "cotal attach --name reviewer"], ["svg", "cotal stop --name reviewer"]]);
+  const beat = all(rev, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat");
+  ok("3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago", `${textOf(beat)} ${textOf(beat?.nextElementSibling)}` === "Heartbeat 2s ago", textOf(rev.querySelector("dl.ui-kv")));
+  same("3.7 the details are harness, model, host, attention and heartbeat", kv(rev),
+    [["Harness", "Codex"], ["Model", "gpt-5.5-codex"], ["Host", "build-box"], ["Attention", "Do not disturb"], ["Heartbeat", "2s ago"]]);
+  const dnd = rev.querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
+  ok("3.8 Do not disturb carries its icon and the notes' tooltip",
+    dnd?.title === "Channel messages wait for its next turn. DMs and mentions still wake it." && dnd.querySelector("svg") !== null, dnd?.outerHTML.slice(0, 160));
+  const rv2 = agentTab("local.rv2");
+  const model = all(rv2, "dl.ui-kv dt").find((dt) => textOf(dt) === "Model")?.nextElementSibling as HTMLElement | undefined;
+  ok("3.9 a card with no model reads Model not reported", textOf(model) === "not reported" && model?.className === "ui-nr", model?.outerHTML);
+  const pln = agentTab("local.pln");
+  const focus = pln.querySelector("dl.ui-kv .v3-meta") as HTMLElement | null;
+  same("3.10 Focus shows with its own tooltip", [textOf(focus), focus?.title], ["Focus", "Channel messages stay in the channel. DMs and role requests still reach it."]);
+  const attention = (a: string | undefined) => kv(agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { attention: a })] })).map((r) => r[0]);
+  same("3.11 open attention, an unknown mode and none show no Attention row", [attention("open"), attention("away"), attention(undefined)],
+    [["Model", "Heartbeat"], ["Model", "Heartbeat"], ["Model", "Heartbeat"]]);
+  const unknown = agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { progress: { kind: "unknown" } })] });
+  same("3.12 working with no reported progress says so, and no activity or time reads as none",
+    [textOf(unknown.querySelector(".ui-sline .v3-spill")), textOf(unknown.querySelector(".ui-sline > span:not(.v3-spill)")), unknown.querySelector(".ui-sline small")],
+    ["Working · progress unknown", "No current activity", null]);
+  const channelRows = (el: HTMLElement) => all(el, ".ui-chrow").map((r) => [...r.children].map(textOf));
+  same("3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other", channelRows(rev), [["#general", "quiet"], ["#review", ""]]);
+  const wide = agentTab("local.rev", { membership: { snapshot: snapshot([{ id: "local.rev", live: [">"] }]) } });
+  same("3.14 a reader of every channel says so instead of listing each", channelRows(wide), [["Reads every channel", ""], ["#general", "quiet"]]);
+  const posted = agentTab("local.dav", {
+    membership: {},
+    activity: [{ mode: "chat", channel: "ops", msg: msg("a1", "local.dav", "hi", 1, "ops") }, { mode: "chat", channel: "review", msg: msg("a2", "local.rev", "hi", 2) }],
+  });
+  same("3.15 with no membership feed the channels are where the agent has posted", channelRows(posted), [["#ops", ""]]);
+  same("3.16 Skills are the card's", all(rev, ".ui-tags .ui-chip").map(textOf), ["code-review", "typescript", "spec"]);
+  const recent = all(rev, ".ui-mini").map((m) => [textOf(m.querySelector("time")), m.querySelector(".ui-unverified") !== null]);
+  ok("3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
+    textOf(all(rev, "h5").find((h) => textOf(h).startsWith("Recent"))) === "Recent in #review"
+      && JSON.stringify(recent) === JSON.stringify([["10:46", true], ["10:45", true], ["10:44", false]]), recent);
+  ok("3.18 off a channel there is no Recent section", agentTab("local.rev", {}, null).querySelector(".ui-mini") === null);
+  const gone = agentTab("local.nobody");
+  ok("3.19 an id the roster does not hold reads Not on the roster", textOf(gone) === "Not on the roster", textOf(gone));
+  same("3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing",
+    [0, 1999, 59_999, 60_000, 3_599_999, 3_600_000, 86_400_000, -5, Number.NaN].map(ago),
+    ["0s ago", "1s ago", "59s ago", "1m ago", "59m ago", "1h ago", "1d ago", "0s ago", undefined]);
+  let t = NOW;
+  const ticking = await mount(createElement(AgentTab, { store: storeOf(), id: "local.rev", channel: "review", clock: () => t }));
+  const beatNow = () => textOf(all(ticking.container, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat")?.nextElementSibling);
+  const first = beatNow();
+  t += 5000;
+  await ticking.run(() => sleep(1100));
+  ok("3.21 the heartbeat's age moves on by itself, every second", first === "2s ago" && beatNow() === "7s ago", [first, beatNow()]);
+  await ticking.unmount();
+}
+
+// ── 4. The delete dialog's markup ────────────────────────────────────────────────────────────────
+const dialogHtml = (space: string | null = "main") =>
+  parse(renderToString(createElement(DeleteChannelDialog, { channel: "review", space, controller: null, onClose: () => undefined })));
+{
+  const d = dialogHtml();
+  const box = d.querySelector("[role=dialog]") as HTMLElement | null;
+  const title = all(box ?? none(), "[id]").find((e) => e.id === box?.getAttribute("aria-labelledby"));
+  ok("4.1 the dialog is a modal named by its title, Delete #review?", box?.getAttribute("aria-modal") === "true" && title?.tagName === "H4" && textOf(title) === "Delete #review?", box?.outerHTML.slice(0, 200));
+  ok("4.2 its body is the notes' sentence, with the channel and the space",
+    textOf(box?.querySelector("p")) === "This deletes every message in #review for everyone on main. You can't undo it. If anyone posts to #review again, it comes back empty.", textOf(box?.querySelector("p")));
+  ok("4.3 the field asks for the name: Type review to confirm", textOf(box?.querySelector("label > span")) === "Type review to confirm" && box?.querySelector("label input.ui-field") !== null);
+  same("4.4 the buttons are Keep channel and Delete #review, the destructive one disabled and not yet red",
+    all(box ?? none(), ".ui-btns button").map((b) => [textOf(b), (b as HTMLButtonElement).disabled, b.className]), [["Keep channel", false, "ui-btn"], ["Delete #review", true, "ui-btn"]]);
+  ok("4.5 the dialog sits on a scrim, in the mock's fixed-size card", box?.parentElement?.className === "ui-scrim" && box?.className === "ui-card ui-dialog");
+}
+
+// ── 5. Mounted: tabs, picking an agent, closing and remembering ──────────────────────────────────
+const KeyboardEventOf = dom.window.KeyboardEvent as typeof KeyboardEvent;
+const click = (el: Element | null | undefined) => (el as HTMLElement | null)?.click();
+const key = (el: Element | null | undefined, k: string, shift = false) =>
+  el?.dispatchEvent(new KeyboardEventOf("keydown", { key: k, shiftKey: shift, bubbles: true, cancelable: true }));
+const typeInto = (input: Element | null | undefined, value: string) => {
+  if (!input) return;
+  const setter = Object.getOwnPropertyDescriptor((dom.window.HTMLInputElement as typeof HTMLInputElement).prototype, "value")!.set!;
+  setter.call(input, value);
+  input.dispatchEvent(new (dom.window.Event as typeof Event)("input", { bubbles: true }));
+};
+/** A controller that records each delete and answers with `answer`. */
+const fakeController = (answer: () => Promise<void> = async () => undefined) => {
+  const deleted: string[] = [];
+  const controller = { open: async () => undefined, deleteChannel: (c: string) => (deleted.push(c), answer()) } as unknown as Controller;
+  return { controller, deleted };
+};
+let goTo!: (r: Route) => void;
+const Harness = ({ store, controller, initial }: { store: ReturnType<typeof storeOf>; controller: Controller | null; initial: Route }) => {
+  const [route, setRoute] = useState(initial);
+  goTo = setRoute;
+  return createElement(Shell, { store, controller, route, paneOpen: route.view === "channel", msgPerSecond: () => 0, clock: () => NOW });
+};
+/** Live traffic in #review, which the Activity view draws with its verified senders. */
+const liveTraffic: DashboardState["activity"] = [{ mode: "chat", channel: "review", senderId: "local.dav", msg: msg("f1", "local.dav", "Live from david.", at(10, 50)) }];
+const mountShell = async (controller: Controller | null = null, patch: Partial<DashboardState> = {}) =>
+  mount(createElement(Harness, { store: storeOf({ activity: liveTraffic, ...patch }), controller, initial: inReview }));
+const tabBy = (m: Mounted, label: string) => all(pane(m.container), "[role=tab]").find((t) => textOf(t) === label);
+const selected = (m: Mounted) => textOf(pane(m.container).querySelector("[role=tab][aria-selected=true]"));
+
+localStorage.clear();
+{
+  const m = await mountShell();
+  await m.run(() => click(tabBy(m, "Topology")));
+  ok("5.1 clicking Topology selects it and draws the graph", selected(m) === "Topology" && pane(m.container).querySelector(".ui-pane-body svg.ui-topo-svg") !== null, selected(m));
+  await m.run(() => click(tabBy(m, "Members")));
+  ok("5.2 and clicking Members goes back to the members", selected(m) === "Members" && pane(m.container).querySelector("button.v3-mrow") !== null, selected(m));
+  await m.run(() => click(pane(m.container).querySelector("button.v3-mrow[data-member='local.dav']")));
+  ok("5.3 picking a member opens the Agent tab on that agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "david", selected(m));
+  await m.run(() => click(tabBy(m, "Topology")));
+  await m.run(() => click(m.container.querySelector("header button.ui-members")));
+  ok("5.4 the channel's member stack opens the Members tab", selected(m) === "Members" && (m.container.querySelector("header button.ui-members") as HTMLButtonElement).disabled === false, selected(m));
+  await m.run(() => click(m.container.querySelector(".ui-dock .ui-btns > button")));
+  ok("5.5 the Needs card's View agent opens the Agent tab on the waiting agent", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "reviewer_2", selected(m));
+  const name = all(m.container, "main .ui-msg .ui-mh button.ui-who").map(textOf);
+  ok("5.6 a verified sender's name in the channel is a button, and a history row's is not", JSON.stringify(name) === JSON.stringify(["david", "reviewer"]), name);
+  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
+  ok("5.7 clicking a sender's name opens its Agent tab", selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "reviewer", selected(m));
+  const faces = all(m.container, "main .ui-msg .ui-gut button.ui-who");
+  await m.run(() => click(faces[0]));
+  ok("5.8 a verified sender's avatar opens it too, and is not a second tab stop",
+    selected(m) === "Agent" && textOf(pane(m.container).querySelector(".ui-profile h4")) === "david" && JSON.stringify(faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex])) === JSON.stringify([["david", -1], ["reviewer", -1]]),
+    faces.map((f) => [f.getAttribute("aria-label"), f.tabIndex]));
+  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
+  await m.run(() => goTo({ view: "channel", channel: "general" }));
+  same("5.9 a new channel route goes back to Members and keeps the pick one click away", tabs(m.container), [["Members", "true", false], ["Agent", "false", false], ["Topology", "false", false]]);
+  await m.run(() => goTo({ view: "activity" }));
+  ok("5.10 a route with no panel drops the pick, so no panel is drawn", m.container.querySelector("section.ui-pane") === null);
+  await m.run(() => click(m.container.querySelector("main .ui-msg .ui-mh button.ui-who")));
+  same("5.11 off a channel, picking a sender opens the panel on the Agent tab, with Members disabled",
+    [tabs(m.container), textOf(pane(m.container).querySelector(".ui-profile h4"))], [[["Members", "false", true], ["Agent", "true", false], ["Topology", "false", false]], "david"]);
+  await m.run(() => goTo(inReview));
+  await m.run(() => click(pane(m.container).querySelector("button[aria-label='Close panel']")));
+  ok("5.12 Close panel hides the panel and saves that", m.container.querySelector("section.ui-pane") === null && localStorage.getItem(PANEL_KEY) === "0", localStorage.getItem(PANEL_KEY));
+  await m.unmount();
+
+  const again = await mountShell();
+  const toggle = again.container.querySelector("header button[title='Toggle panel']");
+  ok("5.13 a new page keeps the panel closed, and Toggle panel says it is", again.container.querySelector("section.ui-pane") === null && toggle?.getAttribute("aria-pressed") === "false", toggle?.outerHTML);
+  await again.run(() => click(toggle));
+  ok("5.14 Toggle panel opens it again and saves that", again.container.querySelector("section.ui-pane") !== null && localStorage.getItem(PANEL_KEY) === "1", localStorage.getItem(PANEL_KEY));
+  await again.run(() => click(pane(again.container).querySelector("button[aria-label='Close panel']")));
+  await again.run(() => click(again.container.querySelector(".ui-dock .ui-btns > button")));
+  ok("5.15 picking an agent opens a closed panel on the Agent tab", selected(again) === "Agent" && localStorage.getItem(PANEL_KEY) === "1", selected(again));
+  await again.unmount();
+  localStorage.clear();
+}
+{
+  const g = globalThis as Record<string, unknown>;
+  const real = Object.getOwnPropertyDescriptor(g, "localStorage");
+  Object.defineProperty(g, "localStorage", { configurable: true, get() { throw new DOMException("The operation is insecure.", "SecurityError"); } });
+  try {
+    let m: Mounted | undefined;
+    let opened = false;
+    let crashed: unknown;
+    const errors = await errorsDuring(async () => {
+      try {
+        m = await mountShell();
+        opened = m.container.querySelector("section.ui-pane") !== null;
+        await m.run(() => click(pane(m!.container).querySelector("button[aria-label='Close panel']")));
+      } catch (e) {
+        crashed = e;
+      }
+    });
+    ok("5.16 with storage blocked the panel still opens, and closing it still works for this page",
+      crashed === undefined && opened && m?.container.querySelector("section.ui-pane") === null && errors.length === 0, { errors, crashed: String(crashed) });
+    await m?.unmount();
+  } finally {
+    if (real) Object.defineProperty(g, "localStorage", real);
+  }
+}
+
+// ── 6. Mounted: the delete dialog ────────────────────────────────────────────────────────────────
+{
+  const { controller, deleted } = fakeController();
+  const m = await mountShell(controller);
+  const trigger = pane(m.container).querySelector("button.ui-btn-danger");
+  await m.run(() => click(trigger));
+  const box = () => m.container.querySelector("[role=dialog]");
+  const field = () => box()?.querySelector("input");
+  const destroy = () => all(box() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined;
+  const shape = () => [box()?.className, [...(box()?.children ?? [])].map((c) => `${c.tagName}.${c.className}`)];
+  ok("6.1 Delete channel opens the dialog with the field focused", box() !== null && document.activeElement === field(), document.activeElement?.outerHTML);
+  const before = JSON.stringify(shape());
+  const states: [string, boolean | undefined][] = [];
+  for (const v of ["revie", "Review", "review ", "review"]) {
+    await m.run(() => typeInto(field(), v));
+    states.push([v, destroy()?.disabled]);
+  }
+  same("6.2 the destructive button waits for the exact name", states, [["revie", true], ["Review", true], ["review ", true], ["review", false]]);
+  ok("6.3 the dialog keeps its shape before and after typing", JSON.stringify(shape()) === before && destroy()?.className === "ui-btn ui-btn-danger-solid", { before, after: shape() });
+  destroy()?.focus();
+  key(destroy(), "Tab");
+  ok("6.4 Tab from the last control wraps to the field", document.activeElement === field(), document.activeElement?.outerHTML);
+  key(field(), "Tab", true);
+  ok("6.5 and Shift+Tab from the field wraps to the last control", document.activeElement === destroy(), document.activeElement?.outerHTML);
+  await m.run(() => key(document.activeElement, "Escape"));
+  ok("6.6 Escape closes the dialog and focus returns to Delete channel", box() === null && document.activeElement === trigger, document.activeElement?.outerHTML);
+  ok("6.7 closing deletes nothing", deleted.length === 0, deleted);
+  await m.run(() => click(trigger));
+  await m.run(() => click(all(box() ?? none(), ".ui-btns button")[0]));
+  ok("6.8 Keep channel closes it too, with focus back on the trigger", box() === null && document.activeElement === trigger);
+  await m.run(() => click(trigger));
+  await m.run(() => typeInto(field(), "review"));
+  await m.run(() => click(destroy()));
+  await m.run(() => sleep(0));
+  ok("6.9 confirming deletes the channel by name, once, and closes the dialog", JSON.stringify(deleted) === JSON.stringify(["review"]) && box() === null && document.activeElement === trigger, deleted);
+  await m.unmount();
+
+  const refused = fakeController(async () => { throw new Error("delete #review: permissions violation for publish"); });
+  const r = await mountShell(refused.controller);
+  await r.run(() => click(pane(r.container).querySelector("button.ui-btn-danger")));
+  const rbox = () => r.container.querySelector("[role=dialog]");
+  await r.run(() => typeInto(rbox()?.querySelector("input"), "review"));
+  await r.run(() => click(all(rbox() ?? none(), ".ui-btns button")[1]));
+  await r.run(() => sleep(0));
+  ok("6.10 a refusal keeps the dialog open and shows the server's error in it",
+    rbox() !== null && textOf(rbox()?.querySelector("[role=alert]")) === "delete #review: permissions violation for publish" && refused.deleted.length === 1, textOf(rbox()));
+  ok("6.11 and the button can be pressed again", (all(rbox() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined)?.disabled === false);
+  await r.unmount();
+}
+
+// ── 7. The Topology tab and a graph that changes size ────────────────────────────────────────────
+/** A frame source on a zero timer, so a layout that takes hundreds of frames settles in well under a second. */
+const frames = new Map<number, ReturnType<typeof setTimeout>>();
+let frameId = 0;
+const fg = globalThis as unknown as { requestAnimationFrame: (cb: (t: number) => void) => number; cancelAnimationFrame: (id: number) => void };
+fg.requestAnimationFrame = (cb) => {
+  const id = ++frameId;
+  frames.set(id, setTimeout(() => { frames.delete(id); cb(0); }, 0));
+  return id;
+};
+fg.cancelAnimationFrame = (id) => { clearTimeout(frames.get(id)); frames.delete(id); };
+const idle = async () => { for (let i = 0; i < 500 && frames.size > 0; i++) await sleep(10); };
+{
+  const t = parse(renderToString(createElement(TopologyTab, { store: storeOf(), clock: () => NOW })));
+  same("7.1 the Topology tab draws the pill, Hide offline on, and the graph at the panel's 360 by 420",
+    [textOf(t.querySelector(".ui-mpill")), t.querySelector("button[aria-pressed]")?.getAttribute("aria-pressed"), t.querySelector("svg.ui-topo-svg")?.getAttribute("viewBox")],
+    ["Membership: live", "true", "0 0 360 420"]);
+  const model: TopoModel = topologyModel({ roster, channels: [review, general], membership: { snapshot: reviewMembers }, recent: [], hideOffline: true, hideEmpty: true, now: NOW });
+  const layout = new ForceLayout(360, 420);
+  layout.sync(model);
+  layout.warm();
+  ok("7.2 a layout told its own size again changes nothing, and a new size refits it", layout.resize(360, 420) === false && layout.resize(720, 420) === true && layout.resize(720, 420) === false);
+
+  let setSize!: (s: { width: number; height: number }) => void;
+  const Sized = () => {
+    const [s, set] = useState({ width: 360, height: 420 });
+    setSize = set;
+    return createElement(TopologyGraph, { model, width: s.width, height: s.height });
+  };
+  const xs = (root: ParentNode) => all(root, "[data-node]").map((e) => Number(/^translate\((-?[\d.e+-]+) /.exec(e.getAttribute("transform") ?? "")?.[1]));
+  const mean = (v: number[]) => v.reduce((a, b) => a + b, 0) / v.length;
+  const g = await mount(createElement(Sized));
+  const narrow = mean(xs(g.container));
+  await g.run(() => setSize({ width: 1080, height: 420 }));
+  await g.run(() => idle());
+  const wide = mean(xs(g.container));
+  ok("7.3 a graph given a new size on the same mount moves its nodes to the new middle",
+    g.container.querySelector("svg")?.getAttribute("viewBox") === "0 0 1080 420" && Math.abs(narrow - 180) < 60 && Math.abs(wide - 540) < 60, { narrow, wide });
+  await g.unmount();
+}
+
+await closeDom();

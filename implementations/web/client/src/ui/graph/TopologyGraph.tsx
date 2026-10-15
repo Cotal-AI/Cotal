@@ -65,7 +65,9 @@ function ChannelNode({ node, x, y, hot }: { node: TopoNode; x: number; y: number
  *  heats again only when the set of nodes or links changes, so a link going hot or cold, a status or
  *  a new label moves nothing. The first draw is already at rest. `d3-zoom` on the SVG pans and zooms.
  *
- *  `width` and `height` are the drawing's own coordinates (its `viewBox`); CSS scales it to its box. */
+ *  `width` and `height` are the drawing's own coordinates (its `viewBox`); CSS scales it to its box.
+ *  A new size on the same mount refits the layout's forces and heats it, so the nodes move to the
+ *  new middle rather than staying where the old size put them. */
 export function TopologyGraph({ model, width = 400, height = 420 }: { model: TopoModel; width?: number; height?: number }) {
   const layoutRef = useRef<ForceLayout | null>(null);
   if (layoutRef.current === null) {
@@ -89,6 +91,7 @@ export function TopologyGraph({ model, width = 400, height = 420 }: { model: Top
   };
 
   useEffect(() => {
+    if (layout.resize(width, height)) layout.reheat();
     if (layout.sync(model)) layout.reheat();
     run();
   });

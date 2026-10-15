@@ -49,20 +49,40 @@ export class ForceLayout {
   private readonly links: ForceLink<Body, SimulationLinkDatum<Body>>;
   private bodies = new Map<string, Body>();
   private key: string | undefined;
+  private size = "";
 
   constructor(width: number, height: number) {
-    // The distances were tuned on the panel's 420 units; a larger drawing spreads them in proportion.
-    const k = Math.min(width, height) / 420;
-    this.links = forceLink<Body, SimulationLinkDatum<Body>>([]).id((d) => d.id).distance(90 * k).strength(0.4);
+    this.links = forceLink<Body, SimulationLinkDatum<Body>>([]).id((d) => d.id).strength(0.4);
+    // The sized forces are placeholders here, replaced by `resize`. A replaced force keeps its place,
+    // so the forces apply in this order whatever the size.
     this.sim = forceSimulation<Body>()
       .force("link", this.links)
+      .force("charge", forceManyBody<Body>())
+      .force("center", forceCenter())
+      .force("collide", forceCollide<Body>().radius((d) => d.r))
+      .force("x", forceX<Body>())
+      .force("y", forceY<Body>())
+      .stop();
+    this.resize(width, height);
+  }
+
+  /** Fits the forces to a drawing of `width` by `height`: the centre, the pull to the middle and the
+   *  spacing. Returns whether the size differs from the last one, which is when the caller should
+   *  `reheat` so the nodes move to the new middle. Nodes keep their places until then. */
+  resize(width: number, height: number): boolean {
+    const size = `${width}x${height}`;
+    if (size === this.size) return false;
+    this.size = size;
+    // The distances were tuned on the panel's 420 units; a larger drawing spreads them in proportion.
+    const k = Math.min(width, height) / 420;
+    this.links.distance(90 * k);
+    this.sim
       .force("charge", forceManyBody<Body>().strength(-280 * k * k))
       .force("center", forceCenter(width / 2, height / 2))
-      .force("collide", forceCollide<Body>().radius((d) => d.r))
       // A weak pull to the middle keeps a group with no link to the rest from drifting out of view.
       .force("x", forceX<Body>(width / 2).strength(0.04))
-      .force("y", forceY<Body>(height / 2).strength(0.04))
-      .stop();
+      .force("y", forceY<Body>(height / 2).strength(0.04));
+    return true;
   }
 
   /** Takes in a model. Nodes already placed keep their place. Returns whether the node or link set

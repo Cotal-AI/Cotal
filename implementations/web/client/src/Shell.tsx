@@ -12,6 +12,8 @@ import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
 import { AgentsView } from "./ui/views/AgentsView.tsx";
+import { AgentPicker } from "./ui/panel/picker.js";
+import { panelShown, RightPanel, usePanel, type Panel } from "./ui/panel/RightPanel.tsx";
 import { TopologyView } from "./ui/views/TopologyView.tsx";
 
 /** The line the dashboard owes its reader about what the event stream is missing. Plain on purpose;
@@ -29,17 +31,21 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
 /** The view the centre draws for a route. The Agents route draws the Agents view in the grouping its
  *  address names, and the Needs route draws it by status with the Waiting group in focus. `clock` is
  *  the time the topology view measures hot links against and the Agents view measures heartbeats
- *  against. `selectedAgent` and `onPickAgent` are the Agents view's seam to the details panel. */
+ *  against. `selectedAgent` and `onPickAgent` are the Agents view's seam to the details panel.
+ *  `panel` is how a view opens the right panel: the member stack opens Members, View agent picks
+ *  the agent. */
 function centreView(
   store: Store<DashboardState>,
   route: Route,
   clock: () => number,
   selectedAgent: string | null,
   onPickAgent: ((id: string) => void) | undefined,
+  panel: Panel,
+  panelOpen: boolean,
 ): ReactNode {
   switch (route.view) {
     case "channel":
-      return <ChannelView store={store} channel={route.channel} />;
+      return <ChannelView store={store} channel={route.channel} onMembers={panel.showMembers} onViewAgent={panel.selectAgent} panelOpen={panelOpen} onTogglePanel={panel.toggle} />;
     case "activity":
       return <ActivityView store={store} />;
     case "dm":
@@ -56,10 +62,15 @@ function centreView(
 /** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, no
  *  DOM access, so it renders the same in a browser and in `renderToString`. `controller` is null
  *  until the dashboard has started. `msgPerSecond` is where the sidebar reads the message rate.
- *  `clock` is the topology view's clock, `Date.now` unless a caller passes its own.
+ *  `clock` is the topology view's and the panel's clock, `Date.now` unless a caller passes its own.
+ *  `paneOpen` says whether the route has a panel beside it (a channel route does).
  *
- *  The sidebar is the places and the stale marker, and the panel is an empty frame. The centre draws
- *  the view for the route (`centreView`) inside a section that says which view it is. */
+ *  The sidebar is the places and the stale marker. The centre draws the view for the route
+ *  (`centreView`) inside a section that says which view it is. The panel draws while the reader has
+ *  it open and there is something to show: the route's channel or a picked agent (`panelShown`).
+ *
+ *  `selectAgent(id)` (from `usePanel`) is the one picker: the Needs card's View agent and the
+ *  Members tab rows are handed it, and message rows reach it through `AgentPicker`. */
 export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, selectedAgent = null, onPickAgent }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -77,12 +88,17 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const roster = useStore(store, (s) => s.roster);
   const dms = useStore(store, (s) => s.dms);
   const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
-  const view = centreView(store, route, clock, selectedAgent, onPickAgent);
+  const panel = usePanel(route);
+  const shown = panelShown(panel, paneOpen);
+  const view = centreView(store, route, clock, selectedAgent, onPickAgent, panel, shown);
+  const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} panel={panel} clock={clock} />;
   return (
-    <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}>
-      <title>{documentTitle(space)}</title>
-      <StatusLines store={store} />
-      <section className="ui-view" data-view={route.view}>{view}</section>
-    </AppShell>
+    <AgentPicker.Provider value={panel.selectAgent}>
+      <AppShell route={route} controller={controller} paneOpen={shown} panel={panelBody} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}>
+        <title>{documentTitle(space)}</title>
+        <StatusLines store={store} />
+        <section className="ui-view" data-view={route.view}>{view}</section>
+      </AppShell>
+    </AgentPicker.Provider>
   );
 }

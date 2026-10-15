@@ -114,8 +114,8 @@
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "find": "disabled={!onMembers} onClick={onMembers}",
       "replace": "onClick={onMembers}",
-      "expectRed": "1.13 in the shell, with no Members tab to open yet, the stack is a disabled button",
-      "cell": "1.13 in the shell, with no Members tab to open yet, the stack is a disabled button"
+      "expectRed": "1.13 drawn with no Members tab to open, the stack is a disabled button",
+      "cell": "1.13 drawn with no Members tab to open, the stack is a disabled button"
     },
     {
       "name": "V14 clicking the stack opens nothing",
@@ -274,8 +274,8 @@
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
       "find": "disabled={!onViewAgent} ",
       "replace": "",
-      "expectRed": "4.8 in the shell, with no Agent tab to open yet, View agent is disabled",
-      "cell": "4.8 in the shell, with no Agent tab to open yet, View agent is disabled"
+      "expectRed": "4.8 drawn with no Agent tab to open, View agent is disabled, and in the shell it is not",
+      "cell": "4.8 drawn with no Agent tab to open, View agent is disabled, and in the shell it is not"
     },
     {
       "name": "N9 View agent opens the agent by its name, not its id",
@@ -560,7 +560,7 @@
     {
       "name": "S4 the channel route draws no view",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "return <ChannelView store={store} channel={route.channel} />;",
+      "find": "return <ChannelView store={store} channel={route.channel} onMembers={panel.showMembers} onViewAgent={panel.selectAgent} panelOpen={panelOpen} onTogglePanel={panel.toggle} />;",
       "replace": "return null;",
       "expectRed": "1.1 the header names the channel as # review and shows its topic",
       "cell": "1.1 the header names the channel as # review and shows its topic"

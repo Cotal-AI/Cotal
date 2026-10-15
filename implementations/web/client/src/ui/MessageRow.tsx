@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import type { CotalMessage, FeedMessage } from "../api/types.js";
 import { HARNESS } from "../lib/harness.js";
 import { renderMarkdown } from "../lib/md.js";
@@ -6,6 +6,7 @@ import { displayNameOf, type NameIndex } from "../lib/names.js";
 import { partsToText } from "../lib/parts.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
+import { AgentPicker } from "./panel/picker.js";
 
 /** Bodies longer than this many characters of source text clamp, with Show more. */
 const CLAMP = 280;
@@ -37,6 +38,8 @@ export const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0
  *    and carries the same unverified mark and tooltip as an unverified author.
  *  - A row whose mentions include `mention` (the reader's own name) is highlighted.
  *  - `place`, when given (even as null), takes the role's place in the header and drops the harness.
+ *  - Inside the shell (`AgentPicker`), a verified sender's avatar and name open its Agent tab. A
+ *    history row's sender is not verified, so it opens nothing.
  *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
  *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
  *    a history row ignores `compact` and always draws its header, so its unverified mark is never
@@ -57,6 +60,7 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   place?: string | null;
 }) {
   const [opened, setOpened] = useState(false);
+  const pick = useContext(AgentPicker);
   const who = senderId ?? msg.from?.id;
   const peer = who === undefined ? undefined : peers.get(who);
   const text = partsToText(msg.parts);
@@ -65,14 +69,21 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   const role = typeof msg.toService === "string" ? msg.toService : undefined;
   const at = Number.isFinite(msg.ts) ? new Date(msg.ts) : undefined;
   const cont = compact && senderId !== undefined;
+  const name = displayNameOf(senderId ?? msg.from, idx);
+  const avatar = <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} />;
   const className = ["ui-msg", cont && "ui-msg-cont", mentioned && "ui-msg-mention"].filter(Boolean).join(" ");
   return (
     <div className={className}>
-      <div className="ui-gut">{!cont && <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} />}</div>
+      <div className="ui-gut">
+        {!cont && (pick && senderId !== undefined ? (
+          // The name beside it is the keyboard's way in, so the avatar is not a second tab stop.
+          <button type="button" className="ui-who" tabIndex={-1} aria-label={name} onClick={() => pick(senderId)}>{avatar}</button>
+        ) : avatar)}
+      </div>
       <div>
         {!cont && (
           <div className="ui-mh">
-            <b>{displayNameOf(senderId ?? msg.from, idx)}</b>
+            {pick && senderId !== undefined ? <button type="button" className="ui-who" onClick={() => pick(senderId)}><b>{name}</b></button> : <b>{name}</b>}
             {senderId === undefined && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
             {place && <span className="ui-role">{place}</span>}
             {place === undefined && peer?.role && <span className="ui-role">{peer.role}</span>}

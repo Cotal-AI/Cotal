@@ -140,7 +140,9 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   ok("1.11 five members draw four avatars and the count 5", all(five, ".ui-stack > .ui-av").length === 4 && textOf(five).endsWith("5") && five.title === "5 members", five.outerHTML.slice(0, 200));
   const one: MembershipSnapshot = { asOf: Date.now(), members: [{ id: "local.rev", live: ["review"], durable: [], observedAt: 1 }] } as unknown as MembershipSnapshot;
   ok("1.12 one member reads 1 member", (centre(shellDom(channelSeed({ membership: { snapshot: one } }), channelRoute)).querySelector("header button.ui-members") as HTMLElement).title === "1 member");
-  ok("1.13 in the shell, with no Members tab to open yet, the stack is a disabled button", stack.disabled === true, stack.outerHTML.slice(0, 120));
+  const alone = parse(renderToString(createElement(ChannelView, { store: createStore<DashboardState>({ ...initialState, ...channelSeed() }), channel: "review" })));
+  const bare = alone.querySelector("button.ui-members") as HTMLButtonElement | null;
+  ok("1.13 drawn with no Members tab to open, the stack is a disabled button", bare?.disabled === true && stack.disabled === false, bare?.outerHTML.slice(0, 120));
   const opened: string[] = [];
   const store = createStore<DashboardState>({ ...initialState, ...channelSeed() });
   const m = await mount(createElement(ChannelView, { store, channel: "review", onMembers: () => void opened.push("members") }));
@@ -228,7 +230,9 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
   ok("4.6 a card whose agent reported no time says no time", nd === "Needs approval to run pnpm smoke:ci." && !nd.includes("Reported"), nd);
   const quiet = roster.map((p) => (p.card.id === "local.rv2" ? { ...p, activity: undefined } : p));
   ok("4.7 a card with no activity text says only when it was reported", textOf(centre(shellDom(channelSeed({ roster: quiet }), channelRoute)).querySelector(".ui-nd")) === "Reported 10:49.");
-  ok("4.8 in the shell, with no Agent tab to open yet, View agent is disabled", (card.querySelector(".ui-btns > button") as HTMLButtonElement).disabled === true);
+  const lone = parse(renderToString(createElement(NeedsCard, { row: rosterRows(roster)[0], onDismiss: () => undefined })));
+  ok("4.8 drawn with no Agent tab to open, View agent is disabled, and in the shell it is not",
+    (lone.querySelector(".ui-btns > button") as HTMLButtonElement | null)?.disabled === true && (card.querySelector(".ui-btns > button") as HTMLButtonElement).disabled === false);
   const viewed: string[] = [];
   const cm = await mount(createElement(NeedsCard, { row: rosterRows(roster)[0], onViewAgent: (id: string) => void viewed.push(id), onDismiss: () => undefined }));
   await cm.run(() => (cm.container.querySelector(".ui-btns > button") as HTMLButtonElement).click());
