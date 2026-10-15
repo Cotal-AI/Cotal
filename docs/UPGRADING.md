@@ -34,6 +34,29 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## CLI command resolution after 0.82.0 (unreleased)
+
+The CLI now resolves and validates a command before it seeds connectors or writes configuration.
+Nothing on a running mesh changes. Brokers, managers, seats, credentials and mesh records need no
+migration and no restart, and there is no outage window. Upgrading the `cotal` binary is the whole
+operation. What changes is what two kinds of command line do.
+
+### What stops working
+
+- `cotal -v` no longer prints the version. It exits 1 and names `cotal version` and `cotal -V`. A
+  script that reads the version this way must use `cotal version`, `cotal --version` or `cotal -V`.
+- The words `sp`, `a`, `s`, `r`, `x` and `h` are now aliases of built-in commands (`spawn`,
+  `attach`, `status`, `run`, `ext` and `history`). An installed extension that provides a command
+  under one of those words still loads, but the built-in wins and every run prints a warning naming
+  the extension. Remove or update that extension to clear it. `cotal ext add` refuses a new
+  extension whose name or alias is already claimed.
+
+### Before the upgrade
+
+Search scripts and shell aliases for `cotal -v`, and run `cotal ext list` to see whether an
+installed extension provides one of the words above. There is nothing to snapshot. The extension
+manifest an older binary wrote is read as before.
+
 ## Managed Claude workspace trust in 0.80.0
 
 Before upgrading, snapshot the manager's private Cotal state and Claude configuration home.
