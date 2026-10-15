@@ -12,6 +12,7 @@ import type { Store } from "../state/store.js";
 import type { Connection, DashboardState } from "../state/types.js";
 import { Avatar } from "./Avatar.tsx";
 import { UNVERIFIED } from "./MessageRow.tsx";
+import { SkeletonPlaces } from "./Skeleton.tsx";
 import { StaleMarker } from "./StaleMarker.tsx";
 
 /** How often the Activity row redraws its rate. The rate falls as the window slides past old
@@ -45,7 +46,11 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *  rate as it falls. The rate itself lives outside the store, which holds serializable state.
  *
  *  A direct message conversation holding a row read from history says unverified, as a message row
- *  does, because it was grouped by what the payload says about its own sender.
+ *  does, because it was grouped by what the payload says about its own sender. A conversation is
+ *  named, and linked, opener first: the sender of its first message, then the other party, as the
+ *  mock writes "reviewer_2, david".
+ *
+ *  While the first roster and channel reads are outstanding the places are skeleton rows.
  *
  *  Two things the mock draws are left out because the page cannot say them: the operator's place on
  *  the roster (it depends on the mesh's credential mode, which no read reports) and a "to you" mark on a
@@ -58,6 +63,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const roster = useStore(store, (s) => s.roster);
   const dms = useStore(store, (s) => s.dms);
   const connection = useStore(store, (s) => s.connection);
+  const loading = useStore(store, (s) => s.loading);
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), RATE_TICK_MS);
@@ -70,8 +76,13 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const conversations = useMemo(() => {
     const seen = new Map<string, { pair: [string, string]; last: number; verified: boolean }>();
     for (const peer of dmPeers(dms, roster))
-      for (const c of peer.conversations)
-        if (!seen.has(c.key)) seen.set(c.key, { pair: [peer.id, c.with].sort() as [string, string], last: c.last, verified: c.verified });
+      for (const c of peer.conversations) {
+        if (seen.has(c.key)) continue;
+        const first = c.messages[0];
+        const opener = first?.senderId ?? first?.msg.from?.id;
+        const pair: [string, string] = opener === c.with ? [c.with, peer.id] : [peer.id, c.with];
+        seen.set(c.key, { pair, last: c.last, verified: c.verified });
+      }
     return [...seen.values()].sort((a, b) => b.last - a.last);
   }, [dms, roster]);
   const open = route.view === "dm" ? route : null;
@@ -81,7 +92,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
         <span className="ui-space ui-space-static">{space}</span>
       </div>
       <StaleMarker store={store} />
-      <nav className="ui-side-scroll" aria-label="Places">
+      {loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className="ui-side-scroll" aria-label="Places">
         <Row to={{ view: "needs" }} here={route.view === "needs"}>
           <RailIcon name="inbox" />
           <span className="ui-row-lbl">Needs you</span>
@@ -127,7 +138,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
             {!verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
           </Row>
         ))}
-      </nav>
+      </nav>}
       <div className="ui-side-foot">
         <span className="ui-me">OP</span>
         <div className="ui-who"><b>operator</b></div>

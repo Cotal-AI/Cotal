@@ -5,8 +5,8 @@
     {
       "name": "G1 the feed goes back to being chained behind the bootstrap, so it is guaranteed to RUN but not to run SOON and the pill reads disconnected for the whole load window on a slow link",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return { controller, stop: stopFeed };",
-      "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
+      "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return {",
+      "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return {",
       "expectRed": "1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected",
       "cell": "1.1 THE FEED IS OPEN while the bootstrap read is still in flight, so the pill is not stuck at disconnected"
     },
@@ -61,7 +61,7 @@
     {
       "name": "G9 a feed error stops marking the dashboard reconnecting, so a dropped feed still reads connected",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "    error: () => store.set((s) => ({ connection: s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\" })),",
+      "find": "    error: () => store.set((s) => (s.connection === \"closed\" ? {} : { connection: s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\" })),",
       "replace": "    error: () => undefined,",
       "expectRed": "6.3 a feed error after an open marks it reconnecting",
       "cell": "6.3 a feed error after an open marks it reconnecting"
@@ -69,8 +69,8 @@
     {
       "name": "G10 stop() no longer closes the feed, so a stopped dashboard keeps a live connection",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  return { controller, stop: stopFeed };",
-      "replace": "  return { controller, stop: () => undefined };",
+      "find": "      stopFeed();\n    },\n  };",
+      "replace": "    },\n  };",
       "expectRed": "6.5 stop() closes the feed it opened, once",
       "cell": "6.5 stop() closes the feed it opened, once"
     },
@@ -109,8 +109,8 @@
     {
       "name": "G16 any feed error reads as a drop, so a failed first attempt says reconnecting to a feed that never connected",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "    error: () => store.set((s) => ({ connection: s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\" })),",
-      "replace": "    error: () => store.set({ connection: \"reconnecting\" }),",
+      "find": "    error: () => store.set((s) => (s.connection === \"closed\" ? {} : { connection: s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\" })),",
+      "replace": "    error: () => store.set((s) => (s.connection === \"closed\" ? {} : { connection: \"reconnecting\" })),",
       "expectRed": "6.0b and a failed first attempt is still connecting: nothing has dropped yet",
       "cell": "6.0b and a failed first attempt is still connecting: nothing has dropped yet"
     },

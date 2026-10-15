@@ -1,5 +1,5 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { useLayoutEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { formatRoute, type Route } from "../../lib/route.js";
 import type { Controller } from "../../state/controller.js";
@@ -65,10 +65,16 @@ const tabFor = (route: Route): PanelTab => (route.view === "channel" ? "members"
  *    before the first paint, so a server render never touches storage, and blocked storage reads as
  *    open. Picking an agent or the member stack opens the panel, and that is saved too.
  *  - A new route resets the tab: Members on a channel route, with the picked agent kept so its tab
- *    stays one click away; any other route drops the pick. */
-export function usePanel(route: Route): Panel {
+ *    stays one click away; any other route drops the pick.
+ *  - On a phone (`phone`) the panel covers the whole page, so it starts closed, opens only when the
+ *    reader asks (the member stack, the panel button, picking an agent), closes again on a new route,
+ *    and none of that touches the saved choice, which is the wide layout's. */
+export function usePanel(route: Route, phone = false): Panel {
   const key = formatRoute(route);
-  const [open, setOpen] = useState(true);
+  const [wide, setOpen] = useState(true);
+  const [phoneOpen, setPhoneOpen] = useState(false);
+  const onPhone = useRef(phone);
+  onPhone.current = phone;
   useLayoutEffect(() => {
     const saved = readOpen();
     if (saved !== undefined) setOpen(saved);
@@ -79,10 +85,12 @@ export function usePanel(route: Route): Panel {
     // Reset during render, not in an effect, so the new route never draws a frame with the old tab.
     cur = { key, tab: tabFor(route), agent: route.view === "channel" ? at.agent : null };
     setAt(cur);
+    setPhoneOpen(false);
   }
   // Stable across renders, so the picker handed down through `AgentPicker` does not redraw every row.
   const actions = useMemo(() => {
     const remember = (next: boolean) => {
+      if (onPhone.current) return setPhoneOpen(next);
       setOpen(next);
       writeOpen(next);
     };
@@ -100,6 +108,7 @@ export function usePanel(route: Route): Panel {
       remember,
     };
   }, []);
+  const open = phone ? phoneOpen : wide;
   return {
     open,
     tab: cur.tab,
@@ -121,7 +130,9 @@ export const panelShown = (panel: Panel, routeHasPanel: boolean): boolean => pan
  *  route, Agent before an agent is picked. `clock` is the time the pill and the heartbeat read.
  *
  *  The tabs follow the ARIA tabs pattern: the selected tab is the one Tab stop in the list, and Left
- *  and Right (wrapping), Home and End move between the enabled tabs and select them. */
+ *  and Right (wrapping), Home and End move between the enabled tabs and select them. When the
+ *  selected tab is disabled, the first enabled tab is the Tab stop instead, so the list is never
+ *  skipped by the keyboard. */
 export function RightPanel({ store, controller, channel, panel, clock }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -136,6 +147,7 @@ export function RightPanel({ store, controller, channel, panel, clock }: {
     { id: "topology", label: "Topology", off: false },
   ];
   const tab = panel.tab;
+  const stop = tabs.find((t) => t.id === tab && !t.off)?.id ?? tabs.find((t) => !t.off)?.id;
   // Arrow keys, Home and End move between the tabs that can show, and select the one they reach.
   const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const live = tabs.filter((t) => !t.off).map((t) => t.id);
@@ -158,7 +170,7 @@ export function RightPanel({ store, controller, channel, panel, clock }: {
             role="tab"
             id={`pane-tab-${t.id}`}
             aria-selected={tab === t.id}
-            tabIndex={tab === t.id ? 0 : -1}
+            tabIndex={stop === t.id ? 0 : -1}
             aria-controls="pane-body"
             disabled={t.off}
             onClick={() => panel.setTab(t.id)}

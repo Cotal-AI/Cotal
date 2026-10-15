@@ -216,34 +216,34 @@
     {
       "name": "SB27 conversations are not deduped, so each shows once per peer",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "if (!seen.has(c.key)) seen.set(c.key, ",
-      "replace": "seen.set(peer.id + c.key, ",
-      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers",
-      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers"
+      "find": "seen.set(c.key, { pair, last: c.last, verified: c.verified });",
+      "replace": "seen.set(peer.id + c.key, { pair, last: c.last, verified: c.verified });",
+      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
+      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first"
     },
     {
       "name": "SB28 conversations list oldest first",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
       "find": ".sort((a, b) => b.last - a.last);",
       "replace": ".sort((a, b) => a.last - b.last);",
-      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers",
-      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers"
+      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
+      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first"
     },
     {
-      "name": "SB29 a pair keeps the order it was met in, so one conversation has two links",
+      "name": "SB29 a conversation is named and linked in the order it was met in, not opener first",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "[peer.id, c.with].sort()",
+      "find": "opener === c.with ? [c.with, peer.id] : [peer.id, c.with]",
       "replace": "[peer.id, c.with]",
-      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers",
-      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers"
+      "expectRed": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
+      "cell": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows"
     },
     {
       "name": "SB30 a DM row shows the raw id, not the roster's name",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
       "find": "{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}",
       "replace": "{`${a}, ${b}`}",
-      "expectRed": "5.2 each row is named from the roster by id: the payload's own name never shows",
-      "cell": "5.2 each row is named from the roster by id: the payload's own name never shows"
+      "expectRed": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
+      "cell": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows"
     },
     {
       "name": "SB31 the DM avatars draw a status dot",
@@ -336,26 +336,34 @@
     {
       "name": "SB42 the app counts no arrivals",
       "file": "implementations/web/client/src/App.tsx",
-      "find": "() => rate.hit(Date.now())",
+      "find": "() => rate.hit(clock())",
       "replace": "() => undefined",
-      "expectRed": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick",
-      "cell": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick"
+      "expectRed": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s",
+      "cell": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s"
     },
     {
       "name": "SB43 the rate is read over one second, not ten",
       "file": "implementations/web/client/src/App.tsx",
       "find": "RATE_WINDOW_MS = 10_000",
       "replace": "RATE_WINDOW_MS = 1_000",
-      "expectRed": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick",
-      "cell": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick"
+      "expectRed": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s",
+      "cell": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s"
     },
     {
       "name": "SB44 the app hands the shell a rate of nothing",
       "file": "implementations/web/client/src/App.tsx",
-      "find": "msgPerSecond={() => rate.perSecond(Date.now())}",
+      "find": "msgPerSecond={() => rate.perSecond(clock())}",
       "replace": "msgPerSecond={() => 0}",
-      "expectRed": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick",
-      "cell": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick"
+      "expectRed": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s",
+      "cell": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s"
+    },
+    {
+      "name": "SB44b the rate counts over its whole window from the start, so the page's first seconds read low",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "createRate(RATE_WINDOW_MS, clock())",
+      "replace": "createRate(RATE_WINDOW_MS)",
+      "expectRed": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s",
+      "cell": "9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s"
     },
     {
       "name": "SB45 the sidebar never ticks",

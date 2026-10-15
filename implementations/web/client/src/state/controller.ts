@@ -73,6 +73,12 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
   // dropped. What is superseded is the source, not the snapshot: a refusal obeys the same rule.
   const liveApplied = new Set<string>();
   const supersededByFeed = <T>(name: string, apply: (v: T) => void) => (v: T) => { if (!liveApplied.has(name)) apply(v); };
+  /** When each source last read successfully, by its stale-mark name, so a refusal can say how old
+   *  the data it left on screen is. */
+  const lastGood = new Map<string, number>();
+  /** Clear the first-read wait for the sources that have now landed. */
+  const answered = (roster: boolean, channels: boolean) =>
+    store.set((s) => ({ loading: { roster: s.loading.roster && !roster, channels: s.loading.channels && !channels } }));
 
   /** Gap and prefix notes, newest last. Kept rather than logged: a gap that only reaches the
    *  console is a gap nobody sees. */
@@ -145,7 +151,10 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         for (const m of live) if (m && !ids.has(m.msg.id)) merged.push(m);
         store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP) } });
         // SAID, NOT JUST KEPT. Retention without the mark shows old messages as though they were current.
-        markStale(`#${key} history`, refused ? { kind: "refused", name: `#${key} history`, reason: refused } : undefined);
+        const history = `#${key} history`;
+        if (!refused) lastGood.set(history, now());
+        const lastRead = lastGood.get(history);
+        markStale(history, refused ? { kind: "refused", name: history, reason: refused, ...(lastRead === undefined ? {} : { lastRead }) } : undefined);
       }
       if (selecting === mine) selecting = null;
       release();
@@ -167,7 +176,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     try {
       // A FAILED READ KEEPS WHAT IS ON SCREEN. `refreshAll` reads every source concurrently, applies
       // ONLY the ones that succeeded, and returns what did not land.
-      const refused: StaleMark[] = await refreshAll([
+      const sources = [
         { name: "space", read: () => api.meta(), apply: (meta: Meta) => store.set({ space: meta.space }) },
         // ONCE THE FEED HAS SPOKEN FOR A SOURCE, ITS READ IS NOT MADE AT ALL. Its value would be
         // dropped on arrival (the feed's snapshot is newer than any read), so it would cost a broker
@@ -186,21 +195,35 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         ...(liveApplied.has("membership")
           ? []
           : [{ name: "membership", read: () => api.membership(), apply: supersededByFeed("membership", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) }]),
-      ]);
+      ];
+      const refused: StaleMark[] = await refreshAll(sources);
+      const landedAt = now();
+      const landed = new Set(sources.map((s) => s.name).filter((name) => !refused.some((r) => r.name === name)));
+      for (const name of landed) lastGood.set(name, landedAt);
+      answered(landed.has("peers"), landed.has("channels"));
       // A REFUSAL OF A READ THE FEED HAS SINCE OUTRANKED IS A FACT ABOUT THAT ONE READ. It is neither
       // marked nor allowed to set `unreadable`: the header would call the roster or membership stale,
       // and the pill unreadable, over a feed that is delivering it. The read that was already in
       // flight when the feed spoke lands here; later polls never issue it. `liveApplied` holds only
       // the sources the feed speaks for, so no other refusal is dropped.
       const stale: StaleMark[] = refused.filter((m) => !liveApplied.has(m.name));
+      // Each refusal says when its source last landed, which is how old the data it left on screen is.
+      for (const m of stale) {
+        const at = lastGood.get(m.name);
+        if (at !== undefined) m.lastRead = at;
+      }
       // A PARTIAL PAGE IS NOT A REFUSAL AND IS NOT SILENCE. Its entries are applied; the reader is
-      // told which sources did not answer in time, on the same marker as a refusal.
+      // told which sources did not answer in time, on the same marker as a refusal, with the counts
+      // for its second line and each missing source's reason, one per line, for its tooltip.
       const pg = activityPage as ActivityPage | null;
       if (pg && pg.partial)
         stale.push({
           kind: "partial",
           name: "activity",
-          reason: `${pg.read} of ${pg.of} sources answered within ${pg.deadlineMs}ms; missing ${pg.missing.map((m) => `${m} (${pg.reasons[m]})`).join(", ")}`,
+          reason: pg.missing.map((m) => `${m}: ${pg.reasons[m]}`).join("\n"),
+          read: pg.read,
+          of: pg.of,
+          missing: pg.missing.slice(),
         });
       const rosterView = store.get().stale.find((s) => s.name === "roster");
       if (rosterView && !stale.some((s) => s.name === "roster")) stale.push(rosterView);
@@ -293,6 +316,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     onRoster(roster) {
       liveApplied.add("peers");
       store.set({ roster });
+      answered(true, false);
     },
     onPresenceView(view) {
       // The observer's own watch, not a peer. A stale view keeps the last-known rows and names the

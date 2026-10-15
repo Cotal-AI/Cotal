@@ -1,0 +1,433 @@
+{
+  "command": "pnpm smoke:web-states",
+  "suite": [
+    "implementations/web/smoke/states.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "ST1 the boot no longer marks the first reads outstanding",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "  store.set({ loading: { roster: true, channels: true } });\n",
+      "replace": "",
+      "expectRed": "1.9 starting the dashboard marks both first reads outstanding before anything lands",
+      "cell": "1.9 starting the dashboard marks both first reads outstanding before anything lands"
+    },
+    {
+      "name": "ST2 the centre waits on the roster only",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "const view = loading.roster || loading.channels ? <SkeletonView /> :",
+      "replace": "const view = loading.roster ? <SkeletonView /> :",
+      "expectRed": "1.3 the roster arriving on the feed does not end the wait while the channel read is still out",
+      "cell": "1.3 the roster arriving on the feed does not end the wait while the channel read is still out"
+    },
+    {
+      "name": "ST3 the sidebar waits on the roster only",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{loading.roster || loading.channels ? <SkeletonPlaces />",
+      "replace": "{loading.roster ? <SkeletonPlaces />",
+      "expectRed": "1.3 the roster arriving on the feed does not end the wait while the channel read is still out",
+      "cell": "1.3 the roster arriving on the feed does not end the wait while the channel read is still out"
+    },
+    {
+      "name": "ST4 the skeleton loses a channel row",
+      "file": "implementations/web/client/src/ui/Skeleton.tsx",
+      "find": "        <Row width=\"62%\" />\n",
+      "replace": "",
+      "expectRed": "1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view",
+      "cell": "1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view"
+    },
+    {
+      "name": "ST5 the skeleton loses its Direct messages heading",
+      "file": "implementations/web/client/src/ui/Skeleton.tsx",
+      "find": "        <div className=\"ui-sec\">Direct messages</div>\n",
+      "replace": "",
+      "expectRed": "1.2 the skeleton keeps the Channels and Direct messages headings, as the mock draws them",
+      "cell": "1.2 the skeleton keeps the Channels and Direct messages headings, as the mock draws them"
+    },
+    {
+      "name": "ST6 the skeleton list no longer says it is busy",
+      "file": "implementations/web/client/src/ui/Skeleton.tsx",
+      "find": "<nav className=\"ui-side-scroll\" aria-label=\"Places\" aria-busy=\"true\">",
+      "replace": "<nav className=\"ui-side-scroll\" aria-label=\"Places\">",
+      "expectRed": "1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view",
+      "cell": "1.1 before the first reads answer, the sidebar draws the mock's six skeleton rows in a busy list and the centre two skeleton messages, with no place and no view"
+    },
+    {
+      "name": "ST7 a refresh never clears the channel wait",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "answered(landed.has(\"peers\"), landed.has(\"channels\"));",
+      "replace": "answered(landed.has(\"peers\"), false);",
+      "expectRed": "1.6 a refresh whose roster and channel reads land clears both",
+      "cell": "1.6 a refresh whose roster and channel reads land clears both"
+    },
+    {
+      "name": "ST8 a roster event leaves the roster wait standing",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      store.set({ roster });\n      answered(true, false);\n",
+      "replace": "      store.set({ roster });\n",
+      "expectRed": "1.5 a roster event from the feed clears the roster wait and leaves the channel wait",
+      "cell": "1.5 a roster event from the feed clears the roster wait and leaves the channel wait"
+    },
+    {
+      "name": "ST9 a refused read counts as landed",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": ".filter((name) => !refused.some((r) => r.name === name))",
+      "replace": ".filter(() => true)",
+      "expectRed": "1.7 a refused channel read leaves its wait standing, and the marker says why",
+      "cell": "1.7 a refused channel read leaves its wait standing, and the marker says why"
+    },
+    {
+      "name": "ST10 the refused line names the newest read, not the oldest",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "hhmm(Math.min(...read))",
+      "replace": "hhmm(Math.max(...read))",
+      "expectRed": "2.2 with two refused sources it names the older read, so neither is claimed fresher than it is, under the mock's label and tooltip",
+      "cell": "2.2 with two refused sources it names the older read, so neither is claimed fresher than it is, under the mock's label and tooltip"
+    },
+    {
+      "name": "ST11 a source that never read claims a read time",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": ": \"Retrying.\");",
+      "replace": ": \"Showing what we last read at 00:00. Retrying.\");",
+      "expectRed": "2.3 a source that has never read says only that it is retrying: nothing on screen came from it",
+      "cell": "2.3 a source that has never read says only that it is retrying: nothing on screen came from it"
+    },
+    {
+      "name": "ST12 the silent watch draws no sentence",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "if (roster?.since !== undefined && Number.isFinite(roster.since)) lines.push(",
+      "replace": "if (false) lines.push(",
+      "expectRed": "2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch",
+      "cell": "2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch"
+    },
+    {
+      "name": "ST13 the silent watch is counted as a refused read that a retry repairs",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "s.kind !== \"partial\" && s.name !== \"roster\");",
+      "replace": "s.kind !== \"partial\");",
+      "expectRed": "2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch",
+      "cell": "2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch"
+    },
+    {
+      "name": "ST14 a partial read draws no count",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "for (const p of stale) if (p.kind === \"partial\"",
+      "replace": "for (const p of [] as StaleMark[]) if (p.kind === \"partial\"",
+      "expectRed": "2.7 a partial read says how many sources answered",
+      "cell": "2.7 a partial read says how many sources answered"
+    },
+    {
+      "name": "ST15 times lose their leading zeros",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "return `${two(d.getHours())}:${two(d.getMinutes())}`;",
+      "replace": "return `${d.getHours()}:${d.getMinutes()}`;",
+      "expectRed": "2.8 refused and partial together draw one sentence each, refused first",
+      "cell": "2.8 refused and partial together draw one sentence each, refused first"
+    },
+    {
+      "name": "ST16 the silent-since time loses its seconds",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "`${hhmm(ts)}:${two(new Date(ts).getSeconds())}`",
+      "replace": "hhmm(ts)",
+      "expectRed": "2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch",
+      "cell": "2.5 and the marker says it as the notes do, with no retry claim, since no read repairs a silent watch"
+    },
+    {
+      "name": "ST17 the marker draws no sentences",
+      "file": "implementations/web/client/src/ui/StaleMarker.tsx",
+      "find": "{staleLines(stale).map((line) => <span key={line}>{line}</span>)}",
+      "replace": "",
+      "expectRed": "2.1 a refused read says when its source last landed, in the notes' words",
+      "cell": "2.1 a refused read says when its source last landed, in the notes' words"
+    },
+    {
+      "name": "ST18 the silent watch's mark carries no time",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "return Number.isFinite(view.staleSince) ? { ...mark, since: view.staleSince } : mark;",
+      "replace": "return mark;",
+      "expectRed": "2.4 the observer's silent watch carries the time it went silent",
+      "cell": "2.4 the observer's silent watch carries the time it went silent"
+    },
+    {
+      "name": "ST19 a refusal is not stamped with its last read",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        if (at !== undefined) m.lastRead = at;\n",
+      "replace": "",
+      "expectRed": "2.9 the controller stamps a refusal with when its source last landed",
+      "cell": "2.9 the controller stamps a refusal with when its source last landed"
+    },
+    {
+      "name": "ST20 a landed read is not remembered",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "for (const name of landed) lastGood.set(name, landedAt);",
+      "replace": "",
+      "expectRed": "2.9 the controller stamps a refusal with when its source last landed",
+      "cell": "2.9 the controller stamps a refusal with when its source last landed"
+    },
+    {
+      "name": "ST21 a source that never landed is given the time now",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "const at = lastGood.get(m.name);",
+      "replace": "const at = lastGood.get(m.name) ?? now();",
+      "expectRed": "2.10 and a source that never landed carries no time",
+      "cell": "2.10 and a source that never landed carries no time"
+    },
+    {
+      "name": "ST22 a partial mark drops its counts",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "          read: pg.read,\n          of: pg.of,\n",
+      "replace": "",
+      "expectRed": "2.11 a partial page's mark carries its counts and its missing sources",
+      "cell": "2.11 a partial page's mark carries its counts and its missing sources"
+    },
+    {
+      "name": "ST23 a partial mark's reason names the sources with no reasons",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "reason: pg.missing.map((m) => `${m}: ${pg.reasons[m]}`).join(\"\\n\"),",
+      "replace": "reason: pg.missing.join(\", \"),",
+      "expectRed": "2.12 and its tooltip reads as the mock's: each missing source with its reason",
+      "cell": "2.12 and its tooltip reads as the mock's: each missing source with its reason"
+    },
+    {
+      "name": "ST24 a channel history read that lands is not remembered",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        if (!refused) lastGood.set(history, now());\n",
+      "replace": "",
+      "expectRed": "2.13 a refused channel history says when that channel's history last landed",
+      "cell": "2.13 a refused channel history says when that channel's history last landed"
+    },
+    {
+      "name": "ST25 the banner's direct messages sentence is lost",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "\"direct messages\": \"Direct messages didn't load in time",
+      "replace": "\"direct message\": \"Direct messages didn't load in time",
+      "expectRed": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover",
+      "cell": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover"
+    },
+    {
+      "name": "ST26 a page missing both sources still names a half",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "missing.length === 1 &&",
+      "replace": "missing.length >= 1 &&",
+      "expectRed": "3.3 with both sources missing there is no half to name",
+      "cell": "3.3 with both sources missing there is no half to name"
+    },
+    {
+      "name": "ST27 the Activity view draws no banner",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{partial && <PartialBanner banner={partial} />}",
+      "replace": "",
+      "expectRed": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover",
+      "cell": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover"
+    },
+    {
+      "name": "ST28 the banner drops the reason from its tooltip",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "<div className=\"s-banner\" role=\"status\" title={banner.title}>",
+      "replace": "<div className=\"s-banner\" role=\"status\">",
+      "expectRed": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover",
+      "cell": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover"
+    },
+    {
+      "name": "ST29 a refused activity read draws the partial banner",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "s.kind === \"partial\" && s.name === \"activity\"",
+      "replace": "s.name === \"activity\"",
+      "expectRed": "3.4 a whole page, or a refusal that is not partial, has no banner",
+      "cell": "3.4 a whole page, or a refusal that is not partial, has no banner"
+    },
+    {
+      "name": "ST30 the banner drops the count",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{banner.count && <> <span>{banner.count}</span></>}",
+      "replace": "",
+      "expectRed": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover",
+      "cell": "3.1 a page missing its direct messages carries the mock's banner: the marker, the count, the half it shows, the reason on hover"
+    },
+    {
+      "name": "ST31 a closed feed reads reconnecting after an error",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "(s.connection === \"closed\" ? {} : {",
+      "replace": "(false ? {} : {",
+      "expectRed": "4.1 an error after the browser closed the feed for good leaves the pill on Disconnected, not Reconnecting",
+      "cell": "4.1 an error after the browser closed the feed for good leaves the pill on Disconnected, not Reconnecting"
+    },
+    {
+      "name": "ST32 a refused read arms no retry",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    if (!wanted || retry !== null) return;\n",
+      "replace": "    return;\n",
+      "expectRed": "4.2 a refused read arms one retry, RETRY_MS later",
+      "cell": "4.2 a refused read arms one retry, RETRY_MS later"
+    },
+    {
+      "name": "ST33 the retry fires at once",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    }, RETRY_MS);",
+      "replace": "    }, 0);",
+      "expectRed": "4.2 a refused read arms one retry, RETRY_MS later",
+      "cell": "4.2 a refused read arms one retry, RETRY_MS later"
+    },
+    {
+      "name": "ST34 every store change arms another retry",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "if (!wanted || retry !== null) return;",
+      "replace": "if (!wanted) return;",
+      "expectRed": "4.3 further store changes while it is pending do not arm a second",
+      "cell": "4.3 further store changes while it is pending do not arm a second"
+    },
+    {
+      "name": "ST35 a retry that fires reads nothing",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "      retry = null;\n      refresh();\n",
+      "replace": "      retry = null;\n",
+      "expectRed": "4.4 when it fires the dashboard reads again, and a read still refused arms the next retry",
+      "cell": "4.4 when it fires the dashboard reads again, and a read still refused arms the next retry"
+    },
+    {
+      "name": "ST36 a retry stays pending after the read lands",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    if (!wanted && retry !== null) {\n      timer.clear(retry);\n      retry = null;\n    }\n",
+      "replace": "",
+      "expectRed": "4.5 a retry that lands clears the mark and arms nothing more",
+      "cell": "4.5 a retry that lands clears the mark and arms nothing more"
+    },
+    {
+      "name": "ST37 the silent watch arms a retry",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "m.kind === \"refused\" && m.name !== \"roster\"",
+      "replace": "m.kind === \"refused\"",
+      "expectRed": "4.6 the observer's silent watch and a partial page arm no retry: no read repairs either",
+      "cell": "4.6 the observer's silent watch and a partial page arm no retry: no read repairs either"
+    },
+    {
+      "name": "ST38 stopping leaves the retry pending",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "      if (retry !== null) timer.clear(retry);\n",
+      "replace": "",
+      "expectRed": "4.8 stopping the dashboard cancels the pending retry",
+      "cell": "4.8 stopping the dashboard cancels the pending retry"
+    },
+    {
+      "name": "ST39 a stopped dashboard keeps listening and arms retries",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "      unsubscribe();\n",
+      "replace": "",
+      "expectRed": "4.9 and a stopped dashboard arms nothing",
+      "cell": "4.9 and a stopped dashboard arms nothing"
+    },
+    {
+      "name": "ST40 a rail item with nowhere to go is a bare anchor again",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "const Item = to ? \"a\" : \"button\";",
+      "replace": "const Item = \"a\";",
+      "expectRed": "5.1 Channels and Direct messages with nowhere to go are buttons marked disabled, not bare links, so the keyboard still reaches them",
+      "cell": "5.1 Channels and Direct messages with nowhere to go are buttons marked disabled, not bare links, so the keyboard still reaches them"
+    },
+    {
+      "name": "ST41 the disabled rail button loses its type",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "type={to ? undefined : \"button\"}",
+      "replace": "type={undefined}",
+      "expectRed": "5.1 Channels and Direct messages with nowhere to go are buttons marked disabled, not bare links, so the keyboard still reaches them",
+      "cell": "5.1 Channels and Direct messages with nowhere to go are buttons marked disabled, not bare links, so the keyboard still reaches them"
+    },
+    {
+      "name": "ST42 a disabled rail item is titled with its name only",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "title={to ? label : (EMPTY_TITLE[view] ?? label)}",
+      "replace": "title={label}",
+      "expectRed": "5.2 each is titled with the empty state the reader would find, keeping its name as its label",
+      "cell": "5.2 each is titled with the empty state the reader would find, keeping its name as its label"
+    },
+    {
+      "name": "ST43 the Direct messages empty state changes its words",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "dm: \"No direct messages yet.\",",
+      "replace": "dm: \"No DMs.\",",
+      "expectRed": "5.2 each is titled with the empty state the reader would find, keeping its name as its label",
+      "cell": "5.2 each is titled with the empty state the reader would find, keeping its name as its label"
+    },
+    {
+      "name": "ST44 the last channel visited is forgotten",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "  if (route.view === \"channel\" && last.channel !== route.channel) seen = { ...last, channel: route.channel };\n",
+      "replace": "",
+      "expectRed": "5.4 Channels lands on the channel last visited, not the first one",
+      "cell": "5.4 Channels lands on the channel last visited, not the first one"
+    },
+    {
+      "name": "ST45 the last conversation visited is forgotten",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "  if (route.view === \"dm\" && (last.dm?.peer !== route.peer || last.dm?.with !== route.with)) seen = { ...seen, dm: { peer: route.peer, with: route.with } };\n",
+      "replace": "",
+      "expectRed": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one",
+      "cell": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one"
+    },
+    {
+      "name": "ST46 the last conversation keeps one party",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "dm: { peer: route.peer, with: route.with } };",
+      "replace": "dm: { peer: route.peer } };",
+      "expectRed": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one",
+      "cell": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one"
+    },
+    {
+      "name": "ST47 a deleted last channel is still the target",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "channels.some((c) => c.channel === seen.channel) ? seen.channel",
+      "replace": "true ? seen.channel",
+      "expectRed": "5.6 a last channel that is gone falls back to the first there is",
+      "cell": "5.6 a last channel that is gone falls back to the first there is"
+    },
+    {
+      "name": "ST48 the rail ignores the channel the shell names",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "return places.channel === null ? null : { view, channel: places.channel };",
+      "replace": "return null;",
+      "expectRed": "5.4 Channels lands on the channel last visited, not the first one",
+      "cell": "5.4 Channels lands on the channel last visited, not the first one"
+    },
+    {
+      "name": "ST49 a disabled selected tab leaves no Tab stop",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": " ?? tabs.find((t) => !t.off)?.id;",
+      "replace": ";",
+      "expectRed": "6.1 when the selected tab is disabled the first enabled tab is the list's Tab stop, so the keyboard does not skip the list",
+      "cell": "6.1 when the selected tab is disabled the first enabled tab is the list's Tab stop, so the keyboard does not skip the list"
+    },
+    {
+      "name": "ST50 a disabled selected tab is the Tab stop",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "const stop = tabs.find((t) => t.id === tab && !t.off)?.id",
+      "replace": "const stop = tabs.find((t) => t.id === tab)?.id",
+      "expectRed": "6.1 when the selected tab is disabled the first enabled tab is the list's Tab stop, so the keyboard does not skip the list",
+      "cell": "6.1 when the selected tab is disabled the first enabled tab is the list's Tab stop, so the keyboard does not skip the list"
+    },
+    {
+      "name": "ST51 the Agents row is marked whatever the panel shows",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "agent: shown && panel.tab === \"agent\" ? panel.agent : null",
+      "replace": "agent: panel.agent",
+      "expectRed": "6.5 while the panel shows another tab the row is not marked",
+      "cell": "6.5 while the panel shows another tab the row is not marked"
+    },
+    {
+      "name": "ST52 the Agents row is marked while the panel is on another tab",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "agent: shown && panel.tab === \"agent\" ? panel.agent : null",
+      "replace": "agent: shown ? panel.agent : null",
+      "expectRed": "6.5 while the panel shows another tab the row is not marked",
+      "cell": "6.5 while the panel shows another tab the row is not marked"
+    },
+    {
+      "name": "ST53 the Agents row is marked while the panel is closed",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "agent: shown && panel.tab === \"agent\" ? panel.agent : null",
+      "replace": "agent: panel.tab === \"agent\" ? panel.agent : null",
+      "expectRed": "6.7 a closed panel marks nothing",
+      "cell": "6.7 a closed panel marks nothing"
+    }
+  ]
+}

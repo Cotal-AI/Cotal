@@ -11,15 +11,41 @@ import { createController, type Api, type Controller } from "./controller.js";
 import type { Store } from "./store.js";
 import type { DashboardState } from "./types.js";
 
+/** How long after a refused read the dashboard reads again, while the refusal stands. */
+export const RETRY_MS = 5000;
+
+/** The timer the retry runs on: `setTimeout` and `clearTimeout` unless a suite passes its own. */
+export interface RetryTimer {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const realTimer: RetryTimer = {
+  set: (fn, ms) => setTimeout(fn, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
+
+/** A refused read the next `refresh()` can retry. The `roster` mark is the observer's own presence
+ *  watch going silent, which no read repairs; a partial page is not a refusal. */
+const retryable = (s: DashboardState): boolean => s.stale.some((m) => m.kind === "refused" && m.name !== "roster");
+
 /** `onArrival` is told of every message the feed delivers, a duplicate delivery included, before the
- *  controller takes it. It is how the sidebar's message rate is fed without the rate entering the store. */
+ *  controller takes it. It is how the sidebar's message rate is fed without the rate entering the store.
+ *
+ *  The first roster and channel reads are marked outstanding before anything is read, so the page
+ *  draws its skeleton rows until they land. While any read stands refused the dashboard reads again
+ *  every `RETRY_MS` (on `timer`), which is what the stale marker's "Retrying." promises; `stop()`
+ *  cancels a pending retry along with the feed. */
 export function startDashboard(deps: {
   store: Store<DashboardState>;
   api: Api;
   openFeed: (h: FeedHandlers) => () => void;
   onArrival?: () => void;
+  timer?: RetryTimer;
 }): { controller: Controller; stop(): void } {
   const { store } = deps;
+  const timer = deps.timer ?? realTimer;
+  store.set({ loading: { roster: true, channels: true } });
   const controller = createController(store, deps.api);
   // A read that is refused never rejects `refresh()`: `refreshAll` turns it into a stale mark. What
   // does reject it is a defect (an `apply` or a store subscriber that throws), and that is not a
@@ -36,8 +62,9 @@ export function startDashboard(deps: {
       refresh();
     },
     // A failed first attempt has dropped nothing, so it is still connecting; an error after an open
-    // is a drop, and the browser's EventSource retries it.
-    error: () => store.set((s) => ({ connection: s.connection === "connecting" ? "connecting" : "reconnecting" })),
+    // is a drop, and the browser's EventSource retries it. A closed feed stays closed: the browser
+    // will not retry it, so a late error cannot make the pill say it is reconnecting.
+    error: () => store.set((s) => (s.connection === "closed" ? {} : { connection: s.connection === "connecting" ? "connecting" : "reconnecting" })),
     // Final: nothing reopens a feed the browser gave up on, so no later event can undo it.
     closed: () => store.set({ connection: "closed" }),
     roster: controller.onRoster,
@@ -49,7 +76,33 @@ export function startDashboard(deps: {
       controller.onMessage(e);
     },
   };
+  // One retry pending at most, and pending exactly while the store holds a retryable refusal, by
+  // whichever read left it there (a refresh or a channel's history). It fires one refresh, which
+  // reopens the open channel too. A read that lands clears the mark, and with it the pending retry,
+  // which an earlier write in the same refresh may have armed while the old mark still stood.
+  let retry: unknown = null;
+  const armRetry = () => {
+    const wanted = retryable(store.get());
+    if (!wanted && retry !== null) {
+      timer.clear(retry);
+      retry = null;
+    }
+    if (!wanted || retry !== null) return;
+    retry = timer.set(() => {
+      retry = null;
+      refresh();
+    }, RETRY_MS);
+  };
+  const unsubscribe = store.subscribe(armRetry);
   const stopFeed = deps.openFeed(handlers);
   refresh();
-  return { controller, stop: stopFeed };
+  return {
+    controller,
+    stop() {
+      unsubscribe();
+      if (retry !== null) timer.clear(retry);
+      retry = null;
+      stopFeed();
+    },
+  };
 }

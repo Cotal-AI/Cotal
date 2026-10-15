@@ -27,6 +27,12 @@ g.document = win.document;
 // Node defines Web Storage of its own, which without --localstorage-file is a stub that warns on
 // every read, so the page's storage replaces it.
 for (const key of ["localStorage", "sessionStorage"]) Object.defineProperty(g, key, { value: win[key], configurable: true, writable: true });
+// jsdom has no `matchMedia`, and the app reads it to choose the phone layout. The window answers as a
+// wide screen, where no query matches; a suite that draws the phone layout installs its own.
+if (typeof win.matchMedia !== "function") {
+  win.matchMedia = (media: string) => ({ matches: false, media, addEventListener: () => undefined, removeEventListener: () => undefined });
+  g.matchMedia = win.matchMedia;
+}
 
 /** Close the window's timers and handles, so the suite's process can exit.
  *

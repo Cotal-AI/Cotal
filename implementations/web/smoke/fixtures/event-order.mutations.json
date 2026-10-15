@@ -188,8 +188,8 @@
     {
       "name": "O-B1 the startup stops calling refresh() after it opens the feed, so the dashboard shows nothing until a feed open happens to run the bootstrap",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  refresh();\n  return { controller, stop: stopFeed };",
-      "replace": "  return { controller, stop: stopFeed };",
+      "find": "  refresh();\n  return {\n    controller,",
+      "replace": "  return {\n    controller,",
       "expectRed": "13.1 the shipped startup opens the feed and then calls refresh()",
       "cell": "13.1 the shipped startup opens the feed and then calls refresh()"
     },

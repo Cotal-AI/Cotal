@@ -1,5 +1,5 @@
-import { SidebarRightIcon } from "@hugeicons/core-free-icons";
-import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
+import { Menu01Icon, SidebarRightIcon } from "@hugeicons/core-free-icons";
+import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { claimedBy } from "../../lib/claims.js";
@@ -12,6 +12,7 @@ import type { ChannelRow, DashboardState, StoredMessage } from "../../state/type
 import { Avatar } from "../Avatar.tsx";
 import { MessageRow } from "../MessageRow.tsx";
 import { NeedsCard, needsKey, useDismissed } from "../NeedsCard.tsx";
+import { SheetMenu } from "../sheet.js";
 
 /** How many members the header stack draws before the count alone carries the rest. */
 const STACK = 4;
@@ -140,7 +141,8 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *  - `onMembers` and `onViewAgent` open the Members and Agent tabs. Without them (a view drawn with
  *    no panel) their buttons are disabled.
  *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
- *    who closed the panel can bring it back. */
+ *    who closed the panel can bring it back.
+ *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet. */
 export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen = false, onTogglePanel }: {
   store: Store<DashboardState>;
   channel: string;
@@ -168,9 +170,15 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const tail = messages[messages.length - 1];
   const scroll = usePinnedScroll(channel, tail && `${tail.msg.id}\u0001${tail.senderId ?? ""}`);
   const count = members.length;
+  const sheet = useContext(SheetMenu);
   return (
     <>
       <header className="ui-bar">
+        {sheet && (
+          <button type="button" className="ui-tool" title="Open sidebar" aria-label="Open sidebar" aria-haspopup="dialog" aria-expanded={sheet.open} onClick={sheet.show}>
+            <Icon icon={Menu01Icon} className="ui-ic" />
+          </button>
+        )}
         <h1>{`# ${channel}`}</h1>
         {info?.description && <span className="ui-topic">{info.description}</span>}
         <span className="ui-sp" />

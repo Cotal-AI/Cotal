@@ -164,15 +164,15 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   ];
   const html = renderShell({ roster, dms: dmRows });
   const rows = dms(html);
-  same("5.1 one row per conversation, newest first, though each talks under both its peers",
+  same("5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
     rows.map((r) => r.attrs.href), [
       formatRoute({ view: "dm", peer: "local.rv2", with: "local.sco" }),
-      formatRoute({ view: "dm", peer: "local.dav", with: "local.rev" }),
-      formatRoute({ view: "dm", peer: "local.dav", with: "local.rv2" }),
-      formatRoute({ view: "dm", peer: "local.ghost", with: "local.sco" }),
+      formatRoute({ view: "dm", peer: "local.rev", with: "local.dav" }),
+      formatRoute({ view: "dm", peer: "local.rv2", with: "local.dav" }),
+      formatRoute({ view: "dm", peer: "local.sco", with: "local.ghost" }),
     ]);
-  same("5.2 each row is named from the roster by id: the payload's own name never shows",
-    rows.map((r) => r.label), ["reviewer_2, scout", "david, reviewer", "david, reviewer_2", "local.ghost, scout"]);
+  same("5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
+    rows.map((r) => r.label), ["reviewer_2, scout", "reviewer, david", "reviewer_2, david", "scout, local.ghost"]);
   ok("5.3 no row or page text carries the payload's name", !html.includes("mallory"));
   ok("5.4 each row shows two small avatars, one per party, and no status dot",
     rows.every((r) => (r.inner.match(/<span class="ui-av[ "]/g) ?? []).length === 2 && !r.inner.includes("ui-st ")) && /<span class="ui-stack">/.test(rows[0].inner), rows[0].inner.slice(0, 200));
@@ -281,26 +281,30 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
 }
 
 // ── 9. The mounted app: arrivals become the rate, and the tick stops with the page ───────────────
+// The app's clock is injected and the tick is fired by hand, so no cell waits on a real timer.
 {
   let arrive!: () => void;
   let stops = 0;
+  let now = 1_000_000;
+  const clock = () => now;
   const controller = { open: async () => undefined } as unknown as Controller;
   const start = (_store: unknown, onArrival: () => void) => ((arrive = onArrival), { controller, stop: () => void stops++ });
   const host: RouteHost = { location: { hash: "#/activity", pathname: "/" }, addEventListener: () => undefined, removeEventListener: () => undefined };
   const g = globalThis as unknown as { setInterval: typeof setInterval; clearInterval: typeof clearInterval };
   const realSet = g.setInterval;
   const realClear = g.clearInterval;
-  const live = new Set<unknown>();
-  g.setInterval = ((fn: () => void, ms?: number) => { const id = realSet(fn, ms); live.add(id); return id; }) as typeof setInterval;
+  const live = new Map<unknown, () => void>();
+  g.setInterval = ((fn: () => void, ms?: number) => { const id = realSet(fn, ms); live.set(id, fn); return id; }) as typeof setInterval;
   g.clearInterval = ((id: Parameters<typeof clearInterval>[0]) => { live.delete(id); realClear(id); }) as typeof clearInterval;
   try {
-    const m = await mount(createElement(App, { host, start: start as never }));
+    const m = await mount(createElement(App, { host, start: start as never, clock }));
     const shown = () => m.container.querySelector(".ui-side .ui-row-n")?.textContent;
     ok("9.1 a freshly mounted app shows 0 msg/s", shown() === "0 msg/s", shown());
     ok("9.2 the app is ticking while mounted", live.size === 1, live.size);
     await m.run(() => { arrive(); arrive(); arrive(); });
-    await m.run(() => new Promise((r) => setTimeout(r, 1150)));
-    ok("9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick", shown() === "0.3 msg/s", shown());
+    now += 5_000;
+    await m.run(() => { for (const tick of live.values()) tick(); });
+    ok("9.3 three arrivals reach the Activity row on the next tick, over the five seconds the page has watched: 0.6 msg/s", shown() === "0.6 msg/s", shown());
     await m.unmount();
     ok("9.4 unmounting stops the tick", live.size === 0, live.size);
     ok("9.5 and stops the dashboard", stops === 1, stops);

@@ -45,6 +45,12 @@ export interface DashboardState {
   /** Newest last, capped at 50. */
   orderNotes: OrderNote[];
   membership: { snapshot?: MembershipSnapshot; unreadable?: string };
+  /** The first reads the page is still waiting on, true until that source's data lands. The shell
+   *  draws skeleton rows while either is outstanding. A store starts with nothing outstanding;
+   *  `startDashboard` marks both as it starts, and the controller clears each when its read applies
+   *  or, for the roster, when the feed delivers one. A refused read clears nothing: the page has no
+   *  data to show, and the stale marker says why while the read is retried. */
+  loading: { roster: boolean; channels: boolean };
 }
 
 export const initialState: DashboardState = {
@@ -60,4 +66,5 @@ export const initialState: DashboardState = {
   stale: [],
   orderNotes: [],
   membership: {},
+  loading: { roster: false, channels: false },
 };

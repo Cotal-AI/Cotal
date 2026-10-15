@@ -56,7 +56,7 @@
     {
       "name": "A8 Settings is dropped from the rail",
       "file": "implementations/web/client/src/ui/Rail.tsx",
-      "find": "      <button type=\"button\" className=\"ui-rail-btn\" aria-label=\"Settings\" title=\"Settings\" disabled={!onSettings} onClick={onSettings}>\n        <RailIcon name=\"gear\" size={22} />\n      </button>\n",
+      "find": "      <Settings theme={theme} onTheme={onTheme} />\n",
       "replace": "",
       "expectRed": "1.2 the rail lists the five views and Settings, in the mock's order",
       "cell": "1.2 the rail lists the five views and Settings, in the mock's order"
@@ -88,16 +88,16 @@
     {
       "name": "A12 Channels leads nowhere when the route is elsewhere, so the shell no longer names a channel for the rail to land on",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "channel={channels[0]?.channel ?? null}",
-      "replace": "channel={null}",
+      "find": "const channel = seen.channel !== null && channels.some((c) => c.channel === seen.channel) ? seen.channel : (channels[0]?.channel ?? null);",
+      "replace": "const channel = null;",
       "expectRed": "1.4 each view links to its route hash",
       "cell": "1.4 each view links to its route hash"
     },
     {
       "name": "A13 Direct messages never finds a conversation to land on",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "[0]?.id ?? null, [dms, roster]",
-      "replace": "[0]?.id && null, [dms, roster]",
+      "find": ": peers[0] ? { peer: peers[0].id } : null;",
+      "replace": ": null;",
       "expectRed": "1.4 each view links to its route hash",
       "cell": "1.4 each view links to its route hash"
     },
@@ -200,7 +200,7 @@
     {
       "name": "A26 Settings is live with no handler behind it, so the rail offers a button that does nothing",
       "file": "implementations/web/client/src/ui/Rail.tsx",
-      "find": "disabled={!onSettings}",
+      "find": "disabled={!onTheme}",
       "replace": "disabled={false}",
       "expectRed": "1.8 Settings is disabled while the shell gives it no handler",
       "cell": "1.8 Settings is disabled while the shell gives it no handler"

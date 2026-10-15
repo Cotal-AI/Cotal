@@ -50,11 +50,20 @@ export interface Refusal {
   reason: string;
 }
 
-/** A source marked for the header: refused (last value kept) or partial (a short, fresh read). */
+/** A source marked for the header: refused (last value kept) or partial (a short, fresh read). The
+ *  optional fields are what the marker's second line says, and each is set only when it is known:
+ *  `lastRead` is when a refused source last read successfully (absent when it never has), `since`
+ *  is when the observer's presence watch went silent, and `read`, `of` and `missing` are a partial
+ *  page's counts and the sources that did not answer. */
 export interface StaleMark {
   kind: "refused" | "partial";
   name: string;
   reason: string;
+  lastRead?: number;
+  since?: number;
+  read?: number;
+  of?: number;
+  missing?: string[];
 }
 
 /** Read every source concurrently and apply only the ones that succeeded.

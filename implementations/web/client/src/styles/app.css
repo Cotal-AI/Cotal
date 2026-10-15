@@ -422,3 +422,44 @@ input.ui-field { width: 100%; outline: none; }
 input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
 /* A refusal sits in the dialog's own row, so the dialog keeps its size. */
 .ui-dialog-err { color: var(--red-ink); font-size: 12.5px; overflow: hidden; }
+/* ---------- states (mock section B) ---------- */
+/* The marker's plain sentences sit under its label, one to a line. The Activity header has room for
+   the label only. */
+.ui-stale span { display: block; }
+.ui-bar .ui-stale span { display: none; }
+/* Focus rings: 2px in the accent, offset from the fill. A row clips what spills past its edge, so its
+   ring sits just inside, as the mock's focused sidebar row does. */
+.ui-row:focus-visible, .v3-mrow:focus-visible, .ui-menu button:focus-visible { outline-offset: -2px; }
+
+/* ---------- Settings menu: the theme, from the rail ---------- */
+.ui-rail-set { position: relative; }
+.ui-menu { position: absolute; left: calc(100% + 10px); bottom: 0; z-index: 6; min-width: 168px; padding: 6px; display: grid; gap: 2px; color: var(--ink); }
+.ui-menu-h { padding: 4px 8px; font-size: 12px; font-weight: 500; color: var(--dim); }
+.ui-menu button { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 7px; font-size: 13px; text-align: left; }
+.ui-menu button:hover { background: var(--hover); }
+.ui-menu button[aria-checked="true"] { font-weight: 500; }
+.ui-menu-gap { width: 16px; flex: none; }
+
+/* ---------- phone, below 768px (mock section F) ---------- */
+/* The centre over the bottom tab bar. The sizes are the mock's phone frame (.d-screen) rules. */
+.ui-app.ui-phone { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.ui-phone > .ui-center { flex: 1; }
+.ui-phone .ui-bar { padding: 0 8px; gap: 4px; }
+.ui-phone .ui-bar h1 { font-size: 16px; margin-left: 2px; }
+.ui-phone .ui-bar .ui-topic, .ui-phone .ui-bar .ui-chip { display: none; }
+.ui-phone .ui-col { padding: 8px 16px; }
+.ui-phone .ui-msg { grid-template-columns: 30px minmax(0, 1fr); gap: 10px; }
+.ui-phone .ui-dock { padding: 0 10px 12px; }
+.ui-phone .ui-dock-in { gap: 8px; }
+.ui-phone .ui-needs { grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; padding: 11px 12px; }
+.ui-phone .ui-needs .ui-btns { grid-column: 1 / -1; }
+.ui-phone .ui-needs .ui-btns .ui-btn { flex: 1; justify-content: center; }
+.ui-phone .ui-composer { height: 92px; padding: 10px 10px 9px 14px; }
+/* The tab bar's tabs are links, and a tab with nowhere to go yet is a disabled button. */
+.v3-tabbar > a { display: grid; justify-items: center; align-content: center; gap: 3px; font-size: 11.5px; color: var(--dim); position: relative; text-decoration: none; }
+.v3-tabbar > [aria-current="page"] { color: var(--ink); font-weight: 500; }
+.v3-tabbar > [aria-disabled="true"] { opacity: .4; cursor: default; }
+/* The places sheet over the page, and the panel over the whole page. */
+.ui-sheet-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 3; }
+.ui-side.ui-sheet { position: fixed; top: 0; left: 0; bottom: 0; width: 308px; max-width: calc(100vw - 48px); z-index: 4; border-right: 0; box-shadow: var(--sheet-shadow); }
+.ui-pane.ui-pane-full { position: fixed; inset: 0; z-index: 4; border-left: 0; }

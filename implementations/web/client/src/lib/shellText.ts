@@ -15,6 +15,61 @@ export function staleView(stale: StaleMark[]): { hidden: boolean; text: string; 
   return { hidden: !text, text, title: stale.map((s) => `${s.name}: ${s.reason}`).join("\n") };
 }
 
+const two = (n: number): string => String(n).padStart(2, "0");
+/** `hh:mm` in the reader's own clock. */
+const hhmm = (ts: number): string => {
+  const d = new Date(ts);
+  return `${two(d.getHours())}:${two(d.getMinutes())}`;
+};
+/** `hh:mm:ss` in the reader's own clock. */
+const hhmmss = (ts: number): string => `${hhmm(ts)}:${two(new Date(ts).getSeconds())}`;
+
+/** The plain sentences under the marker's label, in the notes' words, one per kind of mark:
+ *
+ *  - Refused reads: "Showing what we last read at 10:51. Retrying." The time is the OLDEST last
+ *    successful read among the refused sources, so no source is claimed fresher than it is. When none
+ *    of them has ever read, nothing on screen came from them, and the line is only "Retrying.".
+ *  - The observer's silent presence watch (the `roster` mark): "No presence updates since 10:52:14.
+ *    Showing the last roster we heard." While the watch is still loading it has no silent-since time,
+ *    so there is no line and the reason stays in the tooltip.
+ *  - A partial read: "1 of 2 sources answered".
+ *
+ *  "Retrying." is true because `startDashboard` reads again on a timer while any refused mark stands. */
+export function staleLines(stale: StaleMark[]): string[] {
+  const lines: string[] = [];
+  const refused = stale.filter((s) => s.kind !== "partial" && s.name !== "roster");
+  if (refused.length) {
+    const read = refused.map((s) => s.lastRead).filter((t): t is number => typeof t === "number" && Number.isFinite(t));
+    lines.push(read.length ? `Showing what we last read at ${hhmm(Math.min(...read))}. Retrying.` : "Retrying.");
+  }
+  const roster = stale.find((s) => s.kind !== "partial" && s.name === "roster");
+  if (roster?.since !== undefined && Number.isFinite(roster.since)) lines.push(`No presence updates since ${hhmmss(roster.since)}. Showing the last roster we heard.`);
+  for (const p of stale) if (p.kind === "partial" && p.read !== undefined && p.of !== undefined) lines.push(`${p.read} of ${p.of} sources answered`);
+  return lines;
+}
+
+/** What the Activity view says when its source alone answered: the half of the feed it still shows. */
+const ONLY: Record<string, string> = {
+  "direct messages": "Direct messages didn't load in time, so this page shows channel messages only.",
+  chat: "Channel messages didn't load in time, so this page shows direct messages only.",
+};
+
+/** The banner at the top of the Activity view while the activity read is partial (mock section B,
+ *  Partial), or undefined when it is whole. `count` is "1 of 2 sources answered". `body` says which
+ *  half of the feed is on the page, and is drawn only when exactly one source is missing, since with
+ *  both gone there is no half to name. `title` is the server's reasons, one source per line. */
+export function partialBanner(stale: StaleMark[]): { label: string; count?: string; body?: string; title: string } | undefined {
+  const p = stale.find((s) => s.kind === "partial" && s.name === "activity");
+  if (!p) return undefined;
+  const missing = p.missing ?? [];
+  return {
+    label: `partial: ${p.name}`,
+    count: p.read !== undefined && p.of !== undefined ? `${p.read} of ${p.of} sources answered` : undefined,
+    body: missing.length === 1 && Object.hasOwn(ONLY, missing[0]) ? ONLY[missing[0]] : undefined,
+    title: p.reason,
+  };
+}
+
 /** The order notes as the line the feed views draw above their rows, or `undefined` for an ordinary
  *  feed.
  *

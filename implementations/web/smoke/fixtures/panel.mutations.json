@@ -208,7 +208,7 @@
     {
       "name": "P26 every tab is a Tab stop",
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
-      "find": "            tabIndex={tab === t.id ? 0 : -1}\n",
+      "find": "            tabIndex={stop === t.id ? 0 : -1}\n",
       "replace": "",
       "expectRed": "5.17 the selected tab is the list's one Tab stop",
       "cell": "5.17 the selected tab is the list's one Tab stop"

@@ -1,6 +1,8 @@
 /* Design tokens for the dashboard. Light (Quiet) is :root. Night is chosen by data-theme="dark",
-   or follows the system when data-theme is "system" or unset. data-theme="light" pins Quiet. */
+   or follows the system when data-theme is "system" or unset. data-theme="light" pins Quiet.
+   color-scheme follows the same choice, so native scrollbars and form controls draw in Night too. */
 :root {
+  color-scheme: light dark;
   --body: "Inter Variable", system-ui, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --multi: #4D69E6; --uni: #E38C6E; --any: #5FA866; --gold: #E5B94E; --red: #E0625A; --idle: #B9B4A6;
@@ -17,9 +19,13 @@
   --on-gold: #3A2C05; --on-multi: #FFFFFF; --me-bg: #6B6F80; --me-ink: #FFFFFF;
   --danger-solid: #B23A32; --danger-solid-ink: #FFFFFF;
   --mark: #202B43;
+  --sheet-shadow: 8px 0 30px rgba(20, 24, 33, .18);
 }
 
+:root[data-theme="light"] { color-scheme: light; }
+
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --bg: #16181D; --side: #1B1E24; --rail-ink: #8A90A0; --side-ink: #E4E6EC; --side-dim: #9097A6;
   --side-hover: #23272F; --side-sel: #2A2F39; --side-line: #262A32;
   --ink: #E6E8EE; --dim: #9097A6; --faint: #6E7484; --line: #262A32; --hover: #1C1F25; --soft: #20242B;
@@ -29,6 +35,7 @@
   --warn-bg: #2C2818; --err-bg: #2E1D1C; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;
   --shimmer: rgba(255, 255, 255, .06);
   --mark: #FFFCEE;
+  --sheet-shadow: 8px 0 30px rgba(0, 0, 0, .45);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -42,5 +49,6 @@
     --warn-bg: #2C2818; --err-bg: #2E1D1C; --scrim: rgba(0, 0, 0, .55); --skel: #23272F;
     --shimmer: rgba(255, 255, 255, .06);
     --mark: #FFFCEE;
+    --sheet-shadow: 8px 0 30px rgba(0, 0, 0, .45);
   }
 }

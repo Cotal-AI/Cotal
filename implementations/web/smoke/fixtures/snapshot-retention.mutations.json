@@ -44,8 +44,8 @@
     {
       "name": "W6 the boot is chained again, so the live feed is guaranteed to run but not to run soon",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return { controller, stop: stopFeed };",
-      "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return { controller, stop: () => stopFeed() };",
+      "find": "  const stopFeed = deps.openFeed(handlers);\n  refresh();\n  return {",
+      "replace": "  let stopFeed = () => {};\n  void controller.refresh().then(() => { stopFeed = deps.openFeed(handlers); });\n  return {",
       "expectRed": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap",
       "cell": "3.11 the boot opens the live feed WITHOUT waiting for the bootstrap (the wipe was `load().then(connect)`)"
     },

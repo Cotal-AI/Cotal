@@ -83,5 +83,6 @@ export function presenceViewMark(view: PresenceView): StaleMark | undefined {
   if (!view || view.fresh) return undefined;
   if (view.state === "unpopulated") return { kind: "refused", name: "roster", reason: "observer presence snapshot still loading" };
   const since = Number.isFinite(view.staleSince) ? new Date(view.staleSince).toISOString() : "unknown";
-  return { kind: "refused", name: "roster", reason: `observer presence watch silent since ${since}` };
+  const mark: StaleMark = { kind: "refused", name: "roster", reason: `observer presence watch silent since ${since}` };
+  return Number.isFinite(view.staleSince) ? { ...mark, since: view.staleSince } : mark;
 }
