@@ -10,16 +10,16 @@
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n",
       "replace": "  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n  { label: \"Workflow runs\", icon: \"graph\", view: \"needs\" },\n",
-      "expectRed": "1.2 the rail has no Workflow runs item",
-      "cell": "1.2 the rail has no Workflow runs item"
+      "expectRed": "1.1 the rail has no Workflow runs item",
+      "cell": "1.1 the rail has no Workflow runs item"
     },
     {
       "name": "A2 Topology moves above Agents, so the rail no longer reads in the order the mock draws it",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "  { label: \"Agents\", icon: \"agents\", view: \"agents\" },\n  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n",
       "replace": "  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n  { label: \"Agents\", icon: \"agents\", view: \"agents\" },\n",
-      "expectRed": "1.1 the rail lists the five views and Settings, in the mock's order",
-      "cell": "1.1 the rail lists the five views and Settings, in the mock's order"
+      "expectRed": "1.2 the rail lists the five views and Settings, in the mock's order",
+      "cell": "1.2 the rail lists the five views and Settings, in the mock's order"
     },
     {
       "name": "A4 the active item is always Activity, whatever the route says",
@@ -42,8 +42,8 @@
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "  if (route.view === view) return route;\n",
       "replace": "",
-      "expectRed": "3.2 on a dm route Direct messages links to that conversation",
-      "cell": "3.2 on a dm route Direct messages links to that conversation"
+      "expectRed": "3.1 on a channel route Channels links to that channel",
+      "cell": "3.1 on a channel route Channels links to that channel"
     },
     {
       "name": "A7 an item with nowhere to lead still looks live, so the rail offers a link that does nothing",
@@ -58,8 +58,8 @@
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "      <button type=\"button\" className=\"ui-rail-btn\" aria-label=\"Settings\" title=\"Settings\" disabled={!onSettings} onClick={onSettings}>\n        <RailIcon name=\"gear\" size={22} />\n      </button>\n",
       "replace": "",
-      "expectRed": "1.1 the rail lists the five views and Settings, in the mock's order",
-      "cell": "1.1 the rail lists the five views and Settings, in the mock's order"
+      "expectRed": "1.2 the rail lists the five views and Settings, in the mock's order",
+      "cell": "1.2 the rail lists the five views and Settings, in the mock's order"
     },
     {
       "name": "A9 the shell never drops the panel column, so a closed panel leaves an empty 360px strip",
@@ -188,6 +188,14 @@
       "replace": "  const first = currentRoute(host);\n  const listener = () => on(first);\n",
       "expectRed": "7.3 a hashchange reports the new route, and an unknown hash reports the default",
       "cell": "7.3 a hashchange reports the new route, and an unknown hash reports the default"
+    },
+    {
+      "name": "A25 the dm item no longer keeps the conversation it is on, so clicking it drops the second party and lands on the most recent peer",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "  if (route.view === view) return route;\n",
+      "replace": "  if (route.view === view && view !== \"dm\") return route;\n",
+      "expectRed": "3.2 on a dm route Direct messages links to that conversation",
+      "cell": "3.2 on a dm route Direct messages links to that conversation"
     }
   ]
 }

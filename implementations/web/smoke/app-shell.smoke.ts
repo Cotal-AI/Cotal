@@ -36,9 +36,9 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
 // ── 1. The rail ──────────────────────────────────────────────────────────────────────────────────
 {
   const html = renderShell(seed);
-  same("1.1 the rail lists the five views and Settings, in the mock's order",
+  ok("1.1 the rail has no Workflow runs item", !/Workflow runs/i.test(html) && !html.includes("#/runs"), names(html));
+  same("1.2 the rail lists the five views and Settings, in the mock's order",
     names(html), ["Activity", "Channels", "Direct messages", "Agents", "Topology", "Settings"]);
-  ok("1.2 the rail has no Workflow runs item", !/Workflow runs/i.test(html) && !html.includes("#/runs"), names(html));
   const items = rail(html);
   ok("1.3 the five views are links and Settings is a button",
     items.slice(0, 5).every((i) => i.tag === "a") && items[5].tag === "button", items.map((i) => i.tag));
