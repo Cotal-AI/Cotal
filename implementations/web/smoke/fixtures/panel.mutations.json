@@ -608,24 +608,24 @@
     {
       "name": "A6 Message opens a DM with the name, not the id",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "href={formatRoute({ view: \"dm\", peer: row.id })}",
-      "replace": "href={formatRoute({ view: \"dm\", peer: row.name })}",
+      "find": "href={formatRoute(messageRoute(row.id, self))}",
+      "replace": "href={formatRoute(messageRoute(row.name, self))}",
       "expectRed": "3.4 Message opens the DM view with this agent",
       "cell": "3.4 Message opens the DM view with this agent"
     },
     {
       "name": "A7 attach names the id",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "command={`cotal attach --name ${row.name}`}",
-      "replace": "command={`cotal attach --name ${row.id}`}",
+      "find": "command={`cotal attach --name ${shellArg(row.name)}`}",
+      "replace": "command={`cotal attach --name ${shellArg(row.id)}`}",
       "expectRed": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
       "cell": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon"
     },
     {
       "name": "A8 stop names the id",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "command={`cotal stop --name ${row.name}`}",
-      "replace": "command={`cotal stop --name ${row.id}`}",
+      "find": "command={`cotal stop --name ${shellArg(row.name)}`}",
+      "replace": "command={`cotal stop --name ${shellArg(row.id)}`}",
       "expectRed": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
       "cell": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon"
     },

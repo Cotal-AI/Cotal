@@ -1,7 +1,8 @@
 import { ArrowUp02Icon, AtIcon, SquareLock02Icon } from "@hugeicons/core-free-icons";
 import { createContext, useContext, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
-import { composeKey, composerNote, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
+import { composeKey, composerNote, messageRoute, POST_OFF_CREDS, sendCommand, type ComposeTarget } from "../lib/compose.js";
+import { formatRoute } from "../lib/route.js";
 import type { Controller } from "../state/controller.js";
 import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
@@ -17,7 +18,9 @@ export const Compose = createContext<Pick<Controller, "send" | "draft"> | null>(
  *  the suites typecheck the components that render on the server with no DOM lib. */
 type Field = { focus(): void; value: string };
 
-/** The composer the next Message button asked to focus, by `composeKey`, until one takes it. */
+/** The composer the next Message button asked to focus, by `composeKey`. The first composer for that
+ *  target to mount takes it and clears it, a composer that cannot post included, so a request the
+ *  view could not honour does not move the focus on a later visit. */
 let wanted: string | null = null;
 const askers = new Set<() => void>();
 
@@ -56,10 +59,9 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
   const field = () => box.current as unknown as Field | null;
   useLayoutEffect(() => {
     const take = () => {
-      const el = field();
-      if (wanted !== key || !el) return;
+      if (wanted !== key) return;
       wanted = null;
-      el.focus();
+      field()?.focus();
     };
     take();
     askers.add(take);
@@ -76,7 +78,7 @@ export function Composer({ store, target, where, to }: { store: Store<DashboardS
             <span>{post.reason === POST_OFF_CREDS ? withCode("This dashboard was started with `--creds`, which can only read.") : post.reason}</span>
           </div>
           <div className="ui-crow">
-            <CopyCommand command={sendCommand(target, where)} />
+            <CopyCommand command={sendCommand(target)} />
             <span className="ui-sp" />
             <button type="button" className="ui-send" disabled title={post.reason} aria-label="Send">
               <Icon icon={ArrowUp02Icon} size={16} className="ui-ic ui-ic16" />
@@ -169,6 +171,24 @@ export function OutgoingRows({ store, target, shown }: { store: Store<DashboardS
           </div>
         );
       })}
+    </>
+  );
+}
+
+/** In the dock of a conversation between two agents, which the operator is not in (mock B's dock
+ *  size): one line saying so, and Message, which opens the operator's own conversation with `peer`
+ *  with its composer focused. The same two elements as the composer, so the dock keeps its height. */
+export function BetweenAgents({ peer, name, selfId }: { peer: string; name: string; selfId: string | null }) {
+  return (
+    <>
+      <div className="ui-card ui-composer">
+        <div className="ui-reason"><span>This conversation is between two agents.</span></div>
+        <div className="ui-crow">
+          <span className="ui-sp" />
+          <a className="ui-btn ui-btn-sm" href={formatRoute(messageRoute(peer, selfId))} onClick={() => focusComposer({ kind: "dm", to: peer })}>{`Message ${name}`}</a>
+        </div>
+      </div>
+      <div className="ui-cnote" />
     </>
   );
 }

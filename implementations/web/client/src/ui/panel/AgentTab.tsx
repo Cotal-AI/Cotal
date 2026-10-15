@@ -2,6 +2,7 @@ import { ComputerTerminal01Icon, Message01Icon, StopCircleIcon } from "@hugeicon
 import { useEffect, useMemo, useReducer } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { ageText } from "../../lib/age.js";
+import { messageRoute, shellArg } from "../../lib/compose.js";
 import { agentChannels } from "../../lib/members.js";
 import { partsToText } from "../../lib/parts.js";
 import { rosterRows } from "../../lib/roster.js";
@@ -31,8 +32,9 @@ const BEAT_MS = 1000;
  *  - The status line: the status word (through `statusLabel`, so unknown progress says so), the
  *    activity or "No current activity", and "Reported <hh:mm>" from when the status began. With no
  *    `statusSince` no time is given.
- *  - Message opens the DM view with its composer focused. The attach and stop commands are for the
- *    reader to copy.
+ *  - Message opens the operator's conversation with the agent, with its composer focused. The
+ *    attach and stop commands are for the reader to copy, with the name quoted for a shell when it
+ *    needs it.
  *  - Model reads "not reported" when the card has none. Attention shows only Do not disturb or
  *    Focus. The heartbeat is labelled as a heartbeat and reads its age from `now`, redrawn every second.
  *  - Channels are the agent's, decided as the Members tab decides them, with its quiet or muted
@@ -51,6 +53,7 @@ export function AgentTab({ store, id, channel, clock }: {
   const membership = useStore(store, (s) => s.membership);
   const activity = useStore(store, (s) => s.activity);
   const open = useStore(store, (s) => s.open);
+  const self = useStore(store, (s) => s.operatorId);
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   useEffect(() => {
     const t = setInterval(redraw, BEAT_MS);
@@ -82,12 +85,12 @@ export function AgentTab({ store, id, channel, clock }: {
           {reported && <small>{reported}</small>}
         </div>
         <div className="ui-actions">
-          <a className="ui-btn ui-btn-primary" href={formatRoute({ view: "dm", peer: row.id })} onClick={() => focusComposer({ kind: "dm", to: row.id })}>
+          <a className="ui-btn ui-btn-primary" href={formatRoute(messageRoute(row.id, self))} onClick={() => focusComposer({ kind: "dm", to: row.id })}>
             <Icon icon={Message01Icon} size={16} className="ui-ic ui-ic16" />
             Message
           </a>
-          <CopyCommand icon={ComputerTerminal01Icon} command={`cotal attach --name ${row.name}`} />
-          <CopyCommand icon={StopCircleIcon} command={`cotal stop --name ${row.name}`} />
+          <CopyCommand icon={ComputerTerminal01Icon} command={`cotal attach --name ${shellArg(row.name)}`} />
+          <CopyCommand icon={StopCircleIcon} command={`cotal stop --name ${shellArg(row.name)}`} />
         </div>
       </div>
       <dl className="ui-kv">

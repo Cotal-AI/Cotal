@@ -38,10 +38,23 @@ export function composerNote(post: PostCapability): string {
   return post.reason === POST_OFF_CREDS ? "Restart `cotal web` without `--creds` to post here." : "";
 }
 
-/** The command that posts the same thing from a terminal, for a composer that cannot. `name` is the
- *  agent's name, which `cotal send dm` takes. */
-export function sendCommand(t: ComposeTarget, name: string): string {
-  return t.kind === "msg" ? `cotal send msg ${t.channel} "<text>"` : `cotal send dm ${name} "<text>"`;
+/** `value` as one shell word for a command the reader pastes into a terminal: as it is when every
+ *  character is safe unquoted, else in single quotes, with each single quote closed, escaped and
+ *  reopened. A name or id is the sender's own text, so it is never pasted bare. */
+export function shellArg(value: string): string {
+  return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/** The command that posts the same thing from a terminal, for a composer that cannot. A DM names
+ *  the agent by id, which `cotal send dm` resolves exactly; a display name can be a shortened id. */
+export function sendCommand(t: ComposeTarget): string {
+  return t.kind === "msg" ? `cotal send msg ${shellArg(t.channel)} "<text>"` : `cotal send dm ${shellArg(t.to)} "<text>"`;
+}
+
+/** The route a Message button opens: the operator's conversation with `id` once the operator's id is
+ *  known, else the agent alone, which opens the same conversation or none. */
+export function messageRoute(id: string, selfId: string | null | undefined): Route {
+  return selfId ? { view: "dm", peer: id, with: selfId } : { view: "dm", peer: id };
 }
 
 /** The second line of the sidebar footer, with its reason for the tooltip. Nothing until `/api/meta`
@@ -77,11 +90,12 @@ export async function sendRefusal(res: Response): Promise<SendRefused> {
 
 /** What the composer says when a post to `where` (`#review`, or an agent's name) did not go out. Only
  *  a 502 is the broker's refusal; every other answer, and a request that never reached the server,
- *  is said as it came. The server's text ends the sentence with one period. */
+ *  is said as it came. The server's text ends the sentence, with a period added only when it does not
+ *  already end in one, or in a question or exclamation mark. */
 export function refusalText(where: string, err: unknown): string {
   const status = err instanceof SendRefused ? err.status : undefined;
   const said = (err instanceof SendRefused ? err.error : err instanceof Error ? err.message : String(err)).trim();
   const why = said || (status === undefined ? "the request failed" : `HTTP ${status}`);
-  const sentence = why.endsWith(".") ? why : `${why}.`;
+  const sentence = /[.?!]$/.test(why) ? why : `${why}.`;
   return `Couldn't post to ${where}. ${status === 502 ? `The broker refused it: ${sentence}` : sentence} Your message is still here.`;
 }

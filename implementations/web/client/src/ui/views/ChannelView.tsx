@@ -160,6 +160,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const roster = useStore(store, (s) => s.roster);
   const membership = useStore(store, (s) => s.membership);
   const post = useStore(store, (s) => s.post);
+  const self = useStore(store, (s) => s.operatorId);
   const messages = open?.channel === channel ? open.messages : NONE;
   const target = useMemo((): ComposeTarget => ({ kind: "msg", channel }), [channel]);
   const shown = useMemo(() => new Set(messages.map((m) => m.msg.id)), [messages]);
@@ -227,7 +228,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
       {(needing || post) && (
         <div className="ui-dock">
           <div className="ui-dock-in">
-            {needing && <NeedsCard row={needing} onViewAgent={onViewAgent} onDismiss={() => dismiss(needsKey(needing))} />}
+            {needing && <NeedsCard row={needing} onViewAgent={onViewAgent} onDismiss={() => dismiss(needsKey(needing))} post={post} selfId={self} />}
             <Composer store={store} target={target} where={`#${channel}`} to={`to #${channel} · ${count} member${count === 1 ? "" : "s"}`} />
           </div>
         </div>

@@ -1,10 +1,13 @@
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Copy01Icon } from "@hugeicons/core-free-icons";
 import { useLayoutEffect, useState } from "react";
 import { Icon } from "../icons/Icon.tsx";
+import type { PostCapability } from "../api/types.js";
+import { messageRoute, sendCommand } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
 import { focusComposer } from "./Composer.tsx";
+import { copy } from "./CopyCommand.tsx";
 import { clock } from "./MessageRow.tsx";
 
 /** Where this browser keeps its dismissals: a JSON list of `needsKey` values. */
@@ -70,9 +73,17 @@ export function needsDetail(row: RosterRow): string {
 /** The card for an agent whose status is waiting (mock section D, the dock). "Waiting" is all
  *  presence says, so the card names no one the agent waits for and no duration; "Reported" dates the
  *  report. View agent opens the Agent tab when the shell has one (`onViewAgent`) and is disabled
- *  until then. Message opens the DM view with its composer focused, and dismiss hides the card until
- *  the status changes. */
-export function NeedsCard({ row, onViewAgent, onDismiss }: { row: RosterRow; onViewAgent?: (id: string) => void; onDismiss: () => void }) {
+ *  until then. Message opens the operator's conversation with the agent (`messageRoute`, by the
+ *  operator's id `selfId` once known) with its composer focused. When posting is off (`post`) it is
+ *  Copy command instead, which copies `cotal send dm <id> "<text>"`. Dismiss hides the card until the
+ *  status changes. */
+export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = null }: {
+  row: RosterRow;
+  onViewAgent?: (id: string) => void;
+  onDismiss: () => void;
+  post?: PostCapability | null;
+  selfId?: string | null;
+}) {
   return (
     <div className="ui-card ui-needs">
       <Avatar vendor={row.harness} status={row.status} size={34} />
@@ -82,7 +93,14 @@ export function NeedsCard({ row, onViewAgent, onDismiss }: { row: RosterRow; onV
       </div>
       <div className="ui-btns">
         <button type="button" className="ui-btn" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</button>
-        <a className="ui-btn ui-btn-primary" href={formatRoute({ view: "dm", peer: row.id })} onClick={() => focusComposer({ kind: "dm", to: row.id })}>{`Message ${row.name}`}</a>
+        {post?.mode === "off" ? (
+          <button type="button" className="ui-btn" onClick={() => copy(sendCommand({ kind: "dm", to: row.id }))}>
+            <Icon icon={Copy01Icon} size={16} className="ui-ic ui-ic16" />
+            Copy command
+          </button>
+        ) : (
+          <a className="ui-btn ui-btn-primary" href={formatRoute(messageRoute(row.id, selfId))} onClick={() => focusComposer({ kind: "dm", to: row.id })}>{`Message ${row.name}`}</a>
+        )}
       </div>
       <button type="button" className="ui-x" title={DISMISS} aria-label={DISMISS} onClick={onDismiss}>
         <Icon icon={Cancel01Icon} size={16} className="ui-ic ui-ic16" />

@@ -232,7 +232,7 @@
     {
       "name": "N3 Message opens the Agents view instead of the DM view",
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
-      "find": "href={formatRoute({ view: \"dm\", peer: row.id })}",
+      "find": "href={formatRoute(messageRoute(row.id, selfId))}",
       "replace": "href={formatRoute({ view: \"agents\", group: \"status\" })}",
       "expectRed": "4.2 its buttons are View agent and Message reviewer_2, which opens the DM view",
       "cell": "4.2 its buttons are View agent and Message reviewer_2, which opens the DM view"
@@ -456,7 +456,7 @@
     {
       "name": "D4 a two-party route opens the peer's newest conversation instead",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "convs.find((c) => c.with === other)",
+      "find": "convs.find((c) => c.with === withWhom)",
       "replace": "convs[0]",
       "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
       "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
@@ -470,12 +470,12 @@
       "cell": "7.4 a verified conversation carries no unverified mark"
     },
     {
-      "name": "D5 a one-peer route opens the oldest conversation",
+      "name": "D5 a one-peer route opens the peer's newest conversation, though the operator is not in it",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "other === undefined ? convs[0]",
-      "replace": "other === undefined ? convs[convs.length - 1]",
-      "expectRed": "7.5 a route naming only the peer opens its newest conversation",
-      "cell": "7.5 a route naming only the peer opens its newest conversation"
+      "find": "withWhom === undefined ? undefined :",
+      "replace": "withWhom === undefined ? convs[0] :",
+      "expectRed": "7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet",
+      "cell": "7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet"
     },
     {
       "name": "D6 a conversation holding a history row reads as verified",

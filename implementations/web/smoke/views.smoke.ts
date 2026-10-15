@@ -365,7 +365,11 @@ const dmRows: StoredMessage[] = [
       && all(bar, ".ui-topic").map(textOf).join(" | ") === "reviewer · OpenCode | with david", textOf(bar));
   same("7.3 the list holds that conversation only, oldest first", all(c, ".ui-scroll .ui-msg .ui-tx").map(textOf), ["Can you run the gate?", "Running it now."]);
   ok("7.4 a verified conversation carries no unverified mark", bar.querySelector(".ui-unverified") === null);
-  same("7.5 a route naming only the peer opens its newest conversation", all(view({ view: "dm", peer: "local.rv2" }), ".ui-scroll .ui-msg .ui-tx").map(textOf), ["Later one."]);
+  // A route that names only the peer is a Message button's: it opens the operator's conversation
+  // with the peer, and none while there is none, never the peer's newest talk with another agent.
+  same("7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet",
+    [all(view({ view: "dm", peer: "local.rv2" }), ".ui-scroll .ui-msg .ui-tx").map(textOf), textOf(view({ view: "dm", peer: "local.rv2" }).querySelector(".ui-empty"))],
+    [[], "No direct messages with reviewer_2 yet."]);
   const hist = view({ view: "dm", peer: "local.dav", with: "local.rev" }).querySelector("header.ui-bar") ?? none();
   ok("7.6 a conversation with a history row says unverified in its header, with the message rows' tooltip",
     (hist.querySelector(".ui-unverified") as HTMLElement | null)?.title === UNVERIFIED, hist.outerHTML.slice(0, 300));

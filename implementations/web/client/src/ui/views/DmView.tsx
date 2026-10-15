@@ -7,19 +7,22 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { Avatar } from "../Avatar.tsx";
-import { Composer, OutgoingRows } from "../Composer.tsx";
+import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
 import { harnessName, UNVERIFIED } from "../MessageRow.tsx";
 import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
 
 /** One direct message conversation, from `dmPeers`. The header is the peer the route names: its
  *  character, name, role and harness from the roster by id, and who it talks with. A route that names
- *  only the peer opens its newest conversation. A conversation holding a row read from history says
+ *  only the peer is a Message button's, so it opens the operator's conversation with the peer, and
+ *  none when there is none yet: never another agent's conversation under a composer that posts to the
+ *  peer. A conversation holding a row read from history says
  *  unverified, with the message rows' tooltip, because it was grouped by what the payload says about
  *  its own sender. A peer with no direct messages gets its header and a line saying so.
  *
  *  A view that posts to an agent (`composeTarget`) has the composer in its dock, and the operator's
- *  posts that no conversation holds yet follow the messages. The operator's own id reads
- *  "operator (you)" until the roster names it. */
+ *  posts that no conversation holds yet follow the messages. A conversation between two agents says so
+ *  in the dock's place, with Message for the operator's own conversation with the peer. The
+ *  operator's own id reads "operator (you)" until the roster names it. */
 export function DmView({ store, peer, with: other }: { store: Store<DashboardState>; peer: string; with?: string }) {
   const dms = useStore(store, (s) => s.dms);
   const roster = useStore(store, (s) => s.roster);
@@ -29,7 +32,8 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peers = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const convs = useMemo(() => dmPeers(dms, roster).find((p) => p.id === peer)?.conversations ?? [], [dms, roster, peer]);
-  const conv = other === undefined ? convs[0] : convs.find((c) => c.with === other);
+  const withWhom = other ?? self ?? undefined;
+  const conv = withWhom === undefined ? undefined : convs.find((c) => c.with === withWhom);
   const me = peers.get(peer);
   const name = displayNameOf(peer, idx, self);
   const sub = [me?.role, me?.harness && harnessName(me.harness)].filter(Boolean).join(" · ");
@@ -58,10 +62,10 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
           <div className="ui-empty"><span>{`No direct messages with ${name} yet.`}</span></div>
         )}
       </div>
-      {target && post && (
+      {post && (target || other !== undefined) && (
         <div className="ui-dock">
           <div className="ui-dock-in">
-            <Composer store={store} target={target} where={toName} to={`to ${toName}`} />
+            {target ? <Composer store={store} target={target} where={toName} to={`to ${toName}`} /> : <BetweenAgents peer={peer} name={name} selfId={self} />}
           </div>
         </div>
       )}

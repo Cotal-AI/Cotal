@@ -8,17 +8,21 @@
  *  answers are the ones `POST /api/send` gives (smoke:web-send pins the route itself). */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { createElement, useState } from "react";
 import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry, SendAnswer } from "../client/src/api/types.js";
 import { httpApi } from "../client/src/api/http.js";
-import { composeKey, composerNote, composeTarget, footerLine, POST_OFF_CREDS as CLIENT_POST_OFF_CREDS, refusalText, SendRefused } from "../client/src/lib/compose.js";
+import { composeKey, composerNote, composeTarget, footerLine, messageRoute, POST_OFF_CREDS as CLIENT_POST_OFF_CREDS, refusalText, SendRefused, sendCommand, shellArg } from "../client/src/lib/compose.js";
 import { displayNameOf, nameIndex } from "../client/src/lib/names.js";
-import { parseRoute, type Route } from "../client/src/lib/route.js";
+import { formatRoute, parseRoute, type Route } from "../client/src/lib/route.js";
 import { Shell } from "../client/src/Shell.tsx";
 import type { Api, Controller } from "../client/src/state/controller.js";
 import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type Draft } from "../client/src/state/types.js";
+import { Compose, Composer, focusComposer } from "../client/src/ui/Composer.tsx";
+import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
 import { gate, harness, page } from "./controller-harness.js";
 import { mount } from "./mount.js";
 import { renderShell } from "./render-shell.js";
@@ -127,6 +131,24 @@ const draftOf = (text: string, extra: Partial<Draft> = {}): Draft => ({ text, ou
   same("1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason",
     [footerLine(null, false), footerLine(PARTICIPANT, false)?.text, footerLine(PARTICIPANT, true)?.text, footerLine(CREDS_OFF, false)],
     [undefined, "Not on the roster", "On the roster", { text: "Read only", title: POST_OFF_CREDS }]);
+  // A hostile id or channel name, read back by a real shell: it must stay one word and mean itself.
+  // A shell that cannot parse the line is an answer too, so it is reported rather than thrown. Run from
+  // the temp directory, so a mutant that leaves a word bare runs `true` there and nothing else.
+  const words = (line: string) => {
+    try {
+      return execFileSync("/bin/sh", ["-c", `for w in ${line}; do printf '%s\\n' "$w"; done`], { encoding: "utf8", cwd: tmpdir(), stdio: ["ignore", "pipe", "ignore"] }).split("\n").slice(0, -1);
+    } catch (e) {
+      return [`the shell refused it: ${(e as Error).message.split("\n")[0]}`];
+    }
+  };
+  const hostile = "local.x'; true; echo $(echo hi) `echo hi` \"q\"";
+  same("1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
+    [sendCommand({ kind: "dm", to: "local.rv2" }), sendCommand({ kind: "msg", channel: "review" }), words(shellArg(hostile)), words(sendCommand({ kind: "dm", to: hostile }).slice("cotal send dm ".length, -' "<text>"'.length)),
+      words(sendCommand({ kind: "msg", channel: "rev;iew" }).slice("cotal send msg ".length, -' "<text>"'.length))],
+    ['cotal send dm local.rv2 "<text>"', 'cotal send msg review "<text>"', [hostile], [hostile], ["rev;iew"]]);
+  same("1.17 a server sentence ending in a question or exclamation mark gets no period after it",
+    [refusalText("#review", new SendRefused(400, "is this a channel?")), refusalText("#review", new SendRefused(400, "no!"))],
+    ["Couldn't post to #review. is this a channel? Your message is still here.", "Couldn't post to #review. no! Your message is still here."]);
 }
 
 // ── 2. The controller's send ─────────────────────────────────────────────────────────────────────
@@ -187,6 +209,19 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
   h.ctl.onMessage({ mode: "chat", channel: "review", senderId: OP, msg: msg("m-3", OP, "fast") });
   await h.ctl.send(REVIEW, "fast");
   same("2.13 a post the feed delivered before the answer came leaves no row behind", h.store.get().drafts[composeKey(REVIEW)].outgoing, []);
+}
+{
+  const dm = msg("m-7", OP, "missed by the feed", { to: "local.rv2" });
+  const h = harness({ send: async () => answer("m-7"), meta: async () => ({ space: "main", pid: 1, post: PARTICIPANT }), roster: async () => [], channels: async () => [],
+    activity: async () => page(), dms: async () => [dm], membership: async () => ({ members: [] }) as never });
+  await h.ctl.send(RV2, "missed by the feed");
+  const before = h.store.get().drafts[composeKey(RV2)].outgoing.length;
+  await h.ctl.refresh();
+  same("2.16 an answered post the feed never delivered goes once a refresh reads it back", [before, h.store.get().drafts[composeKey(RV2)].outgoing], [1, []]);
+  const c = harness({ send: async () => answer("m-8"), history: async () => [msg("m-8", OP, "in history", { channel: "review" })] });
+  await c.ctl.send(REVIEW, "in history");
+  await c.ctl.open("review");
+  same("2.17 and so does one a channel load reads back", c.store.get().drafts[composeKey(REVIEW)].outgoing, []);
 }
 {
   const calls: { url: string; init?: RequestInit }[] = [];
@@ -280,10 +315,36 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
   same("3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot",
     [(k.querySelector("textarea") as HTMLTextAreaElement | null)?.placeholder, textOf(k.querySelectorAll(".ui-pick")[1]), (k.querySelector(".ui-mode-dot") as HTMLElement | null)?.getAttribute("style")?.includes("var(--uni)")],
     ["Message reviewer_2", "to reviewer_2", true]);
-  same("3.19 posting off there, the command is cotal send dm with the agent's name", textOf(card(centre({ post: CREDS_OFF }, rv2Route)).querySelector(".ui-cmd code")), 'cotal send dm reviewer_2 "<text>"');
-  ok("3.20 a conversation between two agents has no composer", centre({}, { view: "dm", peer: "local.rev", with: "local.rv2" }).querySelector(".ui-composer") === null);
+  same("3.19 posting off there, the command is cotal send dm with the agent's id, which the CLI resolves exactly", textOf(card(centre({ post: CREDS_OFF }, rv2Route)).querySelector(".ui-cmd code")), 'cotal send dm local.rv2 "<text>"');
+  ok("3.20 a conversation between two agents has no composer", centre({}, { view: "dm", peer: "local.rev", with: "local.rv2" }).querySelector(".ui-composer textarea") === null);
   const header = centre({ operatorId: OP, dms: [{ msg: msg("d1", OP, "hi", { to: "local.rv2" }), senderId: OP }] }, { view: "dm", peer: "local.rv2", with: OP }).querySelector("header") ?? none();
   ok("3.21 the conversation with the operator says operator (you) while the roster does not name it", textOf(header).includes("with operator (you)"), textOf(header));
+  const both: Partial<DashboardState> = {
+    operatorId: OP,
+    roster: [...roster, operator],
+    dms: [
+      { msg: msg("o1", OP, "Can you run it?", { to: "local.rv2", ts: 1 }), senderId: OP },
+      { msg: msg("a1", "local.rv2", "Newer, to david.", { to: "local.dav", ts: 2 }), senderId: "local.rv2" },
+    ],
+  };
+  const one = centre(both, rv2Route);
+  same("3.22 a route naming only the agent opens the operator's conversation with it, not the agent's newest with someone else",
+    [[...one.querySelectorAll("header .ui-topic")].map((x) => textOf(x)).at(-1), [...one.querySelectorAll(".ui-scroll .ui-msg .ui-tx")].map((x) => textOf(x))],
+    ["with operator", ["Can you run it?"]]);
+  const needs = centre({ roster: [...waitingRv2, operator], operatorId: OP });
+  same("3.23 the Needs card's Message carries the operator's id once known, so it opens that conversation",
+    [...needs.querySelectorAll(".ui-needs a")].map((a) => a.getAttribute("href")), [formatRoute(messageRoute("local.rv2", OP))]);
+  const pair = centre({ operatorId: OP }, { view: "dm", peer: "local.rev", with: "local.rv2" });
+  const pairDock = dockOf(pair);
+  const link = pairDock.querySelector("a");
+  same("3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer",
+    [textOf(pairDock.querySelector(".ui-reason")), textOf(link), link?.getAttribute("href"), [...pairDock.children].map((x) => x.className), pairDock.querySelector(".ui-composer")?.children.length],
+    ["This conversation is between two agents.", "Message reviewer", formatRoute(messageRoute("local.rev", OP)), ["ui-card ui-composer", "ui-cnote"], 2]);
+  const evil = "x'; true; echo $(echo hi)";
+  const tabStore = createStore<DashboardState>({ ...initialState, ...seed({ roster: [...roster, entry("local.evil", evil, "idle")] }) });
+  const tab = parse(renderToString(createElement(AgentTab, { store: tabStore, id: "local.evil", channel: null, clock: () => 2 })));
+  same("3.25 the Agent tab quotes a hostile agent name in its attach and stop commands",
+    [...tab.querySelectorAll(".ui-cmd code")].map((x) => x.textContent), [`cotal attach --name ${shellArg(evil)}`, `cotal stop --name ${shellArg(evil)}`]);
 }
 
 // ── 4. Mounted: typing, sending, and the Message buttons ─────────────────────────────────────────
@@ -332,7 +393,7 @@ const key = (el: Element, k: string, shiftKey = false) =>
 {
   localStorage.clear();
   const h = harness(quiet);
-  h.store.set(seed({ roster: waitingRv2 }));
+  h.store.set(seed({ roster: [...waitingRv2, operator], operatorId: OP }));
   const { m, go } = await rig(h.store, h.ctl, channelRoute);
   const link = [...m.container.querySelectorAll(".ui-needs a")].find((a) => textOf(a) === "Message reviewer_2") as HTMLAnchorElement | undefined;
   await m.run(() => link?.click());
@@ -346,7 +407,7 @@ const key = (el: Element, k: string, shiftKey = false) =>
 {
   localStorage.clear();
   const h = harness(quiet);
-  h.store.set(seed({ roster: waitingRv2 }));
+  h.store.set(seed({ roster: [...waitingRv2, operator], operatorId: OP }));
   const { m, go } = await rig(h.store, h.ctl, channelRoute);
   const view = [...m.container.querySelectorAll(".ui-needs button")].find((b) => textOf(b) === "View agent") as HTMLButtonElement | undefined;
   await m.run(() => view?.click());
@@ -354,9 +415,35 @@ const key = (el: Element, k: string, shiftKey = false) =>
   await m.run(() => link?.click());
   await go(parseRoute(link?.getAttribute("href") ?? "", "/"));
   const focused = document.activeElement as HTMLTextAreaElement | null;
-  ok("4.6 the Agent tab's Message opens the DM view with its composer focused",
-    link !== undefined && m.container.querySelector('section.ui-view[data-view="dm"]') !== null && focused?.tagName === "TEXTAREA" && focused.placeholder === "Message reviewer_2",
+  ok("4.6 the Agent tab's Message opens the operator's conversation with the agent, with its composer focused",
+    link?.getAttribute("href") === formatRoute(messageRoute("local.rv2", OP)) && m.container.querySelector('section.ui-view[data-view="dm"]') !== null && focused?.tagName === "TEXTAREA" && focused.placeholder === "Message reviewer_2",
     { link: link?.outerHTML, focused: focused?.outerHTML });
+  await m.unmount();
+}
+{
+  // A request the off composer cannot honour is still spent, so a later composer does not jump to it.
+  const offStore = createStore<DashboardState>({ ...initialState, ...seed({ post: CREDS_OFF }) });
+  const liveStore = createStore<DashboardState>({ ...initialState, ...seed() });
+  const h = harness({});
+  const off = await mount(createElement(Composer, { store: offStore, target: RV2, where: "reviewer_2", to: "to reviewer_2" }));
+  await off.run(() => focusComposer(RV2));
+  await off.unmount();
+  const live = await mount(createElement(Compose.Provider, { value: h.ctl }, createElement(Composer, { store: liveStore, target: RV2, where: "reviewer_2", to: "to reviewer_2" })));
+  ok("4.7 a focus request is spent by the composer that takes it, even one that cannot post, so a later visit does not take the focus",
+    (document.activeElement as HTMLElement | null)?.tagName !== "TEXTAREA", (document.activeElement as HTMLElement | null)?.outerHTML);
+  await live.unmount();
+}
+{
+  const copied: string[] = [];
+  Object.defineProperty(globalThis.navigator, "clipboard", { value: { writeText: async (t: string) => void copied.push(t) }, configurable: true });
+  const h = harness(quiet);
+  h.store.set(seed({ roster: waitingRv2, post: CREDS_OFF }));
+  const { m } = await rig(h.store, h.ctl, channelRoute);
+  const buttons = [...m.container.querySelectorAll(".ui-needs .ui-btns > *")].map((b) => [b.tagName, textOf(b)]);
+  const copy = [...m.container.querySelectorAll(".ui-needs button")].find((b) => textOf(b) === "Copy command") as HTMLButtonElement | undefined;
+  await m.run(() => copy?.click());
+  same("4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
+    [buttons, copied], [[["BUTTON", "View agent"], ["BUTTON", "Copy command"]], ['cotal send dm local.rv2 "<text>"']]);
   await m.unmount();
 }
 
@@ -375,6 +462,11 @@ const key = (el: Element, k: string, shiftKey = false) =>
   ok("5.4 a conversation with the operator reads operator (you) in the sidebar while the roster does not name it",
     [...rows.querySelectorAll(".ui-side-scroll .ui-row-lbl")].some((x) => textOf(x) === "operator (you), reviewer_2"),
     [...rows.querySelectorAll(".ui-side-scroll .ui-row-lbl")].map((x) => textOf(x)));
+  const who = parse(renderShell(seed({ post: CREDS_OFF }), channelRoute, true)).querySelector(".ui-side-foot .ui-who") ?? none();
+  const lineEl = who.querySelector("span[aria-describedby]");
+  const why = lineEl ? who.querySelector(`#${lineEl.getAttribute("aria-describedby")}`) : null;
+  same("5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone",
+    [textOf(lineEl), lineEl?.getAttribute("tabindex"), textOf(why)], ["Read only", "0", POST_OFF_CREDS]);
 }
 
 await closeDom();

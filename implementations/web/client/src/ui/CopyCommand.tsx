@@ -8,7 +8,7 @@ type Clipboard = { writeText(text: string): Promise<void> };
 
 /** Put `text` on the clipboard. A page with no clipboard (one served over plain http from another
  *  host) cannot copy, and says so on the console rather than pretending it did. */
-function copy(text: string): void {
+export function copy(text: string): void {
   const clipboard = (globalThis as { navigator?: { clipboard?: Clipboard } }).navigator?.clipboard;
   if (!clipboard) {
     console.error("copying needs the clipboard, which this page cannot reach");

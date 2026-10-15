@@ -109,6 +109,19 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     store.set((s) => ({ drafts: { ...s.drafts, [key]: edit(s.drafts[key] ?? BLANK) } }));
   /** Numbers each post the composer sends, for its row's key. */
   let posted = 0;
+  /** Drop every answered post whose message the page now holds, in Activity, the DMs or the open
+   *  channel: its own row draws it from then on. Run after the feed, after a bootstrap and after a
+   *  channel load, because a post the feed missed while it was down comes back through a read. */
+  const pruneDelivered = () => {
+    const s = store.get();
+    if (!Object.values(s.drafts).some((d) => d.outgoing.some((o) => o.id !== undefined))) return;
+    const held = new Set<string>();
+    for (const list of [s.activity, s.dms, s.open?.messages ?? []] as { msg?: { id?: string } }[][])
+      for (const e of list) if (e?.msg?.id) held.add(e.msg.id);
+    const delivered = (o: Outgoing) => o.id !== undefined && held.has(o.id);
+    if (!Object.values(s.drafts).some((d) => d.outgoing.some(delivered))) return;
+    store.set((st) => ({ drafts: Object.fromEntries(Object.entries(st.drafts).map(([k, d]) => [k, { ...d, outgoing: d.outgoing.filter((o) => !delivered(o)) }])) }));
+  };
 
   /** Close the open channel. A load still in flight no longer owns the view, so it is superseded. */
   const close = () => {
@@ -167,6 +180,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         const ids = new Set(merged.map((m) => m.msg.id));
         for (const m of live) if (m && !ids.has(m.msg.id)) merged.push(m);
         store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP) } });
+        pruneDelivered();
         // SAID, NOT JUST KEPT. Retention without the mark shows old messages as though they were current.
         const history = `#${key} history`;
         if (!refused) lastGood.set(history, now());
@@ -268,6 +282,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       const ids = new Set(merged.map((e) => (e?.msg as Wire | undefined)?.id));
       for (const e of store.get().activity) if (e && e.msg && !ids.has(e.msg.id)) merged.push(e);
       store.set({ activity: merged.slice(-ACTIVITY_CAP) });
+      pruneDelivered();
       refreshing = null;
       release();
     }
@@ -286,9 +301,6 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // and released by `backfill()` in seq order; everything else passes through, deduped by id.
     const fed = feedOrder.live(e);
     noteOrder(fed.notes);
-    // A post of the operator's that the feed delivers is shown by its own row from now on.
-    if (Object.values(store.get().drafts).some((d) => d.outgoing.some((o) => o.id === msg.id)))
-      store.set((s) => ({ drafts: Object.fromEntries(Object.entries(s.drafts).map(([k, d]) => [k, { ...d, outgoing: d.outgoing.filter((o) => o.id !== msg.id) }])) }));
     store.set((s) => {
       const activity = s.activity.slice();
       for (const x of fed.emit as Entry[]) {
@@ -300,6 +312,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       const dms = e.mode === "unicast" && !s.dms.some((d) => d.msg.id === msg.id) ? [...s.dms, { msg: e.msg, senderId: e.senderId }] : s.dms;
       return { activity, dms };
     });
+    pruneDelivered();
     const channel = msg.channel;
     if (!channel) return;
     // A live message can beat the next channel read. Keep its count; its policy stays unknown until
@@ -383,16 +396,15 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         putDraft(key, (d) => ({ text: d.text ? `${text}\n${d.text}` : text, refused: refusalText(where, err), outgoing: d.outgoing.filter((o) => o !== mine) }));
         throw err;
       }
-      // The feed may have delivered the post before the answer came, and then its row shows it.
-      const s = store.get();
-      const seen = [s.activity, s.dms, s.open?.messages ?? []].some((list: { msg: { id: string } }[]) => list.some((e) => e.msg?.id === answer.id));
       store.set((st) => ({
         operatorId: st.operatorId ?? answer.operatorId,
         drafts: {
           ...st.drafts,
-          [key]: { ...(st.drafts[key] ?? BLANK), outgoing: (st.drafts[key] ?? BLANK).outgoing.flatMap((o) => (o !== mine ? [o] : seen ? [] : [{ ...o, id: answer.id }])) },
+          [key]: { ...(st.drafts[key] ?? BLANK), outgoing: (st.drafts[key] ?? BLANK).outgoing.map((o) => (o === mine ? { ...o, id: answer.id } : o)) },
         },
       }));
+      // The feed may have delivered the post before the answer came, and then its row shows it.
+      pruneDelivered();
     },
     draft(target, text) {
       putDraft(composeKey(target), (d) => ({ text, outgoing: d.outgoing }));

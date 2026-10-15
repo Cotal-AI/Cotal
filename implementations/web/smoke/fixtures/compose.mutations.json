@@ -104,7 +104,7 @@
     {
       "name": "K13 a server sentence that ends in a period gets a second one",
       "file": "implementations/web/client/src/lib/compose.ts",
-      "find": "const sentence = why.endsWith(\".\") ? why : `${why}.`;",
+      "find": "const sentence = /[.?!]$/.test(why) ? why : `${why}.`;",
       "replace": "const sentence = `${why}.`;",
       "expectRed": "1.13 a 403 is said as it came, and the server's own period is not doubled",
       "cell": "1.13 a 403 is said as it came, and the server's own period is not doubled"
@@ -160,8 +160,8 @@
     {
       "name": "K20 a delivered post keeps its own row, so it shows twice",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "outgoing: d.outgoing.filter((o) => o.id !== msg.id) }",
-      "replace": "outgoing: d.outgoing }",
+      "find": "      return { activity, dms };\n    });\n    pruneDelivered();\n",
+      "replace": "      return { activity, dms };\n    });\n",
       "expectRed": "2.5 the row goes once the feed delivers the message itself",
       "cell": "2.5 the row goes once the feed delivers the message itself"
     },
@@ -238,10 +238,10 @@
       "cell": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept"
     },
     {
-      "name": "K30 the answer to a post the feed already delivered adds its row back",
+      "name": "K30 the answer to a post the feed already delivered keeps its row",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": ": seen ? [] : [{ ...o, id: answer.id }]",
-      "replace": ": false ? [] : [{ ...o, id: answer.id }]",
+      "find": "      pruneDelivered();\n    },\n    draft(target, text) {",
+      "replace": "    },\n    draft(target, text) {",
       "expectRed": "2.13 a post the feed delivered before the answer came leaves no row behind",
       "cell": "2.13 a post the feed delivered before the answer came leaves no row behind"
     },
@@ -336,7 +336,7 @@
     {
       "name": "K42 a composer that cannot post offers no command",
       "file": "implementations/web/client/src/ui/Composer.tsx",
-      "find": "<CopyCommand command={sendCommand(target, where)} />",
+      "find": "<CopyCommand command={sendCommand(target)} />",
       "replace": "",
       "expectRed": "3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason",
       "cell": "3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason"
@@ -448,7 +448,7 @@
     {
       "name": "K56 a DM view has no composer",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "{target && post && (",
+      "find": "{post && (target || other !== undefined) && (",
       "replace": "{false && (",
       "expectRed": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot",
       "cell": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot"
@@ -462,12 +462,12 @@
       "cell": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot"
     },
     {
-      "name": "K58 the DM command names the agent by id, which cotal send dm does not take",
+      "name": "K58 the DM command pastes the agent id bare, so a hostile id runs as shell",
       "file": "implementations/web/client/src/lib/compose.ts",
-      "find": "`cotal send dm ${name} \"<text>\"`",
+      "find": "`cotal send dm ${shellArg(t.to)} \"<text>\"`",
       "replace": "`cotal send dm ${t.to} \"<text>\"`",
-      "expectRed": "3.19 posting off there, the command is cotal send dm with the agent's name",
-      "cell": "3.19 posting off there, the command is cotal send dm with the agent's name"
+      "expectRed": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
+      "cell": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself"
     },
     {
       "name": "K59 the DM view drops the conversation's other side when it picks a target",
@@ -536,7 +536,7 @@
     {
       "name": "K67 the composer takes the request and never focuses",
       "file": "implementations/web/client/src/ui/Composer.tsx",
-      "find": "      wanted = null;\n      el.focus();\n",
+      "find": "      wanted = null;\n      field()?.focus();\n",
       "replace": "      wanted = null;\n",
       "expectRed": "4.5 the Needs card's Message opens the DM view with its composer focused",
       "cell": "4.5 the Needs card's Message opens the DM view with its composer focused"
@@ -552,7 +552,7 @@
     {
       "name": "K69 the footer draws no second line",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "{line && <span title={line.title}>{line.text}</span>}",
+      "find": "          {line && <span title={line.title} tabIndex={0} aria-describedby=\"operator-line-why\">{line.text}</span>}\n",
       "replace": "",
       "expectRed": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover",
       "cell": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover"
@@ -560,8 +560,8 @@
     {
       "name": "K70 the footer line loses its reason on hover",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "<span title={line.title}>{line.text}</span>",
-      "replace": "<span>{line.text}</span>",
+      "find": "<span title={line.title} tabIndex",
+      "replace": "<span tabIndex",
       "expectRed": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover",
       "cell": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover"
     },
@@ -580,6 +580,150 @@
       "replace": "{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}",
       "expectRed": "5.4 a conversation with the operator reads operator (you) in the sidebar while the roster does not name it",
       "cell": "5.4 a conversation with the operator reads operator (you) in the sidebar while the roster does not name it"
+    },
+    {
+      "name": "K73 a bootstrap never prunes, so a post the feed missed keeps its row forever",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      store.set({ activity: merged.slice(-ACTIVITY_CAP) });\n      pruneDelivered();\n",
+      "replace": "      store.set({ activity: merged.slice(-ACTIVITY_CAP) });\n",
+      "expectRed": "2.16 an answered post the feed never delivered goes once a refresh reads it back",
+      "cell": "2.16 an answered post the feed never delivered goes once a refresh reads it back"
+    },
+    {
+      "name": "K74 a channel load never prunes",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP) } });\n        pruneDelivered();\n",
+      "replace": "        store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP) } });\n",
+      "expectRed": "2.17 and so does one a channel load reads back",
+      "cell": "2.17 and so does one a channel load reads back"
+    },
+    {
+      "name": "K75 a conversation between two agents draws nothing in the dock's place",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{post && (target || other !== undefined) && (",
+      "replace": "{post && target && (",
+      "expectRed": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer",
+      "cell": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer"
+    },
+    {
+      "name": "K76 only a period counts as the end of the server's sentence",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "const sentence = /[.?!]$/.test(why) ? why : `${why}.`;",
+      "replace": "const sentence = why.endsWith(\".\") ? why : `${why}.`;",
+      "expectRed": "1.17 a server sentence ending in a question or exclamation mark gets no period after it",
+      "cell": "1.17 a server sentence ending in a question or exclamation mark gets no period after it"
+    },
+    {
+      "name": "K77 every value is pasted bare",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "return /^[A-Za-z0-9_@%+=:,./-]+$/.test(value) ? value :",
+      "replace": "return true ? value :",
+      "expectRed": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
+      "cell": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself"
+    },
+    {
+      "name": "K78 a single quote inside the value is not escaped, so it closes the quoting early",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "`'${value.replace(/'/g, `'\\\\''`)}'`",
+      "replace": "`'${value}'`",
+      "expectRed": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
+      "cell": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself"
+    },
+    {
+      "name": "K79 the channel command pastes the name bare",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "`cotal send msg ${shellArg(t.channel)} \"<text>\"`",
+      "replace": "`cotal send msg ${t.channel} \"<text>\"`",
+      "expectRed": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself",
+      "cell": "1.16 a command names an agent by id and a channel by name as one shell word each, safe ones bare and hostile ones quoted, and the shell reads each back as itself"
+    },
+    {
+      "name": "K80 the attach command pastes a hostile agent name bare",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "command={`cotal attach --name ${shellArg(row.name)}`}",
+      "replace": "command={`cotal attach --name ${row.name}`}",
+      "expectRed": "3.25 the Agent tab quotes a hostile agent name in its attach and stop commands",
+      "cell": "3.25 the Agent tab quotes a hostile agent name in its attach and stop commands"
+    },
+    {
+      "name": "K81 posting off, the Needs card still offers Message",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "{post?.mode === \"off\" ? (",
+      "replace": "{false ? (",
+      "expectRed": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
+      "cell": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id"
+    },
+    {
+      "name": "K82 Copy command copies the agent's name instead of the command",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "copy(sendCommand({ kind: \"dm\", to: row.id }))",
+      "replace": "copy(row.name)",
+      "expectRed": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id",
+      "cell": "4.8 posting off, the Needs card offers Copy command in Message's place, and it copies cotal send dm with the agent's id"
+    },
+    {
+      "name": "K83 the Needs card's Message ignores the operator's id",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "messageRoute(row.id, selfId)",
+      "replace": "messageRoute(row.id, null)",
+      "expectRed": "3.23 the Needs card's Message carries the operator's id once known, so it opens that conversation",
+      "cell": "3.23 the Needs card's Message carries the operator's id once known, so it opens that conversation"
+    },
+    {
+      "name": "K84 the Agent tab's Message ignores the operator's id",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "messageRoute(row.id, self)",
+      "replace": "messageRoute(row.id, null)",
+      "expectRed": "4.6 the Agent tab's Message opens the operator's conversation with the agent, with its composer focused",
+      "cell": "4.6 the Agent tab's Message opens the operator's conversation with the agent, with its composer focused"
+    },
+    {
+      "name": "K85 a route naming only the agent ignores the operator's conversation with it",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "const withWhom = other ?? self ?? undefined;",
+      "replace": "const withWhom = other;",
+      "expectRed": "3.22 a route naming only the agent opens the operator's conversation with it, not the agent's newest with someone else",
+      "cell": "3.22 a route naming only the agent opens the operator's conversation with it, not the agent's newest with someone else"
+    },
+    {
+      "name": "K86 a focus request the composer cannot honour stays pending for a later visit",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "      if (wanted !== key) return;\n      wanted = null;\n      field()?.focus();\n",
+      "replace": "      const el = field();\n      if (wanted !== key || !el) return;\n      wanted = null;\n      el.focus();\n",
+      "expectRed": "4.7 a focus request is spent by the composer that takes it, even one that cannot post, so a later visit does not take the focus",
+      "cell": "4.7 a focus request is spent by the composer that takes it, even one that cannot post, so a later visit does not take the focus"
+    },
+    {
+      "name": "K87 the footer line cannot take the keyboard focus",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "tabIndex={0} aria-describedby",
+      "replace": "aria-describedby",
+      "expectRed": "5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone",
+      "cell": "5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone"
+    },
+    {
+      "name": "K88 the footer line's description is empty",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span id=\"operator-line-why\" className=\"ui-sr\">{line.title}</span>",
+      "replace": "<span id=\"operator-line-why\" className=\"ui-sr\" />",
+      "expectRed": "5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone",
+      "cell": "5.5 the footer line takes the keyboard focus and carries its reason as its accessible description, not on hover alone"
+    },
+    {
+      "name": "K89 the two-agent line's Message ignores the operator's id",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "messageRoute(peer, selfId)",
+      "replace": "messageRoute(peer, null)",
+      "expectRed": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer",
+      "cell": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer"
+    },
+    {
+      "name": "K90 the two-agent dock line drops its note, so the dock is a line shorter",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "      </div>\n      <div className=\"ui-cnote\" />\n    </>",
+      "replace": "      </div>\n    </>",
+      "expectRed": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer",
+      "cell": "3.24 a conversation between two agents says so in the dock's place, same two elements, with Message for the operator's own conversation with the peer"
     }
   ]
 }

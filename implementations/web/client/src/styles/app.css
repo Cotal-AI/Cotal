@@ -180,15 +180,6 @@ pre code { background: none; padding: 0; }
 .ui-reason .ui-ic { color: var(--faint); margin-top: 2px; }
 .ui-pending { opacity: .6; }
 .ui-pending time::after { content: " sending"; }
-/* The composer's box is a real textarea in the mock's input slot; a refusal rings the card in red and
-   says why in the note, which keeps its one-line height so the dock does not move. */
-textarea.ui-input { display: block; width: 100%; height: 100%; margin: 0; border: 0; padding: 2px 0 0; background: none; color: var(--ink); font: inherit; line-height: 1.45; resize: none; outline: none; }
-textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
-.ui-composer:focus-within { box-shadow: 0 0 0 1px var(--focus), var(--card-shadow); }
-.ui-composer-err, .ui-composer-err:focus-within { box-shadow: 0 0 0 1px var(--red), var(--card-shadow); }
-.ui-cnote.ui-cnote-err { color: var(--red-ink); }
-/* The footer's operator block stacks its name over its roster line, which `.ui-who` below would lay out in a row. */
-.ui-side-foot .ui-who { display: block; }
 
 /* copyable CLI command */
 .ui-cmd { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--soft); border: 1px solid var(--card-line); border-radius: 7px; padding: 4px 4px 4px 9px; white-space: nowrap; }
@@ -424,8 +415,8 @@ a.ui-btn { text-decoration: none; }
 /* The attach and stop rows lead with their icon, dimmed as the mock draws it. */
 .ui-cmd > .ui-ic { color: var(--dim); flex: none; }
 /* A message's avatar and name open the sender's Agent tab. */
-.ui-who { display: inline-flex; border-radius: 6px; }
-.ui-who:hover b { text-decoration: underline; }
+.ui-msg .ui-who { display: inline-flex; border-radius: 6px; }
+.ui-msg .ui-who:hover b { text-decoration: underline; }
 /* The delete dialog's field is a real input, focused as the mock's focused field. */
 input.ui-field { width: 100%; outline: none; }
 input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
@@ -472,3 +463,14 @@ input.ui-field:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-m
 .ui-sheet-scrim { position: fixed; inset: 0; background: var(--scrim); z-index: 3; }
 .ui-side.ui-sheet { position: fixed; top: 0; left: 0; bottom: 0; width: 308px; max-width: calc(100vw - 48px); z-index: 4; border-right: 0; box-shadow: var(--sheet-shadow); }
 .ui-pane.ui-pane-full { position: fixed; inset: 0; z-index: 4; border-left: 0; }
+
+/* ---------- composer (phase 3 posting) ----------
+   The box is a real textarea in the mock's input slot. A refusal rings the card in red and says why
+   in the note, which keeps its one-line height so the dock does not move. `.ui-sr` holds text for
+   screen readers only, such as the footer line's reason. */
+textarea.ui-input { display: block; width: 100%; height: 100%; margin: 0; border: 0; padding: 2px 0 0; background: none; color: var(--ink); font: inherit; line-height: 1.45; resize: none; outline: none; }
+textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
+.ui-composer:focus-within { box-shadow: 0 0 0 1px var(--focus), var(--card-shadow); }
+.ui-composer-err, .ui-composer-err:focus-within { box-shadow: 0 0 0 1px var(--red), var(--card-shadow); }
+.ui-cnote.ui-cnote-err { color: var(--red-ink); }
+.ui-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }

@@ -55,8 +55,9 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *
  *  The footer's second line is the operator's place on the roster (`footerLine`): nothing until
  *  `/api/meta` has said what the dashboard can post as, then "Not on the roster" until the operator's
- *  id is on it, "On the roster" once it is, and "Read only" when posting is off, each with its reason
- *  on hover. The operator's own id reads "operator (you)" in a conversation until the roster names it.
+ *  id is on it, "On the roster" once it is, and "Read only" when posting is off. Its reason is the
+ *  tooltip, and the line takes the keyboard focus with the reason as its accessible description, so
+ *  a reader without a pointer reaches it too. The operator's own id reads "operator (you)" in a conversation until the roster names it.
  *
  *  A "to you" mark on a direct message, which the mock draws, is left out. The space name has no menu
  *  until the server can list the other spaces. */
@@ -148,7 +149,11 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
       </nav>}
       <div className="ui-side-foot">
         <span className="ui-me">OP</span>
-        <div className="ui-who"><b>operator</b>{line && <span title={line.title}>{line.text}</span>}</div>
+        <div className="ui-who">
+          <b>operator</b>
+          {line && <span title={line.title} tabIndex={0} aria-describedby="operator-line-why">{line.text}</span>}
+          {line && <span id="operator-line-why" className="ui-sr">{line.title}</span>}
+        </div>
         {connection === "connected" ? (
           <span className="ui-live" title="Connected to cotal web"><i></i>Connected</span>
         ) : (
