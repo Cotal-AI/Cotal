@@ -1,0 +1,78 @@
+{
+  "suite": [
+    "bin/smoke/capability-census.smoke.ts"
+  ],
+  "guard": "every census item needs a well-formed owner row and every row a live item; the extractor reads endpoint input fields at nested depth, the subcommand modes usage strings and positionals declare and route keys held in constants, so a capability added under an existing command fails until mapped; an owner naming an unregistered command, mode or flag fails, each owner in a list is checked, and a list of one owner fails",
+  "command": "pnpm smoke:capability-census",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census.json",
+  "why": [
+    "Each mutation removes one check the census relies on and must redden the cell that names it."
+  ],
+  "mutations": [
+    {
+      "name": "an item with no owner row is no longer reported",
+      "file": "bin/smoke/census/owners.ts",
+      "find": "    if (owner === undefined) problems.push(`${id}: no owner row`);",
+      "replace": "    if (owner === undefined) continue;",
+      "expectRed": "a field added under an existing command fails as unowned",
+      "cell": "a field added under an existing command fails as unowned"
+    },
+    {
+      "name": "a current owner is accepted without its command being registered",
+      "file": "bin/smoke/census/owners.ts",
+      "find": "  if (!flags) return `${item}: owner names \"${parsed.command}\", which is not a registered command`;",
+      "replace": "  if (!flags) return undefined;",
+      "expectRed": "an owner naming no registered command fails",
+      "cell": "an owner naming no registered command fails"
+    },
+    {
+      "name": "nested input fields are no longer extracted",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "    if (sub.properties) out.push(...schemaFields(sub, `${prefix}${key}.`));",
+      "replace": "",
+      "expectRed": "endpoint items reach nested input fields and target modes",
+      "cell": "endpoint items reach nested input fields and target modes"
+    },
+    {
+      "name": "repeated usage forms are no longer split into their own modes",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "  const forms = usage.split(\"\\n\").flatMap((line) => line.split(` | ${name} `).map((f, i) => (i === 0 ? f : `${name} ${f}`)));",
+      "replace": "  const forms = usage.split(\"\\n\");",
+      "expectRed": "a usage that repeats the command name yields one mode per form",
+      "cell": "a usage that repeats the command name yields one mode per form"
+    },
+    {
+      "name": "route keys held in module constants are no longer resolved",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "        const text = ts.isStringLiteral(key) ? key.text : ts.isIdentifier(key) ? constants.get(key.text) : undefined;\n        if (text === undefined) throw",
+      "replace": "        const text = ts.isStringLiteral(key) ? key.text : \"\";\n        if (text === undefined) throw",
+      "expectRed": "auth routes keyed by a module constant are census items",
+      "cell": "auth routes keyed by a module constant are census items"
+    },
+    {
+      "name": "modes declared only in positionals are no longer census items",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "    const declared = [cmd.usage ?? \"\", cmd.positionals === undefined ? \"\" : `${cmd.name} ${cmd.positionals}`];",
+      "replace": "    const declared = [cmd.usage ?? \"\"];",
+      "expectRed": "CLI items reach modes declared only in a command's positionals",
+      "cell": "CLI items reach modes declared only in a command's positionals"
+    },
+    {
+      "name": "only the first owner in a list is checked",
+      "file": "bin/smoke/census/owners.ts",
+      "find": "      for (const one of ownersOf(map, id)) {",
+      "replace": "      for (const one of ownersOf(map, id).slice(0, 1)) {",
+      "expectRed": "each owner in a list is checked",
+      "cell": "each owner in a list is checked"
+    },
+    {
+      "name": "a list of one owner is accepted",
+      "file": "bin/smoke/census/owners.ts",
+      "find": "    else if (Array.isArray(owner) && (owner.length < 2 || new Set(owner).size !== owner.length))",
+      "replace": "    else if (Array.isArray(owner) && new Set(owner).size !== owner.length)",
+      "expectRed": "a list of one owner fails",
+      "cell": "a list of one owner fails"
+    }
+  ]
+}

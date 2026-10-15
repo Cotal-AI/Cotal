@@ -614,6 +614,8 @@
     "smoke:down-lease-tombstone": "tsx implementations/cli/smoke/down-lease-tombstone.smoke.ts",
     "smoke:down-target": "tsx implementations/cli/smoke/down-target.smoke.ts",
     "smoke:flag-inventory": "tsx bin/smoke/flag-inventory.smoke.ts",
+    "smoke:capability-census": "tsx bin/smoke/capability-census.smoke.ts",
+    "smoke:capability-census:live": "tsx bin/smoke/capability-census-live.smoke.ts",
     "smoke:launch-matrix:live": "tsx bin/smoke/launch-matrix-live.smoke.ts",
     "smoke:persona-agent": "tsx bin/smoke/persona-agent.smoke.ts",
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",
