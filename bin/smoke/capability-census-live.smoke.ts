@@ -18,7 +18,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
-import { SMOKE_BROKER_TOKEN, createSuite, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { executionProblems, invocationOf, observeRequests, type ObservedRequest } from "./census/execute.js";
 import { readOwnerMap } from "./census/owners.js";
 
@@ -26,7 +26,7 @@ const home = mkdtempSync(join(tmpdir(), "cotal-census-home-"));
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}census-root-`));
 const xdg = join(home, "xdg");
 mkdirSync(join(root, ".cotal"), { recursive: true });
-recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
+const anchor = recordSmokeSandbox({ root, cotalHome: home, xdgConfigHome: xdg });
 process.env.COTAL_HOME = home;
 process.env.XDG_CONFIG_HOME = xdg;
 const { probeConnect } = await import("@cotal-ai/core");
@@ -47,6 +47,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Run the real binary without blocking this process, which hosts the manager that must answer. */
 function cotal(...args: string[]): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve, reject) => {
+    assertSmokeSandboxDown(anchor, args, { cwd: root, env });
     const child = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", (d) => { output += d; });
