@@ -140,6 +140,16 @@
       "cell": "a fresh machine is pointed to setup",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a help flag after -- still asks for help",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  const options = end === -1 ? args : args.slice(0, end);\n",
+      "replace": "  const options = args;\n",
+      "expectRed": "-h after -- is a word, not a help request",
+      "cell": "-h after -- is a word, not a help request",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }

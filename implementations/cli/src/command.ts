@@ -15,6 +15,13 @@ import { printCommandHelp, printEntry } from "./help.js";
 import { prepareCatalogCommand } from "./commands/sync.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 
+/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
+function asksForHelp(args: readonly string[]): boolean {
+  const end = args.indexOf("--");
+  const options = end === -1 ? args : args.slice(0, end);
+  return options.includes("--help") || options.includes("-h");
+}
+
 /**
  * `ext seed [--repair|--reset|--force]`, dispatched before the manifest overlay so repair survives a
  * corrupt manifest. Returns `true` iff `argv` was that command (or its help), so the caller returns.
@@ -27,7 +34,7 @@ async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean>
   if (extCmd?.name !== "ext" || sub !== "seed") return false;
   // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
   // stamp/manifest).
-  if (argv.includes("--help") || argv.includes("-h")) {
+  if (asksForHelp(argv)) {
     printCommandHelp(extCmd);
     return true;
   }
@@ -188,7 +195,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   let commands = surface();
   const [word, ...rest] = argv;
   if (word === undefined) return printEntry(commands);
-  const wantsHelp = rest.includes("--help") || rest.includes("-h");
+  const wantsHelp = asksForHelp(rest);
   let cmd = findCommand(commands, word);
   // A seeded package's command (`web`) can be absent only because the first seed has not installed
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
