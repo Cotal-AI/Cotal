@@ -16,8 +16,8 @@
     {
       "name": "writeTheme stops catching a blocked storage",
       "file": "implementations/web/client/src/theme.ts",
-      "find": "  } catch {\n    // Blocked storage is a browser setting, not a fault: the choice then lasts until the page closes.\n  }",
-      "replace": "  } finally {\n  }",
+      "find": "    localStorage.setItem(KEY, t);\n  } catch {",
+      "replace": "    localStorage.setItem(KEY, t);\n  } finally {",
       "expectRed": "writeTheme does not throw when storage throws",
       "cell": "writeTheme does not throw when storage throws"
     },
