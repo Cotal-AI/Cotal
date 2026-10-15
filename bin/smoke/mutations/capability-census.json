@@ -39,8 +39,8 @@
       "file": "bin/smoke/census/sources.ts",
       "find": "  const forms = usage.split(\"\\n\").flatMap((line) => line.split(` | ${name} `).map((f, i) => (i === 0 ? f : `${name} ${f}`)));",
       "replace": "  const forms = usage.split(\"\\n\");",
-      "expectRed": "CLI items reach the subcommand modes usage strings declare, repeated forms included",
-      "cell": "CLI items reach the subcommand modes usage strings declare, repeated forms included"
+      "expectRed": "a usage that repeats the command name yields one mode per form",
+      "cell": "a usage that repeats the command name yields one mode per form"
     },
     {
       "name": "route keys held in module constants are no longer resolved",

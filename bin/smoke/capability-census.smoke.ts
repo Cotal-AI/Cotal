@@ -11,7 +11,7 @@
  *
  * Run: pnpm smoke:capability-census
  */
-import { censusItems } from "./census/sources.js";
+import { censusItems, usageModes } from "./census/sources.js";
 import { ownerMapProblems, readOwnerMap, type OwnerMap } from "./census/owners.js";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
@@ -28,6 +28,8 @@ check("endpoint items reach nested input fields and target modes",
 check("CLI items reach the subcommand modes usage strings declare, repeated forms included",
   ["cli:meshes rm", "cli:clean restore-fallback", "cli:linear account add", "cli:send dm"].every((id) => ids.has(id)),
   [...ids].filter((id) => /^cli:\S+ /.test(id)));
+check("a usage that repeats the command name yields one mode per form",
+  usageModes("x", "x one <a> | x two --flag | x three").join(",") === "one,two,three", usageModes("x", "x one <a> | x two --flag | x three"));
 check("CLI items reach modes declared only in a command's positionals",
   ["cli:doctor auth", "cli:deliver pending", "cli:run migrate"].every((id) => ids.has(id)));
 check("auth routes keyed by a module constant are census items", ids.has("auth-http:/interactive-lifecycle/retire"));
