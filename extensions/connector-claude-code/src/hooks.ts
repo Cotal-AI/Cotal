@@ -104,6 +104,8 @@ function failureCondition(ev: HookEvent): PresenceCondition | undefined {
 }
 
 export interface ClaudeHandleDeps {
+  /** Launch environment for a hosted session's carried-fork record. Omitted uses the process env. */
+  env?: NodeJS.ProcessEnv;
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
   events?: () => AguiEmitterHolder<ClaudeEntry, unknown> | undefined;
   /** Told which inbox items a frame surfaced; pass {@link WakePolicy.surfaced}. */
@@ -313,7 +315,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // current boundary and never republish history. The holder carries the value opaquely to
           // the connector-owned source factory.
           adoptEvents(ev.transcript_path, ev.source);
-          recordCarriedFork(process.env, ev);
+          recordCarriedFork(deps.env ?? process.env, ev);
           // Claude Code reports the session's actual model here (the ONLY hook that carries it; absent
           // after /clear or conversation recovery, so guard on string). Surface it in presence when the
           // operator didn't pin one. A mid-session /model switch fires no hook, so this holds until the

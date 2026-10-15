@@ -87,15 +87,6 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   return Object.keys(meta).length ? meta : undefined;
 }
 
-/** Exec the spawner-provided bearer argv and return the one line it prints. The command owns
- *  discovery, the exchange protocol, and the secret file — a failure here is ITS operator-exact
- *  stderr sentence, surfaced verbatim (the endpoint emits it as a loud "error" and retries). */
-async function execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
-  const bearer = await runAgentBearer(argv, { signal, timeoutMs });
-  if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
-  return bearer;
-}
-
 /** A message that has arrived for us, normalized for the agent to read. */
 export interface InboxItem {
   id: string;
@@ -382,6 +373,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
+  private readonly bearerEnv?: NodeJS.ProcessEnv;
 
   private inbox: Pending[] = [];
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
@@ -524,9 +516,11 @@ export class MeshAgent extends EventEmitter {
    *  poison the chain: the tail is swallowed and the next write still runs. */
   private presenceChain: Promise<void> = Promise.resolve();
 
-  constructor(config: AgentConfig) {
+  /** An explicit env scopes bearer subprocesses to this session. Omitted preserves process inheritance. */
+  constructor(config: AgentConfig, env?: NodeJS.ProcessEnv) {
     super();
     this.config = config;
+    this.bearerEnv = env === undefined ? undefined : { ...env };
     // Seed per-channel attention from the operator's file default (one-way: the runtime never writes
     // back — the persona file is a shared template). muted/quiet are validated disjoint at file load.
     for (const c of config.quiet ?? []) this.channelModes.set(c, "quiet");
@@ -543,7 +537,7 @@ export class MeshAgent extends EventEmitter {
       acceptedToken: config.acceptedToken,
       // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
       // protocol lives entirely behind that command, this runtime just runs it and reads a line.
-      bearer: config.userAuth ? () => execBearerCmd(config.userAuth!.bearerCmd) : undefined,
+      bearer: config.userAuth ? () => this.execBearerCmd(config.userAuth!.bearerCmd) : undefined,
       sentinelCreds: config.userAuth?.sentinelCreds,
       tls: config.tls,
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
@@ -2157,6 +2151,13 @@ export class MeshAgent extends EventEmitter {
     return { ok: true, model };
   }
 
+  /** Run the spawner's bearer command with this session's environment on every credential path. */
+  private async execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
+    const bearer = await runAgentBearer(argv, { env: this.bearerEnv, signal, timeoutMs });
+    if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
+    return bearer;
+  }
+
   /** One v0.4 manager-endpoint invoke (P2 item 1, 1c.2b): the generic {@link CotalEndpoint.invokeService}
    *  path (describe → §13.7 store fetch → digest-verified recompile → typed command), adapted back to
    *  the {@link ControlReply} shape every tool above consumes. `undefined` args are stripped BEFORE the
@@ -2176,7 +2177,7 @@ export class MeshAgent extends EventEmitter {
       if (this.config.userAuth) {
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
-        const bearer = (signal?: AbortSignal) => execBearerCmd([
+        const bearer = (signal?: AbortSignal) => this.execBearerCmd([
           ...this.config.userAuth!.bearerCmd,
           "--manager-call",
           ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
@@ -2190,7 +2191,7 @@ export class MeshAgent extends EventEmitter {
             reconcile: async (goalId, attributed, context) => {
               const instanceId = attributed.responder?.instanceId;
               if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
-              const bearer = (signal?: AbortSignal) => execBearerCmd([
+              const bearer = (signal?: AbortSignal) => this.execBearerCmd([
                 ...this.config.userAuth!.bearerCmd,
                 "--manager-call", "--manager-instance", instanceId,
               ], signal, Math.min(30_000, context.deadlineMs));

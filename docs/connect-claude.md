@@ -656,9 +656,12 @@ including CommonJS consumers with Node16 or Node18 module settings.
 Claude Code pushes `claude/channel` only to a stdio server it launched, so each `claude` still
 launches a stdio command, such as a small relay that pipes its stdio to the host.
 
-- **Managed only.** `env` is the seat's launch env and the session reads no other env. It must
+- **Managed only.** `env` is a complete launch environment, copied when the call starts. It must
   carry a mesh identity and the full control pair, or the call rejects before the session joins the
-  mesh. A plain `claude` with no identity is served by `mcp.cjs` run directly.
+  mesh. Bearer commands, carried-fork records and feedback contact lookup use that copy, including
+  the Git subprocess. Include the `PATH`, `HOME` and other OS variables those commands need;
+  the host's environment is not merged into it. A plain `claude` with no identity is served by
+  `mcp.cjs` run directly. Sharing a process does not isolate untrusted tenants or their files.
 - **Streams.** `input` carries JSON-RPC from the client and `output` carries this session's replies
   and `claude/channel` pushes. The caller owns both streams. Input that has emitted `end` or is
   destroyed rejects startup. Buffered unread input remains eligible. When an active session's

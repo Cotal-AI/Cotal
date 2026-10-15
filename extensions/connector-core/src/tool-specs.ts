@@ -608,11 +608,11 @@ function renderChannelInfo(
 }
 
 /** Contact email for keyless feedback: explicit arg → COTAL_FEEDBACK_EMAIL → git config. */
-function resolveFeedbackEmail(explicit?: string): string | undefined {
+function resolveFeedbackEmail(explicit: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
   if (explicit?.trim()) return explicit.trim();
-  if (process.env.COTAL_FEEDBACK_EMAIL?.trim()) return process.env.COTAL_FEEDBACK_EMAIL.trim();
+  if (env.COTAL_FEEDBACK_EMAIL?.trim()) return env.COTAL_FEEDBACK_EMAIL.trim();
   try {
-    const email = execFileSync("git", ["config", "user.email"], { encoding: "utf8" }).trim();
+    const email = execFileSync("git", ["config", "user.email"], { encoding: "utf8", env }).trim();
     return email || undefined;
   } catch {
     return undefined;
@@ -632,7 +632,7 @@ export function channelMeta(i: InboxItem): Record<string, string> {
 
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. */
-export function cotalToolSpecs(config: AgentConfig, source = "connector"): CotalToolSpec[] {
+export function cotalToolSpecs(config: AgentConfig, source = "connector", env: NodeJS.ProcessEnv = process.env): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
   // without the capability is denied at the wire (nats-server); open mode mints no identity, so
@@ -1406,7 +1406,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         if (config.feedbackKey) {
           headers.authorization = `Bearer ${config.feedbackKey}`;
         } else {
-          const contact = resolveFeedbackEmail(email as string | undefined);
+          const contact = resolveFeedbackEmail(email as string | undefined, env);
           if (!contact)
             return err(
               "Keyless feedback goes to the public cotal.ai intake, which requires a traceable contact email — ask the user for one and retry with the email argument (or set COTAL_FEEDBACK_EMAIL).",

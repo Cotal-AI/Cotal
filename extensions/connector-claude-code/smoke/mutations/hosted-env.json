@@ -1,0 +1,99 @@
+{
+  "command": "pnpm smoke:claude-hosted-env",
+  "progressPattern": "^(?:PASS|FAIL) ",
+  "minTicks": 1,
+  "suite": [
+    "extensions/connector-claude-code/smoke/hosted-env.smoke.ts",
+    "extensions/connector-core/smoke/user-manager-transport.smoke.ts"
+  ],
+  "mutations": [
+    {
+      "name": "hosted session retains the caller's mutable environment",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  const env = { ...opts.env };",
+      "replace": "  const env = opts.env;",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_carried_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "hosted agent omits its explicit bearer environment",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  const agent = new MeshAgent(config, env);",
+      "replace": "  const agent = new MeshAgent(config);",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_bearer_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "bearer executor inherits the host environment",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const bearer = await runAgentBearer(argv, { env: this.bearerEnv, signal, timeoutMs });",
+      "replace": "    const bearer = await runAgentBearer(argv, { signal, timeoutMs });",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_mesh_snapshot",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "agent retains the caller's mutable bearer environment",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.bearerEnv = env === undefined ? undefined : { ...env };",
+      "replace": "    this.bearerEnv = env;",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_mesh_snapshot",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "legacy agent loses process environment inheritance",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.bearerEnv = env === undefined ? undefined : { ...env };",
+      "replace": "    this.bearerEnv = env === undefined ? {} : { ...env };",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_legacy_inheritance",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "carried-fork hook reads ambient launch state",
+      "file": "extensions/connector-claude-code/src/hooks.ts",
+      "find": "          recordCarriedFork(deps.env ?? process.env, ev);",
+      "replace": "          recordCarriedFork(process.env, ev);",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_carried_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "hosted MCP tools omit the session environment",
+      "file": "extensions/connector-claude-code/src/mcp.ts",
+      "find": "  registerCotalTools(server, agent, config, \"claude-code\", env);",
+      "replace": "  registerCotalTools(server, agent, config, \"claude-code\");",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "tool renderer drops the explicit environment",
+      "file": "extensions/connector-core/src/tools.ts",
+      "find": "  for (const spec of cotalToolSpecs(config, source, env)) {",
+      "replace": "  for (const spec of cotalToolSpecs(config, source)) {",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "feedback resolves contact in the host environment",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const contact = resolveFeedbackEmail(email as string | undefined, env);",
+      "replace": "          const contact = resolveFeedbackEmail(email as string | undefined, process.env);",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "feedback Git subprocess inherits host configuration",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    const email = execFileSync(\"git\", [\"config\", \"user.email\"], { encoding: \"utf8\", env }).trim();",
+      "replace": "    const email = execFileSync(\"git\", [\"config\", \"user.email\"], { encoding: \"utf8\" }).trim();",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_git",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "manager-caller bearer bypasses the scoped executor",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        const bearer = (signal?: AbortSignal) => this.execBearerCmd([\n          ...this.config.userAuth!.bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], signal);",
+      "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer([\n          ...this.config.userAuth!.bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], { signal });",
+      "command": "pnpm smoke:user-manager-transport",
+      "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
+    }
+  ]
+}

@@ -125,7 +125,7 @@ async function startSession(
   opts: ClaudeSessionOptions,
   setClose: (close: () => Promise<void>) => void,
 ): Promise<ClaudeSession> {
-  const { env } = opts;
+  const env = { ...opts.env };
   if (opts.input.readableEnded || opts.input.destroyed)
     throw new Error("hosted MCP input is already ended or destroyed");
   /** Publishes this session's activity as AG-UI events on `events.<owner>.<actor>` — set below
@@ -139,14 +139,14 @@ async function startSession(
   /** Claude Code lifecycle events → presence + (on inject-capable events) queued peer messages.
    *  Read `events` and `wake` lazily: they are assigned after this handler is built. `onReply` is
    *  the commit half — an injected batch is acked only once its reply is confirmed delivered. */
-  const claude = createClaudeHandle({ events: () => events, surfaced: (items) => wake?.surfaced(items) });
+  const claude = createClaudeHandle({ env, events: () => events, surfaced: (items) => wake?.surfaced(items) });
 
   const config = configFromEnv(env);
   config.connector = "claude"; // advertise the host harness on our AgentCard (meta.connector)
   // Parsed here, not in the handshake handler that applies it: the SDK routes a throw from that
   // handler to its error hook and the session would run on with the flag unread.
   const channelFlag = envFlag(env, "COTAL_CHANNEL");
-  const agent = new MeshAgent(config);
+  const agent = new MeshAgent(config, env);
   const eventWaitStop = new AbortController();
   // A Cotal bind can remain current while nats.js is reconnecting and has no server info.
   // Wait for both edges before starting or pumping the recorder. Its transcript stays durable
@@ -379,7 +379,7 @@ async function startSession(
   );
 
   mcp = server;
-  registerCotalTools(server, agent, config, "claude-code");
+  registerCotalTools(server, agent, config, "claude-code", env);
 
   // The wake policy owns every `claude/channel` push (arriving messages + the Stop→idle flush).
   // It stays inert until the handshake below confirms the client speaks claude/channel.

@@ -909,7 +909,7 @@ try {
   await realManager.start();
   check("Real user-mode Manager started in serverRoot", true);
 
-  // Actual MeshAgent with fresh manager-caller issuer path pinned to real Manager instance
+  // Initial bind can inherit the fixture CA; subsequent manager calls must use the supplied env.
   realAgent = new MeshAgent({
     space: SPACE,
     name: "producer-operator",
@@ -926,8 +926,10 @@ try {
     subscribe: [],
     allowSubscribe: [],
     allowPublish: [],
-  });
+  }, cleanEnv);
   await realAgent.start();
+  await realAgent.whenConnected();
+  delete process.env.NODE_EXTRA_CA_CERTS;
   check("actual MeshAgent connected with manager-caller path pinned to real Manager", true);
 
   // 7A. First spawn over wire to real Manager with model pin "sonnet"
