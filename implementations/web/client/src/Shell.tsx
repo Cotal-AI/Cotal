@@ -32,12 +32,18 @@ export function Shell({ store, controller }: { store: Store<DashboardState>; con
   const roster = useStore(store, (s) => s.roster);
   const open = useStore(store, (s) => s.open);
   const idx = useMemo(() => nameIndex(roster), [roster]);
+  // A refused history read never rejects `open()`: it becomes an order note and a stale mark. What
+  // does reject it is a defect, which is logged rather than left as an unhandled rejection, as the
+  // boot does for `refresh()`.
+  const openChannel = (channel: string) => {
+    controller?.open(channel).catch((err) => console.error("opening a channel failed:", err));
+  };
   return (
     <div style={{ font: "14px 'Inter Variable', system-ui", padding: 16 }}>
       <title>{documentTitle(space)}</title>
       <StatusLines store={store} />
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr 260px", gap: 16 }}>
-        <nav>{channels.map((c) => <button key={c.channel} disabled={!controller} onClick={() => void controller?.open(c.channel)}># {c.channel}</button>)}</nav>
+        <nav>{channels.map((c) => <button key={c.channel} disabled={!controller} onClick={() => openChannel(c.channel)}># {c.channel}</button>)}</nav>
         <main>{open?.messages.map(({ msg }) => <p key={msg.id}><b>{displayNameOf(msg.from, idx)}</b> {partsToText(msg.parts)}</p>)}</main>
         <aside>{rosterRows(roster).map((r) => <p key={r.id}>{r.name}: {statusLabel(r)}</p>)}</aside>
       </div>
