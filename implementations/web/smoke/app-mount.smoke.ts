@@ -1,4 +1,4 @@
-/** The wiring in `App`, mounted with `react-dom/client` in happy-dom: the route in the address reaches
+/** The wiring in `App`, mounted with `react-dom/client` in jsdom: the route in the address reaches
  *  the controller (a channel route opens that channel, any other route closes the open one), a hash
  *  change re-routes, and unmounting stops the dashboard. The dashboard is a fake that records what
  *  it is asked; the address is a fake host whose hash the suite sets and whose hashchange it fires.

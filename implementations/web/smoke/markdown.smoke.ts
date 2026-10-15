@@ -4,13 +4,12 @@
  *  link opens in a new tab with no opener and no referrer, and the Markdown a message actually uses
  *  (lists, code, quotes, headings) survives. Each cell renders a source and reads the HTML.
  *
- *  The DOM is happy-dom, installed by `dom-globals.ts` before `md.ts` makes its sanitizer. Two parts
- *  of happy-dom break DOMPurify in ways no browser does, and `dom-globals.ts` replaces them. The first
- *  three cells are the evidence for that: each shows the native part misbehaving, so a reader can see
- *  the replacement is not decoration. */
+ *  The DOM is jsdom, DOMPurify's own test environment. It is installed by `dom-globals.ts` after the
+ *  first cell, because that cell needs the process WITHOUT a usable DOM: it proves the renderer
+ *  refuses to run there instead of handing back the HTML unsanitized. */
 import { strict as assert } from "node:assert";
-import { closeDom, dom, nativeCreateNodeIterator, nativeNodeName, SpecNodeIterator } from "./dom-globals.js";
-import { renderMarkdown } from "../client/src/lib/md.js";
+import { JSDOM } from "jsdom";
+import { renderMarkdown, sanitizeHtml } from "../client/src/lib/md.js";
 
 let n = 0;
 const ok = (name: string, cond: unknown, detail?: unknown) => {
@@ -22,32 +21,39 @@ const ok = (name: string, cond: unknown, detail?: unknown) => {
 const links = (html: string): Record<string, string>[] =>
   [...html.matchAll(/<a\b([^>]*)>/g)].map((m) => Object.fromEntries([...m[1].matchAll(/\s([a-z-]+)="([^"]*)"/g)].map((a) => [a[1], a[2]])));
 
-// ── 1. The DOM the sanitizer runs in ─────────────────────────────────────────────────────────────
-type Walkable = { nodeName: string; remove(): void };
+/** Every source the suite renders, for the second-pass cell. */
+const CORPUS = [
+  "before <script>alert(1)</script> after",
+  '<img src="x" onerror="alert(1)"> <iframe src="https://evil.example"></iframe>',
+  '<u>kept <img src=x onerror=alert(1)></u>',
+  "[s](https://cotal.example/a) [m](mailto:ops@cotal.example) [r](/docs/a) [h](#top) [j](javascript:alert(1))",
+  '<a href="https://cotal.example" target="_self" rel="opener">x</a>',
+  "- one\n- two\n\n```\nconst a = '<b>';\n```\n\n# Title\n\n> quoted\n\n**strong** *em* ~~gone~~",
+];
+
+// ── 1. The sanitizer itself ──────────────────────────────────────────────────────────────────────
 {
-  const doc = dom.document as unknown as {
-    createElement(t: string): { innerHTML: string } & Walkable;
-  };
-  const walk = (make: (root: unknown) => { nextNode(): Walkable | null }) => {
-    const root = doc.createElement("div");
-    root.innerHTML = "<p>a<script>x</script><b>after</b></p>";
-    const it = make(root);
-    const seen: string[] = [];
-    for (let node = it.nextNode(); node; node = it.nextNode()) {
-      seen.push(node.nodeName);
-      if (node.nodeName === "SCRIPT") node.remove();
-    }
-    return seen;
-  };
-  const native = walk((root) => nativeCreateNodeIterator.call(dom.document, root as never, 0xffffffff, null) as never);
-  ok("1.1 CONTROL: happy-dom's own NodeIterator stops at the first removal, so it never reaches what follows",
-    native.includes("SCRIPT") && !native.includes("B"), native);
-  const spec = walk((root) => new SpecNodeIterator(root as never) as never);
-  ok("1.2 the replacement resumes after a removed node, as the DOM standard says it must",
-    spec.join() === "DIV,P,#text,SCRIPT,B,#text", spec);
-  const p = (dom.document as unknown as { createElement(t: string): object }).createElement("p");
-  ok("1.3 CONTROL: happy-dom's base nodeName getter, the one DOMPurify reads, does not name an element",
-    nativeNodeName(p) !== "P" && (p as { nodeName: string }).nodeName === "P", nativeNodeName(p));
+  // A window that is complete except for the one thing DOMPurify checks last: it builds a full
+  // purifier object, reports isSupported false, and its sanitize would return the input unchanged.
+  // The window is its own realm, so taking createHTMLDocument off its DOMImplementation touches no
+  // other window.
+  const bare = new JSDOM("<!doctype html><body></body>");
+  const impl = (bare.window as unknown as { DOMImplementation: { prototype: object } }).DOMImplementation.prototype;
+  Object.defineProperty(impl, "createHTMLDocument", { value: undefined });
+  const g = globalThis as { window?: unknown };
+  g.window = bare.window;
+  let out: string | undefined;
+  let error = "";
+  try { out = renderMarkdown("<b>x</b><script>alert(1)</script>"); } catch (e) { error = String(e); }
+  delete g.window;
+  ok("1.1 a purifier that cannot run here makes renderMarkdown throw, never return the HTML unsanitized",
+    out === undefined && /refuses to render rather than return unsanitized HTML/.test(error), { out, error });
+}
+await import("./dom-globals.js");
+{
+  const once = CORPUS.map((src) => renderMarkdown(src));
+  const changed = once.filter((html) => sanitizeHtml(html) !== html);
+  ok("1.2 sanitizing the rendered output a second time changes nothing", changed.length === 0, changed);
 }
 
 // ── 2. Raw HTML does not survive ─────────────────────────────────────────────────────────────────
@@ -66,12 +72,17 @@ type Walkable = { nodeName: string; remove(): void };
   ok("2.6 style and class attributes are removed", !/style=|class=/.test(styled), styled);
   const other = renderMarkdown("<form><input></form><style>p{}</style><object></object><svg><script>x</script></svg>");
   ok("2.7 form, input, style, object and svg are not on the allow-list", !/<(form|input|style|object|svg|script)/i.test(other), other);
+  const wrapped = renderMarkdown("<u>kept <img src=x onerror=alert(1)></u> and <b>bold</b>");
+  ok("2.8 a disallowed wrapper keeps its text and still loses the dangerous element inside it",
+    wrapped.includes("kept") && wrapped.includes("bold") && !/<img|onerror|<u>|<b>/i.test(wrapped), wrapped);
 }
 
 // ── 3. Links ─────────────────────────────────────────────────────────────────────────────────────
 {
   const js = links(renderMarkdown("[a](javascript:alert(1)) [b](JaVaScRiPt:alert(1)) [c](vbscript:x)"));
   ok("3.1 a javascript: or vbscript: link loses its href, in any letter case", js.length === 3 && js.every((a) => !("href" in a)), js);
+  const tail = links(renderMarkdown(`<a href="javascript:alert('https://cotal.example')">x</a>`));
+  ok("3.1b a javascript: link that names https further on still loses its href: the pattern is anchored", tail.length === 1 && !("href" in tail[0]), tail);
   const data = links(renderMarkdown("[d](data:text/html,<b>x</b>)"));
   ok("3.2 a data: link loses its href", data.length === 1 && !("href" in data[0]), data);
   const web = links(renderMarkdown("[s](https://cotal.example/a) [p](http://cotal.example/b)"));
@@ -86,6 +97,8 @@ type Walkable = { nodeName: string; remove(): void };
   const own = links(renderMarkdown('<a href="https://cotal.example" target="_self" rel="opener">x</a>'));
   ok("3.8 an author's own target and rel are replaced, not kept",
     own.length === 1 && own[0].target === "_blank" && own[0].rel === "noopener noreferrer nofollow", own);
+  const hidden = links(renderMarkdown('<a href="&#106;avascript:alert(1)">a</a> <a href=" javascript:alert(1)">b</a> <a href="java&#9;script:alert(1)">c</a> <a href="java\tscript:alert(1)">d</a>'));
+  ok("3.9 an encoded, padded or tab-split javascript: scheme still loses its href", hidden.length === 4 && hidden.every((a) => !("href" in a)), hidden);
 }
 
 // ── 4. The Markdown a message uses survives ──────────────────────────────────────────────────────
@@ -103,5 +116,6 @@ type Walkable = { nodeName: string; remove(): void };
   ok("4.6 an empty body renders as the empty string", renderMarkdown("") === "");
 }
 
+const { closeDom } = await import("./dom-globals.js");
 await closeDom();
 console.log(`markdown: ${n} checks passed`);

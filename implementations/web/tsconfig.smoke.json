@@ -10,6 +10,6 @@
   "compilerOptions": { "noEmit": true, "rootDir": "../..", "jsx": "react-jsx", "allowImportingTsExtensions": true },
   "include": ["smoke/**/*.ts"],
   // The suites that stub or drive a DOM need DOM types and are typechecked by tsconfig.smoke-dom.json
-  // instead: the theme suite, and the suites that mount React in happy-dom.
+  // instead: the theme suite, and the suites that mount React in jsdom.
   "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/mount.ts"]
 }

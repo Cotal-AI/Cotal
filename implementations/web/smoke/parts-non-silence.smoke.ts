@@ -33,7 +33,7 @@
  * a correct helper nobody invokes. It renders the shell to HTML on the server (`render-shell.ts`,
  * `renderToString` over a seeded store) and checks that the message body in that HTML carries the
  * renderer's text and its marker. The body is drawn by `MessageRow`, which renders it as Markdown,
- * and the Markdown sanitizer needs a DOM, so happy-dom is installed first (`dom-globals.ts`). That
+ * and the Markdown sanitizer needs a DOM, so jsdom is installed first (`dom-globals.ts`). That
  * DOM serves the sanitizer only: no cell here mounts the page or looks at pixels. So these cells
  * prove the marker is produced and is in the shell's server-rendered HTML, not that a browser
  * paints it.

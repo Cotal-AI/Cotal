@@ -27,10 +27,15 @@ interface LinkNode {
 }
 
 /** The sanitizer, made on the first render rather than on import. DOMPurify needs a DOM, so a
- *  module that set it up at load could not be imported under Node at all. */
+ *  module that set it up at load could not be imported under Node at all.
+ *
+ *  A DOMPurify that cannot run in this environment does not fail: its `sanitize` hands its input
+ *  back unchanged. So an unsupported purifier is refused here, loudly, and nothing is cached, rather
+ *  than let agent text reach the page as raw HTML. */
 function getPurifier(): Purifier {
   if (purifier) return purifier;
   const p = DOMPurify();
+  if (!p.isSupported) throw new Error("renderMarkdown: DOMPurify cannot sanitize in this environment (no usable DOM), so it refuses to render rather than return unsanitized HTML");
   // Every rendered link opens safely and leaks no referrer.
   p.addHook("afterSanitizeAttributes", (node) => {
     const el = node as unknown as LinkNode;
@@ -42,8 +47,14 @@ function getPurifier(): Purifier {
   return (purifier = p);
 }
 
+/** Strip `html` to the allow-list, with every link opening safely. Sanitizing its own output again
+ *  changes nothing. */
+export function sanitizeHtml(html: string): string {
+  return getPurifier().sanitize(html, CLEAN);
+}
+
 /** Agent text is untrusted: render Markdown, then strip everything outside a small allow-list. An
  *  empty source renders as the empty string. */
 export function renderMarkdown(src: string): string {
-  return src ? getPurifier().sanitize(marked.parse(String(src), { async: false }), CLEAN) : "";
+  return src ? sanitizeHtml(marked.parse(String(src), { async: false })) : "";
 }
