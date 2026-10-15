@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type ParsedArgs } from "@cotal-ai/core";
-import { RESERVED_CONNECTOR_NAMES, SEEDED_EXTENSIONS, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, provenance, saveExtensionsManifest, seededCommandsMismatch, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -298,10 +298,8 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   }
   const commands = contributed.filter((ext): ext is Command => ext.kind === "command");
   // The dispatcher resolves a seeded package's commands before its first seed, from the declared list.
-  const declared = seeding ? Object.values(SEEDED_EXTENSIONS).find((seeded) => seeded.pkg === pkg)?.commands : undefined;
-  if (declared && [...commands.map((cmd) => cmd.name)].sort().join(" ") !== [...declared].sort().join(" ")) {
-    fail(pkg, `registers commands [${commands.map((cmd) => cmd.name).join(", ")}], but its seed entry declares [${declared.join(", ")}] - the binary and this package disagree`);
-  }
+  const mismatch = seeding ? seededCommandsMismatch(pkg, commands) : undefined;
+  if (mismatch) fail(pkg, mismatch);
   const connectors = contributed.filter((ext): ext is Connector => ext.kind === "connector");
   const localProcesses = contributed.filter((ext): ext is LocalProcess => ext.kind === "local-process");
   const entry: InstalledExtension = {

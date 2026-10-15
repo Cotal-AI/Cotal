@@ -2,11 +2,12 @@
   "suite": [
     "implementations/cli/smoke/command-kernel.smoke.ts"
   ],
-  "guard": "completion resolves the command word as dispatch does, by exact name or alias, and offers names for a prefix rather than selecting one",
+  "guard": "completion resolves the command word as dispatch does, by exact name or alias, and offers names for a prefix rather than selecting one; a seeded package must claim the words its seed entry declares, aliases included",
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/cli-kernel-aliases.json",
   "why": [
-    "A <TAB> after an alias must complete inside that alias's command, or completion and dispatch disagree about what a word means."
+    "A <TAB> after an alias must complete inside that alias's command, or completion and dispatch disagree about what a word means.",
+    "The dispatcher resolves a seeded package's words before the first seed installs it, so an alias the entry does not declare would be an unknown command on a fresh machine. The check lives in the workspace package, which the suite imports through its build, so that mutation rebuilds it and the restore rebuilds it back."
   ],
   "mutations": [
     {
@@ -16,6 +17,16 @@
       "replace": "  const cmd = commands.find((candidate) => candidate.name === argv[0]);\n",
       "expectRed": "sp completes as spawn",
       "cell": "sp completes as spawn"
+    },
+    {
+      "name": "the seed check compares command names only",
+      "file": "packages/workspace/src/official-connectors.ts",
+      "find": "  const claimed = commands.flatMap((cmd) => [cmd.name, ...(cmd.aliases ?? [])]);\n",
+      "replace": "  const claimed = commands.map((cmd) => cmd.name);\n",
+      "expectRed": "an undeclared alias of a seeded command passed the seed check",
+      "cell": "an undeclared alias of a seeded command passed the seed check",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:cli-kernel",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ]
 }

@@ -13,7 +13,7 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { MeshTargetError } from "@cotal-ai/workspace";
+import { MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
 import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -209,6 +209,15 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok((await completionOut(["sp"])).includes("spawn\t"), "a lone alias is still a word being typed: it offers command names");
   const prefix = await completionOut(["spa"]);
   assert.ok(prefix.includes("spawn\t") && prefix.includes("status\t"), "a prefix offers command names, it never selects one");
+}
+
+// --- a seeded package must claim the words its seed entry declares, aliases included -------------
+{
+  assert.equal(seededCommandsMismatch("@cotal-ai/web", [{ name: "web" }]), undefined, "web as declared");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "web", aliases: ["w"] }]) ?? "", /claiming \[web, w\].*declares \[web\]/, "an undeclared alias of a seeded command passed the seed check");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "web" }, { name: "dash" }]) ?? "", /declares \[web\]/, "an undeclared seeded command passed the seed check");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", []) ?? "", /declares \[web\]/, "a seeded package that dropped its command passed the seed check");
+  assert.equal(seededCommandsMismatch("@example/not-seeded", [{ name: "x", aliases: ["y"] }]), undefined, "a package that is not seeded has no declared words");
 }
 
 // --- exact commands and flags-before-positionals stay inside the command grammar -----------------
