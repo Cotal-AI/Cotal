@@ -1,0 +1,24 @@
+{
+  "suite": [
+    "implementations/cli/smoke/cli-pty.smoke.ts"
+  ],
+  "guard": "on a real terminal, --no-input stops meshes add from opening its guided form",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/cli-pty-no-input.json",
+  "why": [
+    "Only a real terminal reaches a prompt, so only the pty suite can show --no-input suppresses one. bin/cotal.ts loads the CLI from its build, so the mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "the guided form ignores --no-input",
+      "file": "implementations/cli/src/commands/meshes-wizard.ts",
+      "find": " && process.env.COTAL_NO_PROMPT !== \"1\" && !inputDisabledByFlag();",
+      "replace": " && process.env.COTAL_NO_PROMPT !== \"1\";",
+      "expectRed": "cotal meshes add --no-input opens no prompt",
+      "cell": "cotal meshes add --no-input opens no prompt",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:cli-pty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

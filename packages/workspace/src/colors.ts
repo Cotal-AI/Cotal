@@ -1,8 +1,17 @@
-/** Whether operator output gets ANSI color. A set `FORCE_COLOR` is checked first, the order Node
- *  uses: `0` or `false` turns color off and any other value turns it on. Otherwise a non-empty
- *  `NO_COLOR` turns it off (no-color.org), and color follows whether stdout is a terminal. Read on
- *  every call, so a process that sets these after import is still honoured. */
+let colorDisabled = false;
+
+/** `--no-color`: no ANSI color for the rest of this process, whatever the environment says. It is
+ *  process state rather than `NO_COLOR`, so it does not reach the children a command starts. */
+export function disableColor(): void {
+  colorDisabled = true;
+}
+
+/** Whether operator output gets ANSI color. `--no-color` wins. Then a set `FORCE_COLOR` is checked,
+ *  the order Node uses: `0` or `false` turns color off and any other value turns it on. Otherwise a
+ *  non-empty `NO_COLOR` turns it off (no-color.org), and color follows whether stdout is a terminal.
+ *  Read on every call, so a process that sets these after import is still honoured. */
 export function colorEnabled(): boolean {
+  if (colorDisabled) return false;
   const force = process.env.FORCE_COLOR;
   if (force !== undefined) return force !== "0" && force !== "false";
   if (process.env.NO_COLOR) return false;

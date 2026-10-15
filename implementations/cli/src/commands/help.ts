@@ -1,7 +1,8 @@
 import { findCommand, findSubcommand, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { jsonFlag, writeEnvelope } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { printCommandHelp, printCommandList } from "../help.js";
-import { cliVersion, extensionVersions } from "../lib/version.js";
+import { cliVersion, extensionVersions, readExtensionVersions } from "../lib/version.js";
 
 export const helpFlags = [{ name: "all", type: "boolean", description: "also list hidden commands" }] as const;
 
@@ -21,9 +22,25 @@ export async function help(args: ParsedArgs): Promise<void> {
   printCommandHelp(cmd, sub);
 }
 
-/** `cotal version` (also `--version`, `-V`): this binary's version, then each installed extension's,
- *  read from disk. Plain text, since a version line is routinely machine-read. */
-export async function version(): Promise<void> {
+export const versionFlags = [jsonFlag] as const;
+
+/** `cotal version [--json]` (also `--version`, `-V`): this binary's version, then each installed
+ *  extension's, read from disk. Plain text, since a version line is routinely machine-read, or one
+ *  envelope with no target, since it reads only local metadata. */
+export async function version(args: ParsedArgs): Promise<void> {
+  if ((args.values as FlagValues<typeof versionFlags>).json) {
+    const { versions, unreadable } = readExtensionVersions();
+    writeEnvelope({
+      schemaVersion: 1,
+      command: "version",
+      target: null,
+      outcome: "ok",
+      completeness: unreadable === undefined ? "complete" : "partial",
+      result: { version: cliVersion(), extensions: versions.map((e) => ({ package: e.pkg, version: e.version })) },
+      warnings: unreadable === undefined ? [] : [{ code: "EXTENSIONS_UNREADABLE", target: null, message: `the extensions manifest could not be read: ${unreadable}` }],
+    });
+    return;
+  }
   const exts = extensionVersions();
   const lines = [`cotal-ai ${cliVersion()}`];
   if (exts.length) {

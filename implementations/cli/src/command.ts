@@ -1,5 +1,19 @@
+import { writeSync } from "node:fs";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry } from "@cotal-ai/core";
-import { hasMeshTargetFlags, isSeededCommand, isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
+import {
+  CommandFailure,
+  disableColor,
+  disableInput,
+  envelopeLine,
+  exitCode,
+  failureEnvelope,
+  hasMeshTargetFlags,
+  isCommandFailure,
+  isSeededCommand,
+  isWorkspaceTargetError,
+  outputDeclarationProblems,
+  renderWorkspaceError,
+} from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
   isExtensionStub,
@@ -22,6 +36,53 @@ function asksForHelp(args: readonly string[]): boolean {
   return options.includes("--help") || options.includes("-h");
 }
 
+/** Whether a global flag (`--no-color`, `--no-input`) is `word`, applying it when it is. */
+function takeGlobalFlag(word: string): boolean {
+  if (word === "--no-color") disableColor();
+  else if (word === "--no-input") disableInput();
+  else return false;
+  return true;
+}
+
+/** `words` without the global flags before any `--`, each applied. */
+function stripGlobalFlags(words: readonly string[]): string[] {
+  const end = words.indexOf("--");
+  const head = (end === -1 ? words : words.slice(0, end)).filter((word) => !takeGlobalFlag(word));
+  return end === -1 ? head : [...head, ...words.slice(end)];
+}
+
+/** The words `cmd` parses: the global flags are the kernel's, except for a command that takes its
+ *  words raw or an internal one, whose words are another command line. */
+function ownWords(cmd: Command | undefined, words: readonly string[]): string[] {
+  return cmd && (cmd.rawArgs || cmd.name.startsWith("__")) ? [...words] : stripGlobalFlags(words);
+}
+
+/** Whether `cmd` declares a structured output, so it reports every outcome by the 0 to 5 table. */
+function structured(cmd: Command): boolean {
+  return (cmd.outputs ?? []).some((mode) => mode === "json" || mode === "ndjson");
+}
+
+/** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
+ *  command's boolean short flags. Read from the words, because a usage error has no parse. */
+function asksForJson(cmd: Command, args: readonly string[]): boolean {
+  if (!structured(cmd)) return false;
+  const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
+  const end = args.indexOf("--");
+  return (end === -1 ? args : args.slice(0, end)).some(
+    (word) => word === "--json" || word === "-j" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes("j") && [...word.slice(1)].every((ch) => booleans.has(ch))),
+  );
+}
+
+/** A classified failure: its line and remedy on stderr, its envelope on stdout when one was asked
+ *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
+ *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
+function failureExit(cmd: Command, failure: CommandFailure, json: boolean): never {
+  console.error(c.red(`✗ ${failure.message}`));
+  if (failure.remedy) console.error(c.dim(`  ↳ ${failure.remedy}`));
+  if (json) writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure)));
+  process.exit(exitCode(failure.outcome, failure.code));
+}
+
 /**
  * `ext seed [--repair|--reset|--force]`, dispatched before the manifest overlay so repair survives a
  * corrupt manifest. Returns `true` iff `argv` was that command (or its help), so the caller returns.
@@ -38,7 +99,7 @@ async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean>
     printCommandHelp(extCmd);
     return true;
   }
-  await extCmd.run(parseCommandArgs(extCmd, argv.slice(1)));
+  await extCmd.run(parseCommandArgs(extCmd, stripGlobalFlags(argv.slice(1))));
   return true;
 }
 
@@ -109,7 +170,10 @@ export interface RunCliOptions {
 }
 
 /** A usage error, rendered as one red line plus the command's help when there is one. Exit 1. */
-function usageExit(message: string, cmd?: Command): never {
+function usageExit(message: string, cmd?: Command, json = false): never {
+  // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
+  // the remedy names stays out of it.
+  if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
   console.error(c.red(`✗ ${message}`));
   if (cmd) printCommandHelp(cmd);
   process.exit(1);
@@ -119,16 +183,19 @@ function usageExit(message: string, cmd?: Command): never {
  *  parse error is trimmed to its first sentence: the verbose "To specify a positional argument
  *  starting with a '-' …" tail is dropped. */
 function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
+  const json = asksForJson(cmd, rest);
   let parsed: ParsedArgs;
   try {
     parsed = parseCommandArgs(cmd, rest);
   } catch (e) {
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
     throw e;
   }
   const first = parsed.positionals[0];
   if (cmd.subcommands?.length && first !== undefined && !findSubcommand(cmd, first))
-    usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd);
+    usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json);
+  // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
+  if (structured(cmd) && parsed.values.json === true) disableInput();
   return canonicalSubcommand(cmd, parsed);
 }
 
@@ -163,6 +230,10 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // the variable naming it.
   takeManagedHandoffCustody(process.env);
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
+  // Global flags before the command word apply whatever the command is.
+  let lead = 0;
+  while (lead < argv.length && takeGlobalFlag(argv[lead]!)) lead++;
+  argv = argv.slice(lead);
   // The global spellings of help and version are the `help` and `version` commands.
   if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
   if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
@@ -186,17 +257,18 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     for (const cmd of commands) {
-      const problems = commandDeclarationProblems(cmd);
+      const problems = [...commandDeclarationProblems(cmd), ...outputDeclarationProblems(cmd)];
       if (problems.length) usageExit(`internal error: ${problems.join("; ")}`);
     }
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
     return commands;
   };
   let commands = surface();
-  const [word, ...rest] = argv;
+  const [word, ...words] = argv;
   if (word === undefined) return printEntry(commands);
-  const wantsHelp = asksForHelp(rest);
   let cmd = findCommand(commands, word);
+  let rest = ownWords(cmd, words);
+  const wantsHelp = asksForHelp(rest);
   // A seeded package's command (`web`) can be absent only because the first seed has not installed
   // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
   // unknown word is a usage error.
@@ -221,6 +293,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     commands = surface();
     cmd = findCommand(commands, word);
     if (!cmd) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
+    rest = ownWords(cmd, words);
   }
   // An extension stub materializes before parsing: verify the version pin, import the package
   // (self-registers), and parse with the LIVE specs — the cache never drives run's input.
@@ -242,8 +315,16 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {
+    const json = structured(cmd) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
-    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd);
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
+    if (isCommandFailure(e)) failureExit(cmd, e, json);
+    // A command that declares a structured output reports by the outcome table, so a failure it did
+    // not classify is unknown: it may have had effects that cannot be attributed.
+    if (structured(cmd)) {
+      const message = isWorkspaceTargetError(e) ? renderWorkspaceError({ kind: "target", error: e }) : e instanceof Error ? e.message : String(e);
+      failureExit(cmd, new CommandFailure("unknown", "OPERATION_UNKNOWN", message), json);
+    }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe
     // rather than product copy, so falling through to the generic line below strips the removed

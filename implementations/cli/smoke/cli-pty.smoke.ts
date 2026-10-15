@@ -4,7 +4,8 @@
  *
  * The binary must start under the pty and exit cleanly. The node child must see a terminal on both
  * ends, the pty's window size, and raw keystrokes as bytes: the 0x1d detach key and Ctrl+C, which a
- * cooked terminal turns into a signal. Linux and macOS run it under a pty, Windows under ConPTY.
+ * cooked terminal turns into a signal. A command that would prompt on a terminal must not prompt
+ * under `--no-input`. Linux and macOS run it under a pty, Windows under ConPTY.
  *
  * Offline: no broker. COTAL_HOME and XDG_CONFIG_HOME are sandboxed.
  *
@@ -65,6 +66,21 @@ try {
   check("Ctrl+C in raw mode reaches it as the byte 0x03", await until(() => e.text().includes("bytes:03")), e.text());
   echoPty.write("\x04");
   check("it exits 0 when it reads 0x04", (await until(() => e.exitCode !== undefined)) && e.exitCode === 0, e.exitCode);
+
+  // On a terminal, `meshes add` with no space asks for one. `--no-input` answers with the usage line
+  // instead, in either position.
+  const wizardPty = cotalPty(["meshes", "add"], { cwd: home, env });
+  ptys.push(wizardPty);
+  const w = session(wizardPty);
+  check("control: meshes add on a terminal opens the guided form", await until(() => w.text().includes("Register a mesh")), w.text());
+  for (const argv of [["meshes", "add", "--no-input"], ["--no-input", "meshes", "add"]]) {
+    const pty = cotalPty(argv, { cwd: home, env });
+    ptys.push(pty);
+    const s = session(pty);
+    await until(() => s.exitCode !== undefined);
+    check(`cotal ${argv.join(" ")} on a terminal prints the usage line and exits 1`, s.exitCode === 1 && s.text().includes("usage: cotal meshes add <space>"), s.text());
+    check(`cotal ${argv.join(" ")} opens no prompt`, !s.text().includes("Register a mesh"), s.text());
+  }
 } catch (err) {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);
 } finally {

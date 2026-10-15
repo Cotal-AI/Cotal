@@ -17,6 +17,7 @@ cotal help                # every command, grouped (also `cotal --help`)
 cotal help --all          # including hidden commands
 cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
 cotal version             # cotal-ai version + each installed extension's (also `cotal --version`, `cotal -V`)
+cotal version --json      # the same as one JSON document (also `-j`)
 ```
 
 `npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
@@ -63,13 +64,60 @@ connectors or writes configuration. Help, version and completion never do either
 Command output, including error lines on stderr and the guided `setup` and `meshes add` prompts,
 is colored only when stdout is a terminal, so piped or redirected output is plain text. A non-empty
 `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
-piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`.
+piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`. `--no-color` turns
+color off for that run, whatever the environment says.
+
+`--no-input` means the run never prompts, opens an editor or opens a browser. A command that would
+prompt behaves as it does without a terminal, `web` prints its link without opening it, and
+`personas edit` is refused. `--json` implies `--no-input`. Both flags work before the command word
+on every command, and after it on every command except one that takes its words raw. After `--`
+they are ordinary words. An extension command that declares a flag with either name does not
+receive it.
 
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
 runtimes, and local process lifecycle descriptors. The `web` dashboard and optional manager
 runtimes ship this way.
+
+## Structured output
+
+A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
+one JSON document on stdout. In this release that is `cotal version`:
+
+```json
+{"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
+```
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `1` |
+| `command` | The command that ran |
+| `target` | What it acted on, or `null` for a command that reads only local metadata |
+| `outcome` | `ok`, `no-op`, `refused`, `failed`, `partial` or `unknown` |
+| `completeness` | How much of the read scope the result covers: `complete`, `partial` or `not-checked`. It says nothing about whether the work succeeded |
+| `result` | The command's result, or `null` when it did not succeed |
+| `warnings` | One `{code, target, message}` for each thing it could not read or check |
+| `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`, where `cause` keeps an endpoint's own code, outcome and safe detail |
+| `changed` | What a command that did not succeed changed anyway |
+
+Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
+`USAGE_INVALID`, and the help it names stays off stdout. A command without a JSON output refuses
+`--json` as an unknown option.
+
+A command with a JSON output exits by its outcome, with or without `--json`:
+
+| Outcome | Exit | Codes |
+|---|---|---|
+| `ok`, `no-op` | 0 | none |
+| `refused` before any effect, for invalid input | 1 | `USAGE_INVALID`, `SCHEMA_INVALID` |
+| `refused` at a known boundary before any effect | 2 | `PERMISSION_DENIED`, `AUTH_REQUIRED`, `TARGET_UNAVAILABLE`, `TARGET_NOT_FOUND`, `TARGET_AMBIGUOUS`, `DEPENDENCY_UNAVAILABLE`, `UNSUPPORTED`, `CONFLICT`, `LIFECYCLE_BLOCKED` |
+| `unknown`: it may have had an effect that cannot be attributed. Do not retry blindly | 3 | `OPERATION_UNKNOWN` |
+| `partial`: some of the work completed, or cleanup remains | 4 | `OPERATION_PARTIAL` |
+| `failed`: a confirmed failure with no cleanup left | 5 | `OPERATION_FAILED` |
+
+An error such a command does not classify is `unknown`, exit 3. Other commands still exit 1 on any
+failure.
 
 ## Commands
 

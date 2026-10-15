@@ -6,6 +6,7 @@ import { registry, type Connector, type ConnectorAssist, type ConnectorSetupActi
 import {
   findCotalRoot,
   homeCotalDir,
+  inputDisabledByFlag,
   isWorkspaceTargetError,
   manifestExtensionNames,
   personaDir,
@@ -222,7 +223,7 @@ async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
 export async function offerGlobalInstall(yes: boolean): Promise<void> {
   if (!isNpx() || cotalOnPath()) return; // already have `cotal`, or not an npx run
 
-  if (!yes && process.stdin.isTTY) {
+  if (!yes && process.stdin.isTTY && !inputDisabledByFlag()) {
     const go = abortIfCancel(
       await p.confirm({ message: "Install `cotal` globally so you can just type `cotal`?", initialValue: true }),
     );
@@ -307,7 +308,7 @@ export async function setupConnectorSurface(): Promise<Connector[]> {
 
 async function pickConnectors(candidates: readonly SetupConnectorCandidate[], yes: boolean): Promise<Set<string>> {
   const all = candidates.filter((candidate) => candidate.missing.length === 0).map((candidate) => candidate.value);
-  if (yes || !process.stdin.isTTY) return new Set(all);
+  if (yes || !process.stdin.isTTY || inputDisabledByFlag()) return new Set(all);
 
   // Common case: show what was detected and offer a visible Continue button (clack's multiselect
   // has no native one). Only "Customize" (or nothing detected) drops into the toggle list.

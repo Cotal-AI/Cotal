@@ -23,6 +23,7 @@ import {
 import {
   c,
   connectOrExit,
+  inputDisabledByFlag,
   localProcessPath,
   parsePid,
   probeLiveness,
@@ -1554,8 +1555,9 @@ function noBody(path: string, declared: number): PayloadTooLarge {
 }
 
 /** Best-effort open of the dashboard in the default browser. The URL is already
- *  printed, so a failure here is harmless — never block startup on it. */
-function openBrowser(url: string): void {
+ *  printed, so a failure here is harmless — never block startup on it. `--no-input` opens nothing. */
+export function openBrowser(url: string): void {
+  if (inputDisabledByFlag()) return;
   const [cmd, args] =
     process.platform === "darwin"
       ? ["open", [url]]

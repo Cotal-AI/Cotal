@@ -1,0 +1,70 @@
+{
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts",
+    "implementations/cli/smoke/output-exit.fixture.ts"
+  ],
+  "guard": "the kernel exits a classified failure by its outcome and writes its envelope on --json, reports an unclassified error from a structured command as unknown, keeps a usage error under --json to one envelope, makes --json imply --no-input, and version --json labels an unreadable extension list partial",
+  "command": "pnpm smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/output-exit.json",
+  "why": [
+    "The kernel is where a command's failure becomes an exit code and a document. Each mutation restores one way that mapping can drift, and must redden the assertion that names it. The suite imports the CLI source directly, so no rebuild is needed."
+  ],
+  "mutations": [
+    {
+      "name": "every classified failure exits 1",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  process.exit(exitCode(failure.outcome, failure.code));\n",
+      "replace": "  process.exit(1);\n",
+      "expectRed": "a boundary refusal exits 2",
+      "cell": "a boundary refusal exits 2"
+    },
+    {
+      "name": "an unclassified error from a structured command exits 1",
+      "file": "implementations/cli/src/command.ts",
+      "find": "    if (structured(cmd)) {\n",
+      "replace": "    if (false && structured(cmd)) {\n",
+      "expectRed": "an unclassified error from a structured command exits 3",
+      "cell": "an unclassified error from a structured command exits 3"
+    },
+    {
+      "name": "--json does not imply --no-input",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (structured(cmd) && parsed.values.json === true) disableInput();\n",
+      "replace": "",
+      "expectRed": "--json implies --no-input",
+      "cell": "--json implies --no-input"
+    },
+    {
+      "name": "a usage error under --json prints help instead of an envelope",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (cmd && json) failureExit(",
+      "replace": "  if (false && cmd && json) failureExit(",
+      "expectRed": "a usage error under --json is one USAGE_INVALID envelope",
+      "cell": "a usage error under --json is one USAGE_INVALID envelope"
+    },
+    {
+      "name": "-j in a group of short flags is not read",
+      "file": "implementations/cli/src/command.ts",
+      "find": "(word) => word === \"--json\" || word === \"-j\" || (/^-[A-Za-z]{2,}$/.test(word) && word.includes(\"j\") && [...word.slice(1)].every((ch) => booleans.has(ch))),",
+      "replace": "(word) => word === \"--json\" || word === \"-j\",",
+      "expectRed": "-j inside a group of short flags asks for the usage envelope",
+      "cell": "-j inside a group of short flags asks for the usage envelope"
+    },
+    {
+      "name": "global flags after the command word reach its parser",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  return cmd && (cmd.rawArgs || cmd.name.startsWith(\"__\")) ? [...words] : stripGlobalFlags(words);\n",
+      "replace": "  return [...words];\n",
+      "expectRed": "--no-input after the command's words disables input",
+      "cell": "--no-input after the command's words disables input"
+    },
+    {
+      "name": "an unreadable manifest is reported complete",
+      "file": "implementations/cli/src/commands/help.ts",
+      "find": "      completeness: unreadable === undefined ? \"complete\" : \"partial\",\n",
+      "replace": "      completeness: \"complete\",\n",
+      "expectRed": "an unreadable manifest makes the extension list partial, not empty and complete",
+      "cell": "an unreadable manifest makes the extension list partial, not empty and complete"
+    }
+  ]
+}

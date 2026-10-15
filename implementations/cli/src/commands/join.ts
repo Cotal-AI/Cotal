@@ -20,7 +20,7 @@ import {
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { findMesh, refreshRegistrationPolicy, type MeshEntry } from "@cotal-ai/workspace";
+import { findMesh, inputDisabledByFlag, refreshRegistrationPolicy, type MeshEntry } from "@cotal-ai/workspace";
 import { resolveSpace } from "../lib/status.js";
 import { reachableOrExit, refuseStaticCredsForKnownUserAuthOrExit, resolveTargetOrExit, preflightOrExit } from "../lib/connect.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
@@ -234,7 +234,7 @@ export async function join(args: ParsedArgs): Promise<void> {
 
   // Interactive only when attached to a real terminal; headless when spawned
   // detached (manager) — then we just hold presence and log mesh events.
-  const interactive = process.stdin.isTTY === true;
+  const interactive = process.stdin.isTTY === true && !inputDisabledByFlag();
   let rlClosed = false;
   const rl = interactive
     ? readline.createInterface({

@@ -1,0 +1,22 @@
+{
+  "suite": [
+    "implementations/web/smoke/no-input.smoke.ts"
+  ],
+  "guard": "--no-input opens no browser from cotal web",
+  "command": "pnpm smoke:web-no-input",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/web/smoke/mutations/web-no-input.json",
+  "why": [
+    "The suite imports the web source directly, so no rebuild is needed."
+  ],
+  "mutations": [
+    {
+      "name": "the browser opens under --no-input",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (inputDisabledByFlag()) return;\n",
+      "replace": "",
+      "expectRed": "--no-input opens no browser",
+      "cell": "--no-input opens no browser"
+    }
+  ]
+}
