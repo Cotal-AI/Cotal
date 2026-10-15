@@ -266,9 +266,6 @@ jobs:
       - name: Transport liveness unit baseline
         run: pnpm smoke:transport-liveness
 
-  # Native linux-x64 and linux-arm64 SO_PEERCRED helpers, then one pack on x64
-  # that assembles BOTH into the tarball the ARM load job consumes unchanged.
-  # The ARM load job must not rebuild. A queued-never-started job is not a measurement.
   platforms:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     name: platforms (${{ matrix.os }})
@@ -336,6 +333,9 @@ jobs:
           COTAL_CI_SUITES: bin/smoke/platform-suites.txt
         run: node bin/smoke/shard.mjs 0 1
 
+  # Native linux-x64 and linux-arm64 SO_PEERCRED helpers, then one pack on x64
+  # that assembles BOTH into the tarball the ARM load job consumes unchanged.
+  # The ARM load job must not rebuild. A queued-never-started job is not a measurement.
   seat-native-linux-x64:
     if: ${{ github.event_name != 'workflow_dispatch' }}
     name: seat native (linux-x64)
