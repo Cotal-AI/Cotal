@@ -546,8 +546,8 @@
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": " onClick={() => focusComposer({ kind: \"dm\", to: row.id })}",
       "replace": "",
-      "expectRed": "4.6 the Agent tab's Message opens the DM view with its composer focused",
-      "cell": "4.6 the Agent tab's Message opens the DM view with its composer focused"
+      "expectRed": "4.6 the Agent tab's Message opens the operator's conversation with the agent, with its composer focused",
+      "cell": "4.6 the Agent tab's Message opens the operator's conversation with the agent, with its composer focused"
     },
     {
       "name": "K69 the footer draws no second line",

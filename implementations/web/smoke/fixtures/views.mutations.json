@@ -490,8 +490,8 @@
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
       "find": "{`No direct messages with ${name} yet.`}",
       "replace": "{\"\"}",
-      "expectRed": "7.7 a peer with no direct messages gets its header and says there are none yet",
-      "cell": "7.7 a peer with no direct messages gets its header and says there are none yet"
+      "expectRed": "7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet",
+      "cell": "7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet"
     },
     {
       "name": "D9 a peer off the roster is drawn idle",
