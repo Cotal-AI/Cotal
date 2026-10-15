@@ -47,7 +47,7 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
     items.slice(0, 5).every((i) => i.tag === "a") && items[5].tag === "button", items.map((i) => i.tag));
   same("1.4 each view links to its route hash",
     items.slice(0, 5).map((i) => i.attrs.href),
-    ["#/activity", "#/channel/general", "#/dm/local.ab", "#/agents", "#/topology"]);
+    ["#/activity", "#/channel/general", "#/dm/local.ab/local.cd", "#/agents", "#/topology"]);
   ok("1.5 every item carries its name as a title too", items.every((i) => i.attrs.title === i.attrs["aria-label"]), items.map((i) => i.attrs));
   ok("1.6 the rail sits in the Views landmark", /<nav class="ui-rail" aria-label="Views">/.test(html));
   const railBtns = startTags(html, "a").filter((a) => a.class === "ui-rail-btn").length + startTags(html, "button").filter((b) => b.class === "ui-rail-btn").length;

@@ -101,7 +101,8 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const roster = useStore(store, (s) => s.roster);
   const dms = useStore(store, (s) => s.dms);
   const loading = useStore(store, (s) => s.loading);
-  const places = usePlaces(route, channels, dms, roster);
+  const self = useStore(store, (s) => s.operatorId);
+  const places = usePlaces(route, channels, dms, roster, self);
   const needing = useMemo(() => waiting(rosterRows(roster, { includeOffline: true })).length, [roster]);
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
@@ -146,16 +147,22 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
 
 /** Where the rail's Channels and Direct messages items lead off their own routes: the channel and
  *  the conversation the reader last visited, while they still exist, and otherwise the first channel
- *  and the peer of the newest conversation, or null when there is none. The last visits are kept as
- *  the route changes, during render, so the rail never draws a frame that points at the place before. */
-function usePlaces(route: Route, channels: DashboardState["channels"], dms: DashboardState["dms"], roster: DashboardState["roster"]): Places {
-  const [last, setLast] = useState<Places>({ channel: null, dm: null });
+ *  and the newest conversation, or null when there is none. The last visits are kept as the route
+ *  changes, during render, so the rail never draws a frame that points at the place before.
+ *
+ *  A conversation is named by both parties, so the link opens the conversation it stands for. A
+ *  visit from a Message button names only the agent: the operator is the other party, and until
+ *  `self`, the operator's id, is known that visit is no place to land. */
+function usePlaces(route: Route, channels: DashboardState["channels"], dms: DashboardState["dms"], roster: DashboardState["roster"], self: string | null): Places {
+  const [last, setLast] = useState<{ channel: string | null; dm: { peer: string; with?: string } | null }>({ channel: null, dm: null });
   let seen = last;
   if (route.view === "channel" && last.channel !== route.channel) seen = { ...last, channel: route.channel };
   if (route.view === "dm" && (last.dm?.peer !== route.peer || last.dm?.with !== route.with)) seen = { ...seen, dm: { peer: route.peer, with: route.with } };
   if (seen !== last) setLast(seen);
   const peers = useMemo(() => dmPeers(dms, roster), [dms, roster]);
   const channel = seen.channel !== null && channels.some((c) => c.channel === seen.channel) ? seen.channel : (channels[0]?.channel ?? null);
-  const dm = seen.dm !== null && peers.some((p) => p.id === seen.dm?.peer) ? seen.dm : peers[0] ? { peer: peers[0].id } : null;
+  const other = seen.dm === null ? null : (seen.dm.with ?? self);
+  const newest = peers[0]?.conversations[0];
+  const dm = seen.dm !== null && other !== null && peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm.peer, with: other } : peers[0] && newest ? { peer: peers[0].id, with: newest.with } : null;
   return { channel, dm };
 }

@@ -96,7 +96,7 @@
     {
       "name": "A13 Direct messages never finds a conversation to land on",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": ": peers[0] ? { peer: peers[0].id } : null;",
+      "find": ": peers[0] && newest ? { peer: peers[0].id, with: newest.with } : null;",
       "replace": ": null;",
       "expectRed": "1.3 the five views are links and Settings is a button",
       "cell": "1.3 the five views are links and Settings is a button"

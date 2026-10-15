@@ -4,7 +4,7 @@
  *  presence watch went silent, a partial page's counts); the partial banner in the Activity view; the
  *  retry that makes "Retrying." true; a closed feed that stays closed; rail items with nowhere to go
  *  that are disabled buttons titled with the empty state; Channels and Direct messages landing on the
- *  last place visited; the panel's Tab stop when the selected tab is disabled; and an Agents row
+ *  last place visited, a conversation named by both parties; the panel's Tab stop when the selected tab is disabled; and an Agents row
  *  marked only while the panel shows that agent. Each cell renders the real components over a seeded
  *  store, on the server or mounted in jsdom, or drives the controller and the boot over a fake Api,
  *  and reads what they drew or wrote. */
@@ -339,10 +339,17 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
     href("Direct messages"), formatRoute({ view: "dm", peer: "local.rev", with: "local.dav" }));
   await m.run(() => store.set({ channels: [{ channel: "general", messages: 1 }] }));
   same("5.6 a last channel that is gone falls back to the first there is", href("Channels"), formatRoute({ view: "channel", channel: "general" }));
-  await m.unmount();
   const fresh = railItems(parse(renderShell({ roster, channels: [{ channel: "general", messages: 1 }], dms: [dmMsg("d2", "local.rv2", "local.dav", 20)] })));
-  same("5.7 before any visit they land on the first channel and on the first peer with a conversation",
-    fresh.slice(1, 3).map((i) => i.href), [formatRoute({ view: "channel", channel: "general" }), formatRoute({ view: "dm", peer: "local.dav" })]);
+  same("5.7 before any visit they land on the first channel and on the newest conversation, both parties named",
+    fresh.slice(1, 3).map((i) => i.href), [formatRoute({ view: "channel", channel: "general" }), formatRoute({ view: "dm", peer: "local.dav", with: "local.rv2" })]);
+  await m.run(() => goTo({ view: "dm", peer: "local.rev" }));
+  await m.run(() => goTo({ view: "activity" }));
+  same("5.8 a Message visit names only the agent, so with the operator's id unknown Direct messages lands on the newest conversation, both parties named",
+    href("Direct messages"), formatRoute({ view: "dm", peer: "local.dav", with: "local.rv2" }));
+  await m.run(() => store.set({ operatorId: "local.op" }));
+  same("5.9 once the operator's id is known that visit is the operator's conversation with the agent, both parties named",
+    href("Direct messages"), formatRoute({ view: "dm", peer: "local.rev", with: "local.op" }));
+  await m.unmount();
 }
 
 // ── 6. The panel: a Tab stop when the selected tab is disabled, and the Agents row mark ──────────

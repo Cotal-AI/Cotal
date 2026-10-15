@@ -24,10 +24,11 @@ const VIEWS: View[] = [
 ];
 
 /** Where the Channels and Direct messages items land off their own views: the place of that kind
- *  the reader last visited, or the first there is, or null when there is none yet. */
+ *  the reader last visited, or the first there is, or null when there is none yet. A conversation
+ *  names both parties, so the item opens the conversation it stands for. */
 export interface Places {
   channel: string | null;
-  dm: { peer: string; with?: string } | null;
+  dm: { peer: string; with: string } | null;
 }
 
 /** Why an item that leads nowhere yet is disabled: the empty state the reader would find there. */

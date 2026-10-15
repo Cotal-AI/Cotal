@@ -368,7 +368,7 @@
     {
       "name": "ST46 the last conversation is followed with one party",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "peers.some((p) => p.id === seen.dm?.peer) ? seen.dm :",
+      "find": "peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm.peer, with: other } :",
       "replace": "peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm!.peer } :",
       "expectRed": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one",
       "cell": "5.5 Direct messages lands on the conversation last visited, both parties kept, not the newest one"
@@ -468,6 +468,30 @@
       "replace": "{false && ",
       "expectRed": "3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it",
       "cell": "3.6 while the page is partial the Activity header carries only its title, as mock B's partial frame does: the sidebar marker and the banner say it"
+    },
+    {
+      "name": "ST59 the newest conversation is followed with one party",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "? { peer: peers[0].id, with: newest.with } :",
+      "replace": "? { peer: peers[0].id } :",
+      "expectRed": "5.7 before any visit they land on the first channel and on the newest conversation, both parties named",
+      "cell": "5.7 before any visit they land on the first channel and on the newest conversation, both parties named"
+    },
+    {
+      "name": "ST60 a Message visit is followed with its missing party, so the rail names one party",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "seen.dm !== null && other !== null && peers.some(",
+      "replace": "seen.dm !== null && peers.some(",
+      "expectRed": "5.8 a Message visit names only the agent, so with the operator's id unknown Direct messages lands on the newest conversation, both parties named",
+      "cell": "5.8 a Message visit names only the agent, so with the operator's id unknown Direct messages lands on the newest conversation, both parties named"
+    },
+    {
+      "name": "ST61 a Message visit is never filled in with the operator's id",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "(seen.dm.with ?? self)",
+      "replace": "(seen.dm.with ?? null)",
+      "expectRed": "5.9 once the operator's id is known that visit is the operator's conversation with the agent, both parties named",
+      "cell": "5.9 once the operator's id is known that visit is the operator's conversation with the agent, both parties named"
     }
   ]
 }
