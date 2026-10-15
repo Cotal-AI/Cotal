@@ -277,18 +277,26 @@ try {
   ok("5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
     outcome === POSTER_STOPPED && wentOffline, { outcome, roster: watcher.getRoster().filter((p) => p.card.id === closingId).map((p) => p.status) });
 
+  // Judged on the watcher's presence events in stream order rather than on a roster sampled at a
+  // moment: the retried operator heartbeats every 2 s, which would put a stray offline record right
+  // back online before a sample could see it.
+  const lateEvents: Array<{ id: string; type: string; uid?: string }> = [];
+  watcher.on("presence", (ev: { type: string; presence: { card: { id: string }; lifecycleUid?: string } }) =>
+    lateEvents.push({ id: ev.presence.card.id, type: ev.type, uid: ev.presence.lifecycleUid }));
   const late = operatorPoster({ space: "postopen", server: OPEN, tls: false }, undefined);
   starts.failAfterConnect = true;
   const lateFirst = await late.ensure().then(() => "resolved", (e: Error) => e.message);
   const lateSecond = await late.ensure().then((e) => e.card.id, (e: Error) => `rejected: ${e.message}`);
   const lateId = late.operatorId();
   const lateJoined = await until(() => watcher.getRoster().some((p) => p.card.id === lateId && p.status !== "offline"));
-  // Past the held-back stop, and well inside the 5 s heartbeat that would mask a stray offline record.
-  await wait(STOP_DELAY_MS + 700);
-  const lateStatus = watcher.getRoster().find((p) => p.card.id === lateId)?.status;
+  await wait(STOP_DELAY_MS + 500); // past the held-back stop
+  const mine = lateEvents.filter((e) => e.id === lateId);
+  const failedUid = mine.find((e) => e.type !== "offline")?.uid;
+  const successorAt = mine.findIndex((e) => e.type !== "offline" && e.uid !== failedUid);
+  const offlineAfter = successorAt >= 0 && mine.slice(successorAt).some((e) => e.type === "offline");
   ok("5.13 a start that fails after connecting is stopped before the retry starts, so its offline record cannot land over the retried operator's online one",
     lateFirst === "injected failure after connect" && lateSecond === lateId && lateId === starts.failedId && lateJoined
-    && lateStatus !== undefined && lateStatus !== "offline", { lateFirst, lateSecond, lateId, failedId: starts.failedId, lateJoined, lateStatus });
+    && successorAt > 0 && !offlineAfter, { lateFirst, lateSecond, lateId, failedId: starts.failedId, lateJoined, events: mine });
   await late.stop();
   await watcher.stop();
 
