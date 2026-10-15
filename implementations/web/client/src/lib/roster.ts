@@ -30,11 +30,18 @@ const metaText = (meta: Record<string, unknown> | undefined, key: string): strin
   return typeof v === "string" ? v : undefined;
 };
 
+/** A status's place in `STATUS_ORDER`. The wire can carry a status outside the four, which sorts
+ *  after all of them rather than before them. */
+const rank = (status: string): number => {
+  const i = STATUS_ORDER.indexOf(status as Status);
+  return i === -1 ? STATUS_ORDER.length : i;
+};
+
 /** The roster shaped for a list: online only unless asked, sorted by status then name. */
 export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boolean } = {}): RosterRow[] {
   return roster
     .filter((p) => opts.includeOffline || p.status !== "offline")
-    .sort((a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) || a.card.name.localeCompare(b.card.name))
+    .sort((a, b) => rank(a.status) - rank(b.status) || a.card.name.localeCompare(b.card.name))
     .map((p): RosterRow => ({
       id: p.card.id,
       name: p.card.name,
@@ -51,9 +58,11 @@ export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boole
     }));
 }
 
+/** How many rows hold each of the four statuses. A row whose status is none of them counts toward
+ *  none, so no count becomes `NaN`. */
 export function statusCounts(rows: RosterRow[]): Record<Status, number> {
   const counts: Record<Status, number> = { working: 0, waiting: 0, idle: 0, offline: 0 };
-  for (const r of rows) counts[r.status] += 1;
+  for (const r of rows) if (STATUS_ORDER.includes(r.status)) counts[r.status] += 1;
   return counts;
 }
 

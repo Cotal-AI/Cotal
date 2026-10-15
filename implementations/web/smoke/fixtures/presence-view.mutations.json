@@ -92,6 +92,22 @@
       "replace": "",
       "expectRed": "2.1 the client applies presence-view events",
       "cell": "2.1 the client applies presence-view events: a stale view keeps the last-known rows and marks the roster source"
+    },
+    {
+      "name": "statusCounts counts a status outside the four again, so the counts gain a NaN entry for it",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "  for (const r of rows) if (STATUS_ORDER.includes(r.status)) counts[r.status] += 1;",
+      "replace": "  for (const r of rows) counts[r.status] += 1;",
+      "expectRed": "2.11b statusCounts ignores a status outside the four",
+      "cell": "2.11b statusCounts ignores a status outside the four, so no count is NaN and the four are unchanged"
+    },
+    {
+      "name": "an unknown status ranks at -1 again, so a peer with a status the page does not know heads the list above the waiting peers",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "  return i === -1 ? STATUS_ORDER.length : i;",
+      "replace": "  return i;",
+      "expectRed": "2.11c rosterRows sorts a status outside the four after every known one, not first",
+      "cell": "2.11c rosterRows sorts a status outside the four after every known one, not first"
     }
   ]
 }

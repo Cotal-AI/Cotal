@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 416,
+    "total": 418,
     "honest-text": 34,
     "presence-only-glyph/count": 24,
     "command-ack": 12,
-    "non-render/control": 346
+    "non-render/control": 348
   },
   "renderers": [
     {
@@ -3019,9 +3019,23 @@
     {
       "path": "implementations/web/client/src/lib/roster.ts",
       "kind": "status-token",
-      "anchor": "Offline || p.status !== \"offline\")\n    .sort((a, b) => ST",
+      "anchor": "Offline || p.status !== \"offline\")\n    .sort((a, b) => ra",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "derived-output",
+      "anchor": "rank(a.status)",
+      "class": "non-render/control",
+      "rationale": "Sort key: the status's place in STATUS_ORDER, used only to order the rows; nothing is rendered from it."
+    },
+    {
+      "path": "implementations/web/client/src/lib/roster.ts",
+      "kind": "derived-output",
+      "anchor": "rank(b.status)",
+      "class": "non-render/control",
+      "rationale": "Sort key: the status's place in STATUS_ORDER, used only to order the rows; nothing is rendered from it."
     },
     {
       "path": "implementations/web/client/src/lib/roster.ts",

@@ -111,6 +111,14 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
   ok("2.10 a row carries activity, attention and statusSince", amy?.activity === "reviewing" && amy?.attention === "focus" && amy?.statusSince === 5, amy);
   ok("2.11 statusCounts counts every status over the rows it is given",
     JSON.stringify(statusCounts(all)) === JSON.stringify({ working: 2, waiting: 2, idle: 1, offline: 1 }), statusCounts(all));
+  // The wire can carry a status outside the four. It is counted toward none of them and sorts last.
+  const odd = [...roster, entry("local.eve", "eve", "paused" as RosterEntry["status"])];
+  const oddCounts = statusCounts(rosterRows(odd, { includeOffline: true }));
+  ok("2.11b statusCounts ignores a status outside the four, so no count is NaN and the four are unchanged",
+    JSON.stringify(oddCounts) === JSON.stringify({ working: 2, waiting: 2, idle: 1, offline: 1 }), oddCounts);
+  const oddRows = rosterRows(odd);
+  ok("2.11c rosterRows sorts a status outside the four after every known one, not first",
+    oddRows.at(-1)?.name === "eve" && oddRows[0]?.name === "cat", oddRows.map((r) => `${r.status}:${r.name}`));
   ok("2.12 waiting() returns the waiting rows", waiting(rows).map((r) => r.name).join() === "cat,dan", waiting(rows));
   ok("2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one",
     oldestLiveBeat(all) === 1 && oldestLiveBeat(rosterRows([entry("local.o", "o", "offline")], { includeOffline: true })) === undefined,
