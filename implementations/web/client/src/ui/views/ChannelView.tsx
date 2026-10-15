@@ -142,7 +142,8 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *    no panel) their buttons are disabled.
  *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
  *    who closed the panel can bring it back.
- *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet. */
+ *  - On a phone (`SheetMenu`) the header opens with the menu button that shows the places sheet, and
+ *    the panel button is titled Open agent panel. */
 export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen = false, onTogglePanel }: {
   store: Store<DashboardState>;
   channel: string;
@@ -171,6 +172,8 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const scroll = usePinnedScroll(channel, tail && `${tail.msg.id}\u0001${tail.senderId ?? ""}`);
   const count = members.length;
   const sheet = useContext(SheetMenu);
+  // On a phone the panel opens over the whole page, so the button says what it does there, as mock F does.
+  const panelLabel = sheet ? "Open agent panel" : "Toggle panel";
   return (
     <>
       <header className="ui-bar">
@@ -193,7 +196,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
           {count}
         </button>
         {onTogglePanel && (
-          <button type="button" className="ui-tool" title="Toggle panel" aria-label="Toggle panel" aria-pressed={panelOpen} onClick={onTogglePanel}>
+          <button type="button" className="ui-tool" title={panelLabel} aria-label={panelLabel} aria-pressed={panelOpen} onClick={onTogglePanel}>
             <Icon icon={SidebarRightIcon} className="ui-ic" />
           </button>
         )}

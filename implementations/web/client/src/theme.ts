@@ -29,18 +29,10 @@ export function applyTheme(t: Theme): void {
   document.documentElement.dataset.theme = t;
 }
 
-/** Puts the saved choice on the root element and returns it. The entry module calls it at its top
- *  level, before React mounts, so a reader who chose the other palette never sees a frame of the
- *  system's first. It is code in the bundle and not an inline script, so the page can keep a
- *  `script-src 'self'` policy. Browser only. */
-export function initTheme(): Theme {
-  const t = readTheme();
-  applyTheme(t);
-  return t;
-}
-
-/** The theme as React state for the Settings menu: the choice on the root element now, and the way to
- *  change it, which applies it at once and saves it for the next load. Browser only. */
+/** The theme as React state for the Settings menu: the saved choice, and the way to change it, which
+ *  applies it at once and saves it for the next load. The saved choice is on the root element before
+ *  this runs: the build's `theme-boot.js` (`lib/themeBoot.ts`) puts it there ahead of the stylesheet.
+ *  Browser only. */
 export function useTheme(): [Theme, (t: Theme) => void] {
   const [theme, setTheme] = useState<Theme>(readTheme);
   const choose = (t: Theme) => {

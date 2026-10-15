@@ -294,9 +294,14 @@ export const CLIENT_NOT_BUILT =
   "the dashboard client is not built. In a source checkout, run `pnpm --filter @cotal-ai/web build`. " +
   "An installed @cotal-ai/web always ships its client, so this is a broken install: reinstall it with `cotal ext seed --force`.";
 
+/** The classic script the page loads in its head, before the stylesheet, to put the saved theme on
+ *  the root element before anything is drawn (`client/src/lib/themeBoot.ts`, written by the build). */
+export const THEME_BOOT = "theme-boot.js";
+
 /** The client build as an allow-list, read once at startup: the page at `/` (and `/graph`, so an
- *  old link opens the app) plus the files directly inside `assets/`. Nothing else under `dir` is
- *  reachable, and no request path is ever joined onto the filesystem. */
+ *  old link opens the app), the theme boot script at `/theme-boot.js`, and the files directly inside
+ *  `assets/`. Nothing else under `dir` is reachable, and no request path is ever joined onto the
+ *  filesystem. The boot script's name carries no hash, so unlike the assets it is not cached for good. */
 export function clientAssets(dir: string): Map<string, ClientFile> {
   const routes = new Map<string, ClientFile>();
   const index = join(dir, "index.html");
@@ -304,6 +309,8 @@ export function clientAssets(dir: string): Map<string, ClientFile> {
   const page: ClientFile = { path: index, type: "text/html; charset=utf-8", immutable: false };
   routes.set("/", page);
   routes.set("/graph", page);
+  const boot = join(dir, THEME_BOOT);
+  if (existsSync(boot)) routes.set(`/${THEME_BOOT}`, { path: boot, type: CLIENT_TYPES[".js"], immutable: false });
   const assets = join(dir, "assets");
   if (!existsSync(assets)) return routes;
   for (const entry of readdirSync(assets, { withFileTypes: true })) {

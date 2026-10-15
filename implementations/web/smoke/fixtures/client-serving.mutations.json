@@ -44,6 +44,30 @@
       "replace": "  \"\";",
       "expectRed": "the not-built message tells an installed package it is a broken install and how to reinstall it",
       "cell": "the not-built message tells an installed package it is a broken install and how to reinstall it"
+    },
+    {
+      "name": "the theme boot script is not served, so the page loads in the system palette",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (existsSync(boot)) routes.set(`/${THEME_BOOT}`, ",
+      "replace": "if (false) routes.set(`/${THEME_BOOT}`, ",
+      "expectRed": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash",
+      "cell": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash"
+    },
+    {
+      "name": "the theme boot script is cached for good though its name carries no hash, so an upgrade keeps the old one",
+      "file": "implementations/web/src/web.ts",
+      "find": "{ path: boot, type: CLIENT_TYPES[\".js\"], immutable: false }",
+      "replace": "{ path: boot, type: CLIENT_TYPES[\".js\"], immutable: true }",
+      "expectRed": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash",
+      "cell": "the theme boot script the page loads in its head is served as JavaScript, and not cached for good, since its name carries no hash"
+    },
+    {
+      "name": "a build without the boot script still routes it, to a file that is not there",
+      "file": "implementations/web/src/web.ts",
+      "find": "if (existsSync(boot)) routes.set(`/${THEME_BOOT}`, ",
+      "replace": "routes.set(`/${THEME_BOOT}`, ",
+      "expectRed": "a build without the boot script has no route for it",
+      "cell": "a build without the boot script has no route for it"
     }
   ]
 }

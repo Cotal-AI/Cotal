@@ -6,164 +6,124 @@
   "progressPattern": "^  ok ",
   "mutations": [
     {
-      "name": "LY1 the first call returns the saved choice without applying it",
-      "file": "implementations/web/client/src/theme.ts",
-      "find": "  applyTheme(t);\n  return t;\n",
-      "replace": "  return t;\n",
-      "expectRed": "1.1 the entry module's first call puts the saved choice on the root element before anything renders",
-      "cell": "1.1 the entry module's first call puts the saved choice on the root element before anything renders"
-    },
-    {
-      "name": "LY2 the first call ignores what was saved",
-      "file": "implementations/web/client/src/theme.ts",
-      "find": "export function initTheme(): Theme {\n  const t = readTheme();",
-      "replace": "export function initTheme(): Theme {\n  const t: Theme = \"system\";",
-      "expectRed": "1.1 the entry module's first call puts the saved choice on the root element before anything renders",
-      "cell": "1.1 the entry module's first call puts the saved choice on the root element before anything renders"
-    },
-    {
       "name": "LY3 a menu choice is not applied",
       "file": "implementations/web/client/src/theme.ts",
       "find": "    applyTheme(t);\n    writeTheme(t);\n",
       "replace": "    writeTheme(t);\n",
-      "expectRed": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
-      "cell": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
+      "expectRed": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
+      "cell": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
     },
     {
       "name": "LY4 a menu choice is not saved",
       "file": "implementations/web/client/src/theme.ts",
       "find": "    writeTheme(t);\n    setTheme(t);\n",
       "replace": "    setTheme(t);\n",
-      "expectRed": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
-      "cell": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
+      "expectRed": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
+      "cell": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
     },
     {
       "name": "LY5 a new load does not read the saved choice",
       "file": "implementations/web/client/src/theme.ts",
       "find": "useState<Theme>(readTheme)",
       "replace": "useState<Theme>(\"system\")",
-      "expectRed": "1.9 a new load reads the saved choice: Dark is the checked item",
-      "cell": "1.9 a new load reads the saved choice: Dark is the checked item"
+      "expectRed": "1.7 a new load reads the saved choice: Dark is the checked item",
+      "cell": "1.7 a new load reads the saved choice: Dark is the checked item"
     },
     {
       "name": "LY6 the app hands Settings no handler",
       "file": "implementations/web/client/src/App.tsx",
       "find": "      onTheme={setTheme}\n",
       "replace": "",
-      "expectRed": "1.3 Settings is live in the app and its menu starts closed",
-      "cell": "1.3 Settings is live in the app and its menu starts closed"
+      "expectRed": "1.1 Settings is live in the app and its menu starts closed",
+      "cell": "1.1 Settings is live in the app and its menu starts closed"
     },
     {
       "name": "LY7 the menu loses Light",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "  { value: \"light\", label: \"Light\" },\n",
       "replace": "",
-      "expectRed": "1.4 it opens a Theme menu offering System, Light and Dark, the current choice checked",
-      "cell": "1.4 it opens a Theme menu offering System, Light and Dark, the current choice checked"
+      "expectRed": "1.2 it opens a Theme menu offering System, Light and Dark, the current choice checked",
+      "cell": "1.2 it opens a Theme menu offering System, Light and Dark, the current choice checked"
     },
     {
       "name": "LY8 no item is checked",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "aria-checked={theme === t.value}",
       "replace": "aria-checked={false}",
-      "expectRed": "1.4 it opens a Theme menu offering System, Light and Dark, the current choice checked",
-      "cell": "1.4 it opens a Theme menu offering System, Light and Dark, the current choice checked"
+      "expectRed": "1.2 it opens a Theme menu offering System, Light and Dark, the current choice checked",
+      "cell": "1.2 it opens a Theme menu offering System, Light and Dark, the current choice checked"
     },
     {
       "name": "LY9 the checked item has no tick",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "{theme === t.value ? <Icon icon={Tick02Icon}",
       "replace": "{false ? <Icon icon={Tick02Icon}",
-      "expectRed": "1.5 focus moves to the checked item, and the checked item carries a tick, not colour alone",
-      "cell": "1.5 focus moves to the checked item, and the checked item carries a tick, not colour alone"
+      "expectRed": "1.3 focus moves to the checked item, and the checked item carries a tick, not colour alone",
+      "cell": "1.3 focus moves to the checked item, and the checked item carries a tick, not colour alone"
     },
     {
       "name": "LY10 focus stays on Settings when the menu opens",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "    items()[Math.max(checked, 0)]?.focus();\n",
       "replace": "",
-      "expectRed": "1.5 focus moves to the checked item, and the checked item carries a tick, not colour alone",
-      "cell": "1.5 focus moves to the checked item, and the checked item carries a tick, not colour alone"
+      "expectRed": "1.3 focus moves to the checked item, and the checked item carries a tick, not colour alone",
+      "cell": "1.3 focus moves to the checked item, and the checked item carries a tick, not colour alone"
     },
     {
       "name": "LY11 Down does not move",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "ArrowDown: at + 1",
       "replace": "ArrowDown: at",
-      "expectRed": "1.6 Down moves to the next item",
-      "cell": "1.6 Down moves to the next item"
+      "expectRed": "1.4 Down moves to the next item",
+      "cell": "1.4 Down moves to the next item"
     },
     {
       "name": "LY12 Up does not wrap",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "list[(step[e.key] + list.length) % list.length]?.focus();",
       "replace": "list[step[e.key]]?.focus();",
-      "expectRed": "1.7 and Up wraps from the first to the last",
-      "cell": "1.7 and Up wraps from the first to the last"
+      "expectRed": "1.5 and Up wraps from the first to the last",
+      "cell": "1.5 and Up wraps from the first to the last"
     },
     {
       "name": "LY13 closing the menu leaves focus where it was",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "    (button.current as unknown as Focusable | null)?.focus();\n",
       "replace": "",
-      "expectRed": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
-      "cell": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
+      "expectRed": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
+      "cell": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
     },
     {
       "name": "LY14 a choice leaves the menu open",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "                onTheme(t.value);\n                close();\n",
       "replace": "                onTheme(t.value);\n",
-      "expectRed": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
-      "cell": "1.8 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
+      "expectRed": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings",
+      "cell": "1.6 each choice in turn is applied to the root element at once, saved for the next load, and closes the menu with focus back on Settings"
     },
     {
       "name": "LY15 Escape does not close the menu",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "if (e.key === \"Escape\" || e.key === \"Tab\") {",
       "replace": "if (e.key === \"Tab\") {",
-      "expectRed": "1.10 Escape closes the menu and puts focus back on Settings",
-      "cell": "1.10 Escape closes the menu and puts focus back on Settings"
+      "expectRed": "1.8 Escape closes the menu and puts focus back on Settings",
+      "cell": "1.8 Escape closes the menu and puts focus back on Settings"
     },
     {
       "name": "LY16 a press outside leaves the menu open",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "      if (!inside) setOpen(false);\n",
       "replace": "",
-      "expectRed": "1.11 a press outside the menu closes it",
-      "cell": "1.11 a press outside the menu closes it"
+      "expectRed": "1.9 a press outside the menu closes it",
+      "cell": "1.9 a press outside the menu closes it"
     },
     {
       "name": "LY17 Settings never says it is expanded",
       "file": "implementations/web/client/src/ui/Rail.tsx",
       "find": "aria-expanded={open}",
       "replace": "aria-expanded={false}",
-      "expectRed": "1.4 it opens a Theme menu offering System, Light and Dark, the current choice checked",
-      "cell": "1.4 it opens a Theme menu offering System, Light and Dark, the current choice checked"
-    },
-    {
-      "name": "LY18 system pins light controls",
-      "file": "implementations/web/client/src/styles/tokens.css",
-      "find": "  color-scheme: light dark;\n",
-      "replace": "  color-scheme: light;\n",
-      "expectRed": "1.12 color-scheme follows the choice: light dark for system, and each forced value under its data-theme",
-      "cell": "1.12 color-scheme follows the choice: light dark for system, and each forced value under its data-theme"
-    },
-    {
-      "name": "LY19 a forced light theme keeps the system's controls",
-      "file": "implementations/web/client/src/styles/tokens.css",
-      "find": ":root[data-theme=\"light\"] { color-scheme: light; }",
-      "replace": ":root[data-theme=\"light\"] { }",
-      "expectRed": "1.12 color-scheme follows the choice: light dark for system, and each forced value under its data-theme",
-      "cell": "1.12 color-scheme follows the choice: light dark for system, and each forced value under its data-theme"
-    },
-    {
-      "name": "LY20 a forced dark theme keeps the system's controls",
-      "file": "implementations/web/client/src/styles/tokens.css",
-      "find": "  color-scheme: dark;\n",
-      "replace": "",
-      "expectRed": "1.12 color-scheme follows the choice: light dark for system, and each forced value under its data-theme",
-      "cell": "1.12 color-scheme follows the choice: light dark for system, and each forced value under its data-theme"
+      "expectRed": "1.2 it opens a Theme menu offering System, Light and Dark, the current choice checked",
+      "cell": "1.2 it opens a Theme menu offering System, Light and Dark, the current choice checked"
     },
     {
       "name": "LY21 the phone width is wider than 768px",
@@ -258,144 +218,144 @@
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "find": "        {sheet && (\n",
       "replace": "        {false && (\n",
-      "expectRed": "3.1 the channel header opens with the menu button, and the sheet starts closed",
-      "cell": "3.1 the channel header opens with the menu button, and the sheet starts closed"
+      "expectRed": "4.1 the channel header opens with the menu button, and the sheet starts closed",
+      "cell": "4.1 the channel header opens with the menu button, and the sheet starts closed"
     },
     {
       "name": "LY33 the shell gives the header no sheet",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "(phone ? { open: sheetOpen, show: () => setSheetAt(here) } : null)",
       "replace": "null",
-      "expectRed": "3.1 the channel header opens with the menu button, and the sheet starts closed",
-      "cell": "3.1 the channel header opens with the menu button, and the sheet starts closed"
+      "expectRed": "4.1 the channel header opens with the menu button, and the sheet starts closed",
+      "cell": "4.1 the channel header opens with the menu button, and the sheet starts closed"
     },
     {
       "name": "LY34 the menu button never says it is expanded",
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "find": "aria-expanded={sheet.open}",
       "replace": "aria-expanded={false}",
-      "expectRed": "3.2 the menu button opens the places sheet, a modal dialog holding the sidebar",
-      "cell": "3.2 the menu button opens the places sheet, a modal dialog holding the sidebar"
+      "expectRed": "4.2 the menu button opens the places sheet, a modal dialog holding the sidebar",
+      "cell": "4.2 the menu button opens the places sheet, a modal dialog holding the sidebar"
     },
     {
       "name": "LY35 the sheet is not a modal dialog",
       "file": "implementations/web/client/src/ui/AppShell.tsx",
       "find": "<aside className=\"ui-side ui-sheet\" aria-label=\"Space\" role=\"dialog\" aria-modal=\"true\">",
       "replace": "<aside className=\"ui-side ui-sheet\" aria-label=\"Space\">",
-      "expectRed": "3.2 the menu button opens the places sheet, a modal dialog holding the sidebar",
-      "cell": "3.2 the menu button opens the places sheet, a modal dialog holding the sidebar"
+      "expectRed": "4.2 the menu button opens the places sheet, a modal dialog holding the sidebar",
+      "cell": "4.2 the menu button opens the places sheet, a modal dialog holding the sidebar"
     },
     {
       "name": "LY36 focus is not moved into the trap",
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "    tabbable()[0]?.focus();\n",
       "replace": "",
-      "expectRed": "3.3 focus moves into the sheet, to its first place",
-      "cell": "3.3 focus moves into the sheet, to its first place"
+      "expectRed": "4.3 focus moves into the sheet, to its first place",
+      "cell": "4.3 focus moves into the sheet, to its first place"
     },
     {
       "name": "LY37 Tab from the last item leaves the trap",
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "(!e.shiftKey && at === last)",
       "replace": "false",
-      "expectRed": "3.4 Tab from the last place wraps to the first: focus stays in the sheet",
-      "cell": "3.4 Tab from the last place wraps to the first: focus stays in the sheet"
+      "expectRed": "4.4 Tab from the last place wraps to the first: focus stays in the sheet",
+      "cell": "4.4 Tab from the last place wraps to the first: focus stays in the sheet"
     },
     {
       "name": "LY38 Shift Tab from the first item leaves the trap",
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "(e.shiftKey && at === first)",
       "replace": "false",
-      "expectRed": "3.5 and Shift Tab from the first wraps to the last",
-      "cell": "3.5 and Shift Tab from the first wraps to the last"
+      "expectRed": "4.5 and Shift Tab from the first wraps to the last",
+      "cell": "4.5 and Shift Tab from the first wraps to the last"
     },
     {
       "name": "LY39 Escape does nothing in the trap",
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "        escape.current();\n",
       "replace": "",
-      "expectRed": "3.6 Escape closes the sheet and puts focus back on the menu button",
-      "cell": "3.6 Escape closes the sheet and puts focus back on the menu button"
+      "expectRed": "4.6 Escape closes the sheet and puts focus back on the menu button",
+      "cell": "4.6 Escape closes the sheet and puts focus back on the menu button"
     },
     {
       "name": "LY40 focus is not handed back when the trap goes",
       "file": "implementations/web/client/src/ui/focusTrap.tsx",
       "find": "      before?.focus?.();\n",
       "replace": "",
-      "expectRed": "3.6 Escape closes the sheet and puts focus back on the menu button",
-      "cell": "3.6 Escape closes the sheet and puts focus back on the menu button"
+      "expectRed": "3.5 and focus goes back to the member stack that opened it",
+      "cell": "3.5 and focus goes back to the member stack that opened it"
     },
     {
       "name": "LY41 the sheet's close does nothing",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "onSheetClose={() => setSheetAt(null)}",
       "replace": "onSheetClose={() => undefined}",
-      "expectRed": "3.6 Escape closes the sheet and puts focus back on the menu button",
-      "cell": "3.6 Escape closes the sheet and puts focus back on the menu button"
+      "expectRed": "4.6 Escape closes the sheet and puts focus back on the menu button",
+      "cell": "4.6 Escape closes the sheet and puts focus back on the menu button"
     },
     {
       "name": "LY42 the scrim does not close the sheet",
       "file": "implementations/web/client/src/ui/AppShell.tsx",
       "find": "<div className=\"ui-sheet-scrim\" onClick={props.onSheetClose} />",
       "replace": "<div className=\"ui-sheet-scrim\" />",
-      "expectRed": "3.7 a click on the scrim closes it",
-      "cell": "3.7 a click on the scrim closes it"
+      "expectRed": "4.7 a click on the scrim closes it",
+      "cell": "4.7 a click on the scrim closes it"
     },
     {
       "name": "LY43 coming back to the route reopens the sheet",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "  if (sheetAt !== null && sheetAt !== here) setSheetAt(null);\n",
       "replace": "",
-      "expectRed": "3.8 a new route, as following a place does, closes it",
-      "cell": "3.8 a new route, as following a place does, closes it"
+      "expectRed": "4.8 a new route, as following a place does, closes it",
+      "cell": "4.8 a new route, as following a place does, closes it"
     },
     {
       "name": "LY44 the phone panel follows the wide layout's saved choice",
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
       "find": "const open = phone ? phoneOpen : wide;",
       "replace": "const open = wide;",
-      "expectRed": "4.1 the panel starts closed on a phone, though the wide layout's saved choice is open",
-      "cell": "4.1 the panel starts closed on a phone, though the wide layout's saved choice is open"
+      "expectRed": "3.1 the panel starts closed on a phone, though the wide layout's saved choice is open",
+      "cell": "3.1 the panel starts closed on a phone, though the wide layout's saved choice is open"
     },
     {
       "name": "LY45 the phone panel is not full screen or modal",
       "file": "implementations/web/client/src/ui/AppShell.tsx",
       "find": "<section className=\"ui-pane ui-pane-full\" aria-label=\"Details\" role=\"dialog\" aria-modal=\"true\" data-full=\"true\">",
       "replace": "<section className=\"ui-pane\" aria-label=\"Details\">",
-      "expectRed": "4.2 the member stack opens it full screen, as a modal dialog marked full",
-      "cell": "4.2 the member stack opens it full screen, as a modal dialog marked full"
+      "expectRed": "3.2 the member stack opens it full screen, as a modal dialog marked full",
+      "cell": "3.2 the member stack opens it full screen, as a modal dialog marked full"
     },
     {
       "name": "LY46 opening the phone panel writes the wide layout's choice",
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
       "find": "      if (onPhone.current) return setPhoneOpen(next);\n",
       "replace": "",
-      "expectRed": "4.2 the member stack opens it full screen, as a modal dialog marked full",
-      "cell": "4.2 the member stack opens it full screen, as a modal dialog marked full"
+      "expectRed": "3.2 the member stack opens it full screen, as a modal dialog marked full",
+      "cell": "3.2 the member stack opens it full screen, as a modal dialog marked full"
     },
     {
       "name": "LY47 Escape leaves the phone panel open",
       "file": "implementations/web/client/src/ui/AppShell.tsx",
       "find": "<FocusTrap onEscape={props.onPanelClose}>",
       "replace": "<FocusTrap onEscape={() => undefined}>",
-      "expectRed": "4.4 Escape closes it, and the wide layout's saved choice is untouched",
-      "cell": "4.4 Escape closes it, and the wide layout's saved choice is untouched"
+      "expectRed": "3.4 Escape closes it, and the wide layout's saved choice is untouched",
+      "cell": "3.4 Escape closes it, and the wide layout's saved choice is untouched"
     },
     {
       "name": "LY48 the shell hands the phone panel no close",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "onPanelClose={panel.close}",
       "replace": "onPanelClose={() => undefined}",
-      "expectRed": "4.4 Escape closes it, and the wide layout's saved choice is untouched",
-      "cell": "4.4 Escape closes it, and the wide layout's saved choice is untouched"
+      "expectRed": "3.4 Escape closes it, and the wide layout's saved choice is untouched",
+      "cell": "3.4 Escape closes it, and the wide layout's saved choice is untouched"
     },
     {
       "name": "LY49 a new route leaves the phone panel open",
       "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
       "find": "    setAt(cur);\n    setPhoneOpen(false);\n",
       "replace": "    setAt(cur);\n",
-      "expectRed": "4.7 a new route closes it, even another channel that has a panel to show",
-      "cell": "4.7 a new route closes it, even another channel that has a panel to show"
+      "expectRed": "3.8 a new route closes it, even another channel that has a panel to show",
+      "cell": "3.8 a new route closes it, even another channel that has a panel to show"
     },
     {
       "name": "LY50 the app does not follow the width as it changes",
@@ -404,6 +364,14 @@
       "replace": "",
       "expectRed": "5.1 when the window widens past 768px the rail, the sidebar and the saved panel come back, and the tab bar and the menu button go",
       "cell": "5.1 when the window widens past 768px the rail, the sidebar and the saved panel come back, and the tab bar and the menu button go"
+    },
+    {
+      "name": "LY52 on a phone the panel button keeps its wide title",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "const panelLabel = sheet ? \"Open agent panel\" : \"Toggle panel\";",
+      "replace": "const panelLabel = \"Toggle panel\";",
+      "expectRed": "3.6 the header's panel button, titled Open agent panel as in mock F, opens it too",
+      "cell": "3.6 the header's panel button, titled Open agent panel as in mock F, opens it too"
     },
     {
       "name": "LY51 unmounting keeps watching the width",

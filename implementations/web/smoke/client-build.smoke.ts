@@ -1,12 +1,16 @@
 /** The client build is the shipped page: it must exist after `build`, reference only files it
  *  contains, name every third-party package it bundles with that package's license, and carry the
- *  character art the avatars draw. */
+ *  character art the avatars draw. Its theme boot script loads before the stylesheet and puts the
+ *  saved theme on the root element, and its stylesheet's color-scheme follows the theme. */
 import { strict as assert } from "node:assert";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { JSDOM } from "jsdom";
 import { body } from "../client/src/art/index.ts";
+import { THEMES } from "../client/src/lib/theme.js";
+import { bootTheme } from "../client/src/lib/themeBoot.ts";
 import config from "../client/vite.config.js";
 
 const pkg = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,8 +27,82 @@ const refs = [...html.matchAll(/(?:src|href)="(\/[^"]+)"/g)].map((m) => m[1]);
 ok("the page references at least one script and one stylesheet",
   refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);
 for (const r of refs) ok(`the page's reference ${r} is a file in the build`, existsSync(join(out, r)));
-ok("every asset sits under /assets/", refs.every((r) => r.startsWith("/assets/")), refs);
+ok("every asset other than the theme boot script sits under /assets/", refs.filter((r) => r !== "/theme-boot.js").every((r) => r.startsWith("/assets/")), refs);
 ok("the page loads no script from another origin", !/src="https?:/.test(html));
+
+// The theme boot script. The stylesheet blocks the first paint while the module script is deferred,
+// so only a classic script that comes before the stylesheet can put the saved theme on the root
+// element in time. It is a file of the page's own origin, never inline, so `script-src 'self'` holds.
+const bootTag = /<script\b[^>]*\bsrc="\/theme-boot\.js"[^>]*><\/script>/.exec(html);
+const sheetAt = html.search(/<link\b[^>]*rel="stylesheet"/);
+ok("the page carries no inline script", [...html.matchAll(/<script\b([^>]*)>/g)].every((m) => /\bsrc="/.test(m[1])), html);
+ok("the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+  bootTag !== null && !/type=|defer|async/.test(bootTag[0]) && sheetAt > 0 && bootTag.index < sheetAt && bootTag.index < html.indexOf("</head>"), { tag: bootTag?.[0], at: bootTag?.index, sheetAt });
+// The function the build writes into the script, driven directly, then the built script itself.
+const marks = (saved: string | null | "blocked") => {
+  let set: [string, string] | undefined;
+  const storage = () => {
+    if (saved === "blocked") throw new Error("storage blocked");
+    return { getItem: (k: string) => (k === "cotal.theme" ? saved : null) };
+  };
+  try {
+    bootTheme(storage, { setAttribute: (name, value) => void (set = [name, value]) });
+  } catch {
+    return "threw";
+  }
+  return set;
+};
+ok("bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+  JSON.stringify([...THEMES.map((t) => marks(t)), marks(null), marks("sepia"), marks("blocked")])
+    === JSON.stringify([...THEMES.map((t) => ["data-theme", t]), ["data-theme", "system"], ["data-theme", "system"], ["data-theme", "system"]]));
+const bootCode = readFileSync(join(out, "theme-boot.js"), "utf8");
+/** The root element's data-theme after the built boot script runs in a fresh page whose storage
+ *  holds `saved` (nothing when undefined, or storage that throws when "blocked"), or "threw" when
+ *  the script itself threw. */
+const booted = (saved: string | undefined | "blocked"): string | null => {
+  const page = new JSDOM("<!doctype html><html><head></head><body></body></html>", { url: "http://localhost/", runScripts: "outside-only" });
+  const win = page.window as unknown as { eval(code: string): unknown; localStorage: { setItem(k: string, v: string): void }; document: { documentElement: { getAttribute(n: string): string | null } } };
+  if (saved === "blocked") Object.defineProperty(win, "localStorage", { get() { throw new Error("storage blocked"); } });
+  else if (saved !== undefined) win.localStorage.setItem("cotal.theme", saved);
+  let threw = false;
+  try {
+    win.eval(bootCode);
+  } catch {
+    threw = true;
+  }
+  const theme = threw ? "threw" : win.document.documentElement.getAttribute("data-theme");
+  page.window.close();
+  return theme;
+};
+const runs = { dark: booted("dark"), light: booted("light"), system: booted("system"), none: booted(undefined), junk: booted("sepia"), blocked: booted("blocked") };
+ok("the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+  JSON.stringify(runs) === JSON.stringify({ dark: "dark", light: "light", system: "system", none: "system", junk: "system", blocked: "system" }), runs);
+
+// color-scheme, read from the built stylesheet: native scrollbars and form controls follow it.
+const css = readdirSync(join(out, "assets")).filter((a) => a.endsWith(".css")).map((a) => readFileSync(join(out, "assets", a), "utf8")).join("\n");
+/** The color-scheme a top-level rule with exactly `selector` sets, or undefined. */
+const schemeOf = (selector: string): string | undefined => {
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < css.length; i++) {
+    if (css[i] === "{") {
+      if (depth === 0) {
+        const sel = css.slice(start, i).trim();
+        const end = css.indexOf("}", i);
+        const scheme = /(?:^|;)\s*color-scheme:\s*([a-z ]+?)\s*(?:;|$)/.exec(css.slice(i + 1, end))?.[1];
+        if (sel === selector && scheme) return scheme;
+      }
+      depth++;
+    } else if (css[i] === "}") {
+      depth--;
+      if (depth === 0) start = i + 1;
+    }
+  }
+  return undefined;
+};
+const schemes = [schemeOf(":root"), schemeOf(":root[data-theme=light]"), schemeOf(":root[data-theme=dark]")];
+ok("the built stylesheet's color-scheme follows the theme: light dark for system, and each forced value under its data-theme",
+  JSON.stringify(schemes) === JSON.stringify(["light dark", "light", "dark"]), schemes);
 
 const licenses = JSON.parse(readFileSync(join(out, "bundle-licenses.json"), "utf8")) as {
   bundled: { package: string; version: string; license: string }[];

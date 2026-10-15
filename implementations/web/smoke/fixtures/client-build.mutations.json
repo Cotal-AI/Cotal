@@ -28,8 +28,8 @@
       "file": "implementations/web/client/vite.config.ts",
       "find": "assetsDir: \"assets\",",
       "replace": "assetsDir: \"static\",",
-      "expectRed": "every asset sits under /assets/",
-      "cell": "every asset sits under /assets/",
+      "expectRed": "every asset other than the theme boot script sits under /assets/",
+      "cell": "every asset other than the theme boot script sits under /assets/",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     },
     {
@@ -39,6 +39,96 @@
       "replace": "await import(/* @vite-ignore */ [\"./characters\", \"js\"].join(\".\"));",
       "expectRed": "the built scripts carry the character art the avatars draw",
       "cell": "the built scripts carry the character art the avatars draw",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the build no longer puts the theme boot script in the page, so the first paint is in the system palette",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "plugins: [react(), bundleLicenses(), themeBoot()],",
+      "replace": "plugins: [react(), bundleLicenses()],",
+      "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the theme boot script goes at the end of the body, after the stylesheet has painted",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "injectTo: \"head-prepend\"",
+      "replace": "injectTo: \"body\"",
+      "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the theme boot script is deferred, so it runs after the stylesheet has painted",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "attrs: { src: \"/theme-boot.js\" },",
+      "replace": "attrs: { src: \"/theme-boot.js\", defer: true },",
+      "expectRed": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "cell": "the theme boot script is a classic script from the page's own origin, in the head before the stylesheet",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the theme boot script is inlined, which a script-src self policy would block",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "attrs: { src: \"/theme-boot.js\" },",
+      "replace": "children: \"void 0;\",",
+      "expectRed": "the page carries no inline script",
+      "cell": "the page carries no inline script",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot ignores a saved dark theme",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "if (saved === \"light\" || saved === \"dark\" || saved === \"system\") theme = saved;",
+      "replace": "if (saved === \"light\" || saved === \"system\") theme = saved;",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot reads a key the Settings menu does not write",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "storage().getItem(\"cotal.theme\")",
+      "replace": "storage().getItem(\"cotal-theme\")",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot lets a storage failure through, so blocked storage throws before the root element is marked",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "  } catch {\n",
+      "replace": "  } catch (e) {\n    throw e;\n",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the boot marks an attribute the stylesheet does not read",
+      "file": "implementations/web/client/src/lib/themeBoot.ts",
+      "find": "root.setAttribute(\"data-theme\", theme);",
+      "replace": "root.setAttribute(\"data-mode\", theme);",
+      "expectRed": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "cell": "bootTheme marks data-theme with each of the theme choices saved under cotal.theme, and system for anything else",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the built script reads the session storage, where the Settings menu saves nothing",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "(() => localStorage, document.documentElement)",
+      "replace": "(() => sessionStorage, document.documentElement)",
+      "expectRed": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "cell": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the built script marks the body instead of the root element the stylesheet reads",
+      "file": "implementations/web/client/vite.config.ts",
+      "find": "(() => localStorage, document.documentElement)",
+      "replace": "(() => localStorage, document.body)",
+      "expectRed": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
+      "cell": "the built boot script puts the saved theme on the root element, and system for nothing saved, a value that is no theme, or blocked storage",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]

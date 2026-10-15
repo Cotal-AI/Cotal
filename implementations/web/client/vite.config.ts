@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { bootTheme } from "./src/lib/themeBoot.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -42,10 +43,35 @@ function bundleLicenses(): Plugin {
   };
 }
 
+/** The theme boot script: `bootTheme` (src/lib/themeBoot.ts) as a classic script, run on the page's
+ *  own storage and root element. */
+const THEME_BOOT_JS = `(${bootTheme.toString()})(() => localStorage, document.documentElement);\n`;
+
+/** Writes `theme-boot.js` beside the page and puts it first in the page's head, ahead of the
+ *  stylesheet and the module script the build adds. The stylesheet blocks the first paint and the
+ *  module script is deferred, so only a classic script placed before the stylesheet can put the saved
+ *  theme on the root element in time. It loads from the page's own origin and is never inlined, so
+ *  the page can keep a `script-src 'self'` policy. The dev server answers it too. */
+function themeBoot(): Plugin {
+  return {
+    name: "cotal-theme-boot",
+    transformIndexHtml: () => [{ tag: "script", attrs: { src: "/theme-boot.js" }, injectTo: "head-prepend" }],
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "theme-boot.js", source: THEME_BOOT_JS });
+    },
+    configureServer(server) {
+      server.middlewares.use("/theme-boot.js", (_req, res) => {
+        res.setHeader("content-type", "text/javascript; charset=utf-8");
+        res.end(THEME_BOOT_JS);
+      });
+    },
+  };
+}
+
 export default defineConfig({
   root: here,
   base: "/",
-  plugins: [react(), bundleLicenses()],
+  plugins: [react(), bundleLicenses(), themeBoot()],
   build: {
     outDir: resolve(here, "../dist/web"),
     emptyOutDir: true,
