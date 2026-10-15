@@ -1082,8 +1082,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
     // Delete a channel and its content. The only write path on this otherwise read-only
-    // dashboard, so it's POST-gated, and the client reaches it only through the controller's
-    // `deleteChannel`, which its UI calls after the operator confirms. Purges with the
+    // dashboard, so it's POST-gated. The client reaches it only through the controller's
+    // `deleteChannel`; nothing in the phase 1 shell calls that yet, and the operator's confirm
+    // arrives with the phase 2 UI. Purges with the
     // channel-purger cred minted at startup (auth mode), the connection creds (open / --creds) or a
     // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
     // channel is a 400.
