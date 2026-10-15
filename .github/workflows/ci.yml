@@ -308,6 +308,7 @@ jobs:
         if: steps.nats.outputs.cache-hit != 'true' && runner.os == 'Windows'
         shell: pwsh
         run: |
+          if ("${{ runner.arch }}" -ne "X64") { Write-Output "::error::no pinned nats-server for Windows-${{ runner.arch }}"; exit 1 }
           $NatsVersion = "v2.12.12"
           $Sha256 = "66e2ab6250083794321905e1f79db4f4ea53465d84ba0760e9b00d022133050e"
           $Name = "nats-server-$NatsVersion-windows-amd64"
