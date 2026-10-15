@@ -1,5 +1,5 @@
-import { commandUsage, parseCommandArgs, type Command, type Registry } from "@cotal-ai/core";
-import { hasMeshTargetFlags, isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
+import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry } from "@cotal-ai/core";
+import { hasMeshTargetFlags, isSeededCommand, isWorkspaceTargetError, renderWorkspaceError } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
   isExtensionStub,
@@ -11,90 +11,47 @@ import {
 } from "./ext-loader.js";
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
-import { cliVersion, extensionVersions } from "./lib/version.js";
+import { printCommandHelp, printEntry } from "./help.js";
 import { prepareCatalogCommand } from "./commands/sync.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 
-/** Display order for the help groups — an explicit ranking, NOT registration order: modules
- *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
- *  order, so the daemon surface could otherwise print above Setup. Groups not listed here
- *  (e.g. an extension's custom group) follow, in first-registered order. */
-const GROUP_ORDER = ["Setup", "Mesh", "Messaging", "Agents", "Observe", "Extensions", "Manager"];
-
-function help(commands: Command[]): void {
-  // `__`-prefixed commands are internal (e.g. `__complete`, the completion dispatcher); `hidden`
-  // ones are runnable dev/test aids (e.g. `demo`) kept off the surface — hide both.
-  const visible = commands.filter((cmd) => !cmd.name.startsWith("__") && !cmd.hidden);
-  const groups = new Map<string, Command[]>();
-  for (const cmd of visible) {
-    const g = cmd.group ?? "Commands";
-    (groups.get(g) ?? groups.set(g, []).get(g)!).push(cmd);
-  }
-  const rank = (g: string) => {
-    const i = GROUP_ORDER.indexOf(g);
-    return i === -1 ? GROUP_ORDER.length : i;
-  };
-  const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
-  const pad = Math.max(...visible.map((c) => c.name.length));
-  let out = `${c.bold("cotal")} - lateral agent coordination over NATS\n`;
-  for (const [group, cmds] of ordered) {
-    out += `\n${c.bold(group)}\n`;
-    for (const cmd of cmds) out += `  ${cmd.name.padEnd(pad)}  ${c.dim(cmd.summary)}\n`;
-  }
-  console.log(out);
-}
-
-/** Full help for one command, generated from its declared specs: summary, usage line, and a
- *  flag table (short, long, metavar, description). */
-function commandHelp(cmd: Command): void {
-  console.log(`${c.bold(`cotal ${cmd.name}`)} - ${cmd.summary}`);
-  console.log(c.dim(`usage: ${commandUsage(cmd)}`));
-  const flags = cmd.flags ?? [];
-  if (!flags.length) return;
-  const left = flags.map((f) => {
-    const metavar = f.type === "string" ? ` ${f.value ?? "<value>"}` : "";
-    return `${f.short ? `-${f.short}, ` : "    "}--${f.name}${metavar}`;
-  });
-  const pad = Math.max(...left.map((s) => s.length));
-  console.log(c.bold("flags:"));
-  flags.forEach((f, i) => console.log(`  ${left[i].padEnd(pad)}  ${c.dim(f.description ?? "")}`));
+/** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
+function asksForHelp(args: readonly string[]): boolean {
+  const end = args.indexOf("--");
+  const options = end === -1 ? args : args.slice(0, end);
+  return options.includes("--help") || options.includes("-h");
 }
 
 /**
- * The connector-seeding boot gate. Returns `true` iff it fully handled the command (maintenance
- * `ext seed`), so the caller returns without the normal dispatch.
- *
- *  - `ext seed [--repair|--reset|--force]` is dispatched HERE, before the manifest overlay, so repair
- *    survives a corrupt manifest.
- *  - every other real command reconciles first (so `npm i -g cotal-ai && cotal ext list` shows the
- *    four, and a first-command `ext add` still seeds), EXCEPT completion/help and an AUTHENTIC seed
- *    CHILD — an `ext add` whose `COTAL_EXT_SEEDING` nonce + parent PID match the live reconcile lock
- *    (a forged marker no longer skips, so it can't bypass the recursive-reconcile guard or the lock).
+ * `ext seed [--repair|--reset|--force]`, dispatched before the manifest overlay so repair survives a
+ * corrupt manifest. Returns `true` iff `argv` was that command (or its help), so the caller returns.
+ * The overlay cannot list the command yet, so the built-in `ext` is found through the registry,
+ * which resolves its alias too.
  */
-async function seedBoot(registry: Registry, argv: string[]): Promise<boolean> {
-  const [name, sub] = argv;
-  if (name === "ext" && sub === "seed") {
-    const extCmd = registry.all<Command>("command").find((cmd) => cmd.name === "ext");
-    if (!extCmd) throw new Error("internal error: the `ext` command is not registered");
-    // `ext seed` is dispatched HERE, before the global/per-command help intercepts, so `--repair` can
-    // fix a corrupt manifest. A help request must still short-circuit to usage and mutate NOTHING
-    // (the maintenance run below writes the seed stamp/manifest).
-    if (argv.includes("--help") || argv.includes("-h")) {
-      commandHelp(extCmd);
-      return true;
-    }
-    await extCmd.run(parseCommandArgs(extCmd, argv.slice(1)));
+async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean> {
+  const [word, sub] = argv;
+  const extCmd = word === undefined || !registry.has("command", word) ? undefined : registry.resolve<Command>("command", word);
+  if (extCmd?.name !== "ext" || sub !== "seed") return false;
+  // A help request short-circuits to usage and mutates NOTHING (the maintenance run writes the seed
+  // stamp/manifest).
+  if (asksForHelp(argv)) {
+    printCommandHelp(extCmd);
     return true;
   }
-  if (skipAutoReconcile(argv)) return false;
-  await reconcileSeededConnectors();
-  return false;
+  await extCmd.run(parseCommandArgs(extCmd, argv.slice(1)));
+  return true;
 }
 
-function skipAutoReconcile(argv: string[]): boolean {
-  const [name, sub] = argv;
-  if (name === undefined || name === "help" || name === "-h" || name === "--help" || name === "__complete" || name === "completion") return true;
-  if (argv.includes("--help") || argv.includes("-h")) return true; // command-specific help must not mutate state
+/**
+ * Whether a validated invocation skips the connector seed. Every real command reconciles first (so
+ * `npm i -g cotal-ai && cotal ext list` shows the four, and a first-command `ext add` still seeds),
+ * EXCEPT help, version, completion and the cases below. `name` is the canonical command and `sub` its
+ * first positional; an AUTHENTIC seed CHILD is an `ext add` whose `COTAL_EXT_SEEDING` nonce + parent
+ * PID match the live reconcile lock (a forged marker no longer skips, so it can't bypass the
+ * recursive-reconcile guard or the lock).
+ */
+function skipsSeed(name: string, sub: string | undefined, argv: readonly string[]): boolean {
+  if (name === "help" || name === "version" || name === "__complete" || name === "completion") return true;
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
   // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
@@ -151,80 +108,133 @@ export interface RunCliOptions {
   extensions?: boolean;
 }
 
-/** Dispatch `argv` against the commands self-registered in a {@link Registry}.
- *  The single entry point a composition root calls — no hardcoded command list.
- *  Parsing happens HERE, from the command's declared specs; `run` gets parsed args. */
+/** A usage error, rendered as one red line plus the command's help when there is one. Exit 1. */
+function usageExit(message: string, cmd?: Command): never {
+  console.error(c.red(`✗ ${message}`));
+  if (cmd) printCommandHelp(cmd);
+  process.exit(1);
+}
+
+/** `rest` parsed against `cmd`'s declared flags, positionals and subcommands, or a usage exit. Node's
+ *  parse error is trimmed to its first sentence: the verbose "To specify a positional argument
+ *  starting with a '-' …" tail is dropped. */
+function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
+  let parsed: ParsedArgs;
+  try {
+    parsed = parseCommandArgs(cmd, rest);
+  } catch (e) {
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd);
+    throw e;
+  }
+  const first = parsed.positionals[0];
+  if (cmd.subcommands?.length && first !== undefined && !findSubcommand(cmd, first))
+    usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd);
+  return canonicalSubcommand(cmd, parsed);
+}
+
+/** The parsed args with a subcommand alias in the first positional replaced by its name, so `run`
+ *  only ever sees canonical subcommands. */
+function canonicalSubcommand(cmd: Command, parsed: ParsedArgs): ParsedArgs {
+  const sub = findSubcommand(cmd, parsed.positionals[0]);
+  if (!sub || sub.name === parsed.positionals[0]) return parsed;
+  return { ...parsed, positionals: [sub.name, ...parsed.positionals.slice(1)] };
+}
+
+/** `-h`/`--help` anywhere after a command: that command's help, or its subcommand's when the first
+ *  positional names one. Read from the declared specs, so a stub's help never imports its package. */
+function printHelpFor(cmd: Command, rest: readonly string[]): void {
+  const sub = findSubcommand(cmd, rest.find((t) => !t.startsWith("-")));
+  printCommandHelp(cmd, sub?.hidden ? undefined : sub);
+}
+
+/**
+ * Dispatch `argv` against the commands self-registered in a {@link Registry}. The single entry point
+ * a composition root calls — no hardcoded command list.
+ *
+ * It runs in two phases. The front end reads only local metadata: it resolves the command by exact
+ * name or alias (never a prefix), answers help and version, and parses a built-in command's flags
+ * against its declared specs. Only an invocation that passed it reaches the effects: the connector
+ * seed, provider materialization, target preparation and `run`. So a usage error seeds, writes and
+ * launches nothing. An extension command's flags are parsed after the seed, because its live specs
+ * come from importing a package the seed keeps current.
+ */
 export async function runCli(registry: Registry, argv: string[], opts: RunCliOptions = {}): Promise<void> {
   // Before anything that can exit, so every outcome leaves no handoff file and no child inherits
   // the variable naming it.
   takeManagedHandoffCustody(process.env);
-  // `-v` / `--version` short-circuits before any extension seeding or dispatch: a side-effect-free
-  // print of this binary's version plus each installed extension's, read straight off disk. First,
-  // so it never triggers the connector reconcile. Plain text (no ANSI) — a `--version` line is
-  // routinely machine-read.
-  if (argv[0] === "-v" || argv[0] === "--version") {
-    const exts = extensionVersions();
-    const lines = [`cotal-ai ${cliVersion()}`];
-    if (exts.length) {
-      const pad = Math.max(...exts.map((e) => e.label.length));
-      for (const e of exts) lines.push(`  ${e.label.padEnd(pad)}  ${e.version}`);
-    }
-    console.log(lines.join("\n"));
-    return;
-  }
   setInstalledExtensionsEnabled(Boolean(opts.extensions));
-  // On the published binary, keep the four built-in connectors seeded (first run + version bump)
-  // through the SAME `ext add` path a third party uses. This runs BEFORE the manifest overlay so
-  // `ext seed --repair` can fix a corrupt manifest (the overlay is fatal on corrupt JSON).
+  // The global spellings of help and version are the `help` and `version` commands.
+  if (argv[0] === "-v") usageExit("-v is not the version flag - run `cotal version` or `cotal -V`");
+  if (argv[0] === "--version" || argv[0] === "-V") argv = ["version", ...argv.slice(1)];
+  else if (argv[0] === "--help" || argv[0] === "-h") argv = ["help", ...argv.slice(1)];
   if (opts.extensions) {
     try {
-      if (await seedBoot(registry, argv)) return;
+      if (await extSeedGate(registry, argv)) return;
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
     }
   }
-  let commands: Command[];
-  try {
-    commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
-  } catch (e) {
-    // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
-    // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
-    console.error(c.red(`✗ ${(e as Error).message}`));
-    process.exit(1);
-  }
-  setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
-  const [name, ...rest] = argv;
-  if (name === undefined || name === "help" || name === "-h" || name === "--help") {
-    help(commands);
-    return;
-  }
-  let cmd = commands.find((c) => c.name === name);
-  if (!cmd) {
-    console.error(c.red(`unknown command: ${name}`));
-    help(commands);
-    process.exit(1);
-  }
+  const surface = (): Command[] => {
+    let commands: Command[];
+    try {
+      commands = opts.extensions ? overlayExtensions(registry) : registry.all<Command>("command");
+    } catch (e) {
+      // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
+      // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+    for (const cmd of commands) {
+      const problems = commandDeclarationProblems(cmd);
+      if (problems.length) usageExit(`internal error: ${problems.join("; ")}`);
+    }
+    setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
+    return commands;
+  };
+  let commands = surface();
+  const [word, ...rest] = argv;
+  if (word === undefined) return printEntry(commands);
+  const wantsHelp = asksForHelp(rest);
+  let cmd = findCommand(commands, word);
+  // A seeded package's command (`web`) can be absent only because the first seed has not installed
+  // it yet, so running it seeds and resolves again. Asking for its help seeds nothing, and any other
+  // unknown word is a usage error.
+  const awaitingSeed = !cmd && opts.extensions === true && isSeededCommand(word) && !wantsHelp && !skipsSeed(word, rest[0], rest);
+  if (!cmd && !awaitingSeed) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
   // `cotal <cmd> --help` / `-h` → that command's help, never run it. This intercept also covers
   // rawArgs commands and extension STUBS (cached specs are exactly the display surface) — only
   // `__`-internal ones are exempt, because __complete's argv is ANOTHER command's half-typed
   // line, where `--help` is a word being completed, not a request.
-  if (!cmd.name.startsWith("__") && (rest.includes("--help") || rest.includes("-h"))) {
-    commandHelp(cmd);
-    return;
+  if (cmd && !cmd.name.startsWith("__") && wantsHelp) return printHelpFor(cmd, rest);
+  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;
+  // ---- Effects: only a validated invocation reaches this line. ----
+  // The seed can install or upgrade an extension package, so the surface is read again after it and
+  // an extension stub resolves against the manifest the seed left.
+  if (opts.extensions && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest)) {
+    try {
+      await reconcileSeededConnectors();
+    } catch (e) {
+      console.error(c.red(`✗ ${(e as Error).message}`));
+      process.exit(1);
+    }
+    commands = surface();
+    cmd = findCommand(commands, word);
+    if (!cmd) usageExit(`unknown command: ${word} - run \`cotal help\` to list commands`);
   }
   // An extension stub materializes before parsing: verify the version pin, import the package
   // (self-registers), and parse with the LIVE specs — the cache never drives run's input.
-  if (isExtensionStub(cmd)) {
+  if (cmd && isExtensionStub(cmd)) {
     try {
       cmd = await materializeExtensionCommand(cmd);
     } catch (e) {
       console.error(c.red(`✗ ${(e as Error).message}`));
       process.exit(1);
     }
+    parsed = parseOrExit(cmd, rest);
   }
+  if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
   try {
-    const parsed = parseCommandArgs(cmd, rest);
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);
     }
@@ -232,14 +242,8 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {
-    // A bad flag/arg prints the command's help, not a stack trace. Trim node's verbose
-    // "To specify a positional argument starting with a '-' …" tail to the first sentence.
-    if (isArgError(e)) {
-      const msg = (e as Error).message.split(".")[0];
-      console.error(c.red(`✗ ${msg}`));
-      commandHelp(cmd);
-      process.exit(1);
-    }
+    // A usage error a command raises from its own checks prints the command's help, not a stack trace.
+    if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd);
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe
     // rather than product copy, so falling through to the generic line below strips the removed

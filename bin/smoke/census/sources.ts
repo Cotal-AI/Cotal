@@ -162,8 +162,15 @@ export function usageModes(name: string, usage: string): string[] {
   return [...modes];
 }
 
-/** Registered CLI commands, their declared flags and the subcommand modes their usage or their
- *  positionals declare. */
+/** The subcommand modes a command declares: those its usage or its positionals name, and its
+ *  declared subcommands. A hidden subcommand is an internal entry, not a mode. */
+export function commandModes(cmd: import("@cotal-ai/core").Command): string[] {
+  const declared = [cmd.usage ?? "", cmd.positionals === undefined ? "" : `${cmd.name} ${cmd.positionals}`];
+  const subcommands = (cmd.subcommands ?? []).filter((sub) => !sub.hidden).map((sub) => sub.name);
+  return [...new Set([...declared.flatMap((text) => usageModes(cmd.name, text)), ...subcommands])];
+}
+
+/** Registered CLI commands, their declared flags and their subcommand modes. */
 export async function cliItems(): Promise<CensusItem[]> {
   for (const surface of COMMAND_SURFACES) await import(surface);
   const { registry } = await import("@cotal-ai/core");
@@ -171,9 +178,7 @@ export async function cliItems(): Promise<CensusItem[]> {
   for (const cmd of registry.all<import("@cotal-ai/core").Command>("command")) {
     items.push({ id: `cli:${cmd.name}`, source: "command registry" });
     for (const flag of cmd.flags ?? []) items.push({ id: `cli:${cmd.name}--${flag.name}`, source: "command registry" });
-    const declared = [cmd.usage ?? "", cmd.positionals === undefined ? "" : `${cmd.name} ${cmd.positionals}`];
-    for (const mode of new Set(declared.flatMap((text) => usageModes(cmd.name, text))))
-      items.push({ id: `cli:${cmd.name} ${mode}`, source: "command usage" });
+    for (const mode of commandModes(cmd)) items.push({ id: `cli:${cmd.name} ${mode}`, source: "command usage" });
   }
   return items;
 }

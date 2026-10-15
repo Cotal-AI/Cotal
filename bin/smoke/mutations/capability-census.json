@@ -53,8 +53,8 @@
     {
       "name": "modes declared only in positionals are no longer census items",
       "file": "bin/smoke/census/sources.ts",
-      "find": "    const declared = [cmd.usage ?? \"\", cmd.positionals === undefined ? \"\" : `${cmd.name} ${cmd.positionals}`];",
-      "replace": "    const declared = [cmd.usage ?? \"\"];",
+      "find": "  const declared = [cmd.usage ?? \"\", cmd.positionals === undefined ? \"\" : `${cmd.name} ${cmd.positionals}`];",
+      "replace": "  const declared = [cmd.usage ?? \"\"];",
       "expectRed": "CLI items reach modes declared only in a command's positionals",
       "cell": "CLI items reach modes declared only in a command's positionals"
     },
@@ -73,6 +73,22 @@
       "replace": "    else if (Array.isArray(owner) && new Set(owner).size !== owner.length)",
       "expectRed": "a list of one owner fails",
       "cell": "a list of one owner fails"
+    },
+    {
+      "name": "declared subcommands are no longer modes",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "  return [...new Set([...declared.flatMap((text) => usageModes(cmd.name, text)), ...subcommands])];",
+      "replace": "  return [...new Set([...declared.flatMap((text) => usageModes(cmd.name, text))])];",
+      "expectRed": "a command's declared subcommands are modes, and a hidden one is not",
+      "cell": "a command's declared subcommands are modes, and a hidden one is not"
+    },
+    {
+      "name": "a hidden subcommand counts as a mode",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "  const subcommands = (cmd.subcommands ?? []).filter((sub) => !sub.hidden).map((sub) => sub.name);",
+      "replace": "  const subcommands = (cmd.subcommands ?? []).map((sub) => sub.name);",
+      "expectRed": "a command's declared subcommands are modes, and a hidden one is not",
+      "cell": "a command's declared subcommands are modes, and a hidden one is not"
     }
   ]
 }

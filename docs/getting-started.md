@@ -38,10 +38,10 @@ cotal setup               # one-time, configure-only; launches nothing
 Cotal runs natively on Windows, but the installer above is a POSIX shell script, so npm is the
 route there (or run the installer under WSL).
 
-Bare `cotal` prints help; `cotal setup` runs the guided setup. `npx cotal-ai setup` works
-too and offers to install the global `cotal` at the end. Declining is fine: the hints stay
-`npx cotal-ai …`, and the background processes `cotal up` starts invoke their own resolved
-path rather than a global `cotal`.
+Bare `cotal` names the selected space and the common commands; `cotal setup` runs the guided
+setup. `npx cotal-ai setup` works too and offers to install the global `cotal` at the end.
+Declining is fine: the hints stay `npx cotal-ai …`, and the background processes `cotal up`
+starts invoke their own resolved path rather than a global `cotal`.
 
 Requirements:
 

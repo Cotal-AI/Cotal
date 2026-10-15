@@ -19,7 +19,7 @@
       "cell": "`cotal down --preserve-state --dry-run`: no operator-global state written",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/dry-run-no-seed.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "Compile-clean: the surrounding --help and update skips stay live, so only the dry-run promise regresses. Restores the exact incident: the store is migrated, then the invocation is refused."
+      "note": "Compile-clean: the surrounding update skip stays live, so only the dry-run promise regresses. Restores the exact incident: the store is migrated, then the invocation is refused."
     },
     {
       "name": "let agent-bearer fall through to the boot-gate seed reconcile",

@@ -13,7 +13,7 @@ import type { InstalledExtension } from "@cotal-ai/workspace";
 import "../src/index.js"; // self-register the CLI commands (for the completion check)
 import { complete } from "../src/commands/completion.js";
 import { EXT_UPDATE_PARENT_ENV, ext } from "../src/commands/ext.js";
-import { MeshTargetError } from "@cotal-ai/workspace";
+import { MeshTargetError, seededCommandsMismatch } from "@cotal-ai/workspace";
 import { executeUpdate, parseNpmVersion, reportRunningManagers, update, verifyGlobalEntry, type UpdateRuntime } from "../src/commands/update.js";
 import { claimExtensionMutation, claimExtensionUpdatePass } from "../src/lib/ext-mutation.js";
 import { compareSemver } from "../src/seed/reconcile.js";
@@ -174,21 +174,22 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!out.includes("Unknown option"), "no usage error above the help");
 }
 
-// --- `-v` / `--version` print `cotal-ai <semver>` (+ any extensions) and short-circuit dispatch --
+// --- `version`, `--version` and `-V` print `cotal-ai <semver>` (+ any extensions) -----------------
+// (`-v` is refused; the entry smoke covers that, since a refusal exits the process.)
 {
   const { runCli } = await import("../src/command.js");
-  for (const flag of ["-v", "--version"]) {
+  for (const argv of [["version"], ["--version"], ["-V"]]) {
     let out = "";
     const realLog = console.log;
     console.log = (s?: unknown) => void (out += `${s}\n`);
     try {
-      await runCli(registry, [flag]);
+      await runCli(registry, argv);
     } finally {
       console.log = realLog;
     }
     // First line is always `cotal-ai <semver>`; any installed extensions follow indented (none in
-    // a bare unit env). Reaching here at all proves it short-circuited before command dispatch.
-    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${flag} prints the binary version`);
+    // a bare unit env).
+    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${argv.join(" ")} prints the binary version`);
   }
 }
 
@@ -200,6 +201,23 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(out.includes("--space"), "flag completion lists --space");
   assert.ok(out.includes("--config"), "flag completion lists --config");
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
+}
+
+// --- an alias completes as its command does; a subcommand alias reaches the completer canonical --
+{
+  assert.equal(await completionOut(["sp", "--"]), await completionOut(["spawn", "--"]), "sp completes as spawn");
+  assert.ok((await completionOut(["sp"])).includes("spawn\t"), "a lone alias is still a word being typed: it offers command names");
+  const prefix = await completionOut(["spa"]);
+  assert.ok(prefix.includes("spawn\t") && prefix.includes("status\t"), "a prefix offers command names, it never selects one");
+}
+
+// --- a seeded package must claim the words its seed entry declares, aliases included -------------
+{
+  assert.equal(seededCommandsMismatch("@cotal-ai/web", [{ name: "web" }]), undefined, "web as declared");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "web", aliases: ["w"] }]) ?? "", /claiming \[web, w\].*declares \[web\]/, "an undeclared alias of a seeded command passed the seed check");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", [{ name: "web" }, { name: "dash" }]) ?? "", /declares \[web\]/, "an undeclared seeded command passed the seed check");
+  assert.match(seededCommandsMismatch("@cotal-ai/web", []) ?? "", /declares \[web\]/, "a seeded package that dropped its command passed the seed check");
+  assert.equal(seededCommandsMismatch("@example/not-seeded", [{ name: "x", aliases: ["y"] }]), undefined, "a package that is not seeded has no declared words");
 }
 
 // --- exact commands and flags-before-positionals stay inside the command grammar -----------------

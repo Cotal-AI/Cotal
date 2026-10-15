@@ -46,7 +46,7 @@ process.stdout.on("error", (e: NodeJS.ErrnoException) => {
 // materializes each lazily when a command resolves it; the default agent is `COTAL_DEFAULT_AGENT`
 // (else claude), resolved manager-side. The old `"cotal"` default-agent alias is gone with them.
 //
-// Bare `cotal` prints help; explicit `cotal setup` runs guided setup. The published binary is
+// Bare `cotal` prints the entry screen; explicit `cotal setup` runs guided setup. The published binary is
 // the ONE composition root that loads operator-installed extensions (`cotal ext add …`) — commands,
 // runtimes, connectors, and local process components all self-register from those packages. Library
 // roots keep the explicit-import model.

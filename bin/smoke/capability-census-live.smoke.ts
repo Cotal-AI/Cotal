@@ -98,6 +98,15 @@ try {
     const problems = executionProblems(invocationOf(argv, map), observed, map, expect);
     check(`every request ${label} issued matches its owner rows and its case`, problems.length === 0, problems);
   }
+  // The kernel's own commands answer from local metadata, so against a live mesh they issue nothing.
+  for (const argv of [["help"], ["help", "--all"], ["version"]]) {
+    let result: { status: number | null; output: string } | undefined;
+    const observed = await observeRequests(nc, SPACE, async () => { result = await cotal(...argv); });
+    const label = `cotal ${argv.join(" ")}`;
+    check(`${label} exits 0 and issues no endpoint request`, result?.status === 0 && observed.length === 0, { observed, output: result?.output.slice(0, 300) });
+    const problems = executionProblems(invocationOf(argv, map), observed, map, { issues: [] });
+    check(`every request ${label} issued matches its owner rows and its case`, problems.length === 0, problems);
+  }
   check("cotal ps against the live manager exits 0", statuses.get("ps") === 0, statuses.get("ps"));
   const models = observations.get("models --agent claude --refresh") ?? [];
   check("the models case compared the input fields it sent",

@@ -12,13 +12,25 @@ lookup material for the commands, not a walkthrough; if you are new, start with
 
 ```bash
 npm install -g cotal-ai   # puts `cotal` on your PATH (needs Node 22+)
-cotal --help              # every command, grouped
-cotal --version           # cotal-ai version + each installed extension's (also `cotal -v`)
-cotal <command> --help    # one command's flags and usage
+cotal                     # the selected space, common commands, and where to start
+cotal help                # every command, grouped (also `cotal --help`)
+cotal help --all          # including hidden commands
+cotal help <command> [<subcommand>]   # one command's or subcommand's usage and flags
+cotal version             # cotal-ai version + each installed extension's (also `cotal --version`, `cotal -V`)
 ```
 
-`npx cotal-ai <command>` runs it without a global install. Bare `cotal` prints help. Every command
-generates its own `--help`, usage, and shell completion from its declared flags.
+`npx cotal-ai <command>` runs it without a global install. Bare `cotal` starts nothing: it names
+the selected space, lists common commands, and points a machine with no selected space to
+`cotal setup`. Every command generates its own help, usage, and shell completion from its declared
+flags, and `cotal <command> --help` prints the same help as `cotal help <command>`. `-v` is not a
+version flag.
+
+Some commands have short aliases, listed beside them in `cotal help`: `sp` (spawn), `a` (attach),
+`s` (status), `r` (run), `x` (ext), and `h` (history). Subcommands can have their own, such as
+`cotal ext rm` for `cotal ext remove`. An alias behaves the same as its command. A command or
+subcommand is never selected by a prefix, so `cotal spaw` is an unknown command. A command, alias,
+or extension command that would claim a word another one already claims is refused when it
+registers or installs.
 
 In a dev clone, `pnpm cotal <command>` runs `bin/cotal.ts` through `tsx`, but `bin/` loads the other
 packages from their built `dist/`. Run `pnpm build` after `pnpm install`, and again after you edit a
@@ -43,8 +55,10 @@ that must seed from a checkout also set `COTAL_ALLOW_CHECKOUT_SEED=1`, as descri
 [Built-in connectors are seeded extensions](#built-in-connectors-are-seeded-extensions).
 
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
-repeatable, as `--opt` and `down --session-store` are. The command prints the error and its help,
-exits 1, and does not run.
+repeatable, as `--opt` and `down --session-store` are. So is an unknown command, and a first word
+that is not one of the command's subcommands when it declares them. The command prints the error and
+its help, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr and the guided `setup` and `meshes add` prompts,
 is colored only when stdout is a terminal, so piped or redirected output is plain text. A non-empty

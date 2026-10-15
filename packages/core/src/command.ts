@@ -55,6 +55,26 @@ export type FlagValues<F extends readonly FlagSpec[]> = {
       : string;
 };
 
+/** One mode of a command (`ext add`), named by its first positional. It carries its own help, and
+ *  `aliases` are other first words that select it (`rm` for `remove`), scoped to this command. A
+ *  command that declares subcommands takes one as its first positional whenever it takes any, so
+ *  another first word is a usage error. */
+export interface Subcommand {
+  readonly name: string;
+  readonly summary: string;
+  /** An internal entry another process invokes: accepted, but never listed in help. */
+  readonly hidden?: boolean;
+  /** Overrides the generated `cotal <command> <name>` usage line. */
+  readonly usage?: string;
+  readonly aliases?: readonly string[];
+  /** Full example invocations shown in its help. */
+  readonly examples?: readonly string[];
+}
+
+/** A structured output a command implements, beside its human text: one JSON document, a stream of
+ *  NDJSON records, or a documented line-oriented plain presentation. */
+export type OutputMode = "json" | "ndjson" | "plain";
+
 /**
  * The contract for a composable CLI command — an {@link Extension} of kind
  * `"command"`. An implementation (the mesh CLI, the manager …) self-registers its
@@ -64,6 +84,15 @@ export interface Command extends Extension {
   readonly kind: "command";
   readonly name: string;
   readonly summary: string;
+  /** Other exact words that dispatch to this command (`sp` for `spawn`). Never prefixes: the
+   *  registry refuses one that collides with any command's name or alias. */
+  readonly aliases?: readonly string[];
+  /** Declared modes, selected by the first positional. */
+  readonly subcommands?: readonly Subcommand[];
+  /** Structured outputs this command implements; human text is always available. */
+  readonly outputs?: readonly OutputMode[];
+  /** Full example invocations shown in its help. */
+  readonly examples?: readonly string[];
   /** Help grouping header (e.g. "Mesh", "Control plane"). Defaults to "Commands". */
   readonly group?: string;
   /** Overrides the generated usage line — for sub-grammar commands
@@ -137,6 +166,34 @@ export function parseCommandArgs(cmd: Command, argv: string[]): ParsedArgs {
     seen.add(t.name);
   }
   return { values: values as ParsedArgs["values"], positionals, raw: argv };
+}
+
+/** The command `word` names on a surface, by exact name or alias. A prefix never matches. */
+export function findCommand<C extends Command>(commands: readonly C[], word: string | undefined): C | undefined {
+  if (word === undefined) return undefined;
+  return commands.find((cmd) => cmd.name === word || (cmd.aliases ?? []).includes(word));
+}
+
+/** The subcommand `word` selects, by name or by one of its aliases. */
+export function findSubcommand(cmd: Command, word: string | undefined): Subcommand | undefined {
+  if (word === undefined) return undefined;
+  return cmd.subcommands?.find((sub) => sub.name === word || (sub.aliases ?? []).includes(word));
+}
+
+/** Why a command's own declarations are inconsistent: an alias equal to its name, or two subcommands
+ *  sharing a name or alias. Empty means it is well formed. */
+export function commandDeclarationProblems(cmd: Command): string[] {
+  const problems: string[] = [];
+  if ((cmd.aliases ?? []).includes(cmd.name)) problems.push(`command "${cmd.name}" lists its own name as an alias`);
+  const seen = new Map<string, string>();
+  for (const sub of cmd.subcommands ?? []) {
+    for (const word of [sub.name, ...(sub.aliases ?? [])]) {
+      const holder = seen.get(word);
+      if (holder !== undefined) problems.push(`command "${cmd.name}": "${word}" names both subcommand ${holder} and ${sub.name}`);
+      else seen.set(word, sub.name);
+    }
+  }
+  return problems;
 }
 
 /** The generated usage line: `cotal <name> [<positionals>] [flags…]`, honoring an explicit

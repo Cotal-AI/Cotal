@@ -79,6 +79,7 @@ registry.register(runHost);
 const runCommand: Command = {
   kind: "command",
   name: "run",
+  aliases: ["r"],
   group: "Manager",
   summary: "operate workflow runs — start, resume, list, inspect, answer, amend (hosted by the manager), revoke",
   usage:
