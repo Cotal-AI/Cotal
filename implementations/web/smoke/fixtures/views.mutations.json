@@ -558,7 +558,7 @@
       "cell": "8.5 before the space is read it names no space"
     },
     {
-      "name": "S4 the channel route keeps the phase 1 list",
+      "name": "S4 the channel route draws no view",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "return <ChannelView store={store} channel={route.channel} />;",
       "replace": "return null;",
