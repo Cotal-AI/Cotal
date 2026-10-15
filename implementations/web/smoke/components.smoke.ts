@@ -205,10 +205,14 @@ const TIP = "Anycast: one free agent with this role takes it.";
     startTags(renderShell(seed([{ msg: msg({ mentions: ["operator"] }), senderId: "local.dav" }]), inReview), "div").some((d) => d.class === "ui-msg ui-msg-mention"));
   const side = /<aside class="ui-side" aria-label="Space">([\s\S]*?)<\/aside>/.exec(renderShell({ stale: [{ kind: "refused", name: "peers", reason: "x" }] }))?.[1] ?? "";
   ok("7.5 the stale marker sits in the sidebar", /class="ui-stale" id="stale"/.test(side) && side.includes("stale: peers"), side);
-  const people = /<div aria-label="Roster">([\s\S]*?)<\/div><\/section>/.exec(renderShell({ roster }, { view: "agents", group: "status" }))?.[1] ?? "";
-  ok("7.6 the roster draws each live agent with its character and its status word, and leaves the offline one out",
+  // The Agents route replaced the phase 1 roster list. Its Host grouping puts a status word on every
+  // row, so this is where each agent's character and status word are still read together.
+  const onBox = roster.map((p) => ({ ...p, card: { ...p.card, meta: { ...p.card.meta, host: "build-box" } } }));
+  const agentsHtml = renderShell({ roster: onBox }, { view: "agents", group: "host" });
+  const people = agentsHtml.slice(agentsHtml.indexOf('class="v3-by-host"'));
+  ok("7.6 the Agents route draws each agent with its character and its status word, the offline one included",
     people.includes(svgOf("opencode", { mood: "surprised", look: "up" })) && text(people).includes("reviewer_2") && text(people).includes("Waiting")
-      && !text(people).includes("scout"), text(people));
+      && text(people).includes("scout") && text(people).includes("Offline"), text(people));
   // One id from two senders: a duplicate delivery, or a peer reusing another's id. Both rows are
   // facts the page must show, and keyed by id alone React would warn and could drop one.
   const twin: StoredMessage[] = [{ msg: msg({ id: "dup", parts: [{ kind: "text", text: "first" }] }), senderId: "local.dav" }, { msg: msg({ id: "dup", parts: [{ kind: "text", text: "second" }] }), senderId: "local.rev" }];

@@ -60,7 +60,7 @@ export function useDismissed(): [ReadonlySet<string>, (key: string) => void] {
 
 /** What the card says under the name: the agent's own activity text, then when it reported. Without
  *  a `statusSince` there is no time to give, and none is made up. */
-function detail(row: RosterRow): string {
+export function needsDetail(row: RosterRow): string {
   const at = typeof row.statusSince === "number" && Number.isFinite(row.statusSince) ? `Reported ${clock(new Date(row.statusSince))}` : undefined;
   const parts = [row.activity?.trim().replace(/\.$/, ""), at].filter((p): p is string => Boolean(p));
   return parts.length ? `${parts.join(". ")}.` : "";
@@ -76,7 +76,7 @@ export function NeedsCard({ row, onViewAgent, onDismiss }: { row: RosterRow; onV
       <Avatar vendor={row.harness} status={row.status} size={34} />
       <div style={{ minWidth: 0 }}>
         <b>{`${row.name} is waiting`}</b>
-        <span className="ui-nd">{detail(row)}</span>
+        <span className="ui-nd">{needsDetail(row)}</span>
       </div>
       <div className="ui-btns">
         <button type="button" className="ui-btn" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</button>

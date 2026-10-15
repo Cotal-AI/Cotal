@@ -238,12 +238,12 @@
       "cell": "7.5 the stale marker sits in the sidebar"
     },
     {
-      "name": "C30 the roster lists offline agents beside live ones",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "rows.filter((r) => r.status !== \"offline\").map(",
-      "replace": "rows.map(",
-      "expectRed": "7.6 the roster draws each live agent with its character and its status word, and leaves the offline one out",
-      "cell": "7.6 the roster draws each live agent with its character and its status word, and leaves the offline one out"
+      "name": "C30 the Host grouping leaves its offline agents out",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "rows: rows.filter((r) => r.host === host) }));",
+      "replace": "rows: rows.filter((r) => r.host === host && r.status !== \"offline\") }));",
+      "expectRed": "7.6 the Agents route draws each agent with its character and its status word, the offline one included",
+      "cell": "7.6 the Agents route draws each agent with its character and its status word, the offline one included"
     },
     {
       "name": "C31 rows are keyed by id alone, so one id from two senders collides and React warns",

@@ -329,6 +329,8 @@ pre code { background: none; padding: 0; }
 .v3-ghead { display: flex; align-items: center; gap: 8px; padding: 18px 12px 6px; font: 600 13.5px/1 var(--body); color: var(--ink); }
 .v3-ghead:first-child { padding-top: 6px; }
 .v3-ghead .ui-ic { width: 16px; height: 16px; }
+.v3-by-host .v3-ghead .ui-ic, .v3-epsec .v3-ghead .ui-ic { color: var(--dim); }
+.v3-ghead[data-focused="true"] { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 8px; }
 .v3-count { color: var(--dim); font-weight: 500; font-variant-numeric: tabular-nums; }
 .v3-arow { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto auto; gap: 4px 14px; align-items: center; padding: 9px 12px; border-radius: 10px; width: 100%; text-align: left; }
 .v3-arow:hover { background: var(--hover); }

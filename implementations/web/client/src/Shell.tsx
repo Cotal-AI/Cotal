@@ -1,5 +1,4 @@
 import { useMemo, type ReactNode } from "react";
-import type { RosterEntry } from "./api/types.js";
 import { dmPeers } from "./lib/dms.js";
 import type { Route } from "./lib/route.js";
 import { rosterRows } from "./lib/roster.js";
@@ -15,7 +14,7 @@ import { StatusWord } from "./ui/Status.tsx";
 import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
-import { EmptySpace, hasAgents } from "./ui/views/EmptySpace.tsx";
+import { AgentsView } from "./ui/views/AgentsView.tsx";
 import { TopologyView } from "./ui/views/TopologyView.tsx";
 
 /** The line the dashboard owes its reader about what the event stream is missing. Plain on purpose;
@@ -31,9 +30,17 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
 }
 
 /** The view the centre draws for a route, or null where that view is not built yet and the phase 1
- *  roster list still stands in. The Agents route draws the empty space state while the roster has
- *  no agents. `clock` is the time the topology view measures hot links against. */
-function centreView(store: Store<DashboardState>, route: Route, space: string | null, roster: RosterEntry[], clock: () => number): ReactNode {
+ *  roster list still stands in. The Agents route draws the Agents view in the grouping its address
+ *  names, and the Needs route draws it by status with the Waiting group in focus. `clock` is the time
+ *  the topology view measures hot links against and the Agents view measures heartbeats against.
+ *  `selectedAgent` and `onPickAgent` are the Agents view's seam to the details panel. */
+function centreView(
+  store: Store<DashboardState>,
+  route: Route,
+  clock: () => number,
+  selectedAgent: string | null,
+  onPickAgent: ((id: string) => void) | undefined,
+): ReactNode {
   switch (route.view) {
     case "channel":
       return <ChannelView store={store} channel={route.channel} />;
@@ -44,12 +51,9 @@ function centreView(store: Store<DashboardState>, route: Route, space: string | 
     case "topology":
       return <TopologyView store={store} clock={clock} />;
     case "agents":
-      return hasAgents(roster) ? null : (
-        <>
-          <header className="ui-bar"><h1>Agents</h1></header>
-          <div className="ui-scroll"><EmptySpace space={space} /></div>
-        </>
-      );
+      return <AgentsView store={store} group={route.group === "host" ? "host" : undefined} selected={selectedAgent} onPick={onPickAgent} clock={clock} />;
+    case "needs":
+      return <AgentsView store={store} group="status" focusWaiting selected={selectedAgent} onPick={onPickAgent} clock={clock} />;
     default:
       return null;
   }
@@ -63,13 +67,17 @@ function centreView(store: Store<DashboardState>, route: Route, space: string | 
  *  The sidebar is the places and the stale marker, and the panel is an empty frame. The centre draws
  *  the view for the route (`centreView`) inside a section that says which view it is; the routes
  *  whose views are not built yet keep the phase 1 roster list. */
-export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now }: {
+export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, selectedAgent = null, onPickAgent }: {
   store: Store<DashboardState>;
   controller: Controller | null;
   route: Route;
   paneOpen: boolean;
   msgPerSecond: () => number;
   clock?: () => number;
+  /** The agent the details panel shows, marked in the Agents view. */
+  selectedAgent?: string | null;
+  /** Called with the id of the agent whose row the reader opens in the Agents view. */
+  onPickAgent?: (id: string) => void;
 }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -77,7 +85,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const dms = useStore(store, (s) => s.dms);
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
-  const view = centreView(store, route, space, roster, clock);
+  const view = centreView(store, route, clock, selectedAgent, onPickAgent);
   return (
     <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}>
       <title>{documentTitle(space)}</title>

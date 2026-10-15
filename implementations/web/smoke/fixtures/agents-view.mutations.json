@@ -1,0 +1,417 @@
+{
+  "command": "pnpm smoke:web-agents-view",
+  "suite": [
+    "implementations/web/smoke/agents-view.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "A1 Waiting no longer leads: the status order is reversed",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return [...STATUS_ORDER, ...others]",
+      "replace": "return [...[...STATUS_ORDER].reverse(), ...others]",
+      "expectRed": "1.1 the groups are Waiting, Working, Idle and Offline in that order, each with its count",
+      "cell": "1.1 the groups are Waiting, Working, Idle and Offline in that order, each with its count"
+    },
+    {
+      "name": "A2 a group with no agents is drawn",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": ".filter((s) => s.rows.length > 0);",
+      "replace": ".filter(() => true);",
+      "expectRed": "1.6 a group with no agents is not drawn, whichever it is",
+      "cell": "1.6 a group with no agents is not drawn, whichever it is"
+    },
+    {
+      "name": "A3 a status outside the four is dropped",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const others = [...new Set(rows.map((r) => r.status).filter((s) => !STATUS_ORDER.includes(s)))].sort();",
+      "replace": "const others: typeof STATUS_ORDER = [];",
+      "expectRed": "1.7 a status outside the four is listed in a group of its own after Offline, never dropped",
+      "cell": "1.7 a status outside the four is listed in a group of its own after Offline, never dropped"
+    },
+    {
+      "name": "A4 endpoints count as agents",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const isAgent = (p: RosterEntry) => p.card.kind === \"agent\";",
+      "replace": "const isAgent = (p: RosterEntry) => p.card.kind !== undefined;",
+      "expectRed": "1.1 the groups are Waiting, Working, Idle and Offline in that order, each with its count",
+      "cell": "1.1 the groups are Waiting, Working, Idle and Offline in that order, each with its count"
+    },
+    {
+      "name": "A5 a waiting agent's text loses the time it reported",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return needsDetail(row) || \"No current activity\";",
+      "replace": "return row.activity?.trim() || \"No current activity\";",
+      "expectRed": "2.5 a waiting agent says what it reported and when, in the waiting ink",
+      "cell": "2.5 a waiting agent says what it reported and when, in the waiting ink"
+    },
+    {
+      "name": "A6 a waiting agent's text loses the waiting ink",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "style={waiting ? { color: \"var(--gold-ink)\" } : undefined}",
+      "replace": "style={undefined}",
+      "expectRed": "2.5 a waiting agent says what it reported and when, in the waiting ink",
+      "cell": "2.5 a waiting agent says what it reported and when, in the waiting ink"
+    },
+    {
+      "name": "A7 an offline agent says nothing of its last heartbeat",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return `Last heartbeat ${clockTime(new Date(row.ts))}`;",
+      "replace": "return \"No current activity\";",
+      "expectRed": "2.6 an offline agent says when its last heartbeat was",
+      "cell": "2.6 an offline agent says when its last heartbeat was"
+    },
+    {
+      "name": "A8 a working agent with no activity reads as having none",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return row.status === \"working\" ? word(statusLabel(row)) : \"No current activity\";",
+      "replace": "return \"No current activity\";",
+      "expectRed": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity",
+      "cell": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity"
+    },
+    {
+      "name": "A9 a working agent's status text skips statusLabel",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "word(statusLabel(row))",
+      "replace": "word(row.status)",
+      "expectRed": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity",
+      "cell": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity"
+    },
+    {
+      "name": "A10 an open agent shows a badge",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "? ATTENTION[row.attention] : undefined;",
+      "replace": "? ATTENTION[row.attention] : ATTENTION.focus;",
+      "expectRed": "2.12 an open agent, and one that reports no attention, show no badge",
+      "cell": "2.12 an open agent, and one that reports no attention, show no badge"
+    },
+    {
+      "name": "A11 Do not disturb loses its tooltip",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "title={attention.title}",
+      "replace": "",
+      "expectRed": "2.10 Do not disturb shows its icon, its words and the tooltip that says what it does",
+      "cell": "2.10 Do not disturb shows its icon, its words and the tooltip that says what it does"
+    },
+    {
+      "name": "A12 Focus draws the Do not disturb icon",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "focus: { label: \"Focus\", icon: Target02Icon,",
+      "replace": "focus: { label: \"Focus\", icon: NotificationOff01Icon,",
+      "expectRed": "2.11 Focus shows its icon, its words and its tooltip",
+      "cell": "2.11 Focus shows its icon, its words and its tooltip"
+    },
+    {
+      "name": "A13 the row no longer shows its host",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": ") : row.host !== undefined ? (",
+      "replace": ") : false ? (",
+      "expectRed": "2.13 the host ends each row, behind the server icon, and the status word is not repeated",
+      "cell": "2.13 the host ends each row, behind the server icon, and the status word is not repeated"
+    },
+    {
+      "name": "A14 an offline row is no longer dimmed",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "className={row.status === \"offline\" ? \"v3-arow v3-arow-off\" : \"v3-arow\"}",
+      "replace": "className=\"v3-arow\"",
+      "expectRed": "2.14 an offline row is dimmed",
+      "cell": "2.14 an offline row is dimmed"
+    },
+    {
+      "name": "A15 the selected row is not marked",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "aria-current={selected ? \"true\" : undefined}",
+      "replace": "aria-current={undefined}",
+      "expectRed": "2.16 the row an address or the panel selected is marked, and no other",
+      "cell": "2.16 the row an address or the panel selected is marked, and no other"
+    },
+    {
+      "name": "A16 the roster's endpoints are not listed apart",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "{endpoints.length > 0 && <Endpoints rows={endpoints} />}",
+      "replace": "{false && <Endpoints rows={endpoints} />}",
+      "expectRed": "3.1 the endpoints come last, after every status group",
+      "cell": "3.1 the endpoints come last, after every status group"
+    },
+    {
+      "name": "A17 an endpoint held offline does not say so",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "r.status === \"offline\" ? word(r.status) : undefined",
+      "replace": "undefined",
+      "expectRed": "3.4 an endpoint the roster holds offline says so",
+      "cell": "3.4 an endpoint the roster holds offline says so"
+    },
+    {
+      "name": "A18 the oldest heartbeat counts offline agents",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const beat = oldestLiveBeat(agents);",
+      "replace": "const beat = Math.min(...agents.map((r) => r.ts));",
+      "expectRed": "3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock",
+      "cell": "3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock"
+    },
+    {
+      "name": "A19 the heartbeat age counts the wrong way",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "ageText(now - beat)",
+      "replace": "ageText(beat - now)",
+      "expectRed": "3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock",
+      "cell": "3.5 under the groups the oldest heartbeat among live agents is said, counted from the clock"
+    },
+    {
+      "name": "A20 an age under an hour stops reading in minutes",
+      "file": "implementations/web/client/src/lib/age.ts",
+      "find": "if (minutes < 60) return",
+      "replace": "if (minutes < 0) return",
+      "expectRed": "3.7 an offline agent's old heartbeat does not count: only a live agent's can be the oldest",
+      "cell": "3.7 an offline agent's old heartbeat does not count: only a live agent's can be the oldest"
+    },
+    {
+      "name": "A21 an age under a day stops reading in hours",
+      "file": "implementations/web/client/src/lib/age.ts",
+      "find": "if (hours < 24) return",
+      "replace": "if (hours < 0) return",
+      "expectRed": "3.8 it reads in the largest whole unit",
+      "cell": "3.8 it reads in the largest whole unit"
+    },
+    {
+      "name": "A22 a heartbeat ahead of the clock reads a negative age",
+      "file": "implementations/web/client/src/lib/age.ts",
+      "find": "Math.floor(Math.max(0, ms) / 1000)",
+      "replace": "Math.floor(ms / 1000)",
+      "expectRed": "3.9 a heartbeat stamped ahead of this page's clock reads 0s, not a negative age",
+      "cell": "3.9 a heartbeat stamped ahead of this page's clock reads 0s, not a negative age"
+    },
+    {
+      "name": "A23 a silent observer is not said in the header",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const lastSeen = stale.some((m) => m.name === \"roster\");",
+      "replace": "const lastSeen = false;",
+      "expectRed": "3.11 when the observer's presence watch is silent the header says last seen, the rows dim and the heartbeat line goes",
+      "cell": "3.11 when the observer's presence watch is silent the header says last seen, the rows dim and the heartbeat line goes"
+    },
+    {
+      "name": "A24 any stale source reads as a silent observer",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "stale.some((m) => m.name === \"roster\")",
+      "replace": "stale.length > 0",
+      "expectRed": "3.12 and any other stale source leaves the header alone",
+      "cell": "3.12 and any other stale source leaves the header alone"
+    },
+    {
+      "name": "A25 the header names a space that is not known yet",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "offline{space === null ? \"\" : ` on ${space}`}",
+      "replace": "offline{` on ${space}`}",
+      "expectRed": "3.13 before the first read names the space the header names none",
+      "cell": "3.13 before the first read names the space the header names none"
+    },
+    {
+      "name": "A26 hosts are listed in the order they arrive, not by name",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": ".sort((a, b) => a.localeCompare(b));",
+      "replace": ";",
+      "expectRed": "4.1 the host route groups by host, hosts in name order, each header with its count",
+      "cell": "4.1 the host route groups by host, hosts in name order, each header with its count"
+    },
+    {
+      "name": "A27 a host header draws no icon",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "{grouping === \"host\" && <Icon icon={ServerStack01Icon} size={16} className=\"ui-ic\" />}",
+      "replace": "",
+      "expectRed": "4.2 a host header draws the server icon",
+      "cell": "4.2 a host header draws the server icon"
+    },
+    {
+      "name": "A28 the host grouping rows end in no status word",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "<StatusWord row={row} />",
+      "replace": "<span />",
+      "expectRed": "4.4 each row ends in its status icon and word, and no row repeats its host",
+      "cell": "4.4 each row ends in its status icon and word, and no row repeats its host"
+    },
+    {
+      "name": "A29 the heartbeat line follows the host grouping too",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "{grouping === \"status\" && !lastSeen && beat !== undefined",
+      "replace": "{!lastSeen && beat !== undefined",
+      "expectRed": "4.9 the heartbeat line belongs to the status grouping, and the endpoints stay last here too",
+      "cell": "4.9 the heartbeat line belongs to the status grouping, and the endpoints stay last here too"
+    },
+    {
+      "name": "A30 an agent with no host is dropped from the host grouping",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return unnamed.length > 0 ? [...named, { key: \"host:\", label: \"No host reported\", rows: unnamed }] : named;",
+      "replace": "return named;",
+      "expectRed": "4.10 an agent that reports no host is in a last group of its own",
+      "cell": "4.10 an agent that reports no host is in a last group of its own"
+    },
+    {
+      "name": "A31 the host route's grouping is not handed to the view",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "group={route.group === \"host\" ? \"host\" : undefined}",
+      "replace": "group={undefined}",
+      "expectRed": "7.9 the Shell hands the host route's grouping down",
+      "cell": "7.9 the Shell hands the host route's grouping down"
+    },
+    {
+      "name": "A32 the Needs route does not mark the Waiting group",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "group=\"status\" focusWaiting selected",
+      "replace": "group=\"status\" selected",
+      "expectRed": "5.2 and marks the Waiting group as the one in focus",
+      "cell": "5.2 and marks the Waiting group as the one in focus"
+    },
+    {
+      "name": "A33 the Needs route follows a saved Host grouping",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "<AgentsView store={store} group=\"status\" focusWaiting",
+      "replace": "<AgentsView store={store} focusWaiting",
+      "expectRed": "7.10 the Shell draws the Needs route by status whatever grouping is saved",
+      "cell": "7.10 the Shell draws the Needs route by status whatever grouping is saved"
+    },
+    {
+      "name": "A34 the Agents route stops handing the selection down",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "group={route.group === \"host\" ? \"host\" : undefined} selected={selectedAgent}",
+      "replace": "group={route.group === \"host\" ? \"host\" : undefined} selected={null}",
+      "expectRed": "9.3 the Shell passes the selection down and the pick back up, on the Agents route",
+      "cell": "9.3 the Shell passes the selection down and the pick back up, on the Agents route"
+    },
+    {
+      "name": "A35 the Needs route stops handing the pick back up",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "focusWaiting selected={selectedAgent} onPick={onPickAgent}",
+      "replace": "focusWaiting selected={selectedAgent}",
+      "expectRed": "9.4 and on the Needs route",
+      "cell": "9.4 and on the Needs route"
+    },
+    {
+      "name": "A36 the empty space never stands in",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "{empty && <EmptySpace space={space} />}",
+      "replace": "{false && <EmptySpace space={space} />}",
+      "expectRed": "6.1 with no agent the empty space stands in, naming the space",
+      "cell": "6.1 with no agent the empty space stands in, naming the space"
+    },
+    {
+      "name": "A37 endpoints alone count as agents",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const empty = agents.length === 0;",
+      "replace": "const empty = roster.length === 0;",
+      "expectRed": "6.3 endpoints alone are no agents, so the empty space still stands in, with the endpoints below it",
+      "cell": "6.3 endpoints alone are no agents, so the empty space still stands in, with the endpoints below it"
+    },
+    {
+      "name": "A38 the toggle is not saved",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "globalThis.localStorage?.setItem(KEY, group);",
+      "replace": "void group;",
+      "expectRed": "7.3 the choice is saved in this browser",
+      "cell": "7.3 the choice is saved in this browser"
+    },
+    {
+      "name": "A39 the saved grouping is never read",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const saved = globalThis.localStorage?.getItem(KEY);",
+      "replace": "const saved: string | null = null;",
+      "expectRed": "7.5 a reload opens in the saved grouping",
+      "cell": "7.5 a reload opens in the saved grouping"
+    },
+    {
+      "name": "A40 the saved grouping beats the one the address pins",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "setGrouping(group ?? readGrouping() ?? \"status\")",
+      "replace": "setGrouping(readGrouping() ?? group ?? \"status\")",
+      "expectRed": "7.6 a view the address pins to status ignores the saved host (the Needs route)",
+      "cell": "7.6 a view the address pins to status ignores the saved host (the Needs route)"
+    },
+    {
+      "name": "A41 any saved text is taken for a grouping",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return saved === \"status\" || saved === \"host\" ? saved : undefined;",
+      "replace": "return saved ? (saved as Grouping) : undefined;",
+      "expectRed": "7.8 a saved value that is neither grouping is ignored",
+      "cell": "7.8 a saved value that is neither grouping is ignored"
+    },
+    {
+      "name": "A42 blocked storage breaks the read",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "  } catch {\n    return undefined;\n  }",
+      "replace": "  } catch (e) {\n    throw e;\n  }",
+      "expectRed": "7.11 with storage blocked the view still draws, and the toggle still regroups for this page",
+      "cell": "7.11 with storage blocked the view still draws, and the toggle still regroups for this page"
+    },
+    {
+      "name": "A43 blocked storage breaks the save",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "setItem(KEY, group);\n  } catch {",
+      "replace": "setItem(KEY, group);\n  } catch (e) {\n    throw e;",
+      "expectRed": "7.11 with storage blocked the view still draws, and the toggle still regroups for this page",
+      "cell": "7.11 with storage blocked the view still draws, and the toggle still regroups for this page"
+    },
+    {
+      "name": "A44 the Needs route does not scroll to the Waiting group",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "head?.scrollIntoView?.({ block: \"start\" });",
+      "replace": "",
+      "expectRed": "8.1 the Needs route scrolls the Waiting group into view",
+      "cell": "8.1 the Needs route scrolls the Waiting group into view"
+    },
+    {
+      "name": "A45 the Needs route does not focus the Waiting group",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "head?.focus({ preventScroll: true });",
+      "replace": "",
+      "expectRed": "8.2 and focuses it, so the keyboard starts there",
+      "cell": "8.2 and focuses it, so the keyboard starts there"
+    },
+    {
+      "name": "A46 clicking a row tells nobody",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "onClick={() => onPick?.(row.id)}",
+      "replace": "onClick={() => undefined}",
+      "expectRed": "9.1 a click on a row tells the caller which agent, by id",
+      "cell": "9.1 a click on a row tells the caller which agent, by id"
+    },
+    {
+      "name": "A47 a row that moves group loses keyboard focus",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "Array.from(rows).find((e) => e.dataset.agent === id)?.focus({ preventScroll: true });",
+      "replace": "void rows;",
+      "expectRed": "9.6 and keeps keyboard focus through the move, with no key warning",
+      "cell": "9.6 and keeps keyboard focus through the move, with no key warning"
+    },
+    {
+      "name": "A48 focus is handed back to a row that no longer had it",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "held.current = heldBy;",
+      "replace": "held.current = heldBy ?? held.current;",
+      "expectRed": "9.7 focus that sits on another control is left there when a row moves",
+      "cell": "9.7 focus that sits on another control is left there when a row moves"
+    },
+    {
+      "name": "A49 the heartbeat ages never redraw on their own",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "const id = setInterval(redraw, TICK_MS);",
+      "replace": "const id = setInterval(() => undefined, TICK_MS);",
+      "expectRed": "10.2 and with no message to cause a render it ages by itself",
+      "cell": "10.2 and with no message to cause a render it ages by itself"
+    },
+    {
+      "name": "A50 the redraw timer outlives the view",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "return () => clearInterval(id);",
+      "replace": "return undefined;",
+      "expectRed": "10.4 and unmounting stops every timer it started",
+      "cell": "10.4 and unmounting stops every timer it started"
+    },
+    {
+      "name": "A51 the waiting status draws the moon icon",
+      "file": "implementations/web/client/src/ui/Status.tsx",
+      "find": "waiting: HourglassIcon,",
+      "replace": "waiting: Moon02Icon,",
+      "expectRed": "1.2 each header draws its own status icon: hourglass, loading spokes, moon, struck circle",
+      "cell": "1.2 each header draws its own status icon: hourglass, loading spokes, moon, struck circle"
+    }
+  ]
+}

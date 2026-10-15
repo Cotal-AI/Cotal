@@ -543,9 +543,9 @@
     },
     {
       "name": "S1 the Agents route never draws the empty state",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "return hasAgents(roster) ? null : (",
-      "replace": "return null && (",
+      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "find": "{empty && <EmptySpace space={space} />}",
+      "replace": "{false && <EmptySpace space={space} />}",
       "expectRed": "8.4 the Agents route draws it too, under an Agents header",
       "cell": "8.4 the Agents route draws it too, under an Agents header"
     },
