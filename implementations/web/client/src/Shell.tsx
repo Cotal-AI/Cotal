@@ -16,6 +16,7 @@ import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
 import { EmptySpace, hasAgents } from "./ui/views/EmptySpace.tsx";
+import { TopologyView } from "./ui/views/TopologyView.tsx";
 
 /** The line the dashboard owes its reader about what the event stream is missing. Plain on purpose;
  *  the feed views restyle it. */
@@ -31,8 +32,8 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
 
 /** The view the centre draws for a route, or null where that view is not built yet and the phase 1
  *  roster list still stands in. The Agents route draws the empty space state while the roster has
- *  no agents. */
-function centreView(store: Store<DashboardState>, route: Route, space: string | null, roster: RosterEntry[]): ReactNode {
+ *  no agents. `clock` is the time the topology view measures hot links against. */
+function centreView(store: Store<DashboardState>, route: Route, space: string | null, roster: RosterEntry[], clock: () => number): ReactNode {
   switch (route.view) {
     case "channel":
       return <ChannelView store={store} channel={route.channel} />;
@@ -40,6 +41,8 @@ function centreView(store: Store<DashboardState>, route: Route, space: string | 
       return <ActivityView store={store} />;
     case "dm":
       return <DmView store={store} peer={route.peer} with={route.with} />;
+    case "topology":
+      return <TopologyView store={store} clock={clock} />;
     case "agents":
       return hasAgents(roster) ? null : (
         <>
@@ -55,16 +58,18 @@ function centreView(store: Store<DashboardState>, route: Route, space: string | 
 /** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, no
  *  DOM access, so it renders the same in a browser and in `renderToString`. `controller` is null
  *  until the dashboard has started. `msgPerSecond` is where the sidebar reads the message rate.
+ *  `clock` is the topology view's clock, `Date.now` unless a caller passes its own.
  *
  *  The sidebar is the places and the stale marker, and the panel is an empty frame. The centre draws
  *  the view for the route (`centreView`) inside a section that says which view it is; the routes
  *  whose views are not built yet keep the phase 1 roster list. */
-export function Shell({ store, controller, route, paneOpen, msgPerSecond }: {
+export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now }: {
   store: Store<DashboardState>;
   controller: Controller | null;
   route: Route;
   paneOpen: boolean;
   msgPerSecond: () => number;
+  clock?: () => number;
 }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -72,7 +77,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond }: {
   const dms = useStore(store, (s) => s.dms);
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
-  const view = centreView(store, route, space, roster);
+  const view = centreView(store, route, space, roster, clock);
   return (
     <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}>
       <title>{documentTitle(space)}</title>

@@ -110,7 +110,7 @@ try {
   // the React runtime the page is built on, and that every file the shipped page references is in
   // the tarball, so a payload whose page points at a missing asset cannot pass into a published
   // binary. marked and DOMPurify are bundled too, because the message rows render bodies as
-  // sanitized Markdown.
+  // sanitized Markdown, and d3-force, d3-selection and d3-zoom lay out and pan the topology graph.
   const licenses = JSON.parse(
     execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/bundle-licenses.json`], { encoding: "utf8" }),
   ) as { bundled: { package: string; version: string; license: string }[] };
@@ -122,6 +122,7 @@ try {
   );
   check("web bundle-licenses.json names react and react-dom", ["react", "react-dom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   check("web bundle-licenses.json names marked and dompurify", ["marked", "dompurify"].every((p) => libs.has(p)), [...libs.keys()].join(","));
+  check("web bundle-licenses.json names d3-force, d3-selection and d3-zoom", ["d3-force", "d3-selection", "d3-zoom"].every((p) => libs.has(p)), [...libs.keys()].join(","));
   const page = execFileSync("tar", ["xzf", cotalTgz, "-O", `${webBase}/index.html`], { encoding: "utf8" });
   const refs = [...page.matchAll(/(?:src|href)="\/([^"]+)"/g)].map((m) => m[1]);
   check("the shipped web page references its script and stylesheet", refs.some((r) => r.endsWith(".js")) && refs.some((r) => r.endsWith(".css")), refs);

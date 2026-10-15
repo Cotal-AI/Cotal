@@ -268,6 +268,29 @@ pre code { background: none; padding: 0; }
 .ui-legend { display: flex; flex-wrap: wrap; gap: 10px 14px; font: 500 11.5px/1 var(--mono); color: var(--dim); padding-top: 10px; }
 .ui-legend span { display: inline-flex; align-items: center; gap: 6px; }
 .ui-legend i { width: 16px; height: 2px; border-radius: 2px; }
+/* The graph's lines and nodes, from the mock's `topo()`: a faint line for a member, the accent for a
+   link with a message flowing on it, dashes for what is kept for an offline member. */
+.ui-topo-svg { cursor: grab; touch-action: none; }
+.ui-topo-svg:active { cursor: grabbing; }
+.ui-tl { stroke: var(--faint); stroke-width: 1.4; opacity: .45; }
+.ui-tl-durable, .ui-tl-off { stroke-dasharray: 4 4; }
+.ui-tl-traffic { stroke: var(--any); stroke-dasharray: 6 5; opacity: .75; }
+.ui-tl-hot { stroke: var(--multi); stroke-width: 2; opacity: 1; }
+.ui-tn rect { fill: var(--card); stroke: var(--card-line); stroke-width: 1.4; }
+.ui-tn-hot rect { stroke: var(--multi); }
+.ui-tn text { fill: var(--ink); font: 400 11px var(--body); }
+.ui-ta-off { opacity: .5; filter: grayscale(1); }
+.ui-ta-name { fill: var(--ink); font: 600 11.5px var(--body); }
+.ui-wide rect { fill: var(--soft); stroke: var(--card-line); }
+.ui-wide text { fill: var(--dim); font: 500 10px var(--body); }
+.ui-wide-key { font: 500 10px/1 var(--body); color: var(--dim); background: var(--soft); border: 1px solid var(--card-line); border-radius: 6px; padding: 2px 6px; }
+.ui-lg-member { background: var(--faint); opacity: .7; }
+.ui-lg-durable { background: repeating-linear-gradient(90deg, var(--faint) 0 4px, transparent 4px 8px); }
+.ui-lg-traffic { background: repeating-linear-gradient(90deg, var(--any) 0 6px, transparent 6px 11px); }
+.ui-lg-hot { background: var(--multi); }
+.ui-col-wide { max-width: 1040px; }
+.ui-btn-sm { padding: 5px 9px; font-size: 12.5px; }
+.ui-btn[aria-pressed="true"] { background: var(--soft); }
 
 .ui-cnote { font-size: 12px; line-height: 1.4; color: var(--dim); padding: 0 6px; margin-top: -4px; height: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ui-cmd button { min-width: 64px; justify-content: center; }

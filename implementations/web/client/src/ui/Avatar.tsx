@@ -23,15 +23,22 @@ const MOOD: Record<string, { look?: string; mood?: string }> = {
   waiting: { mood: "surprised", look: "up" },
 };
 
-/** An agent's character, drawn from the brand's art through the art seam, with its status dot in
- *  the corner unless `dot` is false (the message rows draw none). Offline is greyscale at half
- *  opacity (`ui-av-off`). `vendor` is the connector the roster card reports. */
-export function Avatar({ vendor, status, size, dot = true }: { vendor?: string; status: Status; size: number; dot?: boolean }) {
+/** An agent's character as the markup of its 112-unit box, for the caller's own `<svg viewBox="-2 -4 112
+ *  112">`: the connector's character, with the face its status gives it. The topology graph draws
+ *  the same character at its own size. `vendor` is the connector the roster card reports. */
+export function characterMarkup(vendor: string | undefined, status: Status): string {
   const key = vendor !== undefined && Object.hasOwn(CHARACTER, vendor) ? CHARACTER[vendor] : GUEST;
   const mood = Object.hasOwn(MOOD, status) ? MOOD[status] : {};
+  return body(key, mood);
+}
+
+/** An agent's character, drawn from the brand's art through the art seam, with its status dot in
+ *  the corner unless `dot` is false (the message rows draw none). Offline is greyscale at half
+ *  opacity (`ui-av-off`). */
+export function Avatar({ vendor, status, size, dot = true }: { vendor?: string; status: Status; size: number; dot?: boolean }) {
   return (
     <span className={status === "offline" ? "ui-av ui-av-off" : "ui-av"} style={{ "--s": `${size}px` } as CSSProperties}>
-      <svg viewBox="-2 -4 112 112" aria-hidden="true" dangerouslySetInnerHTML={{ __html: body(key, mood) }} />
+      <svg viewBox="-2 -4 112 112" aria-hidden="true" dangerouslySetInnerHTML={{ __html: characterMarkup(vendor, status) }} />
       {dot && <StatusDot status={status} />}
     </span>
   );

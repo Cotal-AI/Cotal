@@ -45,7 +45,7 @@ export const channelNodeId = (channel: string): string => `#${channel}`;
  *  badges and no channels; the roster, chat and the channel list still draw. `recent` is the caller's bounded window of messages; each entry's `ts` is what `now` is measured against. */
 export function topologyModel(input: {
   roster: RosterEntry[];
-  channels: ChannelInfo[];
+  channels: Pick<ChannelInfo, "channel">[];
   membership: DashboardState["membership"];
   recent: { mode: string; channel?: string; senderId?: string; msg: CotalMessage; ts: number }[];
   hideOffline: boolean;

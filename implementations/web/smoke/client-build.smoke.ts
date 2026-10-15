@@ -31,7 +31,8 @@ const licenses = JSON.parse(readFileSync(join(out, "bundle-licenses.json"), "utf
 };
 const names = licenses.bundled.map((b) => b.package);
 // marked and DOMPurify are bundled because the message rows render bodies as sanitized Markdown.
-for (const want of ["react", "react-dom", "@fontsource-variable/inter", "marked", "dompurify"])
+// d3-force, d3-selection and d3-zoom are bundled because the topology graph lays out and pans with them.
+for (const want of ["react", "react-dom", "@fontsource-variable/inter", "marked", "dompurify", "d3-force", "d3-selection", "d3-zoom"])
   ok(`bundle-licenses.json names ${want}`, names.includes(want), names);
 ok("every bundled package carries a version and a license",
   licenses.bundled.every((b) => b.version && b.license), licenses.bundled);

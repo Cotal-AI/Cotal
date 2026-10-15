@@ -1,0 +1,273 @@
+{
+  "command": "pnpm smoke:web-topology-view",
+  "suite": [
+    "implementations/web/smoke/topology-view.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "T1 the view measures a message's age from the epoch, so no link is ever hot",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "ts: a.msg.ts,",
+      "replace": "ts: 0,",
+      "expectRed": "2.5 a link is hot within 2 seconds of a message on its channel",
+      "cell": "2.5 a link is hot within 2 seconds of a message on its channel"
+    },
+    {
+      "name": "T2 an empty channel is no longer hidden under an authoritative feed",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "hideEmpty: true,",
+      "replace": "hideEmpty: false,",
+      "expectRed": "1.7 a channel with no members is hidden while the membership feed is authoritative",
+      "cell": "1.7 a channel with no members is hidden while the membership feed is authoritative"
+    },
+    {
+      "name": "T3 Hide offline starts off",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "initialHideOffline = true",
+      "replace": "initialHideOffline = false",
+      "expectRed": "2.11 Hide offline is on by default: the offline agent and its links are gone",
+      "cell": "2.11 Hide offline is on by default: the offline agent and its links are gone"
+    },
+    {
+      "name": "T4 the toggle no longer reaches the model, so offline agents never hide",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "hideOffline, hideEmpty: true,",
+      "replace": "hideOffline: false, hideEmpty: true,",
+      "expectRed": "2.11 Hide offline is on by default: the offline agent and its links are gone",
+      "cell": "2.11 Hide offline is on by default: the offline agent and its links are gone"
+    },
+    {
+      "name": "T5 the button stops saying whether it is pressed",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": " aria-pressed={hideOffline}",
+      "replace": "",
+      "expectRed": "2.12 the button reads Hide offline and says it is pressed",
+      "cell": "2.12 the button reads Hide offline and says it is pressed"
+    },
+    {
+      "name": "T6 pressing the button changes nothing",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "setHideOffline(!hideOffline)",
+      "replace": "setHideOffline(hideOffline)",
+      "expectRed": "3.19 pressing it shows the offline agent again",
+      "cell": "3.19 pressing it shows the offline agent again"
+    },
+    {
+      "name": "T7 the pill is judged at the epoch, so a stale feed reads live",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "pillState(membership, now)",
+      "replace": "pillState(membership, 0)",
+      "expectRed": "2.18 stale for an old one",
+      "cell": "2.18 stale for an old one"
+    },
+    {
+      "name": "T8 the view waits 500 seconds to redraw while a link is hot, so it stays hot",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "hot ? 500 : 5000",
+      "replace": "hot ? 500000 : 5000",
+      "expectRed": "3.22 with no other event, the view draws again and the link goes cold on its own",
+      "cell": "3.22 with no other event, the view draws again and the link goes cold on its own"
+    },
+    {
+      "name": "T9 the redraw timer is never cleared",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "return () => clearInterval(id);",
+      "replace": "return () => void id;",
+      "expectRed": "3.23 unmounting stops the view's timer",
+      "cell": "3.23 unmounting stops the view's timer"
+    },
+    {
+      "name": "T10 a message is attributed to the sender id in its payload instead of the verified one",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "...(\"senderId\" in a && a.senderId !== undefined ? { senderId: a.senderId } : {}),",
+      "replace": "",
+      "expectRed": "1.9 a message is attributed to its verified sender and never to the id in its payload",
+      "cell": "1.9 a message is attributed to its verified sender and never to the id in its payload"
+    },
+    {
+      "name": "G1 a hot link is drawn like a cold one",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "hot ? \"ui-tl-hot\" : \"\"",
+      "replace": "\"\"",
+      "expectRed": "2.5 a link is hot within 2 seconds of a message on its channel",
+      "cell": "2.5 a link is hot within 2 seconds of a message on its channel"
+    },
+    {
+      "name": "G2 an offline agent's links are drawn solid",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "sourceOffline ? \"ui-tl-off\" : \"\"",
+      "replace": "\"\"",
+      "expectRed": "2.2 an offline agent's links are dashed",
+      "cell": "2.2 an offline agent's links are dashed"
+    },
+    {
+      "name": "G3 an offline agent is drawn in full colour",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "status === \"offline\" ? \"ui-ta ui-ta-off\" : \"ui-ta\"",
+      "replace": "\"ui-ta\"",
+      "expectRed": "2.3 an offline agent's node is greyscale at half opacity, and a live one is not",
+      "cell": "2.3 an offline agent's node is greyscale at half opacity, and a live one is not"
+    },
+    {
+      "name": "G4 a reader of everything loses its badge",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "{node.wide && (",
+      "replace": "{false && (",
+      "expectRed": "2.9 a reader of everything gets the all-channels badge and no link to each channel",
+      "cell": "2.9 a reader of everything gets the all-channels badge and no link to each channel"
+    },
+    {
+      "name": "G5 a channel with a message flowing on it is not outlined",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "hotChannels.has(n.id)",
+      "replace": "false",
+      "expectRed": "2.6 and the channel's pill shows it",
+      "cell": "2.6 and the channel's pill shows it"
+    },
+    {
+      "name": "G6 the layout heats on every render, so a link going hot moves the graph",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "if (layout.sync(model)) layout.reheat();",
+      "replace": "layout.sync(model);\n    layout.reheat();",
+      "expectRed": "3.8 a link going hot moves nothing and asks for no frame",
+      "cell": "3.8 a link going hot moves nothing and asks for no frame"
+    },
+    {
+      "name": "G7 the layout never heats, so a node that joins is never moved into place",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "if (layout.sync(model)) layout.reheat();",
+      "replace": "layout.sync(model);",
+      "expectRed": "3.5 and adding it asks for frames",
+      "cell": "3.5 and adding it asks for frames"
+    },
+    {
+      "name": "G8 unmounting leaves the pending frame to run",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "      frames.cancel(frame.current);\n",
+      "replace": "",
+      "expectRed": "3.17 unmounting cancels it: no frame runs and none is asked for after",
+      "cell": "3.17 unmounting cancels it: no frame runs and none is asked for after"
+    },
+    {
+      "name": "G9 the zoom handler drops the transform",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "setView(e.transform)",
+      "replace": "void e",
+      "expectRed": "3.13 a wheel turn zooms the content in",
+      "cell": "3.13 a wheel turn zooms the content in"
+    },
+    {
+      "name": "G10 unmounting leaves the zoom listeners on the graph",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "return () => void select(el).on(\".zoom\", null);",
+      "replace": "return undefined;",
+      "expectRed": "3.15 unmounting takes every one of them off",
+      "cell": "3.15 unmounting takes every one of them off"
+    },
+    {
+      "name": "G11 the first draw is not warmed, so it starts mid-motion",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "    layoutRef.current.warm();\n",
+      "replace": "",
+      "expectRed": "3.3 the first draw is at rest: no frame is asked for",
+      "cell": "3.3 the first draw is at rest: no frame is asked for"
+    },
+    {
+      "name": "G12 the frame loop runs past rest",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "if (frame.current !== 0 || layout.settled) return;",
+      "replace": "if (frame.current !== 0) return;",
+      "expectRed": "3.3 the first draw is at rest: no frame is asked for",
+      "cell": "3.3 the first draw is at rest: no frame is asked for"
+    },
+    {
+      "name": "G13 the frame loop never comes to rest",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "if (!layout.settled) frame.current = frames.request(step);",
+      "replace": "frame.current = frames.request(step);",
+      "expectRed": "3.7 and comes to rest: no frame is left pending",
+      "cell": "3.7 and comes to rest: no frame is left pending"
+    },
+    {
+      "name": "L1 a model with the same nodes and links counts as a change",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": "if (key === this.key) return false;",
+      "replace": "void key;",
+      "expectRed": "3.8 a link going hot moves nothing and asks for no frame",
+      "cell": "3.8 a link going hot moves nothing and asks for no frame"
+    },
+    {
+      "name": "L2 the key forgets the links, so a link between two drawn nodes is no change",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": "${links.join(\"\\u0001\")}",
+      "replace": "",
+      "expectRed": "3.10 a link joining two nodes already drawn asks for frames",
+      "cell": "3.10 a link joining two nodes already drawn asks for frames"
+    },
+    {
+      "name": "L3 reheating does nothing",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": "this.sim.alpha(Math.max(this.sim.alpha(), REHEAT));",
+      "replace": "this.sim.alpha(this.sim.alpha());",
+      "expectRed": "3.5 and adding it asks for frames",
+      "cell": "3.5 and adding it asks for frames"
+    },
+    {
+      "name": "L4 every sync forgets where the nodes were",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": "this.bodies.get(n.id) ?? { id: n.id, r: radius(n) }",
+      "replace": "{ id: n.id, r: radius(n) }",
+      "expectRed": "4.4 a node already placed keeps its place when another joins",
+      "cell": "4.4 a node already placed keeps its place when another joins"
+    },
+    {
+      "name": "L5 the warm-up is three ticks, so the first draw is not at rest",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": "const WARM_TICKS = 300;",
+      "replace": "const WARM_TICKS = 3;",
+      "expectRed": "3.3 the first draw is at rest: no frame is asked for",
+      "cell": "3.3 the first draw is at rest: no frame is asked for"
+    },
+    {
+      "name": "L6 a channel pill is drawn narrower than its name",
+      "file": "implementations/web/client/src/ui/graph/layout.ts",
+      "find": "14 + label.length * 7",
+      "replace": "14 + label.length * 6",
+      "expectRed": "1.3 a channel is a rounded #name pill",
+      "cell": "1.3 a channel is a rounded #name pill"
+    },
+    {
+      "name": "P1 the stale pill is drawn as live",
+      "file": "implementations/web/client/src/ui/MembershipPill.tsx",
+      "find": "cls: \"ui-mpill-stale\"",
+      "replace": "cls: \"ui-mpill-live\"",
+      "expectRed": "2.18 stale for an old one",
+      "cell": "2.18 stale for an old one"
+    },
+    {
+      "name": "P2 the traffic-only pill drops its tooltip",
+      "file": "implementations/web/client/src/ui/MembershipPill.tsx",
+      "find": "title: \"No delivery daemon on an open mesh, so members come from who has posted\"",
+      "replace": "title: undefined",
+      "expectRed": "2.19 traffic-only for no feed, with its tooltip",
+      "cell": "2.19 traffic-only for no feed, with its tooltip"
+    },
+    {
+      "name": "P3 the live pill drops its tooltip",
+      "file": "implementations/web/client/src/ui/MembershipPill.tsx",
+      "find": "title: \"From broker membership, served by the delivery daemon\"",
+      "replace": "title: undefined",
+      "expectRed": "2.17 the pill reads Membership: live for a fresh feed, with the daemon tooltip",
+      "cell": "2.17 the pill reads Membership: live for a fresh feed, with the daemon tooltip"
+    },
+    {
+      "name": "S1 the shell never draws the topology view",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "return <TopologyView store={store} clock={clock} />;",
+      "replace": "return null;",
+      "expectRed": "2.24 the shell draws the topology view in its centre on the topology route",
+      "cell": "2.24 the shell draws the topology view in its centre on the topology route"
+    }
+  ]
+}

@@ -28,5 +28,13 @@ g.document = win.document;
 // every read, so the page's storage replaces it.
 for (const key of ["localStorage", "sessionStorage"]) Object.defineProperty(g, key, { value: win[key], configurable: true, writable: true });
 
-/** Close the window's timers and handles, so the suite's process can exit. */
-export const closeDom = async (): Promise<void> => dom.window.close();
+/** Close the window's timers and handles, so the suite's process can exit.
+ *
+ *  It waits a moment first. d3-force starts a timer when a simulation is built, and the topology
+ *  graph stops it at once, but d3's timer wakes one more time on the next animation frame to retire
+ *  its own polling interval. Closing the window first cancels that frame, and the interval then
+ *  holds the process open for good. */
+export const closeDom = async (): Promise<void> => {
+  await new Promise<void>((resolve) => setTimeout(resolve, 100));
+  dom.window.close();
+};
