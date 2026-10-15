@@ -504,7 +504,6 @@ const stoppedWhileFailingBindParked = (failing.ep as unknown as { stopped: boole
 startRejected = true;
 releaseFailingStart();
 const [failingStopResult] = await Promise.all([failingStop, failedStart]);
-if (!failingStopResult.ok && failingStopResult.error !== lateStartError) throw failingStopResult.error;
 check(
   "a start rejection arriving after stop cannot replace the post-mortem diagnostic",
   stoppedWhileFailingBindParked && failingBindFinished && !failingStopResult.ok &&
