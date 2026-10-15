@@ -647,7 +647,7 @@
     },
     {
       "name": "A11 attention loses its tooltip",
-      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "file": "implementations/web/client/src/ui/Attention.tsx",
       "find": " title={a.title}",
       "replace": "",
       "expectRed": "3.8 Do not disturb carries its icon and the notes' tooltip",
@@ -656,8 +656,8 @@
     {
       "name": "A12 the heartbeat shows its own time, not its age",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "const beat = ago(clock() - row.ts);",
-      "replace": "const beat = ago(row.ts);",
+      "find": "{ageText(clock() - row.ts)} ago",
+      "replace": "{ageText(row.ts)} ago",
       "expectRed": "3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago",
       "cell": "3.6 the heartbeat is labelled as a heartbeat: Heartbeat 2s ago"
     },
@@ -759,35 +759,35 @@
     },
     {
       "name": "G1 a second under a minute reads as minutes",
-      "file": "implementations/web/client/src/lib/ago.ts",
-      "find": "if (s < 60) return",
-      "replace": "if (s < 59) return",
-      "expectRed": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing",
-      "cell": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing"
+      "file": "implementations/web/client/src/lib/age.ts",
+      "find": "if (seconds < 60) return",
+      "replace": "if (seconds < 59) return",
+      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "G2 a clock ahead reads as a negative age",
-      "file": "implementations/web/client/src/lib/ago.ts",
+      "file": "implementations/web/client/src/lib/age.ts",
       "find": "Math.max(0, ms)",
       "replace": "ms",
-      "expectRed": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing",
-      "cell": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing"
+      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "G3 an age that is no number is written anyway",
-      "file": "implementations/web/client/src/lib/ago.ts",
-      "find": "if (!Number.isFinite(ms)) return undefined;",
-      "replace": "",
-      "expectRed": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing",
-      "cell": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing"
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "{Number.isFinite(row.ts) ? <dd",
+      "replace": "{true ? <dd",
+      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "G4 a whole day reads as 24 hours",
-      "file": "implementations/web/client/src/lib/ago.ts",
-      "find": "if (h < 24) return",
-      "replace": "if (h <= 24) return",
-      "expectRed": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing",
-      "cell": "3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing"
+      "file": "implementations/web/client/src/lib/age.ts",
+      "find": "if (hours < 24) return",
+      "replace": "if (hours <= 24) return",
+      "expectRed": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+      "cell": "3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported"
     },
     {
       "name": "E1 a wide reader is not called wide",

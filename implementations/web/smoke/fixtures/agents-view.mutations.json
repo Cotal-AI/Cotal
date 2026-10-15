@@ -80,24 +80,24 @@
     {
       "name": "A10 an open agent shows a badge",
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "? ATTENTION[row.attention] : undefined;",
-      "replace": "? ATTENTION[row.attention] : ATTENTION.focus;",
+      "find": "? row.attention : undefined;",
+      "replace": "? row.attention : \"focus\";",
       "expectRed": "2.12 an open agent, and one that reports no attention, show no badge",
       "cell": "2.12 an open agent, and one that reports no attention, show no badge"
     },
     {
       "name": "A11 Do not disturb loses its tooltip",
-      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "title={attention.title}",
+      "file": "implementations/web/client/src/ui/Attention.tsx",
+      "find": " title={a.title}",
       "replace": "",
       "expectRed": "2.10 Do not disturb shows its icon, its words and the tooltip that says what it does",
       "cell": "2.10 Do not disturb shows its icon, its words and the tooltip that says what it does"
     },
     {
       "name": "A12 Focus draws the Do not disturb icon",
-      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "focus: { label: \"Focus\", icon: Target02Icon,",
-      "replace": "focus: { label: \"Focus\", icon: NotificationOff01Icon,",
+      "file": "implementations/web/client/src/ui/Attention.tsx",
+      "find": "focus: { icon: Target02Icon,",
+      "replace": "focus: { icon: NotificationOff01Icon,",
       "expectRed": "2.11 Focus shows its icon, its words and its tooltip",
       "cell": "2.11 Focus shows its icon, its words and its tooltip"
     },

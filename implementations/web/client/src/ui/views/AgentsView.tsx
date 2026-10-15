@@ -1,4 +1,4 @@
-import { NotificationOff01Icon, Plug01Icon, ServerStack01Icon, Settings01Icon, Target02Icon } from "@hugeicons/core-free-icons";
+import { Plug01Icon, ServerStack01Icon, Settings01Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { RosterEntry } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
@@ -7,6 +7,7 @@ import { oldestLiveBeat, rosterRows, STATUS_ORDER, statusLabel, type RosterRow }
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
+import { AttentionMark } from "../Attention.tsx";
 import { Avatar } from "../Avatar.tsx";
 import { clock as clockTime, harnessName } from "../MessageRow.tsx";
 import { needsDetail } from "../NeedsCard.tsx";
@@ -22,12 +23,6 @@ const KEY = "cotal.agents.group";
 /** How often the heartbeat ages redraw. They count whole seconds, and nothing else would redraw them
  *  while every agent is silent. */
 const TICK_MS = 1000;
-
-/** The tooltips on the two attention badges (mock section D). */
-const ATTENTION = {
-  dnd: { label: "Do not disturb", icon: NotificationOff01Icon, color: "var(--uni-ink)", title: "Channel messages wait for its next turn. DMs and mentions still wake it." },
-  focus: { label: "Focus", icon: Target02Icon, color: "var(--multi-ink)", title: "Channel messages stay in the channel. DMs and role requests still reach it." },
-} as const;
 
 /** The grouping this browser saved, or undefined when none is saved or storage is blocked. */
 function readGrouping(): Grouping | undefined {
@@ -105,7 +100,7 @@ function activityText(row: RosterRow, grouping: Grouping): string {
  *  (open shows nothing), and its host, or its status word under the host grouping. The row is a
  *  button; picking it tells the caller which agent. */
 function AgentRow({ row, grouping, selected, onPick }: { row: RosterRow; grouping: Grouping; selected: boolean; onPick?: (id: string) => void }) {
-  const attention = row.attention === "dnd" || row.attention === "focus" ? ATTENTION[row.attention] : undefined;
+  const attention = row.attention === "dnd" || row.attention === "focus" ? row.attention : undefined;
   const waiting = row.status === "waiting" && grouping === "status";
   return (
     <button
@@ -120,11 +115,7 @@ function AgentRow({ row, grouping, selected, onPick }: { row: RosterRow; groupin
         <span className="v3-aname"><b>{row.name}</b><span>{roleLine(row)}</span></span>
         <span className="v3-aact" style={waiting ? { color: "var(--gold-ink)" } : undefined}>{activityText(row, grouping)}</span>
       </span>
-      {attention ? (
-        <span className="v3-meta" style={{ color: attention.color }} title={attention.title}>
-          <Icon icon={attention.icon} size={16} className="ui-ic ui-ic16" />{attention.label}
-        </span>
-      ) : <span />}
+      {attention ? <AttentionMark attention={attention} /> : <span />}
       {grouping === "host" ? (
         <StatusWord row={row} />
       ) : row.host !== undefined ? (

@@ -13,7 +13,6 @@ import { strict as assert } from "node:assert";
 import { createElement, useState } from "react";
 import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
-import { ago } from "../client/src/lib/ago.js";
 import { formatRoute, type Route } from "../client/src/lib/route.js";
 import { topologyModel, type TopoModel } from "../client/src/lib/topology.js";
 import { Shell } from "../client/src/Shell.tsx";
@@ -220,9 +219,13 @@ const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: stri
   ok("3.18 off a channel there is no Recent section", agentTab("local.rev", {}, null).querySelector(".ui-mini") === null);
   const gone = agentTab("local.nobody");
   ok("3.19 an id the roster does not hold reads Not on the roster", textOf(gone) === "Not on the roster", textOf(gone));
-  same("3.20 ago writes an age in its largest whole unit, a clock ahead as now, and no number as nothing",
-    [0, 1999, 59_999, 60_000, 3_599_999, 3_600_000, 86_400_000, -5, Number.NaN].map(ago),
-    ["0s ago", "1s ago", "59s ago", "1m ago", "59m ago", "1h ago", "1d ago", "0s ago", undefined]);
+  const heartbeatAt = (age: number) => {
+    const tab = agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { ts: NOW - age })] });
+    return textOf(all(tab, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat")?.nextElementSibling);
+  };
+  same("3.20 the heartbeat reads its age in the largest whole unit, a clock ahead as now, and no time as not reported",
+    [0, 1999, 59_999, 60_000, 3_599_999, 3_600_000, 86_400_000, -5, Number.NaN].map(heartbeatAt),
+    ["0s ago", "1s ago", "59s ago", "1m ago", "59m ago", "1h ago", "1d ago", "0s ago", "not reported"]);
   let t = NOW;
   const ticking = await mount(createElement(AgentTab, { store: storeOf(), id: "local.rev", channel: "review", clock: () => t }));
   const beatNow = () => textOf(all(ticking.container, "dl.ui-kv dt").find((dt) => textOf(dt) === "Heartbeat")?.nextElementSibling);

@@ -1,8 +1,7 @@
-import { ComputerTerminal01Icon, Message01Icon, NotificationOff01Icon, StopCircleIcon, Target02Icon } from "@hugeicons/core-free-icons";
-import type { IconSvgElement } from "@hugeicons/react";
+import { ComputerTerminal01Icon, Message01Icon, StopCircleIcon } from "@hugeicons/core-free-icons";
 import { useEffect, useMemo, useReducer } from "react";
 import { Icon } from "../../icons/Icon.tsx";
-import { ago } from "../../lib/ago.js";
+import { ageText } from "../../lib/age.js";
 import { agentChannels } from "../../lib/members.js";
 import { partsToText } from "../../lib/parts.js";
 import { rosterRows } from "../../lib/roster.js";
@@ -10,6 +9,7 @@ import { formatRoute } from "../../lib/route.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
+import { AttentionMark } from "../Attention.tsx";
 import { Avatar } from "../Avatar.tsx";
 import { CopyCommand } from "../CopyCommand.tsx";
 import { clock as hhmm, harnessName, UNVERIFIED } from "../MessageRow.tsx";
@@ -19,26 +19,6 @@ import { StatusWord } from "../Status.tsx";
 const RECENT = 3;
 /** A recent message's text is cut to this many characters; the channel has the whole of it. */
 const SNIPPET = 160;
-
-/** The two attention modes that show, each with its icon, word, colour and the notes' tooltip.
- *  `open` attention, or none, shows nothing. */
-const ATTENTION: Record<"dnd" | "focus", { icon: IconSvgElement; word: string; color: string; title: string }> = {
-  dnd: { icon: NotificationOff01Icon, word: "Do not disturb", color: "var(--uni-ink)", title: "Channel messages wait for its next turn. DMs and mentions still wake it." },
-  focus: { icon: Target02Icon, word: "Focus", color: "var(--multi-ink)", title: "Channel messages stay in the channel. DMs and role requests still reach it." },
-};
-
-/** An agent's attention as the mock draws it: Do not disturb or Focus with its icon and tooltip, and
- *  nothing at all for open attention or a mode the dashboard does not know. */
-export function AttentionMark({ attention }: { attention: string | undefined }) {
-  if (attention === undefined || !Object.hasOwn(ATTENTION, attention)) return null;
-  const a = ATTENTION[attention as keyof typeof ATTENTION];
-  return (
-    <span className="v3-meta" style={{ color: a.color }} title={a.title}>
-      <Icon icon={a.icon} size={16} className="ui-ic ui-ic16" />
-      {a.word}
-    </span>
-  );
-}
 
 /** The heartbeat's age redraws on this beat, so "2s ago" does not stand still between presence updates. */
 const BEAT_MS = 1000;
@@ -84,7 +64,6 @@ export function AgentTab({ store, id, channel, clock }: {
   const row = rosterRows([entry], { includeOffline: true })[0];
   const sub = [row.role, row.harness && harnessName(row.harness)].filter(Boolean).join(" · ");
   const reported = typeof row.statusSince === "number" && Number.isFinite(row.statusSince) ? `Reported ${hhmm(new Date(row.statusSince))}` : undefined;
-  const beat = ago(clock() - row.ts);
   const skills = (entry.card.skills ?? []).map((s) => s.name).filter((s) => typeof s === "string" && s !== "");
   const recent = open !== null && open.channel === channel
     ? open.messages.filter((m) => m.senderId === id || (m.senderId === undefined && m.msg.from?.id === id)).slice(-RECENT).reverse()
@@ -116,7 +95,7 @@ export function AgentTab({ store, id, channel, clock }: {
         {row.host && <><dt>Host</dt><dd>{row.host}</dd></>}
         {(row.attention === "dnd" || row.attention === "focus") && <><dt>Attention</dt><dd><AttentionMark attention={row.attention} /></dd></>}
         <dt>Heartbeat</dt>
-        {beat ? <dd className="ui-num">{beat}</dd> : <dd className="ui-nr">not reported</dd>}
+        {Number.isFinite(row.ts) ? <dd className="ui-num">{ageText(clock() - row.ts)} ago</dd> : <dd className="ui-nr">not reported</dd>}
       </dl>
       {(mine.wide || mine.channels.length > 0) && (
         <>
