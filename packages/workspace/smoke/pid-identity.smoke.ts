@@ -26,7 +26,7 @@
  * Run: pnpm smoke:pid-identity
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,6 +80,23 @@ try {
   check("parseRecord reads an empty file as a husk", parseRecord("  \n").kind === "husk");
   check("parseRecord refuses garbled content as unattributable", parseRecord("x y z").kind === "unattributable");
   check("formatRecord is the inverse of parseRecord", parseRecord(formatRecord({ pid: 4321, token: "t" })).kind === "record");
+  for (const raw of ["4321 token\n1234 other", "4321 token\r1234 other", "0 Thu Oct 15 21:16:51 2026", "x Thu Oct 15 21:16:51 2026"]) {
+    check("parseRecord refuses malformed or multiline identity", parseRecord(raw).kind === "unattributable", raw);
+  }
+  const nativeToken = defaultStartToken(process.pid);
+  check("native process exposes a creation token", nativeToken !== undefined);
+  const nativeRecord = parseRecord(formatRecord({ pid: process.pid, token: nativeToken! }));
+  check("native creation token survives the identity record", nativeRecord.kind === "record" && nativeRecord.record.token === nativeToken);
+  if (process.platform !== "win32") {
+    const token = execFileSync("ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8" }).trim();
+    check("real ps lstart token contains spaces", token.includes(" "), token);
+    const parsed = parseRecord(formatRecord({ pid: process.pid, token }));
+    check("real ps lstart token round-trips without normalization", parsed.kind === "record" && parsed.record.pid === process.pid && parsed.record.token === token);
+    const pidPath = join(root, ".cotal", "lstart.pid");
+    const tokenAt = (pid: number) => execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8" }).trim();
+    writePidPair(pidPath, process.pid, { tokenAt });
+    check("real ps lstart identity pin verifies", verifyIdentityPin(pidPath, tokenAt).kind === "match");
+  }
 
   // ── A. THE MISMATCH REFUSAL on the delivery daemon's own stop path (#969 acceptance 1) ─────
   {

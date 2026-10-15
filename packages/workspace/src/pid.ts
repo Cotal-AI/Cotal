@@ -236,7 +236,7 @@ export function readProcessRecord(
  * without holding a kernel capability (#969 design shape (a)): the start time of a pid is fixed for
  * the life of that pid and changes the moment the number is reused.
  *
- * FORMAT: two whitespace-separated fields, `pid` and `token`. The token is opaque here (see
+ * FORMAT: a `pid` followed by an opaque, single-line `token`, which may contain spaces (see
  * {@link ProcessStartTokenReader} for what produces it); a record carrying only a pid is a LEGACY
  * record (pre-identity build) and every consumer must treat it as such, loud.
  */
@@ -251,16 +251,14 @@ export type ReadRecord = { kind: "record"; record: ProcessIdentityRecord } | { k
 export function parseRecord(raw: string): ReadRecord {
   const trimmed = raw.trim();
   if (trimmed === "") return { kind: "husk" };
-  // FIELD SPLIT, not a substring: the token may itself contain digits (it is a timestamp), so
-  // anything other than exactly two fields cannot name both a pid and its start.
-  const fields = trimmed.split(/\s+/);
-  if (fields.length === 1) {
-    const pid = parsePid(fields[0]!);
-    return pid === undefined ? { kind: "unattributable", raw: trimmed } : { kind: "legacy", pid };
-  }
-  if (fields.length === 2 && parsePid(fields[0]!) !== undefined && fields[1] !== "")
-    return { kind: "record", record: { pid: parsePid(fields[0]!)!, token: fields[1] } };
-  return { kind: "unattributable", raw: trimmed };
+  // macOS/BSD lstart tokens contain spaces. Only the first field is the pid; the
+  // rest is one opaque token. Embedded newlines cannot belong to a single pin.
+  const fields = /^(\S+)(?:[^\S\r\n]+([^\r\n]+))?$/.exec(trimmed);
+  if (!fields) return { kind: "unattributable", raw: trimmed };
+  const pid = parsePid(fields[1]!);
+  if (pid === undefined) return { kind: "unattributable", raw: trimmed };
+  if (fields[2] === undefined) return { kind: "legacy", pid };
+  return { kind: "record", record: { pid, token: fields[2] } };
 }
 
 /** Serialize a record. Exactly the inverse of {@link parseRecord}; writing is centralized so a

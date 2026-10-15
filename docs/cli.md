@@ -416,7 +416,9 @@ remain failures.
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` and `cotal web` record each
 process's creation identity in a sibling `<pidfile>.identity` pin, which holds the pid and the
-process start reported by the OS. Every stop path, including `down` for the broker, web and
+process start reported by the OS. The start token is preserved as one value, including the spaces
+in macOS and BSD start timestamps; existing timestamp pins need no migration. Every stop path,
+including `down` for the broker, web and
 extension components, and the manager, delivery and auth-service stops, applies the same rule. A pin
 that names a different start means the pid was reused, so teardown refuses and preserves it. A torn
 or unreadable pin also refuses.
