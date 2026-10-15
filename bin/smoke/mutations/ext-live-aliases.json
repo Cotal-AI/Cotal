@@ -4,10 +4,10 @@
   ],
   "guard": "an extension's alias runs its command, and an add whose name or alias another installed extension already claims as a name or alias fails naming both, read from the manifest cache without importing the sibling",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:ext:live",
-  "completionMarker": "ext live e2e",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ext-live-aliases.json",
   "why": [
-    "An installed extension is not imported during another's add, so the registry cannot see its aliases; the add must compare the cached names and aliases, or two packages claim one word and the winner depends on install order. Run it without a seat's COTAL_* environment."
+    "An installed extension is not imported during another's add, so the registry cannot see its aliases; the add must compare the cached names and aliases, or two packages claim one word and the winner depends on install order. Run it without a seat's COTAL_* environment.",
+    "The suite stops at its first failed assertion, so it sets no completion marker: a named red is the whole verdict."
   ],
   "mutations": [
     {

@@ -11,15 +11,15 @@
   ],
   "mutations": [
     {
-      "name": "the seed runs before the front end",
+      "name": "the seed runs before flag parsing",
       "file": "implementations/cli/src/command.ts",
-      "find": "  let commands = surface();\n",
-      "replace": "  if (opts.extensions && argv[0] !== \"version\" && argv[0] !== \"help\") await reconcileSeededConnectors();\n  let commands = surface();\n",
+      "find": "  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;\n",
+      "replace": "  if (opts.extensions && !skipsSeed(cmd?.name ?? word, rest[0], rest)) await reconcileSeededConnectors();\n  let parsed = cmd && !isExtensionStub(cmd) ? parseOrExit(cmd, rest) : undefined;\n",
       "expectRed": "an unknown flag writes no seed store",
       "cell": "an unknown flag writes no seed store",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
       "afterRestore": "pnpm --filter cotal-ai... build",
-      "note": "The pre-split order: every invocation but help and version seeds first."
+      "note": "The defect this change fixes: a resolved command seeded before its flags were parsed, so a usage error installed the connectors first. Restoring the whole pre-split order makes nearly every invocation in the suite seed and outruns the proof's per-run budget."
     },
     {
       "name": "dispatch resolves commands by name only",
