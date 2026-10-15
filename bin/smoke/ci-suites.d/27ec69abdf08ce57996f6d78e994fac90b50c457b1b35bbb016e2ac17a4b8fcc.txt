@@ -1,0 +1,1 @@
+smoke:claude-hosted-types

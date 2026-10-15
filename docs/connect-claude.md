@@ -651,6 +651,8 @@ await session.close();
 ```
 
 Loading the module only exports it; it serves its own stdio only when run, as `node dist/mcp.cjs`.
+The subpath ships CommonJS declarations so TypeScript hosts can use either module format,
+including CommonJS consumers with Node16 or Node18 module settings.
 Claude Code pushes `claude/channel` only to a stdio server it launched, so each `claude` still
 launches a stdio command, such as a small relay that pipes its stdio to the host.
 
@@ -661,6 +663,8 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
   and `claude/channel` pushes. The caller owns both streams. Input that has emitted `end` or is
   destroyed rejects startup. Buffered unread input remains eligible. When an active session's
   `input` emits `end` or `close`, the session closes, including after a relay connection resets.
+  Teardown may pause `input` and removes the transport's error handler. A host that reuses the
+  stream must resume it as needed and keep its own stream error handlers.
 - **`fatalBind`.** Off by default: a control socket that cannot be bound rejects the call and the
   host keeps its other sessions. Only a process that is the session turns it on, as `mcp.cjs` does.
 - **Teardown.** `close()` closes the control socket, the wake policy, the AG-UI emitter, the mesh
