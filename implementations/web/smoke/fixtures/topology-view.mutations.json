@@ -70,10 +70,10 @@
       "cell": "3.22 the view has one redraw timer running, and it is the fast one while a link is hot"
     },
     {
-      "name": "T9 the redraw timer is never cleared",
+      "name": "T9 the redraw timer is cleared only while a link is hot, so it outlives the view once the link has cooled",
       "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
       "find": "return () => clearInterval(id);",
-      "replace": "return () => void id;",
+      "replace": "return () => { if (hot) clearInterval(id); };",
       "expectRed": "3.25 unmounting clears the view's timer",
       "cell": "3.25 unmounting clears the view's timer"
     },
@@ -126,10 +126,10 @@
       "cell": "2.6 and the channel's pill shows it"
     },
     {
-      "name": "G6 the layout heats on every render, so a link going hot moves the graph",
+      "name": "G6 a link going hot heats the layout, so the graph moves when nothing about its shape changed",
       "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "find": "if (layout.sync(model)) layout.reheat();",
-      "replace": "layout.sync(model);\n    layout.reheat();",
+      "replace": "if (layout.sync(model) || model.links.some((l) => l.hot)) layout.reheat();",
       "expectRed": "3.8 a link going hot moves nothing and asks for no frame",
       "cell": "3.8 a link going hot moves nothing and asks for no frame"
     },
@@ -194,8 +194,8 @@
       "file": "implementations/web/client/src/ui/graph/layout.ts",
       "find": "if (key === this.key) return false;",
       "replace": "void key;",
-      "expectRed": "3.8 a link going hot moves nothing and asks for no frame",
-      "cell": "3.8 a link going hot moves nothing and asks for no frame"
+      "expectRed": "3.3 the first draw is at rest: no frame is asked for",
+      "cell": "3.3 the first draw is at rest: no frame is asked for"
     },
     {
       "name": "L2 the key forgets the links, so a link between two drawn nodes is no change",
@@ -284,6 +284,14 @@
       "replace": "setInterval(() => void redraw, hot ? 500 : 5000)",
       "expectRed": "3.23 with no other event, the view draws again and the link goes cold on its own",
       "cell": "3.23 with no other event, the view draws again and the link goes cold on its own"
+    },
+    {
+      "name": "T13 the redraw timer is never cleared, so one more joins each time the speed changes",
+      "file": "implementations/web/client/src/ui/views/TopologyView.tsx",
+      "find": "return () => clearInterval(id);",
+      "replace": "return () => void id;",
+      "expectRed": "3.24 and with nothing hot it slows to the idle timer, still one",
+      "cell": "3.24 and with nothing hot it slows to the idle timer, still one"
     }
   ]
 }
