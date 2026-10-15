@@ -141,8 +141,10 @@ const answer = (id: string, operatorId = OP): SendAnswer => ({ ok: true, id, ope
   ok("2.1 a post empties the box and is held as a row the server has not answered",
     during.text === "" && during.outgoing.length === 1 && during.outgoing[0].text === "Approved. Run it." && during.outgoing[0].id === undefined, during);
   same("2.2 and the post goes to the server as given", sent, [[REVIEW, "Approved. Run it."]]);
+  // Not awaited: a second post that did go out would wait on the first one's answer.
   let second: unknown;
-  await h.ctl.send(REVIEW, "again").catch((e) => { second = e; });
+  h.ctl.send(REVIEW, "again").catch((e) => { second = e; });
+  await new Promise((r) => setTimeout(r, 0));
   ok("2.3 a second post to the same target while one is in flight is refused in the page", second instanceof Error && sent.length === 1, sent);
   g.resolve(answer("m-1"));
   await done;
