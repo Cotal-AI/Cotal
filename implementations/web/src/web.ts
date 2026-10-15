@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { closeSync, existsSync, fchmodSync, fstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
@@ -12,13 +12,16 @@ import {
   parseSubject,
   type PresenceView,
   spacePrefix,
+  credsClaims,
   mintCreds,
+  mintLifecycleUid,
   newIdentity,
   clearChannel,
   assertValidChannel,
   hardenPrivate,
   type CotalMessage,
   type ParsedArgs,
+  type SpaceAuth,
 } from "@cotal-ai/core";
 import {
   c,
@@ -774,21 +777,131 @@ export async function activityBackfill(
   }
 }
 
-/** Connects the dashboard and spends the account seed on its one write cred, the channel-purger
- *  for channel delete. The dashboard is a loopback HTTP process and the seed can mint ANY identity
- *  or role, so the seed is bound only inside this function and a request handler in {@link web}
- *  that reaches for it fails to compile. A narrowed copy made inside `web()` would leave the full
- *  value in the handlers' scope beside it. Resolves `undefined` in a parent that hands off to a
- *  `--detach` child. The mint comes last, after that hand-off and the pidfile claim, because the
- *  cred has no expiry and a process that detaches or is refused must not mint one it then drops.
- *  `--creds` and open meshes have no seed and purge with the connection's own creds; user mode
- *  mints a purger view per delete instead. */
+/** What the dashboard can post as, decided once at startup and reported in `/api/meta`. A
+ *  `participant` posts as one operator for the life of the process and joins the roster on its
+ *  first post, on open and static-auth meshes alike. */
+export type PostCapability =
+  | { mode: "participant" }
+  | { mode: "off"; reason: string };
+/** Why posting is off on a dashboard started with `--creds`: the file is the only credential it
+ *  holds, and it has no seed to mint an operator from. */
+export const POST_OFF_CREDS = "This dashboard was started with --creds, which can only read.";
+/** Why posting is off on a per-user sign-in mesh. */
+export const POST_OFF_USER = "Posting from the dashboard isn't available on a sign-in mesh yet. Use cotal send.";
+
+/** The operator credential's lifetime: 24 days. Core arms a reconnect fence with one `setTimeout`
+ *  at the credential's expiry, and Node caps a timer at 2^31-1 ms (about 24.8 days), so a longer
+ *  credential turns library reconnect off 1 ms after every connect. */
+export const OPERATOR_TTL_SECONDS = 24 * 24 * 3600;
+
+/** The posting decision. `--creds` wins: a raw credential file is all such a dashboard holds. */
+export function postCapability(creds: string | undefined, userMode: boolean): PostCapability {
+  if (creds !== undefined) return { mode: "off", reason: POST_OFF_CREDS };
+  if (userMode) return { mode: "off", reason: POST_OFF_USER };
+  return { mode: "participant" };
+}
+
+/** The static-mesh operator: its credential, the lifecycle uid its presence registers under, and
+ *  the credential's expiry in epoch milliseconds, read from the credential itself. */
+export interface OperatorCred { creds: string; lifecycleUid: string; expiresAt: number }
+
+/** Mints the operator for a static-auth mesh with one new identity. Called once, from
+ *  {@link connectWithoutSeed}, so every post the process makes carries that one `from.id` and an
+ *  agent's replies land in one DM thread. With `consume: false` the uid names no broker resources,
+ *  so it needs no provisioning. */
+export async function mintOperatorCred(auth: SpaceAuth): Promise<OperatorCred> {
+  const creds = await mintCreds(auth, newIdentity(), "operator", { expiresInSeconds: OPERATOR_TTL_SECONDS });
+  const exp = credsClaims(creds).exp;
+  if (exp === undefined) throw new Error("the operator credential was minted without an expiry");
+  return { creds, lifecycleUid: mintLifecycleUid(), expiresAt: exp * 1000 };
+}
+
+/** The dashboard's one posting endpoint, built at startup and started on the first post. */
+export interface OperatorPoster {
+  /** The id the operator posts as, once it is known: from startup on a static mesh, whose
+   *  credential names it, and from the first post on an open mesh. */
+  operatorId(): string | undefined;
+  /** Starts the endpoint once. Concurrent first posts share one start. A failed start is dropped,
+   *  so the next post tries again under the same id. */
+  ensure(): Promise<CotalEndpoint>;
+  /** Whether the operator credential has expired, so a refused post can say why. Never on an open
+   *  mesh, which has no credential. */
+  expired(): boolean;
+  /** Stops the endpoint if it started, so the operator leaves an offline record. */
+  stop(): Promise<void>;
+}
+
+/** Builds the operator poster: a presence-registering endpoint with the card
+ *  `{ name: "operator", role: "operator", kind: "endpoint" }`, on the static operator credential
+ *  when there is one. The id is fixed here. The credential names it on a static mesh, and an open
+ *  mesh pins one, so a start retried after a failure keeps it. */
+export function operatorPoster(target: { space: string; server: string; tls: boolean }, operator: OperatorCred | undefined): OperatorPoster {
+  const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, "") }), name: "operator", role: "operator", kind: "endpoint" as const };
+  const build = (): CotalEndpoint => {
+    const e = new CotalEndpoint({
+      space: target.space,
+      servers: target.server,
+      tls: target.tls,
+      ...(operator ? { creds: operator.creds, lifecycleUid: operator.lifecycleUid } : {}),
+      card,
+      channels: [],
+      consume: false,
+      registerPresence: true,
+      watchPresence: false,
+    });
+    e.on("error", (err: Error) => console.error(c.red("! operator: " + err.message)));
+    e.on("warning", (err: Error) => console.error(c.yellow("! operator: " + err.message)));
+    return e;
+  };
+  let endpoint = build();
+  let live: CotalEndpoint | undefined;
+  let starting: Promise<CotalEndpoint> | undefined;
+  return {
+    operatorId: () => (operator || live ? endpoint.card.id : undefined),
+    ensure() {
+      starting ??= endpoint.start().then(
+        () => (live = endpoint),
+        (e: unknown) => {
+          const failed = endpoint;
+          endpoint = build();
+          starting = undefined;
+          void failed.stop().catch(() => undefined);
+          throw e;
+        },
+      );
+      return starting;
+    },
+    expired: () => operator !== undefined && Date.now() >= operator.expiresAt,
+    async stop() {
+      await starting?.catch(() => undefined);
+      await live?.stop();
+    },
+  };
+}
+
+/** Connects the dashboard and spends the account seed on its two write creds: the channel-purger
+ *  for channel delete, and the operator the dashboard posts as. The dashboard is a loopback HTTP
+ *  process and the seed can mint ANY identity or role, so the seed is bound only inside this
+ *  function and a request handler in {@link web} that reaches for it fails to compile. A narrowed
+ *  copy made inside `web()` would leave the full value in the handlers' scope beside it. Resolves
+ *  `undefined` in a parent that hands off to a `--detach` child. The mints come last, after that
+ *  hand-off and the pidfile claim, because the purger has no expiry and the operator lives 24 days,
+ *  and a process that detaches or is refused must not mint creds it then drops. `--creds` and open
+ *  meshes have no seed and purge with the connection's own creds; user mode mints a purger view
+ *  per delete instead. Posting is decided here too, and an open mesh posts with no credential. */
 async function connectWithoutSeed(
   raw: readonly string[],
   values: ConnectFlags & { detach?: boolean; "no-open"?: boolean },
   host: string,
   port: number,
-): Promise<{ conn: Omit<Connection, "auth">; user: UserViewAuth | undefined; pidPath: string | undefined; purgeCreds: string | undefined } | undefined> {
+): Promise<{
+  conn: Omit<Connection, "auth">;
+  user: UserViewAuth | undefined;
+  pidPath: string | undefined;
+  purgeCreds: string | undefined;
+  post: PostCapability;
+  operator: OperatorCred | undefined;
+} | undefined> {
   const { auth, ...conn } = await connectOrExit(values, "admin");
   const detachedRoot = process.env[DETACHED_ROOT_ENV];
   if (detachedRoot && conn.root !== detachedRoot)
@@ -806,7 +919,9 @@ async function connectWithoutSeed(
     process.once("exit", () => releasePid(pidPath));
   }
   const purgeCreds = !user && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
-  return { conn, user, pidPath, purgeCreds };
+  const post = postCapability(values.creds, user !== undefined);
+  const operator = post.mode === "participant" && auth ? await mintOperatorCred(auth) : undefined;
+  return { conn, user, pidPath, purgeCreds, post, operator };
 }
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
@@ -829,7 +944,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // refresh.
   const started = await connectWithoutSeed(args.raw, values, host, port);
   if (!started) return;
-  const { conn, user, pidPath, purgeCreds } = started;
+  const { conn, user, pidPath, purgeCreds, post, operator } = started;
   const { server, space } = conn;
   const sessionPath = conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
 
@@ -855,6 +970,10 @@ export async function web(args: ParsedArgs): Promise<void> {
   ep.on("error", reportEndpoint);
   ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
   await ep.start();
+
+  // The operator the dashboard posts as. Built now so its id is fixed for the process, started on
+  // the first post so it is not on the roster before then.
+  const poster = post.mode === "participant" ? operatorPoster({ space, server, tls: conn.tls }, operator) : undefined;
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
   // the client can say so honestly without deriving progress from the heartbeat.
@@ -983,7 +1102,10 @@ export async function web(args: ParsedArgs): Promise<void> {
       req.on("close", () => clients.delete(res));
       return;
     }
-    if (path === READINESS_PATH) return json(res, { space, pid: process.pid });
+    if (path === READINESS_PATH) {
+      const operatorId = poster?.operatorId();
+      return json(res, { space, pid: process.pid, post, ...(operatorId ? { operatorId } : {}) });
+    }
     if (path === "/api/roster") return json(res, rosterSnapshot());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
@@ -1262,6 +1384,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     await membershipWatch?.stop();
     for (const res of clients) res.end();
     httpServer.close();
+    await poster?.stop().catch(reportEndpoint);
     await ep.stop();
     if (pidPath) releasePid(pidPath);
     process.exit(0);
