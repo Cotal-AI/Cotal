@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/capability-census-live.smoke.ts"
   ],
-  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows: a row naming another command fails, an option map's keys are one value while an undeclared key under a structured field fails, and the most specific row the invocation's mode and flags select must have been issued",
+  "guard": "running a mapped command against a real broker and manager compares the endpoint commands and input fields it issued with the owner rows: a row naming another command fails, an option map's keys are one value while an undeclared key under a structured field fails, and of the most specific rows the invocation's mode and flags select, each owner's group must have one issued",
   "command": "pnpm smoke:capability-census:live",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census-live.json",
@@ -45,8 +45,8 @@
     {
       "name": "a less specific row is no longer shadowed by the row the flags select",
       "file": "bin/smoke/census/execute.ts",
-      "find": "    const shadowed = matching.some((other) => other.flags.length > flags.length && within(flags, other.flags));",
-      "replace": "    const shadowed = false;",
+      "find": "    if (matching.some((other) => other.flags.length > flags.length && within(flags, other.flags))) continue;",
+      "replace": "    if (false) continue;",
       "expectRed": "every request cotal ps --slots issued matches its owner rows",
       "cell": "every request cotal ps --slots issued matches its owner rows"
     },
@@ -57,6 +57,22 @@
       "replace": "    words = bare.slice(0, n);",
       "expectRed": "positional values after a mode are not mode words",
       "cell": "positional values after a mode are not mode words"
+    },
+    {
+      "name": "rows that share an owner are all required instead of one",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "    if (!items.some((item) => issued.has(item)))",
+      "replace": "    if (!items.every((item) => issued.has(item)))",
+      "expectRed": "an invoke that issued one of the endpoint commands invoke owns passes",
+      "cell": "an invoke that issued one of the endpoint commands invoke owns passes"
+    },
+    {
+      "name": "keys under a field that lists its properties are folded into it",
+      "file": "bin/smoke/census/execute.ts",
+      "find": "      if (id in map.owners && !structured.has(id)) return id;",
+      "replace": "      if (id in map.owners) return id;",
+      "expectRed": "an undeclared key under a field whose contract lists its properties still fails",
+      "cell": "an undeclared key under a field whose contract lists its properties still fails"
     }
   ]
 }

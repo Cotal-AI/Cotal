@@ -118,7 +118,19 @@ try {
     executionProblems(invocationOf(["ps"], map), psObserved, wrong).includes("cotal ps issued manager ps, whose owner is current:models"));
   check("a models run that issued nothing fails on the row it should have issued",
     executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"], map), [], map)
-      .includes("ep:manager:models is owned by current:models but cotal models --agent --refresh did not issue it"));
+      .includes("cotal models --agent --refresh issued none of the rows owned by current:models: ep:manager:models"));
+  check("an invoke that issued one of the endpoint commands invoke owns passes",
+    executionProblems(invocationOf(["invoke", "linear", "inventory"], map), [{ endpoint: "linear", command: "inventory", fields: [] }], map).length === 0,
+    executionProblems(invocationOf(["invoke", "linear", "inventory"], map), [{ endpoint: "linear", command: "inventory", fields: [] }], map));
+  const preserved = [{ endpoint: "manager", command: "prepare-preservation", fields: [] }, { endpoint: "manager", command: "commit-preservation", fields: [] }];
+  check("a preserving down that succeeded without its abort step passes",
+    executionProblems(invocationOf(["down", "--preserve-state"], map), preserved, map).length === 0,
+    executionProblems(invocationOf(["down", "--preserve-state"], map), preserved, map));
+  check("a run mode's row is required of that mode",
+    executionProblems(invocationOf(["run", "start", "--file", "p"], map), [], map).some((p) => p.includes("ep:manager:run-start")));
+  let refused = "";
+  try { invocationOf(["spawn", "-f", "cotal.yaml"], map); } catch (e) { refused = e instanceof Error ? e.message : String(e); }
+  check("a case written with a short flag is refused", refused.includes("write -f in its long form"), refused);
   check("positional values after a mode are not mode words", invocationOf(["send", "dm", "alice", "hi"], map).words.join(" ") === "dm");
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);

@@ -68,10 +68,12 @@ const TARGET_FLAGS = new Set(["--space", "--server", "--creds"]);
 /**
  * The invocation an argv names: the longest run of leading bare words that is a mode the command
  * declares (a `cli:<command> <mode>` row), so positional values are not mode words, and the
- * `--flags` outside the target set.
+ * `--flags` outside the target set. A short flag is refused, since owner rows name long flags.
  */
 export function invocationOf(argv: readonly string[], map: OwnerMap): Invocation {
   const [command, ...rest] = argv;
+  const short = rest.find((t) => /^-[^-]/.test(t));
+  if (short !== undefined) throw new Error(`write ${short} in its long form: owner rows name long flags`);
   const bare: string[] = [];
   for (const token of rest) {
     if (token.startsWith("-")) break;
@@ -98,8 +100,10 @@ const PROTOCOL_COMMANDS = new Set(["describe"]);
  * value: the keys under it are data, not fields.
  *
  * Conversely, of the endpoint-command rows naming this command and mode with flags this invocation
- * passes, the most specific must have been issued: `ps --slots` must issue the `ps --slots` row
- * rather than the bare `ps` one.
+ * passes, the most specific apply: `ps --slots` selects the `ps --slots` row rather than the bare
+ * `ps` one. Rows that share one owner are alternatives, so at least one of them must have been
+ * issued: `invoke` issues the endpoint command its arguments name, and a step that runs only on
+ * refusal (`abort-preservation`) is not issued when the operation succeeds.
  */
 export function executionProblems(run: Invocation, observed: readonly ObservedRequest[], map: OwnerMap, steps: readonly string[] = []): string[] {
   const problems: string[] = [];
@@ -137,9 +141,14 @@ export function executionProblems(run: Invocation, observed: readonly ObservedRe
     const words = owner?.words.join(" ");
     return owner?.command === run.command && words === run.words.join(" ") && within(owner.flags, run.flags) ? [{ item, flags: owner.flags }] : [];
   });
+  const alternatives = new Map<string, string[]>();
   for (const { item, flags } of matching) {
-    const shadowed = matching.some((other) => other.flags.length > flags.length && within(flags, other.flags));
-    if (!shadowed && !issued.has(item)) problems.push(`${item} is owned by ${map.owners[item]} but cotal ${label} did not issue it`);
+    if (matching.some((other) => other.flags.length > flags.length && within(flags, other.flags))) continue;
+    const key = [...flags].sort().join(" ");
+    alternatives.set(key, [...(alternatives.get(key) ?? []), item]);
   }
+  for (const items of alternatives.values())
+    if (!items.some((item) => issued.has(item)))
+      problems.push(`cotal ${label} issued none of the rows owned by ${map.owners[items[0]!]}: ${items.join(", ")}`);
   return problems;
 }
