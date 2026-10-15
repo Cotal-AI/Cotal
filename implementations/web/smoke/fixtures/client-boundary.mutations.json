@@ -1,0 +1,65 @@
+{
+  "command": "pnpm smoke:web-client-boundary",
+  "suite": [
+    "implementations/web/smoke/client-boundary.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "md.ts sets up DOMPurify as it loads again, so importing it under Node throws",
+      "file": "implementations/web/client/src/lib/md.ts",
+      "find": "type Purifier = ReturnType<typeof DOMPurify>;\n",
+      "replace": "DOMPurify.addHook(\"afterSanitizeAttributes\", () => {});\ntype Purifier = ReturnType<typeof DOMPurify>;\n",
+      "expectRed": "1.1 lib/md.ts imports under Node, where there is no DOM",
+      "cell": "1.1 lib/md.ts imports under Node, where there is no DOM"
+    },
+    {
+      "name": "the art seam stops giving characters.js a window, so it throws on load under Node",
+      "file": "implementations/web/client/src/art/index.ts",
+      "find": "g.window ??= globalThis;\n",
+      "replace": "",
+      "expectRed": "1.2 the art seam imports under Node",
+      "cell": "1.2 the art seam imports under Node"
+    },
+    {
+      "name": "the art seam stops giving characters.js a path constructor, so its canvas paths throw on load under Node",
+      "file": "implementations/web/client/src/art/index.ts",
+      "find": "g.Path2D ??= class NoCanvasPath {};\n",
+      "replace": "",
+      "expectRed": "1.2 the art seam imports under Node",
+      "cell": "1.2 the art seam imports under Node"
+    },
+    {
+      "name": "the seam drops the vendor, so every body is drawn as the guest",
+      "file": "implementations/web/client/src/art/index.ts",
+      "find": "return art.body(vendor, opts);",
+      "replace": "return art.body(\"\", opts);",
+      "expectRed": "1.3 art.body(\"claude\") returns Claude's SVG body: the pill in Claude's blue",
+      "cell": "1.3 art.body(\"claude\") returns Claude's SVG body: the pill in Claude's blue"
+    },
+    {
+      "name": "the seam drops the fill, so the mark is always drawn in one fixed colour",
+      "file": "implementations/web/client/src/art/index.ts",
+      "find": "return art.mark(fill);",
+      "replace": "return art.mark(\"#4D69E6\");",
+      "expectRed": "1.5 art.mark(fill) returns a whole <svg> with every path in that fill",
+      "cell": "1.5 art.mark(fill) returns a whole <svg> with every path in that fill"
+    },
+    {
+      "name": "a lib module imports a value from @cotal-ai/core, which the client must never load at runtime",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "import type { StaleMark } from \"./snapshot.js\";\n",
+      "replace": "import type { StaleMark } from \"./snapshot.js\";\nimport { parseSubject } from \"@cotal-ai/core\";\n",
+      "expectRed": "2.2 no client module loads a value from @cotal-ai/*",
+      "cell": "2.2 no client module loads a value from @cotal-ai/*: only `import type`, or type-only specifiers"
+    },
+    {
+      "name": "the controller deletes a channel with its own fetch instead of the injected Api",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      await api.deleteChannel(name);\n",
+      "replace": "      await fetch(\"/api/channel/delete\", { method: \"POST\", body: JSON.stringify({ channel: name }) });\n",
+      "expectRed": "2.3 no module under lib/, state/ or art/ names window, document, fetch or EventSource",
+      "cell": "2.3 no module under lib/, state/ or art/ names window, document, fetch or EventSource, outside the named exceptions"
+    }
+  ]
+}
