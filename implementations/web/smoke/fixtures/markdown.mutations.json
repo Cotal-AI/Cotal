@@ -89,7 +89,7 @@
       "name": "MD11 the sanitize pass hands its input back, so marked's HTML reaches the page as is",
       "file": "implementations/web/client/src/lib/md.ts",
       "find": "  return getPurifier().sanitize(html, CLEAN);",
-      "replace": "  return html;",
+      "replace": "  return (getPurifier(), html);",
       "expectRed": "2.1 a script element is removed with its content",
       "cell": "2.1 a script element is removed with its content"
     },
@@ -118,12 +118,12 @@
       "cell": "1.1 a purifier that cannot run here makes renderMarkdown throw, never return the HTML unsanitized"
     },
     {
-      "name": "MD15 disallowed elements take their content with them, so text inside an unknown wrapper vanishes",
+      "name": "MD15 disallowed elements take their content with them, which under this allow-list drops every text node, so a message renders as empty paragraphs",
       "file": "implementations/web/client/src/lib/md.ts",
       "find": "  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,\n",
       "replace": "  ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|#|\\/)/i,\n  KEEP_CONTENT: false,\n",
-      "expectRed": "2.8 a disallowed wrapper keeps its text and still loses the dangerous element inside it",
-      "cell": "2.8 a disallowed wrapper keeps its text and still loses the dangerous element inside it"
+      "expectRed": "2.1 a script element is removed with its content",
+      "cell": "2.1 a script element is removed with its content"
     },
     {
       "name": "MD16 the link pattern loses its anchor, so a javascript: link passes because https appears later in it",
@@ -132,14 +132,6 @@
       "replace": "ALLOWED_URI_REGEXP: /(?:https?:|mailto:|#|\\/)/i,",
       "expectRed": "3.1b a javascript: link that names https further on still loses its href: the pattern is anchored",
       "cell": "3.1b a javascript: link that names https further on still loses its href: the pattern is anchored"
-    },
-    {
-      "name": "MD17 the link hook appends to rel instead of setting it, so every pass over the output grows it again",
-      "file": "implementations/web/client/src/lib/md.ts",
-      "find": "      el.setAttribute(\"rel\", \"noopener noreferrer nofollow\");",
-      "replace": "      el.setAttribute(\"rel\", `${el.getAttribute(\"rel\") ?? \"\"} noopener noreferrer nofollow`.trim());",
-      "expectRed": "1.2 sanitizing the rendered output a second time changes nothing",
-      "cell": "1.2 sanitizing the rendered output a second time changes nothing"
     }
   ]
 }

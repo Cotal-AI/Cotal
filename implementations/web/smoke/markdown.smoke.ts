@@ -21,7 +21,7 @@ const ok = (name: string, cond: unknown, detail?: unknown) => {
 const links = (html: string): Record<string, string>[] =>
   [...html.matchAll(/<a\b([^>]*)>/g)].map((m) => Object.fromEntries([...m[1].matchAll(/\s([a-z-]+)="([^"]*)"/g)].map((a) => [a[1], a[2]])));
 
-/** Every source the suite renders, for the second-pass cell. */
+/** Sources covering every kind of element and link the suite renders, for the second-pass cell. */
 const CORPUS = [
   "before <script>alert(1)</script> after",
   '<img src="x" onerror="alert(1)"> <iframe src="https://evil.example"></iframe>',
@@ -50,11 +50,6 @@ const CORPUS = [
     out === undefined && /refuses to render rather than return unsanitized HTML/.test(error), { out, error });
 }
 await import("./dom-globals.js");
-{
-  const once = CORPUS.map((src) => renderMarkdown(src));
-  const changed = once.filter((html) => sanitizeHtml(html) !== html);
-  ok("1.2 sanitizing the rendered output a second time changes nothing", changed.length === 0, changed);
-}
 
 // ── 2. Raw HTML does not survive ─────────────────────────────────────────────────────────────────
 {
@@ -114,6 +109,13 @@ await import("./dom-globals.js");
   const lines = renderMarkdown("one\ntwo");
   ok("4.5 a single newline is a line break, as in chat", lines.includes("one<br>two"), lines);
   ok("4.6 an empty body renders as the empty string", renderMarkdown("") === "");
+}
+
+// ── 5. A second pass ─────────────────────────────────────────────────────────────────────────────
+{
+  const once = CORPUS.map((src) => renderMarkdown(src));
+  const changed = once.filter((html) => sanitizeHtml(html) !== html);
+  ok("5.1 sanitizing the rendered output a second time changes nothing", changed.length === 0, changed);
 }
 
 const { closeDom } = await import("./dom-globals.js");
