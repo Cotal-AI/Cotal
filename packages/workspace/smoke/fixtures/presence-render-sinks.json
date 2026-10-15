@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 418,
-    "honest-text": 34,
-    "presence-only-glyph/count": 24,
+    "total": 461,
+    "honest-text": 35,
+    "presence-only-glyph/count": 37,
     "command-ack": 12,
-    "non-render/control": 348
+    "non-render/control": 377
   },
   "renderers": [
     {
@@ -3082,6 +3082,311 @@
       "anchor": "'offline'",
       "class": "presence-only-glyph/count",
       "rationale": "Selects the offline face (shut eyes, flat mouth) for a character; a presence expression that makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "word(status)",
+      "class": "presence-only-glyph/count",
+      "rationale": "Group header word beside the group's count: it names the status and claims no progress. The rows under it carry the honest text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": " {\n  if (row.status === \"offline\") return `Last heartbeat",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "`;\n  if (row.status === \"waiting\" && grouping === \"status",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "honest-text",
+      "rationale": "A working agent with no activity text says its status through statusLabel, so progress that is unknown reads Working · progress unknown and never No current activity.",
+      "proof": {
+        "path": "implementations/web/client/src/lib/roster.ts",
+        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "aiting = row.status === \"waiting\" && grouping === \"status",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "className={row.status === \"offline\" ? \"v3-arow v3-arow-off\" : \"v3-arow\"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status === \"offline\" ? \"v3-arow v3-arow-off\" : \"v3-arow\"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "assName={row.status === \"offline\" ? \"v3-arow v3-arow-off\"",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "status={row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a presence dot and a character face: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a presence dot and a character face: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "style={waiting ? { color: \"var(--gold-ink)\" } : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{waiting ? { color: \"var(--gold-ink)\" } : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{rows.map((r) => (\n        <div key={r.id} className=\"v3-eprow\">\n          <span className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}><Icon icon={Settings01Icon} size={16} className=\"ui-ic ui-ic16\" /></span>\n          <b>{r.name}</b>\n          <span>{[r.role, r.host, r.status === \"offline\" ? word(r.status) : undefined].filter(Boolean).join(\" · \")}</span>\n        </div>\n      ))}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The word Offline on an endpoint the roster holds offline: a presence word that makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{r.status === \"offline\" ? \"ui-av ui-av-ep ui-av-off\" : \"ui-av ui-av-ep\"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "className={r.status === \"offline\" ? \"ui-av ui-av-ep ui-av",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{[r.role, r.host, r.status === \"offline\" ? word(r.status) : undefined].filter(Boolean).join(\" · \")}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The word Offline on an endpoint the roster holds offline: a presence word that makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "e, r.host, r.status === \"offline\" ? word(r.status) : unde",
+      "class": "presence-only-glyph/count",
+      "rationale": "The word Offline on an endpoint the roster holds offline: a presence word that makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "word(r.status)",
+      "class": "presence-only-glyph/count",
+      "rationale": "The word Offline on an endpoint the roster holds offline: a presence word that makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "s.some((s) => s.key === \"waiting\") && grouping === \"statu",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "ter((r) => r.status !== \"offline\").length;\n  const lastSe",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{!empty && (\n          <span className=\"ui-topic\">\n            {lastSeen ? (\n              <><span className=\"ui-num\">{live}</span> last seen</>\n            ) : (\n              <><span className=\"ui-num\">{live}</span> live, <span className=\"ui-num\">{agents.length - live}</span> offline{space === null ? \"\" : ` on ${space}`}</>\n            )}\n          </span>\n        )}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Header counts of live and offline agents: an aggregate count that makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{lastSeen ? (\n              <><span className=\"ui-num\">{live}</span> last seen</>\n            ) : (\n              <><span className=\"ui-num\">{live}</span> live, <span className=\"ui-num\">{agents.length - live}</span> offline{space === null ? \"\" : ` on ${space}`}</>\n            )}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Header counts of live and offline agents: an aggregate count that makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "span className=\"ui-num\">{live}</span> last seen</>\n   ",
+      "class": "presence-only-glyph/count",
+      "rationale": "Header counts of live and offline agents: an aggregate count that makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "span className=\"ui-num\">{live}</span> live, <span clas",
+      "class": "presence-only-glyph/count",
+      "rationale": "Header counts of live and offline agents: an aggregate count that makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{agents.length - live}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Header counts of live and offline agents: an aggregate count that makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "Object.hasOwn(STATUS_ICON, status)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "className={known ? `v3-ghead v3-s-${status}` : \"v3-ghead\"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{known ? `v3-ghead v3-s-${status}` : \"v3-ghead\"}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "`v3-ghead v3-s-${status}`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "ref={status === \"waiting\" ? waitingHead : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{status === \"waiting\" ? waitingHead : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "        ref={status === \"waiting\" ? waitingHead : undefin",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "tabIndex={status === \"waiting\" ? -1 : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{status === \"waiting\" ? -1 : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "   tabIndex={status === \"waiting\" ? -1 : undefined}\n     ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "data-focused={status === \"waiting\" && focusWaiting ? \"true\" : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{status === \"waiting\" && focusWaiting ? \"true\" : undefined}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "ata-focused={status === \"waiting\" && focusWaiting ? \"true",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "indexed-map",
+      "anchor": "STATUS_ICON[status as keyof typeof STATUS_ICON]",
+      "class": "presence-only-glyph/count",
+      "rationale": "Narrow presence glyph: the group header's status icon, with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "style={{ color: status === \"offline\" ? \"var(--dim)\" : \"var(--ink)\" }}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "derived-output",
+      "anchor": "{{ color: status === \"offline\" ? \"var(--dim)\" : \"var(--ink)\" }}",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
+      "kind": "status-token",
+      "anchor": "le={{ color: status === \"offline\" ? \"var(--dim)\" : \"var(-",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     }
   ]
 }
