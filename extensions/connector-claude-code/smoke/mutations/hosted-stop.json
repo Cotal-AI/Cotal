@@ -1,5 +1,5 @@
 {
-  "command": "pnpm --filter @cotal-ai/connector-claude-code... build && tsx extensions/connector-claude-code/smoke/hosted-session.smoke.ts && pnpm smoke:transport-liveness",
+  "command": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build && pnpm exec tsx extensions/connector-claude-code/smoke/hosted-session.smoke.ts && pnpm smoke:transport-liveness",
   "progressPattern": "^(?:(?:PASS|FAIL) |  [✓✗])",
   "minTicks": 1,
   "suite": [
@@ -13,7 +13,7 @@
       "find": "    try {\n      await this.connectAndBind();\n    } catch (error) {\n      if (!this.stopped) throw error;\n    }",
       "replace": "    await this.connectAndBind();",
       "expectRed": "hosted_custody_lifecycle",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "stopped rebuild dial retains its connection failure",
@@ -21,7 +21,7 @@
       "find": "      try {\n        await this.connectAndBind();\n      } catch (error) {\n        if (!this.stopped) throw error;\n      }",
       "replace": "      await this.connectAndBind();",
       "expectRed": "hosted_rebuild-stop_lifecycle",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "agent resumes launch work after a stopped bind",
@@ -29,7 +29,7 @@
       "find": "        await this.ep.start();\n        if (this._stopping) return;",
       "replace": "        await this.ep.start();",
       "expectRed": "#975: stop racing the INITIAL bind leaves no nc, heartbeat, or armed supervisor",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "stop suppresses a genuine connection-close rejection",
@@ -37,7 +37,7 @@
       "find": "    this.disableLibraryReconnect(nc);\n    await nc.close();\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    this.disableLibraryReconnect(nc);\n    await nc.close().catch(() => {});\n    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "expectRed": "a genuine connection-close rejection remains a stop failure",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "stop accepts a resolved close without proof",
@@ -45,7 +45,7 @@
       "find": "    if (!nc.isClosed()) throw new Error(\"endpoint connection closure is unproved; consumer custody must be retained\");",
       "replace": "    // Mutation: trust a resolved close without checking its outcome.",
       "expectRed": "a resolved close without closure proof remains a stop failure",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "stop omits the final owned-connection proof",
@@ -53,7 +53,7 @@
       "find": "    if ([...this.ownedConnections].some((nc) => !nc.isClosed()))\n      throw new Error(\"endpoint stop could not prove its connection closed; local consumer custody must be retained\");",
       "replace": "    // Mutation: release custody without proving every owned connection closed.",
       "expectRed": "an unclosed owned connection retains custody after all bind flights settle",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "initial start hides a live bind failure",
@@ -61,7 +61,7 @@
       "find": "    try {\n      await this.connectAndBind();\n    } catch (error) {\n      if (!this.stopped) throw error;\n    }",
       "replace": "    await this.connectAndBind().catch(() => {});",
       "expectRed": "a bind failure before stop still rejects the caller",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     }
   ]
 }

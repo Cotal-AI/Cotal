@@ -94,7 +94,7 @@ process.exitCode = 1;
     COTAL_CLAUDE_CARRIED: ambientCarried.source, CLAUDE_CONFIG_DIR: ambientCarried.home,
     GIT_CONFIG_GLOBAL: ambientGit, GIT_CONFIG_NOSYSTEM: "1",
   });
-  const baseline = { ...process.env };
+  const baseline = new Map(Object.entries(process.env));
   let dials = 0;
   const failure = createServer((socket) => { dials++; socket.destroy(); });
   failure.listen(0, "127.0.0.1");
@@ -199,14 +199,14 @@ process.exitCode = 1;
       if (label === "b") delete process.env.COTAL_FEEDBACK_EMAIL;
       const reply = await request("tools/call", { name: "cotal_feedback", arguments: { origin: "agent", type: "other", summary: "Loopback-only environment fixture" } }) as { isError?: boolean };
       check(label === "a" ? "hosted_env_feedback_a" : "hosted_env_feedback_git", reply.isError !== true && contacts.at(-1) === (label === "a" ? expected.COTAL_FEEDBACK_EMAIL : "session-git-b@example.invalid"));
-      if (label === "b") process.env.COTAL_FEEDBACK_EMAIL = baseline.COTAL_FEEDBACK_EMAIL;
+      if (label === "b") process.env.COTAL_FEEDBACK_EMAIL = baseline.get("COTAL_FEEDBACK_EMAIL");
     }
     const feedbackConfig = configFromEnv(envFor("legacy_feedback"));
     const legacyFeedback = cotalToolSpecs(feedbackConfig).find((spec) => spec.name === "cotal_feedback")!;
     delete process.env.COTAL_FEEDBACK_EMAIL;
     const legacyReply = await legacyFeedback.run(legacy, feedbackConfig, { origin: "agent", type: "other", summary: "Loopback-only legacy Git lookup" });
     check("hosted_env_feedback_legacy_repository", legacyReply.isError !== true && contacts.at(-1) === "host-local@example.invalid");
-    process.env.COTAL_FEEDBACK_EMAIL = baseline.COTAL_FEEDBACK_EMAIL;
+    process.env.COTAL_FEEDBACK_EMAIL = baseline.get("COTAL_FEEDBACK_EMAIL");
     const emptyEnv = { ...envFor("empty_feedback"), GIT_CONFIG_GLOBAL: join(root, "missing.gitconfig") };
     const scopedFeedback = cotalToolSpecs(feedbackConfig, "fixture", emptyEnv).find((spec) => spec.name === "cotal_feedback")!;
     const beforeMissing = contacts.length;
@@ -217,7 +217,7 @@ process.exitCode = 1;
     check("hosted_env_no_broker_dial", dials === 0);
     check("hosted_env_loopback_only", contacts.length === 3);
     check("hosted_env_host_cwd_unchanged", process.cwd() === hostRepo);
-    assert.deepEqual({ ...process.env }, baseline, "hosted API must not mutate ambient env");
+    assert.deepEqual(new Map(Object.entries(process.env)), baseline, "hosted API must not mutate ambient env");
     console.log("PASS hosted_env_ambient_unchanged");
   } finally {
     const closed = await Promise.allSettled([
