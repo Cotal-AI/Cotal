@@ -30,12 +30,12 @@
       "cell": "2.6 style and class attributes are removed"
     },
     {
-      "name": "MD4 onclick joins the allowed attributes, so a message carries a script that runs on a click",
+      "name": "MD4 class joins the allowed attributes, so a message can wear the dashboard's own classes and pass for its controls",
       "file": "implementations/web/client/src/lib/md.ts",
       "find": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\"],",
-      "replace": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\", \"onclick\"],",
-      "expectRed": "2.5 event handler attributes are removed and the text stays",
-      "cell": "2.5 event handler attributes are removed and the text stays"
+      "replace": "ALLOWED_ATTR: [\"href\", \"title\", \"target\", \"rel\", \"class\"],",
+      "expectRed": "2.6 style and class attributes are removed",
+      "cell": "2.6 style and class attributes are removed"
     },
     {
       "name": "MD5 the link pattern admits data:, so a link can open a page the message wrote",

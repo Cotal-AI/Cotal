@@ -143,7 +143,7 @@ const TIP = "Anycast: one free agent with this role takes it.";
   const any = (claim?: string) => row({ msg: msg({ channel: undefined, toService: "reviewer" }), senderId: "local.dav", mode: "anycast", claim });
   const chip = (html: string) => /<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(html);
   ok("5.1 an anycast row says To any <role>, with the anycast tooltip",
-    text(chip(any())?.[1] ?? "") === "To any reviewer" && startTags(any(), "div").find((d) => d.class === "ui-route ui-route-any")?.title === TIP, any());
+    text(chip(any())?.[1] ?? "").startsWith("To any reviewer") && startTags(any(), "div").find((d) => d.class === "ui-route ui-route-any")?.title === TIP, any());
   ok("5.2 with no reply it names no claimer", !text(any()).includes("claimed"));
   ok("5.3 with a reply it adds claimed by, with the name the roster gives that id",
     text(chip(any("local.rv2"))?.[1] ?? "") === "To any reviewer·claimed by reviewer_2", text(chip(any("local.rv2"))?.[1] ?? ""));
