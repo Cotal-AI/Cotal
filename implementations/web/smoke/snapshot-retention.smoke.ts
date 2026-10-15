@@ -583,6 +583,33 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ok("6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark",
       !h.store.get().stale.some((m) => m.name === "membership"), h.store.get().stale);
   }
+  // THE ROSTER FOLLOWS THE SAME RULE. A `roster` event is a full snapshot too, so once the feed has
+  // sent one, a poll does not read `/api/roster`, and a refusal of a read already in flight is
+  // dropped rather than marking the peers stale beside a roster the feed keeps current.
+  {
+    let reads = 0;
+    const h = harness({ ...bootReads, roster: async () => { reads++; throw new Error("peers refused with HTTP 503: roster read failed"); } });
+    await h.ctl.refresh();
+    const beforeFeed = { reads, marked: h.store.get().stale.some((m) => m.name === "peers") };
+    ok("6.10 CONTROL: before the feed has spoken the poll reads the roster, and its refusal is marked",
+      beforeFeed.reads === 1 && beforeFeed.marked, beforeFeed);
+    h.ctl.onRoster(amy);
+    await h.ctl.refresh();
+    await h.ctl.refresh();
+    ok("6.11 after the feed has spoken for the roster, a poll does NOT read it again, and the old refusal's mark is gone",
+      reads === 1 && !h.store.get().stale.some((m) => m.name === "peers") && JSON.stringify(h.store.get().roster) === JSON.stringify(amy),
+      { reads, stale: h.store.get().stale });
+  }
+  {
+    const g = gate<never>();
+    const h = harness({ ...bootReads, roster: () => g.promise });
+    const p = h.ctl.refresh();
+    h.ctl.onRoster(amy);
+    g.reject(new Error("peers refused with HTTP 503: roster read failed"));
+    await p;
+    ok("6.12 a roster refusal the feed outranked while it was in flight leaves no stale mark",
+      !h.store.get().stale.some((m) => m.name === "peers") && JSON.stringify(h.store.get().roster) === JSON.stringify(amy), h.store.get().stale);
+  }
 }
 
 console.log(`\nweb snapshot-retention smoke: ${cells - failed} passed, ${failed} failed`);

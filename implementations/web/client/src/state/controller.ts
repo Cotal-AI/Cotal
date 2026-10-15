@@ -160,25 +160,30 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       // ONLY the ones that succeeded, and returns what did not land.
       const refused: StaleMark[] = await refreshAll([
         { name: "space", read: () => api.meta(), apply: (meta: Meta) => store.set({ space: meta.space }) },
-        { name: "peers", read: () => api.roster(), apply: supersededByFeed("peers", (roster: RosterEntry[]) => store.set({ roster })) },
+        // ONCE THE FEED HAS SPOKEN FOR A SOURCE, ITS READ IS NOT MADE AT ALL. Its value would be
+        // dropped on arrival (the feed's snapshot is newer than any read), so it would cost a broker
+        // call per poll for nothing, and its refusal would still reach the header as a stale mark.
+        // Roster and membership are the two sources the feed speaks for.
+        ...(liveApplied.has("peers")
+          ? []
+          : [{ name: "peers", read: () => api.roster(), apply: supersededByFeed("peers", (roster: RosterEntry[]) => store.set({ roster })) }]),
         { name: "channels", read: () => api.channels(), apply: (channels: ChannelInfo[]) => store.set({ channels }) },
         // Like channel history, a DM history row carries no verified sender.
         { name: "direct messages", read: () => api.dms(500), apply: (dms: CotalMessage[]) => store.set({ dms: dms.map((msg) => ({ msg })) }) },
         // Always read: the Activity view and the Needs card both draw it. An envelope, never a bare
         // array, so a caller that ignores `partial` breaks here instead of drawing a short page.
         { name: "activity", read: () => api.activity(200), apply: (p: ActivityPage) => { batch = p.entries; activityPage = p; } },
-        // ONCE THE FEED HAS SPOKEN, THE READ IS NOT MADE AT ALL. Its value would be dropped on arrival
-        // (the feed's snapshot is newer than any read), so it would cost a broker call per poll for
-        // nothing, and its refusal would still reach the header as a stale mark.
+        // Skipped once the feed has spoken for it, as the roster read is.
         ...(liveApplied.has("membership")
           ? []
           : [{ name: "membership", read: () => api.membership(), apply: supersededByFeed("membership", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) }]),
       ]);
       // A REFUSAL OF A READ THE FEED HAS SINCE OUTRANKED IS A FACT ABOUT THAT ONE READ. It is neither
-      // marked nor allowed to set `unreadable`: the header would call membership stale, and the pill
-      // unreadable, over a feed that is delivering it. The read that was already in flight when the
-      // feed spoke lands here; later polls never issue it.
-      const stale: StaleMark[] = refused.filter((m) => !(m.name === "membership" && liveApplied.has("membership")));
+      // marked nor allowed to set `unreadable`: the header would call the roster or membership stale,
+      // and the pill unreadable, over a feed that is delivering it. The read that was already in
+      // flight when the feed spoke lands here; later polls never issue it. `liveApplied` holds only
+      // the sources the feed speaks for, so no other refusal is dropped.
+      const stale: StaleMark[] = refused.filter((m) => !liveApplied.has(m.name));
       // A PARTIAL PAGE IS NOT A REFUSAL AND IS NOT SILENCE. Its entries are applied; the reader is
       // told which sources did not answer in time, on the same marker as a refusal.
       const pg = activityPage as ActivityPage | null;

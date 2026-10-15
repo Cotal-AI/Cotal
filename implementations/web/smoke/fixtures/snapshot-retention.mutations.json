@@ -124,15 +124,15 @@
     {
       "name": "W15 the bootstrap roster is applied even after the live feed has spoken, so an older snapshot read before the feed opened reverts the roster the feed just announced",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "        { name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
-      "replace": "        { name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) },",
+      "find": "          : [{ name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) }]),",
+      "replace": "          : [{ name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) }]),",
       "expectRed": "6.1 a roster event that lands before the bootstrap roster read resolves wins",
       "cell": "6.1 a roster event that lands before the bootstrap roster read resolves wins"
     },
     {
       "name": "W16 a bootstrap membership refusal is applied even after the live feed delivered a snapshot, so the pill reports the mesh unreadable on the strength of one older read",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
+      "find": "      const stale: StaleMark[] = refused.filter((m) => !liveApplied.has(m.name));",
       "replace": "      const stale: StaleMark[] = refused;",
       "expectRed": "6.3 a live membership snapshot outranks a bootstrap refusal that lands after it",
       "cell": "6.3 a live membership snapshot outranks a bootstrap refusal that lands after it"
@@ -156,7 +156,7 @@
     {
       "name": "W19 a refusal of a membership read the feed outranked in flight is marked stale, so the header calls membership stale beside a pill the feed keeps live",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
+      "find": "      const stale: StaleMark[] = refused.filter((m) => !liveApplied.has(m.name));",
       "replace": "      const stale: StaleMark[] = refused;",
       "expectRed": "6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark",
       "cell": "6.9 a refusal of a read the feed outranked while it was in flight leaves no stale mark"
@@ -232,6 +232,22 @@
       "replace": "(await fetchImpl(url)).json() as Promise<T>;",
       "expectRed": "3.9 http.ts consumes no response body itself",
       "cell": "3.9 http.ts consumes no response body itself (every read goes through readJson), and feed.ts and boot.ts hold no fetch"
+    },
+    {
+      "name": "W28 a poll reads the roster even after the feed has spoken for it, so every poll costs a broker call whose value is thrown away and whose refusal marks the peers stale",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        ...(liveApplied.has(\"peers\")\n",
+      "replace": "        ...(false\n",
+      "expectRed": "6.11 after the feed has spoken for the roster, a poll does NOT read it again",
+      "cell": "6.11 after the feed has spoken for the roster, a poll does NOT read it again, and the old refusal's mark is gone"
+    },
+    {
+      "name": "W29 only a membership refusal defers to the feed, so a roster read the feed outranked in flight still marks the peers stale beside a roster the feed keeps current",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      const stale: StaleMark[] = refused.filter((m) => !liveApplied.has(m.name));",
+      "replace": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(m.name)));",
+      "expectRed": "6.12 a roster refusal the feed outranked while it was in flight leaves no stale mark",
+      "cell": "6.12 a roster refusal the feed outranked while it was in flight leaves no stale mark"
     }
   ],
   "suite": [

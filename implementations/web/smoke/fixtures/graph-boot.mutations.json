@@ -21,8 +21,8 @@
     {
       "name": "G3 the roster bootstrap stops deferring to the live feed, so an older /api/roster snapshot is applied after a live roster event and reverts the agent the feed just announced",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "        { name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) },",
-      "replace": "        { name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) },",
+      "find": "          : [{ name: \"peers\", read: () => api.roster(), apply: supersededByFeed(\"peers\", (roster: RosterEntry[]) => store.set({ roster })) }]),",
+      "replace": "          : [{ name: \"peers\", read: () => api.roster(), apply: (roster: RosterEntry[]) => store.set({ roster }) }]),",
       "expectRed": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE ROSTER after every bootstrap read has applied",
       "cell": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE ROSTER after every bootstrap read has applied"
     },
@@ -45,7 +45,7 @@
     {
       "name": "G7 the bootstrap's own membership refusal stops deferring to the live feed, so one read that could not answer overrules a live snapshot that did and the pill calls the whole source unreadable",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      const stale: StaleMark[] = refused.filter((m) => !(m.name === \"membership\" && liveApplied.has(\"membership\")));",
+      "find": "      const stale: StaleMark[] = refused.filter((m) => !liveApplied.has(m.name));",
       "replace": "      const stale: StaleMark[] = refused;",
       "expectRed": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read",
       "cell": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read"
