@@ -7,7 +7,8 @@
  *  What is pinned, beyond the markup: names come from the roster by id; a sender or a conversation
  *  nothing verified says so; the working line names a working member of THIS channel; a Needs card
  *  dismissal lasts until that agent's status changes and survives blocked storage; and a reopen keeps
- *  the rows and the scroll position while its history loads. */
+ *  the rows and the scroll position while its history loads. A reload from history keeps the copy of
+ *  a message the page saw verified live, in a channel, the DMs and Activity. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement } from "react";
@@ -24,7 +25,7 @@ import { Avatar } from "../client/src/ui/Avatar.tsx";
 import { UNVERIFIED } from "../client/src/ui/MessageRow.tsx";
 import { NeedsCard } from "../client/src/ui/NeedsCard.tsx";
 import { ChannelView } from "../client/src/ui/views/ChannelView.tsx";
-import { harness, gate } from "./controller-harness.js";
+import { bootReads, gate, harness, page } from "./controller-harness.js";
 import { errorsDuring, mount } from "./mount.js";
 import { renderShell } from "./render-shell.js";
 
@@ -483,6 +484,91 @@ const dmRows: StoredMessage[] = [
   await m.run(() => v.ctl.onMessage({ mode: "chat", channel: "review", senderId: "local.dav", msg: msg("l3", "local.dav", "newer", at(10, 6)) }));
   ok("10.9 and a reader scrolled up stays put", scroller.scrollTop === 100, scroller.scrollTop);
   await m.unmount();
+}
+
+// ── 11. A reload keeps what the page saw verified ────────────────────────────────────────────────
+// History rows carry no subject, so they read unverified. A message the page saw verified live keeps
+// that copy when history reloads, and a history row with its id is never shown verified in its place.
+const frame = (id: string, seq: number) =>
+  msg(id, "local.dav", "", at(11, 5), { parts: [{ kind: "ag-ui.frame", seq, type: "RUN_STARTED" }] } as unknown as Partial<CotalMessage>);
+{
+  let next = gate<CotalMessage[]>();
+  let reads = 0;
+  const h = harness({ history: async () => (reads++ === 0 ? [] : next.promise) });
+  h.store.set({ roster, channels: [review] });
+  await h.ctl.open("review");
+  const m = await mount(createElement(ChannelView, { store: h.store, channel: "review" }));
+  const rows = () => all(m.container, ".ui-msg").map((r) => [textOf(r.querySelector(".ui-tx")), r.querySelector(".ui-unverified") === null]);
+  await m.run(() => h.ctl.onMessage({ mode: "chat", channel: "review", senderId: "local.dav", msg: msg("v1", "local.dav", "Seen live.", at(11, 1)) }));
+  let reopening!: Promise<void>;
+  await m.run(() => { reopening = h.ctl.open("review"); });
+  next.resolve([msg("h0", "local.rev", "Never seen live.", at(11, 0)), msg("v1", "local.dav", "Seen live.", at(11, 1))]);
+  await m.run(() => reopening);
+  const reloaded = rows();
+  same("11.1 a message received live and then reloaded from history still renders verified, and the history copy is not shown twice",
+    reloaded.filter(([t]) => t === "Seen live."), [["Seen live.", true]]);
+  same("11.2 a message the page never saw live renders unverified", reloaded.filter(([t]) => t === "Never seen live."), [["Never seen live.", false]]);
+  next = gate<CotalMessage[]>();
+  await m.run(() => { reopening = h.ctl.open("review"); });
+  next.resolve([msg("h0", "local.rev", "Never seen live.", at(11, 0)), msg("v1", "local.dav", "Seen live, then edited.", at(11, 1))]);
+  await m.run(() => reopening);
+  same("11.3 a history row with a verified message's id and claimed sender but other text is not shown verified: the held live copy is shown in its place",
+    rows(), [["Never seen live.", false], ["Seen live.", true]]);
+  await m.unmount();
+}
+{
+  let read: CotalMessage[] = [];
+  const h = harness({ ...bootReads, dms: async () => read });
+  h.ctl.onMessage({ mode: "unicast", senderId: "local.dav", msg: msg("dl1", "local.dav", "Running it now.", at(11, 10), { to: "local.rv2", channel: undefined }) });
+  read = [
+    msg("do1", "local.rev", "Never seen live.", at(11, 9), { to: "local.dav", channel: undefined }),
+    msg("dl1", "local.dav", "Running it now, edited.", at(11, 10), { to: "local.rv2", channel: undefined }),
+  ];
+  await h.ctl.refresh();
+  const view = (route: Route) => centre(shellDom({ space: "main", roster, dms: h.store.get().dms }, route));
+  const seen = view({ view: "dm", peer: "local.dav", with: "local.rv2" });
+  const never = view({ view: "dm", peer: "local.dav", with: "local.rev" });
+  same("11.4 a direct message received live keeps its verified copy when a refresh reads the DMs back, and a conversation never seen live stays unverified",
+    [all(seen, ".ui-scroll .ui-msg .ui-tx").map(textOf), seen.querySelector("header .ui-unverified") === null, never.querySelector("header .ui-unverified") !== null],
+    [["Running it now."], true, true]);
+}
+{
+  let entries: unknown[] = [];
+  const h = harness({ ...bootReads, activity: async () => page(entries) });
+  h.ctl.onMessage({ mode: "chat", channel: "review", senderId: "local.rev", msg: msg("al1", "local.rev", "Seen live.", at(11, 20)) });
+  entries = [
+    { mode: "chat", channel: "review", msg: msg("ao1", "local.dav", "Never seen live.", at(11, 19)) },
+    { mode: "chat", channel: "review", msg: msg("al1", "local.rev", "Seen live, then edited.", at(11, 20)) },
+  ];
+  await h.ctl.refresh();
+  const rows = all(centre(shellDom({ space: "main", roster, activity: h.store.get().activity }, { view: "activity" })), ".ui-scroll .ui-msg")
+    .map((r) => [textOf(r.querySelector(".ui-tx")), r.querySelector(".ui-mh .ui-unverified") === null]);
+  same("11.5 an Activity row received live keeps its verified copy, once, when a refresh reads Activity back, and a row never seen live stays unverified",
+    rows, [["Seen live.", true], ["Never seen live.", false]]);
+}
+{
+  const next = gate<CotalMessage[]>();
+  let reads = 0;
+  const h = harness({ history: async () => (reads++ === 0 ? [] : next.promise) });
+  await h.ctl.open("review");
+  const reopening = h.ctl.open("review");
+  h.ctl.onMessage({ mode: "chat", channel: "review", senderId: "local.dav", msg: frame("f1", 1) });
+  const heldBack = h.store.get().open?.messages.length;
+  next.resolve([frame("f1", 1)]);
+  await reopening;
+  same("11.6 a frame the channel's order machine held back during a reopen keeps its verified copy when the history carries it too",
+    [heldBack, h.store.get().open?.messages.map((m) => [m.msg.id, m.senderId ?? null])], [0, [["f1", "local.dav"]]]);
+}
+{
+  const pg = gate<ReturnType<typeof page>>();
+  const h = harness({ ...bootReads, activity: () => pg.promise });
+  const refreshing = h.ctl.refresh();
+  h.ctl.onMessage({ mode: "chat", channel: "review", senderId: "local.dav", msg: frame("f2", 1) });
+  const heldBack = h.store.get().activity.length;
+  pg.resolve(page([{ mode: "chat", channel: "review", msg: frame("f2", 1) }]));
+  await refreshing;
+  same("11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too",
+    [heldBack, h.store.get().activity.map((e) => [e.msg.id, (e as FeedMessage).senderId ?? null])], [0, [["f2", "local.dav"]]]);
 }
 
 await closeDom();

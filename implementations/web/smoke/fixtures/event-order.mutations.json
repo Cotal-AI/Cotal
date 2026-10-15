@@ -100,8 +100,8 @@
     {
       "name": "O13 the settle goes back inside the all-activity branch while the arm stays unconditional, so a reader sitting on a channel, a DM or an agent holds every live frame in a machine that never settles",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      const settled = feedOrder.backfill(batch);",
-      "replace": "      const settled = store.get().open === null ? feedOrder.backfill(batch) : { emit: [], notes: [] };",
+      "find": "      const settled = feedOrder.backfill(keepVerified(batch, store.get().activity, feedHeld));",
+      "replace": "      const settled = store.get().open === null ? feedOrder.backfill(keepVerified(batch, store.get().activity, feedHeld)) : { emit: [], notes: [] };",
       "expectRed": "14.1 the boundary passes with a channel open",
       "cell": "14.1 the boundary passes with a channel open"
     },

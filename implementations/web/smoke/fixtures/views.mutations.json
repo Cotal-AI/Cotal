@@ -716,6 +716,62 @@
       "replace": "if (true) {",
       "expectRed": "10.10 a slow read of a channel the reader left lands nowhere: the view still shows the channel they are on",
       "cell": "10.10 a slow read of a channel the reader left lands nowhere: the view still shows the channel they are on"
+    },
+    {
+      "name": "H1 a channel reload replaces a live-verified row with its unverified history copy",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      msgs = keepVerified(history, held, view?.channel === key ? view.messages : [], pending);\n",
+      "replace": "      msgs = history;\n",
+      "expectRed": "11.1 a message received live and then reloaded from history still renders verified, and the history copy is not shown twice",
+      "cell": "11.1 a message received live and then reloaded from history still renders verified, and the history copy is not shown twice"
+    },
+    {
+      "name": "H2 a history row the page never saw live is given its payload's from as a verified sender",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "verified.get(r.msg.id) : undefined) ?? r) : rows;",
+      "replace": "verified.get(r.msg.id) : undefined) ?? { ...r, senderId: (r.msg as { from?: { id?: string } }).from?.id }) : rows;",
+      "expectRed": "11.2 a message the page never saw live renders unverified",
+      "cell": "11.2 a message the page never saw live renders unverified"
+    },
+    {
+      "name": "H3 the held sender is copied onto the history row, so a forged row reusing a verified id shows verified",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "return verified.size ? rows.map((r) => (r?.msg?.id !== undefined ? verified.get(r.msg.id) : undefined) ?? r) : rows;",
+      "replace": "return verified.size ? rows.map((r) => { const v = r?.msg?.id !== undefined ? verified.get(r.msg.id) : undefined; return v ? { ...r, senderId: (v as { senderId?: string }).senderId } : r; }) : rows;",
+      "expectRed": "11.3 a history row with a verified message's id and claimed sender but other text is not shown verified: the held live copy is shown in its place",
+      "cell": "11.3 a history row with a verified message's id and claimed sender but other text is not shown verified: the held live copy is shown in its place"
+    },
+    {
+      "name": "H4 a DM read replaces a live-verified DM with its unverified history copy",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "store.set((s) => ({ dms: keepVerified(dms.map((msg): StoredMessage => ({ msg })), s.dms) }))",
+      "replace": "store.set({ dms: dms.map((msg): StoredMessage => ({ msg })) })",
+      "expectRed": "11.4 a direct message received live keeps its verified copy when a refresh reads the DMs back, and a conversation never seen live stays unverified",
+      "cell": "11.4 a direct message received live keeps its verified copy when a refresh reads the DMs back, and a conversation never seen live stays unverified"
+    },
+    {
+      "name": "H5 an Activity backfill replaces a live-verified entry with its unverified history copy",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "feedOrder.backfill(keepVerified(batch, store.get().activity, feedHeld))",
+      "replace": "feedOrder.backfill(batch)",
+      "expectRed": "11.5 an Activity row received live keeps its verified copy, once, when a refresh reads Activity back, and a row never seen live stays unverified",
+      "cell": "11.5 an Activity row received live keeps its verified copy, once, when a refresh reads Activity back, and a row never seen live stays unverified"
+    },
+    {
+      "name": "H6 a frame the channel's machine held is forgotten, so the history copy replaces it",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if (sel.held) openHeld.push(stored);\n",
+      "replace": "",
+      "expectRed": "11.6 a frame the channel's order machine held back during a reopen keeps its verified copy when the history carries it too",
+      "cell": "11.6 a frame the channel's order machine held back during a reopen keeps its verified copy when the history carries it too"
+    },
+    {
+      "name": "H7 a frame the feed's machine held is forgotten, so the backfill copy replaces it",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (fed.held) feedHeld.push(e);\n",
+      "replace": "",
+      "expectRed": "11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too",
+      "cell": "11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too"
     }
   ]
 }

@@ -63,6 +63,19 @@ const NOTES_CAP = 50;
 /** A target nothing has been typed for. */
 const BLANK: Draft = { text: "", outgoing: [] };
 
+/** `rows`, read from history, with every row the page already holds as the live feed delivered it,
+ *  with a verified `senderId`, swapped for that held copy by message id. A history row has no
+ *  subject, so it reads unverified, and replacing a held row with it would turn a message the reader
+ *  saw verified into an unverified one. The held copy is kept whole, never `senderId` copied onto the
+ *  history row: a forged history row could reuse a known id with other content, and only the copy
+ *  that was verified live may be shown as verified. A row the page never saw live stays unverified. */
+function keepVerified<T extends { msg: { id?: string } }>(rows: T[], ...held: readonly (T | undefined)[][]): T[] {
+  const verified = new Map<string, T>();
+  for (const list of held)
+    for (const h of list) if (h?.msg?.id !== undefined && (h as { senderId?: string }).senderId !== undefined) verified.set(h.msg.id, h);
+  return verified.size ? rows.map((r) => (r?.msg?.id !== undefined ? verified.get(r.msg.id) : undefined) ?? r) : rows;
+}
+
 export function createController(store: Store<DashboardState>, api: Api, opts: ControllerOptions = {}): Controller {
   const createOrder = opts.createOrder ?? (() => createEventOrder());
   const now = opts.clock ?? Date.now;
@@ -72,6 +85,10 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
   // machine exists from the start, so an arrival before the first bootstrap is held too.
   let feedOrder = createOrder("feed");
   let openOrder = createOrder("open");
+  // What each machine holds back, kept here too, so a held frame the backfill also carries is shown
+  // as the live copy the server verified rather than as the history copy (see `keepVerified`).
+  let feedHeld: Entry[] = [];
+  let openHeld: StoredMessage[] = [];
   /** In-flight bootstrap, so a second caller shares it instead of arming a rival machine. */
   let refreshing: Promise<void> | null = null;
   /** The in-flight channel bootstrap, so a second open of the same channel shares it. */
@@ -172,6 +189,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // machine it armed even if an open of another channel has since rebound `openOrder`.
     const order = createOrder("open");
     openOrder = order;
+    const pending: StoredMessage[] = (openHeld = []);
     let release!: () => void;
     const mine = { key, promise: new Promise<void>((r) => (release = r)) };
     selecting = mine;
@@ -182,8 +200,12 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     let msgs: StoredMessage[] = [];
     let refused: string | null = null;
     try {
-      // A history row carries no subject, so it has no verified sender: `senderId` stays unset.
-      msgs = (await api.history(key, 200)).map((msg) => ({ msg }));
+      // A history row carries no subject, so it has no verified sender: `senderId` stays unset. A
+      // message this page holds verified (on screen, arrived during the fetch, or held by the
+      // machine) keeps that copy.
+      const history = (await api.history(key, 200)).map((msg): StoredMessage => ({ msg }));
+      const view = store.get().open;
+      msgs = keepVerified(history, held, view?.channel === key ? view.messages : [], pending);
     } catch (err) {
       // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD. The held messages take the place of the
       // history that could not be read, so the merge below is the same as on the successful path.
@@ -226,6 +248,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     let release!: () => void;
     refreshing = new Promise<void>((r) => (release = r));
     feedOrder = createOrder("feed");
+    feedHeld = [];
     // The batch the settle will use. A refused activity read settles on empty, which is the
     // machine's specified empty-history arm rather than a shortcut.
     let batch: Entry[] = [];
@@ -243,8 +266,9 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
           ? []
           : [{ name: "peers", read: () => api.roster(), apply: supersededByFeed("peers", (roster: RosterEntry[]) => store.set({ roster })) }]),
         { name: "channels", read: () => api.channels(), apply: (channels: ChannelInfo[]) => store.set({ channels }) },
-        // Like channel history, a DM history row carries no verified sender.
-        { name: "direct messages", read: () => api.dms(500), apply: (dms: CotalMessage[]) => store.set({ dms: dms.map((msg) => ({ msg })) }) },
+        // Like channel history, a DM history row carries no verified sender, so a DM the page holds
+        // verified keeps that copy.
+        { name: "direct messages", read: () => api.dms(500), apply: (dms: CotalMessage[]) => store.set((s) => ({ dms: keepVerified(dms.map((msg): StoredMessage => ({ msg })), s.dms) })) },
         // Always read: the Activity view and the Needs card both draw it. An envelope, never a bare
         // array, so a caller that ignores `partial` breaks here instead of drawing a short page.
         { name: "activity", read: () => api.activity(200), apply: (p: ActivityPage) => { batch = p.entries; activityPage = p; } },
@@ -298,7 +322,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       // channel the server derived from the subject, so the payload claim is overwritten at ingress.
     } finally {
       for (const e of batch) if (e?.msg) (e.msg as Wire).channel = (e as { channel?: string }).channel;
-      const settled = feedOrder.backfill(batch);
+      // An entry the page holds verified keeps that copy, in the backfill's place.
+      const settled = feedOrder.backfill(keepVerified(batch, store.get().activity, feedHeld));
       noteOrder(settled.notes);
       // MERGED, NOT ASSIGNED OVER. Live frames were held and come back in `settled.emit` in seq
       // order; live chat passed straight through and is only in the store. The backfill is the base
@@ -325,6 +350,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // ORDERED, NOT JUST DEDUPED. A frame arriving before the backfill it belongs after is held here
     // and released by `backfill()` in seq order; everything else passes through, deduped by id.
     const fed = feedOrder.live(e);
+    if (fed.held) feedHeld.push(e);
     noteOrder(fed.notes);
     store.set((s) => {
       const activity = s.activity.slice();
@@ -354,6 +380,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       // Ordered as a stored message, so the verified sender travels with it through the machine.
       const stored: StoredMessage = { msg: e.msg, senderId: e.senderId };
       const sel = openOrder.live(stored as unknown as FeedEntryLike);
+      if (sel.held) openHeld.push(stored);
       noteOrder(sel.notes);
       store.set((s) => {
         if (s.open?.channel !== channel) return {};

@@ -68,16 +68,16 @@
     {
       "name": "S4 a channel history row is given the payload's from as its verified sender, which is the claim senderId exists to replace",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      msgs = (await api.history(key, 200)).map((msg) => ({ msg }));\n",
-      "replace": "      msgs = (await api.history(key, 200)).map((msg) => ({ msg, senderId: msg.from.id }));\n",
+      "find": "      const history = (await api.history(key, 200)).map((msg): StoredMessage => ({ msg }));\n",
+      "replace": "      const history = (await api.history(key, 200)).map((msg): StoredMessage => ({ msg, senderId: msg.from.id }));\n",
       "expectRed": "a channel history row carries no senderId",
       "cell": "a channel history row carries no senderId: the read has no subject, and the payload's from is not promoted to one"
     },
     {
       "name": "S5 a DM history row is given the payload's from as its verified sender",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "store.set({ dms: dms.map((msg) => ({ msg })) })",
-      "replace": "store.set({ dms: dms.map((msg) => ({ msg, senderId: msg.from.id })) })",
+      "find": "dms.map((msg): StoredMessage => ({ msg }))",
+      "replace": "dms.map((msg): StoredMessage => ({ msg, senderId: msg.from.id }))",
       "expectRed": "a DM history row carries no senderId either",
       "cell": "a DM history row carries no senderId either"
     },
