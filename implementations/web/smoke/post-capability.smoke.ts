@@ -36,7 +36,7 @@ process.env.COTAL_SKIP_CONNECTOR_SEED = "1";
 const { CotalEndpoint, createSpaceAuth, credsClaims, isReachable, mintCreds, mintLifecycleUid, newIdentity, probeConnect, serverConfig, setupSpaceStreams } =
   await import("@cotal-ai/core");
 const { authDir, recordMesh, saveSpaceAuth } = await import("@cotal-ai/workspace");
-const { OPERATOR_TTL_SECONDS, POST_OFF_CREDS, POST_OFF_USER, mintOperatorCred, operatorPoster, postCapability } = await import("../src/web.js");
+const { OPERATOR_TTL_SECONDS, POSTER_STOPPED, POST_OFF_CREDS, POST_OFF_USER, mintOperatorCred, operatorPoster, postCapability } = await import("../src/web.js");
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -196,11 +196,32 @@ try {
 
   // ---- 5. the poster's lazy start ----------------------------------------------------------------
   console.log("5. the poster's lazy start");
-  const starts = { n: 0 };
+  // Every operator start is counted and its id recorded, and the next one can be made to fail
+  // before it touches the broker, the way a refused connect fails.
+  const starts = { n: 0, last: "", failNext: false, failedId: "" };
   const realStart = CotalEndpoint.prototype.start;
   CotalEndpoint.prototype.start = function (this: InstanceType<typeof CotalEndpoint>) {
-    if (this.card.name === "operator") starts.n++;
+    if (this.card.name === "operator") {
+      starts.n++;
+      starts.last = this.card.id;
+      if (starts.failNext) {
+        starts.failNext = false;
+        starts.failedId = this.card.id;
+        return Promise.reject(new Error("injected start failure"));
+      }
+    }
     return realStart.call(this);
+  };
+  /** One poster through a failed first start and a retry, read against a watcher's roster. */
+  const retried = async (poster: ReturnType<typeof operatorPoster>, roster: () => Array<{ card: { id: string }; status: string }>) => {
+    const before = poster.operatorId();
+    starts.failNext = true;
+    const first = await poster.ensure().then(() => "resolved", (e: Error) => e.message);
+    const second = await poster.ensure().then((e) => e.card.id, (e: Error) => `rejected: ${e.message}`);
+    const id = poster.operatorId();
+    const joined = await until(() => roster().some((p) => p.card.id === id && p.status !== "offline"));
+    await poster.stop();
+    return { before, failedId: starts.failedId, first, second, id, joined };
   };
   const watcher = new CotalEndpoint({ space: "postopen", servers: OPEN, card: { name: "watcher", kind: "endpoint" }, channels: [], consume: false, registerPresence: false, watchPresence: true });
   watcher.on("error", () => {});
@@ -228,6 +249,22 @@ try {
   await openPoster.stop();
   ok("5.5 stopping the poster leaves an offline record", await until(() => watcher.getRoster().some((p) => p.card.id === openId && p.status === "offline")),
     watcher.getRoster().map((p) => ({ id: p.card.id, status: p.status })));
+
+  const openRetry = await retried(operatorPoster({ space: "postopen", server: OPEN, tls: false }, undefined), () => watcher.getRoster());
+  ok("5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
+    openRetry.first === "injected start failure" && openRetry.second === openRetry.id && openRetry.joined
+    && openRetry.id !== undefined && openRetry.id === openRetry.failedId, openRetry);
+
+  ok("5.10 after the poster stops, a post is refused",
+    (await openPoster.ensure().then(() => "resolved", (e: Error) => e.message)) === POSTER_STOPPED);
+  const closing = operatorPoster({ space: "postopen", server: OPEN, tls: false }, undefined);
+  const pending = closing.ensure().then(() => "resolved", (e: Error) => e.message);
+  await closing.stop();
+  const closingId = starts.last;
+  const outcome = await pending;
+  const notOnline = await until(() => !watcher.getRoster().some((p) => p.card.id === closingId && p.status !== "offline"));
+  ok("5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
+    outcome === POSTER_STOPPED && notOnline, { outcome, roster: watcher.getRoster().filter((p) => p.card.id === closingId).map((p) => p.status) });
   await watcher.stop();
 
   const operator = await mintOperatorCred(auth);
@@ -243,6 +280,10 @@ try {
   ok("5.7 the static operator joins the roster on its first post, under the id it reported before", staticStarted === idBefore && staticJoined,
     { idBefore, staticStarted });
   await staticPoster.stop();
+  const staticRetry = await retried(operatorPoster({ space: SPACE, server: STATIC, tls: false }, await mintOperatorCred(auth)), () => staticWatcher.getRoster());
+  ok("5.12 a static poster whose first start fails starts on the next post, joins the roster, and keeps the id it reported before",
+    staticRetry.first === "injected start failure" && staticRetry.second === staticRetry.id && staticRetry.joined
+    && staticRetry.before !== undefined && staticRetry.id === staticRetry.before && staticRetry.failedId === staticRetry.before, staticRetry);
   await staticWatcher.stop();
   CotalEndpoint.prototype.start = realStart;
 

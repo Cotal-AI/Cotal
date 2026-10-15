@@ -48,8 +48,8 @@
     {
       "name": "P6 the poster starts at startup instead of on the first post, so the operator is on the roster before it has said anything and the composer's line is untrue",
       "file": "implementations/web/src/web.ts",
-      "find": "  const poster = post.mode === \"participant\" ? operatorPoster({ space, server, tls: conn.tls }, operator) : undefined;\n",
-      "replace": "  const poster = post.mode === \"participant\" ? operatorPoster({ space, server, tls: conn.tls }, operator) : undefined;\n  void poster?.ensure().catch(() => undefined);\n",
+      "find": "  const poster = post.mode === \"participant\" ? operatorPoster({ space: conn.space, server: conn.server, tls: conn.tls }, operator) : undefined;\n",
+      "replace": "  const poster = post.mode === \"participant\" ? operatorPoster({ space: conn.space, server: conn.server, tls: conn.tls }, operator) : undefined;\n  void poster?.ensure().catch(() => undefined);\n",
       "expectRed": "2.2 on an open mesh the operator is not on the roster before a post, on a roster that shows a peer that joined after it",
       "cell": "2.2 on an open mesh the operator is not on the roster before a post, on a roster that shows a peer that joined after it"
     },
@@ -64,8 +64,8 @@
     {
       "name": "P8 concurrent first posts each start the endpoint, because the start is no longer shared",
       "file": "implementations/web/src/web.ts",
-      "find": "      starting ??= endpoint.start().then(\n",
-      "replace": "      starting = endpoint.start().then(\n",
+      "find": "      starting ??= start();\n",
+      "replace": "      starting = start();\n",
       "expectRed": "5.2 two concurrent first posts start one endpoint",
       "cell": "5.2 two concurrent first posts start one endpoint"
     },
@@ -124,6 +124,46 @@
       "replace": "  return { creds, lifecycleUid: mintLifecycleUid(), expiresAt: exp };\n",
       "expectRed": "6.2 the poster keeps the expiry the credential carries",
       "cell": "6.2 the poster keeps the expiry the credential carries"
+    },
+    {
+      "name": "P16 a failed start is never cleared, so every later post shares the first failure and the dashboard cannot post again until it restarts",
+      "file": "implementations/web/src/web.ts",
+      "find": "      starting = undefined;\n",
+      "replace": "",
+      "expectRed": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
+      "cell": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed"
+    },
+    {
+      "name": "P17 a failed start is not replaced, so the retry starts the endpoint that was already stopped and the operator never joins",
+      "file": "implementations/web/src/web.ts",
+      "find": "      endpoint = build();\n",
+      "replace": "",
+      "expectRed": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
+      "cell": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed"
+    },
+    {
+      "name": "P18 the open-mesh id is drawn per build, so a start retried after a failure posts under a new id and splits the operator's DM threads",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, \"\") }), name: \"operator\", role: \"operator\", kind: \"endpoint\" as const };\n  const build = (): CotalEndpoint => {\n",
+      "replace": "  const build = (): CotalEndpoint => {\n    const card = { ...(operator ? {} : { id: randomUUID().replace(/-/g, \"\") }), name: \"operator\", role: \"operator\", kind: \"endpoint\" as const };\n",
+      "expectRed": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed",
+      "cell": "5.9 an open poster whose first start fails starts on the next post, joins the roster, and keeps the id of the start that failed"
+    },
+    {
+      "name": "P19 a stopped poster still answers a post with the endpoint it stopped, so a send during shutdown goes out from an operator that has already left",
+      "file": "implementations/web/src/web.ts",
+      "find": "      if (closed) return Promise.reject(new Error(POSTER_STOPPED));\n",
+      "replace": "",
+      "expectRed": "5.10 after the poster stops, a post is refused",
+      "cell": "5.10 after the poster stops, a post is refused"
+    },
+    {
+      "name": "P20 a start still in flight when the poster stops hands back its endpoint as if the post could go out, though shutdown has already begun",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (closed) {\n      await e.stop();\n      throw new Error(POSTER_STOPPED);\n    }\n",
+      "replace": "",
+      "expectRed": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online",
+      "cell": "5.11 a post in flight when the poster stops is refused, and the endpoint it started is not left online"
     }
   ]
 }

@@ -821,15 +821,20 @@ export interface OperatorPoster {
   /** The id the operator posts as, once it is known: from startup on a static mesh, whose
    *  credential names it, and from the first post on an open mesh. */
   operatorId(): string | undefined;
-  /** Starts the endpoint once. Concurrent first posts share one start. A failed start is dropped,
-   *  so the next post tries again under the same id. */
+  /** Starts the endpoint once. Concurrent first posts share one start. A failed start is stopped
+   *  and dropped, so the next post tries again under the same id. Rejects once the poster has
+   *  stopped. */
   ensure(): Promise<CotalEndpoint>;
   /** Whether the operator credential has expired, so a refused post can say why. Never on an open
    *  mesh, which has no credential. */
   expired(): boolean;
-  /** Stops the endpoint if it started, so the operator leaves an offline record. */
+  /** Stops the endpoint if it started, so the operator leaves an offline record, and closes the
+   *  poster: a start still in flight stops what it started, and a later post is refused. */
   stop(): Promise<void>;
 }
+
+/** What `ensure()` rejects with once the poster has stopped. */
+export const POSTER_STOPPED = "the dashboard is shutting down, so it no longer posts";
 
 /** Builds the operator poster: a presence-registering endpoint with the card
  *  `{ name: "operator", role: "operator", kind: "endpoint" }`, on the static operator credential
@@ -856,23 +861,39 @@ export function operatorPoster(target: { space: string; server: string; tls: boo
   let endpoint = build();
   let live: CotalEndpoint | undefined;
   let starting: Promise<CotalEndpoint> | undefined;
+  let closed = false;
+  const start = async (): Promise<CotalEndpoint> => {
+    const e = endpoint;
+    try {
+      await e.start();
+    } catch (err) {
+      // Dropped quietly, the way the console drops a peer that never started, and stopped before
+      // the next post may start its successor, so this one's offline record cannot land after the
+      // successor's online one.
+      e.removeAllListeners("error");
+      e.removeAllListeners("warning");
+      e.on("error", () => {});
+      await e.stop().catch(() => undefined);
+      endpoint = build();
+      starting = undefined;
+      throw err;
+    }
+    if (closed) {
+      await e.stop();
+      throw new Error(POSTER_STOPPED);
+    }
+    return (live = e);
+  };
   return {
     operatorId: () => (operator || live ? endpoint.card.id : undefined),
     ensure() {
-      starting ??= endpoint.start().then(
-        () => (live = endpoint),
-        (e: unknown) => {
-          const failed = endpoint;
-          endpoint = build();
-          starting = undefined;
-          void failed.stop().catch(() => undefined);
-          throw e;
-        },
-      );
+      if (closed) return Promise.reject(new Error(POSTER_STOPPED));
+      starting ??= start();
       return starting;
     },
     expired: () => operator !== undefined && Date.now() >= operator.expiresAt,
     async stop() {
+      closed = true;
       await starting?.catch(() => undefined);
       await live?.stop();
     },
@@ -888,7 +909,8 @@ export function operatorPoster(target: { space: string; server: string; tls: boo
  *  hand-off and the pidfile claim, because the purger has no expiry and the operator lives 24 days,
  *  and a process that detaches or is refused must not mint creds it then drops. `--creds` and open
  *  meshes have no seed and purge with the connection's own creds; user mode mints a purger view
- *  per delete instead. Posting is decided here too, and an open mesh posts with no credential. */
+ *  per delete instead. Posting is decided here too, and the operator poster built, so the operator
+ *  credential stays in this scope with the seed. An open mesh posts with no credential. */
 async function connectWithoutSeed(
   raw: readonly string[],
   values: ConnectFlags & { detach?: boolean; "no-open"?: boolean },
@@ -900,7 +922,7 @@ async function connectWithoutSeed(
   pidPath: string | undefined;
   purgeCreds: string | undefined;
   post: PostCapability;
-  operator: OperatorCred | undefined;
+  poster: OperatorPoster | undefined;
 } | undefined> {
   const { auth, ...conn } = await connectOrExit(values, "admin");
   const detachedRoot = process.env[DETACHED_ROOT_ENV];
@@ -921,7 +943,11 @@ async function connectWithoutSeed(
   const purgeCreds = !user && auth ? await mintCreds(auth, newIdentity(), "channel-purger") : conn.creds;
   const post = postCapability(values.creds, user !== undefined);
   const operator = post.mode === "participant" && auth ? await mintOperatorCred(auth) : undefined;
-  return { conn, user, pidPath, purgeCreds, post, operator };
+  // The operator the dashboard posts as. Built here so its credential never enters `web()`'s scope,
+  // where the request handlers are, and so its id is fixed for the process. It starts on the first
+  // post, so it is not on the roster before then.
+  const poster = post.mode === "participant" ? operatorPoster({ space: conn.space, server: conn.server, tls: conn.tls }, operator) : undefined;
+  return { conn, user, pidPath, purgeCreds, post, poster };
 }
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
@@ -944,7 +970,7 @@ export async function web(args: ParsedArgs): Promise<void> {
   // refresh.
   const started = await connectWithoutSeed(args.raw, values, host, port);
   if (!started) return;
-  const { conn, user, pidPath, purgeCreds, post, operator } = started;
+  const { conn, user, pidPath, purgeCreds, post, poster } = started;
   const { server, space } = conn;
   const sessionPath = conn.root ? localProcessPath(WEB_SESSION_FILE, { root: conn.root, space }) : undefined;
 
@@ -970,10 +996,6 @@ export async function web(args: ParsedArgs): Promise<void> {
   ep.on("error", reportEndpoint);
   ep.on("warning", (e: Error) => console.error(c.yellow("! " + e.message)));
   await ep.start();
-
-  // The operator the dashboard posts as. Built now so its id is fixed for the process, started on
-  // the first post so it is not on the roster before then.
-  const poster = post.mode === "participant" ? operatorPoster({ space, server, tls: conn.tls }, operator) : undefined;
 
   // The dashboard does not yet have a manager/session-store observer. Carry the absence as data so
   // the client can say so honestly without deriving progress from the heartbeat.
