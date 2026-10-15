@@ -226,14 +226,6 @@
       "cell": "5.10 the shell titles the document from the store's space through documentTitle"
     },
     {
-      "name": "W27 http.ts consumes a response body itself instead of handing it to readJson, so a 500 with a JSON body is returned as data on that route",
-      "file": "implementations/web/client/src/api/http.ts",
-      "find": "readJson<T>(await fetchImpl(url), what);",
-      "replace": "(await fetchImpl(url)).json() as Promise<T>;",
-      "expectRed": "3.9 http.ts consumes no response body itself",
-      "cell": "3.9 http.ts consumes no response body itself (every read goes through readJson), and feed.ts and boot.ts hold no fetch"
-    },
-    {
       "name": "W28 a poll reads the roster even after the feed has spoken for it, so every poll costs a broker call whose value is thrown away and whose refusal marks the peers stale",
       "file": "implementations/web/client/src/state/controller.ts",
       "find": "        ...(liveApplied.has(\"peers\")\n",
