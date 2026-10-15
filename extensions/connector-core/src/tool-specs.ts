@@ -608,11 +608,14 @@ function renderChannelInfo(
 }
 
 /** Contact email for keyless feedback: explicit arg → COTAL_FEEDBACK_EMAIL → git config. */
-function resolveFeedbackEmail(explicit: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
+function resolveFeedbackEmail(explicit: string | undefined, env?: NodeJS.ProcessEnv): string | undefined {
   if (explicit?.trim()) return explicit.trim();
-  if (env.COTAL_FEEDBACK_EMAIL?.trim()) return env.COTAL_FEEDBACK_EMAIL.trim();
+  const lookupEnv = env ?? process.env;
+  if (lookupEnv.COTAL_FEEDBACK_EMAIL?.trim()) return lookupEnv.COTAL_FEEDBACK_EMAIL.trim();
+  // A hosted session must not discover a contact in the host repository.
+  const args = env === undefined ? ["config", "user.email"] : ["config", "--global", "--includes", "user.email"];
   try {
-    const email = execFileSync("git", ["config", "user.email"], { encoding: "utf8", env }).trim();
+    const email = execFileSync("git", args, { encoding: "utf8", env }).trim();
     return email || undefined;
   } catch {
     return undefined;
@@ -631,8 +634,9 @@ export function channelMeta(i: InboxItem): Record<string, string> {
 }
 
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
- *  hosting connector and is stamped onto outgoing feedback. */
-export function cotalToolSpecs(config: AgentConfig, source = "connector", env: NodeJS.ProcessEnv = process.env): CotalToolSpec[] {
+ *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
+ *  Git lookup to its global config; omitted preserves process inheritance and repository lookup. */
+export function cotalToolSpecs(config: AgentConfig, source = "connector", env?: NodeJS.ProcessEnv): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
   // without the capability is denied at the wire (nats-server); open mode mints no identity, so

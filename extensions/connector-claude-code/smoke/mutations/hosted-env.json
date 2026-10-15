@@ -83,8 +83,8 @@
     {
       "name": "feedback Git subprocess inherits host configuration",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    const email = execFileSync(\"git\", [\"config\", \"user.email\"], { encoding: \"utf8\", env }).trim();",
-      "replace": "    const email = execFileSync(\"git\", [\"config\", \"user.email\"], { encoding: \"utf8\" }).trim();",
+      "find": "    const email = execFileSync(\"git\", args, { encoding: \"utf8\", env }).trim();",
+      "replace": "    const email = execFileSync(\"git\", args, { encoding: \"utf8\" }).trim();",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_git",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
@@ -138,6 +138,30 @@
       "find": " --footer:js='module.exports = { serveClaudeSession: module.exports.serveClaudeSession };'",
       "replace": "",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_public_exports_only",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "hosted feedback reads the host repository contact",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const args = env === undefined ? [\"config\", \"user.email\"] : [\"config\", \"--global\", \"--includes\", \"user.email\"];",
+      "replace": "  const args = [\"config\", \"user.email\"];",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_git",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "hosted feedback ignores the session global includes",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "[\"config\", \"--global\", \"--includes\", \"user.email\"]",
+      "replace": "[\"config\", \"--global\", \"user.email\"]",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_git",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
+    },
+    {
+      "name": "legacy feedback loses its repository contact lookup",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const args = env === undefined ? [\"config\", \"user.email\"] : [\"config\", \"--global\", \"--includes\", \"user.email\"];",
+      "replace": "  const args = [\"config\", \"--global\", \"--includes\", \"user.email\"];",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_feedback_legacy_repository",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     }
   ]

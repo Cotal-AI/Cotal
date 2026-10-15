@@ -659,9 +659,11 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
 - **Managed only.** `env` is a complete launch environment, copied when the call starts. It must
   carry a mesh identity and the full control pair, or the call rejects before the session joins the
   mesh. The presence environment label, bearer commands, carried-fork records and feedback contact
-  lookup use that copy, including the Git subprocess. Include the `PATH`, `HOME` and other OS variables those commands need;
-  the host's environment is not merged into it. Subprocesses still use the host process's working
-  directory. A plain `claude` with no identity is served by `mcp.cjs` run directly. Sharing a process
+  lookup use that copy. Feedback's Git fallback reads the session's global config, including its
+  includes, without reading the host repository config. Set `COTAL_FEEDBACK_EMAIL` or pass the
+  feedback tool's `email` argument to choose another contact. Include the `PATH`, `HOME` and other OS
+  variables subprocesses need; the host's environment is not merged into them. Subprocesses still
+  use the host process's working directory. A plain `claude` with no identity is served by `mcp.cjs` run directly. Sharing a process
   does not isolate untrusted tenants or their files.
 - **Streams.** `input` carries JSON-RPC from the client and `output` carries this session's replies
   and `claude/channel` pushes. The caller owns both streams. Input that has emitted `end` or is

@@ -1,6 +1,6 @@
 /** Native hosted API, bearer children, hook sockets and loopback feedback. No broker or model. */
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { once } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -13,7 +13,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { createBrokerAuth, createSpaceAccountAuth, mintLifecycleUid, runAgentBearer } from "@cotal-ai/core";
 import { createCalloutAuth } from "@cotal-ai/auth";
-import { configFromEnv, MeshAgent } from "@cotal-ai/connector-core";
+import { configFromEnv, cotalToolSpecs, MeshAgent } from "@cotal-ai/connector-core";
 import type { ClaudeSession, ClaudeSessionOptions } from "../src/mcp.js";
 
 const require = createRequire(import.meta.url);
@@ -64,6 +64,11 @@ async function child(): Promise<void> {
   check("hosted_public_exports_only", Object.keys(api).join(",") === "serveClaudeSession");
   const { serveClaudeSession } = api;
   const root = process.cwd();
+  const hostRepo = join(root, "host-repository"); mkdirSync(hostRepo, { mode: 0o700 });
+  const gitEnv = { HOME: root, PATH: "/usr/bin:/bin", LANG: "C.UTF-8" };
+  execFileSync("git", ["init", "--quiet"], { cwd: hostRepo, env: gitEnv });
+  execFileSync("git", ["config", "--local", "user.email", "host-local@example.invalid"], { cwd: hostRepo, env: gitEnv });
+  process.chdir(hostRepo);
   const helper = join(root, "bearer.cjs");
   writeFileSync(helper, `const fs = require('node:fs');
 const out = process.argv[2];
@@ -147,7 +152,9 @@ process.exitCode = 1;
       const name = `session_${label}`;
       const own = carried(join(root, `carried-${label}`), `source_${label}`);
       const git = join(root, `${label}.gitconfig`);
-      writeFileSync(git, `[user]\n\temail = session-git-${label}@example.invalid\n`, { mode: 0o600 });
+      const contact = join(root, `${label}-contact.gitconfig`);
+      writeFileSync(contact, `[user]\n\temail = session-git-${label}@example.invalid\n`, { mode: 0o600 });
+      writeFileSync(git, `[include]\n\tpath = ${JSON.stringify(contact)}\n`, { mode: 0o600 });
       const env: NodeJS.ProcessEnv = { ...envFor(name), COTAL_CLAUDE_CARRIED: own.source, CLAUDE_CONFIG_DIR: own.home,
         COTAL_FEEDBACK_EMAIL: label === "a" ? "session-env-a@example.invalid" : "",
         GIT_CONFIG_GLOBAL: git, GIT_CONFIG_NOSYSTEM: "1" };
@@ -191,14 +198,25 @@ process.exitCode = 1;
       check(`hosted_env_carried_digest_${label}`, record.source === own.source && record.transcriptSha256 === own.digest && (statSync(own.record).mode & 0o777) === 0o600);
       if (label === "b") delete process.env.COTAL_FEEDBACK_EMAIL;
       const reply = await request("tools/call", { name: "cotal_feedback", arguments: { origin: "agent", type: "other", summary: "Loopback-only environment fixture" } }) as { isError?: boolean };
-      assert.notEqual(reply.isError, true);
-      check(label === "a" ? "hosted_env_feedback_a" : "hosted_env_feedback_git", contacts.at(-1) === (label === "a" ? expected.COTAL_FEEDBACK_EMAIL : "session-git-b@example.invalid"));
+      check(label === "a" ? "hosted_env_feedback_a" : "hosted_env_feedback_git", reply.isError !== true && contacts.at(-1) === (label === "a" ? expected.COTAL_FEEDBACK_EMAIL : "session-git-b@example.invalid"));
       if (label === "b") process.env.COTAL_FEEDBACK_EMAIL = baseline.COTAL_FEEDBACK_EMAIL;
     }
+    const feedbackConfig = configFromEnv(envFor("legacy_feedback"));
+    const legacyFeedback = cotalToolSpecs(feedbackConfig).find((spec) => spec.name === "cotal_feedback")!;
+    delete process.env.COTAL_FEEDBACK_EMAIL;
+    const legacyReply = await legacyFeedback.run(legacy, feedbackConfig, { origin: "agent", type: "other", summary: "Loopback-only legacy Git lookup" });
+    check("hosted_env_feedback_legacy_repository", legacyReply.isError !== true && contacts.at(-1) === "host-local@example.invalid");
+    process.env.COTAL_FEEDBACK_EMAIL = baseline.COTAL_FEEDBACK_EMAIL;
+    const emptyEnv = { ...envFor("empty_feedback"), GIT_CONFIG_GLOBAL: join(root, "missing.gitconfig") };
+    const scopedFeedback = cotalToolSpecs(feedbackConfig, "fixture", emptyEnv).find((spec) => spec.name === "cotal_feedback")!;
+    const beforeMissing = contacts.length;
+    const missingReply = await scopedFeedback.run(legacy, feedbackConfig, { origin: "agent", type: "other", summary: "Loopback-only missing contact" });
+    check("hosted_env_feedback_missing_contact", missingReply.isError === true && contacts.length === beforeMissing);
     await hook(sessions[0].env, { hook_event_name: "SessionStart", source: "fork", session_id: "ambient_target", transcript_path: join(ambientCarried.project, "ambient_target.jsonl") });
     check("hosted_env_ambient_fork_untouched", !existsSync(ambientCarried.record));
     check("hosted_env_no_broker_dial", dials === 0);
-    check("hosted_env_loopback_only", contacts.length === 2);
+    check("hosted_env_loopback_only", contacts.length === 3);
+    check("hosted_env_host_cwd_unchanged", process.cwd() === hostRepo);
     assert.deepEqual({ ...process.env }, baseline, "hosted API must not mutate ambient env");
     console.log("PASS hosted_env_ambient_unchanged");
   } finally {
