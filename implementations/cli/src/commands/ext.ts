@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { registry, type Command, type Connector, type ParsedArgs } from "@cotal-ai/core";
-import { RESERVED_CONNECTOR_NAMES, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
+import { RESERVED_CONNECTOR_NAMES, SEEDED_EXTENSIONS, beginExtensionNpmMutation, bindExtensionPeers, cacheCommand, cacheConnector, cacheExtension, cacheLocalProcess, cmdSpawnSpec, extensionLocalProcesses, extensionPackageDir, extensionProvides, extensionsDir, extensionsManifestPath, importExtensionEntry, installedExtensionVersion, loadExtensionsManifest, loadMeshes, localProcessPath, parsePid, probeLiveness, providedWords, provenance, saveExtensionsManifest, type InstalledExtension, type LocalProcess, type LocalProcessContext } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
 import { cotalRoot } from "../lib/paths.js";
 import { resolveSpace } from "../lib/status.js";
@@ -282,19 +282,26 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
   const reserved = contributed.find((ext) => ext.kind === "connector" && RESERVED_CONNECTOR_NAMES.includes(ext.name));
   if (reserved) fail(pkg, `contributes connector "${reserved.name}", which is a reserved name - a connector cannot be named ${RESERVED_CONNECTOR_NAMES.join(", ")}`);
 
-  // Builtin collisions can't happen here (registry.register throws on a duplicate, surfacing as
-  // failed-to-import above, naming the extension). OTHER installed extensions are invisible to the
-  // registry during this add (they aren't imported), so their CACHED names are checked explicitly —
-  // a duplicate fails the add under the same contract, naming both sides.
+  // Builtin collisions can't happen here (registry.register throws on a duplicate name or alias,
+  // surfacing as failed-to-import above, naming the extension). OTHER installed extensions are
+  // invisible to the registry during this add (they aren't imported), so their CACHED names and
+  // aliases are checked explicitly — a duplicate fails the add under the same contract, naming both sides.
   for (const provided of contributed) {
-    const other = manifest.extensions.find((e) =>
-      e.pkg !== pkg && extensionProvides(e).some((ref) => ref.kind === provided.kind && ref.name === provided.name),
-    );
-    if (other) {
-      fail(pkg, `contributes ${provided.kind} "${provided.name}", already provided by installed extension ${other.pkg}@${other.version} - two extensions cannot claim one registry key; \`cotal ext remove ${other.pkg}\` first if you want this one`);
+    for (const word of providedWords(cacheExtension(provided))) {
+      const other = manifest.extensions.find((e) =>
+        e.pkg !== pkg && extensionProvides(e).some((ref) => ref.kind === provided.kind && providedWords(ref).includes(word)),
+      );
+      if (other) {
+        fail(pkg, `contributes ${provided.kind} "${word}", already provided by installed extension ${other.pkg}@${other.version} - two extensions cannot claim one registry name or alias; \`cotal ext remove ${other.pkg}\` first if you want this one`);
+      }
     }
   }
   const commands = contributed.filter((ext): ext is Command => ext.kind === "command");
+  // The dispatcher resolves a seeded package's commands before its first seed, from the declared list.
+  const declared = seeding ? Object.values(SEEDED_EXTENSIONS).find((seeded) => seeded.pkg === pkg)?.commands : undefined;
+  if (declared && [...commands.map((cmd) => cmd.name)].sort().join(" ") !== [...declared].sort().join(" ")) {
+    fail(pkg, `registers commands [${commands.map((cmd) => cmd.name).join(", ")}], but its seed entry declares [${declared.join(", ")}] - the binary and this package disagree`);
+  }
   const connectors = contributed.filter((ext): ext is Connector => ext.kind === "connector");
   const localProcesses = contributed.filter((ext): ext is LocalProcess => ext.kind === "local-process");
   const entry: InstalledExtension = {

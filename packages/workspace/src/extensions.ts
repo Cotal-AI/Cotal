@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, 
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Command, Connector, Extension, ExtensionRef, FlagSpec } from "@cotal-ai/core";
+import type { Command, Connector, Extension, ExtensionRef, FlagSpec, OutputMode, Subcommand } from "@cotal-ai/core";
 import { globalConfigDir } from "@cotal-ai/core";
 import { inspectLock } from "./advisory-lock.js";
 import { localProcessPath, type LocalProcess } from "./local-process.js";
@@ -28,11 +28,20 @@ import { localProcessPath, type LocalProcess } from "./local-process.js";
 export interface CachedCommand {
   readonly name: string;
   readonly summary: string;
+  readonly aliases?: readonly string[];
   readonly group?: string;
   readonly usage?: string;
   readonly hidden?: boolean;
   readonly flags?: readonly FlagSpec[];
   readonly positionals?: string;
+  readonly subcommands?: readonly Subcommand[];
+  readonly outputs?: readonly OutputMode[];
+  readonly examples?: readonly string[];
+}
+
+/** One registry contribution of an installed package, with the aliases it claims in its kind. */
+export interface ProvidedRef extends ExtensionRef {
+  readonly aliases?: readonly string[];
 }
 
 /** Connector boot metadata cached at install time so the manager can inspect harness availability
@@ -57,7 +66,7 @@ export interface InstalledExtension {
   readonly source?: "seeded";
   /** Every registry contribution made by the package. Older command-only manifests omit this; the
    *  loader derives `command:<name>` entries from `commands` for compatibility. */
-  readonly provides?: readonly ExtensionRef[];
+  readonly provides?: readonly ProvidedRef[];
   readonly commands: readonly CachedCommand[];
   /** Declarative connector harness metadata used at manager boot without importing package code. */
   readonly connectors?: readonly CachedConnector[];
@@ -136,11 +145,15 @@ export function cacheCommand(cmd: Command): CachedCommand {
   return {
     name: cmd.name,
     summary: cmd.summary,
+    aliases: cmd.aliases,
     group: cmd.group,
     usage: cmd.usage,
     hidden: cmd.hidden,
     flags: cmd.flags,
     positionals: cmd.positionals,
+    subcommands: cmd.subcommands,
+    outputs: cmd.outputs,
+    examples: cmd.examples,
   };
 }
 
@@ -174,8 +187,8 @@ export function extensionConnectors(ext: InstalledExtension): readonly CachedCon
 }
 
 /** Stable, serializable registry keys contributed by one imported package. */
-export function cacheExtension(ext: Extension): ExtensionRef {
-  return { kind: ext.kind, name: ext.name };
+export function cacheExtension(ext: Extension): ProvidedRef {
+  return { kind: ext.kind, name: ext.name, ...(ext.aliases?.length ? { aliases: [...ext.aliases] } : {}) };
 }
 
 export function cacheLocalProcess(component: LocalProcess): LocalProcess {
@@ -208,8 +221,13 @@ export function extensionLocalProcesses(ext: InstalledExtension): readonly Local
 }
 
 /** Registry contributions recorded for an installed package, including old command-only entries. */
-export function extensionProvides(ext: InstalledExtension): readonly ExtensionRef[] {
-  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name }));
+export function extensionProvides(ext: InstalledExtension): readonly ProvidedRef[] {
+  return ext.provides ?? ext.commands.map((command) => ({ kind: "command", name: command.name, aliases: command.aliases }));
+}
+
+/** Every word a contribution claims in its kind: its name, then its aliases. */
+export function providedWords(ref: ProvidedRef): string[] {
+  return [ref.name, ...(ref.aliases ?? [])];
 }
 
 /** The installed package's on-disk root inside the prefix. */

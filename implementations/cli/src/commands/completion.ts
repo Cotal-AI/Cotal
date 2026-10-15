@@ -2,6 +2,8 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import {
+  findCommand,
+  findSubcommand,
   type Command,
   type CompletionItem,
   type CompletionResult,
@@ -53,13 +55,19 @@ export async function complete(args: ParsedArgs): Promise<void> {
     emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");
     return;
   }
-  const cmd = commands.find((cmd) => cmd.name === argv[0]);
-  if (argv.length === 1 && cmd) return emitCommandCompletion(cmd, [""]);
+  // The command word resolves as dispatch resolves it: by exact name or alias, never by prefix. A
+  // lone alias is still the word being typed (`sp` on the way to `spawn`), so only a lone exact name
+  // completes inside its command.
+  const cmd = findCommand(commands, argv[0]);
+  if (argv.length === 1 && cmd?.name === argv[0]) return emitCommandCompletion(cmd, [""]);
   if (argv.length === 1) {
     emit(commands.map((cmd) => ({ value: cmd.name, description: cmd.summary })), "nofiles");
     return;
   }
-  return emitCommandCompletion(cmd, argv.slice(1));
+  // A finished subcommand word reaches the command's completer by its canonical name.
+  const words = argv.slice(1);
+  const sub = cmd && words.length > 1 ? findSubcommand(cmd, words[0]) : undefined;
+  return emitCommandCompletion(cmd, sub ? [sub.name, ...words.slice(1)] : words);
 }
 
 async function emitCommandCompletion(cmd: Command | undefined, argv: string[]): Promise<void> {

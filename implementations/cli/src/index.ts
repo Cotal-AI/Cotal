@@ -25,6 +25,7 @@ import { clean, cleanComplete } from "./commands/clean.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
+import { help, helpFlags, version } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
@@ -56,11 +57,36 @@ const baseCommands: Command[] = [
   },
   {
     kind: "command",
+    name: "help",
+    group: "Setup",
+    summary: "list the commands, or show one command's help",
+    positionals: "[command…]",
+    flags: helpFlags,
+    run: help,
+  },
+  {
+    kind: "command",
+    name: "version",
+    group: "Setup",
+    summary: "print this binary's version and each installed extension's",
+    run: version,
+  },
+  {
+    kind: "command",
     name: "ext",
+    aliases: ["x"],
     group: "Setup",
     summary: "operator-installed extensions - add commands, runtimes, and local process providers",
     usage: "ext [add <npm-package> | remove <name> | list [--json] | root | seed [--repair|--reset|--force]]",
     positionals: "[add <npm-package> | remove <name> | list | root | seed]",
+    subcommands: [
+      { name: "add", summary: "install an extension package and register what it provides", usage: "cotal ext add <npm-package>" },
+      { name: "remove", aliases: ["rm"], summary: "uninstall an extension", usage: "cotal ext remove <name>" },
+      { name: "list", summary: "list installed extensions", usage: "cotal ext list [--json]" },
+      { name: "root", summary: "print the extension root directory", usage: "cotal ext root" },
+      { name: "seed", summary: "reconcile the built-in connectors", usage: "cotal ext seed [--repair|--reset|--force]" },
+      { name: "__update-add", summary: "re-add one extension for a running update", hidden: true },
+    ],
     flags: [
       { name: "json", type: "boolean", description: "list: machine-readable, one JSON object per extension per line" },
       { name: "repair", type: "boolean", description: "seed: recover a lost ever-seeded authority from its durable backup" },
@@ -200,6 +226,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "status",
+    aliases: ["s"],
     group: "Mesh",
     summary: "detailed read-only status for setup, local processes, recorded meshes, and the selected live mesh",
     flags: statusFlags,
@@ -306,6 +333,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "history",
+    aliases: ["h"],
     group: "Messaging",
     summary: "clear retained message history (alias of `clean history`)",
     usage: "history clear --force [--dms] [--space <s>]",
@@ -339,6 +367,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "spawn",
+    aliases: ["sp"],
     group: "Agents",
     summary:
       "launch an agent from a persona - spawn [<persona>] (defaults to COTAL_DEFAULT_PERSONA or `default`); --config accepts a persona name or path; foreground here, or --detach via the manager",
@@ -396,6 +425,7 @@ const baseCommands: Command[] = [
   {
     kind: "command",
     name: "attach",
+    aliases: ["a"],
     group: "Agents",
     summary: "stream + drive an agent's terminal (pty runtime) - --name <n>",
     flags: attachFlags,

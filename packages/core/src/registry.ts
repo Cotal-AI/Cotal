@@ -19,6 +19,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 export interface Extension {
   readonly kind: string;
   readonly name: string;
+  /** Other names that resolve to this extension within its kind. A name or alias already claimed in
+   *  the kind is refused at registration, so resolution never depends on load order. */
+  readonly aliases?: readonly string[];
 }
 
 /** A registry key used by commands that need an operator-installed provider before they run. */
@@ -27,33 +30,60 @@ export interface ExtensionRef {
   readonly name: string;
 }
 
+/** Every `kind:word` key an extension claims: its name, then its aliases. */
+function claims(ext: Extension): string[] {
+  return [ext.name, ...(ext.aliases ?? [])].map((word) => `${ext.kind}:${word}`);
+}
+
 export class Registry {
   #byKey = new Map<string, Extension>();
+  /** `kind:alias` → the claiming extension's `kind:name` key, for committed extensions. */
+  #aliases = new Map<string, string>();
   /** While a stage is active in the CURRENT async context, {@link register} writes there instead of
    *  the live map (invisible to resolve/all until commit). `AsyncLocalStorage` propagates the stage
    *  through the import's awaits but NOT into unrelated concurrent async work. */
   #stage = new AsyncLocalStorage<Map<string, Extension>>();
 
-  /** Register one or more extensions, all-or-nothing. A duplicate `kind:name` (already live, already
-   *  staged, or repeated within this call) throws BEFORE any of the batch is applied. During a
+  /** Register one or more extensions, all-or-nothing. A `kind:name` or `kind:alias` already claimed
+   *  by a name or alias (live, staged, or earlier in this call) throws BEFORE any of the batch is
+   *  applied. During a
    *  {@link runStaged} import the batch lands in the per-import stage (invisible); otherwise it lands
    *  live. */
   register(...exts: Extension[]): void {
     const stage = this.#stage.getStore();
-    const keys = exts.map((ext) => `${ext.kind}:${ext.name}`);
-    const seen = new Set<string>();
-    for (const key of keys) {
-      if (this.#byKey.has(key) || (stage?.has(key) ?? false) || seen.has(key)) throw new Error(`extension already registered: ${key}`);
-      seen.add(key);
+    const taken = this.#claimed();
+    for (const staged of stage?.values() ?? []) for (const key of claims(staged)) taken.add(key);
+    for (const ext of exts) {
+      for (const key of claims(ext)) {
+        if (taken.has(key)) throw new Error(`extension already registered: ${key}`);
+        taken.add(key);
+      }
     }
-    const target = stage ?? this.#byKey;
-    exts.forEach((ext, i) => target.set(keys[i], ext));
+    if (stage) for (const ext of exts) stage.set(`${ext.kind}:${ext.name}`, ext);
+    else this.#publish(exts);
+  }
+
+  /** Every committed name and alias key. */
+  #claimed(): Set<string> {
+    return new Set([...this.#byKey.keys(), ...this.#aliases.keys()]);
+  }
+
+  #publish(exts: readonly Extension[]): void {
+    for (const ext of exts) {
+      const key = `${ext.kind}:${ext.name}`;
+      this.#byKey.set(key, ext);
+      for (const alias of claims(ext).slice(1)) this.#aliases.set(alias, key);
+    }
   }
 
   /** Remove one extension by kind + name; returns whether it was registered. Generic teardown; it
    *  knows nothing about what a kind means. */
   unregister(kind: string, name: string): boolean {
-    return this.#byKey.delete(`${kind}:${name}`);
+    const key = `${kind}:${name}`;
+    const ext = this.#byKey.get(key);
+    if (!ext) return false;
+    for (const alias of claims(ext).slice(1)) this.#aliases.delete(alias);
+    return this.#byKey.delete(key);
   }
 
   /**
@@ -72,21 +102,27 @@ export class Registry {
   /** Publish previously-staged registrations to the live registry, atomically (all-or-nothing,
    *  re-checked against the live map, which may have changed since staging). */
   commitStaged(staged: readonly Extension[]): void {
-    const keys = staged.map((ext) => `${ext.kind}:${ext.name}`);
-    for (const key of keys) if (this.#byKey.has(key)) throw new Error(`extension already registered: ${key}`);
-    staged.forEach((ext, i) => this.#byKey.set(keys[i], ext));
+    const taken = this.#claimed();
+    for (const ext of staged) for (const key of claims(ext)) if (taken.has(key)) throw new Error(`extension already registered: ${key}`);
+    this.#publish(staged);
   }
 
-  /** Whether a committed extension exists for kind + name (staged registrations are invisible here,
+  /** Whether a committed extension exists for kind + name or alias (staged registrations are invisible here,
    *  like {@link resolve}). A boolean probe that never throws. */
   has(kind: string, name: string): boolean {
-    return this.#byKey.has(`${kind}:${name}`);
+    return this.#byKey.has(this.#canonical(kind, name));
   }
 
-  /** Resolve one extension by kind + name. Unknown throws. Staged (uncommitted) registrations are
+  /** The `kind:name` key a name or alias resolves to. */
+  #canonical(kind: string, word: string): string {
+    const key = `${kind}:${word}`;
+    return this.#aliases.get(key) ?? key;
+  }
+
+  /** Resolve one extension by kind + name or alias. Unknown throws. Staged (uncommitted) registrations are
    *  invisible here; only committed ones resolve. */
   resolve<T extends Extension>(kind: T["kind"], name: string): T {
-    const ext = this.#byKey.get(`${kind}:${name}`);
+    const ext = this.#byKey.get(this.#canonical(kind, name));
     if (!ext) throw new Error(`no ${kind} registered for "${name}"`);
     return ext as T;
   }

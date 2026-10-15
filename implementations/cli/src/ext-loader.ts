@@ -69,11 +69,15 @@ function stubFor(ext: InstalledExtension, cached: CachedCommand): Command {
     kind: "command",
     name: cached.name,
     summary: cached.summary,
+    aliases: cached.aliases,
     group: cached.group ?? "Extensions",
     usage: cached.usage,
     hidden: cached.hidden,
     flags: cached.flags,
     positionals: cached.positionals,
+    subcommands: cached.subcommands,
+    outputs: cached.outputs,
+    examples: cached.examples,
     // Marker consumed by runCli: dispatch must swap the stub for the live command before parsing.
     extension: ext.pkg,
     async run(): Promise<void> {
@@ -139,11 +143,13 @@ export function isExtensionStub(cmd: Command): boolean {
  *  command list for help/complete/dispatch. Loud on builtin collisions; never imports. */
 export function overlayExtensions(reg: Registry): Command[] {
   const commands = [...reg.all<Command>("command")];
-  const owner = new Map<string, string>(); // command name → "" for a builtin, else the owning ext pkg
-  for (const cm of commands) owner.set(cm.name, "");
+  const owner = new Map<string, string>(); // command name or alias → "" for a builtin, else the owning ext pkg
+  for (const cm of commands) for (const word of [cm.name, ...(cm.aliases ?? [])]) owner.set(word, "");
   for (const ext of loadExtensionsManifest().extensions) {
     for (const cached of ext.commands) {
-      const holder = owner.get(cached.name);
+      const words = [cached.name, ...(cached.aliases ?? [])];
+      const clash = words.find((word) => owner.has(word));
+      const holder = clash === undefined ? undefined : owner.get(clash);
       if (holder !== undefined) {
         // add() refuses fresh collisions, so this install predates the clash: a base upgrade
         // shipped the name (builtin case), or the sibling was added under an older base that
@@ -151,13 +157,13 @@ export function overlayExtensions(reg: Registry): Command[] {
         console.error(
           c.red(
             holder === ""
-              ? `! command "${cached.name}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
-              : `! command "${cached.name}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
+              ? `! command "${clash}" is provided by both this CLI and extension ${ext.pkg}@${ext.version} - the built-in wins; run \`cotal ext remove ${ext.pkg}\` (or update the extension) to clear this`
+              : `! command "${clash}" is provided by both extensions ${holder} and ${ext.pkg}@${ext.version} - ${holder} (installed first) wins; \`cotal ext remove\` one of them to clear this`,
           ),
         );
         continue;
       }
-      owner.set(cached.name, ext.pkg);
+      for (const word of words) owner.set(word, ext.pkg);
       commands.push(stubFor(ext, cached));
     }
   }

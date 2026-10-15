@@ -1,0 +1,34 @@
+{
+  "suite": [
+    "bin/smoke/ext-live.smoke.ts"
+  ],
+  "guard": "an extension's alias runs its command, and an add whose name or alias another installed extension already claims as a name or alias fails naming both, read from the manifest cache without importing the sibling",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:ext:live",
+  "completionMarker": "ext live e2e",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/ext-live-aliases.json",
+  "why": [
+    "An installed extension is not imported during another's add, so the registry cannot see its aliases; the add must compare the cached names and aliases, or two packages claim one word and the winner depends on install order. Run it without a seat's COTAL_* environment."
+  ],
+  "mutations": [
+    {
+      "name": "the add compares only cached names",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "        e.pkg !== pkg && extensionProvides(e).some((ref) => ref.kind === provided.kind && providedWords(ref).includes(word)),\n",
+      "replace": "        e.pkg !== pkg && extensionProvides(e).some((ref) => ref.kind === provided.kind && ref.name === word),\n",
+      "expectRed": "an alias an installed extension claims fails the add, naming both",
+      "cell": "an alias an installed extension claims fails the add, naming both",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:ext:live",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the add checks only the new extension's name",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "    for (const word of providedWords(cacheExtension(provided))) {\n",
+      "replace": "    for (const word of providedWords(cacheExtension(provided)).slice(0, 1)) {\n",
+      "expectRed": "an alias an installed extension claims fails the add, naming both",
+      "cell": "an alias an installed extension claims fails the add, naming both",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:ext:live",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

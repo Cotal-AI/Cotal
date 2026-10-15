@@ -15,6 +15,8 @@
  *     zero registrations. A multi-peer extension gets BOTH core and workspace linked (E2).
  *  F. non-command providers: runtime-only install + lazy supervise resolution; a contributed
  *     local process participates in selective down, while core components stay independent.
+ *  E3. aliases: an extension's alias runs its command; an alias or name a built-in or another
+ *     installed extension already claims fails the add.
  *  G. remove: commands leave the surface; the manifest empties.
  * Run: pnpm smoke:ext:live   (needs npm on PATH)
  */
@@ -358,6 +360,44 @@ registry.register({ kind: "command", name: "hello-ext", summary: "barrier", run:
   );
   const r5b = cotal(["ext", "list"]);
   ok("ext-vs-ext collision rolled back (not listed)", !/sibling/.test(r5b.stdout), r5b.stdout);
+}
+
+// -- E3: aliases. An extension's alias runs its command, and a word another provider claims fails the
+// add, whether a built-in or an installed extension (read from its manifest cache) holds it --------
+{
+  const aliased = (name: string, aliases: string[]) => `import { registry } from "@cotal-ai/core";
+registry.register({
+  kind: "command",
+  name: "${name}",
+  aliases: ${JSON.stringify(aliases)},
+  group: "Extensions",
+  summary: "fixture with an alias",
+  positionals: "[<who>]",
+  run: async (args) => { console.log("${name} " + (args.positionals[0] ?? "world")); },
+});
+`;
+  const added = cotal(["ext", "add", fixture("cotal-ext-aliased", aliased("alias-ext", ["ax"]))]);
+  ok("an extension that declares an alias installs", added.status === 0, added.stderr.slice(-400));
+  const viaAlias = cotal(["ax", "there"]);
+  ok("the alias runs the extension's command", viaAlias.status === 0 && viaAlias.stdout.includes("alias-ext there"), viaAlias.stdout + viaAlias.stderr.slice(-200));
+  const help = cotal(["help"]);
+  ok("help lists the alias beside its command", /alias-ext, ax/.test(help.stdout), help.stdout.slice(-600));
+  const builtin = cotal(["ext", "add", fixture("cotal-ext-claims-sp", aliased("other-ext", ["sp"]))]);
+  ok("an alias a built-in claims fails the add", builtin.status === 1 && /cotal-ext-claims-sp/.test(builtin.stderr) && /command:sp/.test(builtin.stderr), builtin.stderr.slice(-300));
+  const sibling = cotal(["ext", "add", fixture("cotal-ext-claims-ax", aliased("third-ext", ["ax"]))]);
+  ok(
+    "an alias an installed extension claims fails the add, naming both",
+    sibling.status === 1 && /cotal-ext-claims-ax/.test(sibling.stderr) && /cotal-ext-aliased/.test(sibling.stderr) && /"ax"/.test(sibling.stderr),
+    sibling.stderr.slice(-400),
+  );
+  const nameOnAlias = cotal(["ext", "add", fixture("cotal-ext-name-ax", aliased("ax", []))]);
+  ok("a name an installed extension claims as its alias fails the add", nameOnAlias.status === 1 && /cotal-ext-name-ax/.test(nameOnAlias.stderr) && /cotal-ext-aliased/.test(nameOnAlias.stderr), nameOnAlias.stderr.slice(-400));
+  const listed = cotal(["ext", "list"]).stdout;
+  ok("the refused adds rolled back", !/claims-sp|claims-ax|name-ax/.test(listed), listed);
+  const removed = cotal(["ext", "remove", "cotal-ext-aliased"]);
+  ok("the aliased extension removes", removed.status === 0, removed.stderr.slice(-200));
+  const gone = cotal(["ax"]);
+  ok("a removed extension's alias is unknown again", gone.status === 1 && /unknown command: ax/.test(gone.stderr), gone.stderr.slice(0, 200));
 }
 
 // -- E2: a multi-peer extension — the linked workspace peer is importable at run time -------------

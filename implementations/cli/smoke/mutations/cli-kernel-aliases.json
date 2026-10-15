@@ -1,0 +1,21 @@
+{
+  "suite": [
+    "implementations/cli/smoke/command-kernel.smoke.ts"
+  ],
+  "guard": "completion resolves the command word as dispatch does, by exact name or alias, and offers names for a prefix rather than selecting one",
+  "command": "pnpm smoke:cli-kernel",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/cli-kernel-aliases.json",
+  "why": [
+    "A <TAB> after an alias must complete inside that alias's command, or completion and dispatch disagree about what a word means."
+  ],
+  "mutations": [
+    {
+      "name": "completion resolves commands by name only",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "  const cmd = findCommand(commands, argv[0]);\n",
+      "replace": "  const cmd = commands.find((candidate) => candidate.name === argv[0]);\n",
+      "expectRed": "sp completes as spawn",
+      "cell": "sp completes as spawn"
+    }
+  ]
+}

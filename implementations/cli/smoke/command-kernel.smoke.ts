@@ -174,21 +174,22 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(!out.includes("Unknown option"), "no usage error above the help");
 }
 
-// --- `-v` / `--version` print `cotal-ai <semver>` (+ any extensions) and short-circuit dispatch --
+// --- `version`, `--version` and `-V` print `cotal-ai <semver>` (+ any extensions) -----------------
+// (`-v` is refused; the entry smoke covers that, since a refusal exits the process.)
 {
   const { runCli } = await import("../src/command.js");
-  for (const flag of ["-v", "--version"]) {
+  for (const argv of [["version"], ["--version"], ["-V"]]) {
     let out = "";
     const realLog = console.log;
     console.log = (s?: unknown) => void (out += `${s}\n`);
     try {
-      await runCli(registry, [flag]);
+      await runCli(registry, argv);
     } finally {
       console.log = realLog;
     }
     // First line is always `cotal-ai <semver>`; any installed extensions follow indented (none in
-    // a bare unit env). Reaching here at all proves it short-circuited before command dispatch.
-    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${flag} prints the binary version`);
+    // a bare unit env).
+    assert.match(out.split("\n")[0], /^cotal-ai \d+\.\d+\.\d+/, `${argv.join(" ")} prints the binary version`);
   }
 }
 
@@ -200,6 +201,14 @@ async function completionOut(positionals: string[]): Promise<string> {
   assert.ok(out.includes("--space"), "flag completion lists --space");
   assert.ok(out.includes("--config"), "flag completion lists --config");
   assert.ok(out.trimEnd().endsWith(":nofiles"), "directive is nofiles");
+}
+
+// --- an alias completes as its command does; a subcommand alias reaches the completer canonical --
+{
+  assert.equal(await completionOut(["sp", "--"]), await completionOut(["spawn", "--"]), "sp completes as spawn");
+  assert.ok((await completionOut(["sp"])).includes("spawn\t"), "a lone alias is still a word being typed: it offers command names");
+  const prefix = await completionOut(["spa"]);
+  assert.ok(prefix.includes("spawn\t") && prefix.includes("status\t"), "a prefix offers command names, it never selects one");
 }
 
 // --- exact commands and flags-before-positionals stay inside the command grammar -----------------

@@ -27,14 +27,22 @@ export const OFFICIAL_CONNECTORS: Readonly<Record<string, string>> = {
 export interface SeededExtension {
   readonly pkg: string;
   readonly srcDir: string;
+  /** The commands the package registers. The dispatcher resolves these words before the first seed
+   *  installs the package, and the seed refuses a package that registers a different set. */
+  readonly commands: readonly string[];
 }
 
 export const SEEDED_EXTENSIONS: Readonly<Record<string, SeededExtension>> = {
   ...(Object.fromEntries(
-    Object.entries(OFFICIAL_CONNECTORS).map(([name, pkg]) => [name, { pkg, srcDir: `extensions/${pkg.split("/")[1]}` }]),
+    Object.entries(OFFICIAL_CONNECTORS).map(([name, pkg]) => [name, { pkg, srcDir: `extensions/${pkg.split("/")[1]}`, commands: [] }]),
   ) as Record<string, SeededExtension>),
-  web: { pkg: "@cotal-ai/web", srcDir: "implementations/web" },
+  web: { pkg: "@cotal-ai/web", srcDir: "implementations/web", commands: ["web"] },
 };
+
+/** Whether `word` names a command a seeded package registers. */
+export function isSeededCommand(word: string): boolean {
+  return Object.values(SEEDED_EXTENSIONS).some((ext) => ext.commands.includes(word));
+}
 
 /** The default connector/agent type when `COTAL_DEFAULT_AGENT` is unset (David's locked decision). */
 export const DEFAULT_CONNECTOR = "claude";
