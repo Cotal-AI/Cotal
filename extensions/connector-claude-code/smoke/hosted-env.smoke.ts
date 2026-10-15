@@ -22,8 +22,8 @@ function check(label: string, passed: boolean): void {
   assert.equal(passed, true, label);
   console.log(`PASS ${label}`);
 }
-async function stopFixture(agent?: MeshAgent): Promise<void> {
-  await agent?.stop().catch((error: unknown) => {
+async function allowFixtureRefusal(closing: Promise<void> | undefined): Promise<void> {
+  await closing?.catch((error: unknown) => {
     assert.match((error as Error).message, /^fixture refuses before authentication$/);
   });
 }
@@ -130,7 +130,7 @@ process.exitCode = 1;
     await until(() => existsSync(join(root, "legacy.json")));
     const inherited = JSON.parse(readFileSync(join(root, "legacy.json"), "utf8")) as { name: string; hostOnly: boolean };
     check("hosted_env_legacy_inheritance", inherited.name === "ambient_name" && inherited.hostOnly);
-    await stopFixture(legacy);
+    await allowFixtureRefusal(legacy.stop());
     const supplied = envFor("mesh_scoped");
     scoped = new MeshAgent(configFromEnv(supplied), supplied);
     supplied.FIXTURE_SESSION_MARKER = "mutated_after_constructor";
@@ -138,7 +138,7 @@ process.exitCode = 1;
     await until(() => existsSync(join(root, "mesh_scoped.json")));
     const scopedObservation = JSON.parse(readFileSync(join(root, "mesh_scoped.json"), "utf8")) as { marker: string; hostOnly: boolean };
     check("hosted_env_mesh_snapshot", scopedObservation.marker === "marker_mesh_scoped" && !scopedObservation.hostOnly);
-    await stopFixture(scoped);
+    await allowFixtureRefusal(scoped.stop());
     for (const label of ["a", "b"]) {
       const name = `session_${label}`;
       const own = carried(join(root, `carried-${label}`), `source_${label}`);
@@ -199,7 +199,8 @@ process.exitCode = 1;
     console.log("PASS hosted_env_ambient_unchanged");
   } finally {
     const closed = await Promise.allSettled([
-      stopFixture(scoped), stopFixture(legacy), ...sessions.map((state) => state.session?.close()),
+      allowFixtureRefusal(scoped?.stop()), allowFixtureRefusal(legacy?.stop()),
+      ...sessions.map((state) => allowFixtureRefusal(state.session?.close())),
     ]);
     const owned = sessions.every((state) => !state.input.destroyed && !state.output.destroyed);
     for (const state of sessions) {
