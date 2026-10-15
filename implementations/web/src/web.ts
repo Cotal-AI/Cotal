@@ -566,7 +566,7 @@ export function quoteForOperator(value: string): string {
 /** Every codepoint {@link quoteForOperator} escapes, the C0 controls included, without its quotes. */
 const UNREADABLE = new RegExp(`[\\u0000-\\u001f]|${INVISIBLE_AFTER_JSON.source}`, "gu");
 
-/** ESCAPE A MESSAGE SOMEONE ELSE WROTE, KEEPING ITS WORDING. A broker refusal names the subject it
+/** Escapes a message someone else wrote, keeping its wording. A broker refusal names the subject it
  *  refused, and a DM subject carries a recipient id taken from another agent's presence card, so the
  *  message reaches the 502 body and the operator's line as untrusted text. Each codepoint the quoter
  *  escapes leaves as its escape; the rest, quotes included, stays as the broker wrote it. */
