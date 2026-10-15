@@ -8,8 +8,8 @@
     {
       "name": "the default window is no longer one second",
       "file": "implementations/web/client/src/lib/rate.ts",
-      "find": "windowMs = 1000)",
-      "replace": "windowMs = 2000)",
+      "find": "windowMs = 1000, since",
+      "replace": "windowMs = 2000, since",
       "expectRed": "4 hits within the last second give 4",
       "cell": "4 hits within the last second give 4"
     },
@@ -48,7 +48,7 @@
     {
       "name": "the count is not scaled to per second",
       "file": "implementations/web/client/src/lib/rate.ts",
-      "find": "return (inWindow * 1000) / windowMs;",
+      "find": "return (inWindow * 1000) / span(now);",
       "replace": "return inWindow;",
       "expectRed": "a 2 second window scales 4 hits to 2 per second",
       "cell": "a 2 second window scales 4 hits to 2 per second"
@@ -100,6 +100,38 @@
       "replace": "",
       "expectRed": "a hit with a non-finite time is ignored",
       "cell": "a hit with a non-finite time is ignored"
+    },
+    {
+      "name": "the first window is divided over the whole window, so the page reads low at first",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "const span = (now: number): number => (since === undefined ? windowMs : Math.min(windowMs, Math.max(now - since, 1000)));",
+      "replace": "const span = (now: number): number => windowMs;",
+      "expectRed": "three messages in the page's first second read 3 per second, not 0.3 over a ten second window",
+      "cell": "three messages in the page's first second read 3 per second, not 0.3 over a ten second window"
+    },
+    {
+      "name": "the time watched is taken as it is, under a second too, so one early message reads as a burst",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "Math.max(now - since, 1000)",
+      "replace": "(now - since)",
+      "expectRed": "the time watched is never taken as under a second, so one early message is not a burst",
+      "cell": "the time watched is never taken as under a second, so one early message is not a burst"
+    },
+    {
+      "name": "the time watched is never capped at the window, so later rates read low",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "Math.min(windowMs, Math.max(now - since, 1000))",
+      "replace": "Math.max(now - since, 1000)",
+      "expectRed": "once a whole window has passed the full window is used again",
+      "cell": "once a whole window has passed the full window is used again"
+    },
+    {
+      "name": "a start time that is not finite is taken",
+      "file": "implementations/web/client/src/lib/rate.ts",
+      "find": "if (since !== undefined && !Number.isFinite(since)) throw",
+      "replace": "if (false) throw",
+      "expectRed": "a start time that is not finite is refused",
+      "cell": "a start time that is not finite is refused"
     }
   ]
 }

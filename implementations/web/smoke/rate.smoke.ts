@@ -1,5 +1,6 @@
-/** The rolling message rate: hits inside the window ending at `now` count, scaled to per second.
- *  `now` is an argument, so no cell waits on a clock. */
+/** The rolling message rate: hits inside the window ending at `now` count, scaled to per second, and
+ *  in the first window after the page starts, over the time actually watched. `now` is an argument,
+ *  so no cell waits on a clock. */
 import { strict as assert } from "node:assert";
 import { createRate, MAX_HITS } from "../client/src/lib/rate.js";
 
@@ -72,6 +73,21 @@ nan.hit(Number.NaN);
 nan.hit(Number.POSITIVE_INFINITY);
 nan.hit(9_500);
 ok("a hit with a non-finite time is ignored", nan.perSecond(10_000) === 1 && nan.perSecond(20_000) === 0, nan.perSecond(10_000));
+
+// The first window after the page starts: dividing by the whole window would understate the rate.
+const fresh = createRate(10_000, 100_000);
+for (const ts of [100_200, 100_400, 100_600]) fresh.hit(ts);
+ok("three messages in the page's first second read 3 per second, not 0.3 over a ten second window", fresh.perSecond(100_900) === 3, fresh.perSecond(100_900));
+ok("five seconds in, the same three read 0.6 per second: the count over the time watched", fresh.perSecond(105_000) === 0.6, fresh.perSecond(105_000));
+ok("once a whole window has passed the full window is used again", fresh.perSecond(110_100) === 0.3, fresh.perSecond(110_100));
+const lone = createRate(10_000, 100_000);
+lone.hit(100_050);
+ok("the time watched is never taken as under a second, so one early message is not a burst", lone.perSecond(100_100) === 1, lone.perSecond(100_100));
+const late2 = createRate(10_000, 100_000);
+late2.hit(108_000);
+ok("a message after eight quiet seconds reads over the eight seconds watched, not over the time since it", late2.perSecond(108_000) === 0.125, late2.perSecond(108_000));
+const bareStart = attempt(() => createRate(10_000, Number.NaN));
+ok("a start time that is not finite is refused", bareStart.threw !== undefined, bareStart);
 
 for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
   const r = attempt(() => createRate(bad));
