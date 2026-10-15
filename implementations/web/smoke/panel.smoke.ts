@@ -349,6 +349,25 @@ localStorage.clear();
   }
 }
 
+{
+  const m = await mountShell();
+  const roving = () => all(pane(m.container), "[role=tab]").map((t) => [textOf(t), t.tabIndex]);
+  same("5.17 the selected tab is the list's one Tab stop", roving(), [["Members", 0], ["Agent", -1], ["Topology", -1]]);
+  tabBy(m, "Members")?.focus();
+  await m.run(() => key(document.activeElement, "ArrowRight"));
+  ok("5.18 Right moves to the next enabled tab and selects it, skipping a disabled one",
+    selected(m) === "Topology" && document.activeElement === tabBy(m, "Topology"), [selected(m), textOf(document.activeElement)]);
+  const walk: string[] = [];
+  for (const k of ["ArrowRight", "ArrowLeft", "Home", "End"]) {
+    await m.run(() => key(document.activeElement, k));
+    walk.push(`${k} ${selected(m)} ${textOf(document.activeElement)}`);
+  }
+  same("5.19 Right and Left wrap, Home and End go to the ends, and focus follows the selection",
+    walk, ["ArrowRight Members Members", "ArrowLeft Topology Topology", "Home Members Members", "End Topology Topology"]);
+  same("5.20 and the Tab stop moves with it", roving(), [["Members", -1], ["Agent", -1], ["Topology", 0]]);
+  await m.unmount();
+}
+
 // ── 6. Mounted: the delete dialog ────────────────────────────────────────────────────────────────
 {
   const { controller, deleted } = fakeController();

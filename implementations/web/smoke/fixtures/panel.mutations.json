@@ -198,6 +198,46 @@
       "cell": "5.13 a new page keeps the panel closed, and Toggle panel says it is"
     },
     {
+      "name": "P25 the tab list ignores the arrow keys",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": " onKeyDown={onTabKey}>",
+      "replace": ">",
+      "expectRed": "5.18 Right moves to the next enabled tab and selects it, skipping a disabled one",
+      "cell": "5.18 Right moves to the next enabled tab and selects it, skipping a disabled one"
+    },
+    {
+      "name": "P26 every tab is a Tab stop",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "            tabIndex={tab === t.id ? 0 : -1}\n",
+      "replace": "",
+      "expectRed": "5.17 the selected tab is the list's one Tab stop",
+      "cell": "5.17 the selected tab is the list's one Tab stop"
+    },
+    {
+      "name": "P27 the arrow keys stop at the ends",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "(step[e.key] + live.length) % live.length",
+      "replace": "Math.min(Math.max(step[e.key], 0), live.length - 1)",
+      "expectRed": "5.19 Right and Left wrap, Home and End go to the ends, and focus follows the selection",
+      "cell": "5.19 Right and Left wrap, Home and End go to the ends, and focus follows the selection"
+    },
+    {
+      "name": "P28 the arrow keys land on a disabled tab",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "const live = tabs.filter((t) => !t.off).map((t) => t.id);",
+      "replace": "const live = tabs.map((t) => t.id);",
+      "expectRed": "5.18 Right moves to the next enabled tab and selects it, skipping a disabled one",
+      "cell": "5.18 Right moves to the next enabled tab and selects it, skipping a disabled one"
+    },
+    {
+      "name": "P29 focus stays behind when the selection moves",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "((e.currentTarget as unknown as Box).querySelector(`#pane-tab-${next}`) as Focusable | null)?.focus();",
+      "replace": "void next;",
+      "expectRed": "5.18 Right moves to the next enabled tab and selects it, skipping a disabled one",
+      "cell": "5.18 Right moves to the next enabled tab and selects it, skipping a disabled one"
+    },
+    {
       "name": "S1 the shell ignores the reader's choice",
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "const shown = panelShown(panel, paneOpen);",

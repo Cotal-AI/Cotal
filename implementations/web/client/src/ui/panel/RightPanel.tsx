@@ -1,5 +1,5 @@
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { useLayoutEffect, useMemo, useState } from "react";
+import { useLayoutEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { formatRoute, type Route } from "../../lib/route.js";
 import type { Controller } from "../../state/controller.js";
@@ -10,6 +10,11 @@ import { MembersTab } from "./MembersTab.tsx";
 import { TopologyTab } from "./TopologyTab.tsx";
 
 export type PanelTab = "members" | "agent" | "topology";
+
+/** The parts of an element the tab keys use. Spelled out rather than taken from the DOM lib, because
+ *  the suites typecheck the components that render on the server with no DOM lib. */
+type Focusable = { focus(): void };
+type Box = { querySelector(selector: string): unknown };
 
 /** Where this browser keeps whether the panel is open: "1" or "0". */
 export const PANEL_KEY = "cotal.panel.open";
@@ -113,7 +118,10 @@ export const panelShown = (panel: Panel, routeHasPanel: boolean): boolean => pan
 
 /** The right panel (mock section D, the panel): the Members, Agent and Topology tabs, the close
  *  button, and the open tab's body. A tab with nothing to show is disabled: Members off a channel
- *  route, Agent before an agent is picked. `clock` is the time the pill and the heartbeat read. */
+ *  route, Agent before an agent is picked. `clock` is the time the pill and the heartbeat read.
+ *
+ *  The tabs follow the ARIA tabs pattern: the selected tab is the one Tab stop in the list, and Left
+ *  and Right (wrapping), Home and End move between the enabled tabs and select them. */
 export function RightPanel({ store, controller, channel, panel, clock }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -128,9 +136,20 @@ export function RightPanel({ store, controller, channel, panel, clock }: {
     { id: "topology", label: "Topology", off: false },
   ];
   const tab = panel.tab;
+  // Arrow keys, Home and End move between the tabs that can show, and select the one they reach.
+  const onTabKey = (e: KeyboardEvent<HTMLDivElement>) => {
+    const live = tabs.filter((t) => !t.off).map((t) => t.id);
+    const at = live.indexOf(tab);
+    const step: Record<string, number> = { ArrowRight: at + 1, ArrowLeft: at - 1, Home: 0, End: live.length - 1 };
+    if (!Object.hasOwn(step, e.key) || live.length === 0) return;
+    e.preventDefault();
+    const next = live[(step[e.key] + live.length) % live.length];
+    panel.setTab(next);
+    ((e.currentTarget as unknown as Box).querySelector(`#pane-tab-${next}`) as Focusable | null)?.focus();
+  };
   return (
     <>
-      <div className="ui-tabs" role="tablist" aria-label="Details">
+      <div className="ui-tabs" role="tablist" aria-label="Details" onKeyDown={onTabKey}>
         {tabs.map((t) => (
           <button
             key={t.id}
@@ -139,6 +158,7 @@ export function RightPanel({ store, controller, channel, panel, clock }: {
             role="tab"
             id={`pane-tab-${t.id}`}
             aria-selected={tab === t.id}
+            tabIndex={tab === t.id ? 0 : -1}
             aria-controls="pane-body"
             disabled={t.off}
             onClick={() => panel.setTab(t.id)}
