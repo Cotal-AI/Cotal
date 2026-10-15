@@ -88,11 +88,9 @@ jobs:
           exit "$rc"
       - name: Typecheck
         run: pnpm typecheck
-      - name: Build
-        run: pnpm build
       - name: Docs bundle in sync
         run: pnpm check:docsbundle
-      # Broker-free and network-free, and it reads the BUILT connector, so it belongs after Build.
+      # Broker-free and network-free; it reads the connector built by Typecheck.
       # It was reachable from `check` and executed by nothing, which is how it sat red on main.
       - name: Docs smoke
         run: pnpm smoke:docs

@@ -3,7 +3,7 @@
     "packages/workspace/smoke/pid-identity.smoke.ts"
   ],
   "guard": "pinned teardown refuses reused pids and torn pins; win32 launches write a creation-time pin; a legacy live record warns and remains signalable only when no sibling pin exists",
-  "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+  "command": "pnpm --filter @cotal-ai/workspace... build > /dev/null && pnpm smoke:pid-identity",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/pid-identity.json",
   "why": [
     "M1 breaks the shared verdict (the mismatch comparison in verifyIdentityPin) and must redden",
@@ -24,8 +24,9 @@
     "M4 RESTORES THE WRITE SKIP: writeIdentityPin returns without creating a sibling even when a",
     "token exists. That is the Windows steady state the issue named. F2 must red.",
     "",
-    "ALL OF THEM RUN THE CLI-LIB-BACKED SUITE, so they build first (implementations/cli resolves to dist/)",
-    "and rebuild in afterRestore - git cannot recover a gitignored dist compiled from the mutant."
+    "The baseline builds workspace and its dependencies. Only workspace/src/pid.ts changes here,",
+    "so each CLI-backed run rebuilds workspace, which the CLI source loads from dist. afterRestore",
+    "rebuilds it again: git cannot recover a gitignored dist compiled from the mutant."
   ],
   "mutations": [
     {
@@ -36,8 +37,8 @@
       "expectRed": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "cell": "A1 a REUSED pid (pin mismatch) is REFUSED by stopDelivery, never signalled",
       "note": "The one comparison the whole design turns on. Folding it to match makes every pinned record pass verification, which is precisely the bare-pid behaviour the issue forbids; A1 goes red the moment the signal is sent.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M3 win32 identity token is undefined again (the #1437 reader defect)",
@@ -47,8 +48,8 @@
       "expectRed": "F1 win32 identity uses the creation-time reader, not undefined",
       "cell": "F1 win32 identity uses the creation-time reader, not undefined",
       "note": "The Windows reader branch must not fold to undefined. F1 injects a FILETIME reader and names win32; returning undefined is the pre-fix processStartToken behaviour.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M4 writeIdentityPin never writes a sibling (the #1437 pin-absent defect)",
@@ -58,8 +59,8 @@
       "expectRed": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "cell": "F2 a win32 launch WRITES the sibling pin (the #1437 defect is writing none)",
       "note": "Restores the write skip that made every Windows record unpinned. F2 reds when the sibling is absent after a win32-capable launch.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M5 the bridge pin never reaches the pin path (the #1238 bridge-pin step removed)",
@@ -69,8 +70,8 @@
       "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "note": "Without the bridge, the crash planted at bridge-pin leaves the OLD single-line pin, so G2's two-line check fails. The same mutant would commit the NEW pid beside the OLD pin, a torn pairing, which is what G3 would read next.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M6 the bridge pin drops the old record's line (#1238)",
@@ -80,8 +81,8 @@
       "expectRed": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "cell": "G2 a crash after `bridge-pin` leaves the OLD pid checked against its own line of a two-line pin (match, never legacy or torn)",
       "note": "With only the NEW line in the bridge, the OLD pid the pidfile still names has no line of its own, so G2 reads torn-pairing instead of match: the old record would lose its check for the length of the window.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M7 the pidfile is written in place during temporaries, never to a temporary (#1238)",
@@ -91,8 +92,8 @@
       "expectRed": "G0 a first publish with no injection leaves a complete, matching record",
       "cell": "G0 a first publish with no injection leaves a complete, matching record",
       "note": "Hand-confirmed: G0 is the FIRST writePidPair call ever made against a fresh pidfile path, so it is the call that hits the mutant first (not G1): the pidfile is written directly, then renameSync(pidTemp, pidfilePath) throws ENOENT since pidTemp was never created. G0 is try/catch-wrapped so this is now a clean, named red rather than an uncaught crash.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M8 a token with spaces is refused again (the #3924 two-field parse)",
@@ -102,8 +103,8 @@
       "expectRed": "P1 a start token with spaces (macOS lstart) reads back as a record",
       "cell": "P1 a start token with spaces (macOS lstart) reads back as a record",
       "note": "Restores the pre-fix rule that a record is exactly two whitespace-separated fields: a macOS lstart token reads as unattributable, which is what made the manager fail its own pin at boot and cotal down refuse every component on a Mac. P3 also reds on macOS; P1 is named because it reds on every platform.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M9 the token's own spacing is collapsed (a padded day no longer matches the live token)",
@@ -113,8 +114,8 @@
       "expectRed": "P2 a padded one-digit day keeps its double space byte for byte",
       "cell": "P2 a padded one-digit day keeps its double space byte for byte",
       "note": "The live token from ps keeps the double space before a one-digit day, so a parser that normalises spacing would read a pin that never matches its own process for the first nine days of every month.",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     },
     {
       "name": "M10 the single-record parser accepts multiple pin lines",
@@ -123,8 +124,8 @@
       "replace": "",
       "expectRed": "P4 multiple pin lines are not a single identity record",
       "cell": "P4 multiple pin lines are not a single identity record",
-      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
-      "afterRestore": "pnpm build > /dev/null"
+      "command": "pnpm --filter @cotal-ai/workspace build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build > /dev/null"
     }
   ]
 }
