@@ -352,14 +352,7 @@ const labels = (root: ParentNode) => sections(root).map((x) => x.label).join();
   const moved = rowByName(m.container, "david");
   const where = sections(m.container).find((x) => names(x).includes("david"))?.label;
   ok("9.5 when its agent changes status the row moves to the new group, still selected", where === "Idle" && moved.getAttribute("aria-current") === "true", where);
-  ok("9.6 and keeps keyboard focus through the move, with no key warning", document.activeElement === moved && errors.length === 0, { errors, active: document.activeElement?.tagName });
-  const toggle = m.container.querySelector(".v3-toggle button") as HTMLButtonElement;
-  toggle.focus();
-  await m.run(() => store.set({ roster: ROSTER.map((p) => (p.card.id === "local.dav" ? { ...p, status: "waiting" } : p)) }));
-  ok("9.7 focus that sits on another control is left there when a row moves", document.activeElement === toggle, document.activeElement?.tagName);
-  (document.activeElement as HTMLElement | null)?.blur();
-  await m.run(() => store.set({ roster: ROSTER.map((p) => (p.card.id === "local.dav" ? { ...p, status: "working" } : p)) }));
-  ok("9.8 and a reader who left the page's controls altogether is not handed a row", document.activeElement === document.body);
+  ok("9.6 and it is the same element, so it keeps keyboard focus through the move, with no key warning", moved === row && document.activeElement === moved && errors.length === 0, { errors, active: document.activeElement?.tagName });
   await m.unmount();
 }
 

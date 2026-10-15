@@ -49,15 +49,12 @@ function saveGrouping(group: Grouping): void {
   }
 }
 
-/** The parts of a row, the Waiting header and the list this view reaches into the DOM for. Spelled
- *  out rather than taken from the DOM lib, because the suites typecheck the components that render on
- *  the server with no DOM lib. */
+/** The parts of the Waiting header this view reaches into the DOM for. Spelled out rather than taken
+ *  from the DOM lib, because the suites typecheck the components that render on the server with no
+ *  DOM lib. */
 interface Reached {
   focus(options?: { preventScroll?: boolean }): void;
   scrollIntoView?(options?: { block?: "start" }): void;
-  dataset: Record<string, string | undefined>;
-  ownerDocument: { activeElement: unknown; body: unknown };
-  querySelectorAll(selector: string): ArrayLike<Reached>;
 }
 
 /** One section of the list: its header and the rows under it. */
@@ -168,7 +165,8 @@ function Endpoints({ rows }: { rows: RosterRow[] }) {
  *    is one.
  *  - `selected` is the agent the details panel shows (`aria-current` on its row) and `onPick` is
  *    called with the id of a row the reader opens. The view holds neither, so a row that moves to
- *    another group when its agent changes status stays selected, and keeps keyboard focus if it had it.
+ *    another group when its agent changes status stays selected. It keeps keyboard focus too, because
+ *    the rows are keyed by agent in one list, so React moves a row's element and never rebuilds it.
  *  - While the roster has no agent the empty space state stands in for the list.
  *  - When the observer's own presence watch is silent the header says how many agents were last seen,
  *    the rows dim, and the heartbeat line goes, since its ages would be of a roster no longer heard.
@@ -188,7 +186,6 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
   const [grouping, setGrouping] = useState<Grouping>(group ?? "status");
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const waitingHead = useRef<HTMLDivElement>(null);
-  const list = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => setGrouping(group ?? readGrouping() ?? "status"), [group]);
   useEffect(() => {
     const id = setInterval(redraw, TICK_MS);
@@ -209,19 +206,6 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
     head?.focus({ preventScroll: true });
     head?.scrollIntoView?.({ block: "start" });
   }, [focusWaiting, hasWaiting]);
-
-  // A row that changes group is moved or rebuilt by React, which drops the focus it held. Note which
-  // row has focus while rendering, before anything moves, and put the focus back once the commit has.
-  const reached = list.current as unknown as Reached | null;
-  const heldBy = (reached?.ownerDocument.activeElement as Partial<Reached> | null | undefined)?.dataset?.agent ?? null;
-  const held = useRef<string | null>(null);
-  held.current = heldBy;
-  useLayoutEffect(() => {
-    const id = held.current;
-    if (id === null) return;
-    const rows = (list.current as unknown as Reached | null)?.querySelectorAll("[data-agent]") ?? [];
-    Array.from(rows).find((e) => e.dataset.agent === id)?.focus({ preventScroll: true });
-  });
 
   const choose = (next: Grouping) => {
     setGrouping(next);
@@ -258,7 +242,7 @@ export function AgentsView({ store, group, focusWaiting = false, selected = null
         <div className={lastSeen ? "ui-col s-lastseen" : "ui-col"} style={{ maxWidth: 900 }}>
           {empty && <EmptySpace space={space} />}
           {!empty && (
-            <div key={grouping} ref={list} className={grouping === "status" ? "v3-by-status" : "v3-by-host"}>
+            <div key={grouping} className={grouping === "status" ? "v3-by-status" : "v3-by-host"}>
               {sections.flatMap((section) => {
                 const status = grouping === "status" ? section.key : undefined;
                 const known = status !== undefined && Object.hasOwn(STATUS_ICON, status);

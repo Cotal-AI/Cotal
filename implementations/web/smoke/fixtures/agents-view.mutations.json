@@ -250,8 +250,8 @@
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "group={route.group === \"host\" ? \"host\" : undefined}",
       "replace": "group={undefined}",
-      "expectRed": "7.9 the Shell hands the host route's grouping down",
-      "cell": "7.9 the Shell hands the host route's grouping down"
+      "expectRed": "4.1 the host route groups by host, hosts in name order, each header with its count",
+      "cell": "4.1 the host route groups by host, hosts in name order, each header with its count"
     },
     {
       "name": "A32 the Needs route does not mark the Waiting group",
@@ -274,8 +274,8 @@
       "file": "implementations/web/client/src/Shell.tsx",
       "find": "group={route.group === \"host\" ? \"host\" : undefined} selected={selectedAgent}",
       "replace": "group={route.group === \"host\" ? \"host\" : undefined} selected={null}",
-      "expectRed": "9.3 the Shell passes the selection down and the pick back up, on the Agents route",
-      "cell": "9.3 the Shell passes the selection down and the pick back up, on the Agents route"
+      "expectRed": "2.16 the row an address or the panel selected is marked, and no other",
+      "cell": "2.16 the row an address or the panel selected is marked, and no other"
     },
     {
       "name": "A35 the Needs route stops handing the pick back up",
@@ -374,20 +374,20 @@
       "cell": "9.1 a click on a row tells the caller which agent, by id"
     },
     {
-      "name": "A47 a row that moves group loses keyboard focus",
+      "name": "A47 a row is keyed by its status as well, so it is rebuilt when its agent changes group",
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "Array.from(rows).find((e) => e.dataset.agent === id)?.focus({ preventScroll: true });",
-      "replace": "void rows;",
-      "expectRed": "9.6 and keeps keyboard focus through the move, with no key warning",
-      "cell": "9.6 and keeps keyboard focus through the move, with no key warning"
+      "find": "key={`row:${row.id}`}",
+      "replace": "key={`row:${row.id}:${row.status}`}",
+      "expectRed": "9.6 and it is the same element, so it keeps keyboard focus through the move, with no key warning",
+      "cell": "9.6 and it is the same element, so it keeps keyboard focus through the move, with no key warning"
     },
     {
-      "name": "A48 focus is handed back to a row that no longer had it",
+      "name": "A48 each group is its own list, so a row that changes group is rebuilt",
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "held.current = heldBy;",
-      "replace": "held.current = heldBy ?? held.current;",
-      "expectRed": "9.7 focus that sits on another control is left there when a row moves",
-      "cell": "9.7 focus that sits on another control is left there when a row moves"
+      "find": "{sections.flatMap((section) => {",
+      "replace": "{sections.map((section) => {",
+      "expectRed": "9.6 and it is the same element, so it keeps keyboard focus through the move, with no key warning",
+      "cell": "9.6 and it is the same element, so it keeps keyboard focus through the move, with no key warning"
     },
     {
       "name": "A49 the heartbeat ages never redraw on their own",
