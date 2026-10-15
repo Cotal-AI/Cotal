@@ -20,7 +20,7 @@
  * Run: pnpm smoke:launch-matrix:live
  */
 import { spawn as spawnProc, spawnSync, type ChildProcess } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -34,6 +34,9 @@ const home = mkdtempSync(join(tmpdir(), "cotal-launch-matrix-home-"));
 const root = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}launch-matrix-root-`));
 const fgRoot = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}launch-matrix-fg-`));
 const xdg = join(home, "xdg");
+/** Whether two paths name one directory: a child records its working directory resolved, so a
+ *  symlinked temp root (macOS /var) is spelled differently from what mkdtemp returned. */
+const samePath = (a: string, b: string) => existsSync(a) && realpathSync(a) === realpathSync(b);
 const stubBin = join(home, "stub-bin");
 for (const dir of [join(root, ".cotal"), join(fgRoot, ".cotal"), xdg, stubBin]) mkdirSync(dir, { recursive: true });
 const anchors = new Map([
@@ -155,7 +158,7 @@ try {
       const envFile = /^EnvironmentFile=(.*)$/m.exec(unit)?.[1]?.replace(/%%/g, "%") ?? "";
       workDir = /^WorkingDirectory=(.*)$/m.exec(unit)?.[1]?.replace(/%%/g, "%") ?? "";
       check("the owned systemd unit runs bare `supervise` in the mesh root with the mesh facts in its environment file",
-        argv.at(-1) === "supervise" && existsSync(envFile) && workDir === root, { argv, envFile, workDir });
+        argv.at(-1) === "supervise" && existsSync(envFile) && samePath(workDir, root), { argv, envFile, workDir });
       for (const m of readFileSync(envFile, "utf8").matchAll(/^([A-Z_]+)="(.*)"$/gm)) unitEnv[m[1]!] = m[2]!.replace(/\\(["\\`$])/g, "$1");
     } else {
       const agentsDir = join(home, "Library", "LaunchAgents");
@@ -166,7 +169,7 @@ try {
       argv = [...section("ProgramArguments", "array").matchAll(/<string>([\s\S]*?)<\/string>/g)].map((m) => unescape(m[1]!));
       workDir = unescape(/<key>WorkingDirectory<\/key><string>([\s\S]*?)<\/string>/.exec(plist)?.[1] ?? "");
       for (const m of section("EnvironmentVariables", "dict").matchAll(/<key>([^<]+)<\/key><string>([\s\S]*?)<\/string>/g)) unitEnv[m[1]!] = unescape(m[2]!);
-      check("the owned launchd agent runs bare `supervise` in the mesh root", argv.at(-1) === "supervise" && workDir === root, { argv, workDir });
+      check("the owned launchd agent runs bare `supervise` in the mesh root", argv.at(-1) === "supervise" && samePath(workDir, root), { argv, workDir });
     }
     check("the unit environment names the space, server and a skipped lazy seed",
       unitEnv.COTAL_SPACE === SPACE && unitEnv.COTAL_SERVER === SERVER && unitEnv.COTAL_SKIP_CONNECTOR_SEED === "1", unitEnv);
