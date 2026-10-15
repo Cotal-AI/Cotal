@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 543,
+    "total": 549,
     "honest-text": 45,
     "presence-only-glyph/count": 88,
     "command-ack": 12,
-    "non-render/control": 398
+    "non-render/control": 404
   },
   "renderers": [
     {
@@ -2954,6 +2954,13 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
+      "path": "implementations/web/src/web.ts",
+      "kind": "derived-output",
+      "anchor": "json(res, answer.body, answer.status)",
+      "class": "non-render/control",
+      "rationale": "HTTP response plumbing: writes the status code of the /api/send answer; no agent presence is rendered."
+    },
+    {
       "path": "implementations/web/client/src/lib/dms.ts",
       "kind": "status-token",
       "anchor": "\"offline\"",
@@ -3499,6 +3506,41 @@
       "rationale": "Routing: decides whether an offline node or its links are hidden or dimmed; nothing is rendered from the status itself."
     },
     {
+      "path": "implementations/web/client/src/lib/compose.ts",
+      "kind": "derived-output",
+      "anchor": "`HTTP ${status}`",
+      "class": "non-render/control",
+      "rationale": "The composer's refusal sentence: status is the HTTP status of the refused POST /api/send, which picks the broker wording or is said as HTTP <n>; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/client/src/lib/compose.ts",
+      "kind": "derived-output",
+      "anchor": "/[.?!]$/.test(why)",
+      "class": "non-render/control",
+      "rationale": "The composer's refusal sentence: status is the HTTP status of the refused POST /api/send, which picks the broker wording or is said as HTTP <n>; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/client/src/lib/compose.ts",
+      "kind": "derived-output",
+      "anchor": "`${why}.`",
+      "class": "non-render/control",
+      "rationale": "The composer's refusal sentence: status is the HTTP status of the refused POST /api/send, which picks the broker wording or is said as HTTP <n>; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/client/src/lib/compose.ts",
+      "kind": "derived-output",
+      "anchor": "`Couldn't post to ${where}. ${status === 502 ? `The broker refused it: ${sentence}` : sentence} Your message is still here.`",
+      "class": "non-render/control",
+      "rationale": "The composer's refusal sentence: status is the HTTP status of the refused POST /api/send, which picks the broker wording or is said as HTTP <n>; no agent presence is rendered."
+    },
+    {
+      "path": "implementations/web/client/src/lib/compose.ts",
+      "kind": "derived-output",
+      "anchor": "`The broker refused it: ${sentence}`",
+      "class": "non-render/control",
+      "rationale": "The composer's refusal sentence: status is the HTTP status of the refused POST /api/send, which picks the broker wording or is said as HTTP <n>; no agent presence is rendered."
+    },
+    {
       "path": "implementations/web/client/src/ui/Avatar.tsx",
       "kind": "derived-output",
       "anchor": "Object.hasOwn(MOOD, status)",
@@ -3620,14 +3662,14 @@
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {conversations.map(({ pair: [a, b], verified }) => (\n          <Row\n            key={`${a}\\u0001${b}`}\n            to={{ view: \"dm\", peer: a, with: b }}\n            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}\n          >\n            <span className=\"ui-stack\">\n              {[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}\n            </span>\n            <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}</span>\n            {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n          </Row>\n        ))}\n      </nav>}",
+      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {conversations.map(({ pair: [a, b], verified }) => (\n          <Row\n            key={`${a}\\u0001${b}`}\n            to={{ view: \"dm\", peer: a, with: b }}\n            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}\n          >\n            <span className=\"ui-stack\">\n              {[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}\n            </span>\n            <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n            {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n          </Row>\n        ))}\n      </nav>}",
       "class": "presence-only-glyph/count",
       "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws: no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{conversations.map(({ pair: [a, b], verified }) => (\n          <Row\n            key={`${a}\\u0001${b}`}\n            to={{ view: \"dm\", peer: a, with: b }}\n            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}\n          >\n            <span className=\"ui-stack\">\n              {[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}\n            </span>\n            <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}</span>\n            {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n          </Row>\n        ))}",
+      "anchor": "{conversations.map(({ pair: [a, b], verified }) => (\n          <Row\n            key={`${a}\\u0001${b}`}\n            to={{ view: \"dm\", peer: a, with: b }}\n            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}\n          >\n            <span className=\"ui-stack\">\n              {[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}\n            </span>\n            <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n            {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n          </Row>\n        ))}",
       "class": "presence-only-glyph/count",
       "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws: no textual progress claim."
     },
