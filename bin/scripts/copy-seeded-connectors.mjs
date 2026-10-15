@@ -41,6 +41,11 @@ for (const [name, { pkg, srcDir: srcSubdir }] of Object.entries(SEEDED_EXTENSION
   if (!existsSync(join(srcDir, "dist"))) {
     throw new Error(`first-party extension ${pkg} is not built (no dist at ${srcDir}) - run \`pnpm build\` before packing cotal-ai`);
   }
+  // The dashboard's page is its own build step (vite) beside the server's tsc, so a dist holding the
+  // server alone is possible, and an install of it would answer 503 on its own front page.
+  if (pkg === "@cotal-ai/web" && !existsSync(join(srcDir, "dist", "web", "index.html"))) {
+    throw new Error(`first-party extension ${pkg} has no client build (no dist/web/index.html at ${srcDir}) - run \`pnpm --filter @cotal-ai/web build\` before packing cotal-ai`);
+  }
   const tmp = mkdtempSync(join(tmpdir(), "cotal-seed-"));
   try {
     // --ignore-scripts: dist is already built above; don't re-run the connector's own prepack.
