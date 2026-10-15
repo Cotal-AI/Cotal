@@ -24,3 +24,18 @@ export function body(vendor: string, opts?: { look?: string; mood?: string }): s
 export function mark(fill: string | string[]): string {
   return art.mark(fill);
 }
+
+/** A character waving, for the empty space state: the pose the mock's helper draws (one arm raised
+ *  with an open hand, both legs down), as markup for a caller's `<svg viewBox="0 0 150 150">`. */
+export function wave(vendor: string): string {
+  return art.character({
+    vendor,
+    cx: 70,
+    cy: 66,
+    w: 92,
+    look: "right",
+    mood: "happy",
+    arms: [{ from: [84, 50], via: [106, 40], to: [112, 12], hand: "open", deg: "auto" }],
+    legs: [{ from: [40, 94], to: [36, 116], dir: -1 }, { from: [62, 94], to: [66, 116], dir: 1 }],
+  });
+}

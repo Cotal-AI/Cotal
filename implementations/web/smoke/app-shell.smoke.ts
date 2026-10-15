@@ -2,7 +2,9 @@
  *  the active item follows the route, the details panel's absence is the `no-pane` class, a channel
  *  route shows that channel as the open one, and a route change reaches the controller. The shell is
  *  server-rendered over a seeded store and its HTML is read; the hash listener and the open call are
- *  driven in Node over a fake location and a fake controller. */
+ *  driven in Node over a fake location and a fake controller. The DOM shim is installed first, because
+ *  a DM route draws message bodies, which render Markdown only through a working sanitizer. */
+import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { mark } from "../client/src/art/index.ts";
@@ -100,17 +102,23 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
 }
 
 // ── 5. A channel route shows that channel as the open one ────────────────────────────────────────
+// The channel list is the sidebar's (Task 4); the centre draws the channel itself.
+/** The channel links in the sidebar, in document order. */
+const channelLinks = (html: string) => {
+  const side = /<aside class="ui-side" aria-label="Space">([\s\S]*?)<\/aside>/.exec(html)?.[1] ?? "";
+  return startTags(side, "a").filter((a) => (a.href ?? "").startsWith("#/channel/"));
+};
 {
   const html = renderShell(seed, { view: "channel", channel: "review" });
-  const links = startTags(html, "a").filter((a) => a.class === "ui-chlink");
+  const links = channelLinks(html);
   same("5.1 the channel list links each channel to its route", links.map((a) => a.href), ["#/channel/general", "#/channel/review"]);
   same("5.2 and only the routed channel is the current one", links.filter((a) => a["aria-current"] === "page").map((a) => a.href), ["#/channel/review"]);
   same("5.3 the centre says which view it is showing", startTags(html, "section").find((s) => s.class === "ui-view")?.["data-view"], "channel");
-  const elsewhere = startTags(renderShell(seed, { view: "topology" }), "a").filter((a) => a.class === "ui-chlink");
+  const elsewhere = channelLinks(renderShell(seed, { view: "topology" }));
   ok("5.4 off a channel route no channel is the current one", elsewhere.length === 2 && elsewhere.every((a) => a["aria-current"] === undefined), elsewhere);
   const encoded = renderShell({ channels: [{ channel: "team / a", messages: 0 }] }, { view: "channel", channel: "team / a" });
   same("5.5 a channel name is encoded in its link and matched back to the route",
-    startTags(encoded, "a").filter((a) => a.class === "ui-chlink").map((a) => [a.href, a["aria-current"]]), [["#/channel/team%20%2F%20a", "page"]]);
+    channelLinks(encoded).map((a) => [a.href, a["aria-current"]]), [["#/channel/team%20%2F%20a", "page"]]);
 }
 
 // ── 6. A route change reaches the controller ─────────────────────────────────────────────────────
@@ -170,4 +178,5 @@ const fake = () => {
   ok("7.4 stopping removes the listener, so a later change reports nothing", w.listeners.size === 0 && seen.length === 2, seen);
 }
 
+await closeDom();
 console.log(`\n${n} cells green`);

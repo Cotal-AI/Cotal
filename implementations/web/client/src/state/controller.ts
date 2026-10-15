@@ -99,8 +99,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // arm would orphan the frames the first machine holds.
     if (selecting && selecting.key === key) return selecting.promise;
     const seq = ++loadSeq;
-    // HELD BEFORE THE CLEAR, and only when it belongs to THIS channel. A fresh selection must not
-    // inherit the last channel's messages, so a switch holds nothing and starts empty.
+    // HELD, and only when it belongs to THIS channel. A fresh selection must not inherit the last
+    // channel's messages, so a switch holds nothing and starts empty.
     const cur = store.get().open;
     const held = cur?.channel === key ? cur.messages : [];
     // ARMED BEFORE THE FETCH IS ISSUED. Held in a LOCAL as well, so this bootstrap settles the
@@ -110,7 +110,10 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     let release!: () => void;
     const mine = { key, promise: new Promise<void>((r) => (release = r)) };
     selecting = mine;
-    store.set({ open: { channel: key, messages: [] } });
+    // A REOPEN KEEPS WHAT IS ON SCREEN until its history lands, the keep-last-good rule the refused
+    // read already follows. `refresh()` reopens the open channel on every feed open, so clearing
+    // here would draw an empty list on each reconnect.
+    store.set({ open: { channel: key, messages: held } });
     let msgs: StoredMessage[] = [];
     let refused: string | null = null;
     try {
@@ -129,8 +132,11 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       if (seq === loadSeq) {
         noteOrder(settled.notes);
         // Chat that arrived live during this fetch is only in the open view, released frames are only
-        // in `settled.emit`, and both have to survive.
-        const live = store.get().open?.channel === key ? store.get().open!.messages : [];
+        // in `settled.emit`, and both have to survive. The held rows are still in the view too, and
+        // they are what the history replaces: a held row the history no longer has must go, so only
+        // the rows added after the hold (by identity) count as live.
+        const kept = new Set(held);
+        const live = store.get().open?.channel === key ? store.get().open!.messages.filter((m) => !kept.has(m)) : [];
         const merged = settled.emit.slice() as unknown as StoredMessage[];
         const ids = new Set(merged.map((m) => m.msg.id));
         for (const m of live) if (m && !ids.has(m.msg.id)) merged.push(m);

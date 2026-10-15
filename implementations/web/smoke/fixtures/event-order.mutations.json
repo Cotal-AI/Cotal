@@ -196,8 +196,8 @@
     {
       "name": "O-B2 the feed's open handler stops calling refresh(), so a reconnect never re-reads what the feed missed while it was down",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      store.set({ connected: true });\n      refresh();\n",
-      "replace": "      store.set({ connected: true });\n",
+      "find": "      store.set({ connection: \"connected\" });\n      refresh();\n",
+      "replace": "      store.set({ connection: \"connected\" });\n",
       "expectRed": "13.2 and the feed's open handler calls refresh() again",
       "cell": "13.2 and the feed's open handler calls refresh() again"
     }

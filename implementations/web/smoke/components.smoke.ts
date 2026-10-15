@@ -188,22 +188,24 @@ const TIP = "Anycast: one free agent with this role takes it.";
 // ── 7. The shell draws with them ─────────────────────────────────────────────────────────────────
 {
   const seed = (messages: StoredMessage[]): Partial<DashboardState> => ({ roster, open: { channel: "review", messages } });
+  // The channel view draws the open channel's messages, on that channel's route.
+  const inReview = { view: "channel", channel: "review" } as const;
   const ask = msg({ id: "a1", channel: undefined, toService: "reviewer", parts: [{ kind: "text", text: "Review this?" }] });
   const reply = msg({ id: "r1", replyTo: "a1", from: { id: "local.rv2", name: "x" }, parts: [{ kind: "text", text: "On it." }] });
-  const html = renderShell(seed([{ msg: ask, senderId: "local.dav" }, { msg: reply, senderId: "local.rv2" }]));
+  const html = renderShell(seed([{ msg: ask, senderId: "local.dav" }, { msg: reply, senderId: "local.rv2" }]), inReview);
   ok("7.1 the shell's message list draws a MessageRow per message", startTags(html, "div").filter((d) => (d.class ?? "").split(" ").includes("ui-msg")).length === 2, html.length);
   ok("7.2 the shell names an anycast's claimer from the first later reply",
     text(/<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(html)?.[1] ?? "") === "To any reviewer · claimed by reviewer_2");
-  const fromHistory = renderShell(seed([{ msg: ask, senderId: "local.dav" }, { msg: reply }]));
+  const fromHistory = renderShell(seed([{ msg: ask, senderId: "local.dav" }, { msg: reply }]), inReview);
   ok("7.2b a reply read from history makes an unverified claim",
     text(/<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(fromHistory)?.[1] ?? "") === "To any reviewer · claimed by reviewer_2 unverified");
-  const lone = renderShell(seed([{ msg: ask, senderId: "local.dav" }]));
+  const lone = renderShell(seed([{ msg: ask, senderId: "local.dav" }]), inReview);
   ok("7.3 and names none while nobody has replied", !text(lone).includes("claimed by"));
   ok("7.4 the shell highlights a row that mentions the operator",
-    startTags(renderShell(seed([{ msg: msg({ mentions: ["operator"] }), senderId: "local.dav" }])), "div").some((d) => d.class === "ui-msg ui-msg-mention"));
+    startTags(renderShell(seed([{ msg: msg({ mentions: ["operator"] }), senderId: "local.dav" }]), inReview), "div").some((d) => d.class === "ui-msg ui-msg-mention"));
   const side = /<aside class="ui-side" aria-label="Space">([\s\S]*?)<\/aside>/.exec(renderShell({ stale: [{ kind: "refused", name: "peers", reason: "x" }] }))?.[1] ?? "";
   ok("7.5 the stale marker sits in the sidebar", /class="ui-stale" id="stale"/.test(side) && side.includes("stale: peers"), side);
-  const people = /<div aria-label="Roster">([\s\S]*?)<\/div><\/section>/.exec(renderShell({ roster }))?.[1] ?? "";
+  const people = /<div aria-label="Roster">([\s\S]*?)<\/div><\/section>/.exec(renderShell({ roster }, { view: "agents", group: "status" }))?.[1] ?? "";
   ok("7.6 the roster draws each live agent with its character and its status word, and leaves the offline one out",
     people.includes(svgOf("opencode", { mood: "surprised", look: "up" })) && text(people).includes("reviewer_2") && text(people).includes("Waiting")
       && !text(people).includes("scout"), text(people));
@@ -212,7 +214,7 @@ const TIP = "Anycast: one free agent with this role takes it.";
   const twin: StoredMessage[] = [{ msg: msg({ id: "dup", parts: [{ kind: "text", text: "first" }] }), senderId: "local.dav" }, { msg: msg({ id: "dup", parts: [{ kind: "text", text: "second" }] }), senderId: "local.rev" }];
   let mounted: Awaited<ReturnType<typeof mount>> | undefined;
   const errors = await errorsDuring(async () => {
-    mounted = await mount(createElement(Shell, { store: createStore<DashboardState>({ ...initialState, ...seed(twin) }), controller: null, route: { view: "activity" }, paneOpen: false, msgPerSecond: () => 0 }));
+    mounted = await mount(createElement(Shell, { store: createStore<DashboardState>({ ...initialState, ...seed(twin) }), controller: null, route: inReview, paneOpen: false, msgPerSecond: () => 0 }));
   });
   const drawn = mounted?.container.querySelectorAll(".ui-msg").length;
   ok("7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning",

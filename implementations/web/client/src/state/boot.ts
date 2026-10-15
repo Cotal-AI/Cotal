@@ -32,10 +32,12 @@ export function startDashboard(deps: {
     // EVERY open runs the bootstrap again, a reconnect included: events published while the feed was
     // down are not replayed, so the reads are what makes up the difference.
     open() {
-      store.set({ connected: true });
+      store.set({ connection: "connected" });
       refresh();
     },
-    error: () => store.set({ connected: false }),
+    // A failed first attempt has dropped nothing, so it is still connecting; an error after an open
+    // is a drop, and the browser's EventSource retries it.
+    error: () => store.set((s) => ({ connection: s.connection === "connecting" ? "connecting" : "reconnecting" })),
     roster: controller.onRoster,
     presenceView: controller.onPresenceView,
     membership: controller.onMembership,

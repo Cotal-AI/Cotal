@@ -120,7 +120,7 @@
     {
       "name": "C15 the role leaves the header",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
-      "find": "            {peer?.role && <span className=\"ui-role\">{peer.role}</span>}\n",
+      "find": "            {place === undefined && peer?.role && <span className=\"ui-role\">{peer.role}</span>}\n",
       "replace": "",
       "expectRed": "3.6 the role and the harness come from the roster",
       "cell": "3.6 the role and the harness come from the roster"
@@ -207,15 +207,15 @@
     },
     {
       "name": "C26 the shell never passes a claim, so a claimed anycast reads as unclaimed",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "claim={mode === \"anycast\" ? claimedBy(msg.id, all.slice(i + 1)) : undefined}",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "claim={mode === \"anycast\" ? claimedBy(msg.id, messages.slice(i + 1)) : undefined}",
       "replace": "claim={undefined}",
       "expectRed": "7.2 the shell names an anycast's claimer from the first later reply",
       "cell": "7.2 the shell names an anycast's claimer from the first later reply"
     },
     {
       "name": "C27 the shell reads every message as chat, so an anycast loses its route chip",
-      "file": "implementations/web/client/src/Shell.tsx",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "find": "typeof msg.toService === \"string\" ? \"anycast\"",
       "replace": "false ? \"anycast\"",
       "expectRed": "7.2 the shell names an anycast's claimer from the first later reply",
@@ -223,8 +223,8 @@
     },
     {
       "name": "C28 the shell stops naming the operator to highlight, so a mention of the operator looks like any other row",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "                mention=\"operator\"\n",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "        mention=\"operator\"\n",
       "replace": "",
       "expectRed": "7.4 the shell highlights a row that mentions the operator",
       "cell": "7.4 the shell highlights a row that mentions the operator"
@@ -247,7 +247,7 @@
     },
     {
       "name": "C31 rows are keyed by id alone, so one id from two senders collides and React warns",
-      "file": "implementations/web/client/src/Shell.tsx",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "find": "key={`${msg.id}\\u0001${senderId ?? \"\"}`}",
       "replace": "key={msg.id}",
       "expectRed": "7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning",
@@ -279,17 +279,17 @@
     },
     {
       "name": "C35 the shell fills a missing senderId from the payload before claiming, so a history reply's claim reads as verified",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "claimedBy(msg.id, all.slice(i + 1))",
-      "replace": "claimedBy(msg.id, all.slice(i + 1).map((r) => ({ ...r, senderId: r.senderId ?? r.msg.from.id })))",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "claimedBy(msg.id, messages.slice(i + 1))",
+      "replace": "claimedBy(msg.id, messages.slice(i + 1).map((r) => ({ ...r, senderId: r.senderId ?? r.msg.from.id })))",
       "expectRed": "7.2b a reply read from history makes an unverified claim",
       "cell": "7.2b a reply read from history makes an unverified claim"
     },
     {
       "name": "C36 an anycast nobody answered is shown as claimed by its own sender",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "claimedBy(msg.id, all.slice(i + 1))",
-      "replace": "(claimedBy(msg.id, all.slice(i + 1)) ?? { id: msg.from.id, verified: true })",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "claimedBy(msg.id, messages.slice(i + 1))",
+      "replace": "(claimedBy(msg.id, messages.slice(i + 1)) ?? { id: msg.from.id, verified: true })",
       "expectRed": "7.3 and names none while nobody has replied",
       "cell": "7.3 and names none while nobody has replied"
     }

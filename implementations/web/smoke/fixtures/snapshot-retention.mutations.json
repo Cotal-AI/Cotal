@@ -188,8 +188,8 @@
     {
       "name": "W23 the stale marker is no longer hidden by the view, so a recovered poll leaves an empty marker standing in the sidebar",
       "file": "implementations/web/client/src/ui/StaleMarker.tsx",
-      "find": "<div className=\"ui-stale\" id=\"stale\" hidden={view.hidden} title={view.title}>",
-      "replace": "<div className=\"ui-stale\" id=\"stale\" title={view.title}>",
+      "find": "<div className=\"ui-stale\" id={id ?? undefined} hidden={view.hidden} title={view.title}>",
+      "replace": "<div className=\"ui-stale\" id={id ?? undefined} title={view.title}>",
       "expectRed": "3.5 the shell carries the stale marker element it drives",
       "cell": "3.5 the shell carries the stale marker element it drives: hidden, tooltip and text all come from the view"
     },

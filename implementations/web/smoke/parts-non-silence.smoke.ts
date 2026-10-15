@@ -145,15 +145,16 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
 // is that the shell, which draws message bodies, renders them through the shared renderer. A correct
 // helper nobody invokes is the defect this cell exists for.
 //
-// The shell (`client/src/Shell.tsx`) is rendered on the server with an open channel holding one
-// message, and its HTML is read: the body is the centre's `<main>`, drawn by `ui/MessageRow.tsx`.
+// The shell (`client/src/Shell.tsx`) is rendered on the server on a channel route, the channel open
+// and holding one message, and its HTML is read: the body is the centre's `<main>`, drawn by the
+// channel view through `ui/MessageRow.tsx`.
 // This proves what the shell draws, not that its text survives to the pixels: no cell here opens a
 // browser. `Shell` does not import `aguiFrame.ts`, so the registry stays empty for the cells above
 // and below.
 {
   const parts = [{ kind: "text", text: "before" }, { kind: "data" }, { kind: "text", text: "after" }];
   const msg = { id: "m1", from: { id: "alice" }, parts } as unknown as CotalMessage;
-  const html = renderShell({ open: { channel: "general", messages: [{ msg }] } });
+  const html = renderShell({ open: { channel: "general", messages: [{ msg }] } }, { view: "channel", channel: "general" });
   const body = unescapeHtml(/<main[^>]*>([\s\S]*?)<\/main>/.exec(html)?.[1] ?? "");
   ok("the shell renders message bodies through partsToText", body.includes(partsToText(parts)), { body, want: partsToText(parts) });
   ok("and what it draws is the shared renderer's text, marker included, not a body of its own",

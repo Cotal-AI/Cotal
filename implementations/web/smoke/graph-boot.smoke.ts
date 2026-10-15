@@ -269,22 +269,27 @@ async function main() {
   console.log("6. the feed's connection state, its reconnect and its close");
   {
     const d = newDashboard();
+    ok("6.0 before the feed first opens the dashboard is connecting, not disconnected", d.store.get().connection === "connecting", d.store.get().connection);
+    d.deliver("error");
+    ok("6.0b and a failed first attempt is still connecting: nothing has dropped yet", d.store.get().connection === "connecting", d.store.get().connection);
     await d.release();
     const readsBefore = d.log.filter((e) => e === "read:meta").length;
     d.deliver("open");
-    ok("6.1 a feed open marks the dashboard connected", d.store.get().connected === true, d.store.get().connected);
+    ok("6.1 a feed open marks the dashboard connected", d.store.get().connection === "connected", d.store.get().connection);
     // READ BEFORE ANYTHING ELSE CALLS refresh(): the reads are issued synchronously, so the count
     // here is what the open handler itself did, and a later `refresh()` in this cell cannot stand in for it.
     ok("6.2 and runs the bootstrap again, because a reconnect may have missed events",
       d.log.filter((e) => e === "read:meta").length === readsBefore + 1, d.log);
     await d.dash.controller.refresh();
     d.deliver("error");
-    ok("6.3 a feed error marks it disconnected", d.store.get().connected === false, d.store.get().connected);
+    ok("6.3 a feed error after an open marks it reconnecting", d.store.get().connection === "reconnecting", d.store.get().connection);
+    d.deliver("error");
+    ok("6.3b and a second error while it retries is still reconnecting", d.store.get().connection === "reconnecting", d.store.get().connection);
     d.deliver("open");
     const readsAfterReconnect = d.log.filter((e) => e === "read:meta").length;
     await d.dash.controller.refresh();
     ok("6.4 and a reconnect marks it connected again, and reads again",
-      d.store.get().connected === true && readsAfterReconnect === readsBefore + 2, { connected: d.store.get().connected, readsAfterReconnect, readsBefore });
+      d.store.get().connection === "connected" && readsAfterReconnect === readsBefore + 2, { connection: d.store.get().connection, readsAfterReconnect, readsBefore });
     d.dash.stop();
     ok("6.5 stop() closes the feed it opened, once", d.stats().closed === 1, d.stats());
   }

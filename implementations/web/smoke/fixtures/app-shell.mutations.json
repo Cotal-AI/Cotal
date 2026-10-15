@@ -103,17 +103,17 @@
     },
     {
       "name": "A14 every channel in the list reads as the current one",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "route.view === \"channel\" && route.channel === c.channel ? \"page\" : undefined",
-      "replace": "\"page\"",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "here={route.view === \"channel\" && route.channel === c.channel}",
+      "replace": "here={true}",
       "expectRed": "5.2 and only the routed channel is the current one",
       "cell": "5.2 and only the routed channel is the current one"
     },
     {
       "name": "A15 the channel link carries the raw name instead of the encoded route",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "href={formatRoute({ view: \"channel\", channel: c.channel })}",
-      "replace": "href={`#/channel/${c.channel}`}",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "href={formatRoute(to)}",
+      "replace": "href={to.view === \"channel\" ? `#/channel/${to.channel}` : formatRoute(to)}",
       "expectRed": "5.5 a channel name is encoded in its link and matched back to the route",
       "cell": "5.5 a channel name is encoded in its link and matched back to the route"
     },

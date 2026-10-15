@@ -27,6 +27,7 @@ import { startDashboard } from "../client/src/state/boot.js";
 import type { Api, Controller } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type StoredMessage } from "../client/src/state/types.js";
+import { UNVERIFIED } from "../client/src/ui/MessageRow.tsx";
 import { mount } from "./mount.js";
 import { renderShell, startTags, unescapeHtml } from "./render-shell.js";
 
@@ -82,7 +83,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
 
 // ── 1. The head: the space name, no menu ─────────────────────────────────────────────────────────
 {
-  const html = renderShell({ space: "main", roster, connected: true });
+  const html = renderShell({ space: "main", roster, connection: "connected" });
   ok("1.1 the head names the space", /<span class="ui-space[^"]*">main/.test(head(html)), head(html));
   ok("1.2 and has no menu: no button, no link, no chevron icon",
     !/<(button|a)\b/.test(head(html)) && !head(html).includes("<svg"), head(html));
@@ -183,26 +184,34 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   same("5.7 a route that names one peer marks no row", at({ view: "dm", peer: "local.dav" }), [undefined, undefined, undefined, undefined]);
   ok("5.8 no row reads \"to you\": the page does not know which id is the operator", !strip(section(html, "Direct messages")).includes("to you"));
   ok("5.9 with no conversations the heading stays and no row follows", dms(renderShell({ roster })).length === 0 && section(renderShell({ roster }), "Direct messages") !== "");
+  const marks = rows.map((r) => startTags(r.inner, "span").filter((s) => s.class === "ui-unverified").map((s) => s.title));
+  same("5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one",
+    marks, [[], [UNVERIFIED], [], []]);
 }
 
 // ── 6. The operator footer and the connection pill ───────────────────────────────────────────────
 {
-  const up = foot(renderShell({ roster, connected: true }));
+  const up = foot(renderShell({ roster, connection: "connected" }));
   ok("6.1 the footer names the operator with the OP initials", /<span class="ui-me">OP<\/span>/.test(up) && /<b>operator<\/b>/.test(up), up);
   const pill = (html: string) => /<span class="(ui-live[^"]*)"([^>]*)>(<i><\/i>)?([^<]*)<\/span>/.exec(html);
+  const titleOf = (p: RegExpExecArray | null) => (p ? startTags(`<span ${p[2]}>`, "span")[0].title : undefined);
   const p = pill(up);
-  ok("6.2 a live feed reads Connected, with its tooltip", p?.[4] === "Connected" && startTags(`<span ${p[2]}>`, "span")[0].title === "Connected to cotal web", p?.[0]);
+  ok("6.2 a live feed reads Connected, with its tooltip", p?.[4] === "Connected" && titleOf(p) === "Connected to cotal web", p?.[0]);
   ok("6.3 and the pill is not in the down state", p?.[1] === "ui-live", p?.[1]);
-  const down = pill(foot(renderShell({ roster, connected: false })));
-  ok("6.4 a feed that is down reads Disconnected, never Connected", down?.[4] === "Disconnected", down?.[0]);
+  const down = pill(foot(renderShell({ roster, connection: "reconnecting" })));
+  ok("6.4 a feed that dropped reads Reconnecting, never Connected", down?.[4] === "Reconnecting" && titleOf(down) === "Reconnecting to cotal web", down?.[0]);
   ok("6.5 and the dot takes its own shape (ui-live-down), so the state is not colour alone", down?.[1] === "ui-live ui-live-down" && down[3] === "<i></i>", down?.[0]);
+  const first = pill(foot(renderShell({ roster })));
+  ok("6.4b before the feed first opens it reads Connecting, with its tooltip, and not Reconnecting",
+    first?.[4] === "Connecting" && titleOf(first) === "Connecting to cotal web" && first[1] === "ui-live ui-live-down", first?.[0]);
+  ok("6.4c the page never claims a disconnection it cannot know is final", !/Disconnected|Not connected/.test(foot(renderShell({ roster })) + foot(renderShell({ roster, connection: "reconnecting" }))));
   ok("6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here",
     !/On the roster|Not on the roster|Read only/.test(up), strip(up));
 }
 
 // ── 7. The sidebar's place in the shell ──────────────────────────────────────────────────────────
 {
-  const html = renderShell({ space: "main", roster, connected: true, stale: [{ kind: "refused", name: "peers", reason: "HTTP 503" }] });
+  const html = renderShell({ space: "main", roster, connection: "connected", stale: [{ kind: "refused", name: "peers", reason: "HTTP 503" }] });
   const s = side(html);
   const at = (needle: string) => s.indexOf(needle);
   ok("7.1 the head comes first, then the stale marker, then the places, then the footer",
@@ -243,6 +252,28 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
   await new Promise((r) => setTimeout(r, 20));
   ok("8.3 a dashboard started with no arrival listener takes messages as before", quietStore.get().activity.map((e) => e.msg.id).join() === "m3", quietStore.get().activity.map((e) => e.msg.id));
   quiet.stop();
+
+  // The rate is messages per second ARRIVING. The bootstrap's activity page and a channel's history
+  // are messages that arrived before the page looked, so counting them would report a burst that
+  // never happened every time the feed reconnects.
+  const old = (id: string, to?: string) => ({ id, ts: 1, space: "main", from: { id: "local.dav" }, to, parts: [{ kind: "text", text: "old" }] }) as unknown as CotalMessage;
+  const fullApi: Api = {
+    ...emptyApi,
+    activity: async () => ({ entries: [{ mode: "chat", channel: "general", msg: old("h1") }, { mode: "unicast", msg: old("h2", "local.rev") }], partial: false, read: 2, of: 2, missing: [], reasons: {}, deadlineMs: 1 }),
+    dms: async () => [old("h3", "local.rev")],
+    history: async () => [old("h4"), old("h5")],
+  };
+  let readArrivals = 0;
+  const readStore = createStore<DashboardState>({ ...initialState });
+  const reads = startDashboard({ store: readStore, api: fullApi, openFeed: (h) => ((handlers = h), () => undefined), onArrival: () => void readArrivals++ });
+  handlers.open();
+  await reads.controller.refresh();
+  await reads.controller.open("general");
+  await reads.controller.refresh();
+  await new Promise((r) => setTimeout(r, 20));
+  ok("8.4 the bootstrap's activity page, the DM read and a channel's history are not arrivals: the rate counts only live messages",
+    readArrivals === 0 && readStore.get().activity.length === 2 && readStore.get().open?.messages.length === 2, { readArrivals, activity: readStore.get().activity.length, open: readStore.get().open?.messages.length });
+  reads.stop();
 }
 
 // ── 9. The mounted app: arrivals become the rate, and the tick stops with the page ───────────────

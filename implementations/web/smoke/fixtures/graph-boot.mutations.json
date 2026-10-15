@@ -53,18 +53,18 @@
     {
       "name": "G8 the feed's open stops marking the dashboard connected, so the pill stays at connecting after the feed is up",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      store.set({ connected: true });\n",
+      "find": "      store.set({ connection: \"connected\" });\n",
       "replace": "",
       "expectRed": "6.1 a feed open marks the dashboard connected",
       "cell": "6.1 a feed open marks the dashboard connected"
     },
     {
-      "name": "G9 a feed error stops marking the dashboard disconnected, so a dropped feed still reads connected",
+      "name": "G9 a feed error stops marking the dashboard reconnecting, so a dropped feed still reads connected",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "    error: () => store.set({ connected: false }),",
+      "find": "    error: () => store.set((s) => ({ connection: s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\" })),",
       "replace": "    error: () => undefined,",
-      "expectRed": "6.3 a feed error marks it disconnected",
-      "cell": "6.3 a feed error marks it disconnected"
+      "expectRed": "6.3 a feed error after an open marks it reconnecting",
+      "cell": "6.3 a feed error after an open marks it reconnecting"
     },
     {
       "name": "G10 stop() no longer closes the feed, so a stopped dashboard keeps a live connection",
@@ -85,8 +85,8 @@
     {
       "name": "G12 a feed open stops running the bootstrap again, so a reconnect never makes up the events it missed",
       "file": "implementations/web/client/src/state/boot.ts",
-      "find": "      store.set({ connected: true });\n      refresh();\n",
-      "replace": "      store.set({ connected: true });\n",
+      "find": "      store.set({ connection: \"connected\" });\n      refresh();\n",
+      "replace": "      store.set({ connection: \"connected\" });\n",
       "expectRed": "6.2 and runs the bootstrap again, because a reconnect may have missed events",
       "cell": "6.2 and runs the bootstrap again, because a reconnect may have missed events"
     },
@@ -97,6 +97,30 @@
       "replace": "    void controller.refresh();",
       "expectRed": "8.2 a refresh that rejects reaches the console",
       "cell": "8.2 a refresh that rejects reaches the console, with the defect's own message"
+    },
+    {
+      "name": "G15 the dashboard starts out reconnecting, so the pill claims a drop before the feed has ever opened",
+      "file": "implementations/web/client/src/state/types.ts",
+      "find": "  connection: \"connecting\",",
+      "replace": "  connection: \"reconnecting\",",
+      "expectRed": "6.0 before the feed first opens the dashboard is connecting, not disconnected",
+      "cell": "6.0 before the feed first opens the dashboard is connecting, not disconnected"
+    },
+    {
+      "name": "G16 any feed error reads as a drop, so a failed first attempt says reconnecting to a feed that never connected",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    error: () => store.set((s) => ({ connection: s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\" })),",
+      "replace": "    error: () => store.set({ connection: \"reconnecting\" }),",
+      "expectRed": "6.0b and a failed first attempt is still connecting: nothing has dropped yet",
+      "cell": "6.0b and a failed first attempt is still connecting: nothing has dropped yet"
+    },
+    {
+      "name": "G17 an error while already reconnecting falls back to connecting, so a retry that fails again reads as a first attempt",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "s.connection === \"connecting\" ? \"connecting\" : \"reconnecting\"",
+      "replace": "s.connection === \"connected\" ? \"reconnecting\" : \"connecting\"",
+      "expectRed": "6.3b and a second error while it retries is still reconnecting",
+      "cell": "6.3b and a second error while it retries is still reconnecting"
     }
   ],
   "suite": [

@@ -24,9 +24,13 @@ export interface StoredMessage {
   senderId?: string;
 }
 
+/** The live feed's state as the pill says it. `connecting` until the feed first opens, `connected`
+ *  while it is open, and `reconnecting` after it dropped, while the browser retries. */
+export type Connection = "connecting" | "connected" | "reconnecting";
+
 export interface DashboardState {
   space: string | null;
-  connected: boolean;
+  connection: Connection;
   roster: RosterEntry[];
   presenceView: PresenceView | null;
   channels: ChannelRow[];
@@ -44,7 +48,7 @@ export interface DashboardState {
 
 export const initialState: DashboardState = {
   space: null,
-  connected: false,
+  connection: "connecting",
   roster: [],
   presenceView: null,
   channels: [],

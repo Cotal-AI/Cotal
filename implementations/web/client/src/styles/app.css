@@ -371,6 +371,14 @@ pre code { background: none; padding: 0; }
 .ui-beat-empty { padding: 4px 8px; font-size: 12.5px; }
 /* A feed that is down: a hollow dashed dot in place of the filled green one, so the state is its shape and its word. */
 .ui-live-down i { background: transparent; border: 1.5px dashed var(--faint); box-shadow: none; }
-.ui-center > .ui-view { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; }
-.ui-chlink { display: block; color: var(--ink); text-decoration: none; }
-.ui-chlink[aria-current="page"] { font-weight: 600; }
+/* A view fills the centre with the mock's bar, scroll and dock. The phase 1 roster list that still
+   stands in for the views not built yet scrolls with padding. */
+.ui-center > .ui-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ui-center > .ui-interim { display: block; overflow-y: auto; padding: 16px 20px; }
+/* The Needs card's Message button is a link to the DM view, drawn as the mock's button. */
+a.ui-btn { text-decoration: none; }
+/* The member stack and View agent wait for the right panel; until then they do not answer a hover. */
+.ui-members:disabled { cursor: default; }
+.ui-members:disabled:hover { background: none; }
+/* The Activity header's copy of the stale marker sits in the bar, not under the space name. */
+.ui-bar .ui-stale { margin: 0; padding: 5px 8px; }

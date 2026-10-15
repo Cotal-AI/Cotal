@@ -12,18 +12,18 @@ const CLAMP = 280;
 
 /** The tooltip on a sender read from history, which carries no verified sender: the author of a
  *  history row, or the claimer of an anycast whose reply came from history. */
-const UNVERIFIED =
+export const UNVERIFIED =
   "History does not record who sent this message. The sender shown is the one the message names, and it has not been checked.";
 
 /** The name a harness goes by, for the chip beside the sender. A connector the dashboard has no
  *  brand for is shown as the connector reports it. */
-function harnessName(connector: string): string {
+export function harnessName(connector: string): string {
   const key = connector === "claude-code" ? "claude" : connector;
   return Object.hasOwn(HARNESS, key) ? HARNESS[key as keyof typeof HARNESS].label : connector;
 }
 
 /** `hh:mm` in the reader's own clock. */
-const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+export const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 
 /** One message, as mock section D draws it: the sender's character in the gutter, the header
  *  (name, role, harness, time), the body, and for an anycast the route chip.
@@ -36,11 +36,12 @@ const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${S
  *    event, so with no reply there is nothing to say. A claim from a history reply is not verified
  *    and carries the same unverified mark and tooltip as an unverified author.
  *  - A row whose mentions include `mention` (the reader's own name) is highlighted.
+ *  - `place`, when given, takes the role's place in the header.
  *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
  *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
  *    a history row ignores `compact` and always draws its header, so its unverified mark is never
  *    hidden behind the row above. */
-export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, mention, claim }: {
+export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, mention, claim, place }: {
   msg: CotalMessage;
   senderId?: string;
   mode: FeedMessage["mode"];
@@ -50,6 +51,9 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   compact?: boolean;
   mention?: string;
   claim?: { id: string; verified: boolean };
+  /** Where the message went (`#review`, `to reviewer_2`), drawn where the role goes. The Activity
+   *  view passes it, because there the destination is what tells rows apart. */
+  place?: string;
 }) {
   const [opened, setOpened] = useState(false);
   const who = senderId ?? msg.from?.id;
@@ -69,7 +73,8 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
           <div className="ui-mh">
             <b>{displayNameOf(senderId ?? msg.from, idx)}</b>
             {senderId === undefined && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
-            {peer?.role && <span className="ui-role">{peer.role}</span>}
+            {place !== undefined && <span className="ui-role">{place}</span>}
+            {place === undefined && peer?.role && <span className="ui-role">{peer.role}</span>}
             {peer?.harness && <span className="ui-hz">{harnessName(peer.harness)}</span>}
             {at && <time dateTime={at.toISOString()}>{clock(at)}</time>}
           </div>

@@ -9,6 +9,9 @@ export interface DmConversation {
   with: string;
   messages: StoredMessage[];
   last: number;
+  /** True only when every message carries the sender the server read off the subject. A history
+   *  row has none, so a conversation holding one is grouped by what the payload says about itself. */
+  verified: boolean;
 }
 
 export interface DmPeer {
@@ -51,11 +54,12 @@ export function dmPeers(dms: StoredMessage[], roster: RosterEntry[]): DmPeer[] {
   for (const [key, pair] of pairs) {
     pair.messages.sort((a, b) => a.msg.ts - b.msg.ts);
     const last = pair.messages[pair.messages.length - 1]?.msg.ts ?? 0;
+    const verified = pair.messages.every((m) => m.senderId !== undefined);
     for (const id of pair.parts) {
       const other = pair.parts[0] === id ? pair.parts[1] : pair.parts[0];
       let peer = peers.get(id);
       if (!peer) peers.set(id, (peer = { id, conversations: [], last: 0 }));
-      peer.conversations.push({ key, with: other, messages: pair.messages, last });
+      peer.conversations.push({ key, with: other, messages: pair.messages, last, verified });
       peer.last = Math.max(peer.last, last);
     }
   }

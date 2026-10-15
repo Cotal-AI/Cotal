@@ -7,7 +7,7 @@
  *  `document` when it loads. Every name the window carries that Node does not already define is
  *  copied onto `globalThis`, so `document`, `HTMLElement`, `Node` and the event classes resolve as
  *  they do in a page. `window` and `document` are set unconditionally, because the art seam may
- *  already have pointed `window` at `globalThis` when it loaded first. */
+ *  already have pointed `window` at `globalThis` when it loaded first, and so is Web Storage. */
 import { JSDOM } from "jsdom";
 
 export const dom = new JSDOM("<!doctype html><html><body></body></html>", { url: "http://localhost/", pretendToBeVisual: true });
@@ -24,6 +24,9 @@ for (const key of Object.getOwnPropertyNames(win)) {
 }
 g.window = win;
 g.document = win.document;
+// Node defines Web Storage of its own, which without --localstorage-file is a stub that warns on
+// every read, so the page's storage replaces it.
+for (const key of ["localStorage", "sessionStorage"]) Object.defineProperty(g, key, { value: win[key], configurable: true, writable: true });
 
 /** Close the window's timers and handles, so the suite's process can exit. */
 export const closeDom = async (): Promise<void> => dom.window.close();

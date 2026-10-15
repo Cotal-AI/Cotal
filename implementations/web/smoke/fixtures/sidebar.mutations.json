@@ -286,12 +286,12 @@
       "cell": "6.2 a live feed reads Connected, with its tooltip"
     },
     {
-      "name": "SB36 a dead feed still reads Connected",
+      "name": "SB36 a dropped feed still reads Connected",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "{connected ? (",
+      "find": "{connection === \"connected\" ? (",
       "replace": "{true ? (",
-      "expectRed": "6.4 a feed that is down reads Disconnected, never Connected",
-      "cell": "6.4 a feed that is down reads Disconnected, never Connected"
+      "expectRed": "6.4 a feed that dropped reads Reconnecting, never Connected",
+      "cell": "6.4 a feed that dropped reads Reconnecting, never Connected"
     },
     {
       "name": "SB37 the down pill keeps the live dot's shape",
@@ -380,6 +380,46 @@
       "replace": "",
       "expectRed": "1.1 the head names the space",
       "cell": "1.1 the head names the space"
+    },
+    {
+      "name": "SB44 the reconnecting pill says it is connecting for the first time",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "reconnecting: { text: \"Reconnecting\", title: \"Reconnecting to cotal web\" },",
+      "replace": "reconnecting: { text: \"Reconnecting\", title: \"Connecting to cotal web\" },",
+      "expectRed": "6.4 a feed that dropped reads Reconnecting, never Connected",
+      "cell": "6.4 a feed that dropped reads Reconnecting, never Connected"
+    },
+    {
+      "name": "SB45 the first connection reads Reconnecting, as if the page had already dropped a feed",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "connecting: { text: \"Connecting\", title: \"Connecting to cotal web\" },",
+      "replace": "connecting: { text: \"Reconnecting\", title: \"Reconnecting to cotal web\" },",
+      "expectRed": "6.4b before the feed first opens it reads Connecting, with its tooltip, and not Reconnecting",
+      "cell": "6.4b before the feed first opens it reads Connecting, with its tooltip, and not Reconnecting"
+    },
+    {
+      "name": "SB46 a conversation holding a history row reads as verified",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}",
+      "replace": "",
+      "expectRed": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one",
+      "cell": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one"
+    },
+    {
+      "name": "SB47 the DM grouping treats every conversation as verified",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "const verified = pair.messages.every((m) => m.senderId !== undefined);",
+      "replace": "const verified = true;",
+      "expectRed": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one",
+      "cell": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one"
+    },
+    {
+      "name": "SB48 the boot counts every message the bootstrap read as an arrival, so each reconnect reports a burst that never happened",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    void controller.refresh().catch(",
+      "replace": "    void controller.refresh().then(() => store.get().activity.forEach(() => deps.onArrival?.())).catch(",
+      "expectRed": "8.4 the bootstrap's activity page, the DM read and a channel's history are not arrivals: the rate counts only live messages",
+      "cell": "8.4 the bootstrap's activity page, the DM read and a channel's history are not arrivals: the rate counts only live messages"
     }
   ]
 }

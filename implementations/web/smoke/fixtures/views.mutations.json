@@ -1,0 +1,633 @@
+{
+  "command": "pnpm smoke:web-views",
+  "suite": [
+    "implementations/web/smoke/views.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "V1 the header drops the hash and reads like a person's name",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "<h1>{`# ${channel}`}</h1>",
+      "replace": "<h1>{channel}</h1>",
+      "expectRed": "1.1 the header names the channel as # review and shows its topic",
+      "cell": "1.1 the header names the channel as # review and shows its topic"
+    },
+    {
+      "name": "V2 the topic leaves the header",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "{info?.description && <span className=\"ui-topic\">{info.description}</span>}",
+      "replace": "",
+      "expectRed": "1.1 the header names the channel as # review and shows its topic",
+      "cell": "1.1 the header names the channel as # review and shows its topic"
+    },
+    {
+      "name": "V3 the durable chip loses the notes' tooltip",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "title: \"Kept for members who are offline\"",
+      "replace": "title: \"durable\"",
+      "expectRed": "1.2 a durable channel with a 24h replay shows both chips with the notes' tooltips",
+      "cell": "1.2 a durable channel with a 24h replay shows both chips with the notes' tooltips"
+    },
+    {
+      "name": "V4 every channel with a known policy is called durable",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "if (info?.deliveryClass === \"durable\")",
+      "replace": "if (info?.deliveryClass !== undefined)",
+      "expectRed": "1.3 a live channel with replay off shows neither chip",
+      "cell": "1.3 a live channel with replay off shows neither chip"
+    },
+    {
+      "name": "V5 a channel with replay off still shows a replay chip",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "if (info?.replay === true) {",
+      "replace": "if (info?.replay !== undefined) {",
+      "expectRed": "1.3 a live channel with replay off shows neither chip",
+      "cell": "1.3 a live channel with replay off shows neither chip"
+    },
+    {
+      "name": "V6 a one-hour window reads the last 1 hours",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "Number(m[1]) === 1 ? UNIT[m[2]][0] :",
+      "replace": "false ? UNIT[m[2]][0] :",
+      "expectRed": "1.4 the replay chip reads its own window, and a window of one unit reads as that unit",
+      "cell": "1.4 the replay chip reads its own window, and a window of one unit reads as that unit"
+    },
+    {
+      "name": "V7 replay with no window prints undefined",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "out.push({ text: \"replay\", title: \"New members see every message the channel keeps\" });",
+      "replace": "out.push({ text: `replay ${w}`, title: `New members see the last ${w}` });",
+      "expectRed": "1.5 replay with no window says new members see everything the channel keeps",
+      "cell": "1.5 replay with no window says new members see everything the channel keeps"
+    },
+    {
+      "name": "V8 a channel whose policy is unknown is guessed durable",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "if (info?.deliveryClass === \"durable\")",
+      "replace": "if (info?.deliveryClass !== \"live\")",
+      "expectRed": "1.6 a channel whose policy the server has not sent yet shows no chips, rather than guessing",
+      "cell": "1.6 a channel whose policy the server has not sent yet shows no chips, rather than guessing"
+    },
+    {
+      "name": "V43 a channel with no topic draws an empty topic",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "{info?.description && <span className=\"ui-topic\">",
+      "replace": "{<span className=\"ui-topic\">",
+      "expectRed": "1.7 a channel with no topic draws no topic",
+      "cell": "1.7 a channel with no topic draws no topic"
+    },
+    {
+      "name": "V9 the stack ignores the broker and counts who posted",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "() => channelMembers(channel, membership, ",
+      "replace": "() => channelMembers(channel, {}, ",
+      "expectRed": "1.8 the member stack counts the broker's members of #review and says so in its tooltip",
+      "cell": "1.8 the member stack counts the broker's members of #review and says so in its tooltip"
+    },
+    {
+      "name": "V12 the stack's avatars grow status dots",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "size={22} dot={false} />;",
+      "replace": "size={22} />;",
+      "expectRed": "1.9 each member is drawn from the roster by id, in the broker's order, with no status dot",
+      "cell": "1.9 each member is drawn from the roster by id, in the broker's order, with no status dot"
+    },
+    {
+      "name": "V11 the stack draws a fifth avatar",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "const STACK = 4;",
+      "replace": "const STACK = 5;",
+      "expectRed": "1.11 five members draw four avatars and the count 5",
+      "cell": "1.11 five members draw four avatars and the count 5"
+    },
+    {
+      "name": "V10 one member reads 1 members",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "title={`${count} member${count === 1 ? \"\" : \"s\"}`}",
+      "replace": "title={`${count} members`}",
+      "expectRed": "1.12 one member reads 1 member",
+      "cell": "1.12 one member reads 1 member"
+    },
+    {
+      "name": "V13 the stack looks clickable with no tab to open",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "disabled={!onMembers} onClick={onMembers}",
+      "replace": "onClick={onMembers}",
+      "expectRed": "1.13 in the shell, with no Members tab to open yet, the stack is a disabled button",
+      "cell": "1.13 in the shell, with no Members tab to open yet, the stack is a disabled button"
+    },
+    {
+      "name": "V14 clicking the stack opens nothing",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "onClick={onMembers}>",
+      "replace": ">",
+      "expectRed": "1.14 given a Members tab, clicking the stack opens it",
+      "cell": "1.14 given a Members tab, clicking the stack opens it"
+    },
+    {
+      "name": "V16 the day divider is never drawn",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "if (newDay) out.push(",
+      "replace": "if (false) out.push(",
+      "expectRed": "2.1 a Today divider opens today's messages",
+      "cell": "2.1 a Today divider opens today's messages"
+    },
+    {
+      "name": "V17 rows collapse across senders",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "prev.senderId === senderId",
+      "replace": "prev.senderId !== undefined",
+      "expectRed": "2.2 consecutive rows from one verified sender collapse, a new sender breaks the run, and a history row never collapses",
+      "cell": "2.2 consecutive rows from one verified sender collapse, a new sender breaks the run, and a history row never collapses"
+    },
+    {
+      "name": "V19 a day change does not break a run",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "const compact = !newDay && prev",
+      "replace": "const compact = prev",
+      "expectRed": "2.4 a day change draws its own divider, and the divider breaks a run from one sender",
+      "cell": "2.4 a day change draws its own divider, and the divider breaks a run from one sender"
+    },
+    {
+      "name": "V20 yesterday is named by its date",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "if (that === day(today - 12 * 3_600_000)) return \"Yesterday\";",
+      "replace": "",
+      "expectRed": "2.4 a day change draws its own divider, and the divider breaks a run from one sender",
+      "cell": "2.4 a day change draws its own divider, and the divider breaks a run from one sender"
+    },
+    {
+      "name": "V21 the date's month is off by one",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "String(d.getMonth() + 1).padStart(2, \"0\")",
+      "replace": "String(d.getMonth()).padStart(2, \"0\")",
+      "expectRed": "2.5 an older day is named by its date",
+      "cell": "2.5 an older day is named by its date"
+    },
+    {
+      "name": "V15 another channel's open list is drawn under this name",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "const messages = open?.channel === channel ? open.messages : NONE;",
+      "replace": "const messages = open?.messages ?? NONE;",
+      "expectRed": "2.7 the view draws only the open channel's messages: another channel's list is not shown under this name",
+      "cell": "2.7 the view draws only the open channel's messages: another channel's list is not shown under this name"
+    },
+    {
+      "name": "V22 the working line names the roster's first working agent, in the channel or not",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "const working = members.map((m) => peers.get(m.id)).find((r) => r?.status === \"working\");",
+      "replace": "const working = everyone.find((r) => r.status === \"working\");",
+      "expectRed": "3.1 the working line names the first working member of #review in the broker's order, with its activity",
+      "cell": "3.1 the working line names the first working member of #review in the broker's order, with its activity"
+    },
+    {
+      "name": "V23 the working line ignores unknown progress",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "{` is ${statusLabel(working)} `}",
+      "replace": "{\" is working \"}",
+      "expectRed": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots",
+      "cell": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots"
+    },
+    {
+      "name": "V24 unknown progress still draws moving dots",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "working.progress?.kind !== \"unknown\" && ",
+      "replace": "",
+      "expectRed": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots",
+      "cell": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots"
+    },
+    {
+      "name": "V25 the dock holds a card for an agent that is not waiting",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "const needing = waiting(everyone).find(",
+      "replace": "const needing = everyone.find(",
+      "expectRed": "4.5 with nobody waiting there is no dock at all: no space is reserved",
+      "cell": "4.5 with nobody waiting there is no dock at all: no space is reserved"
+    },
+    {
+      "name": "V27 a dismissal hides nothing",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": ".find((r) => !dismissed.has(needsKey(r)))",
+      "replace": ".find(() => true)",
+      "expectRed": "5.1 dismissing the card shows the next waiting agent (helper sorts before reviewer_2)",
+      "cell": "5.1 dismissing the card shows the next waiting agent (helper sorts before reviewer_2)"
+    },
+    {
+      "name": "N1 the card does not say the agent is waiting",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "{`${row.name} is waiting`}",
+      "replace": "{row.name}",
+      "expectRed": "4.1 the dock holds the waiting agent's card: reviewer_2 is waiting, with its activity and the time it reported",
+      "cell": "4.1 the dock holds the waiting agent's card: reviewer_2 is waiting, with its activity and the time it reported"
+    },
+    {
+      "name": "N2 the report time is a raw number",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "`Reported ${clock(new Date(row.statusSince))}`",
+      "replace": "`Reported ${row.statusSince}`",
+      "expectRed": "4.1 the dock holds the waiting agent's card: reviewer_2 is waiting, with its activity and the time it reported",
+      "cell": "4.1 the dock holds the waiting agent's card: reviewer_2 is waiting, with its activity and the time it reported"
+    },
+    {
+      "name": "N3 Message opens the Agents view instead of the DM view",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "href={formatRoute({ view: \"dm\", peer: row.id })}",
+      "replace": "href={formatRoute({ view: \"agents\", group: \"status\" })}",
+      "expectRed": "4.2 its buttons are View agent and Message reviewer_2, which opens the DM view",
+      "cell": "4.2 its buttons are View agent and Message reviewer_2, which opens the DM view"
+    },
+    {
+      "name": "N4 the dismiss tooltip loses its promise",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "const DISMISS = \"Dismiss until the status changes\";",
+      "replace": "const DISMISS = \"Dismiss\";",
+      "expectRed": "4.3 and a dismiss button with the notes' tooltip",
+      "cell": "4.3 and a dismiss button with the notes' tooltip"
+    },
+    {
+      "name": "N5 the card's character loses its waiting dot",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "<Avatar vendor={row.harness} status={row.status} size={34} />",
+      "replace": "<Avatar vendor={row.harness} status={row.status} size={34} dot={false} />",
+      "expectRed": "4.4 the card draws the agent's character with its waiting dot",
+      "cell": "4.4 the card draws the agent's character with its waiting dot"
+    },
+    {
+      "name": "N6 a card with no report time makes one up",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "const at = typeof row.statusSince === \"number\" && Number.isFinite(row.statusSince) ? ",
+      "replace": "const at = true ? ",
+      "expectRed": "4.6 a card whose agent reported no time says no time",
+      "cell": "4.6 a card whose agent reported no time says no time"
+    },
+    {
+      "name": "N7 a card with no activity text opens with a stray period",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": ".filter((p): p is string => Boolean(p))",
+      "replace": ".filter((p): p is string => p !== \"\")",
+      "expectRed": "4.7 a card with no activity text says only when it was reported",
+      "cell": "4.7 a card with no activity text says only when it was reported"
+    },
+    {
+      "name": "N8 View agent looks live with no Agent tab to open",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "disabled={!onViewAgent} ",
+      "replace": "",
+      "expectRed": "4.8 in the shell, with no Agent tab to open yet, View agent is disabled",
+      "cell": "4.8 in the shell, with no Agent tab to open yet, View agent is disabled"
+    },
+    {
+      "name": "N9 View agent opens the agent by its name, not its id",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "onClick={() => onViewAgent?.(row.id)}",
+      "replace": "onClick={() => onViewAgent?.(row.name)}",
+      "expectRed": "4.9 given an Agent tab, View agent opens it on that agent",
+      "cell": "4.9 given an Agent tab, View agent opens it on that agent"
+    },
+    {
+      "name": "N10 a dismissal is keyed by the agent alone, so it outlives the status",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "`${row.id} ${row.statusSince ?? \"\"}`",
+      "replace": "row.id",
+      "expectRed": "5.2 the dismissal is kept in this browser, keyed by the agent's id and the time its status began",
+      "cell": "5.2 the dismissal is kept in this browser, keyed by the agent's id and the time its status began"
+    },
+    {
+      "name": "N11 a dismissal is never saved",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "globalThis.localStorage?.setItem(KEY, JSON.stringify(keys.slice(-KEPT)));",
+      "replace": "",
+      "expectRed": "5.2 the dismissal is kept in this browser, keyed by the agent's id and the time its status began",
+      "cell": "5.2 the dismissal is kept in this browser, keyed by the agent's id and the time its status began"
+    },
+    {
+      "name": "N12 saved dismissals are never read back",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "useLayoutEffect(() => setKeys(readDismissed()), []);",
+      "replace": "",
+      "expectRed": "5.4 a reload remembers both dismissals",
+      "cell": "5.4 a reload remembers both dismissals"
+    },
+    {
+      "name": "N13 reading dismissals touches storage outside the guard",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "function readDismissed(): string[] {\n  try {",
+      "replace": "function readDismissed(): string[] {\n  void globalThis.localStorage;\n  try {",
+      "expectRed": "5.6 with storage blocked the card still draws, and dismissing it still works for this page",
+      "cell": "5.6 with storage blocked the card still draws, and dismissing it still works for this page"
+    },
+    {
+      "name": "N14 saving a dismissal touches storage outside the guard",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": "function writeDismissed(keys: string[]): void {\n  try {",
+      "replace": "function writeDismissed(keys: string[]): void {\n  void globalThis.localStorage;\n  try {",
+      "expectRed": "5.6 with storage blocked the card still draws, and dismissing it still works for this page",
+      "cell": "5.6 with storage blocked the card still draws, and dismissing it still works for this page"
+    },
+    {
+      "name": "A2 the stale marker leaves the Activity header",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "<StaleMarker store={store} id={null} />",
+      "replace": "",
+      "expectRed": "6.1 the Activity header names the view and carries the stale marker",
+      "cell": "6.1 the Activity header names the view and carries the stale marker"
+    },
+    {
+      "name": "A1 the header's marker takes the sidebar's id, so the page has two #stale",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "<StaleMarker store={store} id={null} />",
+      "replace": "<StaleMarker store={store} />",
+      "expectRed": "6.2 the header's marker has no id of its own, so the page keeps one #stale",
+      "cell": "6.2 the header's marker has no id of its own, so the page keeps one #stale"
+    },
+    {
+      "name": "A3 the Direct chip is renamed",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{ label: \"Direct\", mode: \"unicast\" }",
+      "replace": "{ label: \"DMs\", mode: \"unicast\" }",
+      "expectRed": "6.3 the filter chips are All, Channels, Direct and Roles, with All pressed",
+      "cell": "6.3 the filter chips are All, Channels, Direct and Roles, with All pressed"
+    },
+    {
+      "name": "A4 no chip says it is pressed",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "aria-pressed={filter === f.mode}",
+      "replace": "aria-pressed={false}",
+      "expectRed": "6.3 the filter chips are All, Channels, Direct and Roles, with All pressed",
+      "cell": "6.3 the filter chips are All, Channels, Direct and Roles, with All pressed"
+    },
+    {
+      "name": "A5 the list runs oldest first",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "      .reverse();",
+      "replace": "      ;",
+      "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
+      "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
+    },
+    {
+      "name": "A6 a direct message names its recipient by raw id",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "`to ${displayNameOf(typeof e.msg.to === \"string\" ? e.msg.to : undefined, idx)}`",
+      "replace": "`to ${e.msg.to}`",
+      "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
+      "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
+    },
+    {
+      "name": "A7 a role request reads like a direct message",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "`to role ${e.msg.toService ?? \"?\"}`",
+      "replace": "`to ${e.msg.toService ?? \"?\"}`",
+      "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
+      "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
+    },
+    {
+      "name": "A8 a channel row trusts the channel the payload claims",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "`#${e.channel ?? \"?\"}`",
+      "replace": "`#${e.msg.channel ?? \"?\"}`",
+      "expectRed": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>",
+      "cell": "6.4 newest first, each row says where it went: #channel, to <name> from the roster, to role <role>"
+    },
+    {
+      "name": "A9 every Activity row reads unverified",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "const senderId = (e as FeedMessage).senderId;",
+      "replace": "const senderId = undefined;",
+      "expectRed": "6.5 a row the feed delivered is verified and a backfill row is not",
+      "cell": "6.5 a row the feed delivered is verified and a backfill row is not"
+    },
+    {
+      "name": "A10 the filter chips filter nothing",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "const shown = filter === undefined ? listed : listed.filter(({ e }) => e.mode === filter);",
+      "replace": "const shown = listed;",
+      "expectRed": "6.7 Channels keeps the channel messages",
+      "cell": "6.7 Channels keeps the channel messages"
+    },
+    {
+      "name": "A11 Roles keeps channel messages",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{ label: \"Roles\", mode: \"anycast\" }",
+      "replace": "{ label: \"Roles\", mode: \"chat\" }",
+      "expectRed": "6.9 Roles keeps the role requests",
+      "cell": "6.9 Roles keeps the role requests"
+    },
+    {
+      "name": "A12 the empty space state shows with agents on the roster",
+      "file": "implementations/web/client/src/ui/views/ActivityView.tsx",
+      "find": "{!hasAgents(roster) && <EmptySpace",
+      "replace": "{<EmptySpace",
+      "expectRed": "6.11 with agents and nothing yet sent, the list is empty and the empty-space state is not drawn",
+      "cell": "6.11 with agents and nothing yet sent, the list is empty and the empty-space state is not drawn"
+    },
+    {
+      "name": "L2 a conversation is verified when any message is",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "pair.messages.every((m) => m.senderId !== undefined)",
+      "replace": "pair.messages.some((m) => m.senderId !== undefined)",
+      "expectRed": "7.1 a conversation is verified only when every message carries the sender the server checked",
+      "cell": "7.1 a conversation is verified only when every message carries the sender the server checked"
+    },
+    {
+      "name": "D1 the DM header names the peer by raw id",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "<h1>{name}</h1>",
+      "replace": "<h1>{peer}</h1>",
+      "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
+      "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
+    },
+    {
+      "name": "D2 the DM header drops the harness",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "[me?.role, me?.harness && harnessName(me.harness)].filter(Boolean).join(\" · \")",
+      "replace": "[me?.role].filter(Boolean).join(\" · \")",
+      "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
+      "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
+    },
+    {
+      "name": "D3 the counterparty is named by raw id",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{`with ${displayNameOf(conv.with, idx)}`}",
+      "replace": "{`with ${conv.with}`}",
+      "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
+      "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
+    },
+    {
+      "name": "D4 a two-party route opens the peer's newest conversation instead",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "convs.find((c) => c.with === other)",
+      "replace": "convs[0]",
+      "expectRed": "7.3 the list holds that conversation only, oldest first",
+      "cell": "7.3 the list holds that conversation only, oldest first"
+    },
+    {
+      "name": "D7 a verified conversation is marked unverified",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{conv && !conv.verified && <span",
+      "replace": "{conv && <span",
+      "expectRed": "7.4 a verified conversation carries no unverified mark",
+      "cell": "7.4 a verified conversation carries no unverified mark"
+    },
+    {
+      "name": "D5 a one-peer route opens the oldest conversation",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "other === undefined ? convs[0]",
+      "replace": "other === undefined ? convs[convs.length - 1]",
+      "expectRed": "7.5 a route naming only the peer opens its newest conversation",
+      "cell": "7.5 a route naming only the peer opens its newest conversation"
+    },
+    {
+      "name": "D6 a conversation holding a history row reads as verified",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{conv && !conv.verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}",
+      "replace": "",
+      "expectRed": "7.6 a conversation with a history row says unverified in its header, with the message rows' tooltip",
+      "cell": "7.6 a conversation with a history row says unverified in its header, with the message rows' tooltip"
+    },
+    {
+      "name": "D8 a peer with no messages gets no line saying so",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{`No direct messages with ${name} yet.`}",
+      "replace": "{\"\"}",
+      "expectRed": "7.7 a peer with no direct messages gets its header and says there are none yet",
+      "cell": "7.7 a peer with no direct messages gets its header and says there are none yet"
+    },
+    {
+      "name": "D9 a peer off the roster is drawn idle",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "status={me?.status ?? \"offline\"} size={22}",
+      "replace": "status={me?.status ?? \"idle\"} size={22}",
+      "expectRed": "7.8 a peer off the roster is named by its id and drawn offline",
+      "cell": "7.8 a peer off the roster is named by its id and drawn offline"
+    },
+    {
+      "name": "E5 an endpoint counts as an agent, so the empty state never shows on a mesh with a manager",
+      "file": "implementations/web/client/src/ui/views/EmptySpace.tsx",
+      "find": "roster.some((p) => p.card.kind === \"agent\")",
+      "replace": "roster.length > 0",
+      "expectRed": "8.1 with no agents on the roster Activity says so in the notes' words",
+      "cell": "8.1 with no agents on the roster Activity says so in the notes' words"
+    },
+    {
+      "name": "E1 the empty state forgets the space's name",
+      "file": "implementations/web/client/src/ui/views/EmptySpace.tsx",
+      "find": "`No agents on ${space} yet.`",
+      "replace": "\"No agents yet.\"",
+      "expectRed": "8.1 with no agents on the roster Activity says so in the notes' words",
+      "cell": "8.1 with no agents on the roster Activity says so in the notes' words"
+    },
+    {
+      "name": "E2 the empty state drops what to do",
+      "file": "implementations/web/client/src/ui/views/EmptySpace.tsx",
+      "find": "<span>Start one from your terminal. It shows up here when it joins.</span>",
+      "replace": "",
+      "expectRed": "8.1 with no agents on the roster Activity says so in the notes' words",
+      "cell": "8.1 with no agents on the roster Activity says so in the notes' words"
+    },
+    {
+      "name": "E3 cotal personas cannot be copied",
+      "file": "implementations/web/client/src/ui/views/EmptySpace.tsx",
+      "find": "<CopyCommand command=\"cotal personas\" />",
+      "replace": "<code>cotal personas</code>",
+      "expectRed": "8.2 the commands are copyable: cotal spawn, and cotal personas, which lists the others",
+      "cell": "8.2 the commands are copyable: cotal spawn, and cotal personas, which lists the others"
+    },
+    {
+      "name": "E4 the waving character is not drawn",
+      "file": "implementations/web/client/src/ui/views/EmptySpace.tsx",
+      "find": "${wave(\"claude\")}",
+      "replace": "",
+      "expectRed": "8.3 above them the waving character",
+      "cell": "8.3 above them the waving character"
+    },
+    {
+      "name": "S1 the Agents route never draws the empty state",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "return hasAgents(roster) ? null : (",
+      "replace": "return null && (",
+      "expectRed": "8.4 the Agents route draws it too, under an Agents header",
+      "cell": "8.4 the Agents route draws it too, under an Agents header"
+    },
+    {
+      "name": "E6 before the space is read the empty state names a space called null",
+      "file": "implementations/web/client/src/ui/views/EmptySpace.tsx",
+      "find": "space === null ? \"No agents here yet.\" : ",
+      "replace": "",
+      "expectRed": "8.5 before the space is read it names no space",
+      "cell": "8.5 before the space is read it names no space"
+    },
+    {
+      "name": "S4 the channel route keeps the phase 1 list",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "return <ChannelView store={store} channel={route.channel} />;",
+      "replace": "return null;",
+      "expectRed": "1.1 the header names the channel as # review and shows its topic",
+      "cell": "1.1 the header names the channel as # review and shows its topic"
+    },
+    {
+      "name": "S2 the activity route draws a channel",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "return <ActivityView store={store} />;",
+      "replace": "return <ChannelView store={store} channel=\"review\" />;",
+      "expectRed": "6.1 the Activity header names the view and carries the stale marker",
+      "cell": "6.1 the Activity header names the view and carries the stale marker"
+    },
+    {
+      "name": "S3 the DM route draws nothing of its own",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "return <DmView store={store} peer={route.peer} with={route.with} />;",
+      "replace": "return null;",
+      "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
+      "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
+    },
+    {
+      "name": "S5 the centre stops saying which view it draws",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "<section className=\"ui-view\" data-view={route.view}>{view}</section>",
+      "replace": "<section className=\"ui-view\">{view}</section>",
+      "expectRed": "9.1 the centre says which view it draws",
+      "cell": "9.1 the centre says which view it draws"
+    },
+    {
+      "name": "R1 a reopen clears the list before its history lands, the blank frame on every reconnect",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "store.set({ open: { channel: key, messages: held } });",
+      "replace": "store.set({ open: { channel: key, messages: [] } });",
+      "expectRed": "10.1 while a reopen's history loads, the channel keeps the messages it had",
+      "cell": "10.1 while a reopen's history loads, the channel keeps the messages it had"
+    },
+    {
+      "name": "R2 a held row the new history dropped is kept as if it had arrived live",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": ".filter((m) => !kept.has(m))",
+      "replace": ".filter(() => true)",
+      "expectRed": "10.2 when it lands the list is the new history plus what arrived live during the read, and a held row the history no longer has is gone",
+      "cell": "10.2 when it lands the list is the new history plus what arrived live during the read, and a held row the history no longer has is gone"
+    },
+    {
+      "name": "R3 a switch inherits the last channel's rows",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "const held = cur?.channel === key ? cur.messages : [];",
+      "replace": "const held = cur ? cur.messages : [];",
+      "expectRed": "10.4 opening a different channel still starts empty: retention is per channel",
+      "cell": "10.4 opening a different channel still starts empty: retention is per channel"
+    },
+    {
+      "name": "P2 a reader at the bottom is left behind by a new message",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "    if (pinned.current) el.scrollTop = el.scrollHeight;\n",
+      "replace": "",
+      "expectRed": "10.8 a reader at the bottom follows a new message down",
+      "cell": "10.8 a reader at the bottom follows a new message down"
+    },
+    {
+      "name": "P1 a new message drags a reader who scrolled up back to the bottom",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "    if (pinned.current) el.scrollTop = el.scrollHeight;\n",
+      "replace": "    el.scrollTop = el.scrollHeight;\n",
+      "expectRed": "10.9 and a reader scrolled up stays put",
+      "cell": "10.9 and a reader scrolled up stays put"
+    }
+  ]
+}

@@ -9,8 +9,9 @@ import { formatRoute, type Route } from "../lib/route.js";
 import { rateText } from "../lib/shellText.js";
 import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
-import type { DashboardState } from "../state/types.js";
+import type { Connection, DashboardState } from "../state/types.js";
 import { Avatar } from "./Avatar.tsx";
+import { UNVERIFIED } from "./MessageRow.tsx";
 import { StaleMarker } from "./StaleMarker.tsx";
 
 /** How often the Activity row redraws its rate. The rate falls as the window slides past old
@@ -19,6 +20,13 @@ const RATE_TICK_MS = 1000;
 
 /** A channel the runtime writes a run's events to (`run.build-0412`). */
 const isEventChannel = (channel: string): boolean => channel.startsWith("run.");
+
+/** The pill while the feed is not open. Neither state says the page is disconnected for good: the
+ *  browser's EventSource keeps retrying, so the page says what it is doing. */
+const PILL: Record<Exclude<Connection, "connected">, { text: string; title: string }> = {
+  connecting: { text: "Connecting", title: "Connecting to cotal web" },
+  reconnecting: { text: "Reconnecting", title: "Reconnecting to cotal web" },
+};
 
 /** One link row: `to` is the route it opens and `here` whether that route is the page now. */
 function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bold?: boolean; title?: string; children: ReactNode }) {
@@ -35,6 +43,9 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *  `msgPerSecond` is read on every render and again every second, so the Activity row follows the
  *  rate as it falls. The rate itself lives outside the store, which holds serializable state.
  *
+ *  A direct message conversation holding a row read from history says unverified, as a message row
+ *  does, because it was grouped by what the payload says about its own sender.
+ *
  *  Two things the mock draws are left out because the page cannot say them: the operator's place on
  *  the roster (it depends on the mesh's credential mode, which no read reports) and a "to you" mark on a
  *  direct message (the operator's id is not known here). The space name has no menu until the server
@@ -45,7 +56,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const unread = useStore(store, (s) => s.unread);
   const roster = useStore(store, (s) => s.roster);
   const dms = useStore(store, (s) => s.dms);
-  const connected = useStore(store, (s) => s.connected);
+  const connection = useStore(store, (s) => s.connection);
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), RATE_TICK_MS);
@@ -56,10 +67,10 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const needing = waiting(rows).length;
   const conversations = useMemo(() => {
-    const seen = new Map<string, { pair: [string, string]; last: number }>();
+    const seen = new Map<string, { pair: [string, string]; last: number; verified: boolean }>();
     for (const peer of dmPeers(dms, roster))
       for (const c of peer.conversations)
-        if (!seen.has(c.key)) seen.set(c.key, { pair: [peer.id, c.with].sort() as [string, string], last: c.last });
+        if (!seen.has(c.key)) seen.set(c.key, { pair: [peer.id, c.with].sort() as [string, string], last: c.last, verified: c.verified });
     return [...seen.values()].sort((a, b) => b.last - a.last);
   }, [dms, roster]);
   const open = route.view === "dm" ? route : null;
@@ -100,7 +111,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
           );
         })}
         <div className="ui-sec">Direct messages</div>
-        {conversations.map(({ pair: [a, b] }) => (
+        {conversations.map(({ pair: [a, b], verified }) => (
           <Row
             key={`${a}\u0001${b}`}
             to={{ view: "dm", peer: a, with: b }}
@@ -112,16 +123,17 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
               ))}
             </span>
             <span className="ui-row-lbl">{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}</span>
+            {!verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
           </Row>
         ))}
       </nav>
       <div className="ui-side-foot">
         <span className="ui-me">OP</span>
         <div className="ui-who"><b>operator</b></div>
-        {connected ? (
+        {connection === "connected" ? (
           <span className="ui-live" title="Connected to cotal web"><i></i>Connected</span>
         ) : (
-          <span className="ui-live ui-live-down" title="Not connected to cotal web"><i></i>Disconnected</span>
+          <span className="ui-live ui-live-down" title={PILL[connection].title}><i></i>{PILL[connection].text}</span>
         )}
       </div>
     </>
