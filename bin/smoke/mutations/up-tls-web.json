@@ -2,21 +2,22 @@
   "suite": [
     "bin/smoke/up-tls-routes-live.smoke.ts"
   ],
-  "guard": "the web dashboard demands TLS when its mesh record requires it, so it refuses a plaintext broker substituted on the recorded port",
+  "guard": "the TLS suite's web cell runs the installed web dashboard, so its refusal of a plaintext broker is web's own and not an unknown-command refusal",
   "command": "pnpm --filter @cotal-ai/web build > /dev/null && pnpm smoke:up-tls-routes",
   "completionMarker": "/16 routes",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/up-tls-web.json",
   "why": [
-    "The web cell ran without the web extension installed, so `cotal web` was an unknown command and its refusal, which printed the command list, satisfied the reason check through the word \"down\". The cell now installs the extension in its sandbox. Dropping the client's own TLS requirement must redden it, since the substitute broker would then be accepted.",
+    "The web cell ran without the web extension installed, so `cotal web` was an unknown command and its refusal, which printed the command list, satisfied the reason check through the word \"down\". The cell now installs the extension in its sandbox and refuses an unknown-command result. An installed package that no longer registers `web` must redden it.",
+    "Web's own TLS requirement is not mutated here: the shared preflight refuses the substituted plaintext broker before web builds its endpoint, so dropping that requirement alone changes nothing this cell can see.",
     "The suite installs web from implementations/web, which ships its build, so the mutation builds the package first and the restore rebuilds it."
   ],
   "mutations": [
     {
-      "name": "web no longer demands the TLS its mesh record requires",
-      "file": "implementations/web/src/web.ts",
-      "find": "    tls: conn.tls,\n",
-      "replace": "    tls: false,\n",
-      "expectRed": "GATE FAILED (web)",
+      "name": "the installed web package no longer registers the web command",
+      "file": "implementations/web/src/index.ts",
+      "find": "  name: \"web\",\n",
+      "replace": "  name: \"webx\",\n",
+      "expectRed": "web was never run, so its refusal says nothing about TLS",
       "cell": "web+status-demand-tls",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
