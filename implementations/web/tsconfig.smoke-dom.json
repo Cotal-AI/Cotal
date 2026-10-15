@@ -1,0 +1,8 @@
+{
+  // The theme suite stubs `localStorage` and `document`, so only it may see DOM types. Every other
+  // smoke file stays in tsconfig.smoke.json, which has no DOM lib.
+  "extends": "./tsconfig.smoke.json",
+  "compilerOptions": { "lib": ["ES2023", "DOM", "DOM.Iterable"] },
+  "include": ["smoke/client-theme.smoke.ts"],
+  "exclude": []
+}

@@ -5,8 +5,10 @@
   // tsx, which erases types without checking them.
   "extends": "./tsconfig.json",
   // `jsx` (and `.tsx` import paths) because the shell suites render `client/src/Shell.tsx` on the
-  // server. There is still no DOM lib here, so a client module the suites load cannot reach
+  // server. There is no DOM lib in this program, so a client module the suites load cannot reach
   // `window` or `document` and pass.
   "compilerOptions": { "noEmit": true, "rootDir": "../..", "jsx": "react-jsx", "allowImportingTsExtensions": true },
-  "include": ["smoke/**/*.ts"]
+  "include": ["smoke/**/*.ts"],
+  // The theme suite needs DOM types and is typechecked by tsconfig.smoke-dom.json instead.
+  "exclude": ["smoke/client-theme.smoke.ts"]
 }

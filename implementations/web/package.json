@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p client/tsconfig.json && tsc -p tsconfig.smoke.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p client/tsconfig.json && tsc -p tsconfig.smoke.json && tsc -p tsconfig.smoke-dom.json",
     "test": "tsx smoke/detach.smoke.ts",
     "build": "tsc -p tsconfig.json && vite build --config client/vite.config.ts",
     "prepublishOnly": "pnpm run build"
