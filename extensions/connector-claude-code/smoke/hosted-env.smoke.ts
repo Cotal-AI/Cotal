@@ -56,9 +56,13 @@ async function hook(env: NodeJS.ProcessEnv, event: Record<string, unknown>): Pro
 }
 
 async function child(): Promise<void> {
-  const { serveClaudeSession } = require("../dist/mcp.cjs") as {
+  const api = require("../dist/mcp.cjs") as {
     serveClaudeSession(opts: ClaudeSessionOptions): Promise<ClaudeSession>;
   };
+  check("hosted_env_module_loaded", typeof api.serveClaudeSession === "function");
+  // Bundled dependency UMD exports are private, including their mutable crypto API.
+  check("hosted_public_exports_only", Object.keys(api).join(",") === "serveClaudeSession");
+  const { serveClaudeSession } = api;
   const root = process.cwd();
   const helper = join(root, "bearer.cjs");
   writeFileSync(helper, `const fs = require('node:fs');

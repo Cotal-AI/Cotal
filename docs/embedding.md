@@ -78,6 +78,9 @@ package publishes `.` via `dist/index.{js,d.ts}` and ships `files: ["dist"]`).
 in one process ([Connect Claude](connect-claude.md#host-sessions-in-one-process)). Type-only names
 are marked; import them with `import type`.
 
+`CotalEndpoint` accepts `environment` as an explicit presence label. Pass `null` to omit the label
+without reading `COTAL_ENVIRONMENT`. Omitting the option preserves the process environment default.
+
 **Daemon runners and lifecycle**
 
 | symbol | package | purpose |

@@ -4,7 +4,8 @@
   "minTicks": 1,
   "suite": [
     "extensions/connector-claude-code/smoke/hosted-env.smoke.ts",
-    "extensions/connector-core/smoke/user-manager-transport.smoke.ts"
+    "extensions/connector-core/smoke/user-manager-transport.smoke.ts",
+    "extensions/connector-claude-code/smoke/hosted-presence.smoke.ts"
   ],
   "mutations": [
     {
@@ -26,7 +27,7 @@
     {
       "name": "bearer executor inherits the host environment",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    const bearer = await runAgentBearer(argv, { env: this.bearerEnv, signal, timeoutMs });",
+      "find": "    const bearer = await runAgentBearer(argv, { env: this.launchEnv, signal, timeoutMs });",
       "replace": "    const bearer = await runAgentBearer(argv, { signal, timeoutMs });",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_mesh_snapshot",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
@@ -34,16 +35,16 @@
     {
       "name": "agent retains the caller's mutable bearer environment",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    this.bearerEnv = env === undefined ? undefined : { ...env };",
-      "replace": "    this.bearerEnv = env;",
+      "find": "    this.launchEnv = env === undefined ? undefined : { ...env };",
+      "replace": "    this.launchEnv = env;",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_mesh_snapshot",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
     {
       "name": "legacy agent loses process environment inheritance",
       "file": "extensions/connector-core/src/agent.ts",
-      "find": "    this.bearerEnv = env === undefined ? undefined : { ...env };",
-      "replace": "    this.bearerEnv = env === undefined ? {} : { ...env };",
+      "find": "    this.launchEnv = env === undefined ? undefined : { ...env };",
+      "replace": "    this.launchEnv = env === undefined ? {} : { ...env };",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_env_legacy_inheritance",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     },
@@ -94,6 +95,50 @@
       "replace": "        const bearer = (signal?: AbortSignal) => runAgentBearer([\n          ...this.config.userAuth!.bearerCmd,\n          \"--manager-call\",\n          ...(managerInstanceId ? [\"--manager-instance\", managerInstanceId] : []),\n        ], { signal });",
       "command": "pnpm smoke:user-manager-transport",
       "expectRed": "✗ actual MeshAgent.spawn over real wire to real Manager succeeded"
+    },
+    {
+      "name": "endpoint ignores explicit presence environment",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    this.environment =\n      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;",
+      "replace": "    this.environment = process.env.COTAL_ENVIRONMENT?.trim() || undefined;",
+      "command": "pnpm smoke:claude-hosted-presence",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_sess_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "hosted agent omits the presence environment override",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      environment: this.launchEnv === undefined ? undefined : this.launchEnv.COTAL_ENVIRONMENT ?? null,",
+      "replace": "      environment: undefined,",
+      "command": "pnpm smoke:claude-hosted-presence",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_sess_a",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "explicit null presence label falls back to the host",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;",
+      "replace": "      (opts.environment ?? process.env.COTAL_ENVIRONMENT)?.trim() || undefined;",
+      "command": "pnpm smoke:claude-hosted-presence",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_sess_absent",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "legacy endpoint stops inheriting its presence environment",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;",
+      "replace": "      opts.environment?.trim() || undefined;",
+      "command": "pnpm smoke:claude-hosted-presence",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_presence_legacy_inherits",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
+    },
+    {
+      "name": "public MCP exports the dependency crypto namespace",
+      "file": "extensions/connector-claude-code/package.json",
+      "find": " --footer:js='module.exports = { serveClaudeSession: module.exports.serveClaudeSession };'",
+      "replace": "",
+      "expectRed": "AssertionError [ERR_ASSERTION]: hosted_public_exports_only",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"
     }
   ]
 }

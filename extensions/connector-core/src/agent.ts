@@ -373,7 +373,7 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
 export class MeshAgent extends EventEmitter {
   readonly ep: CotalEndpoint;
   readonly config: AgentConfig;
-  private readonly bearerEnv?: NodeJS.ProcessEnv;
+  private readonly launchEnv?: NodeJS.ProcessEnv;
 
   private inbox: Pending[] = [];
   /** Ids already SURFACED to the model (handled) — bounded, commit-aware dedup ACROSS a drain. The
@@ -516,17 +516,18 @@ export class MeshAgent extends EventEmitter {
    *  poison the chain: the tail is swallowed and the next write still runs. */
   private presenceChain: Promise<void> = Promise.resolve();
 
-  /** An explicit env scopes bearer subprocesses to this session. Omitted preserves process inheritance. */
+  /** An explicit env scopes launch metadata and bearer subprocesses. Omitted preserves process inheritance. */
   constructor(config: AgentConfig, env?: NodeJS.ProcessEnv) {
     super();
     this.config = config;
-    this.bearerEnv = env === undefined ? undefined : { ...env };
+    this.launchEnv = env === undefined ? undefined : { ...env };
     // Seed per-channel attention from the operator's file default (one-way: the runtime never writes
     // back — the persona file is a shared template). muted/quiet are validated disjoint at file load.
     for (const c of config.quiet ?? []) this.channelModes.set(c, "quiet");
     for (const c of config.muted ?? []) this.channelModes.set(c, "muted");
     this.ep = new CotalEndpoint({
       space: config.space,
+      environment: this.launchEnv === undefined ? undefined : this.launchEnv.COTAL_ENVIRONMENT ?? null,
       servers: config.servers,
       token: config.token,
       user: config.user,
@@ -2153,7 +2154,7 @@ export class MeshAgent extends EventEmitter {
 
   /** Run the spawner's bearer command with this session's environment on every credential path. */
   private async execBearerCmd(argv: string[], signal?: AbortSignal, timeoutMs?: number): Promise<string> {
-    const bearer = await runAgentBearer(argv, { env: this.bearerEnv, signal, timeoutMs });
+    const bearer = await runAgentBearer(argv, { env: this.launchEnv, signal, timeoutMs });
     if (!bearer) throw new Error(`bearer command printed nothing (${argv[0]})`);
     return bearer;
   }

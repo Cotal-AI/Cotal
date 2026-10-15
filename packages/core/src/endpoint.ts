@@ -214,6 +214,8 @@ export interface EndpointOptions {
   space: string;
   /** Identity. `id` is generated if omitted. */
   card: Omit<AgentCard, "id"> & { id?: string };
+  /** Opaque presence label. Omitted reads COTAL_ENVIRONMENT; null omits the label without reading it. */
+  environment?: string | null;
   /** This incarnation's lifecycle UID (SPEC §13.1), minted ONCE per lifecycle by the provisioning
    *  authority (manager/CLI: `mintLifecycleUid()`) and PERSISTED with the agent — never re-minted per
    *  process, or a supervised restart would abandon the durable inbox. REQUIRED to bind/create the
@@ -863,7 +865,8 @@ export class CotalEndpoint extends EventEmitter {
     // principalKey validates both tokens.
     const principal = principalKey(this.owner, this.actor);
     this.card = { ...opts.card, id: principal.key, owner: this.owner, actor: this.actor };
-    this.environment = process.env.COTAL_ENVIRONMENT?.trim() || undefined;
+    this.environment =
+      (opts.environment === undefined ? process.env.COTAL_ENVIRONMENT : opts.environment)?.trim() || undefined;
     this.servers = opts.servers ?? DEFAULT_SERVER;
     this.token = opts.token;
     this.user = opts.user;
