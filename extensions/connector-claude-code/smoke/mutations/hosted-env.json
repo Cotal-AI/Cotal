@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:claude-hosted-env",
+  "command": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build && pnpm smoke:claude-hosted-env",
   "progressPattern": "^(?:PASS|FAIL) ",
   "minTicks": 1,
   "suite": [
