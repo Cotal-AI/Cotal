@@ -1,0 +1,4 @@
+# Suites that must pass on Linux, macOS and Windows, one script name per line. The CI workflow's
+# `platforms` job runs this list on each of the three through bin/smoke/shard.mjs. Each suite also
+# keeps its usual home: an offline suite in its package's `test`, a broker-backed one in `smoke:ci`.
+smoke:cli-pty

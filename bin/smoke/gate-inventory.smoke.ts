@@ -205,8 +205,16 @@ const bodyOf = (name: string): string => (name === "smoke:ci" ? ciChainBody() : 
 const ROOTS = ["smoke:ci", "test"];
 const wfDir = join(ROOT, ".github", "workflows");
 const roots = new Set<string>(ROOTS.filter((r) => r in pkg.scripts));
-for (const f of readdirSync(wfDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml")))
-  for (const s of suitesIn(readFileSync(join(wfDir, f), "utf8"))) if (s in pkg.scripts) roots.add(s);
+// A workflow can also run a list file through the shard runner (`COTAL_CI_SUITES: <file>` beside
+// `node bin/smoke/shard.mjs`), as the platforms job does. Every suite such a list names is a root.
+const listFiles = new Set<string>();
+for (const f of readdirSync(wfDir).filter((f) => f.endsWith(".yml") || f.endsWith(".yaml"))) {
+  const text = readFileSync(join(wfDir, f), "utf8");
+  for (const s of suitesIn(text)) if (s in pkg.scripts) roots.add(s);
+  for (const m of text.matchAll(/\bCOTAL_CI_SUITES\s*[:=]\s*["']?([^\s"']+)/g)) listFiles.add(m[1]);
+}
+const workflowLists = [...listFiles].sort().map((file) => ({ file, suites: readCiSuites(join(ROOT, file)) as string[] }));
+for (const { suites } of workflowLists) for (const s of suites) if (s in pkg.scripts) roots.add(s);
 
 const reached = new Set<string>();
 const frontier = [...roots];
@@ -367,6 +375,17 @@ if (missingChainEntries.length) {
   console.log(`    A duplicate costs a full run of that suite and hides which copy a merge added.`);
 } else {
   console.log(`  ✓ the smoke:ci chain file holds ${chain.length} suites, no duplicates`);
+}
+
+// A list a workflow runs is a chain too, so a name it holds must be a defined script.
+for (const { file, suites } of workflowLists) {
+  const missing = suites.filter((suite) => !(suite in pkg.scripts));
+  if (missing.length) {
+    fail++;
+    console.log(`  ✗ FAIL: ${file}, which a workflow runs, names ${missing.length} missing script(s): ${missing.join(", ")}`);
+  } else {
+    console.log(`  ✓ ${file}, which a workflow runs, names ${suites.length} defined script(s)`);
+  }
 }
 
 // An allowlist that outlives its entries rots into a place where gating a suite goes unnoticed.
