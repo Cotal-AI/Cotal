@@ -306,6 +306,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         channels: s.channels.filter((c) => c.channel !== name),
         unread: Object.fromEntries(Object.entries(s.unread).filter(([k]) => k !== name)),
         activity: s.activity.filter((e) => (e.msg as Wire).channel !== name),
+        // A refused history read of this channel marked it stale; the channel is gone, so the mark goes.
+        stale: s.stale.filter((m) => m.name !== `#${name} history`),
       }));
       if (store.get().open?.channel === name) close();
     },

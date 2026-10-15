@@ -80,6 +80,14 @@
       "replace": "store.set({ dms: dms.map((msg) => ({ msg, senderId: msg.from.id })) })",
       "expectRed": "a DM history row carries no senderId either",
       "cell": "a DM history row carries no senderId either"
+    },
+    {
+      "name": "A6 deleting a channel leaves its history stale mark behind, so the header keeps calling a channel that no longer exists stale",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        stale: s.stale.filter((m) => m.name !== `#${name} history`),\n",
+      "replace": "",
+      "expectRed": "a deleted channel's history stale mark leaves with it, and another channel's stays",
+      "cell": "a deleted channel's history stale mark leaves with it, and another channel's stays"
     }
   ],
   "suite": [

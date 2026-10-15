@@ -424,8 +424,9 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
 
 // ── 2d. DELETING A CHANNEL ──────────────────────────────────────────────────────────────────────
 // The steward action. The UI confirms first; the controller performs it. On success the channel is
-// gone from the list, its rows from the activity feed, and the view closes if it was open. On a
-// refusal nothing changes and the server's message reaches the caller, so the dialog can show it.
+// gone from the list, its rows from the activity feed and its history stale mark from the header,
+// and the view closes if it was open. On a refusal nothing changes and the server's message
+// reaches the caller, so the dialog can show it.
 {
   const rows = [
     { mode: "chat", channel: "doomed", msg: { id: "d-1", channel: "doomed" } },
@@ -460,6 +461,20 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
   try { await refusing.ctl.deleteChannel("doomed"); } catch (e) { said = (e as Error).message; }
   check("a refused delete throws the server's message for the dialog", /not a steward/.test(said), said);
   check("and changes nothing", refusing.store.get().channels.length === 1, refusing.store.get().channels);
+
+  // A channel whose history read was refused carries a `#<name> history` stale mark. Deleting the
+  // channel removes the thing the mark is about, so the mark goes too, and another channel's stays.
+  const marked = harness({
+    ...bootReads,
+    history: async (channel) => { throw new Error(`#${channel} history refused with HTTP 503: read timed out`); },
+    deleteChannel: async (channel) => ({ ok: true, channel, purged: 0 }),
+  });
+  await marked.ctl.open("kept");
+  await marked.ctl.open("doomed");
+  const marks = () => marked.store.get().stale.map((m) => m.name).sort().join(",");
+  check("CONTROL: both refused history reads are marked stale before the delete", marks() === "#doomed history,#kept history", marks());
+  await marked.ctl.deleteChannel("doomed");
+  check("a deleted channel's history stale mark leaves with it, and another channel's stays", marks() === "#kept history", marks());
 }
 
 // ── 2e. THE VERIFIED SENDER TRAVELS WITH THE MESSAGE ────────────────────────────────────────────
