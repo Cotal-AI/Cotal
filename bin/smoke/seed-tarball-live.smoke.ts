@@ -128,6 +128,12 @@ try {
   // The same payload, packed from the web package directly, the way prepack packs it and the way
   // `@cotal-ai/web` publishes on its own: the umbrella must carry that package's manifest byte for
   // byte, not a copy from some other build.
+  //
+  // This pack is also what gives the mutation coverage gate its reach into the web package: the
+  // gate cannot follow the umbrella's prepack, but it can follow an `npm pack` this suite runs over
+  // `implementations/web`. It is NOT the witness for the fixture's mutation. That mutation (the
+  // build stops recording bundled packages) is killed by the "names react and react-dom" cell
+  // above, which reads the umbrella's own tarball.
   const webTgzDir = join(base, "web-tgz");
   mkdirSync(webTgzDir, { recursive: true });
   execFileSync("npm", ["pack", "--ignore-scripts", "--silent", "--pack-destination", webTgzDir, join(REPO, "implementations", "web")], { stdio: ["ignore", "ignore", "inherit"] });
