@@ -125,6 +125,26 @@
       "cell": "P4 multiple pin lines are not a single identity record",
       "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
       "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M11 the Windows reader uses management cmdlet discovery again",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "        `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().ToFileTimeUtc()`,",
+      "replace": "        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,",
+      "expectRed": "F7 win32 creation asks the native Process API without a cmdlet",
+      "cell": "F7 win32 creation asks the native Process API without a cmdlet",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M12 the Windows reader cuts off a measured cold runtime start",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "      { encoding: \"utf8\", stdio: [\"ignore\", \"pipe\", \"ignore\"], timeout: 10_000 },",
+      "replace": "      { encoding: \"utf8\", stdio: [\"ignore\", \"pipe\", \"ignore\"], timeout: 5000 },",
+      "expectRed": "F8 win32 creation allows a bounded ten-second cold runtime start",
+      "cell": "F8 win32 creation allows a bounded ten-second cold runtime start",
+      "command": "pnpm build > /dev/null && pnpm smoke:pid-identity",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }

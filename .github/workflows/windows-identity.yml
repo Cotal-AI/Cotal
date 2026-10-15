@@ -1,0 +1,52 @@
+name: Windows creation identity
+on:
+  pull_request:
+    paths:
+      - packages/workspace/src/pid.ts
+      - packages/workspace/smoke/pid-identity.smoke.ts
+      - packages/workspace/smoke/win32-creation-native.smoke.ts
+      - bin/smoke/mutations/pid-identity.json
+      - scripts/mutation-proof.mjs
+      - .github/workflows/windows-identity.yml
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  native:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6.0.8
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @cotal-ai/core --filter @cotal-ai/workspace build
+      - run: pnpm --filter @cotal-ai/workspace typecheck
+      - name: Prove the native cold read and its named reversion
+        env:
+          PROOF_CONFIG: ${{ runner.temp }}/windows-creation-proof.json
+        shell: pwsh
+        run: |
+          node --input-type=module -e '
+            import {readFileSync,writeFileSync} from "node:fs";
+            const original=JSON.parse(readFileSync("bin/smoke/mutations/pid-identity.json","utf8"));
+            const mutation=original.mutations.find(m=>m.name.startsWith("M11 "));
+            if(!mutation)throw new Error("missing Windows creation mutation");
+            const command=JSON.stringify(process.execPath.replaceAll("\\","/"))+" --import tsx packages/workspace/smoke/win32-creation-native.smoke.ts";
+            const cell="W1 a cold Windows process has a native creation token";
+            const proof={suite:["packages/workspace/smoke/win32-creation-native.smoke.ts"],command,mutations:[{...mutation,command,expectRed:cell,cell}]};
+            delete proof.mutations[0].afterRestore;
+            writeFileSync(process.env.PROOF_CONFIG,JSON.stringify(proof,null,2));
+          '
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/mutation-proof.mjs --config "$env:PROOF_CONFIG"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git diff --exit-code

@@ -276,7 +276,7 @@ export function formatRecord(record: ProcessIdentityRecord): string {
 /**
  * The creation-identity token of a live pid: on Linux `/proc/<pid>/stat` field 22 (starttime —
  * ticks since boot, fixed for the life of the pid); on macOS/BSD `ps -o lstart=`; on Windows
- * the process creation FILETIME (PowerShell `Get-Process StartTime`, #1437). A pid whose token is
+ * the process creation FILETIME (.NET `Process.StartTime` through PowerShell, #1437). A pid whose token is
  * `undefined` can still be recorded — the record then carries no start pin, and teardown warns that
  * it is proceeding without the identity check. That pid-only shape is for a record that predates
  * pinning, or a host that could not read a start at all. It is not the Windows steady state.
@@ -295,9 +295,11 @@ export function parseWin32CreationToken(raw: string): string | undefined {
 
 /**
  * Windows process-creation identity (#1437). A stop runs once, so unlike the advisory lock this
- * may spend a PowerShell spawn: the token must be STABLE, not cheap. `Get-Process StartTime`
+ * may spend a PowerShell spawn: the token must be STABLE, not cheap. .NET `Process.StartTime`
  * converted to UTC FILETIME is fixed for the life of that pid and changes when the number is
- * reused. `undefined` means the process is gone or PowerShell could not answer.
+ * reused. Read the API directly so a cold profile does not need management cmdlet discovery.
+ * Allow ten seconds for a fresh PowerShell runtime, whose first start can exceed five seconds.
+ * `undefined` means the process is gone or PowerShell could not answer.
  */
 export function win32ProcessCreationToken(pid: number): string | undefined {
   if (!Number.isInteger(pid) || pid <= 0) return undefined;
@@ -308,9 +310,9 @@ export function win32ProcessCreationToken(pid: number): string | undefined {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().ToFileTimeUtc()`,
+        `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().ToFileTimeUtc()`,
       ],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000 },
     );
     return parseWin32CreationToken(out);
   } catch {

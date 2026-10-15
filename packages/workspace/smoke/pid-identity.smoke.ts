@@ -26,14 +26,15 @@
  * Run: pnpm smoke:pid-identity
  */
 import { strict as assert } from "node:assert";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   defaultStartToken, formatRecord, identityPinPath, identityStartToken, parsePid, parseRecord,
-  parseWin32CreationToken, verifyIdentityPin, writeIdentityPin, writePidPair,
+  parseWin32CreationToken, verifyIdentityPin, win32ProcessCreationToken, writeIdentityPin, writePidPair,
 } from "../src/pid.js";
 
 const prevCwd = process.cwd();
@@ -270,6 +271,27 @@ try {
     check("F6 a live record with no sibling pin is still legacy (upgrade path only)",
       verifyIdentityPin(legacyPath, () => win32Token).kind === "legacy");
     reap(liveLegacy.child);
+    // This guards command construction only; the native Windows cold suite executes the OS read.
+    const originalExec = childProcess.execFileSync;
+    let nativeQuery = false;
+    let nativeTimeout: unknown;
+    childProcess.execFileSync = ((file: unknown, args: unknown, ...rest: unknown[]) => {
+      if (file === "powershell.exe") {
+        nativeQuery = Array.isArray(args) && args[3] === "[System.Diagnostics.Process]::GetProcessById(4242).StartTime.ToUniversalTime().ToFileTimeUtc()";
+        nativeTimeout = (rest[0] as { timeout?: unknown } | undefined)?.timeout;
+        return win32Token;
+      }
+      return Reflect.apply(originalExec, childProcess, [file, args, ...rest]);
+    }) as typeof originalExec;
+    syncBuiltinESMExports();
+    try {
+      const token = win32ProcessCreationToken(4242);
+      check("F7 win32 creation asks the native Process API without a cmdlet", token === win32Token && nativeQuery);
+      check("F8 win32 creation allows a bounded ten-second cold runtime start", nativeTimeout === 10_000);
+    } finally {
+      childProcess.execFileSync = originalExec;
+      syncBuiltinESMExports();
+    }
   }
 
   // ── G. writePidPair (#1238): the WRITE side has no cell today; a crash mid-publish is planted

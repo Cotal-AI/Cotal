@@ -42,12 +42,6 @@ Pointing `XDG_CONFIG_HOME` at a scratch dir is not enough by itself. Isolated re
 that must seed from a checkout also set `COTAL_ALLOW_CHECKOUT_SEED=1`, as described under
 [Built-in connectors are seeded extensions](#built-in-connectors-are-seeded-extensions).
 
-Before publication, the release workflow installs the packaged candidate into fresh homes and
-caches on Linux, macOS and Windows, on x64 and arm64 with Node 22, 24 and 26. Each setup seeds
-connectors, starts the broker, delivery daemon and Manager, checks native process identity and
-Manager control, then stops and restarts them. Every platform must pass before normal or snapshot
-publication can proceed.
-
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
 repeatable, as `--opt` and `down --session-store` are. The command prints the error and its help,
 exits 1, and does not run.
@@ -427,6 +421,9 @@ extension components, and the manager, delivery and auth-service stops, applies 
 that names a different start means the pid was reused, so teardown refuses and preserves it. A torn
 or unreadable pin also refuses. macOS start tokens keep their spaces, including the padded day,
 in both the identity pin and the one-shot shutdown intent. A single record cannot span lines.
+On Windows, the reader uses .NET `Process.StartTime` through PowerShell and converts it to UTC
+FILETIME. It does not load management cmdlets during a cold launch. The read allows up to ten
+seconds for a fresh PowerShell runtime to start; it does not retry or accept an unreadable pin.
 
 The pidfile and its pin are published by renames, and the pidfile rename is the commit point. Just
 before it, the pin holds two lines: the old process's and the new one's. A launcher that dies
