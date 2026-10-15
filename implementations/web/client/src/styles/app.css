@@ -249,7 +249,7 @@ pre code { background: none; padding: 0; }
 .ui-field-focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
 .ui-field-empty { color: var(--faint); }
 .ui-dialog .ui-btns { justify-content: flex-end; align-self: end; }
-.ui-scrim { position: absolute; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 5; }
+.ui-scrim { position: fixed; inset: 0; background: var(--scrim); display: grid; place-items: center; z-index: 5; }
 
 /* ---------- loading and empty ---------- */
 .ui-skel { display: block; height: 10px; border-radius: 5px; background: var(--skel); position: relative; overflow: hidden; }

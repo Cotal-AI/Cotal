@@ -482,16 +482,32 @@
       "file": "implementations/web/client/src/ui/panel/DeleteChannelDialog.tsx",
       "find": "setError(err instanceof Error ? err.message : String(err));",
       "replace": "setError(null);",
-      "expectRed": "6.10 a refusal keeps the dialog open and shows the server's error in it",
-      "cell": "6.10 a refusal keeps the dialog open and shows the server's error in it"
+      "expectRed": "6.11 a refusal keeps the dialog open and shows the server's error in it",
+      "cell": "6.11 a refusal keeps the dialog open and shows the server's error in it"
     },
     {
       "name": "D11 a refusal leaves the button stuck",
       "file": "implementations/web/client/src/ui/panel/DeleteChannelDialog.tsx",
       "find": "String(err));\n      setBusy(false);",
       "replace": "String(err));",
-      "expectRed": "6.11 and the button can be pressed again",
-      "cell": "6.11 and the button can be pressed again"
+      "expectRed": "6.12 and the button can be pressed again",
+      "cell": "6.12 and the button can be pressed again"
+    },
+    {
+      "name": "D17 the error row is drawn only for an error, so the dialog changes size",
+      "file": "implementations/web/client/src/ui/panel/DeleteChannelDialog.tsx",
+      "find": "<span className=\"ui-dialog-err\" role=\"alert\">{error}</span>",
+      "replace": "{error && <span className=\"ui-dialog-err\" role=\"alert\">{error}</span>}",
+      "expectRed": "6.3 the dialog keeps its shape before and after typing, with the error row always there",
+      "cell": "6.3 the dialog keeps its shape before and after typing, with the error row always there"
+    },
+    {
+      "name": "D18 a click on the scrim lets focus leave the dialog",
+      "file": "implementations/web/client/src/ui/panel/DeleteChannelDialog.tsx",
+      "find": "        if (e.target !== e.currentTarget) return;\n        e.preventDefault();\n        (field.current as unknown as Focusable | null)?.focus();\n",
+      "replace": "",
+      "expectRed": "6.10 a click on the scrim keeps focus in the dialog, so Escape still closes it",
+      "cell": "6.10 a click on the scrim keeps focus in the dialog, so Escape still closes it"
     },
     {
       "name": "D12 the body forgets the space",

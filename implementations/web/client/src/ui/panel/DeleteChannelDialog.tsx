@@ -18,8 +18,10 @@ const TABBABLE = "input, button:not([disabled])";
  *  - The dialog keeps one size whatever is typed: the error has its own row, empty until a refusal.
  *  - Confirming calls `controller.deleteChannel`. A refusal keeps the dialog open and shows the
  *    server's error in it, as it came.
- *  - The field takes focus when the dialog opens, Tab stays inside it, and Escape closes it. The
- *    caller returns focus to what opened it, in `onClose`. */
+ *  - The field takes focus when the dialog opens, Tab stays inside it, and Escape closes it. A click
+ *    on the scrim around it puts focus back on the field. The caller returns focus to what opened
+ *    it, in `onClose`.
+ *  - The scrim is fixed to the viewport, so it covers the whole page wherever the dialog is drawn. */
 export function DeleteChannelDialog({ channel, space, controller, onClose }: {
   channel: string;
   space: string | null;
@@ -71,7 +73,16 @@ export function DeleteChannelDialog({ channel, space, controller, onClose }: {
   };
 
   return (
-    <div className="ui-scrim">
+    <div
+      className="ui-scrim"
+      onMouseDown={(e) => {
+        // A click on the scrim would move focus to the page behind, where Escape no longer reaches
+        // the dialog. It keeps focus in the dialog instead, on the field.
+        if (e.target !== e.currentTarget) return;
+        e.preventDefault();
+        (field.current as unknown as Focusable | null)?.focus();
+      }}
+    >
       <div ref={box} className="ui-card ui-dialog" role="dialog" aria-modal="true" aria-labelledby={title} aria-describedby={body} onKeyDown={onKeyDown}>
         <h4 id={title}>{`Delete #${channel}?`}</h4>
         <p id={body}>{`This deletes every message in #${channel} for everyone${space ? ` on ${space}` : ""}. You can't undo it. If anyone posts to #${channel} again, it comes back empty.`}</p>

@@ -378,6 +378,7 @@ localStorage.clear();
   const field = () => box()?.querySelector("input");
   const destroy = () => all(box() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined;
   const shape = () => [box()?.className, [...(box()?.children ?? [])].map((c) => `${c.tagName}.${c.className}`)];
+  const FIXED = ["ui-card ui-dialog", ["H4.", "P.", "LABEL.", "SPAN.ui-dialog-err", "DIV.ui-btns"]];
   ok("6.1 Delete channel opens the dialog with the field focused", box() !== null && document.activeElement === field(), document.activeElement?.outerHTML);
   const before = JSON.stringify(shape());
   const states: [string, boolean | undefined][] = [];
@@ -386,7 +387,8 @@ localStorage.clear();
     states.push([v, destroy()?.disabled]);
   }
   same("6.2 the destructive button waits for the exact name", states, [["revie", true], ["Review", true], ["review ", true], ["review", false]]);
-  ok("6.3 the dialog keeps its shape before and after typing", JSON.stringify(shape()) === before && destroy()?.className === "ui-btn ui-btn-danger-solid", { before, after: shape() });
+  ok("6.3 the dialog keeps its shape before and after typing, with the error row always there",
+    before === JSON.stringify(FIXED) && JSON.stringify(shape()) === before && destroy()?.className === "ui-btn ui-btn-danger-solid", { before, after: shape() });
   destroy()?.focus();
   key(destroy(), "Tab");
   ok("6.4 Tab from the last control wraps to the field", document.activeElement === field(), document.activeElement?.outerHTML);
@@ -403,6 +405,16 @@ localStorage.clear();
   await m.run(() => click(destroy()));
   await m.run(() => sleep(0));
   ok("6.9 confirming deletes the channel by name, once, and closes the dialog", JSON.stringify(deleted) === JSON.stringify(["review"]) && box() === null && document.activeElement === trigger, deleted);
+  await m.run(() => click(trigger));
+  (document.activeElement as HTMLElement | null)?.blur();
+  const scrim = box()?.parentElement;
+  await m.run(() => {
+    scrim?.dispatchEvent(new (dom.window.MouseEvent as typeof MouseEvent)("mousedown", { bubbles: true, cancelable: true }));
+    click(scrim);
+  });
+  const kept = document.activeElement === field();
+  await m.run(() => key(document.activeElement, "Escape"));
+  ok("6.10 a click on the scrim keeps focus in the dialog, so Escape still closes it", kept && box() === null && document.activeElement === trigger, { kept, open: box() !== null });
   await m.unmount();
 
   const refused = fakeController(async () => { throw new Error("delete #review: permissions violation for publish"); });
@@ -412,9 +424,9 @@ localStorage.clear();
   await r.run(() => typeInto(rbox()?.querySelector("input"), "review"));
   await r.run(() => click(all(rbox() ?? none(), ".ui-btns button")[1]));
   await r.run(() => sleep(0));
-  ok("6.10 a refusal keeps the dialog open and shows the server's error in it",
+  ok("6.11 a refusal keeps the dialog open and shows the server's error in it",
     rbox() !== null && textOf(rbox()?.querySelector("[role=alert]")) === "delete #review: permissions violation for publish" && refused.deleted.length === 1, textOf(rbox()));
-  ok("6.11 and the button can be pressed again", (all(rbox() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined)?.disabled === false);
+  ok("6.12 and the button can be pressed again", (all(rbox() ?? none(), ".ui-btns button")[1] as HTMLButtonElement | undefined)?.disabled === false);
   await r.unmount();
 }
 
