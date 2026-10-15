@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { executionProblems, invocationOf, observeRequests, type ObservedRequest } from "./census/execute.js";
+import { executionProblems, invocationOf, observeRequests, type Expectation, type ObservedRequest } from "./census/execute.js";
 import { readOwnerMap } from "./census/owners.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-census-home-"));
@@ -77,26 +77,26 @@ try {
   await mgr.start();
   nc = await connect({ servers: SERVER });
 
-  // Each case is an argv the census maps, plus the endpoint commands it issues only as resolution.
-  // The census grades what a command issues, so a native refusal (an open manager has no static
-  // slots, and no connector is installed here) is still a complete observation.
-  const cases: { argv: string[]; steps?: string[] }[] = [
-    { argv: ["ps"] },
-    { argv: ["ps", "--slots"] },
-    { argv: ["models", "--agent", "claude", "--refresh"] },
-    { argv: ["spawn", "scout", "--detach", "--agent", "claude", "--opt", "effort=high"] },
+  // Each case is an argv the census maps and the endpoint commands it issues. The census grades
+  // what a command issues, so a native refusal (an open manager has no static slots, and no
+  // connector is installed here) is still a complete observation.
+  const cases: { argv: string[]; expect: Expectation }[] = [
+    { argv: ["ps"], expect: { issues: ["ep:manager:ps"] } },
+    { argv: ["ps", "--slots"], expect: { issues: ["ep:manager:slots"] } },
+    { argv: ["models", "--agent", "claude", "--refresh"], expect: { issues: ["ep:manager:models"] } },
+    { argv: ["spawn", "scout", "--detach", "--agent", "claude", "--opt", "effort=high"], expect: { issues: ["ep:manager:spawn"] } },
   ];
   const observations = new Map<string, ObservedRequest[]>();
   const statuses = new Map<string, number | null | undefined>();
-  for (const { argv, steps } of cases) {
+  for (const { argv, expect } of cases) {
     let result: { status: number | null; output: string } | undefined;
     const observed = await observeRequests(nc, SPACE, async () => { result = await cotal(...argv, "--space", SPACE); });
     const label = `cotal ${argv.join(" ")}`;
     observations.set(argv.join(" "), observed);
     statuses.set(argv.join(" "), result?.status);
     check(`${label} issued a manager command`, observed.some((r) => r.endpoint === "manager" && r.command !== "describe"), { observed, output: result?.output });
-    const problems = executionProblems(invocationOf(argv, map), observed, map, steps);
-    check(`every request ${label} issued matches its owner rows`, problems.length === 0, problems);
+    const problems = executionProblems(invocationOf(argv, map), observed, map, expect);
+    check(`every request ${label} issued matches its owner rows and its case`, problems.length === 0, problems);
   }
   check("cotal ps against the live manager exits 0", statuses.get("ps") === 0, statuses.get("ps"));
   const models = observations.get("models --agent claude --refresh") ?? [];
@@ -106,39 +106,60 @@ try {
   const spawned = observations.get("spawn scout --detach --agent claude --opt effort=high") ?? [];
   check("the spawn case sent a key under its options map",
     spawned.some((r) => r.command === "spawn" && r.fields.includes("launchOptions.effort")), spawned);
-  check("an undeclared key under a field whose contract lists its properties still fails",
-    executionProblems(invocationOf(["spawn", "scout", "--detach"], map), [{ endpoint: "manager", command: "spawn", fields: ["supervise.bogus"] }], map)
-      .includes("cotal spawn --detach sent manager spawn field supervise.bogus, whose owner is missing"));
 
-  const wrongField = { ...map, owners: { ...map.owners, "ep:manager:models.agent": "current:ps" } };
-  check("a field row that names another command fails on the models observation",
-    executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"], map), models, wrongField)
-      .includes("cotal models --agent --refresh sent manager models field agent, whose owner is current:ps"));
-  const wrong = { ...map, owners: { ...map.owners, "ep:manager:ps": "current:models" } };
-  check("a row that names another command for manager ps fails on the same observation",
-    executionProblems(invocationOf(["ps"], map), psObserved, wrong).includes("cotal ps issued manager ps, whose owner is current:models"));
-  check("a models run that issued nothing fails on the row it should have issued",
-    executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"], map), [], map)
-      .includes("cotal models --agent --refresh issued none of the rows owned by current:models: ep:manager:models"));
-  check("an invoke that issued one of the endpoint commands invoke owns passes",
-    executionProblems(invocationOf(["invoke", "linear", "inventory"], map), [{ endpoint: "linear", command: "inventory", fields: [] }], map).length === 0,
-    executionProblems(invocationOf(["invoke", "linear", "inventory"], map), [{ endpoint: "linear", command: "inventory", fields: [] }], map));
-  const preserved = [{ endpoint: "manager", command: "prepare-preservation", fields: [] }, { endpoint: "manager", command: "commit-preservation", fields: [] }];
-  check("a preserving down that succeeded without its abort step passes",
-    executionProblems(invocationOf(["down", "--preserve-state"], map), preserved, map).length === 0,
-    executionProblems(invocationOf(["down", "--preserve-state"], map), preserved, map));
-  check("a run mode's row is required of that mode",
-    executionProblems(invocationOf(["run", "start", "--file", "p"], map), [], map).some((p) => p.includes("ep:manager:run-start")));
-  check("an amend that issued nothing fails on the row it shares with answer",
-    executionProblems(invocationOf(["run", "amend", "r", "s", "--value", "x"], map), [], map)
-      .includes("cotal run amend --value issued none of the rows owned by current:run amend: ep:manager:run-answer"));
-  const turned = [{ endpoint: "manager", command: "turn", fields: [] }];
-  check("a local start that drove a turn passes without run-start",
-    executionProblems(invocationOf(["run", "start", "--local", "--file", "p"], map), turned, map).length === 0,
-    executionProblems(invocationOf(["run", "start", "--local", "--file", "p"], map), turned, map));
-  check("a local read, which issues no endpoint command, passes",
-    executionProblems(invocationOf(["run", "ps", "--local"], map), [], map).length === 0,
-    executionProblems(invocationOf(["run", "ps", "--local"], map), [], map));
+  // Self-tests: fixed observations against the real map, or against a map with one row changed.
+  const req = (command: string, fields: string[] = [], endpoint = "manager"): ObservedRequest => ({ endpoint, command, fields });
+  const problemsOf = (argv: string[], observed: ObservedRequest[], issues: string[], against = map) =>
+    executionProblems(invocationOf(argv, against), observed, against, { issues });
+  const passes = (name: string, argv: string[], observed: ObservedRequest[], issues: string[]) => {
+    const problems = problemsOf(argv, observed, issues);
+    check(name, problems.length === 0, problems);
+  };
+  const reports = (name: string, problems: string[], expected: string) => check(name, problems.includes(expected), problems);
+  reports("an undeclared key under a field whose contract lists its properties still fails",
+    problemsOf(["spawn", "scout", "--detach"], [req("spawn", ["supervise.bogus"])], ["ep:manager:spawn"]),
+    "cotal spawn --detach sent manager spawn field supervise.bogus, whose owner is missing");
+  reports("a field row that names another command fails on the models observation",
+    problemsOf(["models", "--agent", "claude", "--refresh"], models, ["ep:manager:models"], { ...map, owners: { ...map.owners, "ep:manager:models.agent": "current:ps" } }),
+    "cotal models --agent --refresh sent manager models field agent, whose owner is current:ps");
+  reports("a row that names another command for manager ps fails on the same observation",
+    problemsOf(["ps"], psObserved, [], { ...map, owners: { ...map.owners, "ep:manager:ps": "current:models" } }),
+    "cotal ps issued manager ps, whose owner is current:models");
+  reports("a models run that issued nothing fails on the row its case expects",
+    problemsOf(["models", "--agent", "claude", "--refresh"], [], ["ep:manager:models"]),
+    "cotal models --agent --refresh did not issue ep:manager:models");
+  reports("a command the case does not expect fails",
+    problemsOf(["down", "--preserve-state"], [req("prepare-preservation"), req("abort-preservation")], ["ep:manager:prepare-preservation"]),
+    "cotal down --preserve-state issued ep:manager:abort-preservation, which its case does not expect");
+  reports("a case cannot expect a row whose owner needs a flag the run does not pass",
+    problemsOf(["ps"], [req("slots")], ["ep:manager:slots"]),
+    "cotal ps expects ep:manager:slots, whose owner is current:ps --slots");
+  reports("a case cannot expect a row another mode owns",
+    problemsOf(["run", "ps", "--local"], [req("run-start")], ["ep:manager:run-start"]),
+    "cotal run ps --local expects ep:manager:run-start, whose owner is current:run start");
+  reports("a case cannot expect a row another command owns",
+    problemsOf(["ps"], [req("models")], ["ep:manager:models"]),
+    "cotal ps expects ep:manager:models, whose owner is current:models");
+  passes("an invoke that issued the endpoint command its arguments name passes",
+    ["invoke", "linear", "inventory"], [req("inventory", [], "linear")], ["ep:linear:inventory"]);
+  passes("a preserving down that succeeded without its abort step passes",
+    ["down", "--preserve-state"], [req("prepare-preservation"), req("commit-preservation")], ["ep:manager:prepare-preservation", "ep:manager:commit-preservation"]);
+  passes("an amend that issued the row it shares with answer passes",
+    ["run", "amend", "r", "s", "--value", "x"], [req("run-answer", ["amend", "runId", "stepKey", "value"])], ["ep:manager:run-answer"]);
+  passes("a local start that drove a turn passes",
+    ["run", "start", "--local", "--file", "p"], [req("turn")], ["ep:manager:turn"]);
+  passes("a local start whose program relays nothing passes",
+    ["run", "start", "--local", "--file", "p"], [], []);
+  const stepped = executionProblems(invocationOf(["ps"], map), [req("models"), req("ps")], map, { issues: ["ep:manager:ps"], steps: ["ep:manager:models"] });
+  check("a resolution step the case declares is neither expected nor graded", stepped.length === 0, stepped);
+  passes("a local read, which issues no endpoint command, passes",
+    ["run", "ps", "--local"], [], []);
+  passes("a detached resume that names its agent passes on spawn and the transcript it receives",
+    ["spawn", "scout", "--detach", "--resume", "sid", "--agent", "claude", "--on", "inst"],
+    [req("transcript-receive"), req("spawn")], ["ep:manager:transcript-receive", "ep:manager:spawn"]);
+  reports("a detached resume observed resolving its agent without spawning fails",
+    problemsOf(["spawn", "scout", "--detach", "--resume", "sid"], [req("resolve-agent")], ["ep:manager:resolve-agent", "ep:manager:spawn"]),
+    "cotal spawn --detach --resume did not issue ep:manager:spawn");
   let refused = "";
   try { invocationOf(["spawn", "-f", "cotal.yaml"], map); } catch (e) { refused = e instanceof Error ? e.message : String(e); }
   check("a case written with a short flag is refused", refused.includes("write -f in its long form"), refused);

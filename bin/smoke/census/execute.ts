@@ -90,26 +90,34 @@ export function invocationOf(argv: readonly string[], map: OwnerMap): Invocation
 const PROTOCOL_COMMANDS = new Set(["describe"]);
 
 /**
- * Why the requests one CLI invocation issued disagree with the owner map.
+ * What one census case declares it issues. `issues` lists the endpoint-command items (`ep:<endpoint>:
+ * <command>`) the invocation sends. `steps` lists the ones it sends only as resolution for another
+ * command (a targeted command looks its target up first); they are neither expected nor graded.
+ */
+export interface Expectation {
+  issues: readonly string[];
+  steps?: readonly string[];
+}
+
+/**
+ * Why the requests one CLI invocation issued disagree with the owner map and with its case.
  *
  * Every issued command and input field must be owned by `current:<command>`, whatever mode or flag
  * the row adds, because a command can send a field on every run (a default) or issue a command as a
- * step of a larger operation. `steps` lists the endpoint commands this invocation issues as
- * resolution for another one (a targeted command looks its target up first); they are exempt. A
- * field whose contract declares no properties (an options map, forwarded tool arguments) is one
- * value: the keys under it are data, not fields.
+ * step of a larger operation. A field whose contract declares no properties (an options map,
+ * forwarded tool arguments) is one value: the keys under it are data, not fields.
  *
- * Conversely, the invocation selects one owner: its command, its mode and the path flags it passes,
- * where a path flag is one that a current endpoint-command row of the command names. `ps --slots`
- * selects `current:ps --slots`, and `run ps --local`, which reads the run stores directly, selects
- * an owner no row names. The endpoint-command rows of that owner are alternatives, so at least one
- * of them must have been issued: `invoke` issues the endpoint command its arguments name, and a
- * step that runs only on refusal (`abort-preservation`) is not issued when the operation succeeds.
- * An item that more than one entry point issues lists each owner, and each selects it.
+ * The case names the endpoint commands it issues, because whether a command is sent can depend on
+ * more than the argv: `spawn --detach --resume` resolves the agent only when `--agent` is omitted,
+ * and a local run relays a turn only when its program reaches one. Each expected item must have a
+ * current owner that is this invocation: the run's command, its mode words, and flags it passes. An
+ * item that more than one entry point issues lists each owner, and any of them qualifies. The
+ * commands issued must then be the expected ones, no more and no fewer.
  */
-export function executionProblems(run: Invocation, observed: readonly ObservedRequest[], map: OwnerMap, steps: readonly string[] = []): string[] {
+export function executionProblems(run: Invocation, observed: readonly ObservedRequest[], map: OwnerMap, expect: Expectation): string[] {
   const problems: string[] = [];
   const label = [run.command, ...run.words, ...run.flags].join(" ");
+  const steps = expect.steps ?? [];
   const current = (item: string) =>
     ownersOf(map, item).flatMap((owner) => {
       const parsed = parseOwner(owner);
@@ -132,21 +140,19 @@ export function executionProblems(run: Invocation, observed: readonly ObservedRe
   for (const req of observed) {
     if (PROTOCOL_COMMANDS.has(req.command)) continue;
     const item = `ep:${req.endpoint}:${req.command}`;
-    issued.add(item);
     if (steps.includes(item)) continue;
+    issued.add(item);
     if (!ownedHere(item)) problems.push(`cotal ${label} issued ${req.endpoint} ${req.command}, whose owner is ${shown(item)}`);
     for (const field of new Set(req.fields.map((f) => fieldItem(item, f))))
       if (!ownedHere(field))
         problems.push(`cotal ${label} sent ${req.endpoint} ${req.command} field ${field.slice(item.length + 1)}, whose owner is ${shown(field)}`);
   }
-  const commandRows = Object.keys(map.owners).filter((item) => /^ep:[^:]+:[^.@#]+$/.test(item));
-  const ofCommand = (item: string) => current(item).filter((owner) => owner.command === run.command);
-  const pathFlags = new Set(commandRows.flatMap((item) => ofCommand(item).flatMap((owner) => owner.flags)));
-  const selected = run.flags.filter((flag) => pathFlags.has(flag));
-  const selects = (owner: CommandOwner) =>
-    owner.words.join(" ") === run.words.join(" ") && owner.flags.length === selected.length && selected.every((flag) => owner.flags.includes(flag));
-  const required = commandRows.filter((item) => ofCommand(item).some(selects));
-  if (required.length > 0 && !required.some((item) => issued.has(item)))
-    problems.push(`cotal ${label} issued none of the rows owned by ${["current:" + run.command, ...run.words, ...selected].join(" ")}: ${required.join(", ")}`);
+  const performs = (owner: CommandOwner) =>
+    owner.command === run.command && owner.words.join(" ") === run.words.join(" ") && owner.flags.every((flag) => run.flags.includes(flag));
+  for (const item of expect.issues) {
+    if (!current(item).some(performs)) problems.push(`cotal ${label} expects ${item}, whose owner is ${shown(item)}`);
+    if (!issued.has(item)) problems.push(`cotal ${label} did not issue ${item}`);
+  }
+  for (const item of issued) if (!expect.issues.includes(item)) problems.push(`cotal ${label} issued ${item}, which its case does not expect`);
   return problems;
 }

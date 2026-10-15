@@ -652,9 +652,18 @@
    "current:run start --local",
    "current:run resume --local"
   ],
-  "ep:manager:cancel#ephemeral/manager.lifecycle": "current:run --local",
-  "ep:manager:cancel.goalId": "current:run --local",
-  "ep:manager:cancel.mode": "current:run --local",
+  "ep:manager:cancel#ephemeral/manager.lifecycle": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:cancel.goalId": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:cancel.mode": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
   "ep:manager:commit-preservation": "current:down --preserve-state",
   "ep:manager:commit-preservation#ephemeral/manager.admin": "current:down --preserve-state",
   "ep:manager:commit-preservation.attemptId": "current:down --preserve-state",
@@ -798,7 +807,10 @@
    "current:run start --local",
    "current:run resume --local"
   ],
-  "ep:manager:turn#ephemeral/manager.lifecycle": "current:run --local",
+  "ep:manager:turn#ephemeral/manager.lifecycle": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
   "ep:manager:turn-pending": "pending:run turns",
   "ep:manager:turn-pending#ephemeral/manager.self": "pending:run turns",
   "ep:manager:turn-pending@self": "pending:run turns",
@@ -809,12 +821,30 @@
   "ep:manager:turn-yield.status": "pending:run yield",
   "ep:manager:turn-yield.to": "pending:run yield",
   "ep:manager:turn-yield@self": "pending:run yield",
-  "ep:manager:turn.deadlineAt": "current:run --local",
-  "ep:manager:turn.deadlineMs": "current:run --local",
-  "ep:manager:turn.handoffFrom": "current:run --local",
-  "ep:manager:turn.payload": "current:run --local",
-  "ep:manager:turn@any": "current:run --local",
-  "ep:manager:turn@owner": "current:run --local",
+  "ep:manager:turn.deadlineAt": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:turn.deadlineMs": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:turn.handoffFrom": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:turn.payload": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:turn@any": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
+  "ep:manager:turn@owner": [
+   "current:run start --local",
+   "current:run resume --local"
+  ],
   "manifest:AgentPolicy.allowPublish": "current:spawn --file",
   "manifest:AgentPolicy.allowSubscribe": "current:spawn --file",
   "manifest:AgentPolicy.subscribe": "current:spawn --file",
