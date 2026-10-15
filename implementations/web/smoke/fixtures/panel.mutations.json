@@ -350,6 +350,22 @@
       "cell": "2.7 a member the roster does not know is listed last by its id, with no status to show"
     },
     {
+      "name": "M14 a member the roster does not know gets a status dot",
+      "file": "implementations/web/client/src/ui/panel/MembersTab.tsx",
+      "find": " dot={r !== undefined}",
+      "replace": "",
+      "expectRed": "2.13 a member the roster does not know draws no status dot, as it shows no status word",
+      "cell": "2.13 a member the roster does not know draws no status dot, as it shows no status word"
+    },
+    {
+      "name": "A25 Recent names the channel again",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "<h5>Recent</h5>",
+      "replace": "<h5>{`Recent in #${channel}`}</h5>",
+      "expectRed": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
+      "cell": "3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified"
+    },
+    {
       "name": "M7 picking a member picks someone else",
       "file": "implementations/web/client/src/ui/panel/MembersTab.tsx",
       "find": "onClick={() => onPick(m.id)}",
@@ -558,20 +574,20 @@
       "cell": "3.1 the profile is the name and role · harness"
     },
     {
-      "name": "A2 the character is drawn at the mock's 72",
+      "name": "A2 the character is drawn at the brief's 76",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "size={76} dot={false}",
-      "replace": "size={72} dot={false}",
-      "expectRed": "3.2 the character is drawn at 76px with no status dot",
-      "cell": "3.2 the character is drawn at 76px with no status dot"
+      "find": "size={72} dot={false}",
+      "replace": "size={76} dot={false}",
+      "expectRed": "3.2 the character is drawn at 72px with no status dot",
+      "cell": "3.2 the character is drawn at 72px with no status dot"
     },
     {
       "name": "A3 the character carries a status dot",
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
-      "find": "size={76} dot={false}",
-      "replace": "size={76}",
-      "expectRed": "3.2 the character is drawn at 76px with no status dot",
-      "cell": "3.2 the character is drawn at 76px with no status dot"
+      "find": "size={72} dot={false}",
+      "replace": "size={72}",
+      "expectRed": "3.2 the character is drawn at 72px with no status dot",
+      "cell": "3.2 the character is drawn at 72px with no status dot"
     },
     {
       "name": "A4 Reported shows the raw time",

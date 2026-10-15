@@ -409,8 +409,6 @@ a.ui-btn { text-decoration: none; }
 /* The Activity header's copy of the stale marker sits in the bar, not under the space name. */
 .ui-bar .ui-stale { margin: 0; padding: 5px 8px; }
 /* ---------- right panel ---------- */
-/* The Agent tab draws the character at 76px; the mock's frame drew it at 72. */
-.ui-big { width: 76px; height: 76px; }
 /* A tab with nothing to show (Members off a channel, Agent before a pick) does not answer a hover. */
 .ui-tab:disabled { opacity: .45; cursor: default; }
 .ui-tab:disabled:hover { background: none; }

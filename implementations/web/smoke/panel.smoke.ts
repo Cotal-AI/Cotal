@@ -165,6 +165,8 @@ const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: stri
   same("2.11 a channel whose policy the server has not sent says nothing about delivery", kv(bare), [["Messages", "4"]]);
   const del = live.querySelector("button.ui-btn-danger") as HTMLElement | null;
   ok("2.12 Delete channel closes the tab, and no dialog is drawn until it is clicked", textOf(del) === "Delete channel" && live.querySelector("[role=dialog]") === null, del?.outerHTML);
+  const unknownDot = all(stranger, "button.v3-mrow").map((r) => r.querySelector(".ui-av .ui-st") !== null);
+  same("2.13 a member the roster does not know draws no status dot, as it shows no status word", unknownDot, [true, false]);
 }
 
 // ── 3. The Agent tab ─────────────────────────────────────────────────────────────────────────────
@@ -172,7 +174,7 @@ const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: stri
   const rev = agentTab("local.rev");
   same("3.1 the profile is the name and role · harness", [textOf(rev.querySelector(".ui-profile h4")), textOf(rev.querySelector(".ui-profile .ui-sub"))], ["reviewer", "reviewer · Codex"]);
   const big = rev.querySelector(".ui-big .ui-av") as HTMLElement | null;
-  ok("3.2 the character is drawn at 76px with no status dot", big?.getAttribute("style")?.includes("--s:76px") === true && big.querySelector(".ui-st") === null, big?.outerHTML.slice(0, 120));
+  ok("3.2 the character is drawn at 72px with no status dot", big?.getAttribute("style")?.includes("--s:72px") === true && big.querySelector(".ui-st") === null, big?.outerHTML.slice(0, 120));
   const sline = rev.querySelector(".ui-sline") ?? none();
   same("3.3 the status line is the status word, the activity, and when it reported",
     [textOf(sline.querySelector(".v3-spill")), textOf(sline.querySelector(":scope > span:not(.v3-spill)")), textOf(sline.querySelector("small"))],
@@ -213,7 +215,7 @@ const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: stri
   same("3.16 Skills are the card's", all(rev, ".ui-tags .ui-chip").map(textOf), ["code-review", "typescript", "spec"]);
   const recent = all(rev, ".ui-mini").map((m) => [textOf(m.querySelector("time")), m.querySelector(".ui-unverified") !== null]);
   ok("3.17 Recent lists the agent's own messages in the open channel, newest first, history marked unverified",
-    textOf(all(rev, "h5").find((h) => textOf(h).startsWith("Recent"))) === "Recent in #review"
+    textOf(all(rev, "h5").find((h) => textOf(h).startsWith("Recent"))) === "Recent"
       && JSON.stringify(recent) === JSON.stringify([["10:46", true], ["10:45", true], ["10:44", false]]), recent);
   ok("3.18 off a channel there is no Recent section", agentTab("local.rev", {}, null).querySelector(".ui-mini") === null);
   const gone = agentTab("local.nobody");

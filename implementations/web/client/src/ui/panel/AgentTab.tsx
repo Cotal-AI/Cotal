@@ -46,7 +46,7 @@ const BEAT_MS = 1000;
 /** The Agent tab (mock section D, the panel's second frame, and the agent states in section B): who
  *  the agent is, what it says it is doing, and the commands to reach its seat.
  *
- *  - The character at 76px, the name, and role · harness.
+ *  - The character at 72px, the name, and role · harness.
  *  - The status line: the status word (through `statusLabel`, so unknown progress says so), the
  *    activity or "No current activity", and "Reported <hh:mm>" from when the status began. With no
  *    `statusSince` no time is given.
@@ -92,7 +92,7 @@ export function AgentTab({ store, id, channel, clock }: {
   return (
     <>
       <div className="ui-profile">
-        <div className="ui-big"><Avatar vendor={row.harness} status={row.status} size={76} dot={false} /></div>
+        <div className="ui-big"><Avatar vendor={row.harness} status={row.status} size={72} dot={false} /></div>
         <h4>{row.name}</h4>
         {sub && <div className="ui-sub">{sub}</div>}
         <div className="ui-sline">
@@ -135,7 +135,7 @@ export function AgentTab({ store, id, channel, clock }: {
       )}
       {recent.length > 0 && (
         <>
-          <h5>{`Recent in #${channel}`}</h5>
+          <h5>Recent</h5>
           {recent.map(({ msg, senderId }) => {
             const text = partsToText(msg.parts);
             const at = Number.isFinite(msg.ts) ? new Date(msg.ts) : undefined;

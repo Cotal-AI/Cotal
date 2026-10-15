@@ -36,7 +36,8 @@ export function deliveryText(info: ChannelRow | undefined): string | undefined {
  *
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
  *    The pill names which, with the notes' tooltips. They are listed in the roster's order, waiting
- *    first, and a member the roster does not know is listed last by its id, with no status to show.
+ *    first, and a member the roster does not know is listed last by its id, with no status to show:
+ *    no word and no dot.
  *  - Clicking a member picks it (`onPick`), which opens the Agent tab.
  *  - Delete channel opens the type-the-name dialog, and focus comes back to the button when it closes.
  *  - `now` is the time the pill measures the feed's age against. */
@@ -82,7 +83,7 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
         const r = peers.get(m.id);
         return (
           <button key={m.id} type="button" className="v3-mrow" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>
-            <Avatar vendor={r?.harness} status={r?.status ?? "offline"} size={28} />
+            <Avatar vendor={r?.harness} status={r?.status ?? "offline"} size={28} dot={r !== undefined} />
             <span className="v3-mname">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>
             {r && <StatusWord row={r} />}
           </button>
