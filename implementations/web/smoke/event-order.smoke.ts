@@ -577,11 +577,11 @@ console.log("event-order smoke");
       && drawnRetention?.text === notice(retentionNotes)?.text && drawnRetention?.attrs.role === "status"
       && paragraph(renderShell(), "order-notice") === undefined, { drawnGap, drawnRetention });
   // The feed lane's notes are the feed's, not a channel's, so the line is drawn with NO channel open,
-  // and it sits outside the channel pane.
+  // and it sits in the centre above the view, outside the channel pane.
   const noChannel = renderShell({ orderNotes: gapNotes, open: null });
   const at = noChannel.indexOf('<p id="order-notice"');
   ok("15.9 and outside the channel pane, so it shows with no channel open",
-    at >= 0 && at < noChannel.indexOf("<main>"), noChannel);
+    at >= 0 && at < noChannel.indexOf('<section class="ui-view"') && noChannel.indexOf('<section class="ui-view"') >= 0, noChannel);
 }
 
 // ── 16. A HOLE INSIDE THE RETAINED BATCH, which no live arrival will ever reveal ─────────────────

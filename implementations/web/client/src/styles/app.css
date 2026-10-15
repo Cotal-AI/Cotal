@@ -354,3 +354,13 @@ pre code { background: none; padding: 0; }
 .v3-tabbar button[aria-current="page"] { color: var(--ink); font-weight: 500; }
 .v3-tabbar .ui-badge-gold { position: absolute; top: 6px; left: calc(50% + 6px); font-size: 10.5px; padding: 1px 5px; }
 .ui-dialog { height: 300px; }
+
+/* ---------- app shell (the mock's frame was a fixed demo box, so the page grid is written here) ---------- */
+.ui-app { height: 100vh; display: grid; grid-template-columns: 52px 264px minmax(0, 1fr) 360px; background: var(--bg); }
+.ui-app.no-pane { grid-template-columns: 52px 264px minmax(0, 1fr); }
+.ui-rail-btn { color: inherit; text-decoration: none; }
+.ui-rail-btn[aria-disabled="true"], .ui-rail-btn:disabled { opacity: .4; cursor: default; }
+.ui-rail-btn:disabled:hover, .ui-rail-btn[aria-disabled="true"]:hover { background: none; }
+.ui-center > .ui-view { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 20px; }
+.ui-chlink { display: block; color: var(--ink); text-decoration: none; }
+.ui-chlink[aria-current="page"] { font-weight: 600; }

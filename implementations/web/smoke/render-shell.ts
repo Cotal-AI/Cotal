@@ -3,17 +3,29 @@
  *  pure function of the state handed in.
  *
  *  The import names `Shell.tsx` with its extension: the suites load it under tsx, and the
- *  coverage gate resolves an import to the file it names. */
+ *  coverage gate resolves an import to the file it names. For the same reason `Shell.tsx` and
+ *  `ui/AppShell.tsx` name the `.tsx` files they import, so a mutation in them is reachable. */
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { Shell } from "../client/src/Shell.tsx";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
+import { DEFAULT_ROUTE, type Route } from "../client/src/lib/route.js";
 
-/** The shell's HTML for the initial state with `patch` applied. */
-export function renderShell(patch: Partial<DashboardState> = {}): string {
+/** The shell's HTML for the initial state with `patch` applied, at `route`, with the details panel
+ *  open or closed. The controller is null, as it is before the dashboard has started. */
+export function renderShell(patch: Partial<DashboardState> = {}, route: Route = DEFAULT_ROUTE, paneOpen = false): string {
   const store = createStore<DashboardState>({ ...initialState, ...patch });
-  return renderToString(createElement(Shell, { store, controller: null }));
+  return renderToString(createElement(Shell, { store, controller: null, route, paneOpen }));
+}
+
+/** The attributes of every `<name ...>` start tag in `html`, in document order, unescaped. */
+export function startTags(html: string, name: string): Record<string, string>[] {
+  return [...html.matchAll(new RegExp(`<${name}\\b([^>]*)>`, "g"))].map((m) => {
+    const attrs: Record<string, string> = {};
+    for (const a of m[1].matchAll(/\s([a-zA-Z][\w:-]*)(?:="([^"]*)")?/g)) attrs[a[1]] = unescapeHtml(a[2] ?? "");
+    return attrs;
+  });
 }
 
 /** Undo the escaping React applies to text and attribute values. */

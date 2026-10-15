@@ -1,0 +1,193 @@
+{
+  "command": "pnpm smoke:web-app-shell",
+  "suite": [
+    "implementations/web/smoke/app-shell.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "A1 a Workflow runs item is added to the rail, which the first version does not have: the control behind it does not exist yet and the item would lead nowhere",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n",
+      "replace": "  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n  { label: \"Workflow runs\", icon: \"graph\", view: \"needs\" },\n",
+      "expectRed": "1.2 the rail has no Workflow runs item",
+      "cell": "1.2 the rail has no Workflow runs item"
+    },
+    {
+      "name": "A2 Topology moves above Agents, so the rail no longer reads in the order the mock draws it",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "  { label: \"Agents\", icon: \"agents\", view: \"agents\" },\n  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n",
+      "replace": "  { label: \"Topology\", icon: \"graph\", view: \"topology\" },\n  { label: \"Agents\", icon: \"agents\", view: \"agents\" },\n",
+      "expectRed": "1.1 the rail lists the five views and Settings, in the mock's order",
+      "cell": "1.1 the rail lists the five views and Settings, in the mock's order"
+    },
+    {
+      "name": "A4 the active item is always Activity, whatever the route says",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "        const here = route.view === view;",
+      "replace": "        const here = view === \"activity\";",
+      "expectRed": "2.2 a channel route marks Channels",
+      "cell": "2.2 a channel route marks Channels"
+    },
+    {
+      "name": "A5 the active item carries no aria-current, so the reader cannot tell where they are but by colour",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "aria-current={here ? \"page\" : undefined}",
+      "replace": "aria-current={undefined}",
+      "expectRed": "2.1 activity marks Activity",
+      "cell": "2.1 activity marks Activity"
+    },
+    {
+      "name": "A6 an item on its own view no longer keeps the current route, so clicking Agents on the host group resets it and a conversation loses its second party",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "  if (route.view === view) return route;\n",
+      "replace": "",
+      "expectRed": "3.2 on a dm route Direct messages links to that conversation",
+      "cell": "3.2 on a dm route Direct messages links to that conversation"
+    },
+    {
+      "name": "A7 an item with nowhere to lead still looks live, so the rail offers a link that does nothing",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "aria-disabled={to ? undefined : true}",
+      "replace": "aria-disabled={undefined}",
+      "expectRed": "3.3 with no channel and no direct message the two items carry no href and say they are disabled",
+      "cell": "3.3 with no channel and no direct message the two items carry no href and say they are disabled"
+    },
+    {
+      "name": "A8 Settings is dropped from the rail",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "      <button type=\"button\" className=\"ui-rail-btn\" aria-label=\"Settings\" title=\"Settings\" disabled={!onSettings} onClick={onSettings}>\n        <RailIcon name=\"gear\" size={22} />\n      </button>\n",
+      "replace": "",
+      "expectRed": "1.1 the rail lists the five views and Settings, in the mock's order",
+      "cell": "1.1 the rail lists the five views and Settings, in the mock's order"
+    },
+    {
+      "name": "A9 the shell never drops the panel column, so a closed panel leaves an empty 360px strip",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "paneOpen ? \"ui-app\" : \"ui-app no-pane\"",
+      "replace": "\"ui-app\"",
+      "expectRed": "4.1 the shell root carries the no-pane class when the panel is closed",
+      "cell": "4.1 the shell root carries the no-pane class when the panel is closed"
+    },
+    {
+      "name": "A10 the panel is drawn even when it is closed, so no-pane and a panel element disagree",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "{paneOpen && <section",
+      "replace": "{<section",
+      "expectRed": "4.3 a closed panel draws no panel element",
+      "cell": "4.3 a closed panel draws no panel element"
+    },
+    {
+      "name": "A11 the panel comes before the centre in the markup, so the grid places the centre in the 360px column",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "      <main className=\"ui-center\">{props.children}</main>\n      {paneOpen && <section className=\"ui-pane\" aria-label=\"Details\">{props.panel}</section>}\n",
+      "replace": "      {paneOpen && <section className=\"ui-pane\" aria-label=\"Details\">{props.panel}</section>}\n      <main className=\"ui-center\">{props.children}</main>\n",
+      "expectRed": "4.6 the four columns come in grid order: rail, sidebar, centre, panel",
+      "cell": "4.6 the four columns come in grid order: rail, sidebar, centre, panel"
+    },
+    {
+      "name": "A12 Channels leads nowhere when the route is elsewhere, so the shell no longer names a channel for the rail to land on",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "channel={channels[0]?.channel ?? null}",
+      "replace": "channel={null}",
+      "expectRed": "1.4 each view links to its route hash",
+      "cell": "1.4 each view links to its route hash"
+    },
+    {
+      "name": "A13 Direct messages never finds a conversation to land on",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "[0]?.id ?? null, [dms, roster]",
+      "replace": "[0]?.id && null, [dms, roster]",
+      "expectRed": "1.4 each view links to its route hash",
+      "cell": "1.4 each view links to its route hash"
+    },
+    {
+      "name": "A14 every channel in the list reads as the current one",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "route.view === \"channel\" && route.channel === c.channel ? \"page\" : undefined",
+      "replace": "\"page\"",
+      "expectRed": "5.2 and only the routed channel is the current one",
+      "cell": "5.2 and only the routed channel is the current one"
+    },
+    {
+      "name": "A15 the channel link carries the raw name instead of the encoded route",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "href={formatRoute({ view: \"channel\", channel: c.channel })}",
+      "replace": "href={`#/channel/${c.channel}`}",
+      "expectRed": "5.5 a channel name is encoded in its link and matched back to the route",
+      "cell": "5.5 a channel name is encoded in its link and matched back to the route"
+    },
+    {
+      "name": "A16 the centre stops saying which view it is showing",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "<section className=\"ui-view\" data-view={route.view}>",
+      "replace": "<section className=\"ui-view\">",
+      "expectRed": "5.3 the centre says which view it is showing",
+      "cell": "5.3 the centre says which view it is showing"
+    },
+    {
+      "name": "A17 a channel route stops naming a channel to open, so the address changes and the store keeps the old channel",
+      "file": "implementations/web/client/src/lib/routeOpen.ts",
+      "find": "return r.view === \"channel\" ? r.channel : null;",
+      "replace": "return null;",
+      "expectRed": "6.1 a channel route opens that channel",
+      "cell": "6.1 a channel route opens that channel"
+    },
+    {
+      "name": "A18 a route that is not a channel keeps the last channel open, so leaving a channel by the rail leaves its messages on screen",
+      "file": "implementations/web/client/src/lib/routeOpen.ts",
+      "find": "return r.view === \"channel\" ? r.channel : null;",
+      "replace": "return r.view === \"channel\" ? r.channel : \"general\";",
+      "expectRed": "6.2 every other route opens nothing",
+      "cell": "6.2 every other route opens nothing"
+    },
+    {
+      "name": "A19 syncOpen drops the target, so every route change closes the channel",
+      "file": "implementations/web/client/src/lib/routeOpen.ts",
+      "find": "controller?.open(target)",
+      "replace": "controller?.open(null)",
+      "expectRed": "6.3 syncOpen hands the target to controller.open, a null closes",
+      "cell": "6.3 syncOpen hands the target to controller.open, a null closes"
+    },
+    {
+      "name": "A20 syncOpen assumes a controller, so the first render before the dashboard has started throws",
+      "file": "implementations/web/client/src/lib/routeOpen.ts",
+      "find": "controller?.open(target)",
+      "replace": "controller!.open(target)",
+      "expectRed": "6.4 before the dashboard has started there is no controller and nothing happens",
+      "cell": "6.4 before the dashboard has started there is no controller and nothing happens"
+    },
+    {
+      "name": "A21 a rejected open is no longer caught, so a defect in the controller is an unhandled rejection",
+      "file": "implementations/web/client/src/lib/routeOpen.ts",
+      "find": ".catch((err) => console.error(\"opening a channel failed:\", err));",
+      "replace": ";",
+      "expectRed": "6.5 a rejected open is logged, not left as an unhandled rejection",
+      "cell": "6.5 a rejected open is logged, not left as an unhandled rejection"
+    },
+    {
+      "name": "A22 the router ignores the page path, so the old /graph address opens the activity feed",
+      "file": "implementations/web/client/src/routeWatch.ts",
+      "find": "parseRoute(host.location.hash, host.location.pathname)",
+      "replace": "parseRoute(host.location.hash, \"/\")",
+      "expectRed": "7.2 the old /graph path is topology",
+      "cell": "7.2 the old /graph path is topology"
+    },
+    {
+      "name": "A23 the hash listener is never removed, so a stopped watcher keeps reporting",
+      "file": "implementations/web/client/src/routeWatch.ts",
+      "find": "return () => host.removeEventListener(\"hashchange\", listener);",
+      "replace": "return () => {};",
+      "expectRed": "7.4 stopping removes the listener, so a later change reports nothing",
+      "cell": "7.4 stopping removes the listener, so a later change reports nothing"
+    },
+    {
+      "name": "A24 the listener reads the route once and replays it, so a hash change reports the old route",
+      "file": "implementations/web/client/src/routeWatch.ts",
+      "find": "  const listener = () => on(currentRoute(host));\n",
+      "replace": "  const first = currentRoute(host);\n  const listener = () => on(first);\n",
+      "expectRed": "7.3 a hashchange reports the new route, and an unknown hash reports the default",
+      "cell": "7.3 a hashchange reports the new route, and an unknown hash reports the default"
+    }
+  ]
+}

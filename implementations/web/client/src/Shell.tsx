@@ -1,5 +1,7 @@
 import { useMemo } from "react";
+import { dmPeers } from "./lib/dms.js";
 import { nameIndex, displayNameOf } from "./lib/names.js";
+import { formatRoute, type Route } from "./lib/route.js";
 import { partsToText } from "./lib/parts.js";
 import { rosterRows, statusLabel } from "./lib/roster.js";
 import { documentTitle, orderNotice, staleView } from "./lib/shellText.js";
@@ -7,6 +9,7 @@ import type { Controller } from "./state/controller.js";
 import { useStore } from "./state/hooks.js";
 import type { Store } from "./state/store.js";
 import type { DashboardState } from "./state/types.js";
+import { AppShell } from "./ui/AppShell.tsx";
 
 /** The two lines the dashboard owes its reader about what it shows: which sources are showing their
  *  last good value, and what the event stream is missing. Plain on purpose; phase 2 restyles them. */
@@ -23,30 +26,36 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
   );
 }
 
-/** What the phase 1 dashboard draws from the store, and nothing else: no feed, no fetch, no DOM
- *  access, so it renders the same in a browser and in `renderToString`. `controller` is null until
- *  the dashboard has started; the channel buttons stay disabled until then. */
-export function Shell({ store, controller }: { store: Store<DashboardState>; controller: Controller | null }) {
+/** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, no
+ *  DOM access, so it renders the same in a browser and in `renderToString`. `controller` is null
+ *  until the dashboard has started. The sidebar and the panel are empty frames and the centre still
+ *  draws the phase 1 content (channel list, messages, roster) until the views replace it. */
+export function Shell({ store, controller, route, paneOpen }: { store: Store<DashboardState>; controller: Controller | null; route: Route; paneOpen: boolean }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
   const roster = useStore(store, (s) => s.roster);
+  const dms = useStore(store, (s) => s.dms);
   const open = useStore(store, (s) => s.open);
   const idx = useMemo(() => nameIndex(roster), [roster]);
-  // A refused history read never rejects `open()`: it becomes an order note and a stale mark. What
-  // does reject it is a defect, which is logged rather than left as an unhandled rejection, as the
-  // boot does for `refresh()`.
-  const openChannel = (channel: string) => {
-    controller?.open(channel).catch((err) => console.error("opening a channel failed:", err));
-  };
+  const peer = useMemo(() => dmPeers(dms.map((d) => d.msg), roster)[0]?.id ?? null, [dms, roster]);
   return (
-    <div style={{ font: "14px 'Inter Variable', system-ui", padding: 16 }}>
+    <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer}>
       <title>{documentTitle(space)}</title>
       <StatusLines store={store} />
-      <div style={{ display: "grid", gridTemplateColumns: "220px 1fr 260px", gap: 16 }}>
-        <nav>{channels.map((c) => <button key={c.channel} disabled={!controller} onClick={() => openChannel(c.channel)}># {c.channel}</button>)}</nav>
-        <main>{open?.messages.map(({ msg }) => <p key={msg.id}><b>{displayNameOf(msg.from, idx)}</b> {partsToText(msg.parts)}</p>)}</main>
-        <aside>{rosterRows(roster).map((r) => <p key={r.id}>{r.name}: {statusLabel(r)}</p>)}</aside>
-      </div>
-    </div>
+      <section className="ui-view" data-view={route.view}>
+        <nav aria-label="Channels">
+          {channels.map((c) => (
+            <a
+              key={c.channel}
+              className="ui-chlink"
+              href={formatRoute({ view: "channel", channel: c.channel })}
+              aria-current={route.view === "channel" && route.channel === c.channel ? "page" : undefined}
+            ># {c.channel}</a>
+          ))}
+        </nav>
+        <div>{open?.messages.map(({ msg }) => <p key={msg.id}><b>{displayNameOf(msg.from, idx)}</b> {partsToText(msg.parts)}</p>)}</div>
+        <div aria-label="Roster">{rosterRows(roster).map((r) => <p key={r.id}>{r.name}: {statusLabel(r)}</p>)}</div>
+      </section>
+    </AppShell>
   );
 }
