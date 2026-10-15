@@ -28,11 +28,13 @@
  * the dashboard client does not use. Nothing here says how a frame should be drawn.
  *
  * AND THE EXACT EDGE OF THE REACH CLAIM. Two things are checked and they are not the same thing: the
- * renderer RETURNS the marker, and the shell CALLS it. That last cell exists because a review replaced
- * all five downstream calls with "" and the cells over the declaration stayed green: a correct helper
- * nobody invokes. What is NOT measured is the last hop, where the shell turns that text into DOM: no
- * cell here opens a browser or asserts rendered HTML. So these cells prove the marker is produced
- * and the producer is wired in, not that it survives to the pixels.
+ * renderer RETURNS the marker, and the shell DRAWS it. That last pair of cells exists because a
+ * review replaced all five downstream calls with "" and the cells over the declaration stayed green:
+ * a correct helper nobody invokes. It renders the shell to HTML on the server (`render-shell.ts`,
+ * `renderToString` over a seeded store) and checks that the message body in that HTML carries the
+ * renderer's text and its marker. What is NOT measured is a browser: no cell here mounts the page in
+ * a DOM or looks at pixels. So these cells prove the marker is produced and is in the shell's
+ * server-rendered HTML, not that a browser paints it.
  */
 import assert from "node:assert/strict";
 import type { CotalMessage } from "../client/src/api/types.js";
