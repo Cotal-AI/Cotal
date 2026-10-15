@@ -603,10 +603,6 @@
     "sha256": "1941ffefb75a18d7abc2118fc1cbd57cb45400dff055c137abce0fc29a4a91f0",
     "refusal": "mutation \"the refusal returns to one rail-blind sentence, with the question and the --local remedy on every rail\" is missing \"cell\""
   },
-  "implementations/web/smoke/fixtures/body-cap.mutations.json": {
-    "sha256": "19a44ba7e3f4c47d4ef3aee56986614610a8b8436b84b7a10cfb8b6c0d92bfb5",
-    "refusal": "mutation \"C1 the streaming count stops refusing, so the cap holds only for a caller that honestly declares an oversized body and stops nothing for one that declares nothing at all\" is missing \"cell\""
-  },
   "implementations/web/smoke/fixtures/bounded-aggregation.mutations.json": {
     "sha256": "6ac4a2e0c9d33fb1480e65668cfcf339576384a1b72c29f7d7f741d52b826426",
     "refusal": "mutation \"B1 the per-source deadline is dropped: every source is read to completion, so the request is unbounded again and the caller waits for the slowest read however long that takes - the 34-second success half of the measured defect\" is missing \"cell\""
@@ -614,14 +610,6 @@
   "implementations/web/smoke/fixtures/channel-alias.mutations.json": {
     "sha256": "5bb3479c848fe2c5dc8a8f4d4dc48248254b2a610b01201a1a696a11ae699d20",
     "refusal": "mutation \"A1 the history route stops asking whether the name is the one the wire uses, so a bidi-altered name reads the channel it aliases onto and the dashboard reports back the name that was typed\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/echo-escaping.mutations.json": {
-    "sha256": "858cd78f1c0b097c9bc119dd481adff6100aa90603174966197666aa65ecc50d",
-    "refusal": "mutation \"E1 the quoter stops escaping anything and becomes the bare `JSON.stringify` that shipped, so DEL, the C1 controls, the bidi marks and the line/paragraph separators go back to arriving raw in the value an operator reads\" is missing \"cell\""
-  },
-  "implementations/web/smoke/fixtures/history-limit.mutations.json": {
-    "sha256": "28d69d5ccaa70d2a43fea08078820a1951c6695e331f00307a93cc767aed3726",
-    "refusal": "mutation \"H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it\" is missing \"cell\""
   },
   "implementations/web/smoke/fixtures/web-events-filter.mutations.json": {
     "sha256": "294cebdc274e69b63d33ed9982db4f6f3baea12e8a74cbe302d7d2074934ce3f",

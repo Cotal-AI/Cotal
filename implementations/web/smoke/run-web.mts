@@ -20,6 +20,21 @@ if (process.env.COTAL_WEB_SMOKE_HANG_DMS === "1")
     opts?.signal?.addEventListener("abort", () => reject(opts.signal?.reason), { once: true });
   });
 
+/** A post whose text is this marker is refused the way the broker refuses a publish it does not
+ *  allow, so a suite can read the route's answer to a refusal without breaking the mesh. */
+const refuseText = process.env.COTAL_WEB_SMOKE_REFUSE_TEXT;
+if (refuseText) {
+  const refusal = () => Promise.reject(new Error(`Permissions Violation for Publish (${refuseText})`));
+  const multicast = CotalEndpoint.prototype.multicast;
+  const unicastAttributed = CotalEndpoint.prototype.unicastAttributed;
+  CotalEndpoint.prototype.multicast = function (text, opts) {
+    return text === refuseText ? refusal() : multicast.call(this, text, opts);
+  };
+  CotalEndpoint.prototype.unicastAttributed = function (to, text, opts) {
+    return text === refuseText ? refusal() : unicastAttributed.call(this, to, text, opts);
+  };
+}
+
 const raw = process.argv.slice(2);
 const values: Record<string, string | boolean> = {};
 for (let i = 0; i < raw.length; i++) {

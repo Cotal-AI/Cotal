@@ -19,6 +19,7 @@ import {
   clearChannel,
   assertValidChannel,
   hardenPrivate,
+  mentionsIn,
   type CotalMessage,
   type ParsedArgs,
   type SpaceAuth,
@@ -459,13 +460,18 @@ export class BadRequest extends Error {}
  *  400 by fixing its payload would loop forever on a size it never learns is the problem. */
 export class PayloadTooLarge extends Error {}
 
-/** The most a request body may weigh before the one write route refuses to keep reading it.
+/** A post the broker, or the operator's connection to it, refused. Neither the caller's fault nor
+ *  this server's, so the frame answers 502 with the broker's own message. */
+export class BrokerRefused extends Error {}
+
+/** The most a request body may weigh before a body route refuses to keep reading it.
  *
- *  THE ROUTE'S BODY HAS ONE FIELD, a channel name, and `assertValidChannel` bounds a usable name
- *  to dotted `[A-Za-z0-9_-]` segments that the wire will carry as a subject. The dashboard's own
- *  delete sends about sixty bytes. 8 KiB is therefore not a guess at a working size, it is two
+ *  The delete route's body has one field, a channel name, and `assertValidChannel` bounds a usable
+ *  name to dotted `[A-Za-z0-9_-]` segments that the wire will carry as a subject. The dashboard's
+ *  own delete sends about sixty bytes. 8 KiB is therefore not a guess at a working size, it is two
  *  orders of magnitude ABOVE any name the broker would accept, chosen so that no legitimate
- *  caller can meet it and an abusive one meets it immediately.
+ *  caller can meet it and an abusive one meets it immediately. The send route shares the cap, so a
+ *  post's text is bounded by it too.
  *
  *  MEASURED, before this existed, against the shipped route over a local broker with a raw socket
  *  rather than `fetch`, because `fetch` hides how much of the body actually left the client:
@@ -473,6 +479,9 @@ export class PayloadTooLarge extends Error {}
  *    peak RSS +1.39 GB, 1022 ms. The read was unbounded and ran to completion before the route
  *    formed an opinion, so the refusal was the expensive part rather than the cheap one. */
 const MAX_BODY_BYTES = 8 * 1024;
+
+/** The only routes that read a request body. Every other route refuses an announced body. */
+const BODY_ROUTES = new Set(["/api/channel/delete", "/api/send"]);
 
 /** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
  *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
@@ -836,6 +845,73 @@ export interface OperatorPoster {
 /** What `ensure()` rejects with once the poster has stopped. */
 export const POSTER_STOPPED = "the dashboard is shutting down, so it no longer posts";
 
+/** Why a post is refused once the operator credential has expired. */
+export const POST_OFF_EXPIRED = "The operator credential expired. Restart cotal web to post again.";
+
+/** What `POST /api/send` answers for a post that went out. `seq` is a DM's stored sequence, the
+ *  broker's proof that it kept the message; a channel post has none. */
+export interface SendAnswer { ok: true; id: string; operatorId: string; seq?: number }
+
+/** `POST /api/send`: posts the body `{kind: "msg", channel, text}` to one channel, or
+ *  `{kind: "dm", to, text}` to one roster member, as the operator. Separate from the handler so the
+ *  refusals that need a stopped or expired poster can be driven with one.
+ *
+ *  The body is read before any refusal, so the size cap bounds what a refused post costs: a reply
+ *  written over an unread body leaves Node draining the rest of it to keep the connection. Every
+ *  check runs before the poster starts, so a refused post never puts the operator on the roster.
+ *  Throws `PayloadTooLarge`, `BadRequest` and `BrokerRefused` for the request frame to answer. */
+export async function sendAsOperator(
+  post: PostCapability,
+  poster: OperatorPoster | undefined,
+  onRoster: (id: string) => boolean,
+  readRequest: () => Promise<unknown>,
+): Promise<{ status: number; body: SendAnswer | { error: string } }> {
+  const read = await readRequest().then(
+    (value) => ({ value }),
+    (e: unknown) => {
+      if (e instanceof PayloadTooLarge) throw e;
+      return undefined;
+    },
+  );
+  if (post.mode === "off") return { status: 403, body: { error: post.reason } };
+  if (!poster) throw new Error("posting is on but no operator poster was built");
+  if (poster.expired()) return { status: 403, body: { error: POST_OFF_EXPIRED } };
+  const body = read?.value;
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new BadRequest("the request body must be a JSON object");
+  const { kind, channel, to, text: raw } = body as Record<string, unknown>;
+  const text = typeof raw === "string" ? raw.trim() : "";
+  if (!text) throw new BadRequest("text required");
+  let target: { channel: string } | { to: string };
+  if (kind === "msg") {
+    if (typeof channel !== "string") throw new BadRequest("channel required");
+    const name = canonicalChannel(channel);
+    if (name.includes("*") || name.includes(">")) throw new BadRequest(`${quoteForOperator(name)} is not one channel`);
+    target = { channel: name };
+  } else if (kind === "dm") {
+    if (typeof to !== "string") throw new BadRequest("to required");
+    if (!onRoster(to)) throw new BadRequest(`no agent with id ${quoteForOperator(to)} is on the roster`);
+    target = { to };
+  } else throw new BadRequest('kind must be "msg" or "dm"');
+
+  let sender: CotalEndpoint;
+  try {
+    sender = await poster.ensure();
+  } catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    if (why === POSTER_STOPPED) return { status: 503, body: { error: why } };
+    throw new BrokerRefused(why);
+  }
+  const refused = (e: unknown): never => {
+    throw new BrokerRefused(e instanceof Error ? e.message : String(e));
+  };
+  if ("channel" in target) {
+    const msg = await sender.multicast(text, { channel: target.channel, mentions: mentionsIn(text) }).catch(refused);
+    return { status: 200, body: { ok: true, id: msg.id, operatorId: sender.card.id } };
+  }
+  const { msg, ack } = await sender.unicastAttributed(target.to, text).catch(refused);
+  return { status: 200, body: { ok: true, id: msg.id, operatorId: sender.card.id, seq: ack.seq } };
+}
+
 /** Builds the operator poster: a presence-registering endpoint with the card
  *  `{ name: "operator", role: "operator", kind: "endpoint" }`, on the static operator credential
  *  when there is one. The id is fixed here. The credential names it on a static mesh, and an open
@@ -1099,12 +1175,12 @@ export async function web(args: ParsedArgs): Promise<void> {
       return void res.end();
     }
 
-    // The delete endpoint is the sole route that reads a request body. Refuse an announced body
-    // before dispatch everywhere else, so the next no-body route inherits the same bound instead
-    // of silently letting Node drain an upload the handler will never inspect.
+    // Only the `BODY_ROUTES` read a request body. Refuse an announced body before dispatch
+    // everywhere else, so the next no-body route inherits the same bound instead of silently
+    // letting Node drain an upload the handler will never inspect.
     const declared = Number(req.headers["content-length"]);
     const announcedBody = declared > 0 || req.headers["transfer-encoding"] !== undefined;
-    const noBodyRoute = path !== "/api/channel/delete" || req.method !== "POST";
+    const noBodyRoute = !BODY_ROUTES.has(path) || req.method !== "POST";
     if (noBodyRoute && announcedBody) throw noBody(path, declared);
 
     if (path === "/feed") {
@@ -1236,9 +1312,8 @@ export async function web(args: ParsedArgs): Promise<void> {
         clock.done();
       }
     }
-    // Delete a channel and its content. The only write path on this otherwise read-only
-    // dashboard, so it's POST-gated. The client reaches it only through the controller's
-    // `deleteChannel`; nothing in the phase 1 shell calls that yet, and the operator's confirm
+    // Delete a channel and its content. A write path, so it's POST-gated. The client reaches it
+    // only through the controller's `deleteChannel`; nothing in the phase 1 shell calls that yet, and the operator's confirm
     // arrives with the phase 2 UI. Purges with the
     // channel-purger cred minted at startup (auth mode), the connection creds (open / --creds) or a
     // per-delete channel-purger view (user mode), never the account seed. A wildcard / missing
@@ -1277,6 +1352,11 @@ export async function web(args: ParsedArgs): Promise<void> {
         return;
       }
     }
+    // Post as the operator: a message to one channel, or a DM to one roster member.
+    if (path === "/api/send" && req.method === "POST") {
+      const answer = await sendAsOperator(post, poster, (id) => ep.getRoster().some((p) => p.card.id === id), () => readBody(req));
+      return json(res, answer.body, answer.status);
+    }
 
     const answer = clientResponse(client, path);
     if (answer.status === 200) {
@@ -1306,7 +1386,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       const why = e instanceof Error ? e.message : String(e);
       // A caller error and a server fault are different facts and must not share a status. Before
       // this split, a malformed query read in the log exactly like the dashboard breaking.
-      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : 500;
+      const status = e instanceof PayloadTooLarge ? 413 : e instanceof BadRequest ? 400 : e instanceof BrokerRefused ? 502 : 500;
       const caller = status < 500;
       console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${requestTargetForLog(req, gate.launchToken)} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
@@ -1695,7 +1775,7 @@ function debounce(fn: () => void, ms: number): () => void {
   };
 }
 
-async function readBody(req: IncomingMessage): Promise<{ channel?: string }> {
+async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   // A DECLARED size over the cap is refused before a single body byte is read. A declaration can
   // lie, in either direction, so this is the cheap gate and the loop below is the real one.
   const declared = Number(req.headers["content-length"]);

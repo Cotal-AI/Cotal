@@ -1,0 +1,145 @@
+{
+  "command": "pnpm smoke:web-send",
+  "suite": [
+    "implementations/web/smoke/send.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "S1 the roster check on `to` is dropped, so a DM to an id nobody holds goes to the wire instead of being refused with the id named",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (!onRoster(to)) throw new BadRequest(`no agent with id ${quoteForOperator(to)} is on the roster`);\n",
+      "replace": "",
+      "expectRed": "4.3 an unknown `to` is refused with 400, naming it escaped",
+      "cell": "4.3 an unknown `to` is refused with 400, naming it escaped"
+    },
+    {
+      "name": "S2 the channel is no longer checked against the name the wire uses, so a name the wire would rewrite posts to a different channel than it names",
+      "file": "implementations/web/src/web.ts",
+      "find": "    const name = canonicalChannel(channel);\n",
+      "replace": "    const name = channel;\n",
+      "expectRed": "4.2 a channel name the wire would rewrite is refused with 400, naming it escaped",
+      "cell": "4.2 a channel name the wire would rewrite is refused with 400, naming it escaped"
+    },
+    {
+      "name": "S3 the wildcard refusal is dropped, so a wildcard reaches the publish and comes back as a broker refusal instead of the caller's mistake",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (name.includes(\"*\") || name.includes(\">\")) throw new BadRequest(`${quoteForOperator(name)} is not one channel`);\n",
+      "replace": "",
+      "expectRed": "4.1 a wildcard channel is refused with 400, naming it as more than one channel",
+      "cell": "4.1 a wildcard channel is refused with 400, naming it as more than one channel"
+    },
+    {
+      "name": "S4 the send route is left out of the body routes, so the pre-dispatch guard refuses every post as a body the route does not take",
+      "file": "implementations/web/src/web.ts",
+      "find": "const BODY_ROUTES = new Set([\"/api/channel/delete\", \"/api/send\"]);",
+      "replace": "const BODY_ROUTES = new Set([\"/api/channel/delete\"]);",
+      "expectRed": "2.1 a channel post answers 200 and reaches the subscriber from the operator",
+      "cell": "2.1 a channel post answers 200 and reaches the subscriber from the operator"
+    },
+    {
+      "name": "S5 the request frame does not know a broker refusal, so it answers 500 and reads as the dashboard breaking",
+      "file": "implementations/web/src/web.ts",
+      "find": " : e instanceof BrokerRefused ? 502 : 500;",
+      "replace": " : 500;",
+      "expectRed": "2.4 a channel post the broker refuses answers 502 with the broker's message",
+      "cell": "2.4 a channel post the broker refuses answers 502 with the broker's message"
+    },
+    {
+      "name": "S6 a refused channel publish is not wrapped, so it reaches the frame as a server fault",
+      "file": "implementations/web/src/web.ts",
+      "find": "mentions: mentionsIn(text) }).catch(refused);",
+      "replace": "mentions: mentionsIn(text) });",
+      "expectRed": "2.4 a channel post the broker refuses answers 502 with the broker's message",
+      "cell": "2.4 a channel post the broker refuses answers 502 with the broker's message"
+    },
+    {
+      "name": "S7 a refused DM publish is not wrapped, so it reaches the frame as a server fault",
+      "file": "implementations/web/src/web.ts",
+      "find": "await sender.unicastAttributed(target.to, text).catch(refused);",
+      "replace": "await sender.unicastAttributed(target.to, text);",
+      "expectRed": "2.5 a DM the broker refuses answers 502 with the broker's message",
+      "cell": "2.5 a DM the broker refuses answers 502 with the broker's message"
+    },
+    {
+      "name": "S8 the expiry check is dropped, so an expired operator tries to start and the post fails as a broker refusal instead of saying to restart",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (poster.expired()) return { status: 403, body: { error: POST_OFF_EXPIRED } };\n",
+      "replace": "",
+      "expectRed": "1.1 an expired operator credential refuses the post with 403 and POST_OFF_EXPIRED, before the poster starts",
+      "cell": "1.1 an expired operator credential refuses the post with 403 and POST_OFF_EXPIRED, before the poster starts"
+    },
+    {
+      "name": "S9 a post during shutdown is answered as a broker refusal, though the broker refused nothing",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (why === POSTER_STOPPED) return { status: 503, body: { error: why } };\n",
+      "replace": "",
+      "expectRed": "1.2 a post after the poster stopped answers 503 with POSTER_STOPPED",
+      "cell": "1.2 a post after the poster stopped answers 503 with POSTER_STOPPED"
+    },
+    {
+      "name": "S10 an operator that cannot start is rethrown as it came, so the frame answers it as a server fault",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BrokerRefused(why);\n",
+      "replace": "    throw e;\n",
+      "expectRed": "1.3 an operator that cannot start is a broker refusal, carrying the broker's message",
+      "cell": "1.3 an operator that cannot start is a broker refusal, carrying the broker's message"
+    },
+    {
+      "name": "S11 a channel post drops its mentions, so an agent named in the text is not woken by it",
+      "file": "implementations/web/src/web.ts",
+      "find": "{ channel: target.channel, mentions: mentionsIn(text) }",
+      "replace": "{ channel: target.channel }",
+      "expectRed": "2.2 the post carries the @mentions in its text, as the wake hint",
+      "cell": "2.2 the post carries the @mentions in its text, as the wake hint"
+    },
+    {
+      "name": "S12 the text is not trimmed, so a post of only whitespace goes out as an empty message",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const text = typeof raw === \"string\" ? raw.trim() : \"\";\n",
+      "replace": "  const text = typeof raw === \"string\" ? raw : \"\";\n",
+      "expectRed": "4.4 an empty text is refused with 400",
+      "cell": "4.4 an empty text is refused with 400"
+    },
+    {
+      "name": "S13 a dashboard whose posting is off is not refused at the route, so a --creds post fails as a server fault with no reason",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (post.mode === \"off\") return { status: 403, body: { error: post.reason } };\n",
+      "replace": "",
+      "expectRed": "3.4 a --creds dashboard refuses a post with 403 and POST_OFF_CREDS",
+      "cell": "3.4 a --creds dashboard refuses a post with 403 and POST_OFF_CREDS"
+    },
+    {
+      "name": "S14 a DM answers without the sequence it was stored at, the broker's only proof that it kept the message",
+      "file": "implementations/web/src/web.ts",
+      "find": "operatorId: sender.card.id, seq: ack.seq } };",
+      "replace": "operatorId: sender.card.id } };",
+      "expectRed": "3.2 a DM answers with the sequence the broker stored it at, and a channel post with none",
+      "cell": "3.2 a DM answers with the sequence the broker stored it at, and a channel post with none"
+    },
+    {
+      "name": "S15 the poster starts before the request is checked, so a refused post still puts the operator on the roster",
+      "file": "implementations/web/src/web.ts",
+      "find": "  let target: { channel: string } | { to: string };\n",
+      "replace": "  await poster.ensure().catch(() => undefined);\n  let target: { channel: string } | { to: string };\n",
+      "expectRed": "1.4 a refused request never starts the poster, so the operator does not join the roster for a post that did not go out",
+      "cell": "1.4 a refused request never starts the poster, so the operator does not join the roster for a post that did not go out"
+    },
+    {
+      "name": "S16 a body that is not a JSON object is destructured anyway, so the route throws a TypeError and answers 500",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (typeof body !== \"object\" || body === null || Array.isArray(body)) throw new BadRequest(\"the request body must be a JSON object\");\n",
+      "replace": "",
+      "expectRed": "4.6 a body that is not a JSON object is refused with 400",
+      "cell": "4.6 a body that is not a JSON object is refused with 400"
+    },
+    {
+      "name": "S17 the operator posts without registering presence, so the roster never shows who the post came from",
+      "file": "implementations/web/src/web.ts",
+      "find": "      registerPresence: true,\n",
+      "replace": "      registerPresence: false,\n",
+      "expectRed": "2.3 after it, /api/roster lists the operator and /api/meta reports the operatorId the post answered with",
+      "cell": "2.3 after it, /api/roster lists the operator and /api/meta reports the operatorId the post answered with"
+    }
+  ]
+}

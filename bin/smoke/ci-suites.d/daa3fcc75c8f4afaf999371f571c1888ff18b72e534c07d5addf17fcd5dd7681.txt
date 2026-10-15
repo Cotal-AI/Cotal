@@ -1,0 +1,2 @@
+# Posting from the dashboard: POST /api/send as the one operator on open and static-auth meshes, one DM thread for the operator and an agent's replies, and the route's refusals.
+smoke:web-send

@@ -54,6 +54,9 @@
  * 431 and a non-JSON body, before any route runs. Measured at 4000 repetitions of U+2028.
  * That is the same bound any long URL meets and it predates this file.
  *
+ * Section 4 covers `POST /api/send`, whose refusals name a channel and a DM recipient read from a
+ * JSON body.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-echo-escaping
  */
 import { spawn } from "node:child_process";
@@ -402,7 +405,7 @@ try {
       const r = await refuse(pct(n));
       if (r.status !== 400) { rawInBody.push(name + " (status " + r.status + ")"); continue; }
       if (r.body.includes(Buffer.from(cp(n), "utf8"))) rawInBody.push(name);
-      if (Buffer.from(segment(r.line), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawInLine.push(name);
+      if (Buffer.from(segment(r.line), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawInLine.push(name + " in " + JSON.stringify(segment(r.line)));
       if (!r.body.toString("utf8").includes(escaped(n).replaceAll("\\", "\\\\"))) notEscaped.push(name);
     }
     ok("1.2 the 400 BODY the caller receives carries no raw codepoint from the class",
@@ -526,6 +529,43 @@ try {
     ok("3.3 a channel name that DECODES but the wire would rewrite is refused 400 with the offending codepoint escaped, never raw",
       raw.length === 0, raw);
     ok("3.4 ...and that refusal says WHICH codepoint, as a JSON unicode escape, so the third quoting site has a real input rather than being consistency alone",
+      unnamed.length === 0, unnamed);
+  }
+
+  console.log("4. the send route quotes the values it refuses the same way");
+  // `POST /api/send` names two caller values in a refusal: a channel the wire would rewrite, through
+  // the same validator as 3.3, and a DM recipient that is not on the roster, at a fourth quoting
+  // site. Both are read from a JSON body, so a class member arrives as itself with no percent step.
+  {
+    const post = async (body: unknown): Promise<{ status: number; body: Buffer; line: string }> => {
+      log = "";
+      const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/send`, {
+        method: "POST", headers: { ...authed, "content-type": "application/json" }, body: JSON.stringify(body),
+      });
+      const out = Buffer.from(await res.arrayBuffer());
+      await wait(150);
+      return { status: res.status, body: out, line: log };
+    };
+    /** The operator line's echoed value: what follows the route's own words, up to the colour reset. */
+    const after = (line: string, words: string): string =>
+      line.includes(words) ? line.slice(line.lastIndexOf(words) + words.length).split(cp(0x1b) + "[0m")[0] : "";
+    const rawChannel: string[] = [];
+    const rawTo: string[] = [];
+    const unnamed: string[] = [];
+    for (const [name, n] of [["RLO U+202E", 0x202e], ["ALM U+061C", 0x61c], ["DEL", 0x7f], ["LS U+2028", 0x2028], ["TAG U+E0001", 0xe0001]] as [string, number][]) {
+      const ch = await post({ kind: "msg", channel: "abc" + cp(n), text: "hello" });
+      if (ch.status !== 400 || !ch.line.includes("channel name ") || ch.body.includes(Buffer.from(cp(n), "utf8"))
+        || Buffer.from(after(ch.line, "channel name "), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawChannel.push(name + " (status " + ch.status + ")");
+      const dm = await post({ kind: "dm", to: "ghost" + cp(n), text: "hello" });
+      if (dm.status !== 400 || !dm.line.includes("no agent with id ") || dm.body.includes(Buffer.from(cp(n), "utf8"))
+        || Buffer.from(after(dm.line, "no agent with id "), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawTo.push(name + " (status " + dm.status + ")");
+      if (!dm.body.toString("utf8").includes(escaped(n).replaceAll("\\", "\\\\"))) unnamed.push(name);
+    }
+    ok("4.1 a send to a channel the wire would rewrite is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
+      rawChannel.length === 0, rawChannel);
+    ok("4.2 a DM to an id that is not on the roster is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
+      rawTo.length === 0, rawTo);
+    ok("4.3 ...and that refusal says WHICH codepoint, as a JSON unicode escape",
       unnamed.length === 0, unnamed);
   }
 
