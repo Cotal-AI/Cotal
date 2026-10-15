@@ -5,14 +5,6 @@
   "suite": ["extensions/connector-claude-code/smoke/hosted-session.smoke.ts"],
   "mutations": [
     {
-      "name": "propagate automatic teardown rejection",
-      "file": "extensions/connector-claude-code/src/mcp.ts",
-      "find": "        opts.onShutdown?.(1);",
-      "replace": "        throw e;",
-      "expectRed": "hosted_failure_lifecycle",
-      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build"
-    },
-    {
       "name": "retain the ended input listener",
       "file": "extensions/connector-claude-code/src/mcp.ts",
       "find": "      opts.input.off(\"end\", onInputClose);",

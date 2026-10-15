@@ -33,8 +33,13 @@ async function child(scenario: string): Promise<void> {
   let notifications = 0;
   let code: number | undefined;
   const events: string[] = [];
+  const lifecycle = scenario === "custody" ? {
+    COTAL_ID: "synthetic_hosted_actor",
+    COTAL_LIFECYCLE_UID: randomBytes(16).toString("hex"),
+  } : {};
   const path = join(process.cwd(), "control.sock");
   const env = (name: string) => ({
+    ...lifecycle,
     HOME: process.env.HOME,
     COTAL_NAME: name,
     COTAL_SPACE: "hosted_component",
@@ -44,15 +49,35 @@ async function child(scenario: string): Promise<void> {
     COTAL_CONTROL_TOKEN: randomBytes(32).toString("hex"),
   });
   try {
-    if (scenario === "failure") {
+    if (scenario === "failure" || scenario === "custody" || scenario === "rebuild-stop") {
       connectionReady = new Promise<void>((resolve) => {
-        failure = createServer((socket) => { pendingConnection = socket; resolve(); });
+        failure = createServer((socket) => {
+          if (pendingConnection) { socket.destroy(); return; }
+          pendingConnection = socket;
+          resolve();
+        });
         failure.listen(0, "127.0.0.1");
       });
       await once(failure!, "listening");
       const address = failure!.address();
       assert.ok(address && typeof address !== "string");
       serverURL = `nats://127.0.0.1:${address.port}`;
+    }
+    if (scenario === "rebuild-stop") {
+      const { CotalEndpoint } = await import("@cotal-ai/core");
+      const endpoint = new CotalEndpoint({
+        servers: serverURL,
+        space: "hosted_component",
+        card: { id: "synthetic_rebuild_actor", name: "rebuild_fixture", kind: "agent" },
+      });
+      endpoint.on("error", () => {});
+      const rebuilding = endpoint.reconnect();
+      await connectionReady;
+      const stopping = endpoint.stop();
+      await wait(20);
+      pendingConnection!.destroy();
+      await Promise.all([rebuilding, stopping]);
+      return;
     }
     if (scenario === "reset") {
       const accepted = new Promise<Socket>((resolve) => {
@@ -92,10 +117,32 @@ async function child(scenario: string): Promise<void> {
       return;
     }
     session = await pending;
-    if (scenario === "explicit") {
+    if (scenario === "custody") {
+      await connectionReady;
+      const duplicateInput = new PassThrough();
+      const duplicateOutput = new PassThrough();
+      try {
+        await assert.rejects(
+          serveClaudeSession({ env: env("sibling"), input: duplicateInput, output: duplicateOutput }),
+          /local inbox already has a consuming session/,
+        );
+      } finally {
+        duplicateInput.destroy();
+        duplicateOutput.destroy();
+      }
+      const closing = session.close();
+      await wait(20);
+      pendingConnection!.destroy();
+      await closing;
+      assert.equal(existsSync(path), false);
+      sibling = await serveClaudeSession({ env: env("sibling"), input: new PassThrough(), output: new PassThrough() });
+      await sibling.close();
+      assert.equal(existsSync(join(process.cwd(), "sibling.sock")), false);
+      assert.equal(notifications, 0);
+    } else if (scenario === "explicit") {
       const first = session.close();
       assert.equal(first, session.close());
-      await first.catch(() => {});
+      await first;
       assert.equal(input.listenerCount("end"), endListeners);
       assert.equal(input.listenerCount("close"), closeListeners);
       assert.equal(input.destroyed, false);
@@ -124,7 +171,7 @@ async function child(scenario: string): Promise<void> {
       if (scenario === "eof" || scenario === "failure" || scenario === "buffered") {
         assert.ok(events.includes("end"));
         if (scenario === "eof") assert.equal(existsSync(join(process.cwd(), "sibling.sock")), true);
-        if (scenario === "failure") assert.equal(code, 1, "pending connection failure must report teardown failure");
+        if (scenario === "failure") assert.equal(code, 0, "a stopped dial failure is not a teardown failure");
       } else {
         assert.ok(events.includes("close"));
         assert.equal(events.includes("end"), false);
@@ -157,7 +204,7 @@ async function main(): Promise<void> {
   assert.ok(address && typeof address !== "string");
   let failed = 0;
   try {
-    for (const scenario of ["explicit", "eof", "failure", "destroy", "reset", "ended", "destroyed-before", "startup-eof", "buffered"]) {
+    for (const scenario of ["explicit", "eof", "failure", "destroy", "reset", "ended", "destroyed-before", "startup-eof", "buffered", "custody", "rebuild-stop"]) {
       const cwd = join(root, scenario);
       mkdirSync(cwd, { mode: 0o700 });
       for (const name of ["home", "config", "cache", "state", ".cotal"]) mkdirSync(join(cwd, name), { mode: 0o700 });

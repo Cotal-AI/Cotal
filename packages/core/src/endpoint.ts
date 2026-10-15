@@ -917,7 +917,12 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   private async startOnce(): Promise<void> {
-    await this.connectAndBind();
+    // A stopped dial is not a teardown failure. The stopped fence still closes any late epoch.
+    try {
+      await this.connectAndBind();
+    } catch (error) {
+      if (!this.stopped) throw error;
+    }
     // stop() can finish while the INITIAL connectAndBind is still awaiting its broker work. The
     // rebuild path already closes that race; initial start needs the same fence or the late bind
     // leaves a fresh nc, heartbeat, consumers, and presence live on an endpoint already stopped.
@@ -1815,8 +1820,13 @@ export class CotalEndpoint extends EventEmitter {
       await this.closeWithoutLibraryReconnect(oldNc);
       // stop() can arrive while the old epoch closes. Do not start another authentication
       // handshake after it: a terminal credential may already have expired in that window.
+      // Keep old-epoch and late-epoch close failures outside this dial-only catch.
       if (this.stopped) return;
-      await this.connectAndBind();
+      try {
+        await this.connectAndBind();
+      } catch (error) {
+        if (!this.stopped) throw error;
+      }
       // stop() may have run during the await — don't leave a live connection + heartbeat +
       // supervisor on a stopped endpoint. (Reads this.nc in its own scope — a bare `this.nc`
       // here in doRebuild narrows to `never` via TS inlining connectAndBind's assignment.)

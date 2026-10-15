@@ -856,6 +856,7 @@ export class MeshAgent extends EventEmitter {
     while (!this._stopping && !this._connected) {
       try {
         await this.ep.start();
+        if (this._stopping) return;
         // _connected is set by the endpoint's "connection" event (fired inside start()), not here.
         this.log(
           `connected to ${this.config.servers} as ${peerLabel(this.config)} in space "${this.config.space}" on #${this.config.subscribe.join(", #")}`,

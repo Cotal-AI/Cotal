@@ -678,7 +678,10 @@ launches a stdio command, such as a small relay that pipes its stdio to the host
   the caller's streams. The returned promise rejects if teardown fails. A startup failure closes
   what was started before the call rejects. A manager shutdown frame or input EOF or closure closes the
   session and then calls `onShutdown(code)` once. A teardown failure is logged and reported with
-  code 1, without becoming an unhandled rejection in the host.
+  code 1, without becoming an unhandled rejection in the host. Close waits for a pending broker
+  dial to settle. A dial that fails after shutdown starts is not a teardown failure. The session
+  releases local inbox custody only after its connections are proved closed, so the same lifecycle
+  can reopen after a successful close. An active duplicate or an unproved close retains custody.
 
 ## Feedback
 
