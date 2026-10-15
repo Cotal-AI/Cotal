@@ -7,7 +7,7 @@
  * with one connected test endpoint subscribed to `#review` and holding a DM inbox: an open mesh,
  * then a static-auth mesh recorded in a scratch registry and the same mesh through a raw `--creds`
  * file. Section 3 is the split-thread repro the operator credential exists to fix: two DMs and the
- * agent's reply land under one conversation key in `/api/dms`. Section 4 is the refusals every
+ * agent's reply land in one conversation, grouped by the client's own `dmPeers`. Section 4 is the refusals every
  * mesh gives, against the open dashboard.
  *
  * A broker refusal is forced with `run-web.mts`'s `COTAL_WEB_SMOKE_REFUSE_TEXT` seam, which refuses
@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { dmPeers } from "../client/src/lib/dms.js";
 
 const base = mkdtempSync(join(tmpdir(), "cotal-send-"));
 const home = join(base, "home");
@@ -132,8 +133,6 @@ const getJson = async (w: Web, path: string): Promise<unknown> => (await call(w,
 
 /** The text parts of a message, joined. */
 const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
-/** The conversation a DM belongs to, the way the client groups `/api/dms`. */
-const conversation = (m: { from: { id: string }; to?: string }) => [m.from.id, m.to ?? ""].sort().join(" | ");
 
 async function startBroker(args: (store: string) => string[], server: string, creds?: string): Promise<void> {
   const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -174,6 +173,10 @@ try {
   ok("1.3 an operator that cannot start is a broker refusal, carrying the broker's message",
     "thrown" in refusedStart && refusedStart.thrown instanceof BrokerRefused && refusedStart.thrown.message === "Authorization Violation",
     { thrown: "thrown" in refusedStart ? String(refusedStart.thrown) : refusedStart });
+  const unreadable = await outcome(poster({ ensure: async () => { throw new Error(`Authorization Violation for ${RLO}x`); } }));
+  ok("1.5 the refusal of an operator that cannot start escapes what it quotes, keeping the broker's wording",
+    "thrown" in unreadable && unreadable.thrown instanceof BrokerRefused && unreadable.thrown.message === "Authorization Violation for \\u202ex",
+    { thrown: "thrown" in unreadable ? String(unreadable.thrown) : unreadable });
   ensured = 0;
   const early = await outcome(poster({}), async () => ({ kind: "msg", channel: "review.*", text: "hello" }));
   ok("1.4 a refused request never starts the poster, so the operator does not join the roster for a post that did not go out",
@@ -285,10 +288,13 @@ try {
     const texts = page.map((m) => m.parts.map((p) => p.text ?? "").join(""));
     return ["first dm", "second dm", "re: first dm", "re: second dm"].every((t) => texts.includes(t)) ? page : undefined;
   });
-  const keys = new Set((dms ?? []).map(conversation));
+  // Grouped by the client's own `dmPeers`, so the cell holds for the conversation the DM view shows.
+  const operatorPeer = dmPeers((dms ?? []).map((msg) => ({ msg: msg as unknown as CotalMessage })), [])
+    .find((p) => p.id === startMeta?.operatorId);
   ok("3.3 the agent's replies land in /api/dms under the one conversation key both DMs share",
-    dms !== undefined && keys.size === 1 && [...keys][0] === [String(startMeta?.operatorId), staticBot.card.id].sort().join(" | "),
-    { keys: [...keys], replies });
+    dms !== undefined && operatorPeer?.conversations.length === 1 && operatorPeer.conversations[0].with === staticBot.card.id
+    && operatorPeer.conversations[0].messages.length === dms.length,
+    { conversations: operatorPeer?.conversations.map((c) => ({ with: c.with, messages: c.messages.length })), dms: dms?.length, replies });
   await stopWeb(staticWeb);
 
   const credsFile = join(base, "admin.creds");

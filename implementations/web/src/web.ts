@@ -461,7 +461,8 @@ export class BadRequest extends Error {}
 export class PayloadTooLarge extends Error {}
 
 /** A post the broker, or the operator's connection to it, refused. Neither the caller's fault nor
- *  this server's, so the frame answers 502 with the broker's own message. */
+ *  this server's, so the frame answers 502 with the broker's own message, escaped by
+ *  {@link escapeForOperator}. */
 export class BrokerRefused extends Error {}
 
 /** The most a request body may weigh before a body route refuses to keep reading it.
@@ -560,6 +561,17 @@ export function quoteForOperator(value: string): string {
     for (let i = 0; i < ch.length; i++) out += "\\u" + ch.charCodeAt(i).toString(16).padStart(4, "0");
     return out;
   });
+}
+
+/** Every codepoint {@link quoteForOperator} escapes, the C0 controls included, without its quotes. */
+const UNREADABLE = new RegExp(`[\\u0000-\\u001f]|${INVISIBLE_AFTER_JSON.source}`, "gu");
+
+/** ESCAPE A MESSAGE SOMEONE ELSE WROTE, KEEPING ITS WORDING. A broker refusal names the subject it
+ *  refused, and a DM subject carries a recipient id taken from another agent's presence card, so the
+ *  message reaches the 502 body and the operator's line as untrusted text. Each codepoint the quoter
+ *  escapes leaves as its escape; the rest, quotes included, stays as the broker wrote it. */
+export function escapeForOperator(text: string): string {
+  return text.replace(UNREADABLE, (ch) => quoteForOperator(ch).slice(1, -1));
 }
 
 /** The channel name out of the path. A percent escape the decoder cannot read is the caller having
@@ -899,10 +911,10 @@ export async function sendAsOperator(
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
     if (why === POSTER_STOPPED) return { status: 503, body: { error: why } };
-    throw new BrokerRefused(why);
+    throw new BrokerRefused(escapeForOperator(why));
   }
   const refused = (e: unknown): never => {
-    throw new BrokerRefused(e instanceof Error ? e.message : String(e));
+    throw new BrokerRefused(escapeForOperator(e instanceof Error ? e.message : String(e)));
   };
   if ("channel" in target) {
     const msg = await sender.multicast(text, { channel: target.channel, mentions: mentionsIn(text) }).catch(refused);

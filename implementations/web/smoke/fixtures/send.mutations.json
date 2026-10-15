@@ -4,6 +4,7 @@
     "implementations/web/smoke/send.smoke.ts"
   ],
   "progressPattern": "^  ok ",
+  "_note": "Cell 3.3 (two DMs and the agent's replies form one conversation in the client's dmPeers) has no mutation here. What it depends on is the operator's stable id, which the post-capability fixture proves: P1 (an id drawn per request), P2 (no operator minted at startup) and P18 (an open-mesh id drawn per build).",
   "mutations": [
     {
       "name": "S1 the roster check on `to` is dropped, so a DM to an id nobody holds goes to the wire instead of being refused with the id named",
@@ -80,7 +81,7 @@
     {
       "name": "S10 an operator that cannot start is rethrown as it came, so the frame answers it as a server fault",
       "file": "implementations/web/src/web.ts",
-      "find": "    throw new BrokerRefused(why);\n",
+      "find": "    throw new BrokerRefused(escapeForOperator(why));\n",
       "replace": "    throw e;\n",
       "expectRed": "1.3 an operator that cannot start is a broker refusal, carrying the broker's message",
       "cell": "1.3 an operator that cannot start is a broker refusal, carrying the broker's message"
@@ -140,6 +141,14 @@
       "replace": "      registerPresence: false,\n",
       "expectRed": "2.3 after it, /api/roster lists the operator and /api/meta reports the operatorId the post answered with",
       "cell": "2.3 after it, /api/roster lists the operator and /api/meta reports the operatorId the post answered with"
+    },
+    {
+      "name": "S18 an operator start the broker refuses is answered with the broker's message raw, so a codepoint from the class reaches the 502 body and the operator's line unescaped",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BrokerRefused(escapeForOperator(why));\n",
+      "replace": "    throw new BrokerRefused(why);\n",
+      "expectRed": "1.5 the refusal of an operator that cannot start escapes what it quotes, keeping the broker's wording",
+      "cell": "1.5 the refusal of an operator that cannot start escapes what it quotes, keeping the broker's wording"
     }
   ]
 }

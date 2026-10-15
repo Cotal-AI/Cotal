@@ -57,6 +57,8 @@
  * Section 4 covers `POST /api/send`, whose refusals name a channel and a DM recipient read from a
  * JSON body.
  *
+ * Section 5 covers its 502, which carries the broker's own message.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-echo-escaping
  */
 import { spawn } from "node:child_process";
@@ -338,6 +340,10 @@ const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store, "-a", "127.0.0.1"], { stdio: "ignore" });
 const release = teardownOnSignal(broker, store);
 let webChild: ReturnType<typeof spawn> | undefined;
+/** A post text the dashboard's broker refuses (through `run-web.mts`), carrying a terminal escape
+ *  sequence, a bidi override and a line separator, so the refusal that names it has three kinds of
+ *  codepoint to render. */
+const REFUSED_MARKER = "refuse-" + cp(0x1b) + "[2J" + cp(0x202e) + cp(0x2028) + "-end";
 try {
   let up = false;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -350,7 +356,7 @@ try {
     webChild = spawn(process.execPath, [
       "--import", "tsx", fileURLToPath(new URL("./run-web.mts", import.meta.url)),
       "--server", SERVER, "--space", SPACE, "--port", String(port), "--no-open",
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, COTAL_WEB_SMOKE_REFUSE_TEXT: REFUSED_MARKER } });
     webChild.stdout?.on("data", (d: Buffer) => { log += d.toString(); });
     webChild.stderr?.on("data", (d: Buffer) => { log += d.toString(); });
     const taken = `Port ${port} is in use`;
@@ -567,6 +573,31 @@ try {
       rawTo.length === 0, rawTo);
     ok("4.3 ...and that refusal says WHICH codepoint, as a JSON unicode escape",
       unnamed.length === 0, unnamed);
+  }
+
+  console.log("5. a broker refusal is someone else's text, and it is escaped the same way");
+  // A 502 carries the broker's own message, and a NATS permission error names the subject it
+  // refused, which for a DM carries a recipient id from another agent's presence card. The seam in
+  // `run-web.mts` refuses this post with a message that contains the marker, so the message has a
+  // terminal escape, a bidi override and a line separator in it.
+  {
+    log = "";
+    const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/send`, {
+      method: "POST", headers: { ...authed, "content-type": "application/json" },
+      body: JSON.stringify({ kind: "msg", channel: "review", text: REFUSED_MARKER }),
+    });
+    const body = Buffer.from(await res.arrayBuffer());
+    await wait(150);
+    const line = log;
+    const from = line.indexOf("Publish (refuse-");
+    const echoed = from < 0 ? "" : line.slice(from, line.indexOf("-end)", from) + "-end)".length);
+    const raw = [0x1b, 0x202e, 0x2028].filter((n) => body.includes(Buffer.from(cp(n), "utf8")) || echoed.includes(cp(n)));
+    let error = "(not JSON)";
+    try { error = (JSON.parse(body.toString("utf8")) as { error?: string }).error ?? "(no error key)"; } catch { /* keep */ }
+    ok("5.1 a 502 names the broker's refusal with every codepoint from the class escaped, in the body and the operator's line, and keeps the broker's wording",
+      res.status === 502 && echoed !== "" && raw.length === 0
+      && error === "Permissions Violation for Publish (refuse-" + escaped(0x1b) + "[2J" + escaped(0x202e) + escaped(0x2028) + "-end)",
+      { status: res.status, error, echoed: JSON.stringify(echoed), raw: raw.map((n) => n.toString(16)) });
   }
 
 } finally {

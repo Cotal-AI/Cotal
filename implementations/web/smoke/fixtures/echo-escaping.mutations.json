@@ -113,6 +113,14 @@
       "replace": "    const name = channel;\n",
       "expectRed": "4.1 a send to a channel the wire would rewrite is refused 400 with the codepoint escaped in the body and the operator's line, never raw",
       "cell": "4.1 a send to a channel the wire would rewrite is refused 400 with the codepoint escaped in the body and the operator's line, never raw"
+    },
+    {
+      "name": "E15 a refused publish is answered with the broker's message raw, so a subject naming a recipient id with a terminal escape or a bidi override reaches the 502 body and the operator's line as it was written",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BrokerRefused(escapeForOperator(e instanceof Error ? e.message : String(e)));\n",
+      "replace": "    throw new BrokerRefused(e instanceof Error ? e.message : String(e));\n",
+      "expectRed": "5.1 a 502 names the broker's refusal with every codepoint from the class escaped, in the body and the operator's line, and keeps the broker's wording",
+      "cell": "5.1 a 502 names the broker's refusal with every codepoint from the class escaped, in the body and the operator's line, and keeps the broker's wording"
     }
   ],
   "suite": [
