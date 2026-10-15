@@ -46,3 +46,9 @@ export function orderNotice(notes: OrderNote[]): { text: string; fault: boolean 
 export function documentTitle(space: string | null): string {
   return space === null ? "Cotal" : `Cotal · ${space}`;
 }
+
+/** The Activity row's rate: the messages per second rounded to one decimal, with no trailing `.0`, so
+ *  `0.8 msg/s`, `4 msg/s` and, with nothing arriving, `0 msg/s`. */
+export function rateText(perSecond: number): string {
+  return `${Math.round(perSecond * 10) / 10} msg/s`;
+}

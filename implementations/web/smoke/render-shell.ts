@@ -13,10 +13,11 @@ import { initialState, type DashboardState } from "../client/src/state/types.js"
 import { DEFAULT_ROUTE, type Route } from "../client/src/lib/route.js";
 
 /** The shell's HTML for the initial state with `patch` applied, at `route`, with the details panel
- *  open or closed. The controller is null, as it is before the dashboard has started. */
-export function renderShell(patch: Partial<DashboardState> = {}, route: Route = DEFAULT_ROUTE, paneOpen = false): string {
+ *  open or closed. The controller is null, as it is before the dashboard has started. The sidebar's
+ *  Activity row reads `msgPerSecond`, which says no messages unless a suite hands it a rate. */
+export function renderShell(patch: Partial<DashboardState> = {}, route: Route = DEFAULT_ROUTE, paneOpen = false, msgPerSecond: () => number = () => 0): string {
   const store = createStore<DashboardState>({ ...initialState, ...patch });
-  return renderToString(createElement(Shell, { store, controller: null, route, paneOpen }));
+  return renderToString(createElement(Shell, { store, controller: null, route, paneOpen, msgPerSecond }));
 }
 
 /** The attributes of every `<name ...>` start tag in `html`, in document order, unescaped. */

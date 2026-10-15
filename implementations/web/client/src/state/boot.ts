@@ -11,10 +11,13 @@ import { createController, type Api, type Controller } from "./controller.js";
 import type { Store } from "./store.js";
 import type { DashboardState } from "./types.js";
 
+/** `onArrival` is told of every message the feed delivers, a duplicate delivery included, before the
+ *  controller takes it. It is how the sidebar's message rate is fed without the rate entering the store. */
 export function startDashboard(deps: {
   store: Store<DashboardState>;
   api: Api;
   openFeed: (h: FeedHandlers) => () => void;
+  onArrival?: () => void;
 }): { controller: Controller; stop(): void } {
   const { store } = deps;
   const controller = createController(store, deps.api);
@@ -37,7 +40,10 @@ export function startDashboard(deps: {
     presenceView: controller.onPresenceView,
     membership: controller.onMembership,
     membershipFailed: controller.onMembershipFailed,
-    message: controller.onMessage,
+    message(e) {
+      deps.onArrival?.();
+      controller.onMessage(e);
+    },
   };
   const stopFeed = deps.openFeed(handlers);
   refresh();

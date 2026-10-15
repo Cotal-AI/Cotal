@@ -231,9 +231,9 @@
     },
     {
       "name": "C29 the stale marker leaves the sidebar",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": " sidebar={<StaleMarker store={store} />}>",
-      "replace": ">",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<StaleMarker store={store} />",
+      "replace": "",
       "expectRed": "7.5 the stale marker sits in the sidebar",
       "cell": "7.5 the stale marker sits in the sidebar"
     },

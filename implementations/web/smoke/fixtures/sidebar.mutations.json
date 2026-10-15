@@ -1,0 +1,385 @@
+{
+  "command": "pnpm smoke:web-sidebar",
+  "suite": [
+    "implementations/web/smoke/sidebar.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "SB1 the space name is dropped from the head",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-space ui-space-static\">{space}</span>",
+      "replace": "<span className=\"ui-space ui-space-static\"></span>",
+      "expectRed": "1.1 the head names the space",
+      "cell": "1.1 the head names the space"
+    },
+    {
+      "name": "SB2 the space name grows a chevron again, as if it opened a menu",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-space ui-space-static\">{space}</span>",
+      "replace": "<span className=\"ui-space ui-space-static\">{space}<RailIcon name=\"chev\" size={16} /></span>",
+      "expectRed": "1.2 and has no menu: no button, no link, no chevron icon",
+      "cell": "1.2 and has no menu: no button, no link, no chevron icon"
+    },
+    {
+      "name": "SB3 an unread space shows a made-up name",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-space ui-space-static\">{space}</span>",
+      "replace": "<span className=\"ui-space ui-space-static\">{space ?? \"main\"}</span>",
+      "expectRed": "1.3 before the first read names the space nothing is drawn for it, not a placeholder",
+      "cell": "1.3 before the first read names the space nothing is drawn for it, not a placeholder"
+    },
+    {
+      "name": "SB4 Needs you links to the activity view",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>",
+      "replace": "<Row to={{ view: \"activity\" }} here={route.view === \"needs\"}>",
+      "expectRed": "2.1 Needs you is a link to the needs view",
+      "cell": "2.1 Needs you is a link to the needs view"
+    },
+    {
+      "name": "SB5 the gold count is every agent, not only the waiting ones",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "const needing = waiting(rows).length;",
+      "replace": "const needing = rows.length;",
+      "expectRed": "2.2 it carries a gold count of the agents waiting: two here, and only the waiting ones",
+      "cell": "2.2 it carries a gold count of the agents waiting: two here, and only the waiting ones"
+    },
+    {
+      "name": "SB6 one waiting agent is still plural in the tooltip",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`",
+      "replace": "`${needing} agents waiting`",
+      "expectRed": "2.4 and says \"1 agent waiting\" for one",
+      "cell": "2.4 and says \"1 agent waiting\" for one"
+    },
+    {
+      "name": "SB7 an empty mesh shows a gold zero",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{needing > 0 && <span",
+      "replace": "{needing >= 0 && <span",
+      "expectRed": "2.5 with nobody waiting the row stays and shows no count",
+      "cell": "2.5 with nobody waiting the row stays and shows no count"
+    },
+    {
+      "name": "SB8 Needs you is never the current page",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />",
+      "replace": "here={false}>\n          <RailIcon name=\"inbox\" />",
+      "expectRed": "2.7 the row is current on the needs route and not elsewhere",
+      "cell": "2.7 the row is current on the needs route and not elsewhere"
+    },
+    {
+      "name": "SB9 Activity is never the current page",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>",
+      "replace": "<Row to={{ view: \"activity\" }} here={false}>",
+      "expectRed": "3.1 Activity is a link to the activity view, current on that route",
+      "cell": "3.1 Activity is a link to the activity view, current on that route"
+    },
+    {
+      "name": "SB10 the Activity row ignores the rate it is given",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{rateText(msgPerSecond())}",
+      "replace": "{rateText(0)}",
+      "expectRed": "3.2 it shows the rate the sidebar was handed, to one decimal: 0.8 msg/s",
+      "cell": "3.2 it shows the rate the sidebar was handed, to one decimal: 0.8 msg/s"
+    },
+    {
+      "name": "SB11 the shell hands the sidebar a rate of nothing",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "msgPerSecond={msgPerSecond} />",
+      "replace": "msgPerSecond={() => 0} />",
+      "expectRed": "3.2 it shows the rate the sidebar was handed, to one decimal: 0.8 msg/s",
+      "cell": "3.2 it shows the rate the sidebar was handed, to one decimal: 0.8 msg/s"
+    },
+    {
+      "name": "SB12 the rate shows a trailing .0 for none",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "return `${Math.round(perSecond * 10) / 10} msg/s`;",
+      "replace": "return `${(Math.round(perSecond * 10) / 10).toFixed(1)} msg/s`;",
+      "expectRed": "3.3 with no messages it says 0 msg/s",
+      "cell": "3.3 with no messages it says 0 msg/s"
+    },
+    {
+      "name": "SB13 the rate is not rounded to one decimal",
+      "file": "implementations/web/client/src/lib/shellText.ts",
+      "find": "return `${Math.round(perSecond * 10) / 10} msg/s`;",
+      "replace": "return `${perSecond} msg/s`;",
+      "expectRed": "3.5 the text rounds to one decimal and drops a trailing .0",
+      "cell": "3.5 the text rounds to one decimal and drops a trailing .0"
+    },
+    {
+      "name": "SB14 the Channels heading is renamed, so the section is not found",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<div className=\"ui-sec\">Channels</div>",
+      "replace": "<div className=\"ui-sec\">Rooms</div>",
+      "expectRed": "4.1 one row per channel, in the store's order",
+      "cell": "4.1 one row per channel, in the store's order"
+    },
+    {
+      "name": "SB15 every channel is drawn with the plug",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}",
+      "replace": "<Icon icon={Plug01Icon} size={18} className=\"ui-ic\" />",
+      "expectRed": "4.2 an ordinary channel opens with the round 2 hash icon",
+      "cell": "4.2 an ordinary channel opens with the round 2 hash icon"
+    },
+    {
+      "name": "SB16 a channel link is the raw name, not the encoded route",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "href={formatRoute(to)}",
+      "replace": "href={to.view === \"channel\" ? `#/channel/${to.channel}` : formatRoute(to)}",
+      "expectRed": "4.3 each row links to its channel route, the name encoded",
+      "cell": "4.3 each row links to its channel route, the name encoded"
+    },
+    {
+      "name": "SB17 every channel row is current while any channel is open",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "here={route.view === \"channel\" && route.channel === c.channel}",
+      "replace": "here={route.view === \"channel\"}",
+      "expectRed": "4.4 the open channel is the current one",
+      "cell": "4.4 the open channel is the current one"
+    },
+    {
+      "name": "SB18 the unread count is gold, the colour of Needs you",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-badge-blue\">",
+      "replace": "<span className=\"ui-badge-gold\">",
+      "expectRed": "4.5 an unread count is a blue badge on a bold row",
+      "cell": "4.5 an unread count is a blue badge on a bold row"
+    },
+    {
+      "name": "SB19 a channel with nothing unread still shows a count",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{count > 0 && <span className=\"ui-badge-blue\">{count}</span>}",
+      "replace": "<span className=\"ui-badge-blue\">{count}</span>",
+      "expectRed": "4.6 a channel with none unread, counted zero or not at all, has no badge and is not bold",
+      "cell": "4.6 a channel with none unread, counted zero or not at all, has no badge and is not bold"
+    },
+    {
+      "name": "SB20 every channel row is bold",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "bold={count > 0}",
+      "replace": "bold={true}",
+      "expectRed": "4.6 a channel with none unread, counted zero or not at all, has no badge and is not bold",
+      "cell": "4.6 a channel with none unread, counted zero or not at all, has no badge and is not bold"
+    },
+    {
+      "name": "SB21 an event channel loses its plug",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}",
+      "replace": "<RailIcon name=\"hash\" />",
+      "expectRed": "4.7 an event channel (run.*) is the one row drawn with the Hugeicons plug",
+      "cell": "4.7 an event channel (run.*) is the one row drawn with the Hugeicons plug"
+    },
+    {
+      "name": "SB22 the run tooltip is dropped",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}",
+      "replace": "title={undefined}",
+      "expectRed": "4.8 and its tooltip names the run: Events from run build-0412",
+      "cell": "4.8 and its tooltip names the run: Events from run build-0412"
+    },
+    {
+      "name": "SB23 every channel claims to be a run's events",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}",
+      "replace": "title={`Events from run ${c.channel.slice(\"run.\".length)}`}",
+      "expectRed": "4.9 only the run. prefix makes an event channel: runner is an ordinary channel with no tooltip",
+      "cell": "4.9 only the run. prefix makes an event channel: runner is an ordinary channel with no tooltip"
+    },
+    {
+      "name": "SB24 a name that merely starts with run counts as an event channel",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "channel.startsWith(\"run.\")",
+      "replace": "channel.startsWith(\"run\")",
+      "expectRed": "4.9 only the run. prefix makes an event channel: runner is an ordinary channel with no tooltip",
+      "cell": "4.9 only the run. prefix makes an event channel: runner is an ordinary channel with no tooltip"
+    },
+    {
+      "name": "SB25 the empty-channels note is never drawn",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{channels.length === 0 && <div",
+      "replace": "{false && <div",
+      "expectRed": "4.10 with no channels the section says so, in the notes' words",
+      "cell": "4.10 with no channels the section says so, in the notes' words"
+    },
+    {
+      "name": "SB26 the empty-channels note stays once a channel exists",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{channels.length === 0 && <div",
+      "replace": "{true && <div",
+      "expectRed": "4.11 and says nothing of the kind once a channel exists",
+      "cell": "4.11 and says nothing of the kind once a channel exists"
+    },
+    {
+      "name": "SB27 conversations are not deduped, so each shows once per peer",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "if (!seen.has(c.key)) seen.set(c.key, ",
+      "replace": "seen.set(peer.id + c.key, ",
+      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers",
+      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers"
+    },
+    {
+      "name": "SB28 conversations list oldest first",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": ".sort((a, b) => b.last - a.last);",
+      "replace": ".sort((a, b) => a.last - b.last);",
+      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers",
+      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers"
+    },
+    {
+      "name": "SB29 a pair keeps the order it was met in, so one conversation has two links",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "[peer.id, c.with].sort()",
+      "replace": "[peer.id, c.with]",
+      "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers",
+      "cell": "5.1 one row per conversation, newest first, though each talks under both its peers"
+    },
+    {
+      "name": "SB30 a DM row shows the raw id, not the roster's name",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}",
+      "replace": "{`${a}, ${b}`}",
+      "expectRed": "5.2 each row is named from the roster by id: the payload's own name never shows",
+      "cell": "5.2 each row is named from the roster by id: the payload's own name never shows"
+    },
+    {
+      "name": "SB31 the DM avatars draw a status dot",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "dot={false}",
+      "replace": "dot={true}",
+      "expectRed": "5.4 each row shows two small avatars, one per party, and no status dot",
+      "cell": "5.4 each row shows two small avatars, one per party, and no status dot"
+    },
+    {
+      "name": "SB32 a party not on the roster is drawn as idle, not offline",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "?.status ?? \"offline\"",
+      "replace": "?.status ?? \"idle\"",
+      "expectRed": "5.5 a party not on the roster is drawn offline, as the roster's own offline agents are",
+      "cell": "5.5 a party not on the roster is drawn offline, as the roster's own offline agents are"
+    },
+    {
+      "name": "SB33 only one orientation of the open pair is current",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "((open.peer === a && open.with === b) || (open.peer === b && open.with === a))",
+      "replace": "(open.peer === a && open.with === b)",
+      "expectRed": "5.6 the row whose pair is open is current, whichever party the address names first",
+      "cell": "5.6 the row whose pair is open is current, whichever party the address names first"
+    },
+    {
+      "name": "SB34 the footer drops the operator's name",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<b>operator</b>",
+      "replace": "<b></b>",
+      "expectRed": "6.1 the footer names the operator with the OP initials",
+      "cell": "6.1 the footer names the operator with the OP initials"
+    },
+    {
+      "name": "SB35 the Connected pill loses its tooltip",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span className=\"ui-live\" title=\"Connected to cotal web\">",
+      "replace": "<span className=\"ui-live\">",
+      "expectRed": "6.2 a live feed reads Connected, with its tooltip",
+      "cell": "6.2 a live feed reads Connected, with its tooltip"
+    },
+    {
+      "name": "SB36 a dead feed still reads Connected",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{connected ? (",
+      "replace": "{true ? (",
+      "expectRed": "6.4 a feed that is down reads Disconnected, never Connected",
+      "cell": "6.4 a feed that is down reads Disconnected, never Connected"
+    },
+    {
+      "name": "SB37 the down pill keeps the live dot's shape",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "\"ui-live ui-live-down\"",
+      "replace": "\"ui-live\"",
+      "expectRed": "6.5 and the dot takes its own shape (ui-live-down), so the state is not colour alone",
+      "cell": "6.5 and the dot takes its own shape (ui-live-down), so the state is not colour alone"
+    },
+    {
+      "name": "SB38 the footer claims the operator is not on the roster",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<b>operator</b></div>",
+      "replace": "<b>operator</b><span>Not on the roster</span></div>",
+      "expectRed": "6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here",
+      "cell": "6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here"
+    },
+    {
+      "name": "SB39 the stale marker leaves the sidebar",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<StaleMarker store={store} />",
+      "replace": "",
+      "expectRed": "7.1 the head comes first, then the stale marker, then the places, then the footer",
+      "cell": "7.1 the head comes first, then the stale marker, then the places, then the footer"
+    },
+    {
+      "name": "SB40 the feed's arrivals are not reported",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "deps.onArrival?.();",
+      "replace": "",
+      "expectRed": "8.1 every message the feed delivers is reported once, a duplicate delivery included",
+      "cell": "8.1 every message the feed delivers is reported once, a duplicate delivery included"
+    },
+    {
+      "name": "SB41 the feed stops reaching the controller once it reports",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "controller.onMessage(e);\n    },",
+      "replace": "},",
+      "expectRed": "8.2 and the controller still takes each (a duplicate id is kept once)",
+      "cell": "8.2 and the controller still takes each (a duplicate id is kept once)"
+    },
+    {
+      "name": "SB42 the app counts no arrivals",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "() => rate.hit(Date.now())",
+      "replace": "() => undefined",
+      "expectRed": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick",
+      "cell": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick"
+    },
+    {
+      "name": "SB43 the rate is read over one second, not ten",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "RATE_WINDOW_MS = 10_000",
+      "replace": "RATE_WINDOW_MS = 1_000",
+      "expectRed": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick",
+      "cell": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick"
+    },
+    {
+      "name": "SB44 the app hands the shell a rate of nothing",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "msgPerSecond={() => rate.perSecond(Date.now())}",
+      "replace": "msgPerSecond={() => 0}",
+      "expectRed": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick",
+      "cell": "9.3 three arrivals reach the Activity row as 0.3 msg/s on the next tick"
+    },
+    {
+      "name": "SB45 the sidebar never ticks",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "const timer = setInterval(() => setTick((t) => t + 1), RATE_TICK_MS);",
+      "replace": "const timer = undefined as never;",
+      "expectRed": "9.2 the app is ticking while mounted",
+      "cell": "9.2 the app is ticking while mounted"
+    },
+    {
+      "name": "SB46 the tick outlives the page",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "return () => clearInterval(timer);",
+      "replace": "return () => undefined;",
+      "expectRed": "9.4 unmounting stops the tick",
+      "cell": "9.4 unmounting stops the tick"
+    },
+    {
+      "name": "SB47 the shell leaves the sidebar slot empty",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}",
+      "replace": "",
+      "expectRed": "1.1 the head names the space",
+      "cell": "1.1 the head names the space"
+    }
+  ]
+}

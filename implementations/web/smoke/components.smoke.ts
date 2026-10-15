@@ -212,7 +212,7 @@ const TIP = "Anycast: one free agent with this role takes it.";
   const twin: StoredMessage[] = [{ msg: msg({ id: "dup", parts: [{ kind: "text", text: "first" }] }), senderId: "local.dav" }, { msg: msg({ id: "dup", parts: [{ kind: "text", text: "second" }] }), senderId: "local.rev" }];
   let mounted: Awaited<ReturnType<typeof mount>> | undefined;
   const errors = await errorsDuring(async () => {
-    mounted = await mount(createElement(Shell, { store: createStore<DashboardState>({ ...initialState, ...seed(twin) }), controller: null, route: { view: "activity" }, paneOpen: false }));
+    mounted = await mount(createElement(Shell, { store: createStore<DashboardState>({ ...initialState, ...seed(twin) }), controller: null, route: { view: "activity" }, paneOpen: false, msgPerSecond: () => 0 }));
   });
   const drawn = mounted?.container.querySelectorAll(".ui-msg").length;
   ok("7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning",

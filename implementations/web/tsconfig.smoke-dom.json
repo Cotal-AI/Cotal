@@ -4,6 +4,6 @@
   // which has no DOM lib.
   "extends": "./tsconfig.smoke.json",
   "compilerOptions": { "lib": ["ES2023", "DOM", "DOM.Iterable"] },
-  "include": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/mount.ts", "smoke/jsdom.d.ts"],
+  "include": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/sidebar.smoke.ts", "smoke/mount.ts", "smoke/jsdom.d.ts"],
   "exclude": []
 }

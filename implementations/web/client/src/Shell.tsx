@@ -13,7 +13,7 @@ import type { DashboardState } from "./state/types.js";
 import { AppShell } from "./ui/AppShell.tsx";
 import { Avatar } from "./ui/Avatar.tsx";
 import { MessageRow } from "./ui/MessageRow.tsx";
-import { StaleMarker } from "./ui/StaleMarker.tsx";
+import { Sidebar } from "./ui/Sidebar.tsx";
 import { StatusWord } from "./ui/Status.tsx";
 
 /** The line the dashboard owes its reader about what the event stream is missing. Plain on purpose;
@@ -34,13 +34,19 @@ const modeOf = (msg: CotalMessage): FeedMessage["mode"] =>
 
 /** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, no
  *  DOM access, so it renders the same in a browser and in `renderToString`. `controller` is null
- *  until the dashboard has started. The sidebar holds the stale marker and the panel is an empty
- *  frame; the centre still draws the interim content (channel list, messages, roster) until the
+ *  until the dashboard has started. `msgPerSecond` is where the sidebar reads the message rate. The
+ *  sidebar is the places and the stale marker, and the panel is an empty frame; the centre still draws the interim content (channel list, messages, roster) until the
  *  views replace it, but with the shared components.
  *
  *  A message row is keyed by its id and its verified sender together: one id can arrive from two
  *  senders (a duplicate delivery, or a peer reusing another's id), and both are facts to show. */
-export function Shell({ store, controller, route, paneOpen }: { store: Store<DashboardState>; controller: Controller | null; route: Route; paneOpen: boolean }) {
+export function Shell({ store, controller, route, paneOpen, msgPerSecond }: {
+  store: Store<DashboardState>;
+  controller: Controller | null;
+  route: Route;
+  paneOpen: boolean;
+  msgPerSecond: () => number;
+}) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
   const roster = useStore(store, (s) => s.roster);
@@ -51,7 +57,7 @@ export function Shell({ store, controller, route, paneOpen }: { store: Store<Das
   const peers = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
   return (
-    <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<StaleMarker store={store} />}>
+    <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<Sidebar store={store} route={route} msgPerSecond={msgPerSecond} />}>
       <title>{documentTitle(space)}</title>
       <StatusLines store={store} />
       <section className="ui-view" data-view={route.view}>
