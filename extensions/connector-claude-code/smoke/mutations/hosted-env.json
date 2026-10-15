@@ -135,7 +135,7 @@
     {
       "name": "public MCP exports the dependency crypto namespace",
       "file": "extensions/connector-claude-code/package.json",
-      "find": " --footer:js='module.exports = { serveClaudeSession: module.exports.serveClaudeSession };'",
+      "find": " --footer:js=\\\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession };\\\"",
       "replace": "",
       "expectRed": "AssertionError [ERR_ASSERTION]: hosted_public_exports_only",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... --filter @cotal-ai/auth... build"

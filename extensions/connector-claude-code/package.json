@@ -25,7 +25,7 @@
     "test": "tsx smoke/launch-env.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.smoke.json",
     "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && node -e \"require('node:fs').copyFileSync('dist/mcp.d.ts','dist/mcp.d.cts')\" && pnpm run bundle",
-    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp.cjs --footer:js='module.exports = { serveClaudeSession: module.exports.serveClaudeSession };' && esbuild src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/hook.cjs",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/mcp.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/mcp.cjs --footer:js=\"module.exports = { serveClaudeSession: module.exports.serveClaudeSession };\" && esbuild src/hook.ts --bundle --platform=node --format=cjs --target=node20 --outfile=dist/hook.cjs",
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
