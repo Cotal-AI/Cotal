@@ -3441,7 +3441,7 @@
     {
       "path": "implementations/web/client/src/ui/panel/MembersTab.tsx",
       "kind": "derived-output",
-      "anchor": "{members.map((m) => {\n        const r = peers.get(m.id);\n        return (\n          <button key={m.id} type=\"button\" className=\"v3-mrow\" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>\n            <Avatar vendor={r?.harness} status={r?.status ?? \"offline\"} size={28} />\n            <span className=\"v3-mname\">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>\n            {r && <StatusWord row={r} />}\n          </button>\n        );\n      })}",
+      "anchor": "{members.map((m) => {\n        const r = peers.get(m.id);\n        return (\n          <button key={m.id} type=\"button\" className=\"v3-mrow\" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>\n            <Avatar vendor={r?.harness} status={r?.status ?? \"offline\"} size={28} dot={r !== undefined} />\n            <span className=\"v3-mname\">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>\n            {r && <StatusWord row={r} />}\n          </button>\n        );\n      })}",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
