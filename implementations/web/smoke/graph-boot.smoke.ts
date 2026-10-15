@@ -86,7 +86,7 @@ function newDashboard(opts: { refuseMembershipRead?: boolean } = {}) {
     return value();
   };
   const api: Api = {
-    meta: slow("meta", () => ({ space: "s", pid: 1 })),
+    meta: slow("meta", () => ({ space: "s", pid: 1, post: { mode: "participant" as const } })),
     roster: slow("roster", () => STALE_ROSTER),
     channels: slow("channels", () => []),
     activity: slow("activity", () => page()),
@@ -97,6 +97,7 @@ function newDashboard(opts: { refuseMembershipRead?: boolean } = {}) {
       return STALE_MEMBERS;
     }),
     deleteChannel: async () => { throw new Error("deleteChannel not expected in this boot"); },
+    send: async () => { throw new Error("send not expected in this boot"); },
   };
   let handlers: FeedHandlers | null = null;
   let opened = 0;
@@ -340,7 +341,7 @@ async function main() {
     const boot = (space: string) => {
       const store = createStore<DashboardState>(structuredClone(initialState));
       store.subscribe(() => { if (store.get().space === "boom") throw new Error("a subscriber that throws"); });
-      startDashboard({ store, api: { ...unusedApi, ...bootReads, meta: async () => ({ space, pid: 1 }) }, openFeed: () => () => undefined });
+      startDashboard({ store, api: { ...unusedApi, ...bootReads, meta: async () => ({ space, pid: 1, post: { mode: "participant" as const } }) }, openFeed: () => () => undefined });
     };
     try {
       boot("fine");

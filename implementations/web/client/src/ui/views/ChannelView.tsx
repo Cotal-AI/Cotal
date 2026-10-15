@@ -3,6 +3,7 @@ import { useContext, useLayoutEffect, useMemo, useRef, type ReactNode } from "re
 import type { CotalMessage, FeedMessage } from "../../api/types.js";
 import { Icon } from "../../icons/Icon.tsx";
 import { claimedBy } from "../../lib/claims.js";
+import { composeKey, type ComposeTarget } from "../../lib/compose.js";
 import { channelMembers } from "../../lib/members.js";
 import { nameIndex, type NameIndex } from "../../lib/names.js";
 import { rosterRows, statusLabel, waiting, type RosterRow } from "../../lib/roster.js";
@@ -10,6 +11,7 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { ChannelRow, DashboardState, StoredMessage } from "../../state/types.js";
 import { Avatar } from "../Avatar.tsx";
+import { Composer, OutgoingRows } from "../Composer.tsx";
 import { MessageRow } from "../MessageRow.tsx";
 import { NeedsCard, needsKey, useDismissed } from "../NeedsCard.tsx";
 import { SheetMenu } from "../sheet.js";
@@ -136,8 +138,9 @@ export function usePinnedScroll(list: string, last: string | undefined) {
  *  - Members are `channelMembers`: the broker's when its feed is authoritative, else who posted here.
  *  - The working line names the first member of this channel, in that order, whose status is
  *    working, with the honest progress text from `statusLabel`. Unknown progress draws no moving dots.
- *  - The dock holds the card for the first waiting agent this browser has not dismissed, and is not
- *    drawn at all when there is none. Phase 3 adds the composer under it.
+ *  - The dock holds the card for the first waiting agent this browser has not dismissed, and the
+ *    composer under it once `/api/meta` has said what the dashboard can post as. With neither it is
+ *    not drawn at all. The operator's posts the list does not hold yet follow the messages.
  *  - `onMembers` and `onViewAgent` open the Members and Agent tabs. Without them (a view drawn with
  *    no panel) their buttons are disabled.
  *  - `onTogglePanel` adds the header's Toggle panel button, pressed while `panelOpen`, so a reader
@@ -156,7 +159,10 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const channels = useStore(store, (s) => s.channels);
   const roster = useStore(store, (s) => s.roster);
   const membership = useStore(store, (s) => s.membership);
+  const post = useStore(store, (s) => s.post);
   const messages = open?.channel === channel ? open.messages : NONE;
+  const target = useMemo((): ComposeTarget => ({ kind: "msg", channel }), [channel]);
+  const shown = useMemo(() => new Set(messages.map((m) => m.msg.id)), [messages]);
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const everyone = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peers = useMemo(() => new Map(everyone.map((r) => [r.id, r])), [everyone]);
@@ -169,7 +175,9 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const [dismissed, dismiss] = useDismissed();
   const needing = waiting(everyone).find((r) => !dismissed.has(needsKey(r)));
   const tail = messages[messages.length - 1];
-  const scroll = usePinnedScroll(channel, tail && `${tail.msg.id}\u0001${tail.senderId ?? ""}`);
+  // A post the operator sends moves the bottom too, so a reader following the channel sees it.
+  const sent = useStore(store, (s) => s.drafts[composeKey(target)]?.outgoing.length ?? 0);
+  const scroll = usePinnedScroll(channel, `${tail ? `${tail.msg.id}\u0001${tail.senderId ?? ""}` : ""}\u0002${sent}`);
   const count = members.length;
   const sheet = useContext(SheetMenu);
   // On a phone the panel opens over the whole page, so the button says what it does there, as mock F does.
@@ -204,6 +212,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
       <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
         <div className="ui-col">
           <MessageList messages={messages} idx={idx} peers={peers} />
+          <OutgoingRows store={store} target={target} shown={shown} />
           {working && (
             <div className="ui-typing">
               <Avatar vendor={working.harness} status={working.status} size={18} dot={false} />
@@ -215,10 +224,11 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
           )}
         </div>
       </div>
-      {needing && (
+      {(needing || post) && (
         <div className="ui-dock">
           <div className="ui-dock-in">
-            <NeedsCard row={needing} onViewAgent={onViewAgent} onDismiss={() => dismiss(needsKey(needing))} />
+            {needing && <NeedsCard row={needing} onViewAgent={onViewAgent} onDismiss={() => dismiss(needsKey(needing))} />}
+            <Composer store={store} target={target} where={`#${channel}`} to={`to #${channel} · ${count} member${count === 1 ? "" : "s"}`} />
           </div>
         </div>
       )}

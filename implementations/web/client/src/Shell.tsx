@@ -10,6 +10,7 @@ import type { DashboardState } from "./state/types.js";
 import type { Theme } from "./lib/theme.js";
 import { AppShell } from "./ui/AppShell.tsx";
 import type { Places } from "./ui/Rail.tsx";
+import { Compose } from "./ui/Composer.tsx";
 import { Sidebar } from "./ui/Sidebar.tsx";
 import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
@@ -81,7 +82,9 @@ function centreView(
  *
  *  `phone` draws mock section F (see `AppShell`): the places sheet opens from the channel header's
  *  menu button (through `SheetMenu`) and closes on Escape, on the scrim or on any new route.
- *  `theme` and `onTheme` are the Settings menu's; without `onTheme` Settings is disabled. */
+ *  `theme` and `onTheme` are the Settings menu's; without `onTheme` Settings is disabled.
+ *
+ *  The composers the views draw reach the controller's `send` and `draft` through `Compose`. */
 export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, theme, onTheme }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -113,6 +116,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const sheetOpen = phone && sheetAt === here;
   const menu = useMemo(() => (phone ? { open: sheetOpen, show: () => setSheetAt(here) } : null), [phone, sheetOpen, here]);
   return (
+    <Compose.Provider value={controller}>
     <AgentPicker.Provider value={panel.selectAgent}>
       <SheetMenu.Provider value={menu}>
         <AppShell
@@ -136,6 +140,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
         </AppShell>
       </SheetMenu.Provider>
     </AgentPicker.Provider>
+    </Compose.Provider>
   );
 }
 

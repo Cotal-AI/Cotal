@@ -38,9 +38,25 @@ export interface ActivityPage {
   deadlineMs: number;
 }
 
+/** What the dashboard can post as, as `/api/meta` reports it. Mirrors the server's
+ *  `PostCapability` JSON; the client imports nothing from the server. */
+export type PostCapability = { mode: "participant" } | { mode: "off"; reason: string };
+
+/** `operatorId` is present once the server knows the id it posts as: from startup on a static
+ *  mesh, and from the first post on an open mesh. */
 export interface Meta {
   space: string;
   pid: number;
+  post: PostCapability;
+  operatorId?: string;
+}
+
+/** What `POST /api/send` answers for a post that went out. `seq` is a DM's stored sequence. */
+export interface SendAnswer {
+  ok: true;
+  id: string;
+  operatorId: string;
+  seq?: number;
 }
 
 /** A frame on the live `/feed` stream. `arrivedAt` is not on the wire: the controller stamps it, from

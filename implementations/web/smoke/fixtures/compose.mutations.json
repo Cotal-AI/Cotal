@@ -1,0 +1,585 @@
+{
+  "command": "pnpm smoke:web-compose",
+  "suite": [
+    "implementations/web/smoke/compose.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "K1 a channel route has no composer",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "if (route.view === \"channel\") return { kind: \"msg\", channel: route.channel };",
+      "replace": "if (route.view === \"channel\") return undefined;",
+      "expectRed": "1.1 a channel route posts to its channel",
+      "cell": "1.1 a channel route posts to its channel"
+    },
+    {
+      "name": "K2 a DM route that names one agent has no composer",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "return route.peer === self ? undefined : { kind: \"dm\", to: route.peer };",
+      "replace": "return undefined;",
+      "expectRed": "1.2 a DM route posts to the agent it names, by id",
+      "cell": "1.2 a DM route posts to the agent it names, by id"
+    },
+    {
+      "name": "K3 every view posts somewhere, Activity included",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "if (route.view !== \"dm\") return undefined;",
+      "replace": "if (route.view !== \"dm\") return { kind: \"msg\", channel: route.view };",
+      "expectRed": "1.3 Activity, and every view that is not a channel or a DM, has no composer",
+      "cell": "1.3 Activity, and every view that is not a channel or a DM, has no composer"
+    },
+    {
+      "name": "K4 a conversation the route opens on the operator posts to the operator itself",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "if (route.peer === self) return { kind: \"dm\", to: route.with };",
+      "replace": "if (route.peer === self) return { kind: \"dm\", to: route.peer };",
+      "expectRed": "1.4 a conversation that names the operator posts to the other side, whichever side the route names first",
+      "cell": "1.4 a conversation that names the operator posts to the other side, whichever side the route names first"
+    },
+    {
+      "name": "K5 a conversation between two agents gets a composer that DMs one of them from the operator",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "  if (route.with === self) return { kind: \"dm\", to: route.peer };\n  return undefined;",
+      "replace": "  if (route.with === self) return { kind: \"dm\", to: route.peer };\n  return { kind: \"dm\", to: route.peer };",
+      "expectRed": "1.5 a conversation between two agents, or the operator alone, has no composer",
+      "cell": "1.5 a conversation between two agents, or the operator alone, has no composer"
+    },
+    {
+      "name": "K6 the participant note goes back to the dropped static-mesh wording",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "Replies come to your DMs.\";",
+      "replace": "Replies come to Direct messages.\";",
+      "expectRed": "1.6 a dashboard that posts says the participant line",
+      "cell": "1.6 a dashboard that posts says the participant line"
+    },
+    {
+      "name": "K7 the restart hint goes to every reason but --creds",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "return post.reason === POST_OFF_CREDS ? \"Restart",
+      "replace": "return post.reason !== POST_OFF_CREDS ? \"Restart",
+      "expectRed": "1.7 posting off with --creds says how to post here, with the command parts as code",
+      "cell": "1.7 posting off with --creds says how to post here, with the command parts as code"
+    },
+    {
+      "name": "K8 the client's copy of the --creds reason drifts from the server's, so the restart hint is never shown",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "export const POST_OFF_CREDS = \"This dashboard was started with --creds, which can only read.\";",
+      "replace": "export const POST_OFF_CREDS = \"This dashboard was started with --creds and can only read.\";",
+      "expectRed": "1.7 posting off with --creds says how to post here, with the command parts as code",
+      "cell": "1.7 posting off with --creds says how to post here, with the command parts as code"
+    },
+    {
+      "name": "K9 the operator's own id shrinks to a prefix like any stranger's",
+      "file": "implementations/web/client/src/lib/names.ts",
+      "find": "  if (selfId && (typeof x === \"object\" ? x.id : x) === selfId && !idx.has(selfId)) return OPERATOR_YOU;\n",
+      "replace": "",
+      "expectRed": "1.10 the operator's id reads operator (you) while the roster does not hold it",
+      "cell": "1.10 the operator's id reads operator (you) while the roster does not hold it"
+    },
+    {
+      "name": "K10 the operator label outranks the roster's own name for it",
+      "file": "implementations/web/client/src/lib/names.ts",
+      "find": " && !idx.has(selfId)) return OPERATOR_YOU;",
+      "replace": ") return OPERATOR_YOU;",
+      "expectRed": "1.11 once the roster names it, that name, and with no selfId the id is not called you",
+      "cell": "1.11 once the roster names it, that name, and with no selfId the id is not called you"
+    },
+    {
+      "name": "K11 a broker refusal is said like any other, without naming the broker",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "${status === 502 ? `The broker refused it: ${sentence}` : sentence}",
+      "replace": "${false ? `The broker refused it: ${sentence}` : sentence}",
+      "expectRed": "1.12 a 502 is the broker's refusal, ending in one period",
+      "cell": "1.12 a 502 is the broker's refusal, ending in one period"
+    },
+    {
+      "name": "K12 every refusal with a status is blamed on the broker",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "${status === 502 ? `The broker refused it: ${sentence}` : sentence}",
+      "replace": "${status !== undefined ? `The broker refused it: ${sentence}` : sentence}",
+      "expectRed": "1.13 a 403 is said as it came, and the server's own period is not doubled",
+      "cell": "1.13 a 403 is said as it came, and the server's own period is not doubled"
+    },
+    {
+      "name": "K13 a server sentence that ends in a period gets a second one",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "const sentence = why.endsWith(\".\") ? why : `${why}.`;",
+      "replace": "const sentence = `${why}.`;",
+      "expectRed": "1.13 a 403 is said as it came, and the server's own period is not doubled",
+      "cell": "1.13 a 403 is said as it came, and the server's own period is not doubled"
+    },
+    {
+      "name": "K14 the footer claims a place on the roster before /api/meta has answered",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "  if (post === null) return undefined;\n  if (post.mode === \"off\")",
+      "replace": "  if (post === null) return { text: \"Not on the roster\", title: PARTICIPANT_NOTE };\n  if (post.mode === \"off\")",
+      "expectRed": "1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason",
+      "cell": "1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason"
+    },
+    {
+      "name": "K15 Read only loses the reason it is read only",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "return { text: \"Read only\", title: post.reason };",
+      "replace": "return { text: \"Read only\", title: \"Read only\" };",
+      "expectRed": "1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason",
+      "cell": "1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason"
+    },
+    {
+      "name": "K16 the footer reads the roster backwards",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "  return onRoster\n",
+      "replace": "  return !onRoster\n",
+      "expectRed": "1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason",
+      "cell": "1.15 the footer line: nothing before /api/meta, then Not on the roster, On the roster, and Read only with the reason"
+    },
+    {
+      "name": "K17 a post leaves its text in the box while it is in flight",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "putDraft(key, (d) => ({ text: \"\", outgoing: [...d.outgoing, mine] }));",
+      "replace": "putDraft(key, (d) => ({ text: d.text, outgoing: [...d.outgoing, mine] }));",
+      "expectRed": "2.1 a post empties the box and is held as a row the server has not answered",
+      "cell": "2.1 a post empties the box and is held as a row the server has not answered"
+    },
+    {
+      "name": "K18 a second post goes out while the first is still in flight",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if ((store.get().drafts[key] ?? BLANK).outgoing.some((o) => o.id === undefined)) throw new Error(\"a post to this target is already in flight\");\n",
+      "replace": "",
+      "expectRed": "2.3 a second post to the same target while one is in flight is refused in the page",
+      "cell": "2.3 a second post to the same target while one is in flight is refused in the page"
+    },
+    {
+      "name": "K19 an open mesh never learns the operator's id from a post's answer",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        operatorId: st.operatorId ?? answer.operatorId,\n",
+      "replace": "        operatorId: st.operatorId,\n",
+      "expectRed": "2.4 the answer marks the row sent, and an open mesh learns the operator's id from it",
+      "cell": "2.4 the answer marks the row sent, and an open mesh learns the operator's id from it"
+    },
+    {
+      "name": "K20 a delivered post keeps its own row, so it shows twice",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "outgoing: d.outgoing.filter((o) => o.id !== msg.id) }",
+      "replace": "outgoing: d.outgoing }",
+      "expectRed": "2.5 the row goes once the feed delivers the message itself",
+      "cell": "2.5 the row goes once the feed delivers the message itself"
+    },
+    {
+      "name": "K21 a refused post loses what was typed",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "text: d.text ? `${text}\\n${d.text}` : text, refused:",
+      "replace": "text: d.text, refused:",
+      "expectRed": "2.6 THE DRAFT SURVIVES A REFUSAL: the text is back in the box and no row is left",
+      "cell": "2.6 THE DRAFT SURVIVES A REFUSAL: the text is back in the box and no row is left"
+    },
+    {
+      "name": "K22 a refused post leaves its faded row behind",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "refused: refusalText(where, err), outgoing: d.outgoing.filter((o) => o !== mine) }));",
+      "replace": "refused: refusalText(where, err), outgoing: d.outgoing }));",
+      "expectRed": "2.6 THE DRAFT SURVIVES A REFUSAL: the text is back in the box and no row is left",
+      "cell": "2.6 THE DRAFT SURVIVES A REFUSAL: the text is back in the box and no row is left"
+    },
+    {
+      "name": "K23 a refusal is not said",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "refused: refusalText(where, err),",
+      "replace": "refused: undefined,",
+      "expectRed": "2.7 and a 502 sets the broker's refusal copy",
+      "cell": "2.7 and a 502 sets the broker's refusal copy"
+    },
+    {
+      "name": "K24 send swallows the server's error",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        throw err;\n",
+      "replace": "        return;\n",
+      "expectRed": "2.8 and send rethrows the server's error",
+      "cell": "2.8 and send rethrows the server's error"
+    },
+    {
+      "name": "K25 editing a refused draft keeps the stale refusal under it",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "putDraft(composeKey(target), (d) => ({ text, outgoing: d.outgoing }));",
+      "replace": "putDraft(composeKey(target), (d) => ({ ...d, text }));",
+      "expectRed": "2.9 editing the refused draft clears the refusal",
+      "cell": "2.9 editing the refused draft clears the refusal"
+    },
+    {
+      "name": "K26 a refused DM names the agent by its raw id",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "displayNameOf(target.to, nameIndex(s.roster), s.operatorId)",
+      "replace": "target.to",
+      "expectRed": "2.10 a refused DM names the agent by its roster name, and a 403 is not called the broker's",
+      "cell": "2.10 a refused DM names the agent by its roster name, and a 403 is not called the broker's"
+    },
+    {
+      "name": "K27 /api/meta's capability never reaches the store",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "({ space: meta.space, post: meta.post, operatorId:",
+      "replace": "({ space: meta.space, operatorId:",
+      "expectRed": "2.11 /api/meta's capability reaches the store",
+      "cell": "2.11 /api/meta's capability reaches the store"
+    },
+    {
+      "name": "K28 a static mesh ignores the operator id /api/meta reports",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "operatorId: s.operatorId ?? meta.operatorId ?? null",
+      "replace": "operatorId: s.operatorId ?? null",
+      "expectRed": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept",
+      "cell": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept"
+    },
+    {
+      "name": "K29 a post's answer overwrites the operator id already known",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        operatorId: st.operatorId ?? answer.operatorId,\n",
+      "replace": "        operatorId: answer.operatorId,\n",
+      "expectRed": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept",
+      "cell": "2.12 a static mesh's operator id comes from /api/meta, and the one that arrived first is kept"
+    },
+    {
+      "name": "K30 the answer to a post the feed already delivered adds its row back",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": ": seen ? [] : [{ ...o, id: answer.id }]",
+      "replace": ": false ? [] : [{ ...o, id: answer.id }]",
+      "expectRed": "2.13 a post the feed delivered before the answer came leaves no row behind",
+      "cell": "2.13 a post the feed delivered before the answer came leaves no row behind"
+    },
+    {
+      "name": "K31 the post's body drops its target",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "body: JSON.stringify({ ...target, text })",
+      "replace": "body: JSON.stringify({ text })",
+      "expectRed": "2.14 send posts its target and text as JSON to /api/send and hands back the answer",
+      "cell": "2.14 send posts its target and text as JSON to /api/send and hands back the answer"
+    },
+    {
+      "name": "K32 a refused post goes through the read gate and loses its status",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "      if (!res.ok) throw await sendRefusal(res);\n",
+      "replace": "",
+      "expectRed": "2.15 a refusal throws with its status and the server's text kept apart",
+      "cell": "2.15 a refusal throws with its status and the server's text kept apart"
+    },
+    {
+      "name": "K33 a refusal drops the server's text",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "    if (body && typeof body.error === \"string\") error = body.error;\n",
+      "replace": "",
+      "expectRed": "2.15 a refusal throws with its status and the server's text kept apart",
+      "cell": "2.15 a refusal throws with its status and the server's text kept apart"
+    },
+    {
+      "name": "K34 the box says Message with no place",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "placeholder={`Message ${where}`}",
+      "replace": "placeholder=\"Message\"",
+      "expectRed": "3.1 the live box is a textarea whose placeholder is Message #review",
+      "cell": "3.1 the live box is a textarea whose placeholder is Message #review"
+    },
+    {
+      "name": "K35 the row drops as operator",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "<span className=\"ui-pick\">as operator</span>",
+      "replace": "",
+      "expectRed": "3.2 its row is Mention, the mode line, as operator and send",
+      "cell": "3.2 its row is Mention, the mode line, as operator and send"
+    },
+    {
+      "name": "K36 the mode line drops the member count",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "to={`to #${channel} · ${count} member${count === 1 ? \"\" : \"s\"}`}",
+      "replace": "to={`to #${channel}`}",
+      "expectRed": "3.2 its row is Mention, the mode line, as operator and send",
+      "cell": "3.2 its row is Mention, the mode line, as operator and send"
+    },
+    {
+      "name": "K37 a channel post wears the DM's orange",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "target.kind === \"msg\" ? \"var(--multi)\" : \"var(--uni)\"",
+      "replace": "\"var(--uni)\"",
+      "expectRed": "3.3 the mode line counts the header's members and carries the channel's blue dot",
+      "cell": "3.3 the mode line counts the header's members and carries the channel's blue dot"
+    },
+    {
+      "name": "K38 the live note is empty",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "      {refused === undefined ? (\n        <div className=\"ui-cnote\">{withCode(composerNote(post))}</div>",
+      "replace": "      {refused === undefined ? (\n        <div className=\"ui-cnote\" />",
+      "expectRed": "3.4 under it, the participant line",
+      "cell": "3.4 under it, the participant line"
+    },
+    {
+      "name": "K39 an empty box can be sent",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "const ready = ctl !== null && !sending && draft.text.trim() !== \"\";",
+      "replace": "const ready = ctl !== null && !sending;",
+      "expectRed": "3.5 an empty box cannot be sent",
+      "cell": "3.5 an empty box cannot be sent"
+    },
+    {
+      "name": "K40 the dock is drawn before /api/meta has said what the dashboard can post as",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "{(needing || post) && (",
+      "replace": "{(needing || true) && (",
+      "expectRed": "3.6 nothing is drawn until /api/meta has said what the dashboard can post as",
+      "cell": "3.6 nothing is drawn until /api/meta has said what the dashboard can post as"
+    },
+    {
+      "name": "K41 the --creds reason loses its code",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "{post.reason === POST_OFF_CREDS ? withCode(\"This dashboard was started with `--creds`, which can only read.\") : post.reason}",
+      "replace": "{post.reason}",
+      "expectRed": "3.7 --creds: the reason with --creds as code, behind a lock",
+      "cell": "3.7 --creds: the reason with --creds as code, behind a lock"
+    },
+    {
+      "name": "K42 a composer that cannot post offers no command",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "<CopyCommand command={sendCommand(target, where)} />",
+      "replace": "",
+      "expectRed": "3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason",
+      "cell": "3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason"
+    },
+    {
+      "name": "K43 the disabled send does not say why",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "disabled title={post.reason} aria-label=\"Send\"",
+      "replace": "disabled aria-label=\"Send\"",
+      "expectRed": "3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason",
+      "cell": "3.8 the command that posts from a terminal, and a disabled send whose tooltip is the reason"
+    },
+    {
+      "name": "K44 the restart note prints its backticks instead of code",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "        <div className=\"ui-cnote\">{withCode(composerNote(post))}</div>\n      </>",
+      "replace": "        <div className=\"ui-cnote\">{composerNote(post)}</div>\n      </>",
+      "expectRed": "3.9 and the note says to restart without --creds, with both as code",
+      "cell": "3.9 and the note says to restart without --creds, with both as code"
+    },
+    {
+      "name": "K45 every reason posting is off is shown as the --creds one",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "which can only read.\") : post.reason}",
+      "replace": "which can only read.\") : POST_OFF_CREDS}",
+      "expectRed": "3.10 a sign-in mesh shows the server's reason as it came, and an empty note",
+      "cell": "3.10 a sign-in mesh shows the server's reason as it came, and an empty note"
+    },
+    {
+      "name": "K46 send stays live while a post is in flight",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "const ready = ctl !== null && !sending && draft.text.trim() !== \"\";",
+      "replace": "const ready = ctl !== null && draft.text.trim() !== \"\";",
+      "expectRed": "3.11 THE SEND BUTTON IS DISABLED WHILE A SEND IS IN FLIGHT, though the box holds text, and it spins",
+      "cell": "3.11 THE SEND BUTTON IS DISABLED WHILE A SEND IS IN FLIGHT, though the box holds text, and it spins"
+    },
+    {
+      "name": "K47 send does not spin while a post is in flight",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "{sending ? <span className=\"ui-spin\" /> :",
+      "replace": "{false ? <span className=\"ui-spin\" /> :",
+      "expectRed": "3.11 THE SEND BUTTON IS DISABLED WHILE A SEND IS IN FLIGHT, though the box holds text, and it spins",
+      "cell": "3.11 THE SEND BUTTON IS DISABLED WHILE A SEND IS IN FLIGHT, though the box holds text, and it spins"
+    },
+    {
+      "name": "K48 a post in flight is drawn as though it had gone out",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "className={o.id === undefined ? \"ui-msg ui-pending\" : \"ui-msg\"}",
+      "replace": "className=\"ui-msg\"",
+      "expectRed": "3.12 THE FADED SENDING ROW: the post shows as the operator's, faded, until the server answers",
+      "cell": "3.12 THE FADED SENDING ROW: the post shows as the operator's, faded, until the server answers"
+    },
+    {
+      "name": "K49 the channel view does not draw the operator's posts in flight",
+      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "find": "          <OutgoingRows store={store} target={target} shown={shown} />\n",
+      "replace": "",
+      "expectRed": "3.12 THE FADED SENDING ROW: the post shows as the operator's, faded, until the server answers",
+      "cell": "3.12 THE FADED SENDING ROW: the post shows as the operator's, faded, until the server answers"
+    },
+    {
+      "name": "K50 an answered post vanishes until the feed brings it",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": ".filter((o) => o.id === undefined || !shown.has(o.id))",
+      "replace": ".filter((o) => o.id === undefined)",
+      "expectRed": "3.13 once answered it is no longer faded, until the list holds the message itself",
+      "cell": "3.13 once answered it is no longer faded, until the list holds the message itself"
+    },
+    {
+      "name": "K51 a delivered post is drawn twice",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": ".filter((o) => o.id === undefined || !shown.has(o.id))",
+      "replace": ".filter(() => true)",
+      "expectRed": "3.14 and once it does, the post is drawn once",
+      "cell": "3.14 and once it does, the post is drawn once"
+    },
+    {
+      "name": "K52 a refused composer is not ringed",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "refused === undefined ? \"ui-card ui-composer\" : \"ui-card ui-composer ui-composer-err\"",
+      "replace": "\"ui-card ui-composer\"",
+      "expectRed": "3.15 refused: the draft is in the box, the card is ringed, and Try again is the row",
+      "cell": "3.15 refused: the draft is in the box, the card is ringed, and Try again is the row"
+    },
+    {
+      "name": "K53 a refused composer offers no Try again",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "              <button type=\"button\" className=\"ui-btn ui-btn-sm\" disabled={!ready} onClick={submit}>Try again</button>\n",
+      "replace": "",
+      "expectRed": "3.15 refused: the draft is in the box, the card is ringed, and Try again is the row",
+      "cell": "3.15 refused: the draft is in the box, the card is ringed, and Try again is the row"
+    },
+    {
+      "name": "K54 the refusal, server text and all, is built as HTML",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "title={refused}>{refused}</div>",
+      "replace": "title={refused} dangerouslySetInnerHTML={{ __html: refused }} />",
+      "expectRed": "3.16 the refusal is the note, as plain text: the server's markup is shown, never built",
+      "cell": "3.16 the refusal is the note, as plain text: the server's markup is shown, never built"
+    },
+    {
+      "name": "K55 an empty note is left out, so a sign-in mesh's dock is a line shorter",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "        <div className=\"ui-cnote\">{withCode(composerNote(post))}</div>\n      </>",
+      "replace": "        {composerNote(post) && <div className=\"ui-cnote\">{withCode(composerNote(post))}</div>}\n      </>",
+      "expectRed": "3.17 ONE DOCK HEIGHT: live, off (with and without a note), sending and refused each draw the same two elements, the card with its two rows and the note",
+      "cell": "3.17 ONE DOCK HEIGHT: live, off (with and without a note), sending and refused each draw the same two elements, the card with its two rows and the note"
+    },
+    {
+      "name": "K56 a DM view has no composer",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{target && post && (",
+      "replace": "{false && (",
+      "expectRed": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot",
+      "cell": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot"
+    },
+    {
+      "name": "K57 a DM wears the channel's blue",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "target.kind === \"msg\" ? \"var(--multi)\" : \"var(--uni)\"",
+      "replace": "\"var(--multi)\"",
+      "expectRed": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot",
+      "cell": "3.18 a DM view posts to its agent: Message reviewer_2, to reviewer_2, with the orange dot"
+    },
+    {
+      "name": "K58 the DM command names the agent by id, which cotal send dm does not take",
+      "file": "implementations/web/client/src/lib/compose.ts",
+      "find": "`cotal send dm ${name} \"<text>\"`",
+      "replace": "`cotal send dm ${t.to} \"<text>\"`",
+      "expectRed": "3.19 posting off there, the command is cotal send dm with the agent's name",
+      "cell": "3.19 posting off there, the command is cotal send dm with the agent's name"
+    },
+    {
+      "name": "K59 the DM view drops the conversation's other side when it picks a target",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "composeTarget({ view: \"dm\", peer, with: other }, self)",
+      "replace": "composeTarget({ view: \"dm\", peer }, self)",
+      "expectRed": "3.20 a conversation between two agents has no composer",
+      "cell": "3.20 a conversation between two agents has no composer"
+    },
+    {
+      "name": "K60 the DM header does not know the operator's own id",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{`with ${displayNameOf(conv.with, idx, self)}`}",
+      "replace": "{`with ${displayNameOf(conv.with, idx)}`}",
+      "expectRed": "3.21 the conversation with the operator says operator (you) while the roster does not name it",
+      "cell": "3.21 the conversation with the operator says operator (you) while the roster does not name it"
+    },
+    {
+      "name": "K61 typing never reaches the draft",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "onChange={(e) => ctl?.draft(target, (e.currentTarget as unknown as Field).value)}",
+      "replace": "onChange={() => undefined}",
+      "expectRed": "4.1 typing reaches the draft and the send button wakes",
+      "cell": "4.1 typing reaches the draft and the send button wakes"
+    },
+    {
+      "name": "K62 the shell hands the composers no controller, so the box is read only",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "<Compose.Provider value={controller}>",
+      "replace": "<Compose.Provider value={null}>",
+      "expectRed": "4.1 typing reaches the draft and the send button wakes",
+      "cell": "4.1 typing reaches the draft and the send button wakes"
+    },
+    {
+      "name": "K63 Shift+Enter sends instead of starting a new line",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "if (e.key !== \"Enter\" || e.shiftKey ||",
+      "replace": "if (e.key !== \"Enter\" ||",
+      "expectRed": "4.2 Shift+Enter does not send",
+      "cell": "4.2 Shift+Enter does not send"
+    },
+    {
+      "name": "K64 Enter does not send",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "            e.preventDefault();\n            submit();\n",
+      "replace": "            e.preventDefault();\n",
+      "expectRed": "4.3 Enter sends, and after a refusal the draft is still in the box with the broker's refusal under it",
+      "cell": "4.3 Enter sends, and after a refusal the draft is still in the box with the broker's refusal under it"
+    },
+    {
+      "name": "K65 Try again does nothing",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "disabled={!ready} onClick={submit}>Try again</button>",
+      "replace": "disabled={!ready}>Try again</button>",
+      "expectRed": "4.4 Try again sends the draft again",
+      "cell": "4.4 Try again sends the draft again"
+    },
+    {
+      "name": "K66 the Needs card's Message opens the DM view without asking for the composer",
+      "file": "implementations/web/client/src/ui/NeedsCard.tsx",
+      "find": " onClick={() => focusComposer({ kind: \"dm\", to: row.id })}",
+      "replace": "",
+      "expectRed": "4.5 the Needs card's Message opens the DM view with its composer focused",
+      "cell": "4.5 the Needs card's Message opens the DM view with its composer focused"
+    },
+    {
+      "name": "K67 the composer takes the request and never focuses",
+      "file": "implementations/web/client/src/ui/Composer.tsx",
+      "find": "      wanted = null;\n      el.focus();\n",
+      "replace": "      wanted = null;\n",
+      "expectRed": "4.5 the Needs card's Message opens the DM view with its composer focused",
+      "cell": "4.5 the Needs card's Message opens the DM view with its composer focused"
+    },
+    {
+      "name": "K68 the Agent tab's Message opens the DM view without asking for the composer",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": " onClick={() => focusComposer({ kind: \"dm\", to: row.id })}",
+      "replace": "",
+      "expectRed": "4.6 the Agent tab's Message opens the DM view with its composer focused",
+      "cell": "4.6 the Agent tab's Message opens the DM view with its composer focused"
+    },
+    {
+      "name": "K69 the footer draws no second line",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{line && <span title={line.title}>{line.text}</span>}",
+      "replace": "",
+      "expectRed": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover",
+      "cell": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover"
+    },
+    {
+      "name": "K70 the footer line loses its reason on hover",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "<span title={line.title}>{line.text}</span>",
+      "replace": "<span>{line.text}</span>",
+      "expectRed": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover",
+      "cell": "5.1 a dashboard that posts reads Not on the roster until the operator's id is on it, with the participant line on hover"
+    },
+    {
+      "name": "K71 the footer never sees the operator on the roster",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "footerLine(post, self !== null && roster.some((p) => p.card.id === self))",
+      "replace": "footerLine(post, false)",
+      "expectRed": "5.2 then On the roster, with its reason on hover",
+      "cell": "5.2 then On the roster, with its reason on hover"
+    },
+    {
+      "name": "K72 a sidebar DM row does not know the operator's own id",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}",
+      "replace": "{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}",
+      "expectRed": "5.4 a conversation with the operator reads operator (you) in the sidebar while the roster does not name it",
+      "cell": "5.4 a conversation with the operator reads operator (you) in the sidebar while the roster does not name it"
+    }
+  ]
+}

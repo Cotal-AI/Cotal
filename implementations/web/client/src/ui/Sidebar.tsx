@@ -2,6 +2,7 @@ import { Plug01Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
 import { RailIcon } from "../icons/rail.tsx";
+import { footerLine } from "../lib/compose.js";
 import { dmPeers } from "../lib/dms.js";
 import { displayNameOf, nameIndex } from "../lib/names.js";
 import { rosterRows, waiting } from "../lib/roster.js";
@@ -52,10 +53,13 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *
  *  While the first roster and channel reads are outstanding the places are skeleton rows.
  *
- *  Two things the mock draws are left out because the page cannot say them: the operator's place on
- *  the roster (it depends on the mesh's credential mode, which no read reports) and a "to you" mark on a
- *  direct message (the operator's id is not known here). The space name has no menu until the server
- *  can list the other spaces. */
+ *  The footer's second line is the operator's place on the roster (`footerLine`): nothing until
+ *  `/api/meta` has said what the dashboard can post as, then "Not on the roster" until the operator's
+ *  id is on it, "On the roster" once it is, and "Read only" when posting is off, each with its reason
+ *  on hover. The operator's own id reads "operator (you)" in a conversation until the roster names it.
+ *
+ *  A "to you" mark on a direct message, which the mock draws, is left out. The space name has no menu
+ *  until the server can list the other spaces. */
 export function Sidebar({ store, route, msgPerSecond }: { store: Store<DashboardState>; route: Route; msgPerSecond: () => number }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -64,6 +68,8 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const dms = useStore(store, (s) => s.dms);
   const connection = useStore(store, (s) => s.connection);
   const loading = useStore(store, (s) => s.loading);
+  const post = useStore(store, (s) => s.post);
+  const self = useStore(store, (s) => s.operatorId);
   const [, setTick] = useState(0);
   useEffect(() => {
     const timer = setInterval(() => setTick((t) => t + 1), RATE_TICK_MS);
@@ -73,6 +79,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const needing = waiting(rows).length;
+  const line = footerLine(post, self !== null && roster.some((p) => p.card.id === self));
   const conversations = useMemo(() => {
     const seen = new Map<string, { pair: [string, string]; last: number; verified: boolean }>();
     for (const peer of dmPeers(dms, roster))
@@ -134,14 +141,14 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
                 <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={false} />
               ))}
             </span>
-            <span className="ui-row-lbl">{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}</span>
+            <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
             {!verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
           </Row>
         ))}
       </nav>}
       <div className="ui-side-foot">
         <span className="ui-me">OP</span>
-        <div className="ui-who"><b>operator</b></div>
+        <div className="ui-who"><b>operator</b>{line && <span title={line.title}>{line.text}</span>}</div>
         {connection === "connected" ? (
           <span className="ui-live" title="Connected to cotal web"><i></i>Connected</span>
         ) : (

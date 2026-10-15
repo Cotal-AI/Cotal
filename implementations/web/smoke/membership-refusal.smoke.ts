@@ -222,7 +222,7 @@ check("an unreadable feed with a fresh snapshot still reads unreadable, not live
 
 /** The healthy answer to every route but membership, which a cell supplies. */
 const healthy = (url: string): unknown => {
-  if (url === "/api/meta") return { space: "s", pid: 1 };
+  if (url === "/api/meta") return { space: "s", pid: 1, post: { mode: "participant" } };
   if (url.startsWith("/api/activity")) return { entries: [], partial: false, read: 1, of: 1, missing: [], reasons: {}, deadlineMs: 8000 };
   return [];
 };

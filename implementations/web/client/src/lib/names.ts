@@ -11,11 +11,16 @@ export function nameIndex(roster: RosterEntry[]): NameIndex {
   return idName;
 }
 
+/** What the operator's own id reads as while the roster does not hold it. */
+export const OPERATOR_YOU = "operator (you)";
+
 /** Resolve an EndpointRef object or a bare id to a display name. An object resolves through its
  *  AUTHENTICATED id; its `.name` is payload text and is never read. An unknown id shrinks to a short
- *  prefix, and a string that is not an identity (already a name) passes through unchanged. */
-export function displayNameOf(x: string | { id?: string } | undefined, idx: NameIndex): string {
+ *  prefix, and a string that is not an identity (already a name) passes through unchanged. `selfId`
+ *  is the id the dashboard posts as, which reads "operator (you)" until the roster names it. */
+export function displayNameOf(x: string | { id?: string } | undefined, idx: NameIndex, selfId?: string | null): string {
   if (!x) return "?";
+  if (selfId && (typeof x === "object" ? x.id : x) === selfId && !idx.has(selfId)) return OPERATOR_YOU;
   if (typeof x === "object") return displayNameOf(x.id, idx);
   const known = idx.get(x);
   if (known !== undefined) return known;

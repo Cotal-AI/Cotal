@@ -16,6 +16,7 @@ export const unusedApi: Api = {
   history: async () => { throw new Error("history not expected in this cell"); },
   membership: async () => { throw new Error("membership not expected in this cell"); },
   deleteChannel: async () => { throw new Error("deleteChannel not expected in this cell"); },
+  send: async () => { throw new Error("send not expected in this cell"); },
 };
 
 /** A bounded `/api/activity` page carrying `entries`, complete. */
@@ -25,7 +26,7 @@ export const page = (entries: unknown[] = []) =>
 /** The six bootstrap reads `refresh()` issues, each answering an empty, healthy value. A refresh
  *  cell spreads this and overrides the read it is about. */
 export const bootReads: Partial<Api> = {
-  meta: async () => ({ space: "main", pid: 1 }),
+  meta: async () => ({ space: "main", pid: 1, post: { mode: "participant" } }),
   roster: async () => [],
   channels: async () => [],
   activity: async () => page(),

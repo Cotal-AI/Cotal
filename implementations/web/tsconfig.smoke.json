@@ -11,5 +11,5 @@
   "include": ["smoke/**/*.ts"],
   // The suites that stub or drive a DOM need DOM types and are typechecked by tsconfig.smoke-dom.json
   // instead: the theme suite, and the suites that mount React in jsdom.
-  "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/sidebar.smoke.ts", "smoke/views.smoke.ts", "smoke/topology-view.smoke.ts", "smoke/agents-view.smoke.ts", "smoke/panel.smoke.ts", "smoke/states.smoke.ts", "smoke/layout.smoke.ts", "smoke/mount.ts"]
+  "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/sidebar.smoke.ts", "smoke/views.smoke.ts", "smoke/topology-view.smoke.ts", "smoke/agents-view.smoke.ts", "smoke/panel.smoke.ts", "smoke/states.smoke.ts", "smoke/layout.smoke.ts", "smoke/compose.smoke.ts", "smoke/mount.ts"]
 }

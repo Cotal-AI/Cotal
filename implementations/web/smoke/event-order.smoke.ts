@@ -430,7 +430,7 @@ console.log("event-order smoke");
     // what the shipped boot does and not what its source says.
     const log: string[] = [];
     let handlers: FeedHandlers | undefined;
-    const reads = { ...bootReads, meta: async () => { log.push("read:meta"); return { space: "main", pid: 1 }; } };
+    const reads = { ...bootReads, meta: async () => { log.push("read:meta"); return { space: "main", pid: 1, post: { mode: "participant" as const } }; } };
     const store = createStore(structuredClone(initialState));
     const dash = startDashboard({
       store,

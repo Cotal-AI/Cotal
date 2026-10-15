@@ -180,6 +180,15 @@ pre code { background: none; padding: 0; }
 .ui-reason .ui-ic { color: var(--faint); margin-top: 2px; }
 .ui-pending { opacity: .6; }
 .ui-pending time::after { content: " sending"; }
+/* The composer's box is a real textarea in the mock's input slot; a refusal rings the card in red and
+   says why in the note, which keeps its one-line height so the dock does not move. */
+textarea.ui-input { display: block; width: 100%; height: 100%; margin: 0; border: 0; padding: 2px 0 0; background: none; color: var(--ink); font: inherit; line-height: 1.45; resize: none; outline: none; }
+textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
+.ui-composer:focus-within { box-shadow: 0 0 0 1px var(--focus), var(--card-shadow); }
+.ui-composer-err, .ui-composer-err:focus-within { box-shadow: 0 0 0 1px var(--red), var(--card-shadow); }
+.ui-cnote.ui-cnote-err { color: var(--red-ink); }
+/* The footer's operator block stacks its name over its roster line, which `.ui-who` below would lay out in a row. */
+.ui-side-foot .ui-who { display: block; }
 
 /* copyable CLI command */
 .ui-cmd { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; font: 500 12px/1 var(--mono); color: var(--ink); background: var(--soft); border: 1px solid var(--card-line); border-radius: 7px; padding: 4px 4px 4px 9px; white-space: nowrap; }

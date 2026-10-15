@@ -448,7 +448,7 @@
     {
       "name": "D3 the counterparty is named by raw id",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "{`with ${displayNameOf(conv.with, idx)}`}",
+      "find": "{`with ${displayNameOf(conv.with, idx, self)}`}",
       "replace": "{`with ${conv.with}`}",
       "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
       "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"

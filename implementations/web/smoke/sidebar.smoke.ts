@@ -7,8 +7,8 @@
  *
  *  What is pinned, beyond the markup: every name comes from the roster by id and never from a
  *  payload; an event channel (`run.*`) is the one row drawn with the plug icon; no footer line
- *  claims the operator's place on the roster, because the page cannot know the mesh's mode; and no
- *  DM row reads "to you", because the page cannot know which id is the operator. */
+ *  claims the operator's place on the roster before `/api/meta` has said what the dashboard can post
+ *  as (compose.smoke.ts pins the lines it draws after); and no DM row reads "to you". */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { Plug01Icon } from "@hugeicons/core-free-icons";
@@ -229,7 +229,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
 // ── 8. The arrivals the rate counts ──────────────────────────────────────────────────────────────
 {
   const emptyApi: Api = {
-    meta: async () => ({ space: "main", pid: 1 }),
+    meta: async () => ({ space: "main", pid: 1, post: { mode: "participant" as const } }),
     roster: async () => [],
     channels: async () => [],
     activity: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], reasons: {}, deadlineMs: 1 }),
@@ -237,6 +237,7 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
     history: async () => [],
     membership: async () => ({ members: [] }) as never,
     deleteChannel: async (channel) => ({ ok: true, channel, purged: 0 }),
+    send: async () => { throw new Error("send not expected here"); },
   };
   const frame = (id: string): FeedMessage => ({ mode: "chat", channel: "general", senderId: "local.dav", msg: { id, ts: 1, space: "main", from: { id: "local.dav" }, parts: [{ kind: "text", text: "hi" }] } as unknown as CotalMessage });
   let handlers!: FeedHandlers;

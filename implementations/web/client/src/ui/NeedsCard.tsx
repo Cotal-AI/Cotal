@@ -4,6 +4,7 @@ import { Icon } from "../icons/Icon.tsx";
 import { formatRoute } from "../lib/route.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
+import { focusComposer } from "./Composer.tsx";
 import { clock } from "./MessageRow.tsx";
 
 /** Where this browser keeps its dismissals: a JSON list of `needsKey` values. */
@@ -69,7 +70,8 @@ export function needsDetail(row: RosterRow): string {
 /** The card for an agent whose status is waiting (mock section D, the dock). "Waiting" is all
  *  presence says, so the card names no one the agent waits for and no duration; "Reported" dates the
  *  report. View agent opens the Agent tab when the shell has one (`onViewAgent`) and is disabled
- *  until then. Message opens the DM view, and dismiss hides the card until the status changes. */
+ *  until then. Message opens the DM view with its composer focused, and dismiss hides the card until
+ *  the status changes. */
 export function NeedsCard({ row, onViewAgent, onDismiss }: { row: RosterRow; onViewAgent?: (id: string) => void; onDismiss: () => void }) {
   return (
     <div className="ui-card ui-needs">
@@ -80,7 +82,7 @@ export function NeedsCard({ row, onViewAgent, onDismiss }: { row: RosterRow; onV
       </div>
       <div className="ui-btns">
         <button type="button" className="ui-btn" disabled={!onViewAgent} onClick={() => onViewAgent?.(row.id)}>View agent</button>
-        <a className="ui-btn ui-btn-primary" href={formatRoute({ view: "dm", peer: row.id })}>{`Message ${row.name}`}</a>
+        <a className="ui-btn ui-btn-primary" href={formatRoute({ view: "dm", peer: row.id })} onClick={() => focusComposer({ kind: "dm", to: row.id })}>{`Message ${row.name}`}</a>
       </div>
       <button type="button" className="ui-x" title={DISMISS} aria-label={DISMISS} onClick={onDismiss}>
         <Icon icon={Cancel01Icon} size={16} className="ui-ic ui-ic16" />

@@ -445,7 +445,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
       { threw: threw?.message, value });
   }
 
-  let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1 });
+  let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1, post: { mode: "participant" as const } });
   let reads = 0;
   const h = harness({ ...bootReads, meta: () => { reads++; return meta(); } });
   await h.ctl.refresh();
@@ -460,7 +460,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ok("5.7 carrying the server's own reason", stale[0]?.reason?.includes("the space could not be read"), stale[0]?.reason);
   }
   {
-    meta = async () => ({ space: "cotal-next", pid: 1 });
+    meta = async () => ({ space: "cotal-next", pid: 1, post: { mode: "participant" as const } });
     await h.ctl.refresh();
     ok("5.8 CONTROL: a read that LANDS replaces the name, so 5.4 is retention and not a stub",
       h.store.get().space === "cotal-next" && h.store.get().stale.length === 0,
@@ -469,7 +469,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   // THE OLD 5.5: "NOR THE DOCUMENT TITLE". A refusal must not change it, and in particular must not
   // write `Cotal · undefined`, which is what the page did when it consumed the 500 body as the space.
   {
-    const landed = harness({ ...bootReads, meta: async () => ({ space: "cotal-main", pid: 1 }) });
+    const landed = harness({ ...bootReads, meta: async () => ({ space: "cotal-main", pid: 1, post: { mode: "participant" as const } }) });
     await landed.ctl.refresh();
     const before = documentTitle(landed.store.get().space);
     const failing = harness({ ...bootReads, meta: async () => { throw new Error("space refused with HTTP 500: timeout"); } });
@@ -477,7 +477,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ok("5.5 a refused space read does not change the document title", before === "Cotal \u00b7 cotal-main" && !/undefined/.test(documentTitle(failing.store.get().space)),
       { before, after: documentTitle(failing.store.get().space) });
     // The same controller, first landing and then refusing, so the title is the LAST GOOD one.
-    let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1 });
+    let meta: Api["meta"] = async () => ({ space: "cotal-main", pid: 1, post: { mode: "participant" as const } });
     const both = harness({ ...bootReads, meta: () => meta() });
     await both.ctl.refresh();
     meta = async () => { throw new Error("space refused with HTTP 500: timeout"); };

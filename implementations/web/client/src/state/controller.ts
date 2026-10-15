@@ -1,18 +1,21 @@
-// The dashboard's data logic: the bootstrap reads, the order machines, the live feed and the one
-// write the page makes (deleting a channel). It reads only through the injected `Api` and writes
-// only to the store, so the smoke suites drive it in Node over a fake `Api`.
+// The dashboard's data logic: the bootstrap reads, the order machines, the live feed and the two
+// writes the page makes (deleting a channel and posting as the operator). It reads only through the
+// injected `Api` and writes only to the store, so the smoke suites drive it in Node over a fake `Api`.
 //
 // Ported from the old plain-JS pages: `refresh()`, `select()`, `onMessage()` and `deleteChannel()`
 // from the console page, and the rule from the graph page that a live feed outranks a bootstrap
 // read issued before it.
-import type { ActivityEntry, ActivityPage, ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, Meta, PresenceView, RosterEntry } from "../api/types.js";
+import type { ActivityEntry, ActivityPage, ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, Meta, PresenceView, RosterEntry, SendAnswer } from "../api/types.js";
+import { composeKey, refusalText, type ComposeTarget } from "../lib/compose.js";
 import { createEventOrder, type EventOrder, type FeedEntryLike, type OrderNote } from "../lib/eventOrder.js";
+import { displayNameOf, nameIndex } from "../lib/names.js";
 import { presenceViewMark } from "../lib/roster.js";
 import { refreshAll, type StaleMark } from "../lib/snapshot.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, DashboardState, StoredMessage } from "./types.js";
+import type { ChannelRow, DashboardState, Draft, Outgoing, StoredMessage } from "./types.js";
 
-/** The server's reads and its one write. Each read throws on a refusal (see `readJson`). */
+/** The server's reads and its two writes. Each read throws on a refusal (see `readJson`), and `send`
+ *  throws `SendRefused` with the status and the server's text. */
 export interface Api {
   meta(): Promise<Meta>;
   roster(): Promise<RosterEntry[]>;
@@ -22,6 +25,7 @@ export interface Api {
   history(channel: string, limit: number): Promise<CotalMessage[]>;
   membership(): Promise<MembershipSnapshot>;
   deleteChannel(channel: string): Promise<{ ok: true; channel: string; purged: number }>;
+  send(target: ComposeTarget, text: string): Promise<SendAnswer>;
 }
 
 export interface Controller {
@@ -33,6 +37,12 @@ export interface Controller {
   onMembership(m: MembershipSnapshot): void;
   onMembershipFailed(reason: string): void;
   deleteChannel(channel: string): Promise<void>;
+  /** Post `text` to `target` as the operator. The box empties and the post shows faded until the
+   *  server answers. A refusal puts the text back in the box with the refusal said under it, and
+   *  rethrows the server's error. */
+  send(target: ComposeTarget, text: string): Promise<void>;
+  /** What the reader has typed for `target`. Editing a refused draft clears the refusal. */
+  draft(target: ComposeTarget, text: string): void;
 }
 
 /** `createOrder` builds the order machine for a lane: the feed's, or the open channel's. The
@@ -50,6 +60,8 @@ type Wire = { id?: string; channel?: string };
 
 const ACTIVITY_CAP = 500;
 const NOTES_CAP = 50;
+/** A target nothing has been typed for. */
+const BLANK: Draft = { text: "", outgoing: [] };
 
 export function createController(store: Store<DashboardState>, api: Api, opts: ControllerOptions = {}): Controller {
   const createOrder = opts.createOrder ?? (() => createEventOrder());
@@ -92,6 +104,11 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       return { stale: entry ? [...rest, entry] : rest };
     });
   const unreadable = (reason: string) => store.set((s) => ({ membership: { snapshot: s.membership.snapshot, unreadable: reason } }));
+  /** Rewrite one target's draft, leaving every other draft alone. */
+  const putDraft = (key: string, edit: (d: Draft) => Draft) =>
+    store.set((s) => ({ drafts: { ...s.drafts, [key]: edit(s.drafts[key] ?? BLANK) } }));
+  /** Numbers each post the composer sends, for its row's key. */
+  let posted = 0;
 
   /** Close the open channel. A load still in flight no longer owns the view, so it is superseded. */
   const close = () => {
@@ -177,7 +194,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       // A FAILED READ KEEPS WHAT IS ON SCREEN. `refreshAll` reads every source concurrently, applies
       // ONLY the ones that succeeded, and returns what did not land.
       const sources = [
-        { name: "space", read: () => api.meta(), apply: (meta: Meta) => store.set({ space: meta.space }) },
+        // The operator's id is kept from whichever says it first: this read or a post's answer.
+        { name: "space", read: () => api.meta(), apply: (meta: Meta) => store.set((s) => ({ space: meta.space, post: meta.post, operatorId: s.operatorId ?? meta.operatorId ?? null })) },
         // ONCE THE FEED HAS SPOKEN FOR A SOURCE, ITS READ IS NOT MADE AT ALL. Its value would be
         // dropped on arrival (the feed's snapshot is newer than any read), so it would cost a broker
         // call per poll for nothing, and its refusal would still reach the header as a stale mark.
@@ -268,6 +286,9 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     // and released by `backfill()` in seq order; everything else passes through, deduped by id.
     const fed = feedOrder.live(e);
     noteOrder(fed.notes);
+    // A post of the operator's that the feed delivers is shown by its own row from now on.
+    if (Object.values(store.get().drafts).some((d) => d.outgoing.some((o) => o.id === msg.id)))
+      store.set((s) => ({ drafts: Object.fromEntries(Object.entries(s.drafts).map(([k, d]) => [k, { ...d, outgoing: d.outgoing.filter((o) => o.id !== msg.id) }])) }));
     store.set((s) => {
       const activity = s.activity.slice();
       for (const x of fed.emit as Entry[]) {
@@ -345,6 +366,36 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         stale: s.stale.filter((m) => m.name !== `#${name} history`),
       }));
       if (store.get().open?.channel === name) close();
+    },
+    async send(target, text) {
+      const key = composeKey(target);
+      // The button is disabled while a post is in flight, so a second one is a defect in the page.
+      if ((store.get().drafts[key] ?? BLANK).outgoing.some((o) => o.id === undefined)) throw new Error("a post to this target is already in flight");
+      const mine: Outgoing = { seq: ++posted, text, ts: now() };
+      putDraft(key, (d) => ({ text: "", outgoing: [...d.outgoing, mine] }));
+      let answer: SendAnswer;
+      try {
+        answer = await api.send(target, text);
+      } catch (err) {
+        const s = store.get();
+        const where = target.kind === "msg" ? `#${target.channel}` : displayNameOf(target.to, nameIndex(s.roster), s.operatorId);
+        // THE DRAFT SURVIVES A REFUSAL. What was typed since the send stays after it.
+        putDraft(key, (d) => ({ text: d.text ? `${text}\n${d.text}` : text, refused: refusalText(where, err), outgoing: d.outgoing.filter((o) => o !== mine) }));
+        throw err;
+      }
+      // The feed may have delivered the post before the answer came, and then its row shows it.
+      const s = store.get();
+      const seen = [s.activity, s.dms, s.open?.messages ?? []].some((list: { msg: { id: string } }[]) => list.some((e) => e.msg?.id === answer.id));
+      store.set((st) => ({
+        operatorId: st.operatorId ?? answer.operatorId,
+        drafts: {
+          ...st.drafts,
+          [key]: { ...(st.drafts[key] ?? BLANK), outgoing: (st.drafts[key] ?? BLANK).outgoing.flatMap((o) => (o !== mine ? [o] : seen ? [] : [{ ...o, id: answer.id }])) },
+        },
+      }));
+    },
+    draft(target, text) {
+      putDraft(composeKey(target), (d) => ({ text, outgoing: d.outgoing }));
     },
   };
 }

@@ -5,6 +5,7 @@ import type {
   CotalMessage,
   FeedMessage,
   MembershipSnapshot,
+  PostCapability,
   PresenceView,
   RosterEntry,
 } from "../api/types.js";
@@ -29,6 +30,24 @@ export interface StoredMessage {
  *  browser has failed it for good and will not retry. */
 export type Connection = "connecting" | "connected" | "reconnecting" | "closed";
 
+/** A post the composer sent. `id` is unset while the server has not answered, which is when the row
+ *  shows faded, and set once it went out, until the feed delivers the message itself. `seq` keys the
+ *  row. */
+export interface Outgoing {
+  seq: number;
+  text: string;
+  ts: number;
+  id?: string;
+}
+
+/** One composer's state: the text in the box, the refusal of its last post, and its posts the views
+ *  do not show yet. A refused post's text is back in `text`. */
+export interface Draft {
+  text: string;
+  refused?: string;
+  outgoing: Outgoing[];
+}
+
 export interface DashboardState {
   space: string | null;
   connection: Connection;
@@ -51,6 +70,12 @@ export interface DashboardState {
    *  or, for the roster, when the feed delivers one. A refused read clears nothing: the page has no
    *  data to show, and the stale marker says why while the read is retried. */
   loading: { roster: boolean; channels: boolean };
+  /** What the dashboard can post as, null until `/api/meta` answers. */
+  post: PostCapability | null;
+  /** The id the operator posts as, from whichever of `/api/meta` and a post's answer says it first. */
+  operatorId: string | null;
+  /** By `composeKey`. */
+  drafts: Record<string, Draft>;
 }
 
 export const initialState: DashboardState = {
@@ -67,4 +92,7 @@ export const initialState: DashboardState = {
   orderNotes: [],
   membership: {},
   loading: { roster: false, channels: false },
+  post: null,
+  operatorId: null,
+  drafts: {},
 };

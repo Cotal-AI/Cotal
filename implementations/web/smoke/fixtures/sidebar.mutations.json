@@ -240,7 +240,7 @@
     {
       "name": "SB30 a DM row shows the raw id, not the roster's name",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "{`${displayNameOf(a, idx)}, ${displayNameOf(b, idx)}`}",
+      "find": "{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}",
       "replace": "{`${a}, ${b}`}",
       "expectRed": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows",
       "cell": "5.2 each row is named from the roster by id, the sender of its first message first, as the mock writes \"reviewer_2, david\": the payload's own name never shows"
@@ -302,10 +302,10 @@
       "cell": "6.5 and the dot takes its own shape (ui-live-down), so the state is not colour alone"
     },
     {
-      "name": "SB38 the footer claims the operator is not on the roster",
+      "name": "SB38 the footer claims the operator is not on the roster before /api/meta has said what the dashboard can post as",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "<b>operator</b></div>",
-      "replace": "<b>operator</b><span>Not on the roster</span></div>",
+      "find": "const line = footerLine(post, self",
+      "replace": "const line = footerLine(post ?? { mode: \"participant\" }, self",
       "expectRed": "6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here",
       "cell": "6.6 no footer line claims the operator's place on the roster: the mesh's mode is not known here"
     },
