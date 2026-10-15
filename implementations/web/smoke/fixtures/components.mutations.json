@@ -128,7 +128,7 @@
     {
       "name": "C16 a continuation row still draws the header, so a run of messages repeats the sender on every line",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
-      "find": "        {!compact && (\n",
+      "find": "        {!cont && (\n",
       "replace": "        {(\n",
       "expectRed": "3.9 a continuation row draws no header and no avatar",
       "cell": "3.9 a continuation row draws no header and no avatar"
@@ -176,16 +176,16 @@
     {
       "name": "C22 an anycast names a claimer with no reply, which the wire never said",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
-      "find": "{claim !== undefined && <>",
-      "replace": "{<>",
+      "find": "            {claim !== undefined && (\n              <>\n                {\" \"}<span className=\"ui-route-sep\">·</span>{\" \"}\n                {`claimed by ${displayNameOf(claim.id, idx)}`}\n                {!claim.verified && <>",
+      "replace": "            {(\n              <>\n                {\" \"}<span className=\"ui-route-sep\">·</span>{\" \"}\n                {`claimed by ${displayNameOf(claim?.id, idx)}`}\n                {!claim?.verified && <>",
       "expectRed": "5.2 with no reply it names no claimer",
       "cell": "5.2 with no reply it names no claimer"
     },
     {
       "name": "C23 the claimer is shown by id instead of by the name the roster gives it",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
-      "find": "{`claimed by ${displayNameOf(claim, idx)}`}",
-      "replace": "{`claimed by ${claim}`}",
+      "find": "{`claimed by ${displayNameOf(claim.id, idx)}`}",
+      "replace": "{`claimed by ${claim.id}`}",
       "expectRed": "5.3 with a reply it adds claimed by, with the name the roster gives that id",
       "cell": "5.3 with a reply it adds claimed by, with the name the roster gives that id"
     },
@@ -252,6 +252,46 @@
       "replace": "key={msg.id}",
       "expectRed": "7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning",
       "cell": "7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning"
+    },
+    {
+      "name": "C32 a claim from a history reply loses its unverified mark, so a forged claimer reads as certain",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "                {!claim.verified && <>{\" \"}<span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span></>}\n",
+      "replace": "",
+      "expectRed": "5.3b a claim from a history reply says it is unverified, with the same tooltip as an unverified author",
+      "cell": "5.3b a claim from a history reply says it is unverified, with the same tooltip as an unverified author"
+    },
+    {
+      "name": "C33 a history row obeys compact, so a run hides its unverified mark behind the row above",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "  const cont = compact && senderId !== undefined;",
+      "replace": "  const cont = compact;",
+      "expectRed": "3.9b a history row asked to continue the run still draws its header, so its unverified mark is never hidden",
+      "cell": "3.9b a history row asked to continue the run still draws its header, so its unverified mark is never hidden"
+    },
+    {
+      "name": "C34 the separator loses its spaces, so the chip reads 'reviewer·claimed by' instead of the notes' wording",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{\" \"}<span className=\"ui-route-sep\">·</span>{\" \"}",
+      "replace": "<span className=\"ui-route-sep\">·</span>",
+      "expectRed": "5.3 with a reply it adds claimed by, with the name the roster gives that id",
+      "cell": "5.3 with a reply it adds claimed by, with the name the roster gives that id"
+    },
+    {
+      "name": "C35 the shell fills a missing senderId from the payload before claiming, so a history reply's claim reads as verified",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "claimedBy(msg.id, all.slice(i + 1))",
+      "replace": "claimedBy(msg.id, all.slice(i + 1).map((r) => ({ ...r, senderId: r.senderId ?? r.msg.from.id })))",
+      "expectRed": "7.2b a reply read from history makes an unverified claim",
+      "cell": "7.2b a reply read from history makes an unverified claim"
+    },
+    {
+      "name": "C36 an anycast nobody answered is shown as claimed by its own sender",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "claimedBy(msg.id, all.slice(i + 1))",
+      "replace": "(claimedBy(msg.id, all.slice(i + 1)) ?? { id: msg.from.id, verified: true })",
+      "expectRed": "7.3 and names none while nobody has replied",
+      "cell": "7.3 and names none while nobody has replied"
     }
   ]
 }

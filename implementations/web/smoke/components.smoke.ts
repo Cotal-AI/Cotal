@@ -1,6 +1,6 @@
 /** The shared components every view draws with: `Avatar`, `StatusDot` and `StatusWord`, `MessageRow`,
  *  `StaleMarker` and `CopyCommand`, and the shell's use of them. Each cell renders a component (on the
- *  server with `renderToString`, or mounted in happy-dom when it needs a click) and reads the HTML.
+ *  server with `renderToString`, or mounted in jsdom when it needs a click) and reads the HTML.
  *
  *  What is pinned, beyond the markup the mock draws: a sender is named from the roster by the
  *  verified id and never by the payload's own name; a row read from history, which carries no
@@ -114,6 +114,9 @@ const UNVERIFIED = "History does not record who sent this message. The sender sh
   const cont = row({ msg: msg({}), senderId: "local.dav", compact: true });
   ok("3.9 a continuation row draws no header and no avatar",
     startTags(cont, "div")[0]?.class === "ui-msg ui-msg-cont" && !cont.includes("ui-mh") && !cont.includes("<svg"), cont);
+  const contHistory = row({ msg: msg({}), compact: true });
+  ok("3.9b a history row asked to continue the run still draws its header, so its unverified mark is never hidden",
+    startTags(contHistory, "div")[0]?.class === "ui-msg" && startTags(contHistory, "span").some((sp) => sp.class === "ui-unverified"), contHistory);
   ok("3.10 the gutter draws the verified sender's character, not the one the payload's id points at",
     forged.includes(svgOf("codex", { look: "down" })) && !forged.includes(svgOf("claude", { look: "down" })), forged);
 }
@@ -140,13 +143,18 @@ const UNVERIFIED = "History does not record who sent this message. The sender sh
 // ── 5. MessageRow: anycast, claims and mentions ──────────────────────────────────────────────────
 const TIP = "Anycast: one free agent with this role takes it.";
 {
-  const any = (claim?: string) => row({ msg: msg({ channel: undefined, toService: "reviewer" }), senderId: "local.dav", mode: "anycast", claim });
+  const any = (claim?: { id: string; verified: boolean }) => row({ msg: msg({ channel: undefined, toService: "reviewer" }), senderId: "local.dav", mode: "anycast", claim });
   const chip = (html: string) => /<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(html);
   ok("5.1 an anycast row says To any <role>, with the anycast tooltip",
     text(chip(any())?.[1] ?? "").startsWith("To any reviewer") && startTags(any(), "div").find((d) => d.class === "ui-route ui-route-any")?.title === TIP, any());
   ok("5.2 with no reply it names no claimer", !text(any()).includes("claimed"));
   ok("5.3 with a reply it adds claimed by, with the name the roster gives that id",
-    text(chip(any("local.rv2"))?.[1] ?? "") === "To any reviewer·claimed by reviewer_2", text(chip(any("local.rv2"))?.[1] ?? ""));
+    text(chip(any({ id: "local.rv2", verified: true }))?.[1] ?? "") === "To any reviewer · claimed by reviewer_2", text(chip(any({ id: "local.rv2", verified: true }))?.[1] ?? ""));
+  const doubted = chip(any({ id: "local.rv2", verified: false }))?.[1] ?? "";
+  const doubtMark = startTags(doubted, "span").find((sp) => sp.class === "ui-unverified");
+  ok("5.3b a claim from a history reply says it is unverified, with the same tooltip as an unverified author",
+    text(doubted) === "To any reviewer · claimed by reviewer_2 unverified" && doubtMark?.title === UNVERIFIED
+      && !startTags(chip(any({ id: "local.rv2", verified: true }))?.[1] ?? "", "span").some((sp) => sp.class === "ui-unverified"), doubted);
   ok("5.4 a chat row carries no route chip", !row({ msg: msg({}), senderId: "local.dav" }).includes("ui-route"));
   const cls = (html: string) => startTags(html, "div")[0]?.class;
   ok("5.5 a row that mentions the operator is highlighted",
@@ -185,7 +193,10 @@ const TIP = "Anycast: one free agent with this role takes it.";
   const html = renderShell(seed([{ msg: ask, senderId: "local.dav" }, { msg: reply, senderId: "local.rv2" }]));
   ok("7.1 the shell's message list draws a MessageRow per message", startTags(html, "div").filter((d) => (d.class ?? "").split(" ").includes("ui-msg")).length === 2, html.length);
   ok("7.2 the shell names an anycast's claimer from the first later reply",
-    text(/<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(html)?.[1] ?? "") === "To any reviewer·claimed by reviewer_2");
+    text(/<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(html)?.[1] ?? "") === "To any reviewer · claimed by reviewer_2");
+  const fromHistory = renderShell(seed([{ msg: ask, senderId: "local.dav" }, { msg: reply }]));
+  ok("7.2b a reply read from history makes an unverified claim",
+    text(/<div class="ui-route ui-route-any"[^>]*>([\s\S]*?)<\/div>/.exec(fromHistory)?.[1] ?? "") === "To any reviewer · claimed by reviewer_2 unverified");
   const lone = renderShell(seed([{ msg: ask, senderId: "local.dav" }]));
   ok("7.3 and names none while nobody has replied", !text(lone).includes("claimed by"));
   ok("7.4 the shell highlights a row that mentions the operator",

@@ -10,7 +10,8 @@ import { Avatar } from "./Avatar.tsx";
 /** Bodies longer than this many characters of source text clamp, with Show more. */
 const CLAMP = 280;
 
-/** The tooltip on a row read from history, which carries no verified sender. */
+/** The tooltip on a sender read from history, which carries no verified sender: the author of a
+ *  history row, or the claimer of an anycast whose reply came from history. */
 const UNVERIFIED =
   "History does not record who sent this message. The sender shown is the one the message names, and it has not been checked.";
 
@@ -31,10 +32,14 @@ const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0")}:${S
  *    has none) the payload's `from.id`. Its name, role and harness come from the roster by that id;
  *    the payload's `from.name` is never read. A history row says its sender is unverified.
  *  - The body is the parts' text rendered as sanitized Markdown, clamped past 280 characters.
- *  - An anycast names its claimer only when `claim` (an id, from `claimedBy`) is given: the wire has
- *    no claim event, so with no reply there is nothing to say.
+ *  - An anycast names its claimer only when `claim` (from `claimedBy`) is given: the wire has no claim
+ *    event, so with no reply there is nothing to say. A claim from a history reply is not verified
+ *    and carries the same unverified mark and tooltip as an unverified author.
  *  - A row whose mentions include `mention` (the reader's own name) is highlighted.
- *  - `compact` draws a continuation of the row above: no avatar and no header. */
+ *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
+ *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
+ *    a history row ignores `compact` and always draws its header, so its unverified mark is never
+ *    hidden behind the row above. */
 export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, mention, claim }: {
   msg: CotalMessage;
   senderId?: string;
@@ -44,7 +49,7 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   peers: ReadonlyMap<string, RosterRow>;
   compact?: boolean;
   mention?: string;
-  claim?: string;
+  claim?: { id: string; verified: boolean };
 }) {
   const [opened, setOpened] = useState(false);
   const who = senderId ?? msg.from?.id;
@@ -54,12 +59,13 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   const mentioned = mention !== undefined && (msg.mentions ?? []).includes(mention.toLowerCase());
   const role = typeof msg.toService === "string" ? msg.toService : undefined;
   const at = Number.isFinite(msg.ts) ? new Date(msg.ts) : undefined;
-  const className = ["ui-msg", compact && "ui-msg-cont", mentioned && "ui-msg-mention"].filter(Boolean).join(" ");
+  const cont = compact && senderId !== undefined;
+  const className = ["ui-msg", cont && "ui-msg-cont", mentioned && "ui-msg-mention"].filter(Boolean).join(" ");
   return (
     <div className={className}>
-      <div className="ui-gut">{!compact && <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} />}</div>
+      <div className="ui-gut">{!cont && <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} />}</div>
       <div>
-        {!compact && (
+        {!cont && (
           <div className="ui-mh">
             <b>{displayNameOf(senderId ?? msg.from, idx)}</b>
             {senderId === undefined && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
@@ -74,7 +80,13 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
           <div className="ui-route ui-route-any" title="Anycast: one free agent with this role takes it.">
             <i />
             {`To any ${role}`}
-            {claim !== undefined && <><span className="ui-route-sep">·</span>{`claimed by ${displayNameOf(claim, idx)}`}</>}
+            {claim !== undefined && (
+              <>
+                {" "}<span className="ui-route-sep">·</span>{" "}
+                {`claimed by ${displayNameOf(claim.id, idx)}`}
+                {!claim.verified && <>{" "}<span className="ui-unverified" title={UNVERIFIED}>unverified</span></>}
+              </>
+            )}
           </div>
         )}
       </div>

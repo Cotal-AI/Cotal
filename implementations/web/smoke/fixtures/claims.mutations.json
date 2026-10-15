@@ -32,24 +32,24 @@
     {
       "name": "the payload from.id outranks the authenticated senderId",
       "file": "implementations/web/client/src/lib/claims.ts",
-      "find": "return senderId ?? msg.from.id;",
-      "replace": "return msg.from.id ?? senderId;",
+      "find": "senderId !== undefined ? { id: senderId, verified: true } : { id: msg.from.id, verified: false }",
+      "replace": "{ id: msg.from.id, verified: senderId !== undefined }",
       "expectRed": "the authenticated senderId wins over the payload's from.id",
       "cell": "the authenticated senderId wins over the payload's from.id"
     },
     {
       "name": "a missing senderId stops falling back to from.id",
       "file": "implementations/web/client/src/lib/claims.ts",
-      "find": "return senderId ?? msg.from.id;",
-      "replace": "return senderId;",
+      "find": "senderId !== undefined ? { id: senderId, verified: true } : { id: msg.from.id, verified: false }",
+      "replace": "senderId !== undefined ? { id: senderId, verified: true } : undefined",
       "expectRed": "from.id answers only when senderId is absent",
       "cell": "from.id answers only when senderId is absent"
     },
     {
       "name": "the claimer is returned as a display name",
       "file": "implementations/web/client/src/lib/claims.ts",
-      "find": "return senderId ?? msg.from.id;",
-      "replace": "return msg.from.name;",
+      "find": "{ id: senderId, verified: true }",
+      "replace": "{ id: msg.from.name ?? \"\", verified: true }",
       "expectRed": "a reply whose replyTo is the id gives its sender",
       "cell": "a reply whose replyTo is the id gives its sender"
     },
@@ -68,6 +68,22 @@
       "replace": "if (anycastId === \"\") return undefined;",
       "expectRed": "an undefined anycast id claims nothing",
       "cell": "an undefined anycast id claims nothing"
+    },
+    {
+      "name": "a history reply's claim reads as verified, so a forged from.id claims an anycast with full certainty",
+      "file": "implementations/web/client/src/lib/claims.ts",
+      "find": "{ id: msg.from.id, verified: false }",
+      "replace": "{ id: msg.from.id, verified: true }",
+      "expectRed": "a reply with no senderId, read from history, is an unverified claim",
+      "cell": "a reply with no senderId, read from history, is an unverified claim"
+    },
+    {
+      "name": "a live reply's claim reads as unverified, so the authenticated claimer is doubted",
+      "file": "implementations/web/client/src/lib/claims.ts",
+      "find": "{ id: senderId, verified: true }",
+      "replace": "{ id: senderId, verified: false }",
+      "expectRed": "a reply that carries senderId is a verified claim",
+      "cell": "a reply that carries senderId is a verified claim"
     }
   ]
 }
