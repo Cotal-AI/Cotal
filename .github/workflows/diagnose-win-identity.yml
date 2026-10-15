@@ -18,4 +18,7 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ matrix.node }}
-      - run: node scripts/diagnose-win-identity.mjs
+      - uses: pnpm/action-setup@v6.0.8
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @cotal-ai/core --filter @cotal-ai/workspace build
+      - run: node --import tsx scripts/diagnose-win-native.mjs
