@@ -2,7 +2,7 @@
   "suite": [
     "bin/smoke/capability-census.smoke.ts"
   ],
-  "guard": "every census item needs a well-formed owner row and every row a live item; the extractor reads endpoint input fields at nested depth, so a field added under an existing command fails until mapped; an owner naming an unregistered command or undeclared flag fails",
+  "guard": "every census item needs a well-formed owner row and every row a live item; the extractor reads endpoint input fields at nested depth, the subcommand modes usage strings declare and route keys held in constants, so a capability added under an existing command fails until mapped; an owner naming an unregistered command, mode or flag fails",
   "command": "pnpm smoke:capability-census",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "pnpm mutation-proof --config bin/smoke/mutations/capability-census.json",
@@ -33,6 +33,22 @@
       "replace": "",
       "expectRed": "endpoint items reach nested input fields and target modes",
       "cell": "endpoint items reach nested input fields and target modes"
+    },
+    {
+      "name": "repeated usage forms are no longer split into their own modes",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "  const forms = usage.split(\"\\n\").flatMap((line) => line.split(` | ${name} `).map((f, i) => (i === 0 ? f : `${name} ${f}`)));",
+      "replace": "  const forms = usage.split(\"\\n\");",
+      "expectRed": "CLI items reach the subcommand modes usage strings declare, repeated forms included",
+      "cell": "CLI items reach the subcommand modes usage strings declare, repeated forms included"
+    },
+    {
+      "name": "route keys held in module constants are no longer resolved",
+      "file": "bin/smoke/census/sources.ts",
+      "find": "        const text = ts.isStringLiteral(key) ? key.text : ts.isIdentifier(key) ? constants.get(key.text) : undefined;\n        if (text === undefined) throw",
+      "replace": "        const text = ts.isStringLiteral(key) ? key.text : \"\";\n        if (text === undefined) throw",
+      "expectRed": "auth routes keyed by a module constant are census items",
+      "cell": "auth routes keyed by a module constant are census items"
     }
   ]
 }

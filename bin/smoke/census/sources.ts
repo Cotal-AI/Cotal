@@ -16,6 +16,7 @@
  *   ep:<endpoint>:<command>.<field>     one input field, nested fields joined with "."
  *   tool:<name> / tool:<name>.<arg>     an agent tool and its arguments
  *   cli:<command> / cli:<command>--<flag>   a registered CLI command and its declared flags
+ *   cli:<command> <mode>                one subcommand mode its usage string declares
  *   agent-file:<field>                  a persona (agent file) field
  *   manifest:<Interface>.<field>        a team manifest model field
  *   config:<Interface>.<field>          a configuration file field
@@ -104,7 +105,64 @@ const COMMAND_SURFACES = [
   "@cotal-ai/linear",
 ];
 
-/** Registered CLI commands and their declared flags. */
+/** Split `text` on `|` that sits outside any `<…>`, `[…]` or `(…)` group. */
+function topLevelAlternatives(text: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === "<" || ch === "[" || ch === "(") depth++;
+    else if (ch === ">" || ch === "]" || ch === ")") depth--;
+    else if (ch === "|" && depth === 0) { out.push(text.slice(start, i)); start = i + 1; }
+  }
+  out.push(text.slice(start));
+  return out.map((a) => a.trim());
+}
+
+const WORD = /^[a-z][a-z-]*$/;
+
+/**
+ * The subcommand modes a usage string declares. A usage holds one or more forms, separated by new
+ * lines or by `| <command> `. In each form the first token after the command name is a mode when it
+ * is a bare word (`history clear`, `linear account add`), or a group of alternatives: `<a | b>` with
+ * two or more alternatives, or `[a | b]`, each alternative's leading word. A single `<word>` is a
+ * placeholder, and an alternative that starts with a flag is not a mode.
+ */
+export function usageModes(name: string, usage: string): string[] {
+  const modes = new Set<string>();
+  const forms = usage.split("\n").flatMap((line) => line.split(` | ${name} `).map((f, i) => (i === 0 ? f : `${name} ${f}`)));
+  for (const raw of forms) {
+    const form = raw.trim().replace(/^cotal /, "");
+    if (!form.startsWith(`${name} `) && form !== name) continue;
+    const rest = form.slice(name.length).trim();
+    const open = rest[0];
+    if (open === "<" || open === "[") {
+      const close = open === "<" ? ">" : "]";
+      let depth = 0;
+      let end = 0;
+      for (; end < rest.length; end++) {
+        if (rest[end] === "<" || rest[end] === "[" || rest[end] === "(") depth++;
+        else if (rest[end] === ">" || rest[end] === "]" || rest[end] === ")") depth--;
+        if (depth === 0) break;
+      }
+      if (rest[end] !== close) continue;
+      const alternatives = topLevelAlternatives(rest.slice(1, end));
+      if (open === "<" && alternatives.length < 2) continue;
+      for (const alt of alternatives) {
+        const word = alt.split(/\s+/)[0] ?? "";
+        if (WORD.test(word)) modes.add(word);
+      }
+    } else {
+      const words = rest.split(/\s+/);
+      if (!WORD.test(words[0] ?? "")) continue;
+      modes.add(WORD.test(words[1] ?? "") ? `${words[0]} ${words[1]}` : words[0]!);
+    }
+  }
+  return [...modes];
+}
+
+/** Registered CLI commands, their declared flags and the subcommand modes their usage declares. */
 export async function cliItems(): Promise<CensusItem[]> {
   for (const surface of COMMAND_SURFACES) await import(surface);
   const { registry } = await import("@cotal-ai/core");
@@ -112,6 +170,7 @@ export async function cliItems(): Promise<CensusItem[]> {
   for (const cmd of registry.all<import("@cotal-ai/core").Command>("command")) {
     items.push({ id: `cli:${cmd.name}`, source: "command registry" });
     for (const flag of cmd.flags ?? []) items.push({ id: `cli:${cmd.name}--${flag.name}`, source: "command registry" });
+    for (const mode of usageModes(cmd.name, cmd.usage ?? "")) items.push({ id: `cli:${cmd.name} ${mode}`, source: "command usage" });
   }
   return items;
 }
@@ -172,23 +231,33 @@ export function envItems(): CensusItem[] {
   const out = execFileSync(
     "git",
     ["grep", "-hoE", ENV_SHAPED, "--", "packages", "implementations", "extensions", "bin/cotal.ts", "bin/run.ts",
-      ":!**/smoke/**", ":!**/test/**", ":!**/*.test.*", ":!**/*.md", ":!**/dist/**", ":!**/claude-plugin/**"],
+      ":!**/smoke/**", ":!**/smoke.ts", ":!**/*.smoke.*", ":!**/test/**", ":!**/*.test.*", ":!**/*.md", ":!**/dist/**", ":!**/claude-plugin/**"],
     { cwd: REPO, encoding: "utf8" },
   );
   const names = new Set(out.match(/COTAL_[A-Z0-9_]*[A-Z0-9]/g) ?? []);
   return [...names].sort().map((name) => ({ id: `env:${name}`, source: "shipped source" }));
 }
 
-/** The auth service's HTTP routes: the string keys of its route tables. */
+/** The auth service's HTTP routes: the keys of its route tables, string literals or the module's
+ *  own string constants. A key that resolves to neither fails the census rather than going uncounted. */
 export function authHttpItems(): CensusItem[] {
   const file = "implementations/auth/src/service.ts";
   const sf = ts.createSourceFile(file, readFileSync(join(REPO, file), "utf8"), ts.ScriptTarget.Latest, true);
+  const constants = new Map<string, string>();
+  sf.forEachChild((node) => {
+    if (!ts.isVariableStatement(node)) return;
+    for (const d of node.declarationList.declarations)
+      if (ts.isIdentifier(d.name) && d.initializer && ts.isStringLiteral(d.initializer)) constants.set(d.name.text, d.initializer.text);
+  });
   const routes = new Set<string>();
   const visit = (node: ts.Node): void => {
     if (ts.isNewExpression(node) && node.expression.getText(sf) === "Map" && node.arguments?.[0] && ts.isArrayLiteralExpression(node.arguments[0])) {
       for (const el of node.arguments[0].elements) {
-        if (ts.isArrayLiteralExpression(el) && el.elements[0] && ts.isStringLiteral(el.elements[0]) && el.elements[0].text.startsWith("/"))
-          routes.add(el.elements[0].text);
+        const key = ts.isArrayLiteralExpression(el) ? el.elements[0] : undefined;
+        if (!key) continue;
+        const text = ts.isStringLiteral(key) ? key.text : ts.isIdentifier(key) ? constants.get(key.text) : undefined;
+        if (text === undefined) throw new Error(`${file}: route key ${key.getText(sf)} is not a string or a module string constant`);
+        if (text.startsWith("/")) routes.add(text);
       }
     }
     ts.forEachChild(node, visit);

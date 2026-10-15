@@ -2,9 +2,12 @@
  * The capability census owner map and its offline checks.
  *
  * An owner is one of:
- *   current:<command> [words] [--flag ...]   a registered command that performs the item today
+ *   current:<command> [mode] [--flag ...]    a registered command that performs the item today
  *   pending:<command> [words] [--flag ...]   the command the CLI redesign adds for it
  *   internal:<reason>                        machinery that is not a user capability
+ *
+ * Flags are named by their long form. A current owner's mode must be one its command's usage
+ * declares.
  *
  * `internal` is accepted only for environment variables, historical CLI entries and auth HTTP
  * routes. An endpoint command or field, an agent tool argument, or a persona, manifest, config,
@@ -25,7 +28,7 @@ export function readOwnerMap(path = OWNER_MAP_PATH): OwnerMap {
   return JSON.parse(readFileSync(path, "utf8")) as OwnerMap;
 }
 
-const COMMAND_OWNER = /^(current|pending):([a-z_][a-z0-9_-]*)((?: [a-z][a-z0-9-]*)*)((?: --?[a-z][a-z0-9-]*)*)$/;
+const COMMAND_OWNER = /^(current|pending):([a-z_][a-z0-9_-]*)((?: [a-z][a-z0-9-]*)*)((?: --[a-z][a-z0-9-]*)*)$/;
 const INTERNAL_OWNER = /^internal:[a-z].{3,}$/;
 const INTERNAL_KINDS = new Set(["env", "cli", "auth-http"]);
 
@@ -53,7 +56,7 @@ export function parseOwner(owner: string): CommandOwner | "internal" | undefined
 function registeredFlags(items: readonly CensusItem[]): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();
   for (const { id } of items) {
-    if (!id.startsWith("cli:")) continue;
+    if (!id.startsWith("cli:") || id.includes(" ")) continue;
     const [command, flag] = id.slice(4).split("--", 2) as [string, string | undefined];
     const flags = out.get(command) ?? out.set(command, new Set()).get(command)!;
     if (flag !== undefined) flags.add(flag);
@@ -62,7 +65,7 @@ function registeredFlags(items: readonly CensusItem[]): Map<string, Set<string>>
 }
 
 /** Why one owner is wrong for the item it owns, or undefined when it is well formed. */
-function ownerProblem(item: string, owner: string, registered: Map<string, Set<string>>): string | undefined {
+function ownerProblem(item: string, owner: string, registered: Map<string, Set<string>>, live: Set<string>): string | undefined {
   const parsed = parseOwner(owner);
   if (parsed === undefined) return `${item}: owner "${owner}" does not match current:, pending: or internal: grammar`;
   if (parsed === "internal") {
@@ -72,10 +75,9 @@ function ownerProblem(item: string, owner: string, registered: Map<string, Set<s
   if (parsed.state === "pending") return undefined;
   const flags = registered.get(parsed.command);
   if (!flags) return `${item}: owner names "${parsed.command}", which is not a registered command`;
-  for (const flag of parsed.flags) {
-    if (!flag.startsWith("--")) return `${item}: a current owner names flags by their long form, got "${flag}"`;
-    if (!flags.has(flag.slice(2))) return `${item}: "${parsed.command}" declares no ${flag} flag`;
-  }
+  const mode = parsed.words.join(" ");
+  if (mode && !live.has(`cli:${parsed.command} ${mode}`)) return `${item}: "${parsed.command}" declares no "${mode}" mode`;
+  for (const flag of parsed.flags) if (!flags.has(flag.slice(2))) return `${item}: "${parsed.command}" declares no ${flag} flag`;
   return undefined;
 }
 
@@ -88,13 +90,13 @@ export function ownerMapProblems(items: readonly CensusItem[], map: OwnerMap): s
     const owner = map.owners[id];
     if (owner === undefined) problems.push(`${id}: no owner row`);
     else {
-      const p = ownerProblem(id, owner, registered);
+      const p = ownerProblem(id, owner, registered, live);
       if (p) problems.push(p);
     }
   }
   for (const id of Object.keys(map.owners)) if (!live.has(id)) problems.push(`${id}: owner row names no census item`);
   for (const [entry, owner] of Object.entries(map.checklist)) {
-    const p = ownerProblem(`checklist ${entry}`, owner, registered);
+    const p = ownerProblem(`checklist ${entry}`, owner, registered, live);
     if (p) problems.push(p);
   }
   return problems;

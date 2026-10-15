@@ -25,6 +25,10 @@ check("the sources yield items of every kind", ["ep", "tool", "cli", "agent-file
 check("endpoint items reach nested input fields and target modes",
   ids.has("ep:manager:spawn.supervise.restarts") && ids.has("ep:manager:despawn@owner") && ids.has("ep:manager:spawn#ephemeral/manager.spawn"),
   [...ids].filter((id) => id.startsWith("ep:manager:spawn")));
+check("CLI items reach the subcommand modes usage strings declare, repeated forms included",
+  ["cli:meshes rm", "cli:clean restore-fallback", "cli:linear account add", "cli:send dm"].every((id) => ids.has(id)),
+  [...ids].filter((id) => /^cli:\S+ /.test(id)));
+check("auth routes keyed by a module constant are census items", ids.has("auth-http:/interactive-lifecycle/retire"));
 
 const problems = ownerMapProblems(items, map);
 check(`every one of ${items.length} items has a well-formed owner and every row is live`, problems.length === 0, problems);
@@ -41,6 +45,9 @@ check("an owner naming no registered command fails",
 check("an owner naming a flag its command does not declare fails",
   ownerMapProblems(items, withRow({ ...map.owners, "ep:manager:ps": "current:ps --no-such-flag" }))
     .includes('ep:manager:ps: "ps" declares no --no-such-flag flag'));
+check("an owner naming a mode its command does not declare fails",
+  ownerMapProblems(items, withRow({ ...map.owners, "ep:manager:run-start": "current:run no-such-mode" }))
+    .includes('ep:manager:run-start: "run" declares no "no-such-mode" mode'));
 check("an endpoint item cannot be marked internal",
   ownerMapProblems(items, withRow({ ...map.owners, "ep:manager:ps": "internal:not a capability" }))
     .includes("ep:manager:ps: a ep item is a user capability and cannot be internal"));

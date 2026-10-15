@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { SMOKE_BROKER_TOKEN, createSuite, freePort, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { executionProblems, observeRequests } from "./census/execute.js";
+import { executionProblems, invocationOf, observeRequests, type ObservedRequest } from "./census/execute.js";
 import { readOwnerMap } from "./census/owners.js";
 
 const home = mkdtempSync(join(tmpdir(), "cotal-census-home-"));
@@ -36,7 +36,8 @@ const { Manager } = await import("@cotal-ai/manager");
 const SPACE = "census";
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
-const TSX = join(import.meta.dirname, "..", "..", "node_modules", ".bin", "tsx");
+// tsx's own loader, by file URL, so the child resolves it from any working directory on any platform.
+const TSX_LOADER = import.meta.resolve("tsx");
 const BIN = join(import.meta.dirname, "..", "cotal.ts");
 const env: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(env)) if (key.startsWith("COTAL_")) delete env[key];
@@ -46,7 +47,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** Run the real binary without blocking this process, which hosts the manager that must answer. */
 function cotal(...args: string[]): Promise<{ status: number | null; output: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawnProc(TSX, [BIN, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnProc(process.execPath, ["--import", TSX_LOADER, BIN, ...args], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
     child.stdout.on("data", (d) => { output += d; });
     child.stderr.on("data", (d) => { output += d; });
@@ -75,16 +76,39 @@ try {
   await mgr.start();
   nc = await connect({ servers: SERVER });
 
-  let ps: { status: number | null; output: string } | undefined;
-  const observed = await observeRequests(nc, SPACE, async () => { ps = await cotal("ps", "--space", SPACE); });
-  check("cotal ps exits 0 against the live manager", ps?.status === 0, ps?.output);
-  check("the observer saw cotal ps issue manager ps", observed.some((r) => r.endpoint === "manager" && r.command === "ps"), observed);
-  const problems = executionProblems({ command: "ps", flags: [] }, observed, map);
-  check("every request cotal ps issued matches its owner rows", problems.length === 0, problems);
+  // Each case is an argv the census maps, plus the endpoint commands it issues only as resolution.
+  // The census grades what a command issues, so a native refusal (an open manager has no static
+  // slots, and no connector is installed here) is still a complete observation.
+  const cases: { argv: string[]; steps?: string[] }[] = [
+    { argv: ["ps"] },
+    { argv: ["ps", "--slots"] },
+    { argv: ["models", "--agent", "claude", "--refresh"] },
+  ];
+  const observations = new Map<string, ObservedRequest[]>();
+  const statuses = new Map<string, number | null | undefined>();
+  for (const { argv, steps } of cases) {
+    let result: { status: number | null; output: string } | undefined;
+    const observed = await observeRequests(nc, SPACE, async () => { result = await cotal(...argv, "--space", SPACE); });
+    const label = `cotal ${argv.join(" ")}`;
+    observations.set(argv.join(" "), observed);
+    statuses.set(argv.join(" "), result?.status);
+    check(`${label} issued a manager command`, observed.some((r) => r.endpoint === "manager" && r.command !== "describe"), { observed, output: result?.output });
+    const problems = executionProblems(invocationOf(argv), observed, map, steps);
+    check(`every request ${label} issued matches its owner rows`, problems.length === 0, problems);
+  }
+  check("cotal ps against the live manager exits 0", statuses.get("ps") === 0, statuses.get("ps"));
+  const models = observations.get("models --agent claude --refresh") ?? [];
+  check("the models case compared the input fields it sent",
+    models.some((r) => r.command === "models" && r.fields.includes("agent") && r.fields.includes("refresh")), models);
+  const psObserved = observations.get("ps") ?? [];
 
+  const wrongField = { ...map, owners: { ...map.owners, "ep:manager:models.agent": "current:ps" } };
+  check("a field row that names another command fails on the models observation",
+    executionProblems(invocationOf(["models", "--agent", "claude", "--refresh"]), models, wrongField)
+      .includes("cotal models --agent --refresh sent manager models field agent, whose owner is current:ps"));
   const wrong = { ...map, owners: { ...map.owners, "ep:manager:ps": "current:models" } };
   check("a row that names another command for manager ps fails on the same observation",
-    executionProblems({ command: "ps", flags: [] }, observed, wrong).includes("cotal ps issued manager ps, whose owner is current:models"));
+    executionProblems(invocationOf(["ps"]), psObserved, wrong).includes("cotal ps issued manager ps, whose owner is current:models"));
 } catch (e) {
   check(`suite ran without throwing: ${e instanceof Error ? e.message : String(e)}`, false, e instanceof Error ? e.stack : e);
 } finally {
