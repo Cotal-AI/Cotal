@@ -60,8 +60,8 @@
     {
       "name": "W8 the controller swallows a refused open-channel history into an empty one, so the view empties, the order machine settles on nothing, and no note or mark says the read was refused (the HTTP status gate is api/http.ts's, graded in smoke:web-http-api)",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      msgs = await api.history(key, 200);\n",
-      "replace": "      msgs = await api.history(key, 200).catch(() => []);\n",
+      "find": "      msgs = (await api.history(key, 200)).map((msg) => ({ msg }));\n",
+      "replace": "      msgs = (await api.history(key, 200).catch(() => [])).map((msg) => ({ msg }));\n",
       "expectRed": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed",
       "cell": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed"
     },

@@ -147,7 +147,7 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
 {
   const parts = [{ kind: "text", text: "before" }, { kind: "data" }, { kind: "text", text: "after" }];
   const msg = { id: "m1", from: { id: "alice" }, parts } as unknown as CotalMessage;
-  const html = renderShell({ open: { channel: "general", messages: [msg] } });
+  const html = renderShell({ open: { channel: "general", messages: [{ msg }] } });
   const body = unescapeHtml(/<main>([\s\S]*?)<\/main>/.exec(html)?.[1] ?? "");
   ok("the shell renders message bodies through partsToText", body.includes(partsToText(parts)), { body, want: partsToText(parts) });
   ok("and what it draws is the shared renderer's text, marker included, not a body of its own",

@@ -38,7 +38,7 @@ export function Shell({ store, controller }: { store: Store<DashboardState>; con
       <StatusLines store={store} />
       <div style={{ display: "grid", gridTemplateColumns: "220px 1fr 260px", gap: 16 }}>
         <nav>{channels.map((c) => <button key={c.channel} disabled={!controller} onClick={() => void controller?.open(c.channel)}># {c.channel}</button>)}</nav>
-        <main>{open?.messages.map((m) => <p key={m.id}><b>{displayNameOf(m.from, idx)}</b> {partsToText(m.parts)}</p>)}</main>
+        <main>{open?.messages.map(({ msg }) => <p key={msg.id}><b>{displayNameOf(msg.from, idx)}</b> {partsToText(msg.parts)}</p>)}</main>
         <aside>{rosterRows(roster).map((r) => <p key={r.id}>{r.name}: {statusLabel(r)}</p>)}</aside>
       </div>
     </div>

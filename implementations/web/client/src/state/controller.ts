@@ -10,7 +10,7 @@ import { createEventOrder, type EventOrder, type FeedEntryLike, type OrderNote }
 import { presenceViewMark } from "../lib/roster.js";
 import { refreshAll, type StaleMark } from "../lib/snapshot.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, DashboardState } from "./types.js";
+import type { ChannelRow, DashboardState, StoredMessage } from "./types.js";
 
 /** The server's reads and its one write. Each read throws on a refusal (see `readJson`). */
 export interface Api {
@@ -111,10 +111,11 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     const mine = { key, promise: new Promise<void>((r) => (release = r)) };
     selecting = mine;
     store.set({ open: { channel: key, messages: [] } });
-    let msgs: CotalMessage[] = [];
+    let msgs: StoredMessage[] = [];
     let refused: string | null = null;
     try {
-      msgs = await api.history(key, 200);
+      // A history row carries no subject, so it has no verified sender: `senderId` stays unset.
+      msgs = (await api.history(key, 200)).map((msg) => ({ msg }));
     } catch (err) {
       // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD. The held messages take the place of the
       // history that could not be read, so the merge below is the same as on the successful path.
@@ -130,9 +131,9 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         // Chat that arrived live during this fetch is only in the open view, released frames are only
         // in `settled.emit`, and both have to survive.
         const live = store.get().open?.channel === key ? store.get().open!.messages : [];
-        const merged = settled.emit.slice() as unknown as CotalMessage[];
-        const ids = new Set(merged.map((m) => (m as Wire)?.id));
-        for (const m of live) if (m && !ids.has(m.id)) merged.push(m);
+        const merged = settled.emit.slice() as unknown as StoredMessage[];
+        const ids = new Set(merged.map((m) => m.msg.id));
+        for (const m of live) if (m && !ids.has(m.msg.id)) merged.push(m);
         store.set({ open: { channel: key, messages: merged.slice(-ACTIVITY_CAP) } });
         // SAID, NOT JUST KEPT. Retention without the mark shows old messages as though they were current.
         markStale(`#${key} history`, refused ? { kind: "refused", name: `#${key} history`, reason: refused } : undefined);
@@ -161,7 +162,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         { name: "space", read: () => api.meta(), apply: (meta: Meta) => store.set({ space: meta.space }) },
         { name: "peers", read: () => api.roster(), apply: supersededByFeed("peers", (roster: RosterEntry[]) => store.set({ roster })) },
         { name: "channels", read: () => api.channels(), apply: (channels: ChannelInfo[]) => store.set({ channels }) },
-        { name: "direct messages", read: () => api.dms(500), apply: (dms: CotalMessage[]) => store.set({ dms }) },
+        // Like channel history, a DM history row carries no verified sender.
+        { name: "direct messages", read: () => api.dms(500), apply: (dms: CotalMessage[]) => store.set({ dms: dms.map((msg) => ({ msg })) }) },
         // Always read: the Activity view and the Needs card both draw it. An envelope, never a bare
         // array, so a caller that ignores `partial` breaks here instead of drawing a short page.
         { name: "activity", read: () => api.activity(200), apply: (p: ActivityPage) => { batch = p.entries; activityPage = p; } },
@@ -234,7 +236,8 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         activity.push(x);
         if (activity.length > ACTIVITY_CAP) activity.shift();
       }
-      const dms = e.mode === "unicast" && !s.dms.some((m) => m.id === msg.id) ? [...s.dms, e.msg] : s.dms;
+      // The DM keeps the sender the server read off the subject, which the payload cannot forge.
+      const dms = e.mode === "unicast" && !s.dms.some((d) => d.msg.id === msg.id) ? [...s.dms, { msg: e.msg, senderId: e.senderId }] : s.dms;
       return { activity, dms };
     });
     const channel = msg.channel;
@@ -250,12 +253,14 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     });
     if (store.get().open?.channel === channel) {
       // The open channel runs the same race: its history read is issued with the feed already open.
-      const sel = openOrder.live(e.msg as unknown as Record<string, unknown>);
+      // Ordered as a stored message, so the verified sender travels with it through the machine.
+      const stored: StoredMessage = { msg: e.msg, senderId: e.senderId };
+      const sel = openOrder.live(stored as unknown as FeedEntryLike);
       noteOrder(sel.notes);
       store.set((s) => {
         if (s.open?.channel !== channel) return {};
         const messages = s.open.messages.slice();
-        for (const m of sel.emit as unknown as CotalMessage[]) {
+        for (const m of sel.emit as unknown as StoredMessage[]) {
           messages.push(m);
           if (messages.length > ACTIVITY_CAP) messages.shift();
         }

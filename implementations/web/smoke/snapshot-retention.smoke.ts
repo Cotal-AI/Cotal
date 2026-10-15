@@ -352,7 +352,7 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   const good = (ms: Msg[]) => async () => msgs(ms);
   const refuse500 = async (): Promise<never> => { throw new Error("#team.backend history refused with HTTP 500: timeout"); };
   const throws = async (): Promise<never> => { throw new Error("network down"); };
-  const ids = (h: ReturnType<typeof harness>) => (h.store.get().open?.messages ?? []).map((m) => m.id);
+  const ids = (h: ReturnType<typeof harness>) => (h.store.get().open?.messages ?? []).map((m) => m.msg.id);
   const label = (h: ReturnType<typeof harness>) => staleLabel(h.store.get().stale);
   /** One controller whose history read is whatever `next` currently says. */
   const channelPage = () => {

@@ -32,7 +32,7 @@
     {
       "name": "the shell stops rendering message bodies through the shared renderer, so a message part renders as the shell's own expression again, which is the blank the renderer exists to remove",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "{partsToText(m.parts)}",
+      "find": "{partsToText(msg.parts)}",
       "replace": "{\"\"}",
       "expectRed": "the shell renders message bodies through partsToText",
       "cell": "the shell renders message bodies through partsToText"

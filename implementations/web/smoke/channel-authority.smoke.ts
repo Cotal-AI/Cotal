@@ -412,7 +412,7 @@ const raised = Object.entries(offscreenRun.store.get().unread).filter(([, n]) =>
 check("controller: a forged DM does NOT raise any unread badge", raised.length === 0, { raised });
 // The message must still ARRIVE: a fix that drops DMs would also pass the cells above.
 check("controller: the forged DM is STILL delivered as a DM (clearing a channel must not drop it)",
-  dmRun.store.get().dms.length === 1 && dmRun.store.get().dms[0].id === "dm-1", { dms: dmRun.store.get().dms });
+  dmRun.store.get().dms.length === 1 && dmRun.store.get().dms[0].msg.id === "dm-1", { dms: dmRun.store.get().dms });
 check("controller: the forged DM still appears in the activity feed, with no channel",
   dmRun.store.get().activity.length === 1 && channelOf(dmRun) === undefined, { activity: dmRun.store.get().activity });
 
@@ -460,6 +460,51 @@ check("controller: a POLICED chat message DOES reach its channel, keyed on the v
   try { await refusing.ctl.deleteChannel("doomed"); } catch (e) { said = (e as Error).message; }
   check("a refused delete throws the server's message for the dialog", /not a steward/.test(said), said);
   check("and changes nothing", refusing.store.get().channels.length === 1, refusing.store.get().channels);
+}
+
+// ── 2e. THE VERIFIED SENDER TRAVELS WITH THE MESSAGE ────────────────────────────────────────────
+// The server reads `senderId` off the subject, which the publish grant covers; `msg.from` is the
+// payload's claim. So a DM or a channel message that arrives live keeps the server's `senderId`
+// beside it, in the DM list and in the open channel's view, and a phase 2 view can name the sender
+// from the roster by that id. A history row has no subject (core's history reads return the
+// payloads alone), so it has no verified sender, and nothing may fill one in from `msg.from`.
+{
+  const FORGED = "local.mallory";
+  const SENDER = "local.alice";
+  const liveDm = live({ mode: "unicast", senderId: SENDER, msg: { id: "dm-v", from: { id: FORGED }, to: "local.bob" } });
+  const dmRow = liveDm.store.get().dms[0];
+  check("a live DM keeps the server's verified senderId in the DM list, not the payload's from",
+    liveDm.store.get().dms.length === 1 && dmRow?.msg.id === "dm-v" && dmRow.senderId === SENDER, dmRow);
+
+  const onScreen = harness({ history: async () => [] });
+  await onScreen.ctl.open(VERIFIED);
+  onScreen.ctl.onMessage({ mode: "chat", senderId: SENDER, channel: VERIFIED, msg: { id: "chat-v", from: { id: FORGED } } } as unknown as FeedMessage);
+  const openRow = onScreen.store.get().open?.messages[0];
+  check("a live channel message keeps the server's verified senderId in the open channel's view",
+    onScreen.store.get().open?.messages.length === 1 && openRow?.msg.id === "chat-v" && openRow.senderId === SENDER, openRow);
+
+  // The live message lands while the channel's history read is in flight, so it reaches the view
+  // through the merge that follows the read rather than straight onto the open view.
+  let release!: (rows: never[]) => void;
+  const racing = harness({ history: () => new Promise<never[]>((r) => (release = r)) });
+  const opening = racing.ctl.open(VERIFIED);
+  racing.ctl.onMessage({ mode: "chat", senderId: SENDER, channel: VERIFIED, msg: { id: "chat-r", from: { id: FORGED } } } as unknown as FeedMessage);
+  release([]);
+  await opening;
+  const merged = racing.store.get().open?.messages.find((m) => m.msg.id === "chat-r");
+  check("and keeps it through the merge when it lands during the channel's history read", merged?.senderId === SENDER, racing.store.get().open);
+
+  const fromHistory = harness({ history: async () => [{ id: "h-1", from: { id: SENDER } }] as never });
+  await fromHistory.ctl.open(VERIFIED);
+  const historyRow = fromHistory.store.get().open?.messages[0];
+  check("a channel history row carries no senderId: the read has no subject, and the payload's from is not promoted to one",
+    historyRow?.msg.id === "h-1" && historyRow.senderId === undefined, historyRow);
+
+  const dmHistory = harness({ ...bootReads, dms: async () => [{ id: "dh-1", from: { id: SENDER }, to: "local.bob" }] as never });
+  await dmHistory.ctl.refresh();
+  const dmHistoryRow = dmHistory.store.get().dms[0];
+  check("a DM history row carries no senderId either",
+    dmHistory.store.get().dms.length === 1 && dmHistoryRow?.msg.id === "dh-1" && dmHistoryRow.senderId === undefined, dmHistoryRow);
 }
 
 // THE FILTER LIST IS THE PROMISE, so a channel name the wire layer would REWRITE has to be refused

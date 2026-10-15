@@ -40,6 +40,46 @@
       "replace": "",
       "expectRed": "and the view closes when it was the open one",
       "cell": "and the view closes when it was the open one"
+    },
+    {
+      "name": "S1 a live DM is stored without the sender the server verified, so a DM view can only name the payload's own claim",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "[...s.dms, { msg: e.msg, senderId: e.senderId }] : s.dms;",
+      "replace": "[...s.dms, { msg: e.msg }] : s.dms;",
+      "expectRed": "a live DM keeps the server's verified senderId in the DM list, not the payload's from",
+      "cell": "a live DM keeps the server's verified senderId in the DM list, not the payload's from"
+    },
+    {
+      "name": "S2 a live channel message reaches the open view without its verified sender",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      const stored: StoredMessage = { msg: e.msg, senderId: e.senderId };\n",
+      "replace": "      const stored: StoredMessage = { msg: e.msg };\n",
+      "expectRed": "a live channel message keeps the server's verified senderId in the open channel's view",
+      "cell": "a live channel message keeps the server's verified senderId in the open channel's view"
+    },
+    {
+      "name": "S3 the merge after a channel's history read rebuilds each live message from its payload, so a message that landed during the read loses its verified sender",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "for (const m of live) if (m && !ids.has(m.msg.id)) merged.push(m);",
+      "replace": "for (const m of live) if (m && !ids.has(m.msg.id)) merged.push({ msg: m.msg });",
+      "expectRed": "and keeps it through the merge when it lands during the channel's history read",
+      "cell": "and keeps it through the merge when it lands during the channel's history read"
+    },
+    {
+      "name": "S4 a channel history row is given the payload's from as its verified sender, which is the claim senderId exists to replace",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      msgs = (await api.history(key, 200)).map((msg) => ({ msg }));\n",
+      "replace": "      msgs = (await api.history(key, 200)).map((msg) => ({ msg, senderId: msg.from.id }));\n",
+      "expectRed": "a channel history row carries no senderId",
+      "cell": "a channel history row carries no senderId: the read has no subject, and the payload's from is not promoted to one"
+    },
+    {
+      "name": "S5 a DM history row is given the payload's from as its verified sender",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "store.set({ dms: dms.map((msg) => ({ msg })) })",
+      "replace": "store.set({ dms: dms.map((msg) => ({ msg, senderId: msg.from.id })) })",
+      "expectRed": "a DM history row carries no senderId either",
+      "cell": "a DM history row carries no senderId either"
     }
   ],
   "suite": [
