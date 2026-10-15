@@ -196,6 +196,30 @@
       "replace": "  if (route.view === view && view !== \"dm\") return route;\n",
       "expectRed": "3.2 on a dm route Direct messages links to that conversation",
       "cell": "3.2 on a dm route Direct messages links to that conversation"
+    },
+    {
+      "name": "A26 Settings is live with no handler behind it, so the rail offers a button that does nothing",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "disabled={!onSettings}",
+      "replace": "disabled={false}",
+      "expectRed": "1.8 Settings is disabled while the shell gives it no handler",
+      "cell": "1.8 Settings is disabled while the shell gives it no handler"
+    },
+    {
+      "name": "A27 the Cotal mark leaves the rail",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "      <span className=\"ui-rail-mark\" dangerouslySetInnerHTML={{ __html: mark(\"currentColor\") }} />\n",
+      "replace": "",
+      "expectRed": "1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour",
+      "cell": "1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour"
+    },
+    {
+      "name": "A28 the mark is painted in a fixed navy, so it disappears on the night theme",
+      "file": "implementations/web/client/src/ui/Rail.tsx",
+      "find": "mark(\"currentColor\")",
+      "replace": "mark(\"#202B43\")",
+      "expectRed": "1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour",
+      "cell": "1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour"
     }
   ]
 }

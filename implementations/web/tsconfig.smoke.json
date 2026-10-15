@@ -9,6 +9,7 @@
   // `window` or `document` and pass.
   "compilerOptions": { "noEmit": true, "rootDir": "../..", "jsx": "react-jsx", "allowImportingTsExtensions": true },
   "include": ["smoke/**/*.ts"],
-  // The theme suite needs DOM types and is typechecked by tsconfig.smoke-dom.json instead.
-  "exclude": ["smoke/client-theme.smoke.ts"]
+  // The suites that stub or drive a DOM need DOM types and are typechecked by tsconfig.smoke-dom.json
+  // instead: the theme suite, and the suites that mount React in happy-dom.
+  "exclude": ["smoke/client-theme.smoke.ts", "smoke/components.smoke.ts", "smoke/app-mount.smoke.ts", "smoke/mount.ts"]
 }

@@ -32,10 +32,13 @@
  * review replaced all five downstream calls with "" and the cells over the declaration stayed green:
  * a correct helper nobody invokes. It renders the shell to HTML on the server (`render-shell.ts`,
  * `renderToString` over a seeded store) and checks that the message body in that HTML carries the
- * renderer's text and its marker. What is NOT measured is a browser: no cell here mounts the page in
- * a DOM or looks at pixels. So these cells prove the marker is produced and is in the shell's
- * server-rendered HTML, not that a browser paints it.
+ * renderer's text and its marker. The body is drawn by `MessageRow`, which renders it as Markdown,
+ * and the Markdown sanitizer needs a DOM, so happy-dom is installed first (`dom-globals.ts`). That
+ * DOM serves the sanitizer only: no cell here mounts the page or looks at pixels. So these cells
+ * prove the marker is produced and is in the shell's server-rendered HTML, not that a browser
+ * paints it.
  */
+import { closeDom } from "./dom-globals.js";
 import assert from "node:assert/strict";
 import type { CotalMessage } from "../client/src/api/types.js";
 import { partsToText } from "../client/src/lib/parts.js";
@@ -143,9 +146,10 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
 // helper nobody invokes is the defect this cell exists for.
 //
 // The shell (`client/src/Shell.tsx`) is rendered on the server with an open channel holding one
-// message, and its HTML is read: the body is the centre's `<main>`. Phase 2 moves the body to `MessageRow.tsx`. This proves what the
-// shell draws, not that its text survives to the pixels: no cell here opens a browser. `Shell` does
-// not import `aguiFrame.ts`, so the registry stays empty for the cells above and below.
+// message, and its HTML is read: the body is the centre's `<main>`, drawn by `ui/MessageRow.tsx`.
+// This proves what the shell draws, not that its text survives to the pixels: no cell here opens a
+// browser. `Shell` does not import `aguiFrame.ts`, so the registry stays empty for the cells above
+// and below.
 {
   const parts = [{ kind: "text", text: "before" }, { kind: "data" }, { kind: "text", text: "after" }];
   const msg = { id: "m1", from: { id: "alice" }, parts } as unknown as CotalMessage;
@@ -156,4 +160,5 @@ ok("no parts at all is still the empty string (absence of content, not a dropped
     body.includes("[empty data part]") && !body.includes("undefined"), { body });
 }
 
+await closeDom();
 console.log(`\n${cells} cells green`);

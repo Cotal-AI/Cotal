@@ -48,7 +48,7 @@ import { startDashboard } from "../client/src/state/boot.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState } from "../client/src/state/types.js";
 import { bootReads, gate, harness, page } from "./controller-harness.js";
-import { paragraph, renderShell } from "./render-shell.js";
+import { renderShell, staleMarker } from "./render-shell.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -190,9 +190,9 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   // The shell's own HTML, rendered on the server from a store seeded the way the controller leaves it.
   const peers: StaleMark[] = [{ kind: "refused", name: "peers", reason: "HTTP 500 <boom>" }];
   const two: StaleMark[] = [...peers, { kind: "refused", name: "activity", reason: "timeout" }];
-  const drawnPeers = paragraph(renderShell({ stale: peers }), "stale");
-  const drawnTwo = paragraph(renderShell({ stale: two }), "stale");
-  const drawnNone = paragraph(renderShell({ stale: [] }), "stale");
+  const drawnPeers = staleMarker(renderShell({ stale: peers }));
+  const drawnTwo = staleMarker(renderShell({ stale: two }));
+  const drawnNone = staleMarker(renderShell({ stale: [] }));
   ok("3.3 the shell draws its stale line through staleView, which says what staleLabel says",
     drawnPeers?.text === staleView(peers).text && drawnPeers?.text === staleLabel(peers), drawnPeers);
   ok("3.4 and the marks it draws are the store's, which the controller writes",

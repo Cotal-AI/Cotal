@@ -40,3 +40,11 @@ export function paragraph(html: string, id: string): { attrs: Record<string, str
   for (const a of m[1].matchAll(/\s([a-z-]+)(?:="([^"]*)")?/g)) attrs[a[1]] = unescapeHtml(a[2] ?? "");
   return { attrs, text: unescapeHtml(m[2]) };
 }
+
+/** The stale marker (`ui/StaleMarker.tsx`) in `html`: the attributes of its box and the text of its
+ *  bold label, unescaped. */
+export function staleMarker(html: string): { attrs: Record<string, string>; text: string } | undefined {
+  const m = /(<div class="ui-stale" id="stale"[^>]*>)[\s\S]*?<b>([^<]*)<\/b>/.exec(html);
+  if (!m) return undefined;
+  return { attrs: startTags(m[1], "div")[0], text: unescapeHtml(m[2]) };
+}

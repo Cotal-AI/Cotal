@@ -30,10 +30,10 @@
       "cell": "a data-bearing extension keeps its data (it was visible before; dropping it is a regression)"
     },
     {
-      "name": "the shell stops rendering message bodies through the shared renderer, so a message part renders as the shell's own expression again, which is the blank the renderer exists to remove",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "{partsToText(msg.parts)}",
-      "replace": "{\"\"}",
+      "name": "the message row stops rendering bodies through the shared renderer, so a message part renders as the row's own expression again, which is the blank the renderer exists to remove",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "  const text = partsToText(msg.parts);",
+      "replace": "  const text = \"\";",
       "expectRed": "the shell renders message bodies through partsToText",
       "cell": "the shell renders message bodies through partsToText"
     }

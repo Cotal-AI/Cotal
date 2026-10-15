@@ -31,6 +31,15 @@
       "expectRed": "every asset sits under /assets/",
       "cell": "every asset sits under /assets/",
       "afterRestore": "pnpm --filter @cotal-ai/web build"
+    },
+    {
+      "name": "the art seam loads the characters file through a computed specifier, which the bundler cannot follow, so the build ships no characters chunk and the first avatar fails in the browser",
+      "file": "implementations/web/client/src/art/index.ts",
+      "find": "await import(\"./characters.js\");",
+      "replace": "await import(/* @vite-ignore */ [\"./characters\", \"js\"].join(\".\"));",
+      "expectRed": "the built scripts carry the character art the avatars draw",
+      "cell": "the built scripts carry the character art the avatars draw",
+      "afterRestore": "pnpm --filter @cotal-ai/web build"
     }
   ]
 }

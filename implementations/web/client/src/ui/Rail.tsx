@@ -1,3 +1,4 @@
+import { mark } from "../art/index.ts";
 import { RailIcon, type RailIconName } from "../icons/rail.js";
 import { formatRoute, type Route } from "../lib/route.js";
 
@@ -36,12 +37,14 @@ function leadsTo(view: Route["view"], route: Route, channel: string | null, peer
   }
 }
 
-/** The view rail down the left edge. `channel` and `peer` are where Channels and Direct messages lead
- *  when the route is not already on them. Settings opens when `onSettings` is given and is disabled
- *  until then. */
+/** The view rail down the left edge, under the Cotal mark. `channel` and `peer` are where Channels
+ *  and Direct messages lead when the route is not already on them. Settings opens when `onSettings`
+ *  is given and is disabled until then. The mark is drawn in `currentColor`, so the stylesheet's
+ *  `--mark` token gives it the brand navy by day and cream at night. */
 export function Rail({ route, channel, peer, onSettings }: { route: Route; channel: string | null; peer: string | null; onSettings?: () => void }) {
   return (
     <nav className="ui-rail" aria-label="Views">
+      <span className="ui-rail-mark" dangerouslySetInnerHTML={{ __html: mark("currentColor") }} />
       {VIEWS.map(({ label, icon, view }) => {
         const to = leadsTo(view, route, channel, peer);
         const here = route.view === view;

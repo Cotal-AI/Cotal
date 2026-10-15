@@ -1,0 +1,49 @@
+{
+  "command": "pnpm smoke:web-app-mount",
+  "suite": [
+    "implementations/web/smoke/app-mount.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "E1 the shell hands the controller nothing to open, so a channel route leaves the store on no channel",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "    syncOpen(controller, target);\n",
+      "replace": "    syncOpen(controller, null);\n",
+      "expectRed": "1.1 a channel route opens that channel",
+      "cell": "1.1 a channel route opens that channel"
+    },
+    {
+      "name": "E2 a route that is not a channel no longer closes the open one, so leaving a channel leaves its messages loaded",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "    syncOpen(controller, target);\n",
+      "replace": "    if (target !== null) syncOpen(controller, target);\n",
+      "expectRed": "1.3 any other route opens nothing, closing what was open",
+      "cell": "1.3 any other route opens nothing, closing what was open"
+    },
+    {
+      "name": "E3 the app reads the address once and never follows it, so a hash change does not re-route",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "  useEffect(() => watchRoute(host, setRoute), [host]);",
+      "replace": "  useEffect(() => {}, [host]);",
+      "expectRed": "1.4 a hashchange re-routes: the new channel is opened and the rail follows",
+      "cell": "1.4 a hashchange re-routes: the new channel is opened and the rail follows"
+    },
+    {
+      "name": "E4 unmounting no longer stops the dashboard, so its feed stays open behind a page that is gone",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "    return dashboard.stop;\n",
+      "replace": "",
+      "expectRed": "1.7 unmounting stops the dashboard",
+      "cell": "1.7 unmounting stops the dashboard"
+    },
+    {
+      "name": "E5 the first route is read from the page's window instead of the host the app was given",
+      "file": "implementations/web/client/src/App.tsx",
+      "find": "useState(() => currentRoute(host))",
+      "replace": "useState(() => currentRoute(window))",
+      "expectRed": "1.1 a channel route opens that channel",
+      "cell": "1.1 a channel route opens that channel"
+    }
+  ]
+}

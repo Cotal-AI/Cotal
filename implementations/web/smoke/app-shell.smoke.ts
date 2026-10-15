@@ -5,6 +5,7 @@
  *  driven in Node over a fake location and a fake controller. */
 import { strict as assert } from "node:assert";
 import type { CotalMessage } from "../client/src/api/types.js";
+import { mark } from "../client/src/art/index.ts";
 import { openTarget, syncOpen } from "../client/src/lib/routeOpen.js";
 import { formatRoute, type Route } from "../client/src/lib/route.js";
 import { currentRoute, watchRoute, type RouteHost } from "../client/src/routeWatch.js";
@@ -49,6 +50,10 @@ const current = (html: string) => rail(html).filter((i) => i.attrs["aria-current
   ok("1.6 the rail sits in the Views landmark", /<nav class="ui-rail" aria-label="Views">/.test(html));
   const railBtns = startTags(html, "a").filter((a) => a.class === "ui-rail-btn").length + startTags(html, "button").filter((b) => b.class === "ui-rail-btn").length;
   ok("1.7 and the item count is exactly six", railBtns === 6, railBtns);
+  ok("1.8 Settings is disabled while the shell gives it no handler", items[5].attrs.disabled !== undefined, items[5].attrs);
+  const head = /<nav class="ui-rail" aria-label="Views">(<span class="ui-rail-mark">([\s\S]*?)<\/span>)?/.exec(html);
+  ok("1.9 the rail opens with the Cotal mark, drawn through the art seam in the text colour",
+    head?.[2] === mark("currentColor") && head[2].includes("<path"), head?.[0]?.slice(0, 160));
 }
 
 // ── 2. The active item follows the route ─────────────────────────────────────────────────────────

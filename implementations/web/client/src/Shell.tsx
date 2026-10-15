@@ -1,35 +1,45 @@
 import { useMemo } from "react";
+import type { CotalMessage, FeedMessage } from "./api/types.js";
+import { claimedBy } from "./lib/claims.js";
 import { dmPeers } from "./lib/dms.js";
-import { nameIndex, displayNameOf } from "./lib/names.js";
+import { nameIndex } from "./lib/names.js";
 import { formatRoute, type Route } from "./lib/route.js";
-import { partsToText } from "./lib/parts.js";
-import { rosterRows, statusLabel } from "./lib/roster.js";
-import { documentTitle, orderNotice, staleView } from "./lib/shellText.js";
+import { rosterRows } from "./lib/roster.js";
+import { documentTitle, orderNotice } from "./lib/shellText.js";
 import type { Controller } from "./state/controller.js";
 import { useStore } from "./state/hooks.js";
 import type { Store } from "./state/store.js";
 import type { DashboardState } from "./state/types.js";
 import { AppShell } from "./ui/AppShell.tsx";
+import { Avatar } from "./ui/Avatar.tsx";
+import { MessageRow } from "./ui/MessageRow.tsx";
+import { StaleMarker } from "./ui/StaleMarker.tsx";
+import { StatusWord } from "./ui/Status.tsx";
 
-/** The two lines the dashboard owes its reader about what it shows: which sources are showing their
- *  last good value, and what the event stream is missing. Plain on purpose; phase 2 restyles them. */
+/** The line the dashboard owes its reader about what the event stream is missing. Plain on purpose;
+ *  the feed views restyle it. */
 function StatusLines({ store }: { store: Store<DashboardState> }) {
-  const stale = useStore(store, (s) => s.stale);
   const notes = useStore(store, (s) => s.orderNotes);
-  const view = staleView(stale);
   const notice = orderNotice(notes);
   return (
     <div>
-      <p id="stale" hidden={view.hidden} title={view.title}>{view.text}</p>
       {notice && <p id="order-notice" role={notice.fault ? "alert" : "status"}>{notice.text}</p>}
     </div>
   );
 }
 
+/** How a message was addressed, read from the field the wire sets for each mode. */
+const modeOf = (msg: CotalMessage): FeedMessage["mode"] =>
+  typeof msg.toService === "string" ? "anycast" : typeof msg.to === "string" ? "unicast" : "chat";
+
 /** What the dashboard draws from the store and the route, and nothing else: no feed, no fetch, no
  *  DOM access, so it renders the same in a browser and in `renderToString`. `controller` is null
- *  until the dashboard has started. The sidebar and the panel are empty frames and the centre still
- *  draws the phase 1 content (channel list, messages, roster) until the views replace it. */
+ *  until the dashboard has started. The sidebar holds the stale marker and the panel is an empty
+ *  frame; the centre still draws the interim content (channel list, messages, roster) until the
+ *  views replace it, but with the shared components.
+ *
+ *  A message row is keyed by its id and its verified sender together: one id can arrive from two
+ *  senders (a duplicate delivery, or a peer reusing another's id), and both are facts to show. */
 export function Shell({ store, controller, route, paneOpen }: { store: Store<DashboardState>; controller: Controller | null; route: Route; paneOpen: boolean }) {
   const space = useStore(store, (s) => s.space);
   const channels = useStore(store, (s) => s.channels);
@@ -37,9 +47,11 @@ export function Shell({ store, controller, route, paneOpen }: { store: Store<Das
   const dms = useStore(store, (s) => s.dms);
   const open = useStore(store, (s) => s.open);
   const idx = useMemo(() => nameIndex(roster), [roster]);
+  const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
+  const peers = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const peer = useMemo(() => dmPeers(dms, roster)[0]?.id ?? null, [dms, roster]);
   return (
-    <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer}>
+    <AppShell route={route} controller={controller} paneOpen={paneOpen} channel={channels[0]?.channel ?? null} peer={peer} sidebar={<StaleMarker store={store} />}>
       <title>{documentTitle(space)}</title>
       <StatusLines store={store} />
       <section className="ui-view" data-view={route.view}>
@@ -53,8 +65,32 @@ export function Shell({ store, controller, route, paneOpen }: { store: Store<Das
             ># {c.channel}</a>
           ))}
         </nav>
-        <div>{open?.messages.map(({ msg }) => <p key={msg.id}><b>{displayNameOf(msg.from, idx)}</b> {partsToText(msg.parts)}</p>)}</div>
-        <div aria-label="Roster">{rosterRows(roster).map((r) => <p key={r.id}>{r.name}: {statusLabel(r)}</p>)}</div>
+        <div className="ui-col">
+          {open?.messages.map(({ msg, senderId }, i, all) => {
+            const mode = modeOf(msg);
+            return (
+              <MessageRow
+                key={`${msg.id}\u0001${senderId ?? ""}`}
+                msg={msg}
+                senderId={senderId}
+                mode={mode}
+                idx={idx}
+                peers={peers}
+                mention="operator"
+                claim={mode === "anycast" ? claimedBy(msg.id, all.slice(i + 1)) : undefined}
+              />
+            );
+          })}
+        </div>
+        <div aria-label="Roster">
+          {rows.filter((r) => r.status !== "offline").map((r) => (
+            <div key={r.id} className="v3-mrow">
+              <Avatar vendor={r.harness} status={r.status} size={28} />
+              <span className="v3-mname">{r.name}{r.role && <span>{r.role}</span>}</span>
+              <StatusWord row={r} />
+            </div>
+          ))}
+        </div>
       </section>
     </AppShell>
   );

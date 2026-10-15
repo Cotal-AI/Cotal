@@ -170,26 +170,26 @@
       "cell": "5.3 and it reads through the gate rather than consuming the body directly"
     },
     {
-      "name": "W21 the shell stops drawing the stale line from the marks, so the poll keeps its last good snapshot and the reader is never told which half of it is old",
-      "file": "implementations/web/client/src/Shell.tsx",
+      "name": "W21 the stale marker stops drawing from the marks, so the poll keeps its last good snapshot and the reader is never told which half of it is old",
+      "file": "implementations/web/client/src/ui/StaleMarker.tsx",
       "find": "  const view = staleView(stale);",
       "replace": "  const view = { hidden: true, text: \"\", title: \"\" };",
       "expectRed": "3.3 the shell draws its stale line through staleView",
       "cell": "3.3 the shell draws its stale line through staleView, which says what staleLabel says"
     },
     {
-      "name": "W22 the stale line reads its marks from somewhere other than the store the controller writes, so a refusal the controller recorded is never drawn",
-      "file": "implementations/web/client/src/Shell.tsx",
+      "name": "W22 the stale marker reads its marks from somewhere other than the store the controller writes, so a refusal the controller recorded is never drawn",
+      "file": "implementations/web/client/src/ui/StaleMarker.tsx",
       "find": "  const stale = useStore(store, (s) => s.stale);",
       "replace": "  const stale: never[] = [];",
       "expectRed": "3.4 and the marks it draws are the store's",
       "cell": "3.4 and the marks it draws are the store's, which the controller writes"
     },
     {
-      "name": "W23 the stale element is no longer hidden by the view, so a recovered poll leaves an empty marker standing in the header",
-      "file": "implementations/web/client/src/Shell.tsx",
-      "find": "<p id=\"stale\" hidden={view.hidden} title={view.title}>",
-      "replace": "<p id=\"stale\" title={view.title}>",
+      "name": "W23 the stale marker is no longer hidden by the view, so a recovered poll leaves an empty marker standing in the sidebar",
+      "file": "implementations/web/client/src/ui/StaleMarker.tsx",
+      "find": "<div className=\"ui-stale\" id=\"stale\" hidden={view.hidden} title={view.title}>",
+      "replace": "<div className=\"ui-stale\" id=\"stale\" title={view.title}>",
       "expectRed": "3.5 the shell carries the stale marker element it drives",
       "cell": "3.5 the shell carries the stale marker element it drives: hidden, tooltip and text all come from the view"
     },

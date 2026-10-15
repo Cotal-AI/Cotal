@@ -1,0 +1,257 @@
+{
+  "command": "pnpm smoke:web-components",
+  "suite": [
+    "implementations/web/smoke/components.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "C1 claude-code loses its character, so a Claude Code agent draws as a guest",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": "  \"claude-code\": \"claude\",\n",
+      "replace": "",
+      "expectRed": "1.2 each connector draws its character: claude-code and claude draw Claude, then OpenCode, Codex, Hermes and pi",
+      "cell": "1.2 each connector draws its character: claude-code and claude draw Claude, then OpenCode, Codex, Hermes and pi"
+    },
+    {
+      "name": "C2 an unknown connector draws Claude instead of the guest, so a stranger wears another vendor's face",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": ": GUEST;",
+      "replace": ": \"claude\";",
+      "expectRed": "1.3 any other connector, none at all, or a name an object already carries, draws the guest",
+      "cell": "1.3 any other connector, none at all, or a name an object already carries, draws the guest"
+    },
+    {
+      "name": "C3 a working agent stops looking down at its work",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": "  working: { look: \"down\" },\n",
+      "replace": "",
+      "expectRed": "1.5 working looks down",
+      "cell": "1.5 working looks down"
+    },
+    {
+      "name": "C4 a waiting agent stops looking up in surprise, so the one that needs a human looks like the rest",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": "  waiting: { mood: \"surprised\", look: \"up\" },\n",
+      "replace": "",
+      "expectRed": "1.6 waiting is surprised and looks up",
+      "cell": "1.6 waiting is surprised and looks up"
+    },
+    {
+      "name": "C5 offline is drawn in full colour, so a departed agent looks present",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": "className={status === \"offline\" ? \"ui-av ui-av-off\" : \"ui-av\"}",
+      "replace": "className=\"ui-av\"",
+      "expectRed": "1.8 offline is greyscale at half opacity (ui-av-off), and no other status is",
+      "cell": "1.8 offline is greyscale at half opacity (ui-av-off), and no other status is"
+    },
+    {
+      "name": "C6 the status dot is off by default, so roster avatars lose their status shape",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": "dot = true }",
+      "replace": "dot = false }",
+      "expectRed": "1.10 the status dot shows by default and carries the status's own shape class",
+      "cell": "1.10 the status dot shows by default and carries the status's own shape class"
+    },
+    {
+      "name": "C7 the dot ignores dot={false}, so message rows grow a status dot the mock does not draw",
+      "file": "implementations/web/client/src/ui/Avatar.tsx",
+      "find": "{dot && <StatusDot status={status} />}",
+      "replace": "<StatusDot status={status} />",
+      "expectRed": "1.11 dot={false} draws no dot",
+      "cell": "1.11 dot={false} draws no dot"
+    },
+    {
+      "name": "C8 the dot says nothing to a screen reader, so its status is colour and shape only",
+      "file": "implementations/web/client/src/ui/Status.tsx",
+      "find": " role=\"img\" aria-label={word(status)} />",
+      "replace": " />",
+      "expectRed": "2.1 the dot's class names its shape and it says the status in words to a screen reader",
+      "cell": "2.1 the dot's class names its shape and it says the status in words to a screen reader"
+    },
+    {
+      "name": "C9 idle borrows working's icon, so two statuses share a shape and differ by colour alone",
+      "file": "implementations/web/client/src/ui/Status.tsx",
+      "find": "  idle: Moon02Icon,",
+      "replace": "  idle: Loading03Icon,",
+      "expectRed": "2.3 each status carries its own icon, so it is a shape and not a colour alone",
+      "cell": "2.3 each status carries its own icon, so it is a shape and not a colour alone"
+    },
+    {
+      "name": "C10 the word bypasses statusLabel, so a working agent with no progress reported reads as plainly working",
+      "file": "implementations/web/client/src/ui/Status.tsx",
+      "find": "{word(statusLabel(row))}",
+      "replace": "{word(row.status)}",
+      "expectRed": "2.5 a working row whose progress is unknown says so, through statusLabel",
+      "cell": "2.5 a working row whose progress is unknown says so, through statusLabel"
+    },
+    {
+      "name": "C11 the row names its sender by the payload's own name, so any peer can sign as another",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{displayNameOf(senderId ?? msg.from, idx)}",
+      "replace": "{msg.from.name}",
+      "expectRed": "3.1 the sender is named from the roster by id, never by the payload's own name",
+      "cell": "3.1 the sender is named from the roster by id, never by the payload's own name"
+    },
+    {
+      "name": "C12 the payload's id outranks the verified senderId, so a forged from.id names the wrong sender",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "displayNameOf(senderId ?? msg.from, idx)",
+      "replace": "displayNameOf(msg.from ?? senderId, idx)",
+      "expectRed": "3.2 the verified senderId outranks the id the payload claims",
+      "cell": "3.2 the verified senderId outranks the id the payload claims"
+    },
+    {
+      "name": "C13 a history row no longer says its sender is unverified, so an unchecked claim reads as certain",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "            {senderId === undefined && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n",
+      "replace": "",
+      "expectRed": "3.3 a history row, which has no senderId, names the payload's id through the roster and marks it unverified",
+      "cell": "3.3 a history row, which has no senderId, names the payload's id through the roster and marks it unverified"
+    },
+    {
+      "name": "C14 every row says its sender is unverified, so the mark stops meaning anything",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{senderId === undefined && <span className=\"ui-unverified\"",
+      "replace": "{true && <span className=\"ui-unverified\"",
+      "expectRed": "3.5 a live row carries no such mark",
+      "cell": "3.5 a live row carries no such mark"
+    },
+    {
+      "name": "C15 the role leaves the header",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "            {peer?.role && <span className=\"ui-role\">{peer.role}</span>}\n",
+      "replace": "",
+      "expectRed": "3.6 the role and the harness come from the roster",
+      "cell": "3.6 the role and the harness come from the roster"
+    },
+    {
+      "name": "C16 a continuation row still draws the header, so a run of messages repeats the sender on every line",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "        {!compact && (\n",
+      "replace": "        {(\n",
+      "expectRed": "3.9 a continuation row draws no header and no avatar",
+      "cell": "3.9 a continuation row draws no header and no avatar"
+    },
+    {
+      "name": "C17 the gutter draws the character the payload's id points at, so a forged from.id borrows another agent's face",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "  const who = senderId ?? msg.from?.id;",
+      "replace": "  const who = msg.from?.id;",
+      "expectRed": "3.10 the gutter draws the verified sender's character, not the one the payload's id points at",
+      "cell": "3.10 the gutter draws the verified sender's character, not the one the payload's id points at"
+    },
+    {
+      "name": "C18 the body skips Markdown and the sanitizer and is drawn as the raw text",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}",
+      "replace": "dangerouslySetInnerHTML={{ __html: text }}",
+      "expectRed": "4.1 the body is the parts' text rendered as Markdown",
+      "cell": "4.1 the body is the parts' text rendered as Markdown"
+    },
+    {
+      "name": "C19 the clamp starts at 280 characters, so a body of exactly the limit is cut",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "text.length > CLAMP",
+      "replace": "text.length >= CLAMP",
+      "expectRed": "4.3 a body of 280 characters is drawn whole",
+      "cell": "4.3 a body of 280 characters is drawn whole"
+    },
+    {
+      "name": "C20 Show more does nothing, so a long body can never be read in full",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "onClick={() => setOpened(true)}",
+      "replace": "onClick={() => setOpened(false)}",
+      "expectRed": "4.5 Show more opens the body and goes away",
+      "cell": "4.5 Show more opens the body and goes away"
+    },
+    {
+      "name": "C21 the anycast chip loses its tooltip, so the reader is never told what To any means",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": " title=\"Anycast: one free agent with this role takes it.\">",
+      "replace": ">",
+      "expectRed": "5.1 an anycast row says To any <role>, with the anycast tooltip",
+      "cell": "5.1 an anycast row says To any <role>, with the anycast tooltip"
+    },
+    {
+      "name": "C22 an anycast names a claimer with no reply, which the wire never said",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{claim !== undefined && <>",
+      "replace": "{<>",
+      "expectRed": "5.2 with no reply it names no claimer",
+      "cell": "5.2 with no reply it names no claimer"
+    },
+    {
+      "name": "C23 the claimer is shown by id instead of by the name the roster gives it",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{`claimed by ${displayNameOf(claim, idx)}`}",
+      "replace": "{`claimed by ${claim}`}",
+      "expectRed": "5.3 with a reply it adds claimed by, with the name the roster gives that id",
+      "cell": "5.3 with a reply it adds claimed by, with the name the roster gives that id"
+    },
+    {
+      "name": "C24 any mention at all highlights the row, so the operator is flagged for messages to others",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "  const mentioned = mention !== undefined && (msg.mentions ?? []).includes(mention.toLowerCase());",
+      "replace": "  const mentioned = mention !== undefined && (msg.mentions ?? []).length > 0;",
+      "expectRed": "5.6 a row that mentions someone else is not",
+      "cell": "5.6 a row that mentions someone else is not"
+    },
+    {
+      "name": "C25 Copy puts nothing on the clipboard",
+      "file": "implementations/web/client/src/ui/CopyCommand.tsx",
+      "find": "onClick={() => copy(command)}",
+      "replace": "onClick={() => copy(\"\")}",
+      "expectRed": "6.3 Copy writes the command to the clipboard",
+      "cell": "6.3 Copy writes the command to the clipboard"
+    },
+    {
+      "name": "C26 the shell never passes a claim, so a claimed anycast reads as unclaimed",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "claim={mode === \"anycast\" ? claimedBy(msg.id, all.slice(i + 1)) : undefined}",
+      "replace": "claim={undefined}",
+      "expectRed": "7.2 the shell names an anycast's claimer from the first later reply",
+      "cell": "7.2 the shell names an anycast's claimer from the first later reply"
+    },
+    {
+      "name": "C27 the shell reads every message as chat, so an anycast loses its route chip",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "typeof msg.toService === \"string\" ? \"anycast\"",
+      "replace": "false ? \"anycast\"",
+      "expectRed": "7.2 the shell names an anycast's claimer from the first later reply",
+      "cell": "7.2 the shell names an anycast's claimer from the first later reply"
+    },
+    {
+      "name": "C28 the shell stops naming the operator to highlight, so a mention of the operator looks like any other row",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "                mention=\"operator\"\n",
+      "replace": "",
+      "expectRed": "7.4 the shell highlights a row that mentions the operator",
+      "cell": "7.4 the shell highlights a row that mentions the operator"
+    },
+    {
+      "name": "C29 the stale marker leaves the sidebar",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": " sidebar={<StaleMarker store={store} />}>",
+      "replace": ">",
+      "expectRed": "7.5 the stale marker sits in the sidebar",
+      "cell": "7.5 the stale marker sits in the sidebar"
+    },
+    {
+      "name": "C30 the roster lists offline agents beside live ones",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "rows.filter((r) => r.status !== \"offline\").map(",
+      "replace": "rows.map(",
+      "expectRed": "7.6 the roster draws each live agent with its character and its status word, and leaves the offline one out",
+      "cell": "7.6 the roster draws each live agent with its character and its status word, and leaves the offline one out"
+    },
+    {
+      "name": "C31 rows are keyed by id alone, so one id from two senders collides and React warns",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "key={`${msg.id}\\u0001${senderId ?? \"\"}`}",
+      "replace": "key={msg.id}",
+      "expectRed": "7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning",
+      "cell": "7.7 rows are keyed by id and sender, so one id from two senders draws both with no duplicate-key warning"
+    }
+  ]
+}
