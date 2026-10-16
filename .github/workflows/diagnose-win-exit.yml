@@ -1,0 +1,34 @@
+name: Diagnose Windows native exit
+on:
+  push:
+    branches: [diag/windows-native-exit-1016]
+permissions:
+  contents: read
+jobs:
+  query:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+        node: [22, 24, 26]
+        replica: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@v6.0.8
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @cotal-ai/core --filter @cotal-ai/workspace build
+      - name: Measure unchanged and explicit-exit queries from separate fresh profiles
+        env:
+          DIAGNOSTIC_REPLICA: ${{ matrix.replica }}
+        run: node --import tsx scripts/diagnose-win-exit.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-exit-${{ matrix.runner }}-node${{ matrix.node }}-replica${{ matrix.replica }}
+          path: win-exit-diagnostic.json
+          if-no-files-found: error
