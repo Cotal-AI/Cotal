@@ -9,7 +9,7 @@
  * Run: pnpm smoke:read-envelopes
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -32,10 +32,16 @@ type Envelope = {
   warnings: { code: string; target: unknown }[]; error?: { code: string; message: string };
 };
 
-/** A sandboxed home, with an optional extensions manifest. */
-function sandbox(manifest?: unknown) {
-  const home = mkdtempSync(join(tmpdir(), "cotal-read-envelopes-"));
-  roots.push(home);
+/** A sandboxed home, with an optional extensions manifest. `viaLink` reaches it through a symlink,
+ *  as a home on a linked volume is, so the command's cwd is canonical and its HOME is not. */
+function sandbox(manifest?: unknown, viaLink = false) {
+  const real = mkdtempSync(join(tmpdir(), "cotal-read-envelopes-"));
+  roots.push(real);
+  const home = viaLink ? `${real}-link` : real;
+  if (viaLink) {
+    symlinkSync(real, home, "junction");
+    roots.push(home);
+  }
   const xdg = join(home, ".config");
   if (manifest !== undefined) {
     mkdirSync(join(xdg, "cotal", "extensions"), { recursive: true });
@@ -64,10 +70,10 @@ const ansi = /\x1b\[/;
   const json = run(["runtimes", "--json"]);
   const names = json.envelope?.result?.items.map((row) => `${row.name}:${row.state}`);
   check("runtimes --json is one complete envelope with no target", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.target === null, shown(json));
-  check("runtimes --json lists pty built in and each official runtime as available", JSON.stringify(names) === JSON.stringify(["pty:built-in", "orca:available", "tmux:available", "cmux:available", "herdr:available"]), names);
+  check("runtimes --json lists pty built in and each official runtime as not installed", JSON.stringify(names) === JSON.stringify(["pty:built-in", "orca:not-installed", "tmux:not-installed", "cmux:not-installed", "herdr:not-installed"]), names);
   const rich = run(["runtimes"], { FORCE_COLOR: "1" });
   const richText = rich.stdout.replace(/\x1b\[[0-9;]*m/g, "");
-  check("runtimes draws a colored table with its state words", rich.status === 0 && ansi.test(rich.stdout) && /RUNTIME\s+STATE/.test(richText) && /available · cotal ext add @cotal-ai\/tmux/.test(richText), shown(rich));
+  check("runtimes draws a colored table with its state words", rich.status === 0 && ansi.test(rich.stdout) && /RUNTIME\s+STATE\s+PACKAGE/.test(richText) && /tmux\s+not installed\s+@cotal-ai\/tmux/.test(richText) && /cotal ext add <package>/.test(richText), shown(rich));
   const plain = run(["runtimes", "--plain"], { FORCE_COLOR: "1" });
   check("runtimes --plain writes the same words with no ANSI", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout === richText, shown(plain));
   check("no report line ends in padding", plain.stdout.split("\n").every((line) => !line.endsWith(" ")), plain.stdout);
@@ -99,6 +105,16 @@ const ansi = /\x1b\[/;
   }
   const named = run(["models", "--json", "--space", "nope"]);
   check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh named "nope"/.test(named.envelope.error.message), shown(named));
+}
+
+// ── ps and models: a home reached through a symlink is still no project ──────────────────────────
+{
+  const run = sandbox(undefined, true);
+  for (const command of ["ps", "models"]) {
+    const json = run([command, "--json"]);
+    check(`${command} --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home`,
+      json.status === 2 && json.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
+  }
 }
 
 // ── ps: its usage refusals are envelopes too ──────────────────────────────────────────────────────

@@ -24,10 +24,10 @@
  */
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { seedChannelRegistry, isReachable, CotalEndpoint } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { opencodeLine } from "../src/opencode-line.js";
@@ -136,6 +136,30 @@ const BOOT_TEXT = "Introduce yourself in #general, then wait.";
     threwG = (e as Error).message;
   }
   check("opencodeLine throws on 'garbage', naming it", threwG.includes("garbage"), threwG);
+
+  // On 2.x the CLI has no catalog to list: the connector says so instead of failing the read. The
+  // fake binary is a POSIX script; on Windows `execFileSync("opencode")` cannot run a `.cmd` shim.
+  if (process.platform === "win32") console.log("  - skipped on Windows: the 2.x catalog cell needs a POSIX opencode script");
+  else {
+    const binDir = mkdtempSync(join(tmpdir(), "oc2-bin-"));
+    writeFileSync(join(binDir, "opencode"), "#!/bin/sh\necho 'opencode v2.0.18'\n");
+    chmodSync(join(binDir, "opencode"), 0o755);
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${binDir}${delimiter}${savedPath ?? ""}`;
+    let catalog: Awaited<ReturnType<NonNullable<typeof opencodeConnector.listModels>>> | undefined;
+    let catalogError = "";
+    try {
+      catalog = await opencodeConnector.listModels!();
+    } catch (e) {
+      catalogError = (e as Error).message;
+    } finally {
+      process.env.PATH = savedPath;
+      rmSync(binDir, { recursive: true, force: true });
+    }
+    check("on 2.x the catalog is reported unavailable with the reason, not thrown",
+      catalogError === "" && catalog?.models.length === 0 && /running opencode server/.test(catalog.unavailable ?? "") && /--model provider\/model/.test(catalog.unavailable ?? ""),
+      { catalog, catalogError });
+  }
 }
 
 // ── 2. the plugin: does a boot with a prompt actually drive a turn? ──────────────────────────────

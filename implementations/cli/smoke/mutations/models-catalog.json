@@ -1,0 +1,68 @@
+{
+  "suite": [
+    "implementations/manager/smoke/cli-on-instance-live.smoke.ts"
+  ],
+  "guard": "cotal models reads each connector's catalog from a real manager: a catalog the connector could not read, or an installed connector the manager could not load, makes the listing partial with exit 4 and fails a read of that one connector with exit 5, and a connector whose install lists no catalog is supported: false with its reason, a complete read",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:cli-on-instance",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/models-catalog.json",
+  "why": [
+    "The suite drives the built binary against managers running in the suite on a real broker, with connectors registered in the shared registry, so each mutation rebuilds and the restore rebuilds back.",
+    "Before the connector could report a catalog unavailable, OpenCode 2.x threw, and every listing on a machine with it installed came back partial with exit 4."
+  ],
+  "mutations": [
+    {
+      "name": "a catalog the install cannot list is reported as supported",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "supported: catalog.unavailable === undefined, ...catalog",
+      "replace": "supported: true, ...catalog",
+      "expectRed": "a catalog the install cannot list is supported: false with its reason, complete, exit 0, no warning",
+      "cell": "a catalog the install cannot list is supported: false with its reason, complete, exit 0, no warning",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable catalog leaves the listing complete",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "const failed = items.filter((row) => row.error);",
+      "replace": "const failed = items.filter((row) => row.error && false);",
+      "expectRed": "every catalog with one unreadable is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+      "cell": "every catalog with one unreadable is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a connector the manager could not load is not counted as unread",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "const failed = items.filter((row) => row.error);",
+      "replace": "const failed = items.filter((row) => row.supported && row.error);",
+      "expectRed": "an installed connector that cannot load is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+      "cell": "an installed connector that cannot load is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the report drops why the install lists no catalog",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "row.unavailable ?? \"no model catalog exposed\"",
+      "replace": "\"no model catalog exposed\"",
+      "expectRed": "the report gives the reason the install lists no catalog and no failure",
+      "cell": "the report gives the reason the install lists no catalog and no failure",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the report shows a load failure as a missing catalog",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "  if (row.error) blocks.push({ kind: \"lines\", lines: [{ text: row.error, tone: \"failed\" }] });",
+      "replace": "  if (row.error && row.supported) blocks.push({ kind: \"lines\", lines: [{ text: row.error, tone: \"failed\" }] });",
+      "expectRed": "the report names the load failure under that connector, not a missing catalog",
+      "cell": "the report names the load failure under that connector, not a missing catalog",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a read of the one unreadable catalog succeeds",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "return result.error ? { ok: false, error: result.error } : { ok: true, data: result };",
+      "replace": "return { ok: true, data: result };",
+      "expectRed": "the one catalog --agent names could not be read: failed, exit 5, with the connector's reason",
+      "cell": "the one catalog --agent names could not be read: failed, exit 5, with the connector's reason",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}
