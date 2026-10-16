@@ -122,7 +122,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   models: { flags: [...TARGET, "agent:string", "refresh:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
-  // `who` and `whoami` (S1.4): the roster and the CLI's own identity, on the structured output contract.
+  // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
   whoami: { flags: ["space:string", "server:string", "json:boolean:j", "plain:boolean"], positionals: false },
   personas: {
