@@ -202,27 +202,52 @@ together under [Manifest deploys](#manifest-deploys).
 ## setup
 
 ```bash
-cotal setup [--full] [--demo] [--yes] [--skills]
+cotal setup [--destination local|self-hosted] [-H|--harness <connector>] [--project <dir>] [--space <name>]
+            [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain]
+cotal setup --skills
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--full` | off | Redo the full guided flow (implies `--demo`) |
+| `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server. `cloud` is refused as in development, before anything is written or contacted. |
+| `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. |
+| `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
+| `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
+| `--connection-file` | none | Self-hosted: register the space from a connection bundle exported where it runs, with the checks `space add --file` makes. |
+| `--configure-only` | on | Write the preparation and start nothing. This is the only mode in this release. |
 | `--demo` | off | Also seed the guided expert team (`david`, `sven`, `me`) |
-| `--yes`, `-y` | off | Non-interactive accept-all (for agents / CI) |
-| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with `--full` or `--demo`. |
+| `--full` | off | The guided flow with the guided team (implies `--demo`) |
+| `--yes`, `-y` | off | Ask nothing: every input comes from the flags |
+| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with the four inputs, `--connection-file`, `--configure-only`, `--full`, `--demo`, `--json` or `--plain`. |
 
-Guided setup is **configure-only**: it checks prerequisites, invokes installed connectors' declared setup providers, and
-seeds persona files, and it launches nothing (no mesh, no web, no manager). First run gets the
-narrated flow; later runs print a status card. By default it seeds one `default` persona; the
-`david`/`sven`/`me` team is opt-in via `--demo`. `cotal status` points stale Claude skills and
-out-of-date `.agents` skills at `cotal setup --skills`, not unscoped `setup`. See [Getting started](getting-started.md) and, for
-maintainers, [setup internals](setup-internals.md).
+Setup prepares a space for your agents and starts nothing: no mesh, no web, no manager. On a
+terminal it asks for each input no flag gave: destination, application, project folder and space.
+It shows the answers before it writes: Save writes them, Change asks every question again with the
+answers kept, and Cancel saves nothing. Cloud is listed as in development and cannot be chosen.
 
-When a mesh resolves, setup seeds that mesh's recorded `.cotal/agents` catalog, the same catalog a
-following `cotal spawn` reads. It prints the absolute destination. On a fresh machine with no mesh it
-uses this folder and says why; when several meshes are available and none is selected, it refuses
-rather than choosing a catalog.
+Without a terminal, or with `--yes`, `--no-input` or `--json`, every input is a flag. A missing one
+is `USAGE_INVALID` naming each missing flag, before anything is written:
+
+```bash
+cotal setup --destination local --harness claude --project ~/research --space research --no-input
+```
+
+A local space is prepared as `cotal space create` prepares it. A self-hosted space is one already
+registered with `cotal space add` or a signed-in catalog, whose root must be `--project`, or one
+`--connection-file` registers. Setup then seeds the `default` persona into
+`<project>/.cotal/agents`, the catalog `cotal spawn` reads for that space, records the application as
+the space's `harness` preference, runs the application's setup actions, and reconciles Cotal's
+skills. The result names the next command: `cotal up` in the project for a local space, or
+`cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
+setup wrote.
+
+A rerun with the same answers changes nothing and is a `no-op`; a space already prepared, started or
+registered at that root is reported, not refused. A space name or root another space holds is
+`CONFLICT`. An application whose host tool is not on PATH leaves the rest saved and the result
+`partial` (exit 4), naming the tool; an application action that does not finish does the same.
+`cotal status` reports the machine's state, and it points
+stale Claude skills and out-of-date `.agents` skills at `cotal setup --skills`. See
+[Getting started](getting-started.md) and, for maintainers, [setup internals](setup-internals.md).
 
 ## update
 

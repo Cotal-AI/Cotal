@@ -34,6 +34,35 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Setup inputs after 0.82.0 (unreleased)
+
+`cotal setup` takes four inputs: destination, application, project folder and space. Nothing on a
+running mesh changes, and there is no outage window.
+
+### What stops working
+
+- A `cotal setup --yes` or a setup with no terminal exits 1 with `USAGE_INVALID` unless it names
+  every input as a flag. It no longer sets up every detected connector and seeds the folder it
+  runs in.
+- Setup sets up one application, the one `--harness` names, and records it as the space's
+  `harness` preference. An application whose executable is not on PATH exits 4 with the rest
+  saved; it used to be skipped with a warning.
+- The default persona lands in `<project>/.cotal/agents`. Setup no longer looks for a running mesh
+  to seed into.
+- A repeat `cotal setup` no longer prints a status card. `cotal status` reports the same state.
+
+### Before the upgrade
+
+A script or image that ran `cotal setup --yes` names the four inputs:
+
+```bash
+cotal setup --destination local --harness claude --project <dir> --space <name> --no-input
+```
+
+For a space that runs elsewhere, register it first with `cotal space add`, or pass the bundle its
+operator exported with `--connection-file`, and use `--destination self-hosted` with the
+registration's root as `--project`.
+
 ## Space selection after 0.82.0 (unreleased)
 
 `cotal use` and the target a command picks without `--space` change. Nothing on a running mesh

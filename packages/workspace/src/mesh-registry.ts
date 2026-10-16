@@ -224,7 +224,8 @@ function meshFileName(space: string): string {
   return `${spaceSegment(space)}.json`;
 }
 
-function meshFile(space: string): string {
+/** The registry file that holds a space's registration. */
+export function meshFile(space: string): string {
   return join(meshesDir(), meshFileName(space));
 }
 

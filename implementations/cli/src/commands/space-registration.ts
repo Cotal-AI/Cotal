@@ -65,7 +65,7 @@ export interface AddValues {
   readonly yes?: boolean;
 }
 
-interface SpaceAdded {
+export interface SpaceAdded {
   readonly kind: "space-added";
   /** The registration as `cotal space show` reports it. */
   readonly space: SpaceDetail;
@@ -163,7 +163,7 @@ export async function spaceAdd(rest: readonly string[], v: AddValues, presentati
   writeResult(presentation, { command: "space", target: { space: added.result.space.space }, result: added.result, warnings: added.warnings }, addedView);
 }
 
-type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[] } | undefined;
+export type Added = { readonly result: SpaceAdded; readonly warnings: OutputWarning[] } | undefined;
 
 async function addFromServer(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
   if (name === undefined) throw usage("name the space to add", "cotal space add <name> --server <url>");
@@ -201,18 +201,13 @@ async function addFromServer(name: string | undefined, v: AddValues, prompt: boo
 
 /** A user-auth space: its pins come from a bundle exported where it runs, or from its HTTPS
  *  discovery document, which is fetched only after the operator agrees and is adopted only after
- *  they confirm the pins. Its checks run even under `--force`, which only replaces a record. */
-async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
+ *  they confirm the pins. Its checks run even under `--force`, which only replaces a record.
+ *  `cotal setup --connection-file` registers a self-hosted space through it. */
+export async function addFromBundle(name: string | undefined, v: AddValues, prompt: boolean): Promise<Added> {
   const target = name ? { space: name } : null;
   let bundle: UserBundle;
   if (v.file !== undefined) {
-    let raw: string;
-    try {
-      raw = readFileSync(v.file, "utf8");
-    } catch (e) {
-      throw usage(`cannot read --file ${v.file} (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`);
-    }
-    bundle = take(checkUserBundle(raw), target);
+    bundle = readConnectionFile(v.file, "--file", target);
   } else {
     let disco: URL;
     try {
@@ -264,6 +259,49 @@ async function addFromBundle(name: string | undefined, v: AddValues, prompt: boo
   return { result: { kind: "space-added", space: detail(entry, getCurrent() ?? null, "reachable"), verified: true, replaced }, warnings };
 }
 
+/** A user-auth connection bundle read from `file` and checked; `flag` names the input in a refusal. */
+export function readConnectionFile(file: string, flag: string, target: unknown): UserBundle {
+  let raw: string;
+  try {
+    raw = readFileSync(file, "utf8");
+  } catch (e) {
+    throw usage(`cannot read ${flag} ${file} (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`);
+  }
+  return take(checkUserBundle(raw), target);
+}
+
+/** What `cotal setup --destination self-hosted` finds for a space: a registration to use as it is,
+ *  or a connection file to register it from. */
+export type SelfHostedSpace = { readonly kind: "registered"; readonly entry: MeshEntry } | { readonly kind: "add"; readonly file: string };
+
+/**
+ * The checks `cotal setup` runs for a self-hosted space before it writes anything. The space must
+ * be one registered here by hand or by a catalog, with `project` as its root, or come with a
+ * connection file that `space add --file` would accept. A connection file for a space already
+ * registered must name the same space and broker, so a rerun with the same answers changes nothing.
+ */
+export function checkSelfHostedSpace(space: string, project: string, connectionFile: string | undefined): SelfHostedSpace {
+  const target = { space };
+  if (findPreparedSpace(space)) throw refuse("CONFLICT", `"${space}" is a space prepared on this machine`, target, "set it up with --destination local");
+  const entry = findMesh(space);
+  if (entry?.origin === "up") throw refuse("CONFLICT", `"${space}" is a space this machine starts`, target, "set it up with --destination local");
+  if (!entry) {
+    if (connectionFile === undefined)
+      throw refuse("TARGET_NOT_FOUND", `no space named "${space}" is registered here`, target, "register it with `cotal space add`, or pass --connection-file <bundle.json>");
+    return { kind: "add", file: connectionFile };
+  }
+  if (canonicalRoot(entry.root) !== canonicalRoot(project))
+    throw refuse("CONFLICT", `"${space}" is registered with the root ${entry.root}, not ${project}`, target, `pass --project ${entry.root}`);
+  if (connectionFile !== undefined) {
+    const bundle = readConnectionFile(connectionFile, "--connection-file", target);
+    if (bundle.space !== space) throw refuse("CONFLICT", `the bundle is for "${bundle.space}", not "${space}": a bundle adds the space it was exported for`, target);
+    const server = take(checkServer(bundle.server, "the bundle's server"), target);
+    if (server !== entry.server)
+      throw refuse("CONFLICT", `"${space}" is registered at ${entry.server}, and the bundle names ${server}`, target, `forget it first with \`cotal space forget ${space}\``);
+  }
+  return { kind: "registered", entry };
+}
+
 function addedView(r: SpaceAdded | AddCancelled): Report {
   if (r.kind === "space-add-cancelled") return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "nothing was added", tone: "hint" }] }] }] };
   const s = r.space;
@@ -287,23 +325,53 @@ function addedView(r: SpaceAdded | AddCancelled): Report {
 export async function spaceCreate(rest: readonly string[], rootFlag: string | undefined, presentation: Presentation): Promise<void> {
   if (rest.length !== 1 || rest[0]!.trim() === "") throw usage("usage: cotal space create <name> [--root <dir>]");
   const name = rest[0]!;
-  const target = { space: name };
   const root = resolve(rootFlag ?? process.cwd());
   if (!isDir(root)) throw usage(`--root ${root} is not a directory`, "create the folder first, or pass an existing one");
-  if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
-    throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, "create the space in a project folder, or pass --root <dir>");
-  const registered = findMesh(name);
-  if (registered) throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with \`cotal space show ${name}\``);
-  const prepared = findPreparedSpace(name);
-  if (prepared) throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}`, target, `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
-  const held = [...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)];
-  if (held.length > 0)
-    throw refuse("CONFLICT", `${root} is already the root of "${[...new Set(held)].join('", "')}"`, target, "create the space in another folder, or pass --root <dir>");
-  mkdirSync(join(root, ".cotal"), { recursive: true });
-  const ts = new Date().toISOString();
-  recordPreparedSpace({ space: name, root, ts });
+  checkLocalSpace(name, root, "--root", false);
+  const ts = recordLocalSpace(name, root).preparedAt;
   const result: SpaceCreated = { kind: "space-created", space: name, root, preparedAt: ts, current: getCurrent() === name };
-  writeResult(presentation, { command: "space", target, result }, createdView);
+  writeResult(presentation, { command: "space", target: { space: name }, result }, createdView);
+}
+
+/** Where a space this machine starts stands at a root: prepared now, prepared before, or started
+ *  there before. */
+export type LocalSpaceState = "created" | "prepared" | "started";
+
+/**
+ * The checks `space create` runs before it prepares `name` at `root`; it writes nothing. `flag`
+ * names the input that chose the root. With `again`, a space already prepared or started at this
+ * same root is reported as its state instead of refused, so `cotal setup` run again with the same
+ * answers changes nothing.
+ */
+export function checkLocalSpace(name: string, root: string, flag: "--root" | "--project", again: boolean): LocalSpaceState {
+  const target = { space: name };
+  if (resolve(root, ".cotal") === resolve(homeCotalDir()) || canonicalRoot(root) === canonicalRoot(homedir()))
+    throw refuse("CONFLICT", `${root} is your home folder, whose .cotal holds this machine's own records`, target, `create the space in a project folder, or pass ${flag} <dir>`);
+  const here = (other: string): boolean => canonicalRoot(other) === canonicalRoot(root);
+  const registered = findMesh(name);
+  if (registered) {
+    if (again && registered.origin === "up" && here(registered.root)) return "started";
+    throw refuse("CONFLICT", `"${name}" is already registered at ${registered.server}`, target, `see it with \`cotal space show ${name}\``);
+  }
+  const prepared = findPreparedSpace(name);
+  if (prepared) {
+    if (again && here(prepared.root)) return "prepared";
+    throw refuse("CONFLICT", `"${name}" is already prepared in ${prepared.root}`, target, `start it with \`cotal up\` there, or forget it with \`cotal space forget ${name}\``);
+  }
+  const held = [...new Set([...take(spacesAtRoot(root), target), ...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ...[preparedSpaceAt(root)?.space].filter((s): s is string => s !== undefined)])];
+  // A space started here before and stopped since keeps its trust in this root.
+  if (again && held.length === 1 && held[0] === name) return "started";
+  if (held.length > 0)
+    throw refuse("CONFLICT", `${root} is already the root of "${held.join('", "')}"`, target, `create the space in another folder, or pass ${flag} <dir>`);
+  return "created";
+}
+
+/** Prepares a space {@link checkLocalSpace} cleared: makes `<root>/.cotal/` and records the space.
+ *  Returns the record it wrote and when. */
+export function recordLocalSpace(name: string, root: string): { file: string; preparedAt: string } {
+  mkdirSync(join(root, ".cotal"), { recursive: true });
+  const preparedAt = new Date().toISOString();
+  return { file: recordPreparedSpace({ space: name, root, ts: preparedAt }), preparedAt };
 }
 
 function isDir(path: string): boolean {

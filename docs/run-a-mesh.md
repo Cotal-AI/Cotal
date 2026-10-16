@@ -190,8 +190,7 @@ connector declares in `requires` are on PATH. Status, setup and the manager's pr
 the same way: an entry written as a path is checked as given, and a directory never counts as the
 executable. A connector whose setup provider reports health adds its
 own rows above those. The Claude Code connector reports its plugin and its skills plugin, and a stale
-skills row names the installed and CLI versions it compared. `cotal
-setup` (after the first run) prints the compact card.
+skills row names the installed and CLI versions it compared.
 
 Before reporting ready, the manager resolves every installed connector's declared harness
 binaries against its own environment. A missing binary does not stop unrelated manager work: boot

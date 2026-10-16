@@ -64,34 +64,36 @@ to your shell rc can be deleted.
 
 ## First run
 
-`cotal setup` is configure-only: it prepares your machine and starts nothing. The first
-time, it walks you through:
+`cotal setup` is configure-only: it prepares a space for your agents and starts nothing. It asks
+four questions and shows your answers before it writes anything:
 
-1. **Checks.** Verifies Node 22+ and locates a `nats-server` (the bundled one, or your
-   own on PATH). Located only; nothing starts.
-2. **Picks connectors.** Choose from every installed connector; detected ones are pre-selected.
-   The list and its hints come from the connectors themselves, never from a name the CLI knows: a
-   connector that declares its own setup runs it (Claude installs its plugin that way), a connector
-   missing a required executable is named, and the rest are ready at spawn.
-3. **Seeds one agent.** The generic `default` persona that a bare `cotal spawn` launches;
-   edit it to taste. It joins no channels at boot, but may join, create, read, and post to
-   channels on demand. It declares `capabilities: [spawn, run]`, so it can manage teammates
-   and start [durable workflows](workflows.md#from-an-agent-session) through `cotal_run` on a
-   static-auth mesh. `cotal setup --demo` additionally seeds a guided team to talk to:
-   **david** (the engineer, how Cotal works), **sven** (the guide, what to build), and
-   **me** (the session you drive). Every file setup writes is announced with a
-   `→ wrote …` line.
+1. **Where your space runs.** Local is a space this machine starts. Self-hosted is a space that
+   runs on a server and is registered here, with `cotal space add` or from a connection file the
+   space's operator gives you. Cloud is shown as in development and cannot be chosen yet.
+2. **Which application your agents run in.** Every installed connector is a choice, and its hint
+   comes from the connector itself: one that declares its own setup runs it (Claude installs its
+   plugin that way), and one whose executable is not on PATH is named. Setup records your choice
+   as the space's `harness` preference, so a bare `cotal spawn` in that space launches it.
+3. **The project folder.** The space's root. Its `.cotal/agents` holds the space's personas.
+   Setup offers to create a folder that does not exist yet.
+4. **The space name.** For a local space it defaults to the folder's name.
 
-   Re-running setup after an upgrade repairs the earlier untouched `default` template that had an
-   empty post ACL. The repair requires a byte-for-byte match, so any persona you edited is left
-   unchanged. A default that already has wildcard post access and only `spawn` also stays
-   unchanged. To enable workflows for an existing persona, follow
-   the [capability update steps](workflows.md#if-cotal_run-is-missing).
-4. **Nothing to install for the dashboard.** `@cotal-ai/web` ships inside `cotal-ai` and is
-   seeded automatically on first run (like the built-in connectors), so `cotal web` works out
-   of the box and tracks your CLI version on upgrade.
-5. **Offers a global install.** Run via `npx` with no global `cotal`, it offers to
-   `npm i -g cotal-ai` so you can just type `cotal`.
+Save writes the answers, Change asks again with your answers kept, and Cancel saves nothing.
+Setup then seeds one agent: the generic `default` persona that a bare `cotal spawn` launches,
+in the project's `.cotal/agents`. Edit it to taste. It joins no channels at boot, but may join,
+create, read, and post to channels on demand. It declares `capabilities: [spawn, run]`, so it can
+manage teammates and start [durable workflows](workflows.md#from-an-agent-session) through
+`cotal_run` on a static-auth mesh. `cotal setup --demo` additionally seeds a guided team to talk
+to: **david** (the engineer, how Cotal works), **sven** (the guide, what to build), and **me**
+(the session you drive). Every file setup writes is announced with a `→ wrote …` line.
+
+Re-running setup after an upgrade repairs the earlier untouched `default` template that had an
+empty post ACL. The repair requires a byte-for-byte match, so any persona you edited is left
+unchanged. A default that already has wildcard post access and only `spawn` also stays
+unchanged. To enable workflows for an existing persona, follow
+the [capability update steps](workflows.md#if-cotal_run-is-missing). Run via `npx` with no global
+`cotal`, setup also offers to `npm i -g cotal-ai` so you can just type `cotal`. The dashboard
+needs no install: `@cotal-ai/web` ships inside `cotal-ai`.
 
 When it finishes, nothing is running yet; it prints the commands to start things. The
 whole loop is four commands:
@@ -147,20 +149,9 @@ and **anycast** (to any one holder of a role). More in
 
 ## After the first run
 
-Every later `cotal setup` prints a **read-only status card**:
-
-```
-cotal · status
-✓ NATS     nats://127.0.0.1:4222
-✓ plugin   installed
-○ mesh     down · start: cotal up --detach
-○ web      down · start: cotal web
-○ manager  not running · start: cotal up, or: cotal supervise
-```
-
-It probes the current folder (the mesh, the browser dashboard, and the manager behind
-`cotal_spawn` / `despawn` / `persona`) and shows the exact start command for anything
-that is down. It starts nothing itself.
+`cotal status` shows what is set up and running: the machine, its processes, the spaces it knows,
+and the start command for anything that is down. It starts nothing itself. Running `cotal setup`
+again with the same answers changes nothing.
 
 The dashboard ships with `cotal-ai` and is seeded automatically on first run. It runs at
 `http://cotal.localhost:7799` once you start it with `cotal web` (works in Chrome,
@@ -184,9 +175,8 @@ cotal down                           # stop the background mesh, delivery daemon
 Feedback flows through your agent too: tell it "send feedback: ..." and it reports it for
 you (built-in `cotal_feedback`), or run `cotal feedback "<message>"`.
 
-`cotal setup --demo` adds the guided team (david, sven, me) to an already-configured machine.
-`cotal setup --full` redoes the whole guided flow (team included), for example to repair
-something. Defaults (persona, harness, model selection) and day-to-day operation are in
+`cotal setup --demo` with the same answers adds the guided team (david, sven, me) to a space
+you already set up. Defaults (persona, harness, model selection) and day-to-day operation are in
 [Run a mesh](run-a-mesh.md); every command and flag is in the [CLI reference](cli.md).
 
 ## Launch a team from a manifest
@@ -202,15 +192,16 @@ team** (your own channels, agents, and who may read and post where), describe it
 A coding agent can set Cotal up for you with two non-interactive commands:
 
 ```bash
-npx cotal-ai setup --yes     # configure: install the plugin + seed one agent (launches nothing)
+npx cotal-ai setup --destination local --harness claude --project . --space main --no-input
 npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
 ```
 
-`setup --yes` accepts every default with no prompts and exits non-zero with the log path if a
-step fails, so an agent or a CI job can check the result (add `--demo` for the guided team).
-`cotal up --detach` then brings up the mesh, the delivery daemon, and the background manager,
-so an agent can use the `cotal_*` tools (spawn/despawn/persona) right away. `cotal down`
-stops the background processes.
+Without a terminal, setup asks nothing, so every input is a flag; a missing one is refused before
+anything is written. `--json` prints one result that lists every file setup wrote, and an
+application whose executable is not on PATH exits 4 with the rest saved, so an agent or a CI job
+can check the result (add `--demo` for the guided team). `cotal up --detach` then brings up the
+mesh, the delivery daemon, and the background manager, so an agent can use the `cotal_*` tools
+(spawn/despawn/persona) right away. `cotal down` stops the background processes.
 
 ## Troubleshooting
 
