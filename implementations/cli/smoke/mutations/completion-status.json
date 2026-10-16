@@ -32,8 +32,8 @@
     {
       "name": "zsh's rc ignores $ZDOTDIR",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "rc: join(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
-      "replace": "rc: join(homedir(), \".zshrc\") };",
+      "find": "rc: resolve(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
+      "replace": "rc: resolve(homedir(), \".zshrc\") };",
       "expectRed": "zsh's rc is read from $ZDOTDIR",
       "cell": "zsh's rc is read from $ZDOTDIR",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -69,7 +69,7 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "a commented-out install line counts",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "rc.split(/\\r?\\n/).some((line) => line.trim() === sourceLine(stub))",
+      "find": "rc.split(\"\\n\").some((line) => line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub))",
       "replace": "rc.includes(sourceLine(stub))",
       "expectRed": "a commented-out install line wires nothing in",
       "cell": "a commented-out install line wires nothing in"
@@ -100,6 +100,33 @@
       "replace": "const config = xdg || join(homedir(), \".config\");",
       "expectRed": "install ignores a relative XDG_CONFIG_HOME",
       "cell": "install ignores a relative XDG_CONFIG_HOME"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "install writes the stub before it checks the rc's directory",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "    if (current === undefined && !existsSync(dirname(rc)))\n",
+      "replace": "    if (current === \"\\u0000never\")\n",
+      "expectRed": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written",
+      "cell": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written"
+    },
+    {
+      "name": "a CRLF install line counts as wired in",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub)",
+      "replace": "line.trim() === sourceLine(stub)",
+      "expectRed": "an install line that ends in a carriage return wires nothing in",
+      "cell": "an install line that ends in a carriage return wires nothing in",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the status reports a relative ZDOTDIR as a relative path",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "rc: resolve(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
+      "replace": "rc: join(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
+      "expectRed": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
+      "cell": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }

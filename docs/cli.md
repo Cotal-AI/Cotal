@@ -98,7 +98,7 @@ one JSON document on stdout. In this release those are `cotal version`, `cotal c
 | `target` | What it acted on, or `null` for a command that reads only local metadata |
 | `outcome` | `ok`, `no-op`, `refused`, `failed`, `partial` or `unknown` |
 | `completeness` | How much of the read scope the result covers: `complete`, `partial` or `not-checked`. It says nothing about whether the work succeeded |
-| `result` | The command's result, or `null` when it did not succeed |
+| `result` | The command's result. A `partial` read keeps what it read; a refused, failed or unknown run has `null` |
 | `warnings` | One `{code, target, message}` for each thing it could not read or check |
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`, where `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
@@ -2599,12 +2599,15 @@ offline.
 Bare `cotal completion` reads local files only. For each shell it shows whether the stub is
 installed, whether it matches the script this version prints (`current`) or not (`differs from
 this version`), the stub file, and where `completion install` wired it in: the startup file that
-holds the install line as a line of its own, or fish's completions directory. `no install line`
+holds the install line as a line of its own, or fish's completions directory. Spaces and tabs
+around the line still count; a copy that ends in a carriage return does not, because bash keeps
+that character in the file name and loads nothing. `no install line`
 means that line was not found, not that the shell loads no completion another way. A startup file
 whose install line names a stub that is gone is named in a hint. Cotal installs nothing for
 PowerShell. `--json` writes that report as one document with `target: null`. A stub or startup
 file it cannot read is reported `unreadable` with a `COMPLETION_UNREADABLE` warning, and the run is
-`partial` and exits 4.
+`partial` and exits 4. A relative `$ZDOTDIR` is read from the working directory, as zsh reads it,
+and the report names the absolute file.
 
 Enable completion in the current shell:
 
@@ -2627,7 +2630,11 @@ or takes a shell name positionally:
 - **fish**: writes `~/.config/fish/completions/cotal.fish` (or under an absolute `$XDG_CONFIG_HOME`), which fish loads automatically.
 - **powershell**: refused with the line to add to `$PROFILE`.
 
-A relative `$XDG_CONFIG_HOME` is ignored, so the paths do not depend on the working directory.
+A relative `$XDG_CONFIG_HOME` is ignored, so the paths do not depend on the working directory. Before
+it writes anything, install reads the startup file: one it cannot read, a startup file whose
+directory does not exist, and a relative `$ZDOTDIR` are refused with nothing changed. If the line
+cannot be added after the stub is written, the run fails with exit 5 and names the stub it wrote
+and the line to add.
 
 The installed stub routes tab completion to the internal `cotal __complete` dispatcher, which
 evaluates candidates from local persona files and registered command specs without network calls.

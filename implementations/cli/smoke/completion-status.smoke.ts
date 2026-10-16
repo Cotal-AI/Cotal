@@ -7,9 +7,9 @@
  * Run: pnpm smoke:completion-status
  */
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -42,7 +42,7 @@ function sandbox(shell = "/bin/bash") {
     const r = run(["completion", "--json"], extraEnv);
     return { ...r, env: r.status === 0 && r.stdout.startsWith("{") ? JSON.parse(r.stdout) : undefined };
   };
-  const shellOf = (env: { result: { shells: { shell: string }[] } } | undefined, name: string) => env?.result.shells.find((s) => s.shell === name) as Record<string, unknown> | undefined;
+  const shellOf = (env: { result: { shells: { shell: string }[] } | null } | undefined, name: string) => env?.result?.shells.find((s) => s.shell === name) as Record<string, unknown> | undefined;
   return { home, xdg, run, json, shellOf };
 }
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 400), stderr: r.stderr.slice(0, 400) });
@@ -119,6 +119,12 @@ const codeOf = (stdout: string): unknown => {
   check("a line that sources the stub some other way is not taken for the install line", s.shellOf(viaVariable.env, "bash")?.wiredIn === null, s.shellOf(viaVariable.env, "bash"));
   const report = s.run(["completion", "--plain"]);
   check("the report says no install line, not that nothing loads the stub", report.status === 0 && /no install line/.test(report.stdout) && !/\bnothing\b/.test(report.stdout), shown(report));
+  writeFileSync(rc, `source "${stub}"\r\n`);
+  check("an install line that ends in a carriage return wires nothing in", s.shellOf(s.json().env, "bash")?.wiredIn === null, s.shellOf(s.json().env, "bash"));
+  const afterCrlf = s.run(["completion", "install", "bash"]);
+  check("install adds a line bash can run after a CRLF copy of it", afterCrlf.status === 0 && readFileSync(rc, "utf8").split("\n").includes(`source "${stub}"`), { ...shown(afterCrlf), rc: JSON.stringify(readFileSync(rc, "utf8")) });
+  writeFileSync(rc, ` \tsource "${stub}"\t \n`);
+  check("spaces and tabs around the install line still count", s.shellOf(s.json().env, "bash")?.wiredIn === rc, s.shellOf(s.json().env, "bash"));
   writeFileSync(rc, `source "${stub}"\n`);
   rmSync(stub);
   const dangling = s.json();
@@ -150,6 +156,27 @@ const codeOf = (stdout: string): unknown => {
   }
 }
 
+// ── install refuses before it writes ────────────────────────────────────────────────────────────────
+{
+  const s = sandbox("/bin/zsh");
+  const stub = join(s.xdg, "cotal", "completion.zsh");
+  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: join(s.home, "nowhere") });
+  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /does not exist, so install cannot create/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
+  check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /ZDOTDIR is relative/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const rc = join(s.home, ".zshrc");
+    writeFileSync(rc, "# mine\n");
+    chmodSync(rc, 0o000);
+    const unreadable = s.run(["completion", "install", "zsh"]);
+    check("install refuses an rc it cannot read, exit 2, with nothing written", unreadable.status === 2 && /could not be read: EACCES/.test(unreadable.stderr) && !existsSync(stub), shown(unreadable));
+    chmodSync(rc, 0o400);
+    const readOnly = s.run(["completion", "install", "zsh"]);
+    chmodSync(rc, 0o600);
+    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source "${stub}"`) && existsSync(stub), shown(readOnly));
+  }
+}
+
 // ── A relative XDG_CONFIG_HOME ──────────────────────────────────────────────────────────────────────
 {
   const s = sandbox();
@@ -163,6 +190,18 @@ const codeOf = (stdout: string): unknown => {
   });
   const row = (JSON.parse(elsewhere.stdout) as { result: { shells: { shell: string; state: string; stub: string }[] } }).result.shells.find((x) => x.shell === "bash");
   check("so does the status, from any directory", row?.state === "current" && row.stub === stub, row);
+}
+
+// ── A relative ZDOTDIR in the status ────────────────────────────────────────────────────────────────
+{
+  const s = sandbox("/bin/zsh");
+  const zdot = join(s.home, "zdot");
+  mkdirSync(zdot);
+  s.run(["completion", "install", "zsh"], { ZDOTDIR: zdot });
+  const zsh = s.shellOf(s.json({ ZDOTDIR: "zdot" }).env, "zsh");
+  // Compared by realpath: the working directory a child reports can be the resolved form of tmpdir().
+  const wiredIn = typeof zsh?.wiredIn === "string" ? zsh.wiredIn : "";
+  check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === join(realpathSync(zdot), ".zshrc"), zsh);
 }
 
 // ── script, and the form it replaced ───────────────────────────────────────────────────────────────
