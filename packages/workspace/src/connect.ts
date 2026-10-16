@@ -25,7 +25,7 @@ import {
 import { c } from "./colors.js";
 import { findCotalRoot, hasUserAuthState, userAuthStateDir } from "./auth-paths.js";
 import { workspaceSecretStore } from "./secret-store-fs.js";
-import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
+import { findMesh, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
@@ -706,12 +706,6 @@ export async function resolveTargetOrThrow(flags: {
     }
     throw e;
   }
-  // If a dangling `current` was silently bypassed — it named a mesh that's since gone (deleted,
-  // or kept as offline) and we fell back to the only live one — say so. The N>1 case errors
-  // loudly; this is the one spot that would otherwise quietly redirect a stale default.
-  const cur = getCurrent();
-  if (cur && (!findMesh(cur) || sweep.offline.includes(cur)) && target.source === "registry")
-    console.error(c.dim(`note: default mesh "${cur}" is down - using "${target.space}"`));
   return target;
 }
 

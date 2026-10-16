@@ -85,8 +85,9 @@ runtimes ship this way.
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
 one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
-`cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal history`, `cotal models`,
-`cotal runtimes`, bare `cotal ext`, `cotal docs` and `cotal config`. `cotal version --json` writes:
+`cotal status`, `cotal space`, `cotal use`, `cotal ps`, `cotal who`, `cotal whoami`,
+`cotal history`, `cotal models`, `cotal runtimes`, bare `cotal ext`, `cotal docs` and `cotal config`.
+`cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -152,9 +153,10 @@ failure.
 | Set up & lifecycle | [`down`](#down) | Stop the whole stack, selected registered components, or a manifest deploy |
 | Set up & lifecycle | [`backup`](#backups) | Create an offline full-space or registry-only artifact from a preserved cut |
 | Set up & lifecycle | [`clean`](#clean) | Configurable cleanup: purge history (live), or wipe the local store / identity (stopped) |
-| Set up & lifecycle | [`meshes`](#mesh-registry) | List the running meshes on this machine |
+| Set up & lifecycle | [`space`](#selecting-a-space) | List the spaces this machine can reach, or show one in full |
+| Set up & lifecycle | [`use`](#selecting-a-space) | Select the space commands target when none is named, or show the selection |
+| Set up & lifecycle | [`meshes`](#mesh-registry) | List, register and drop meshes; `space` replaces its listing |
 | Set up & lifecycle | [`sync`](#mesh-registry) | Refresh the signed-in account's advertised spaces |
-| Set up & lifecycle | [`use`](#mesh-registry) | Set the default mesh a bare `cotal spawn` joins |
 | Set up & lifecycle | [`status`](#mesh-registry) | Read-only diagnostics for setup, processes, and the selected mesh |
 | Agents & personas | [`spawn`](#spawn) | Launch an agent from a persona (foreground, or `--detach` via the manager) |
 | Agents & personas | [`models`](#models) | List connector model catalogs and variants from the manager |
@@ -904,6 +906,44 @@ commit/degraded attempt without either the exact bound proof or a durable dead-l
 record fails closed even when the recorded port is free. A later ordinary startup may pass an `active`
 restore only when its details prove manager commit and its exact recorded listener is dead.
 
+## Selecting a space
+
+```bash
+cotal space [--json|--plain]
+cotal space show [<name>] [--json|--plain]
+cotal use [<space>] [--json|--plain]
+```
+
+`space` lists the spaces this machine can reach: each one's broker state, server, mode, origin
+(`started here`, `registered` or `discovered`) and root, with the selected one marked. It probes
+each broker that this machine started or that was registered by hand, and reports one that does not
+answer as `unreachable`; its registration stays. A discovered space is never dialed by a listing and
+reads `not checked`. `space show [<name>]` shows one space in full, the selected one when no name is
+given, and probes only that broker. Neither writes anything.
+
+`--json` writes one document. `space` gives `current` (the selected space or null),
+`currentRecorded` and `items`; each item is the row `cotal status --json` gives under
+`meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
+`current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
+`recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
+user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
+credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
+so is a bare `space show` with nothing selected.
+
+`use <space>` selects the space commands target when none is named. It changes only the selection:
+it starts nothing and does not check the broker, so a stopped space can be selected and the command
+that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
+registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
+the selection. A selection that names a space no longer registered is reported with a
+`SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
+
+A command run without `--space` targets the selection. When the selected space's broker is down it
+refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
+it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
+
+`cotal meshes` still lists, registers and drops meshes. `space` replaces its listing, and its
+`--json` lines are the old shape.
+
 ## Mesh registry
 
 ```bash
@@ -913,7 +953,6 @@ cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
 cotal sync [--idp <auth base URL>]
-cotal use <space>
 cotal status [--json|--plain] [--all] [--space <s>] [--server <url>]
 cotal status --components [--space <s>] [--server <url>]
 ```
@@ -1034,8 +1073,8 @@ from a preserved cut meets the same rules as a fresh
 spawn: a seat retained with `--no-events`, or on a connector without an event plane, is refused, and
 a resumed seat carries the requirement in its launch material.
 
-`use <space>` sets that default; the selection applies from every directory,
-including inside another mesh's project. `status` is a read-only report in this order: this machine
+The selection `cotal use` sets applies from every directory, including inside another mesh's
+project. `status` is a read-only report in this order: this machine
 (the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
 their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
 delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`

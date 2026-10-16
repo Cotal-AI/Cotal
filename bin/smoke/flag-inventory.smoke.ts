@@ -87,7 +87,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
   sync: { flags: ["idp:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
-  use: { flags: [], positionals: true },
+  // `--json` and `--plain` (2026-10): `use` reports or changes the selection on the structured output contract.
+  use: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
   join: {
     flags: [
       ...TARGET, "channel:string", "kind:string", "lifecycle-uid:string", "link:string",
@@ -136,6 +137,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
+  space: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
   // `config` (2026-10): personal preferences, read through or written to your defaults or one space.
   config: { flags: ["json:boolean:j", "plain:boolean", "space:string", "user:boolean"], positionals: true },
   // `--json` and `--plain` (2026-10): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.
