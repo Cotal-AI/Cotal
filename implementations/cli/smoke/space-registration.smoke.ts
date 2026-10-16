@@ -10,7 +10,7 @@
  * Run: pnpm smoke:space-registration
  */
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,11 +67,12 @@ process.on("exit", () => {
 });
 
 // Asynchronous, so the stand-in exchange in this process can answer while the binary runs.
-const run = (args: string[], extraEnv: Record<string, string> = {}) =>
+const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) =>
   new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
     const child = spawn(process.execPath, [BIN, ...args], {
-      cwd: home,
-      env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+      cwd,
+      env: { ...runEnv, ...extraEnv },
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     });
@@ -171,6 +172,13 @@ setCurrent("keep");
   check("a hostname with no TLS is UNSUPPORTED: credentials would cross the network unprotected", refused(plaintext, 2, "UNSUPPORTED"), shown(plaintext));
   const noRoot = await json(["space", "add", "r2", "--server", LIVE, "--root", join(home, "missing")]);
   check("a --root that is not a directory is USAGE_INVALID", refused(noRoot, 1, "USAGE_INVALID"), shown(noRoot));
+  const fromHome = await json(["space", "add", "r3", "--server", LIVE]);
+  check("with no --root, the home folder is no project: USAGE_INVALID naming --root", refused(fromHome, 1, "USAGE_INVALID") && /--root <dir> is required/.test(fromHome.env?.error?.message ?? ""), shown(fromHome));
+  const link = `${home}-link`;
+  symlinkSync(home, link, "junction");
+  const viaLink = await run(["space", "add", "r4", "--server", LIVE, "--json"], { HOME: link, USERPROFILE: link, COTAL_HOME: join(link, ".cotal") }, link);
+  rmSync(link, { force: true });
+  check("nor is a home reached through a symlink", viaLink.status === 1 && /"code":"USAGE_INVALID"/.test(viaLink.stdout) && /--root <dir> is required/.test(viaLink.stdout), shown(viaLink));
   check("no refused add wrote anything", JSON.stringify(registryFiles()) === JSON.stringify(before));
 
   const forced = await json(["space", "add", "dead1", "--server", DEAD, "--root", root, "--force"]);
