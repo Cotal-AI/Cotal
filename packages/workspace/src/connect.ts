@@ -346,7 +346,7 @@ export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
 
 /** The stable code for a preflight that did not connect: an outage, a credential the broker needs
  *  or a fresh one, or a credential it refused. */
-function preflightCode(failure: PreflightFailure): RefusalCode {
+export function preflightCode(failure: PreflightFailure): RefusalCode {
   switch (failure) {
     case "unreachable":
     case "slow-link":

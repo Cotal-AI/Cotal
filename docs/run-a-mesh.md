@@ -95,7 +95,7 @@ cotal up --detach --host 0.0.0.0 --space main --no-manager
 # `.cotal/manager.<spaceKey>.log` to wait for on this host
 
 # manager host (registered remote mesh, same space)
-cotal meshes add --server nats://broker.example:4222 --root ~/meshes/main
+cotal space add main --server nats://broker.example:4222 --root ~/meshes/main
 cotal supervise --space main --server nats://broker.example:4222
 ```
 
@@ -468,13 +468,14 @@ sentence, never a raw NATS trace.
 A mesh running on another machine has no `cotal up` on this one, so register it by hand:
 
 ```bash
-cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
-cotal meshes add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
+cotal space add optiplex --server nats://100.90.12.34:4222 --root ~/meshes/optiplex \
   --allow-unencrypted-overlay      # see below: an overlay address needs this
-cotal meshes rm optiplex
+cotal space forget optiplex
+cotal meshes add            # guided: asks for the broker, probes it, offers what it finds
 ```
 
-On a terminal, a bare `cotal meshes add` walks you through it: it probes the broker you name and
+`space add` checks the broker and the trust before it writes, and on a terminal shows what it will
+trust and asks first. On a terminal, a bare `cotal meshes add` walks you through it: it probes the broker you name and
 reports whether it is open or requires credentials, offers the spaces the folder already holds
 credentials for, and shows the record before writing it. Scripts and agents keep the flag form -
 without a terminal nothing prompts.

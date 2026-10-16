@@ -14,6 +14,8 @@ import {
   loadSpaceAuth,
   personaDir,
   pinnedFetch,
+  JoinRefusal,
+  preflightCode,
   preflightTarget,
   PREFLIGHT_CONFIRM_TIMEOUT_MS,
   recordMesh,
@@ -25,6 +27,7 @@ import {
   type MeshEntry,
   type MeshTarget,
   type PreflightFailure,
+  type RefusalCode,
   type UserBundle,
 } from "@cotal-ai/workspace";
 // The bundle validator and the pinned fetch live in the workspace package so a manager start can
@@ -43,7 +46,7 @@ export { assertPinnedFetchUrl, checkUserBundle, pinnedFetch, pinnedFetchProbe, t
  * front ends decide only how to *present* a failure: exit with the sentence, or offer a way out.
  */
 
-const bad = (message: string): Check<never> => ({ ok: false, message });
+const bad = (message: string, code: RefusalCode): Check<never> => ({ ok: false, message, code });
 
 /** The cost of the copy every "copy the mesh's auth here" recovery asks the operator to make.
  *
@@ -85,20 +88,20 @@ export function checkServer(raw: string, what: string): Check<string> {
   try {
     u = new URL(raw);
   } catch {
-    return bad(`✗ ${what} is not a valid URL (expected something like nats://127.0.0.1:4222)`);
+    return bad(`✗ ${what} is not a valid URL (expected something like nats://127.0.0.1:4222)`, "USAGE_INVALID");
   }
   if (!["nats:", "tls:", "ws:", "wss:"].includes(u.protocol))
-    return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`);
+    return bad(`✗ ${what} scheme "${u.protocol.replace(":", "")}" is not a broker scheme - use nats://, tls://, ws:// or wss://`, "USAGE_INVALID");
   if (u.username || u.password)
-    return bad(`✗ ${what} must not embed credentials - the registry records this URL and prints it back; pass trust material under --root instead`);
+    return bad(`✗ ${what} must not embed credentials - the registry records this URL and prints it back; pass trust material under --root instead`, "USAGE_INVALID");
   if (u.search || u.hash)
-    return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`);
+    return bad(`✗ ${what} must be a bare broker URL - drop its ${u.search ? "query string" : "fragment"}`, "USAGE_INVALID");
   // A path is refused on nats:// and tls:// because the NATS wire protocol has no notion of one,
   // but on ws:// and wss:// it addresses the websocket route (`wss://host/mesh-ws` behind a
   // reverse proxy) — the same contract classifyJoinTarget and the dial already honour.
   if (u.pathname && u.pathname !== "/" && u.protocol !== "ws:" && u.protocol !== "wss:")
-    return bad(`✗ ${what} must be a bare broker URL - drop its path`);
-  if (!u.hostname) return bad(`✗ ${what} names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)`);
+    return bad(`✗ ${what} must be a bare broker URL - drop its path`, "USAGE_INVALID");
+  if (!u.hostname) return bad(`✗ ${what} names no host - a broker URL needs one (e.g. nats://127.0.0.1:4222)`, "USAGE_INVALID");
   return good(raw);
 }
 
@@ -126,7 +129,9 @@ export function checkDialPolicy(server: string, policy: DialPolicy): Check<JoinT
   try {
     return good(classifyJoinTarget(server, policy));
   } catch (e) {
-    return bad(`✗ ${(e as Error).message}`);
+    // An address that is not a broker URL is invalid input; one this policy will not dial is a refusal.
+    const malformed = e instanceof JoinRefusal && (e.code === "not-a-url" || e.code === "bad-scheme" || e.code === "no-host");
+    return bad(`✗ ${(e as Error).message}`, malformed ? "USAGE_INVALID" : "UNSUPPORTED");
   }
 }
 
@@ -156,11 +161,11 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
     const dir = resolve(flag);
     return isDir(dir)
       ? good(dir)
-      : bad(`✗ --root ${dir} is not a directory - it must be the folder holding this mesh's .cotal/auth and .cotal/agents`);
+      : bad(`✗ --root ${dir} is not a directory - it must be the folder holding this mesh's .cotal/auth and .cotal/agents`, "USAGE_INVALID");
   }
   const root = findCotalRoot(cwd);
   if (!isDir(join(root, ".cotal")) || resolve(root, ".cotal") === resolve(homeCotalDir()))
-    return bad("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas");
+    return bad("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas", "USAGE_INVALID");
   return good(root);
 }
 
@@ -171,13 +176,13 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
  *  the mesh runs, or a confirmed HTTPS discovery document) satisfies exactly that reasoning. */
 export function checkMode(space: string, root: string, accounts: string[], flag: string | undefined, userTrustSupplied = false): Check<MeshEntry["mode"]> {
   if (flag !== undefined && flag !== "auth" && flag !== "open" && flag !== "user")
-    return bad(`✗ --mode must be auth, open or user (got "${flag}")`);
+    return bad(`✗ --mode must be auth, open or user (got "${flag}")`, "USAGE_INVALID");
   if (flag === "user" && !userTrustSupplied)
-    return bad(`✗ --mode user needs its pinned trust SUPPLIED, never guessed - a user-auth space carries IdP pins (issuer, audience, login URL) established where the mesh runs. Pass --user-auth-file <bundle.json> exported there, or --from <https://…/.well-known/cotal-mesh> to fetch, review and confirm them`);
+    return bad(`✗ --mode user needs its pinned trust SUPPLIED, never guessed - a user-auth space carries IdP pins (issuer, audience, login URL) established where the mesh runs. Pass --user-auth-file <bundle.json> exported there, or --from <https://…/.well-known/cotal-mesh> to fetch, review and confirm them`, "USAGE_INVALID");
   if (flag === "user") return good("user");
   const mode = flag ?? (accounts.includes(space) ? "auth" : "open");
   if (mode === "auth" && !accounts.includes(space))
-    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST);
+    return bad(`✗ --mode auth needs "${space}"'s trust material under ${authDir(root)}${accounts.length ? ` (it holds "${accounts.join('", "')}")` : " (it holds none)"} - copy the mesh's account + creds there, point --root at where they already are, or register it --mode open` + CA_COST, "DEPENDENCY_UNAVAILABLE");
   return good(mode);
 }
 
@@ -190,7 +195,7 @@ export function checkTrust(mode: MeshEntry["mode"], root: string, space: string)
   const auth = loadSpaceAuth(authDir(root), space);
   return auth
     ? good(auth)
-    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open` + CA_COST);
+    : bad(`✗ "${space}" has an account record under ${authDir(root)} but its trust does not compose (the broker record or signing material is missing) - copy the mesh's full .cotal/auth from where it runs, or register it --mode open` + CA_COST, "DEPENDENCY_UNAVAILABLE");
 }
 
 /** Budget for the credless mode probe. Generous on purpose: a slow answer must not be read as "the
@@ -216,13 +221,13 @@ export async function probeEnforcement(server: string): Promise<"auth" | "open" 
  *  fact a bare connect can prove about a broker whose admission runs through the callout. */
 export function checkEnforcement(mode: MeshEntry["mode"], enforces: "auth" | "open" | "unreachable", server: string, space: string, root: string): Check<void> {
   if (mode === "auth" && enforces === "open")
-    return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`);
+    return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as an auth mesh - it enforces no credentials; register it \`--mode open\`, or point --server at the authenticated broker for "${space}"`, "CONFLICT");
   if (mode === "open" && enforces === "auth")
-    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST);
+    return bad(`✗ the broker at ${server} requires auth, so it cannot be registered as an open mesh - copy that mesh's account + creds under ${authDir(root)} and re-run with --mode auth` + CA_COST, "CONFLICT");
   if (mode === "user" && enforces === "open")
-    return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as a user-auth mesh - user auth means the broker REFUSES a bare connect and admits only exchanged bearers; check that the bundle's server points at the user-auth broker for "${space}"`);
+    return bad(`✗ the broker at ${server} accepts unauthenticated connections, so it cannot be registered as a user-auth mesh - user auth means the broker REFUSES a bare connect and admits only exchanged bearers; check that the bundle's server points at the user-auth broker for "${space}"`, "CONFLICT");
   if (mode === "user" && enforces === "unreachable")
-    return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`);
+    return bad(`✗ no broker answered at ${server} - a user-auth registration is verified by the broker's own auth-required refusal, so it cannot be recorded while the broker is unreachable`, "TARGET_UNAVAILABLE");
   return good(undefined);
 }
 
@@ -248,32 +253,32 @@ export async function verifyUserExchange(base: string, issuer: string): Promise<
   // may be redirected off it — otherwise the "pinned" exchange is whatever a 302 chooses.
   try {
     const badBase = assertPinnedFetchUrl(new URL(base), `the pinned exchange at ${base}`);
-    if (badBase) return bad(badBase);
+    if (badBase) return bad(badBase, "UNSUPPORTED");
   } catch {
-    return bad(`✗ the bundle's pinned exchange endpoint ${JSON.stringify(base)} is not a URL`);
+    return bad(`✗ the bundle's pinned exchange endpoint ${JSON.stringify(base)} is not a URL`, "SCHEMA_INVALID");
   }
   let health: { ok?: boolean; issuer?: string };
   try {
     const res = await pinnedFetch(url("health"), `the pinned exchange at ${base}`);
-    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`);
+    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /health with ${res.status} - it is not serving as the bundle promises`, "TARGET_UNAVAILABLE");
     health = (await res.json()) as never;
   } catch (e) {
     const m = (e as Error).message;
-    if (m.startsWith("✗")) return bad(m);
-    return bad(`✗ the pinned exchange at ${base} did not answer /health (${m}) - the bundle's endpoint must be reachable to register against it`);
+    if (m.startsWith("✗")) return bad(m, "UNSUPPORTED");
+    return bad(`✗ the pinned exchange at ${base} did not answer /health (${m}) - the bundle's endpoint must be reachable to register against it`, "TARGET_UNAVAILABLE");
   }
   if (health.issuer !== issuer)
-    return bad(`✗ the exchange at ${base} answers for issuer ${JSON.stringify(health.issuer)} but the bundle pins ${JSON.stringify(issuer)} - a different issuer is a different authority; nothing was registered`);
+    return bad(`✗ the exchange at ${base} answers for issuer ${JSON.stringify(health.issuer)} but the bundle pins ${JSON.stringify(issuer)} - a different issuer is a different authority; nothing was registered`, "CONFLICT");
   try {
     const res = await pinnedFetch(url("jwks"), `the pinned exchange at ${base}`);
-    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`);
+    if (!res.ok) return bad(`✗ the pinned exchange at ${base} answered /jwks with ${res.status}`, "TARGET_UNAVAILABLE");
     const jwks = (await res.json()) as { keys?: unknown[] };
     if (!Array.isArray(jwks.keys) || jwks.keys.length === 0)
-      return bad(`✗ the pinned exchange at ${base} serves an empty /jwks - it holds no verification keys for the trust the bundle pins`);
+      return bad(`✗ the pinned exchange at ${base} serves an empty /jwks - it holds no verification keys for the trust the bundle pins`, "CONFLICT");
   } catch (e) {
     const m = (e as Error).message;
-    if (m.startsWith("✗")) return bad(m);
-    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${m})`);
+    if (m.startsWith("✗")) return bad(m, "UNSUPPORTED");
+    return bad(`✗ the pinned exchange at ${base} did not answer /jwks (${m})`, "TARGET_UNAVAILABLE");
   }
   return good(undefined);
 }
@@ -291,11 +296,17 @@ export function persistRemoteUserEntry(
   tlsRequired: boolean,
   overlayConsent: boolean,
 ): ReturnType<typeof writeRecord> {
+  return writeRecord(remoteUserEntry(space, server, root, bundle, tlsRequired, overlayConsent));
+}
+
+/** {@link persistRemoteUserEntry} without the selection: lands the sentinel and returns the entry
+ *  to record. */
+export function remoteUserEntry(space: string, server: string, root: string, bundle: UserBundle, tlsRequired: boolean, overlayConsent: boolean): MeshEntry {
   const dir = userAuthStateDir(root, space);
   mkSecretDir(dir);
   const sentinelCredsPath = join(dir, "sentinel.creds");
   writeSecretFileAtomic(sentinelCredsPath, bundle.sentinelCreds);
-  return writeRecord({
+  return {
     space,
     server,
     root,
@@ -306,7 +317,7 @@ export function persistRemoteUserEntry(
     ...(bundle.policy ? { policy: bundle.policy } : {}),
     userAuth: { ...bundle.userAuth, remote: true, sentinelCredsPath },
     ts: new Date().toISOString(),
-  });
+  };
 }
 
 /** The target this registration would resolve to. `flag-server` is the source that can never
@@ -355,7 +366,7 @@ export function verifyFailureMessage(kind: PreflightFailure, space: string, serv
  *  settled what the broker is. */
 export async function verifyTarget(target: MeshTarget): Promise<Check<void>> {
   const r = await preflightTarget(target);
-  return r.ok ? good(undefined) : bad(verifyFailureMessage(r.kind, target.space, target.server, target.root));
+  return r.ok ? good(undefined) : bad(verifyFailureMessage(r.kind, target.space, target.server, target.root), preflightCode(r.kind));
 }
 
 /** Write the record. Returns whether it became the default — same policy as `cotal up`: adopt only
@@ -385,6 +396,6 @@ export function spacesAtRoot(root: string): Check<string[]> {
   try {
     return good(listSpaceAccounts(authDir(root)));
   } catch (e) {
-    return bad(`✗ ${authDir(root)} cannot be read (${(e as Error).message}) - repair or remove the unreadable account record before registering against this folder`);
+    return bad(`✗ ${authDir(root)} cannot be read (${(e as Error).message}) - repair or remove the unreadable account record before registering against this folder`, "DEPENDENCY_UNAVAILABLE");
   }
 }
