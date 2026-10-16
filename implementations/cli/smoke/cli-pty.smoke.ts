@@ -4,8 +4,8 @@
  *
  * The binary must start under the pty and exit cleanly. The node child must see a terminal on both
  * ends, the pty's window size, and raw keystrokes as bytes: the 0x1d detach key and Ctrl+C, which a
- * cooked terminal turns into a signal. A command that would prompt on a terminal must not prompt
- * under `--no-input`. Linux and macOS run it under a pty, Windows under ConPTY.
+ * cooked terminal turns into a signal. A report fits the terminal's own width. A command that would
+ * prompt on a terminal must not prompt under `--no-input`. Linux and macOS run it under a pty, Windows under ConPTY.
  *
  * Offline: no broker. COTAL_HOME and XDG_CONFIG_HOME are sandboxed.
  *
@@ -14,6 +14,7 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { createSuite } from "@cotal-ai/smoke-kit";
 import { clean, cotalPty, nodePty, repoRoot, wait, type Pty } from "./_console-pty.js";
 
@@ -45,6 +46,12 @@ process.stdin.on("data", (b) => {
   if (b.includes(4)) process.exit(0);
 });`;
 
+// A report fitted to the terminal it is written to: the table needs 27 columns.
+const REPORT = `
+const { writeResult } = await import(${JSON.stringify(pathToFileURL(join(repoRoot, "packages", "workspace", "dist", "index.js")).href)});
+const table = { kind: "table", columns: [{ key: "name", label: "NAME" }, { key: "state", label: "STATE" }], rows: [{ name: "古い席-long-name", state: { text: "working", tone: "ok", mark: "*" } }] };
+writeResult("rich", { command: "probe", target: null, result: null }, () => ({ sections: [{ blocks: [table] }] }));`;
+
 const ptys: Pty[] = [];
 try {
   const versionPty = cotalPty(["--version"], { cwd: repoRoot, env });
@@ -66,6 +73,19 @@ try {
   check("Ctrl+C in raw mode reaches it as the byte 0x03", await until(() => e.text().includes("bytes:03")), e.text());
   echoPty.write("\x04");
   check("it exits 0 when it reads 0x04", (await until(() => e.exitCode !== undefined)) && e.exitCode === 0, e.exitCode);
+
+  for (const [cols, records] of [[100, false], [20, true]] as const) {
+    const pty = nodePty(["--input-type=module", "-e", REPORT], { cwd: repoRoot, env, cols, rows: 20 });
+    ptys.push(pty);
+    const r = session(pty);
+    await until(() => r.exitCode !== undefined);
+    const text = r.text();
+    check(
+      `a report on a ${cols}-column terminal is ${records ? "one labeled record" : "a table"}`,
+      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? /NAME: +古い席-long-name/.test(text) && /STATE: +\* working/.test(text) : /NAME +STATE/.test(text)),
+      text,
+    );
+  }
 
   // On a terminal, `meshes add` with no space asks for one. `--no-input` answers with the usage line
   // instead, in either position.

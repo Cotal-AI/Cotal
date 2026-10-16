@@ -19,6 +19,7 @@ export * from "./manager-shutdown.js";
 export * from "./flags.js";
 export * from "./one-line.js";
 export * from "./output.js";
+export * from "./present.js";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";
 export * from "./join-target.js";

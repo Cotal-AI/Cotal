@@ -818,6 +818,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../core
+      string-width:
+        specifier: ^8.2.1
+        version: 8.2.1
     devDependencies:
       '@cotal-ai/smoke-kit':
         specifier: workspace:*
