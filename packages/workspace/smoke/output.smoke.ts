@@ -12,10 +12,12 @@ import {
   envelopeLine,
   exitCode,
   failureEnvelope,
+  globalFlagDeclarationProblems,
   isCommandFailure,
   jsonFlag,
   outputDeclarationProblems,
   outputFlags,
+  plainFlag,
   streamRecord,
   USAGE_CODES,
   type Envelope,
@@ -108,6 +110,10 @@ check("a json output with the shared flag is accepted", outputDeclarationProblem
 check("a json output without the flag is refused", outputDeclarationProblems({ name: "a", outputs: ["json"], flags: [] }).length === 1);
 check("a json flag without its -j short is refused", outputDeclarationProblems({ name: "a", outputs: ["json"], flags: [{ name: "json", type: "boolean" }] }).length === 1);
 check("a plain output needs --plain", outputDeclarationProblems({ name: "a", outputs: ["plain"], flags: [] }).length === 1);
+
+// No command may declare a global flag's name.
+check("a command that declares --no-color or --no-input is refused", globalFlagDeclarationProblems({ name: "a", flags: [{ name: "no-color", type: "string" }, { name: "no-input", type: "boolean" }] }).length === 2);
+check("a command with other flags is accepted", globalFlagDeclarationProblems({ name: "a", flags: [jsonFlag, plainFlag] }).length === 0);
 
 if (failed) {
   console.log(`OUTPUT SMOKE: ${failed} failed`);

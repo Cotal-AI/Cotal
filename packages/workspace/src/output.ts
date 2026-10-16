@@ -230,9 +230,15 @@ export function outputDeclarationProblems(cmd: { name: string; outputs?: readonl
   return problems;
 }
 
-/** Flags every command accepts, read by the kernel before dispatch. A command that declares one of
- *  these names never receives it. */
+/** Flags every command accepts, read by the kernel before dispatch. No command may declare one. */
 export const GLOBAL_FLAGS = ["no-color", "no-input"] as const;
+
+/** Why a command declares a global flag's name. The kernel takes the bare flag before the command
+ *  parses, so a command could receive it only as `--<name>=<value>`, and never as declared. */
+export function globalFlagDeclarationProblems(cmd: { name: string; flags?: readonly FlagSpec[] }): string[] {
+  const globals: readonly string[] = GLOBAL_FLAGS;
+  return (cmd.flags ?? []).filter((flag) => globals.includes(flag.name)).map((flag) => `command "${cmd.name}" declares --${flag.name}, which is a global flag`);
+}
 
 let inputDisabled = false;
 
