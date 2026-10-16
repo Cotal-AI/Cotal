@@ -132,7 +132,10 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
-export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false): Promise<void> {
+/** `cotal ext add <spec>`: install one extension into the operator prefix and record what it provides.
+ *  `announce` takes the closing `✓ added` line; `cotal setup` sends it to stderr when stdout carries
+ *  a result. */
+export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false, announce: (line: string) => void = console.log): Promise<void> {
   const dir = extensionsDir();
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
   const isPath = isPathSpec(spec);
@@ -328,7 +331,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
-  console.log(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
+  announce(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
   }
 
   function fail(p: string, why: string): never {

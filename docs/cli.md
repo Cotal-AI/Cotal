@@ -202,8 +202,8 @@ together under [Manifest deploys](#manifest-deploys).
 ## setup
 
 ```bash
-cotal setup [--destination local|self-hosted] [-H|--harness <connector>] [--project <dir>] [--space <name>]
-            [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain]
+cotal setup [--destination local|self-hosted] [-H|--harness <connector>] [--runtime <name>]... [--project <dir>]
+            [--space <name>] [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain]
 cotal setup --skills
 ```
 
@@ -211,6 +211,7 @@ cotal setup --skills
 |---|---|---|
 | `--destination` | asked | `local`: a space this machine starts. `self-hosted`: a space registered here that runs on a server. `cloud` is refused as in development, before anything is written or contacted. |
 | `--harness`, `-H` | asked | The connector your agents run in. Setup runs its own setup actions and records it as the space's `harness` preference, so `cotal spawn` in the space launches it. |
+| `--runtime` | asked; none in a script | A runtime to set up besides the built-in `pty`: `tmux`, `cmux`, `orca`, `herdr` or an installed third-party one. Repeat it for each. |
 | `--project` | asked | The project folder: the space's root, whose `.cotal/agents` holds its personas. A script's folder must exist; a terminal offers to create it. |
 | `--space` | asked | The space to prepare (local) or the registered space to use (self-hosted). |
 | `--connection-file` | none | Self-hosted: register the space from a connection bundle exported where it runs, with the checks `space add --file` makes. |
@@ -218,10 +219,11 @@ cotal setup --skills
 | `--demo` | off | Also seed the guided expert team (`david`, `sven`, `me`) |
 | `--full` | off | The guided flow with the guided team (implies `--demo`) |
 | `--yes`, `-y` | off | Ask nothing: every input comes from the flags |
-| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with the four inputs, `--connection-file`, `--configure-only`, `--full`, `--demo`, `--json` or `--plain`. |
+| `--skills` | off | Reconcile Cotal skills only through installed connector providers, plus `~/.agents/skills`. Refused with the four inputs, `--runtime`, `--connection-file`, `--configure-only`, `--full`, `--demo`, `--json` or `--plain`. |
 
 Setup prepares a space for your agents and starts nothing: no mesh, no web, no manager. On a
-terminal it asks for each input no flag gave: destination, application, project folder and space.
+terminal it asks for each input no flag gave: destination, application, runtimes, project folder and
+space.
 It shows the answers before it writes: Save writes them, Change asks every question again with the
 answers kept, and Cancel saves nothing. Cloud is listed as in development and cannot be chosen.
 
@@ -240,6 +242,19 @@ the space's `harness` preference, runs the application's setup actions, and reco
 skills. The result names the next command: `cotal up` in the project for a local space, or
 `cotal spawn --space <name>`. `--json` writes one envelope whose `result.written` lists every file
 setup wrote.
+
+Runtimes are where agents run. `pty` is built in and always set up. The terminal lists the official
+runtimes and every installed third-party one, each with whether it is set up and whether the host
+tool it drives is on PATH, or named by the driver's own variable (`COTAL_ORCA_BIN`,
+`CMUX_BUNDLED_CLI_PATH`); installed ones and ones whose tool was found start selected. Setup
+installs each selected runtime as `cotal ext add` does, at this cotal's version, then asks its
+provider whether it answers, as `cotal runtimes` reports. A selected runtime whose host tool is
+missing is not installed, and one that does not install or answer leaves the rest saved and the
+result `partial`. A script sets up only the runtimes `--runtime` names; an unknown name is
+`USAGE_INVALID` and a missing host tool is `DEPENDENCY_UNAVAILABLE`, both before anything is
+written. Setup never removes a runtime you leave out; `cotal ext remove` does. `result.runtimes`
+lists each one with its package, its host tool and whether setup found it set up, added it or left it
+out.
 
 A rerun with the same answers changes nothing and is a `no-op`; a space already prepared, started or
 registered at that root is reported, not refused. A space name or root another space holds is

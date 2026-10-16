@@ -24,14 +24,7 @@ export interface RuntimeRow {
  */
 export async function runtimes(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(args.values as FlagValues<typeof runtimesFlags>);
-  // name → owning package, for every runtime provider an installed extension advertises (read from
-  // the manifest; no import yet). A provider already registered in core (a library build) is added
-  // below with no package name.
-  const providers = new Map<string, string | undefined>();
-  for (const ext of loadExtensionsManifest().extensions)
-    for (const ref of extensionProvides(ext)) if (ref.kind === "runtime") providers.set(ref.name, ext.pkg);
-  for (const ext of registry.all()) if (ext.kind === "runtime" && !providers.has(ext.name)) providers.set(ext.name, undefined);
-
+  const providers = runtimeProviders();
   const items: RuntimeRow[] = [{ name: "pty", state: "built-in", package: null, reachable: null, error: null }];
   // Officials first in a stable order, then any custom (non-official) installed/registered provider.
   // `pty` is the built-in row above; a stray extension advertising `runtime:pty` must not add a second,
@@ -65,6 +58,17 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
     },
     runtimesView,
   );
+}
+
+/** Name → owning package, for every runtime provider an installed extension advertises (read from
+ *  the manifest; no import yet). A provider already registered in core (a library build) has no
+ *  package name. */
+export function runtimeProviders(): Map<string, string | undefined> {
+  const providers = new Map<string, string | undefined>();
+  for (const ext of loadExtensionsManifest().extensions)
+    for (const ref of extensionProvides(ext)) if (ref.kind === "runtime") providers.set(ref.name, ext.pkg);
+  for (const ext of registry.all()) if (ext.kind === "runtime" && !providers.has(ext.name)) providers.set(ext.name, undefined);
+  return providers;
 }
 
 function stateCell(row: RuntimeRow): Styled {

@@ -2,11 +2,12 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs, type RuntimeProvider } from "@cotal-ai/core";
 import {
   CommandFailure,
   canonicalRoot,
   checkUserBundle,
+  extensionPackageDir,
   findMesh,
   homeCotalDir,
   inputDisabledByFlag,
@@ -31,7 +32,7 @@ import {
   type Presentation,
   type Report,
 } from "@cotal-ai/workspace";
-import { materializeExtension } from "../ext-loader.js";
+import { OFFICIAL_RUNTIMES, OFFICIAL_RUNTIME_TOOLS, materializeExtension } from "../ext-loader.js";
 import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
 import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
@@ -41,7 +42,9 @@ import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
 import { cotalOnPath, displayCmd, isNpx } from "../lib/self-exec.js";
+import { addExtension } from "./ext.js";
 import { canPrompt } from "./meshes-wizard.js";
+import { runtimeProviders } from "./runtimes.js";
 import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 
 const ONBOARD_VERSION = "2";
@@ -54,6 +57,7 @@ export const setupFlags = [
   { name: "harness", short: "H", type: "string", value: "<connector>", description: "the application your agents run in: its own setup runs, and `cotal spawn` in the space launches it" },
   { name: "project", type: "string", value: "<dir>", description: "the project folder: the space's root, whose .cotal/agents holds its personas" },
   { name: "space", type: "string", value: "<name>", description: "the space to prepare (local) or the registered space to use (self-hosted)" },
+  { name: "runtime", type: "string", multiple: true, value: "<name>", description: "a runtime to set up besides the built-in pty: tmux, cmux, orca, herdr or an installed one (repeatable); none without it" },
   { name: "connection-file", type: "string", value: "<bundle.json>", description: "self-hosted: register the space from a connection bundle exported where it runs" },
   { name: "configure-only", type: "boolean", description: "write the preparation and start nothing (the default)" },
   { name: "full", type: "boolean", description: "the guided flow with the guided expert team (implies --demo)" },
@@ -69,11 +73,13 @@ type Destination = "local" | "self-hosted";
 
 /** The inputs a script names as flags. */
 const REQUIRED = ["destination", "harness", "project", "space"] as const;
-const INPUTS = [...REQUIRED, "connection-file", "configure-only", "json", "plain"] as const;
+const INPUTS = [...REQUIRED, "runtime", "connection-file", "configure-only", "json", "plain"] as const;
 
 interface SetupInputs {
   readonly destination: Destination;
   readonly harness: string;
+  /** The runtimes to set up besides the built-in `pty`. */
+  readonly runtimes: readonly string[];
   /** Absolute. */
   readonly project: string;
   /** The folder does not exist yet, and the operator agreed on a terminal to create it. */
@@ -97,6 +103,39 @@ interface ActionFailure {
   readonly message: string;
 }
 
+/** A runtime setup can offer, as this machine has it before setup writes. */
+interface RuntimeChoice {
+  readonly name: string;
+  /** The package that provides it; null for the built-in `pty` and a provider this build registered. */
+  readonly package: string | null;
+  /** The host tools an official runtime drives, any one of which counts. Empty for `pty` and a
+   *  third-party runtime, whose tools setup cannot know. */
+  readonly tools: readonly string[];
+  /** The tool found: the driver's override when it is set, else the first of `tools` on PATH; or null. */
+  readonly found: string | null;
+  readonly installed: boolean;
+}
+
+/** A runtime as setup left it. */
+interface RuntimeSetup {
+  readonly name: string;
+  readonly package: string | null;
+  /** The host tools it drives and the one found; null when setup cannot know them. */
+  readonly tool: { readonly names: readonly string[]; readonly found: string | null } | null;
+  readonly selected: boolean;
+  /** `set-up`: installed before this run. `added`: installed by it. `left-out`: not installed. */
+  readonly state: "built-in" | "set-up" | "added" | "left-out";
+  /** A selected provider's own `available()` answer, as `cotal runtimes` reports it; null when it was not asked. */
+  readonly reachable: boolean | null;
+  /** Why a selected runtime was left out or did not load. */
+  readonly error: string | null;
+}
+
+interface Problem {
+  readonly message: string;
+  readonly remedy: string;
+}
+
 interface Written {
   readonly what: string;
   readonly path: string;
@@ -118,6 +157,8 @@ interface SetupResult {
   };
   /** Every connector-owned setup action that ran, in order. */
   readonly actions: readonly ActionRun[];
+  /** Every runtime setup offers: `pty`, the official ones and each installed third-party one. */
+  readonly runtimes: readonly RuntimeSetup[];
   /** Every file or folder setup wrote, in order. Empty when a rerun changed nothing. */
   readonly written: readonly Written[];
   /** The command that comes next, and the folder to run it in when that matters. */
@@ -129,18 +170,19 @@ interface SetupCancelled {
 }
 
 const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
-const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name>";
+const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name> [--runtime <name>]";
 
 /**
- * `cotal setup` prepares a space for your agents and starts nothing. It takes four inputs: the
+ * `cotal setup` prepares a space for your agents and starts nothing. Its inputs are the
  * destination (a local space this machine starts, or a self-hosted one registered here), the
- * application (the connector your agents run in), the project folder (the space's root) and the
- * space name. On a terminal it asks for each one no flag gave and shows the answers before it
- * writes; in a script every one is a flag, and a missing one is refused before anything is
- * written. It then prepares or registers the space, seeds the default persona into the project's
- * `.cotal/agents`, records the application as the space's `harness` preference, runs the
- * application's own setup actions, and reconciles Cotal's skills. A rerun with the same answers
- * changes nothing. `--skills` only reconciles skills.
+ * application (the connector your agents run in), the runtimes to set up besides the built-in
+ * `pty`, the project folder (the space's root) and the space name. On a terminal it asks for each
+ * one no flag gave and shows the answers before it writes; in a script every one is a flag, and a
+ * missing one is refused before anything is written. It then prepares or registers the space,
+ * seeds the default persona into the project's `.cotal/agents`, records the application as the
+ * space's `harness` preference, runs the application's own setup actions, reconciles Cotal's
+ * skills and sets up the chosen runtimes. A rerun with the same answers changes nothing.
+ * `--skills` only reconciles skills.
  */
 export async function setup(args: ParsedArgs): Promise<void> {
   const values = args.values as SetupValues;
@@ -154,9 +196,10 @@ export async function setup(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(values);
   if (values.destination !== undefined) destinationOf(values.destination);
   const interactive = presentation === "rich" && !values.yes && canPrompt();
-  const inputs = interactive ? await askInputs(values) : scriptedInputs(values);
+  const runtimes = runtimeChoices();
+  const inputs = interactive ? await askInputs(values, runtimes) : scriptedInputs(values, runtimes);
   if (inputs === undefined) return cancelled(presentation, values.space);
-  const plan = await planSetup(inputs);
+  const plan = await planSetup(inputs, runtimes);
   await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation });
 }
 
@@ -177,27 +220,30 @@ function destinationOf(value: string): Destination {
   throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
 }
 
-/** The inputs of a run that asks nothing: every one is a flag, and the project folder exists. */
-function scriptedInputs(v: SetupValues): SetupInputs {
+/** The inputs of a run that asks nothing: every one is a flag, and the project folder exists. No
+ *  `--runtime` sets up no runtime beyond `pty`. */
+function scriptedInputs(v: SetupValues, choices: readonly RuntimeChoice[]): SetupInputs {
   const missing = REQUIRED.filter((flag) => v[flag] === undefined);
   if (missing.length > 0) throw usage(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, SCRIPTED_FORM);
   const project = resolve(v.project!);
   if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
-  return { destination: destinationOf(v.destination!), harness: v.harness!, project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
+  return { destination: destinationOf(v.destination!), harness: v.harness!, runtimes: runtimeFlags(v.runtime ?? [], choices), project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
 }
 
 /**
- * Asks for each input no flag gave: destination, application, then the project and space. The
- * answers are shown before anything is written. Change asks every question again with the answers
- * so far, and Cancel saves nothing.
+ * Asks for each input no flag gave: destination, application, runtimes, then the project and
+ * space. The answers are shown before anything is written. Change asks every question again with
+ * the answers so far, and Cancel saves nothing.
  */
-async function askInputs(v: SetupValues): Promise<SetupInputs | undefined> {
+async function askInputs(v: SetupValues, choices: readonly RuntimeChoice[]): Promise<SetupInputs | undefined> {
+  const runtimes = v.runtime === undefined ? undefined : runtimeFlags(v.runtime, choices);
   if (!isOnboarded()) splash();
   p.intro(brandBold("Set up Cotal"));
   const candidates = await harnessCandidates();
   let given: Partial<SetupInputs> = {
     ...(v.destination === undefined ? {} : { destination: destinationOf(v.destination) }),
     ...(v.harness === undefined ? {} : { harness: v.harness }),
+    ...(runtimes === undefined ? {} : { runtimes }),
     ...(v.project === undefined ? {} : { project: resolve(v.project) }),
     ...(v.space === undefined ? {} : { space: v.space }),
     ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }),
@@ -207,15 +253,17 @@ async function askInputs(v: SetupValues): Promise<SetupInputs | undefined> {
     const ask = <K extends keyof SetupInputs>(key: K): boolean => again || given[key] === undefined;
     const destination = ask("destination") ? await askDestination(given.destination) : given.destination!;
     const harness = ask("harness") ? await askHarness(candidates, given.harness) : given.harness!;
+    const runtimes = ask("runtimes") ? await askRuntimes(choices, given.runtimes) : given.runtimes!;
     const place = destination === "local" ? await askLocal(given, ask) : await askSelfHosted(given, ask);
-    const inputs: SetupInputs = { destination, harness, ...place };
+    const inputs: SetupInputs = { destination, harness, runtimes, ...place };
     note(
       [
         `destination  ${destination === "local" ? "Local" : "Self-hosted"}`,
         `application  ${harness}`,
+        `runtimes     ${["pty", ...runtimes].join(", ")}`,
         `project      ${inputs.project}${inputs.createProject ? " (created on save)" : ""}`,
         `space        ${inputs.space}`,
-        ...(inputs.connectionFile === undefined ? [] : [`registered    from ${inputs.connectionFile}`]),
+        ...(inputs.connectionFile === undefined ? [] : [`registered   from ${inputs.connectionFile}`]),
       ].join("\n"),
       "Your setup",
     );
@@ -261,8 +309,30 @@ async function askHarness(candidates: readonly SetupConnectorCandidate[], initia
   );
 }
 
+/** The runtimes to set up besides `pty`. Installed ones and those whose host tool is on PATH start
+ *  selected. Each row's state is part of its label, because clack shows a hint only on the focused
+ *  and selected rows. */
+async function askRuntimes(choices: readonly RuntimeChoice[], initial: readonly string[] | undefined): Promise<string[]> {
+  const offered = choices.filter((r) => r.name !== "pty");
+  const width = Math.max(...offered.map((r) => r.name.length));
+  return abortIfCancel(
+    await p.multiselect({
+      message: "Which runtimes do your agents run in? pty is built in and always set up",
+      options: offered.map((r) => ({ value: r.name, label: `${r.name.padEnd(width)}  ${runtimeState(r)}` })),
+      initialValues: [...(initial ?? offered.filter((r) => r.installed || r.found !== null).map((r) => r.name))],
+      required: false,
+    }),
+  );
+}
+
+/** Whether a runtime is set up, and its host tool or, for a third-party one, its package. */
+function runtimeState(r: RuntimeChoice): string {
+  const tool = r.tools.length === 0 ? r.package : r.found !== null ? `${r.found} found` : `${r.tools.join(" or ")} not on PATH`;
+  return `${r.installed ? "set up" : "not set up"}${tool ? ` · ${tool}` : ""}`;
+}
+
 /** A local space: the project folder, which a terminal may create, and the space's name. */
-async function askLocal(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness">> {
+async function askLocal(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness" | "runtimes">> {
   let project = given.project;
   let createProject = given.createProject ?? false;
   if (ask("project") || project === undefined) {
@@ -301,7 +371,7 @@ const FROM_FILE = "\0file";
 
 /** A self-hosted space: one registered here, whose root is the project, or one to register from a
  *  connection file into a project folder that exists. */
-async function askSelfHosted(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness">> {
+async function askSelfHosted(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness" | "runtimes">> {
   const registered = loadMeshes().filter((m) => m.origin === "manual" || m.origin === "catalog");
   let space = given.space;
   if (ask("space") || space === undefined) {
@@ -349,22 +419,48 @@ async function harnessCandidates(): Promise<SetupConnectorCandidate[]> {
   return candidates;
 }
 
+/** The runtimes setup offers: `pty`, the official ones in a stable order, then each third-party one
+ *  an installed extension provides. */
+function runtimeChoices(): RuntimeChoice[] {
+  const providers = runtimeProviders();
+  const official = Object.keys(OFFICIAL_RUNTIMES).map((name): RuntimeChoice => {
+    const tool = OFFICIAL_RUNTIME_TOOLS[name] ?? { names: [] };
+    const override = tool.override === undefined ? undefined : process.env[tool.override]?.trim();
+    return { name, package: OFFICIAL_RUNTIMES[name]!, tools: tool.names, found: override || (tool.names.find((bin) => resolveOnPath(bin)) ?? null), installed: providers.has(name) };
+  });
+  const others = [...providers].filter(([name]) => name !== "pty" && !(name in OFFICIAL_RUNTIMES)).map(([name, pkg]): RuntimeChoice => ({ name, package: pkg ?? null, tools: [], found: null, installed: true }));
+  return [{ name: "pty", package: null, tools: [], found: null, installed: true }, ...official, ...others];
+}
+
+/** The `--runtime` names, checked before anything is written: each must be a runtime setup offers,
+ *  and an official one needs its host tool found. `pty` is always set up, so naming it adds nothing. */
+function runtimeFlags(names: readonly string[], choices: readonly RuntimeChoice[]): string[] {
+  for (const name of names) {
+    const choice = choices.find((r) => r.name === name);
+    if (!choice) throw usage(`--runtime ${name} is not a runtime: pass ${choices.map((r) => r.name).join(", ")}`, "install a third-party runtime with `cotal ext add <package>` first");
+    if (choice.tools.length > 0 && choice.found === null)
+      throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the ${name} runtime drives ${choice.tools.join(" or ")}, which is not on PATH`, { remedy: `install ${choice.tools[0]}, then run the same setup again` });
+  }
+  return [...new Set(names)].filter((name) => name !== "pty");
+}
+
 interface SetupPlan {
   readonly inputs: SetupInputs;
+  readonly runtimes: readonly RuntimeChoice[];
   readonly candidate: SetupConnectorCandidate;
   readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
 }
 
 /** Every check setup makes before it writes: the space name, the application, the space at the
  *  destination, and for a local space the NATS server `cotal up` will run. */
-async function planSetup(inputs: SetupInputs): Promise<SetupPlan> {
+async function planSetup(inputs: SetupInputs, runtimes: readonly RuntimeChoice[]): Promise<SetupPlan> {
   const target = { space: inputs.space };
   const problem = preferenceSpaceProblem(inputs.space);
   if (problem) throw usage(problem);
   const candidates = await harnessCandidates();
   const candidate = candidates.find((c) => c.value === inputs.harness);
   if (!candidate) throw usage(`no harness "${inputs.harness}"; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
-  if (inputs.destination === "self-hosted") return { inputs, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
+  if (inputs.destination === "self-hosted") return { inputs, runtimes, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
   if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
   const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);
   try {
@@ -372,13 +468,14 @@ async function planSetup(inputs: SetupInputs): Promise<SetupPlan> {
   } catch (e) {
     throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22 or newer" });
   }
-  return { inputs, candidate, space: { kind: "local", state } };
+  return { inputs, runtimes, candidate, space: { kind: "local", state } };
 }
 
 /**
  * Writes what the plan checked: the space, the personas, the `harness` preference, the
- * application's own setup actions and Cotal's skills. A harness whose host tool is missing, or an
- * action that does not finish, leaves the rest saved and the result partial.
+ * application's own setup actions, Cotal's skills and the chosen runtimes. A harness or runtime
+ * whose host tool is missing, an action that does not finish, or a runtime that does not install or
+ * answer leaves the rest saved and the result partial.
  */
 async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation }): Promise<void> {
   const { inputs, candidate } = plan;
@@ -441,6 +538,7 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     if (narrate) p.log.success(`Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`);
     for (const b of skills.backedUp) warnings.push({ code: "SKILL_BACKED_UP", target, message: `your edited ${b.name} skill was backed up to ${b.path} before it was refreshed` });
   }
+  const runtimes = await setUpRuntimes(plan.runtimes, inputs.runtimes, narrate, wrote);
   if (!isOnboarded()) {
     markOnboarded(ONBOARD_VERSION);
     wrote("onboarded stamp", join(homeCotalDir(), "onboarded.json"));
@@ -457,16 +555,80 @@ async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: bool
     spaceState,
     harness: { name: candidate.value, missing: candidate.missing, failed },
     actions: actions.ran,
+    runtimes: runtimes.rows,
     written,
     next: local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}`, cwd: null },
   };
-  const partial = candidate.missing.length > 0
-    ? { message: `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run; the rest is saved`, remedy: `install ${candidate.missing.join(", ")}, then run the same setup again` }
-    : failed
-      ? { message: `${failed.title} did not finish (${failed.message}); the rest is saved`, remedy: "fix it, then run the same setup again" }
-      : undefined;
+  const problems: Problem[] = [
+    ...(candidate.missing.length > 0
+      ? [{ message: `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run`, remedy: `install ${candidate.missing.join(", ")}, then run the same setup again` }]
+      : failed
+        ? [{ message: `${failed.title} did not finish (${failed.message})`, remedy: "fix it, then run the same setup again" }]
+        : []),
+    ...runtimes.problems,
+  ];
+  const partial = problems.length === 0
+    ? undefined
+    : { message: `${problems.map((x) => x.message).join("; ")}; the rest is saved`, remedy: [...new Set(problems.map((x) => x.remedy))].join("; ") };
   if (opts.interactive) p.outro(brand(partial ? "Saved, with a step left to finish." : "Saved."));
   writeResult(opts.presentation, { command: "setup", target, result, warnings, ...(partial ? { partial } : { noOp: written.length === 0 && actions.ran.length === 0 }) }, setupView);
+}
+
+/**
+ * Sets up each selected runtime. An official one that is not installed is added the way `ext add`
+ * adds it, at this cotal's version, when its host tool is on PATH; then each selected provider is
+ * asked whether it answers. A runtime left unselected is never removed: `ext remove` does that.
+ */
+async function setUpRuntimes(
+  choices: readonly RuntimeChoice[],
+  selected: readonly string[],
+  narrate: boolean,
+  wrote: (what: string, path: string) => void,
+): Promise<{ rows: RuntimeSetup[]; problems: Problem[] }> {
+  const rows: RuntimeSetup[] = [];
+  const problems: Problem[] = [];
+  for (const r of choices) {
+    const tool = r.tools.length === 0 ? null : { names: r.tools, found: r.found };
+    const row = { name: r.name, package: r.package, tool };
+    if (r.name === "pty") {
+      rows.push({ ...row, selected: true, state: "built-in", reachable: null, error: null });
+      continue;
+    }
+    if (!selected.includes(r.name)) {
+      rows.push({ ...row, selected: false, state: r.installed ? "set-up" : "left-out", reachable: null, error: null });
+      continue;
+    }
+    let state: "set-up" | "added" = "set-up";
+    if (!r.installed && r.package !== null) {
+      if (r.found === null) {
+        rows.push({ ...row, selected: true, state: "left-out", reachable: null, error: `${r.tools.join(" or ")} not on PATH` });
+        problems.push({ message: `the ${r.name} runtime needs ${r.tools.join(" or ")} on PATH, so it is not set up`, remedy: `install ${r.tools[0]}, then run the same setup again` });
+        continue;
+      }
+      try {
+        // With --json or --plain, stdout carries the result alone.
+        await addExtension(`${r.package}@${cliVersion()}`, r.package, false, narrate ? console.log : (line) => console.error(line));
+      } catch (e) {
+        const error = (e as Error).message;
+        rows.push({ ...row, selected: true, state: "left-out", reachable: null, error });
+        problems.push({ message: `the ${r.name} runtime did not install (${error.split("\n")[0]})`, remedy: "fix it, then run the same setup again" });
+        continue;
+      }
+      wrote(`${r.name} runtime`, extensionPackageDir(r.package));
+      state = "added";
+    }
+    try {
+      const reachable = (await materializeExtension<RuntimeProvider>({ kind: "runtime", name: r.name })).available();
+      rows.push({ ...row, selected: true, state, reachable, error: null });
+      if (!reachable)
+        problems.push({ message: `the ${r.name} runtime is set up but does not answer here`, remedy: `${r.tools.length > 0 ? `check that ${r.tools.join(" or ")} runs, then ` : ""}see \`cotal runtimes\`` });
+    } catch (e) {
+      const error = (e as Error).message;
+      rows.push({ ...row, selected: true, state, reachable: null, error });
+      problems.push({ message: `the ${r.name} runtime did not load (${error.split("\n")[0]})`, remedy: r.package === null ? "see `cotal runtimes`" : `reinstall it with \`cotal ext add ${r.package}\`` });
+    }
+  }
+  return { rows, problems };
 }
 
 /** Runs connector-owned setup actions in order and stops at the first that does not finish. The rich
@@ -532,11 +694,15 @@ const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
 };
 
 function setupView(r: SetupResult): Report {
+  const unready = r.runtimes.filter((x) => x.selected && (x.state === "left-out" || x.error !== null || x.reachable === false)).map((x) => x.name);
   const head: Cell = r.harness.missing.length > 0 || r.harness.failed
     ? { text: `saved ${r.space}; ${r.harness.name} is not set up yet`, tone: "waiting", mark: "!" }
-    : r.written.length > 0 || r.actions.length > 0
-      ? { text: `set up ${r.space} for ${r.harness.name}`, tone: "ok", mark: "✓" }
-      : { text: `${r.space} is already set up for ${r.harness.name}`, tone: "ok", mark: "✓" };
+    : unready.length > 0
+      ? { text: `set up ${r.space} for ${r.harness.name}; the ${unready.join(", ")} runtime${unready.length === 1 ? " is" : "s are"} not ready`, tone: "waiting", mark: "!" }
+      : r.written.length > 0 || r.actions.length > 0
+        ? { text: `set up ${r.space} for ${r.harness.name}`, tone: "ok", mark: "✓" }
+        : { text: `${r.space} is already set up for ${r.harness.name}`, tone: "ok", mark: "✓" };
+  const leftOut = r.runtimes.filter((x) => !x.selected && x.state === "left-out").map((x) => x.name);
   const application: Cell = r.harness.missing.length > 0
     ? { text: `${r.harness.name} · ${r.harness.missing.join(", ")} not on PATH`, tone: "failed" }
     : r.harness.failed
@@ -547,11 +713,22 @@ function setupView(r: SetupResult): Report {
     ["project", r.project],
     ["space", `${r.space} · ${SPACE_STATE[r.spaceState]}`],
     ["application", application],
+    ...r.runtimes.filter((x) => x.selected || x.state !== "left-out").map((x): [string, Cell] => ["runtime", runtimeCell(x)]),
+    ...(leftOut.length === 0 ? [] : [["not set up", leftOut.join(", ")] as [string, Cell]]),
     ...r.actions.map((a): [string, Cell] => ["ran", `${a.title}${a.detail ? ` · ${a.detail}` : ""}`]),
     ...r.written.map((w): [string, Cell] => ["wrote", `${w.what}: ${w.path}`]),
   ];
   const next: Cell = { text: r.next.cwd === null ? `next: ${r.next.command}` : `next: ${r.next.command}   (in ${r.next.cwd})`, tone: "hint" };
   return { sections: [{ blocks: [{ kind: "lines", lines: [head] }, { kind: "fields", rows: fields }, { kind: "lines", lines: [next] }] }] };
+}
+
+function runtimeCell(r: RuntimeSetup): Cell {
+  if (r.state === "built-in") return `${r.name} · built in`;
+  if (r.state === "left-out") return { text: `${r.name} · not set up: ${r.error}`, tone: "failed" };
+  const state = r.state === "added" ? "added" : "already set up";
+  if (r.error !== null) return { text: `${r.name} · ${state} · did not load`, tone: "failed" };
+  if (r.reachable === false) return { text: `${r.name} · ${state} · does not answer`, tone: "waiting" };
+  return `${r.name} · ${state}${r.reachable ? " · answers" : ""}`;
 }
 
 function isDir(path: string): boolean {
