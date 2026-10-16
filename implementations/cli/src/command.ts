@@ -10,10 +10,12 @@ import {
   globalFlagDeclarationProblems,
   hasMeshTargetFlags,
   isCommandFailure,
+  isConnectRefusal,
   isSeededCommand,
   isWorkspaceTargetError,
   outputDeclarationProblems,
   renderWorkspaceError,
+  targetErrorCode,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "./ui.js";
 import {
@@ -27,7 +29,7 @@ import {
 import { reconcileSeededConnectors } from "./seed/reconcile.js";
 import { isAuthenticSeedChild } from "./seed/lock.js";
 import { printCommandHelp, printEntry } from "./help.js";
-import { prepareCatalogCommand } from "./commands/sync.js";
+import { CatalogPreparationError, prepareCatalogCommand } from "./commands/sync.js";
 import { takeManagedHandoffCustody } from "./managed-handoff.js";
 
 /** Whether `args` ask for help: `--help` or `-h` before any `--`, after which every word is text. */
@@ -322,11 +324,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
     if (isCommandFailure(e)) failureExit(cmd, e, json);
-    // A command that declares a structured output reports by the outcome table, so a failure it did
-    // not classify is unknown: it may have had effects that cannot be attributed.
+    // A command that declares a structured output reports by the outcome table. A target it could
+    // not resolve or connect to is refused before any request, under the refusal's own code; a
+    // failure it did not classify is unknown: it may have had effects that cannot be attributed.
     if (structured(cmd)) {
-      const message = isWorkspaceTargetError(e) ? renderWorkspaceError({ kind: "target", error: e }) : e instanceof Error ? e.message : String(e);
-      failureExit(cmd, new CommandFailure("unknown", "OPERATION_UNKNOWN", message), json);
+      if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);
+      if (isWorkspaceTargetError(e))
+        failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")), json);
+      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure("refused", e.code, e.message), json);
+      failureExit(cmd, new CommandFailure("unknown", "OPERATION_UNKNOWN", e instanceof Error ? e.message : String(e)), json);
     }
     // A workspace TARGET error carries structured recovery — which entry, whether it was removed,
     // what to run next — and has its own renderer. Its raw `.message` is deliberately dev-safe

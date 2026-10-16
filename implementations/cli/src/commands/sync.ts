@@ -10,6 +10,7 @@ import {
   removeMeshes,
   userAuthStateDir,
   type MeshEntry,
+  type RefusalCode,
 } from "@cotal-ai/workspace";
 import { checkUserBundle, type UserBundle } from "./meshes-add.js";
 import { c } from "../ui.js";
@@ -248,6 +249,16 @@ export function preparedCatalogDiagnostics(): readonly AuthSpaceCatalogResult[] 
   return catalogDiagnostics;
 }
 
+/** A space catalog that stopped a command before it ran, with the stable code a structured command
+ *  reports it under: the selected space left its catalog, or the catalog for the target's account
+ *  could not be refreshed. */
+export class CatalogPreparationError extends Error {
+  constructor(message: string, readonly code: RefusalCode) {
+    super(message);
+    this.name = "CatalogPreparationError";
+  }
+}
+
 /** Shared once-per-command preparation. Every target-resolving call gives each signed-in account a
  * chance to refresh inside the provider's freshness window. An operational catalog target scopes
  * that work to its own account and treats its failure as fatal. Other targets warn per account;
@@ -289,12 +300,12 @@ export async function prepareCatalogCommand(args: ParsedArgs, diagnostics = fals
   if (vanished.length) {
     const message = `selected space "${vanished.join("\", \"")}" vanished from its account catalog; no default mesh is selected`;
     if (diagnostics) console.error(c.yellow(message));
-    else throw new Error(message);
+    else throw new CatalogPreparationError(message, "TARGET_NOT_FOUND");
   }
   const failures = results.filter((r) => r.state === "failed");
   if (diagnostics) return;
   if (targetCatalog && failures.length)
-    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "));
+    throw new CatalogPreparationError(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "), "DEPENDENCY_UNAVAILABLE");
   for (const failure of failures)
     console.error(c.yellow(`space catalog for ${failure.account.idpUrl} failed: ${failure.error}`));
 }
@@ -317,7 +328,7 @@ export async function sync(args: ParsedArgs): Promise<void> {
   });
   const failures = results.filter((r) => r.state === "failed");
   if (failures.length)
-    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "));
+    throw new CatalogPreparationError(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join("; "), "DEPENDENCY_UNAVAILABLE");
 }
 
 const spaceCatalogConsumer: SpaceCatalogConsumer = {

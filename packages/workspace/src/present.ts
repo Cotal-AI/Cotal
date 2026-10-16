@@ -110,8 +110,9 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
   );
   const total = indent.length + widths.reduce((sum, w) => sum + w, 0) + 2 * (widths.length - 1);
   if (total <= width) {
+    // An empty last cell would leave the padding before it trailing the line.
     const line = (cells: Cell[]) =>
-      indent + cells.map((cell, i) => (i === cells.length - 1 ? draw(cell, style).shown : drawPadded(cell, style, widths[i]!))).join("  ");
+      (indent + cells.map((cell, i) => (i === cells.length - 1 ? draw(cell, style).shown : drawPadded(cell, style, widths[i]!))).join("  ")).replace(/ +$/, "");
     return [line(table.columns.map(label)), ...table.rows.map((row) => line(table.columns.map((column) => cellOf(row, column))))];
   }
   // Too narrow for the columns: one labeled record per row, so nothing is clipped.

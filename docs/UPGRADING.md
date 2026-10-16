@@ -34,6 +34,36 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Read command output after 0.82.0 (unreleased)
+
+`cotal ps --json` now writes one JSON document instead of one JSON line per seat, and `ps`, `models`
+and `runtimes` exit by the structured outcome table. Nothing on a running mesh changes, and there is
+no outage window. Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- A script that reads `cotal ps --json` line by line reads one envelope instead. The rows it read
+  are now `result.items`, each still the manager's row unchanged, and `result.managers` names each
+  manager instance and whether it answered. With `jq`, `cotal ps --json | jq -c '.result.items[]'`
+  prints the rows as before. Instance headers no longer go to stderr under `--json`.
+- An incomplete manager census, where a registered manager did not answer, refused or serves a
+  different contract, exits 4 instead of 1.
+- A mesh that `ps` or `models` cannot resolve or reach exits 2 instead of 1, and a space catalog
+  refresh that `ps` or `models` needed and could not get exits 2 instead of 1. Under `--json` each is
+  one `refused` envelope whose `error.code` names the reason.
+- `cotal models` exits 4 when a connector's catalog could not be read, and `cotal runtimes` exits 4
+  when an installed runtime provider fails to load. Both exited 0. `cotal models --agent <name>`
+  exits 5 when that one catalog could not be read. OpenCode 2.x, which has no catalog the CLI can
+  list, is reported `supported: false` with the reason in `unavailable` and does not fail the read.
+- The human reports of `ps`, `models` and `runtimes` are tables now, and `ps --wide` prints one
+  labeled record per seat instead of a facts line under each row. Human output is not a parsing
+  target; use `--json`.
+
+### Before the upgrade
+
+Search scripts for `cotal ps --json`, and for checks of the exit status of `ps`, `models` or
+`runtimes`. Change line-by-line reads of `ps --json` to read `result.items` from the one document.
+
 ## Shell completion script after 0.82.0 (unreleased)
 
 `cotal completion <shell>` is now `cotal completion script <shell>`, and bare `cotal completion`

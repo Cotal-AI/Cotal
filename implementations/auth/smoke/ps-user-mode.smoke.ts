@@ -292,6 +292,10 @@ try {
   if (up.status !== 0) { process.exitCode = 1; throw new Error("fixture"); }
   await wait(3000);
 
+  /** Whether output carries credential material: a JWT (bearer or user JWT), a NATS creds block or an
+   *  nkey seed. */
+  const leaksCredential = (out: string): boolean =>
+    /eyJ[A-Za-z0-9_-]{8,}\.eyJ/.test(out) || /BEGIN (NATS|USER NKEY)/.test(out) || /\bS[AUON][A-Z2-7]{56}\b/.test(out);
   console.log("2) device login + admin grant");
   const { sub } = await establishIdpSession({
     dir: home, idpUrl: base, clientId: CLIENT_ID,
@@ -306,6 +310,12 @@ try {
   check("user-mode ps exits 0 (C: ep.one path)", ps.status === 0, ps.status);
   check("user-mode ps does not die on STREAM.INFO (would mean it still scattered)",
     !/STREAM\.INFO/.test(ps.out), ps.out.slice(-200));
+  const psJson = await cotal(["ps", "--json", "--space", SPACE], 20_000);
+  const psEnvelope = (() => { try { return JSON.parse(psJson.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; target: { scope: string; managerInstanceId: string | null } }; } catch { return undefined; } })();
+  check("user-mode ps --json targets the one authorized manager by its instance id",
+    psJson.status === 0 && psEnvelope?.outcome === "ok" && psEnvelope.target.scope === "manager" && /^[a-z0-9]{26,32}$/.test(psEnvelope.target.managerInstanceId ?? ""),
+    psJson.out.slice(-600));
+  check("user-mode ps --json carries no bearer, sentinel or nkey seed", !leaksCredential(psJson.out), psJson.out.slice(-600));
 
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
   const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
@@ -444,6 +454,11 @@ try {
         signedOutStatus.out.includes(`login --idp ${base}`) &&
         !signedOutStatus.out.includes("no user-auth material"),
       signedOutStatus.out.slice(-600));
+    const signedOutPs = await cotal(["ps", "--json", "--space", signedOutSpace], 30_000);
+    check("signed out: ps --json is one AUTH_REQUIRED envelope that names the login, exit 2",
+      signedOutPs.status === 2 && /"code":"AUTH_REQUIRED"/.test(signedOutPs.out) && signedOutPs.out.includes(`login --idp ${base}`),
+      signedOutPs.out.slice(-600));
+    check("signed out: the refusal carries no credential material", !leaksCredential(signedOutPs.out), signedOutPs.out.slice(-600));
   } finally {
     if (sessionsBytes !== undefined) writeFileSync(sessionsFile, sessionsBytes);
     removeMesh(signedOutSpace);
@@ -486,7 +501,10 @@ try {
     { out: localRm.out, catalogRequests, beforeLocalRm });
   const expired = await cotal(["ps", "--space", SPACE], 20_000);
   check("an expired discovered target refuses ps when its required refresh fails",
-    expired.status === 1 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });
+    expired.status === 2 && expired.out.includes("space catalog") && catalogRequests >= 3, { out: expired.out.slice(-400), catalogRequests, cache: readFileSync(join(home, "space-catalogs.json"), "utf8") });
+  const expiredJson = await cotal(["ps", "--json", "--space", SPACE], 20_000);
+  check("under --json that refusal is one DEPENDENCY_UNAVAILABLE envelope",
+    expiredJson.status === 2 && /"code":"DEPENDENCY_UNAVAILABLE"/.test(expiredJson.out) && /"outcome":"refused"/.test(expiredJson.out), expiredJson.out.slice(-400));
 
   console.log("4) kill manager — ps must fail loud, not empty-success");
   // The mesh can only root somewhere else if a `.cotal` appeared above the scratch mid-run; witness

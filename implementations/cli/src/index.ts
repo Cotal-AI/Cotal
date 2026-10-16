@@ -5,7 +5,7 @@ import {
 } from "@cotal-ai/workspace";
 import { MANAGER_PROCESS } from "./lib/manager-proc.js";
 import { up, upComplete, upFlags } from "./commands/up.js";
-import { runtimes } from "./commands/runtimes.js";
+import { runtimes, runtimesFlags } from "./commands/runtimes.js";
 import { down, downComplete } from "./commands/down.js";
 import { use, useComplete } from "./commands/use.js";
 import { meshes, meshesComplete, meshesFlags } from "./commands/meshes.js";
@@ -149,6 +149,10 @@ const baseCommands: Command[] = [
     name: "runtimes",
     group: "Manager",
     summary: "list the agent runtimes the manager can spawn through (pty built in; others via `cotal ext add`) and whether each is reachable",
+    usage: "cotal runtimes [--json|--plain]",
+    flags: runtimesFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal runtimes", "cotal runtimes --json"],
     run: runtimes,
   },
   {
@@ -393,7 +397,10 @@ const baseCommands: Command[] = [
     name: "models",
     group: "Agents",
     summary: "list connector model catalogs and variants from the manager",
+    usage: "cotal models [--json|--plain] [--agent <connector>] [--refresh]",
     flags: modelsFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal models", "cotal models --agent claude --refresh", "cotal models --json"],
     run: models,
     complete: modelsComplete,
   },
@@ -430,7 +437,10 @@ const baseCommands: Command[] = [
     name: "ps",
     group: "Agents",
     summary: "list managed agents + their mesh status",
+    usage: "cotal ps [--json|--plain] [--wide | --slots] [--on <instance>]",
     flags: psFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal ps", "cotal ps --wide", "cotal ps --json", "cotal ps --on <instance>"],
     run: ps,
   },
   {

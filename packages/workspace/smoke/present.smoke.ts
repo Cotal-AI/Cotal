@@ -94,6 +94,8 @@ check(
   lines,
 );
 check("the last column is not padded", lines.every((line) => !line.endsWith(" ")), lines);
+const emptyLast = renderReport({ sections: [{ blocks: [{ kind: "table", columns: [{ key: "a", label: "A" }, { key: "b", label: "B" }], rows: [{ a: "long value", b: "" }, { a: "x", b: "y" }] }] }] }, "plain");
+check("an empty last cell leaves no trailing padding", emptyLast.split("\n").every((line) => !line.endsWith(" ")), emptyLast);
 const richLines = rich.replace(/\x1b\[[0-9;]*m/g, "").split("\n").slice(1, 4);
 check(
   "rich columns line up with their marks",

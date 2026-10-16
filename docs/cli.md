@@ -84,8 +84,8 @@ runtimes ship this way.
 ## Structured output
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
-one JSON document on stdout. In this release those are `cotal version` and `cotal completion`.
-`cotal version --json` writes:
+one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
+`cotal ps`, `cotal models` and `cotal runtimes`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -106,6 +106,21 @@ one JSON document on stdout. In this release those are `cotal version` and `cota
 Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope with code
 `USAGE_INVALID`, and the help it names stays off stdout. A command without a JSON output refuses
 `--json` as an unknown option.
+
+A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
+report as plain lines: no color, no marks, ASCII labels. Pass one of `--json` and `--plain`; both is a
+`USAGE_INVALID` refusal. A table that does not fit the terminal is written as one labeled record per
+row, so no value is cut off.
+
+A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
+`completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
+never presented as complete when part of it is missing.
+
+A target the command cannot resolve or reach is refused before any request, with the code for why:
+`TARGET_NOT_FOUND` (no such mesh), `TARGET_AMBIGUOUS` (several match), `TARGET_UNAVAILABLE` (its
+broker or manager did not answer), `AUTH_REQUIRED` (it needs a sign-in or a fresh credential),
+`PERMISSION_DENIED` (it refused the credential), `DEPENDENCY_UNAVAILABLE` (trust material, the
+user-auth service or a space catalog it needs could not be used), or `UNSUPPORTED`.
 
 A command with a JSON output exits by its outcome, with or without `--json`:
 
@@ -1261,7 +1276,7 @@ client observes an existing same-host consumer.
 ## models
 
 ```bash
-cotal models [--agent <connector>] [--refresh]
+cotal models [--json | --plain] [--agent <connector>] [--refresh]
 ```
 
 | Flag | Default | Meaning |
@@ -1269,12 +1284,18 @@ cotal models [--agent <connector>] [--refresh]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--agent <connector>` | all registered connectors | Connector whose catalog to list |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
+| `--json` / `-j` | off | One JSON document: `result.items` holds each connector's catalog as the manager returned it |
+| `--plain` | off | The same report without color |
 
 Asks the running manager for each connector's model catalog (model ids plus their variants)
 for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
 providers that enable `model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed
-effort tiers render as `variants (declared, not provider-verified)`, and launch can still refuse one.
-A connector without a catalog says so. A connector whose harness the manager did not find at boot
+effort tiers render as `<tiers> (declared, not provider-verified)`, and launch can still refuse one.
+A connector without a catalog says so with `supported: false`, and one whose install has no
+catalog it can list, such as OpenCode 2.x, gives the reason in `unavailable`; neither is a failed
+read. A connector whose catalog could not be read, or that the manager could not load, makes the
+read `partial` (exit 4) with a `MODEL_CATALOG_UNREADABLE` warning naming it, and when `--agent` names
+that connector the read fails (exit 5). A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. OpenCode and Codex ids are the full
@@ -1320,7 +1341,7 @@ reach needs the `admin` scope). An open mesh has no service registry.
 ## Managed seats
 
 ```bash
-cotal ps [--on <instance>] [--wide | --json] [--slots] [--space <s>]
+cotal ps [--json | --plain] [--on <instance>] [--wide] [--slots] [--space <s>]
 cotal stop --name <n> [--on <instance>] [--space <s>]
 cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 ```
@@ -1330,17 +1351,29 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | none | Managed agent to stop / attach (required) |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent. A roster principal id (`local.…`) is refused with a message naming the instance id `ps` prints |
-| `--wide` (`ps`) | off | After each seat's compact row, print extra operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
-| `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, copied unchanged from the manager row. Instance headers and errors go to stderr, so stdout contains only rows. Mutually exclusive with `--wide` |
-| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `live=false`; a retired row never prints |
+| `--wide` (`ps`) | off | Print each seat as a labeled record that adds the operational facts the manager records: the provider the connector reported serving the model, `cwd`, `pid`, spawner, lifecycle uid, the owning manager's instance id and host, and for a `--resume` seat the session it forked (`forked from <id>`, with the source title and transcript SHA-256 once a Hermes or Jcode seat has recorded its fork; a carried Claude session prints `forked from <host>:<id>` with its title, SHA-256 and `carried <time>`, the time its bytes reached the manager). Model and requested variant stay in the identity row rather than printing twice. A fact the manager did not record (for example a runtime with no real process, or a connector that reported no provider) prints nothing, never a placeholder |
+| `--json` / `-j` (`ps`) | off | One JSON document (see below). Mutually exclusive with `--wide` and `--plain` |
+| `--plain` (`ps`) | off | The same report without color or marks |
+| `--slots` (`ps`) | off | List the durable static slot rows this manager owns instead of live seats, through the `slots` command. Mutually exclusive with `--wide`. A row that is not in the live roster still prints, with `LIVE` false; a retired row never prints |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 A raw `--creds` file is refused by `ps`, `stop`, `attach` and the other control commands, because
 that route mints no endpoint-caller triple; the project folder, or `--space` against the registry
 entry, is the route that does.
 
-The human `ps` row is presentation text and is not a stable parsing target. Scripts use `--json`,
-which is the machine-readable row contract.
+The human `ps` report is presentation text and is not a stable parsing target. Scripts use `--json`,
+one envelope whose `result` is:
+
+| Field | Meaning |
+|---|---|
+| `kind` | `seats`, or `slots` with `--slots` |
+| `items` | Each seat (or slot) row as its manager returned it, unchanged |
+| `managers` | Each manager instance asked: `{instanceId, state}`, where `state` is `answered`, `silent` (registered, no answer within the deadline, with the `liveness` this command established), `refused` (with its `error` and `code`) or `contract-mismatch` |
+
+`target` is `{space, scope: "all-managers"}` for the class scatter, and
+`{space, scope: "manager", managerInstanceId}` for `--on` or a user-auth mesh. A manager that is not
+`answered` makes the read `partial` (exit 4), with a `MANAGER_SILENT`, `MANAGER_REFUSED` or
+`MANAGER_CONTRACT_MISMATCH` warning naming it.
 
 `--slots --wide` is refused: `--slots` lists durable static slot rows, `--wide` prints live seat facts, and the two answer different questions. Across a multi-manager scatter, `--slots` prints each manager's rows under its own instance header, the same way the plain `ps` scatter does.
 
@@ -1383,7 +1416,7 @@ On a user-auth mesh `ps` also renders each managed agent's last credential-refre
   instance, and a non-answering instance is shown as `registered, no answer within the deadline`
   (never silently omitted). A refused list or a missing answer makes the census incomplete: rows
   from other instances remain visible, but `ps` prints an incomplete-census warning on stderr and
-  exits non-zero, including with `--json`. Those rows are not a complete seat count. A contract
+  exits 4 (`partial`), including with `--json`. Those rows are not a complete seat count. A contract
   mismatch prints one plain comparison of the requested and served input/output digest pairs and
   advises aligning manager versions. The no-answer label means only that the instance is registered
   and did not answer. It does not say the host is down, because a dead host never deregisters itself and a
@@ -1433,8 +1466,8 @@ concludes nothing.
   (an instance-addressed read against its in-memory roster, owner-filtered). It does **not** report
   other manager instances or establish whether they are reachable. Completeness across a
   multi-manager user-auth space is not claimed.
-  A manager that does not answer fails the command outright (exit non-zero), rather than printing
-  an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
+  A manager that does not answer fails the command outright (`TARGET_UNAVAILABLE`, exit 2), rather
+  than printing an empty list that could be read as "no agents". Your ledger row needs the `admin` scope to
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
 
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
@@ -1975,7 +2008,7 @@ the tombstone on its next start, under the same identity.
 ## runtimes
 
 ```bash
-cotal runtimes
+cotal runtimes [--json | --plain]
 ```
 
 Lists every agent runtime the manager can spawn through: the built-in `pty`, the official providers
@@ -1983,15 +2016,21 @@ Lists every agent runtime the manager can spawn through: the built-in `pty`, the
 provider is probed so you can see what is actually reachable on this machine before selecting it:
 
 ```
-pty    built in
-orca   installed · reachable   @cotal-ai/orca
-tmux   available · cotal ext add @cotal-ai/tmux
-cmux   available · cotal ext add @cotal-ai/cmux
-herdr  available · cotal ext add @cotal-ai/herdr
+RUNTIME  STATE                  PACKAGE
+pty      built in
+orca     installed · reachable  @cotal-ai/orca
+tmux     not installed          @cotal-ai/tmux
+cmux     not installed          @cotal-ai/cmux
+herdr    not installed          @cotal-ai/herdr
+add one that is not installed with `cotal ext add <package>`
 ```
 
-`installed · reachable` / `unreachable` is the provider's own `available()` probe; `available` means
-it is a known runtime you can add with the shown command. Selecting an unknown or uninstalled runtime
+`installed · reachable` / `unreachable` is the provider's own `available()` probe; `not installed`
+means it is a known runtime you can add with `cotal ext add` and the package shown. `--json` writes
+one document whose `result.items` are `{name, state, package, reachable, error}`, with `state` one of
+`built-in`, `installed` or `not-installed` and `reachable` null when the provider was not asked. An installed provider
+whose package fails to load is shown with its error and makes the read `partial` (exit 4). The command
+reads this machine only, so its `target` is null. Selecting an unknown or uninstalled runtime
 via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
 package. There is no silent fallback to `pty`.
 

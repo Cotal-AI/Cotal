@@ -30,8 +30,8 @@
     {
       "name": "make every sibling account failure fatal again",
       "file": "implementations/cli/src/commands/sync.ts",
-      "find": "  if (targetCatalog && failures.length)\n    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join(\"; \"));",
-      "replace": "  if (failures.length)\n    throw new Error(failures.map((r) => `space catalog for ${r.account.idpUrl} failed: ${r.error}`).join(\"; \"));",
+      "find": "  if (targetCatalog && failures.length)\n    throw new CatalogPreparationError(",
+      "replace": "  if (failures.length)\n    throw new CatalogPreparationError(",
       "expectRed": "non-catalog selection refreshes every account and keeps the selection",
       "cell": "non-catalog selection refreshes every account and keeps the selection"
     },

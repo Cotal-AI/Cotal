@@ -30,9 +30,11 @@ export const BOUNDARY_CODES = [
   "LIFECYCLE_BLOCKED",
 ] as const;
 
+/** The codes a `refused` outcome carries: a usage refusal or a boundary refusal. */
+export type RefusalCode = (typeof USAGE_CODES)[number] | (typeof BOUNDARY_CODES)[number];
+
 export type ErrorCode =
-  | (typeof USAGE_CODES)[number]
-  | (typeof BOUNDARY_CODES)[number]
+  | RefusalCode
   | "OPERATION_UNKNOWN"
   | "OPERATION_PARTIAL"
   | "OPERATION_FAILED";

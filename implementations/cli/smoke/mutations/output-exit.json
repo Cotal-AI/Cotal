@@ -61,10 +61,58 @@
     {
       "name": "an unreadable manifest is reported complete",
       "file": "implementations/cli/src/commands/help.ts",
-      "find": "      completeness: unreadable === undefined ? \"complete\" : \"partial\",\n",
-      "replace": "      completeness: \"complete\",\n",
-      "expectRed": "an unreadable manifest makes the extension list partial, not empty and complete",
-      "cell": "an unreadable manifest makes the extension list partial, not empty and complete"
+      "find": "        ...(unreadable === undefined\n          ? {}\n",
+      "replace": "        ...(true\n          ? {}\n",
+      "expectRed": "an unreadable manifest makes the read partial, not empty and complete",
+      "cell": "an unreadable manifest makes the read partial, not empty and complete"
+    },
+    {
+      "name": "a connect refusal from a structured command is reported unknown",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);\n",
+      "replace": "",
+      "expectRed": "a connect refusal from a structured command exits 2",
+      "cell": "a connect refusal from a structured command exits 2"
+    },
+    {
+      "name": "an unresolvable target from a structured command is reported unknown",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      if (isWorkspaceTargetError(e))\n        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code),",
+      "replace": "      if (e === \"\\u0000never\")\n        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code),",
+      "expectRed": "an unresolvable target exits 2",
+      "cell": "an unresolvable target exits 2"
+    },
+    {
+      "name": "a space catalog that stopped a structured command is reported unknown",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      if (e instanceof CatalogPreparationError) failureExit(cmd, new CommandFailure(\"refused\", e.code, e.message), json);\n",
+      "replace": "",
+      "expectRed": "a space catalog that stopped the command exits 2",
+      "cell": "a space catalog that stopped the command exits 2"
+    },
+    {
+      "name": "an unanswered read is not classified",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  \"deadline-exceeded\": \"TARGET_UNAVAILABLE\",\n",
+      "replace": "",
+      "expectRed": "an unanswered read is an unavailable target",
+      "cell": "an unanswered read is an unavailable target"
+    },
+    {
+      "name": "a denied read is not classified",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  \"permission-denied\": \"PERMISSION_DENIED\",\n",
+      "replace": "",
+      "expectRed": "a denied read is PERMISSION_DENIED",
+      "cell": "a denied read is PERMISSION_DENIED"
+    },
+    {
+      "name": "a read failure nothing classifies is unknown",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "  return code ? new CommandFailure(\"refused\", code, message, opts) : new CommandFailure(\"failed\", \"OPERATION_FAILED\", message, opts);\n",
+      "replace": "  return code ? new CommandFailure(\"refused\", code, message, opts) : new CommandFailure(\"unknown\", \"OPERATION_UNKNOWN\", message, opts);\n",
+      "expectRed": "a read that failed for an unclassified reason is failed, not unknown",
+      "cell": "a read that failed for an unclassified reason is failed, not unknown"
     },
     {
       "name": "a command may declare a global flag",

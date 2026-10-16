@@ -33,7 +33,7 @@ import {
 } from "@cotal-ai/core";
 import { PermissionViolationError, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth } from "@cotal-ai/workspace";
+import { CommandFailure, controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
 import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
 import { c, staleStoreHint } from "../ui.js";
 import { cliVersion } from "./version.js";
@@ -220,20 +220,28 @@ export const onFlag = { name: "on", type: "string", value: "<instance>", descrip
  *  shape-checked here now, against core's own lifecycle-token grammar: the mint's bare grammar
  *  error named neither the identifier `--on` wants nor where to read it, which cost operators
  *  spawn attempts on a format mismatch (#423). */
-export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
+export function onInstance(on: string | undefined, verb: string): string | undefined {
   if (on === undefined) return undefined;
-  if (on === "") {
-    console.error(c.red(`✗ --on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`));
-    process.exit(1);
-  }
+  if (on === "")
+    throw new CommandFailure("refused", "USAGE_INVALID", `--on requires a manager instance id (the whole id, as \`cotal ps\` prints it): \`${verb} --on <instance>\`. An empty value is refused, not dropped`);
   try {
     assertLifecycleToken(on, "instanceId");
   } catch (e) {
     const principalClause = on.startsWith("local.") ? `; "${on}" is a principal id` : "";
-    console.error(c.red(`✗ ${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance <id>\` fact under \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``));
-    process.exit(1);
+    throw new CommandFailure("refused", "USAGE_INVALID", `${(e as Error).message}. --on wants the manager INSTANCE id as \`cotal ps\` prints it (the \`manager <id>\` header in a multi-manager space, the \`instance\` field of \`cotal ps --wide\`), not the roster's principal id (\`local.U…\`, as \`cotal endpoints\` shows it)${principalClause}: \`${verb} --on <instance>\``);
   }
   return on;
+}
+
+/** {@link onInstance} for a command that reports no structured output: the refusal is printed and
+ *  ends the process with exit 1. */
+export function onInstanceOrExit(on: string | undefined, verb: string): string | undefined {
+  try {
+    return onInstance(on, verb);
+  } catch (e) {
+    console.error(c.red(`✗ ${(e as Error).message}`));
+    process.exit(1);
+  }
 }
 
 /** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never
@@ -352,10 +360,12 @@ export interface ScatterInstanceReply {
   reachable: boolean;
   data?: unknown;
   error?: string;
+  /** The endpoint's error code beside `error`, when its refusal carried one. */
+  code?: string;
   /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
   liveness?: ScatterInstanceLiveness;
 }
-export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string };
+export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string; code?: string; unanswered?: boolean };
 
 /** Open one short-lived control connection under whichever of the three auth shapes this command
  *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
@@ -595,8 +605,8 @@ async function askManagerScatterEp(
       return (await freezeExpectedSet(jsm, space, BASELINE_LIFECYCLE_ENDPOINT)).map((f) => f.instanceId);
     });
   } catch (e) {
-    const { error } = epRailFailure(e);
-    return { ok: false, error: error ?? "error" };
+    const { error, code, unanswered } = epRailFailure(e);
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}) };
   }
 
   // ---- the LOCAL pinned re-mint, decided by {@link scatterProbeMaterial} rather than inline.
@@ -638,7 +648,7 @@ async function askManagerScatterEp(
       const instances: ScatterInstanceReply[] = [];
       for (const [instanceId, ar] of result.replies) {
         if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error" });
+        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error", ...(ar.reply.error?.code ? { code: ar.reply.error.code } : {}) });
       }
       // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
       // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.
@@ -647,8 +657,8 @@ async function askManagerScatterEp(
       return { ok: true, instances };
     });
   } catch (e) {
-    const { error } = epRailFailure(e);
-    return { ok: false, error: error ?? "error" };
+    const { error, code, unanswered } = epRailFailure(e);
+    return { ok: false, error: error ?? "error", ...(code === undefined ? {} : { code }), ...(unanswered ? { unanswered } : {}) };
   }
 }
 
@@ -671,6 +681,31 @@ export async function scatterManager(
   const who = controlCaller(auth);
   if ("refusal" in who) return { ok: false, error: who.refusal };
   return askManagerScatterEp(space, server, op, { ...auth, epCaller: who.caller }, spaceAuth, timeoutMs);
+}
+
+/** The stable code a refused manager READ reports, by the endpoint's catalog code. A read has no
+ *  effect, so an outcome the catalog does not classify is a failed read, never an unknown one. */
+const READ_REFUSALS: Readonly<Record<string, RefusalCode>> = {
+  unauthenticated: "AUTH_REQUIRED",
+  "permission-denied": "PERMISSION_DENIED",
+  "not-found": "TARGET_NOT_FOUND",
+  unavailable: "TARGET_UNAVAILABLE",
+  "deadline-exceeded": "TARGET_UNAVAILABLE",
+  unimplemented: "UNSUPPORTED",
+  "contract-mismatch": "UNSUPPORTED",
+  conflict: "CONFLICT",
+};
+
+/** A manager read that did not answer, as the classified failure a structured command reports: the
+ *  same sentence, the endpoint's own code under `error.cause`, and the stale-store hint as its remedy
+ *  when one applies. A request nobody answered carries `deadline-exceeded`, an unavailable target. */
+export function readFailure(reply: { error?: string; code?: string; details?: unknown }, target?: unknown): CommandFailure {
+  const message = reply.error ?? "the manager refused the read";
+  const remedy = staleStoreHint(message);
+  const native = reply.code === undefined && reply.details === undefined ? undefined : { ...(reply.code === undefined ? {} : { code: reply.code }), ...(reply.details === undefined ? {} : { detail: reply.details }) };
+  const opts = { target, ...(remedy ? { remedy } : {}), ...(native ? { native } : {}) };
+  const code = reply.code === undefined ? undefined : READ_REFUSALS[reply.code];
+  return code ? new CommandFailure("refused", code, message, opts) : new CommandFailure("failed", "OPERATION_FAILED", message, opts);
 }
 
 export function failIfNotOk(reply: ControlReply): void {

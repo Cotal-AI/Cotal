@@ -29,6 +29,9 @@ import { findMesh, getCurrent, pruneMesh, type UserAuthInfo } from "./mesh-regis
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
 import { renderWorkspaceError } from "./render.js";
+import { CommandFailure, type RefusalCode } from "./output.js";
+import type { MeshTargetErrorCode } from "./mesh-target.js";
+import type { PreflightFailure } from "./preflight.js";
 
 /**
  * The one way every command that touches a running mesh figures out WHICH mesh + with what creds,
@@ -264,6 +267,7 @@ export function refuseStaticCredsForKnownUserAuth(space: string, server: string 
   throw new ConnectRefusal(
     `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
     `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
+    { code: "AUTH_REQUIRED" },
   );
 }
 
@@ -296,13 +300,86 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  */
 export type ConnectRefusalKind = "transient" | "permanent";
 
+const REFUSAL_BRAND = Symbol.for("cotal.ConnectRefusal");
+
 export class ConnectRefusal extends Error {
+  /** A brand that survives two copies of this module, where `instanceof` would not. */
+  readonly [REFUSAL_BRAND] = true;
   readonly kind: ConnectRefusalKind;
-  constructor(readonly rendered: string, readonly hint?: string, options?: { cause?: unknown; kind?: ConnectRefusalKind }) {
+  /** The stable code a structured command reports this refusal under (`AUTH_REQUIRED`,
+   *  `TARGET_UNAVAILABLE`, ...). Every refusal names one, so none reaches a script unclassified. */
+  readonly code: RefusalCode;
+  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
-    this.kind = options?.kind ?? "permanent";
+    this.kind = options.kind ?? "permanent";
+    this.code = options.code;
   }
+
+  /** This refusal as a command's classified failure: the same sentence and hint, and its code. */
+  failure(): CommandFailure {
+    const remedy = this.hint?.trim();
+    return new CommandFailure("refused", this.code, this.rendered.replace(/^✗ /, ""), remedy ? { remedy } : {});
+  }
+}
+
+export function isConnectRefusal(e: unknown): e is ConnectRefusal {
+  return typeof e === "object" && e !== null && (e as { [REFUSAL_BRAND]?: unknown })[REFUSAL_BRAND] === true;
+}
+
+/** The stable code for a mesh target that cannot be resolved. */
+export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
+  switch (code) {
+    case "no-meshes":
+    case "unknown-space":
+    case "user-auth-unrecorded":
+      return "TARGET_NOT_FOUND";
+    case "ambiguous-target":
+      return "TARGET_AMBIGUOUS";
+    case "default-occupied":
+      return "CONFLICT";
+    case "stale-auth-root":
+    case "unreadable-auth":
+      return "DEPENDENCY_UNAVAILABLE";
+  }
+}
+
+/** The stable code for a preflight that did not connect: an outage, a credential the broker needs
+ *  or a fresh one, or a credential it refused. */
+function preflightCode(failure: PreflightFailure): RefusalCode {
+  switch (failure) {
+    case "unreachable":
+    case "slow-link":
+      return "TARGET_UNAVAILABLE";
+    case "registry-open-now-auth":
+    case "open-wants-auth":
+    case "stale-auth":
+      return "AUTH_REQUIRED";
+    case "registry-creds-rejected":
+    case "creds-rejected":
+      return "PERMISSION_DENIED";
+    case "tls-trust":
+      return "DEPENDENCY_UNAVAILABLE";
+  }
+}
+
+/** Why a user-auth provider could not issue credentials, when it says: no sign-in session
+ *  (`signed-out`), its service did not answer (`unavailable`), or it answered and refused this actor
+ *  (`refused`). A provider sets it as the thrown error's `code`; anything else is unclassified. */
+export type CredentialFailure = "signed-out" | "unavailable" | "refused";
+
+/** An error a user-auth provider throws, carrying its {@link CredentialFailure}. */
+export function credentialFailure(code: CredentialFailure, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function credentialCode(e: unknown): RefusalCode {
+  const code = (e as { code?: unknown } | undefined)?.code;
+  if (code === "signed-out") return "AUTH_REQUIRED";
+  if (code === "refused") return "PERMISSION_DENIED";
+  // A provider that cannot issue credentials for a reason it does not name is still a dependency
+  // the command could not use; it is not reported as a sign-in the operator could fix.
+  return "DEPENDENCY_UNAVAILABLE";
 }
 
 /** The exiting disposition, in ONE place: print what the refusal already decided to say, and end
@@ -334,7 +411,7 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     // slip past the flip.
     refuseStaticCredsForKnownUserAuth(space, flags.server, "--creds");
     const server = flags.server ?? DEFAULT_SERVER;
-    if (!existsSync(flags.creds)) throw new ConnectRefusal(`✗ creds file not found: ${flags.creds}`);
+    if (!existsSync(flags.creds)) throw new ConnectRefusal(`✗ creds file not found: ${flags.creds}`, undefined, { code: "USAGE_INVALID" });
     const creds = readFileSync(flags.creds, "utf8");
     // An explicit `--creds` file is an off-registry connect: no mesh record, so no recorded TLS
     // intent to inherit. It stays non-strict, and that is a real (documented) gap rather than a
@@ -354,6 +431,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     if (hasUserAuthState(findCotalRoot(), flags.space))
       throw new ConnectRefusal(
         `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
+        undefined,
+        { code: "TARGET_NOT_FOUND" },
       );
     // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
     // is no intent to honour. Non-strict, same documented gap as `--creds`.
@@ -380,6 +459,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     if (role === "control-caller-privileged" || role === "control-caller-admin")
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
+        undefined,
+        { code: "UNSUPPORTED" },
       );
     // A workflow run's own profiles are minted by the space signer, which a client of a user-auth
     // mesh does not hold; the bearer carries none of their rows. The hosted path refuses too (the
@@ -387,6 +468,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
     if (role === "run-driver" || role === "run-mediator" || role === "run-operator")
       throw new ConnectRefusal(
         `✗ cannot mint the "${role}" credential on a user-mode mesh - a run's driver rides a credential only the space signer mints (SPEC 14.6), and a user-auth mesh hosts no runs yet either. Run programs on a static-auth mesh.`,
+        undefined,
+        { code: "UNSUPPORTED" },
       );
     return userConnectOrThrow(target);
   }
@@ -455,6 +538,8 @@ export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: C
   if (target.mode === "auth" && !target.auth) {
     throw new ConnectRefusal(
       `✗ mesh "${target.space}" is a static-auth mesh but the seed under ${target.root} is missing. Restore the seed at that checkout. This mesh is not open.`,
+      undefined,
+      { code: "DEPENDENCY_UNAVAILABLE" },
     );
   }
   await preflightOrThrow(target, creds);
@@ -508,7 +593,7 @@ export async function connectUserControlOrExit(flags: ConnectFlags): Promise<Con
 export async function connectUserControlOrThrow(flags: { server?: string; space?: string }): Promise<Connection> {
   const target = await resolveTargetOrThrow(flags);
   if (target.mode !== "user")
-    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`);
+    throw new ConnectRefusal(`✗ connectUserControlOrThrow requires a user-auth mesh (resolved mode is "${target.mode}")`, undefined, { code: "UNSUPPORTED" });
   return userConnectOrThrow(target);
 }
 
@@ -526,7 +611,7 @@ async function userConnectOrThrow(target: MeshTarget): Promise<Connection> {
   try {
     return await userConnect(target);
   } catch (e) {
-    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e });
+    throw new ConnectRefusal(`✗ ${e instanceof Error ? e.message : String(e)}`, undefined, { cause: e, code: credentialCode(e) });
   }
 }
 
@@ -583,7 +668,9 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }), undefined, { kind });
+  const code: RefusalCode =
+    kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }), undefined, { kind, code });
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
@@ -615,7 +702,7 @@ export async function resolveTargetOrThrow(flags: {
     // its broker is back. A record that exists and is broken, or several that match, is not.
     if (isWorkspaceTargetError(e)) {
       const kind = e.code === "no-meshes" || e.code === "unknown-space" ? "transient" : "permanent";
-      throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind });
+      throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind, code: targetErrorCode(e.code) });
     }
     throw e;
   }
@@ -645,7 +732,7 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
     throw new ConnectRefusal(
       `✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`,
       undefined,
-      { kind: "transient" },
+      { kind: "transient", code: "TARGET_UNAVAILABLE" },
     );
   }
   const r = await preflightTarget(target, probeCreds);
@@ -656,7 +743,7 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
   const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }), undefined, { kind });
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }), undefined, { kind, code: preflightCode(r.kind) });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */

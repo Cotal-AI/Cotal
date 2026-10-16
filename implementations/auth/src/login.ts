@@ -32,7 +32,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeJwt } from "jose";
 import { isLoopbackLiteral, mkSecretDir, writeSecretFileAtomic, type AuthSpaceCatalogAccount, type AuthSpaceCatalogResult } from "@cotal-ai/core";
-import { acquireLock } from "@cotal-ai/workspace";
+import { acquireLock, credentialFailure } from "@cotal-ai/workspace";
 
 /** A cached IdP login. `token` is the IdP session bearer (Better Auth: `session.token`) — an
  *  opaque revocable handle, never a JWT. `expiresAt` (unix seconds) is advisory for messages;
@@ -687,7 +687,8 @@ export function requireIdpSession(dir: string, idpUrl: string): IdpSession {
   const key = normalizeIdpUrl(idpUrl);
   const s = loadIdpSession(dir, key);
   if (!s)
-    throw new Error(
+    throw credentialFailure(
+      "signed-out",
       `not logged in to ${key} - this space requires a user identity and there is no anonymous fallback; run \`cotal login --idp ${key}\``,
     );
   return s;

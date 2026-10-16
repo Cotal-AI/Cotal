@@ -14,7 +14,7 @@
  *    discovery file the daemon writes only after BOTH planes are bound, then confirm /health).
  */
 import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, type AuthProvider, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAdminAuthorizationResult, type RemoteManagerAuthorityMaterial, type RemoteManagerAuthorityRequest, type RemoteManagerGoalIndexScanRequest, type RemoteManagerGoalIndexScanResult, type RemoteManagerMaintenanceRequest, type RemoteManagerMaintenanceResult, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagedAgentRuntimeRequest, type RemoteManagedAgentRuntimeResult, type RemoteRetainedAgentValidationRequest, type RemoteRetainedAgentValidationResult, type RemoteRunAdmissionRequest, type RemoteRunAdmissionResult, type RemoteRunAttemptRequest, type RemoteRunAttemptResult, type SecretStore, type UserCredentialsRequest } from "@cotal-ai/core";
-import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
+import { assertUserAuthInfo, credentialFailure, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { acquireLock } from "@cotal-ai/core";
@@ -205,7 +205,8 @@ export const cotalAuthProvider: AuthProvider = {
           `Refusing rather than claiming it is down: verify with \`ps -p ${info.pid}\` before restarting anything.`,
       );
     if (!info || !pidAlive(info.pid))
-      throw new Error(
+      throw credentialFailure(
+        "unavailable",
         `the user-auth service for space "${space}" is not running - restart it with \`cotal up\` (or \`cotal auth-service --space ${space} --server <broker>\`)`,
       );
     // Fresh short-lived IdP proof per connect — IdP-side revocation bites HERE, at the next fetch.
@@ -219,7 +220,8 @@ export const cotalAuthProvider: AuthProvider = {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (e) {
-      throw new Error(
+      throw credentialFailure(
+        "unavailable",
         `the user-auth service for space "${space}" did not answer at ${info.url} (${e instanceof Error ? e.message : String(e)}) - restart it with \`cotal up\``,
       );
     }
@@ -227,7 +229,8 @@ export const cotalAuthProvider: AuthProvider = {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       // A refused exchange is an authenticated denial with the reason (an ungranted actor names
       // the grant command); surface it verbatim — the service's copy is already operator-exact.
-      throw new Error(
+      throw credentialFailure(
+        "refused",
         `signed in, but the exchange for actor "${actor}"${view ? ` (view "${view}")` : ""} was refused: ${body.error ?? `HTTP ${res.status}`}`,
       );
     }
@@ -688,7 +691,8 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
       signal: AbortSignal.timeout(15_000),
     });
   } catch (e) {
-    throw new Error(
+    throw credentialFailure(
+      "unavailable",
       `the exchange for space "${space}" did not answer at ${exchangeUrl} (${e instanceof Error ? e.message : String(e)}) - check the network, or re-register with \`cotal meshes add ${space} --from <url>\` if the mesh moved`,
     );
   }
@@ -701,7 +705,8 @@ async function remoteUserCredentials(request: UserCredentialsRequest): Promise<{
     // none, say so rather than presenting the bare HTTP status as if it were the reason - this
     // client cannot tell a real service sentence from a status code dressed up as one.
     const actorLabel = `actor "${actor}"${view ? ` (view "${view}")` : ""}`;
-    throw new Error(
+    throw credentialFailure(
+      "refused",
       body.error
         ? `signed in, but the exchange for ${actorLabel} was refused: ${body.error}`
         : `signed in, but the exchange for ${actorLabel} was refused, and the exchange face withheld the reason (HTTP ${res.status})`,

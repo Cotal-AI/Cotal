@@ -220,8 +220,13 @@ async function completionOut(positionals: string[]): Promise<string> {
     mkdirSync(join(extensionsManifestPath(), ".."), { recursive: true });
     writeFileSync(extensionsManifestPath(), "{ not json");
     const corrupt = JSON.parse(await capture(["version", "--json"]));
-    assert.equal(corrupt.outcome, "ok", "version --json still reports the binary's version");
-    assert.equal(corrupt.completeness, "partial", "an unreadable manifest makes the extension list partial, not empty and complete");
+    const partialExit = process.exitCode;
+    process.exitCode = 0;
+    assert.equal(corrupt.result?.version, clean.result.version, "version --json still reports the binary's version");
+    assert.equal(corrupt.outcome, "partial", "an unreadable manifest makes the read partial, not empty and complete");
+    assert.equal(corrupt.completeness, "partial", "an unreadable manifest makes the extension list partial");
+    assert.equal(corrupt.error?.code, "OPERATION_PARTIAL", "a partial read carries OPERATION_PARTIAL");
+    assert.equal(partialExit, 4, "a partial read exits 4");
     assert.equal(corrupt.warnings[0]?.code, "EXTENSIONS_UNREADABLE", "an unreadable manifest is named in a warning");
   } finally {
     rmSync(xdg, { recursive: true, force: true });
@@ -282,6 +287,21 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(plain.envelope?.error?.code, "OPERATION_UNKNOWN", "an unclassified error from a structured command is unknown");
     assert.equal(plain.envelope?.error?.message, "socket closed mid-request", "the unknown envelope keeps the error's message");
 
+    // A target the command could not resolve or reach is refused under the refusal's own code, not
+    // reported as an unknown outcome.
+    const refusal = run("probe", "--json", "--fail", "refusal");
+    assert.equal(refusal.status, 2, "a connect refusal from a structured command exits 2");
+    assert.equal(refusal.envelope?.error?.code, "TARGET_UNAVAILABLE", "a connect refusal keeps its code");
+    assert.equal(refusal.envelope?.error?.message, "can't reach a broker at nats://127.0.0.1:1", "a connect refusal's message drops the mark");
+    assert.equal(refusal.envelope?.error?.remedy, "start it with `cotal up`", "a connect refusal's hint is its remedy");
+    const target = run("probe", "--json", "--fail", "target");
+    assert.equal(target.status, 2, "an unresolvable target exits 2");
+    assert.equal(target.envelope?.error?.code, "TARGET_AMBIGUOUS", "an ambiguous target is TARGET_AMBIGUOUS");
+    assert.match(target.envelope?.error?.message ?? "", /multiple meshes running - a \(\/a\), b \(\/b\)/, "an unresolvable target keeps its rendered sentence");
+    const catalog = run("probe", "--json", "--fail", "catalog");
+    assert.equal(catalog.status, 2, "a space catalog that stopped the command exits 2");
+    assert.equal(catalog.envelope?.error?.code, "DEPENDENCY_UNAVAILABLE", "a failed catalog refresh is DEPENDENCY_UNAVAILABLE");
+
     const bogus = run("probe", "--json", "--bogus");
     assert.equal(bogus.status, 1, "a usage error under --json exits 1");
     assert.equal(bogus.envelope?.error?.code, "USAGE_INVALID", "a usage error under --json is one USAGE_INVALID envelope");
@@ -301,6 +321,23 @@ async function completionOut(positionals: string[]): Promise<string> {
   } finally {
     rmSync(sandbox, { recursive: true, force: true });
   }
+}
+
+// --- a refused manager read becomes the failure its catalog code names -----------------------------
+{
+  const { readFailure } = await import("../src/lib/control.js");
+  // The reply a request nobody answered carries: the deadline the caller waited out.
+  const silent = readFailure({ error: "no describe reply from cotal.manager within 3000ms on the ep rail", code: "deadline-exceeded" }, { space: "s" });
+  assert.equal(`${silent.outcome}/${silent.code}`, "refused/TARGET_UNAVAILABLE", "an unanswered read is an unavailable target");
+  assert.deepEqual(silent.target, { space: "s" }, "a refused read names its target");
+  const denied = readFailure({ error: "not permitted", code: "permission-denied" });
+  assert.equal(`${denied.outcome}/${denied.code}`, "refused/PERMISSION_DENIED", "a denied read is PERMISSION_DENIED");
+  assert.deepEqual(denied.native, { code: "permission-denied" }, "a refused read keeps the endpoint's code as its cause");
+  assert.equal(readFailure({ error: "x", code: "unauthenticated" }).code, "AUTH_REQUIRED", "an unauthenticated read needs a sign-in");
+  assert.equal(readFailure({ error: "x", code: "contract-mismatch" }).code, "UNSUPPORTED", "a read the manager's contract does not serve is UNSUPPORTED");
+  const internal = readFailure({ error: "boom", code: "internal" });
+  assert.equal(`${internal.outcome}/${internal.code}`, "failed/OPERATION_FAILED", "a read that failed for an unclassified reason is failed, not unknown");
+  assert.equal(readFailure({ error: "boom" }).code, "OPERATION_FAILED", "a read failure with no code is failed");
 }
 
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------

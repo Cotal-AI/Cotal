@@ -3,8 +3,9 @@
 // `legacy` declares none. Each throws what its --fail value names.
 // argv: the cotal words, e.g. `probe --json --fail conflict`
 import { Registry, type Command } from "@cotal-ai/core";
-import { CommandFailure, inputDisabledByFlag, jsonFlag, writeEnvelope } from "@cotal-ai/workspace";
+import { CommandFailure, ConnectRefusal, MeshTargetError, inputDisabledByFlag, jsonFlag, writeEnvelope } from "@cotal-ai/workspace";
 import { runCli } from "../src/command.js";
+import { CatalogPreparationError } from "../src/commands/sync.js";
 
 function fail(kind: unknown): void {
   if (kind === "conflict")
@@ -17,6 +18,9 @@ function fail(kind: unknown): void {
   if (kind === "partial") throw new CommandFailure("partial", "OPERATION_PARTIAL", "one of two stopped", { changed: [{ seat: "a" }] });
   if (kind === "failed") throw new CommandFailure("failed", "OPERATION_FAILED", "nothing stopped");
   if (kind === "plain") throw new Error("socket closed mid-request");
+  if (kind === "refusal") throw new ConnectRefusal("✗ can't reach a broker at nats://127.0.0.1:1", "  start it with `cotal up`", { code: "TARGET_UNAVAILABLE", kind: "transient" });
+  if (kind === "target") throw new MeshTargetError("ambiguous-target", "two meshes", { available: ["a (/a)", "b (/b)"] });
+  if (kind === "catalog") throw new CatalogPreparationError("space catalog for https://idp.example failed: HTTP 503", "DEPENDENCY_UNAVAILABLE");
 }
 
 const probe: Command = {
