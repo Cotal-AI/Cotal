@@ -1,9 +1,17 @@
 let colorDisabled = false;
 
-/** `--no-color`: no ANSI color for the rest of this process, whatever the environment says. It is
- *  process state rather than `NO_COLOR`, so it does not reach the children a command starts. */
+/** `--no-color`: no ANSI color for the rest of this process, whatever the environment says. It sets
+ *  no `NO_COLOR`, so the children a command starts keep their own color. Libraries that color
+ *  through `node:util` (the prompts) ask the terminal stream, or a set `FORCE_COLOR` before it, so
+ *  the streams report no color and `FORCE_COLOR` is dropped: a child is no longer forced into color. */
 export function disableColor(): void {
   colorDisabled = true;
+  delete process.env.FORCE_COLOR;
+  for (const stream of [process.stdout, process.stderr]) {
+    if (!stream.isTTY) continue;
+    stream.getColorDepth = () => 1;
+    stream.hasColors = () => false;
+  }
 }
 
 /** Whether operator output gets ANSI color. `--no-color` wins. Then a set `FORCE_COLOR` is checked,

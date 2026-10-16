@@ -73,6 +73,23 @@ try {
   ptys.push(wizardPty);
   const w = session(wizardPty);
   check("control: meshes add on a terminal opens the guided form", await until(() => w.text().includes("Register a mesh")), w.text());
+  // The guided form is drawn with the setup theme, which once decided color when it loaded, before
+  // `--no-color` was read. ConPTY repaints the stream with its own sequences, so color is read on
+  // POSIX only.
+  if (process.platform !== "win32") {
+    const color = /\x1b\[[0-9;]*m/;
+    check("control: the guided form is colored on a terminal", color.test(w.raw), JSON.stringify(w.raw.slice(0, 300)));
+    const plainPty = cotalPty(["meshes", "add", "--no-color"], { cwd: home, env });
+    ptys.push(plainPty);
+    const plain = session(plainPty);
+    const drawn = await until(() => plain.text().includes("Register a mesh"));
+    check("meshes add --no-color draws the guided form with no ANSI color", drawn && !color.test(plain.raw), JSON.stringify(plain.raw.slice(0, 300)));
+    const forcedPty = cotalPty(["meshes", "add", "--no-color"], { cwd: home, env: { ...env, FORCE_COLOR: "1" } });
+    ptys.push(forcedPty);
+    const forced = session(forcedPty);
+    const forcedDrawn = await until(() => forced.text().includes("Register a mesh"));
+    check("meshes add --no-color draws no ANSI color even under FORCE_COLOR", forcedDrawn && !color.test(forced.raw), JSON.stringify(forced.raw.slice(0, 300)));
+  }
   for (const argv of [["meshes", "add", "--no-input"], ["--no-input", "meshes", "add"]]) {
     const pty = cotalPty(argv, { cwd: home, env });
     ptys.push(pty);

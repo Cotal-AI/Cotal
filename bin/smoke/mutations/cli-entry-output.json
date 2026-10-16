@@ -8,7 +8,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/cli-entry-output.json",
   "why": [
     "Scripts reach these through the installed binary, so the suite drives the built binary and each mutation rebuilds it and the restore rebuilds it back.",
-    "The theme mutation restores the bug where color was decided when the module loaded, before the kernel read --no-color."
+    "The title mutation restores the bug where help's title decided color when its module loaded, before the kernel read --no-color."
   ],
   "mutations": [
     {
@@ -52,10 +52,10 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "color is decided when the theme loads",
-      "file": "implementations/cli/src/lib/theme.ts",
-      "find": "const useAnsi = (): boolean => colorEnabled();\n",
-      "replace": "const ansiAtLoad = colorEnabled();\nconst useAnsi = (): boolean => ansiAtLoad;\n",
+      "name": "help's title decides color when it loads",
+      "file": "implementations/cli/src/help.ts",
+      "find": "const title = (): string => `${c.bold(\"cotal\")} - lateral agent coordination over NATS`;\n",
+      "replace": "const titleAtLoad = `${c.bold(\"cotal\")} - lateral agent coordination over NATS`;\nconst title = (): string => titleAtLoad;\n",
       "expectRed": "cotal --no-color help prints with no ANSI color",
       "cell": "cotal --no-color help prints with no ANSI color",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

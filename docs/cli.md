@@ -65,7 +65,8 @@ Command output, including error lines on stderr and the guided `setup` and `mesh
 is colored only when stdout is a terminal, so piped or redirected output is plain text. A non-empty
 `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
 piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`. `--no-color` turns
-color off for that run, whatever the environment says.
+color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
+run starts, but they are no longer forced into color by `FORCE_COLOR`.
 
 `--no-input` means the run never prompts, opens an editor or opens a browser. A command that would
 prompt behaves as it does without a terminal, `web` prints its link without opening it, and
