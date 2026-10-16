@@ -1,5 +1,15 @@
 # @cotal-ai/cli
 
+## 0.84.0
+
+### Patch Changes
+
+- 6d48a0b: Load Claude Code's native MCP sources by default alongside Cotal and declared overrides. Preserve explicit per-spawn sharing restrictions, carried-session isolation, native policy and narrow environment forwarding.
+- 4f16c65: Show separate bash and native zsh snippets in the completion usage banner instead of directing zsh users to the bash script.
+- Updated dependencies [6d48a0b]
+  - @cotal-ai/core@0.84.0
+  - @cotal-ai/workspace@0.84.0
+
 ## 0.83.0
 
 ### Minor Changes
