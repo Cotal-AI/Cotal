@@ -1,5 +1,11 @@
 # @cotal-ai/connector-claude-code
 
+## 0.84.0
+
+### Minor Changes
+
+- 6d48a0b: Load Claude Code's native MCP sources by default alongside Cotal and declared overrides. Preserve explicit per-spawn sharing restrictions, carried-session isolation, native policy and narrow environment forwarding.
+
 ## 0.83.0
 
 ## 0.82.2
