@@ -1,4 +1,4 @@
-import { existsSync, rmSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
+import { boot, existsSync, rmSync, join, check, cotal, freshCfg, seedDir, writeJson, listNames, track, finishScenario } from "./harness.js";
 
 try {
   // ── 4d. a durable recovery obligation (repair SIGKILL'd after quarantine) is honored, not forgotten ─
@@ -11,7 +11,7 @@ try {
     if (existsSync(mainEntry)) {
       rmSync(mainEntry, { force: true });
       writeJson(join(seedDir(cfg), "reconcile.recovery.json"), { rebuildFromDisk: true, repairAllSeeded: true });
-      const auto = cotal(cfg, ["ext", "list"]);
+      const auto = boot(cfg);
       check("recovery obligation: an auto boot fails loud (does not stamp success over it)", auto.status !== 0 && /interrupted/i.test(auto.stderr), auto.stderr);
       const rep = cotal(cfg, ["ext", "seed", "--repair"]);
       check("recovery obligation: --repair honors it and restores the torn connector", rep.status === 0 && existsSync(mainEntry), rep.stderr);

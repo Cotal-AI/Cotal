@@ -799,7 +799,7 @@ function machineSection(m: StatusResult["machine"]): Section {
     ...m.integrations.map((r): [string, Cell] => [r.name, cell(r.text, tone[r.state])]),
   ];
   if (m.connectors === null) rows.push(["Connectors", cell("unreadable - see the warning below", "failed")]);
-  else if (!m.connectors.length) rows.push(["Connectors", cell(`none installed · ${displayCmd()} ext seed`, "hint")]);
+  else if (!m.connectors.length) rows.push(["Connectors", cell(`none installed · ${displayCmd()} setup`, "hint")]);
   for (const h of m.connectors ?? [])
     rows.push([h.name, h.missing.length ? cell(`${h.missing.join(", ")} not on PATH`, "hint") : cell(h.requires.length ? `${h.requires.join(", ")} on PATH` : "in-process", "ok")]);
   rows.push(["Skills (.agents)", skillsCell(m.skills)]);

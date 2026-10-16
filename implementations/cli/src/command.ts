@@ -113,15 +113,17 @@ async function extSeedGate(registry: Registry, argv: string[]): Promise<boolean>
 }
 
 /**
- * Whether a validated invocation skips the connector seed. Every real command reconciles first (so
- * `npm i -g cotal-ai && cotal ext list` shows the four, and a first-command `ext add` still seeds),
- * EXCEPT help, version, completion and the cases below. `name` is the canonical command and `sub` its
- * first positional; an AUTHENTIC seed CHILD is an `ext add` whose `COTAL_EXT_SEEDING` nonce + parent
- * PID match the live reconcile lock (a forged marker no longer skips, so it can't bypass the
- * recursive-reconcile guard or the lock).
+ * Whether a validated invocation skips the connector seed. Every command reconciles first (so a
+ * first-command `ext add` still seeds, and the first command after an upgrade refreshes what is
+ * installed), EXCEPT help, version, completion, a read its command declares and the cases below. A
+ * read never repairs as a hidden prelude. `name` is the canonical command, `cmd` the command when it
+ * resolved, and `sub` its first positional; an AUTHENTIC seed CHILD is an `ext add` whose
+ * `COTAL_EXT_SEEDING` nonce + parent PID match the live reconcile lock (a forged marker no longer
+ * skips, so it can't bypass the recursive-reconcile guard or the lock).
  */
-function skipsSeed(name: string, sub: string | undefined, argv: readonly string[]): boolean {
+function skipsSeed(name: string, sub: string | undefined, argv: readonly string[], cmd?: Command): boolean {
   if (name === "help" || name === "version" || name === "__complete" || name === "completion") return true;
+  if (cmd && readsOnly(cmd, sub)) return true;
   // A dry run promises to plan and print while mutating NOTHING, and the boot-gate reconcile is a
   // mutation of the operator-global seed store, manifest and npm prefix — it ran BEFORE the command
   // body could reject the invocation, so `down --preserve-state --dry-run` (an unsupported
@@ -135,7 +137,6 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // so the child doesn't redo the seed on boot. A USER running the same public command directly (e.g.
   // `cotal supervise --roster`, the agent supervisor + container entrypoint) still seeds on first run.
   if (process.env.COTAL_SKIP_CONNECTOR_SEED === "1") return true;
-  if (name === "ext" && sub === "root") return true; // a side-effect-free path print: no seed noise, so `$(cotal ext root)` stays exactly one line even on first run
   if (name === "ext" && sub === "seed") return true; // the explicit maintenance command self-reconciles
   if (name === "ext" && sub === "add" && isAuthenticSeedChild()) return true; // a seed child must not recurse
   // `agent-bearer` is machine-facing: a spawned seat execs it on EVERY bearer refresh to read one 0600
@@ -146,6 +147,12 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // COTAL_SKIP_CONNECTOR_SEED (only an operator-set one is forwarded), so the skip is by name.
   if (name === "agent-bearer") return true;
   return false;
+}
+
+/** Whether the invocation is a mode its command declares as a read ({@link Command.reads}). */
+function readsOnly(cmd: Command, first: string | undefined): boolean {
+  const sub = findSubcommand(cmd, first);
+  return sub ? sub.reads === true : cmd.reads === true;
 }
 
 /** node's parseArgs throws these for unknown/malformed flags; treat as a usage error. */
@@ -304,7 +311,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
   // ---- Effects: only a validated invocation reaches this line. ----
   // The seed can install or upgrade an extension package, so the surface is read again after it and
   // an extension stub resolves against the manifest the seed left.
-  if (opts.extensions && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest)) {
+  if (opts.extensions && !skipsSeed(cmd?.name ?? word, parsed ? parsed.positionals[0] : rest[0], rest, cmd)) {
     try {
       await reconcileSeededConnectors();
     } catch (e) {

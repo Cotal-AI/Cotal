@@ -30,7 +30,6 @@ export async function topology(args: ParsedArgs): Promise<void> {
   }
 }
 
-/** Print a manifest/file error as one red block (located issues for a ManifestError) and exit 1. */
 /** A manifest's declared space is the operation's target, so an explicit `--space` may only name the
  *  same space; another one is refused before anything is written. */
 export function refuseManifestSpaceMismatch(prepared: PreparedManifest, space: string | undefined): void {
@@ -39,6 +38,7 @@ export function refuseManifestSpaceMismatch(prepared: PreparedManifest, space: s
   process.exit(1);
 }
 
+/** Print a manifest/file error as one red block (located issues for a ManifestError) and exit 1. */
 export function failManifest(e: unknown): never {
   if (e instanceof ManifestError) console.error(c.red(e.message));
   else if ((e as NodeJS.ErrnoException)?.code === "ENOENT")

@@ -190,17 +190,20 @@ For ergonomics only, an npx run with no global `cotal` offers to `npm i -g cotal
 (`offerGlobalInstall`, pinned to the running version): gated on `isNpx()` plus a PATH scan
 (`cotalOnPath()`, not an exec probe, since `cotal --version` is not a real command). The
 interactive prompt defaults to yes, the non-interactive path (`--yes` or no TTY) takes the
-default, and a failed install is non-fatal (warn plus manual command). The same `self-exec.ts`
-exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in the
-status-card hints so they match how you ran it.
+default, and a failed install is non-fatal (warn plus manual command). It is offered only in the
+rich presentation, so `--json` and `--plain` keep stdout for the result. The same `self-exec.ts`
+exposes `displayCmd()`, the prefix (`cotal` / `npx cotal-ai` / `pnpm cotal`) used in setup's next
+command so it matches how you ran it.
 
 ## Built-in connectors are seeded extensions
 
 The first-party connectors (`claude`, `opencode`, `codex`, `hermes`, `pi`) are **not** static-imported by
 the binary. The composition root (`bin/cotal.ts`) registers no connector; they self-register only when
-imported, and they are imported only once installed. On the first real command of each boot the CLI
-**seeds** them through the same `cotal ext add` path a third party uses, so they are ordinary
-extensions you can `cotal ext remove`. Code lives in [`implementations/cli/src/seed/`](../implementations/cli/src/seed/);
+imported, and they are imported only once installed. Before the first command of each boot that is
+not a read, the CLI **seeds** them through the same `cotal ext add` path a third party uses, so they
+are ordinary extensions you can `cotal ext remove`. A command or subcommand that declares `reads`
+installs and refreshes nothing, and the CLI never imports a built-in whose installed version differs
+from the binary's: it names the package with `cotal ext seed` instead. Code lives in [`implementations/cli/src/seed/`](../implementations/cli/src/seed/);
 the entry is `reconcileSeededConnectors()`, gated in `runCli` before the manifest overlay so
 `ext seed --repair` survives a corrupt manifest.
 

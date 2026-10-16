@@ -72,6 +72,8 @@ export interface Subcommand {
   /** Structured outputs this mode implements. A mode that declares none reports as plain text with
    *  the command's usual exit, whatever its command declares for the bare form. */
   readonly outputs?: readonly OutputMode[];
+  /** This mode only reads. See {@link Command.reads}. */
+  readonly reads?: true;
 }
 
 /** A structured output a command implements, beside its human text: one JSON document, a stream of
@@ -97,6 +99,10 @@ export interface Command extends Extension {
   readonly outputs?: readonly OutputMode[];
   /** Full example invocations shown in its help. */
   readonly examples?: readonly string[];
+  /** The command only reads: a composition root installs and refreshes nothing before it runs, so a
+   *  read never repairs as a hidden prelude. In a command with subcommands this covers the bare form,
+   *  and each subcommand declares its own. Absent means the root may prepare what the command uses. */
+  readonly reads?: true;
   /** Help grouping header (e.g. "Mesh", "Control plane"). Defaults to "Commands". */
   readonly group?: string;
   /** Overrides the generated usage line — for sub-grammar commands

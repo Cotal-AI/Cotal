@@ -63,6 +63,25 @@ For a space that runs elsewhere, register it first with `cotal space add`, or pa
 operator exported with `--connection-file`, and use `--destination self-hosted` with the
 registration's root as `--project`.
 
+## Reads that install nothing after 0.82.0 (unreleased)
+
+A read no longer installs or refreshes the built-in connectors and the web dashboard before it
+runs. Nothing on a running mesh changes, and there is no outage window.
+
+### What stops working
+
+- On a fresh machine, `cotal status`, `cotal ext list`, `cotal ps`, `cotal runtimes`, `cotal docs`
+  and the other reads leave the extension root empty. `cotal setup`, or any command that is not a
+  read, installs the built-ins as before.
+- After an upgrade, a read does not refresh the built-ins. Where it would load one still at the
+  older version, such as a connector's setup row in `cotal status`, it names the package and its
+  version with `cotal ext seed` instead of loading it.
+
+### Before the upgrade
+
+A script that ran a read to install the built-ins, such as `cotal ext list` right after
+`npm i -g cotal-ai`, runs `cotal ext seed` instead.
+
 ## Space selection after 0.82.0 (unreleased)
 
 `cotal use` and the target a command picks without `--space` change. Nothing on a running mesh
