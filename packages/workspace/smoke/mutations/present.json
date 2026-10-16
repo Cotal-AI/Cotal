@@ -1,0 +1,104 @@
+{
+  "suite": [
+    "packages/workspace/smoke/present.smoke.ts"
+  ],
+  "guard": "a report aligns by display width, becomes labeled records when the terminal is too narrow, escapes untrusted text, keeps state words in plain output, and writes one result as the envelope or as its report",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+  "completionMarker": "PRESENT SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/present.json",
+  "why": [
+    "Each mutation restores one way a terminal report can mislead: misaligned columns, a clipped or overflowing table, untrusted text that rewrites the screen, a state shown only by color or a mark, or a result whose warnings vanish. The suite imports the workspace package through its build, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "width counts code units",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  return stringWidth(text);\n",
+      "replace": "  return text.length;\n",
+      "expectRed": "a CJK character is 2 column(s) wide",
+      "cell": "a CJK character is 2 column(s) wide",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a mark's width is not counted",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(marked) };\n",
+      "replace": "  return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(text) };\n",
+      "expectRed": "rich columns line up with their marks",
+      "cell": "rich columns line up with their marks",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "cells are written unescaped",
+      "file": "packages/workspace/src/present.ts",
+      "find": "const textOf = (cell: Cell): string => oneLine(typeof cell === \"string\" ? cell : cell.text);\n",
+      "replace": "const textOf = (cell: Cell): string => (typeof cell === \"string\" ? cell : cell.text);\n",
+      "expectRed": "untrusted cell content is escaped in plain",
+      "cell": "untrusted cell content is escaped in plain",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "bidirectional controls are written raw",
+      "file": "packages/workspace/src/one-line.ts",
+      "find": "  return text.replace(/[\\p{Cc}\\p{Zl}\\p{Zp}\\p{Bidi_Control}]/gu,",
+      "replace": "  return text.replace(/[\\p{Cc}\\p{Zl}\\p{Zp}]/gu,",
+      "expectRed": "a bidi override is escaped",
+      "cell": "a bidi override is escaped",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a table never becomes records",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  if (total <= width) {\n",
+      "replace": "  if (true) {\n",
+      "expectRed": "a narrow terminal gets labeled records",
+      "cell": "a narrow terminal gets labeled records",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "plain draws marks and color",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  if (typeof cell === \"string\" || style === \"plain\") return { shown: text, width: displayWidth(text) };\n",
+      "replace": "  if (typeof cell === \"string\") return { shown: text, width: displayWidth(text) };\n",
+      "expectRed": "plain draws no marks",
+      "cell": "plain draws no marks",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a mark may stand for a state alone",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  if (typeof cell !== \"string\" && cell.mark && !cell.text.trim()) throw",
+      "replace": "  if (false && typeof cell !== \"string\" && cell.mark && !cell.text.trim()) throw",
+      "expectRed": "a mark with no state word is refused",
+      "cell": "a mark with no state word is refused",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "--json with --plain picks json",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  if (values.json === true && values.plain === true)\n",
+      "replace": "  if (false)\n",
+      "expectRed": "--json with --plain is a USAGE_INVALID refusal",
+      "cell": "--json with --plain is a USAGE_INVALID refusal",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "warnings are dropped from text output",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  for (const warning of out.warnings ?? []) console.error(",
+      "replace": "  for (const warning of [] as OutputWarning[]) console.error(",
+      "expectRed": "plain writes each warning on stderr",
+      "cell": "plain writes each warning on stderr",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    }
+  ]
+}

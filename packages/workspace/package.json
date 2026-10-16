@@ -24,7 +24,8 @@
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
-    "@cotal-ai/core": "workspace:*"
+    "@cotal-ai/core": "workspace:*",
+    "string-width": "^8.2.1"
   },
   "devDependencies": {
     "@cotal-ai/smoke-kit": "workspace:*"

@@ -34,6 +34,7 @@ const sgr = (code: string) => (s: string) => (colorEnabled() ? `\x1b[${code}m${s
 export const c = {
   dim: sgr("2"),
   bold: sgr("1"),
+  blue: sgr("34"),
   green: sgr("32"),
   cyan: sgr("36"),
   yellow: sgr("33"),
