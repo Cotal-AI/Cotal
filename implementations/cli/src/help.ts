@@ -102,7 +102,8 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand): void {
     console.log(c.bold("flags:"));
     flags.forEach((f, i) => console.log(`  ${left[i]!.padEnd(pad)}  ${c.dim(f.description ?? "")}`));
   }
-  if (cmd.outputs?.length) console.log(c.dim(`structured output: ${cmd.outputs.join(", ")}`));
+  const outputs = (sub ?? cmd).outputs ?? [];
+  if (outputs.length) console.log(c.dim(`structured output: ${outputs.join(", ")}`));
   const examples = (sub ?? cmd).examples ?? [];
   if (examples.length) {
     console.log(c.bold("examples:"));

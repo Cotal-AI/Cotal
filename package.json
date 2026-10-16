@@ -597,6 +597,7 @@
     "smoke:status-report": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/status-report.smoke.ts",
     "smoke:who-roster": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/who-roster.smoke.ts",
     "smoke:history-read": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/history-read.smoke.ts",
+    "smoke:docs-ext-read": "pnpm --filter cotal-ai... build && tsx bin/smoke/docs-ext-read.smoke.ts",
     "smoke:legacy-manager-report": "tsx implementations/cli/smoke/legacy-manager-report.smoke.ts",
     "smoke:legacy-packaged-manager": "tsx implementations/cli/smoke/legacy-packaged-manager.smoke.ts",
     "smoke:runtime-contract": "tsx packages/core/smoke/runtime-contract.smoke.ts",

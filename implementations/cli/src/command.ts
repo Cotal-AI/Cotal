@@ -59,15 +59,18 @@ function ownWords(cmd: Command | undefined, words: readonly string[]): string[] 
   return cmd && (cmd.rawArgs || cmd.name.startsWith("__")) ? [...words] : stripGlobalFlags(words);
 }
 
-/** Whether `cmd` declares a structured output, so it reports every outcome by the 0 to 5 table. */
-function structured(cmd: Command): boolean {
-  return (cmd.outputs ?? []).some((mode) => mode === "json" || mode === "ndjson");
+/** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
+ *  table: the subcommand `first` selects, else the command's bare form. */
+function structured(cmd: Command, first: string | undefined): boolean {
+  const sub = findSubcommand(cmd, first);
+  return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
 }
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
- *  command's boolean short flags. Read from the words, because a usage error has no parse. */
+ *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
+ *  is the first word that is not a flag. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd)) return false;
+  if (!structured(cmd, args.find((word) => !word.startsWith("-")))) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
   const end = args.indexOf("--");
   return (end === -1 ? args : args.slice(0, end)).some(
@@ -197,7 +200,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   if (cmd.subcommands?.length && first !== undefined && !findSubcommand(cmd, first))
     usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
-  if (structured(cmd) && parsed.values.json === true) disableInput();
+  if (structured(cmd, first) && parsed.values.json === true) disableInput();
   return canonicalSubcommand(cmd, parsed);
 }
 
@@ -259,7 +262,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     for (const cmd of commands) {
-      const problems = [...commandDeclarationProblems(cmd), ...outputDeclarationProblems(cmd)];
+      const problems = [
+        ...commandDeclarationProblems(cmd),
+        ...outputDeclarationProblems(cmd),
+        ...(cmd.subcommands ?? []).flatMap((sub) => outputDeclarationProblems({ name: `${cmd.name} ${sub.name}`, outputs: sub.outputs, flags: cmd.flags })),
+      ];
       if (problems.length) usageExit(`internal error: ${problems.join("; ")}`);
     }
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
@@ -317,14 +324,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {
-    const json = structured(cmd) && parsed.values.json === true;
+    const mode = parsed.positionals[0];
+    const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
     if (isCommandFailure(e)) failureExit(cmd, e, json);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
-    if (structured(cmd)) {
+    if (structured(cmd, mode)) {
       if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);
       if (isWorkspaceTargetError(e))
         failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")), json);

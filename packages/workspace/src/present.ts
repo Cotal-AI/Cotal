@@ -151,7 +151,8 @@ export function presentationOf(values: { readonly json?: unknown; readonly plain
 /** One finished result in the presentation the run asked for: the envelope for `json`, otherwise the
  *  report `view` builds from the same result, fitted to the terminal stdout is, with each warning on
  *  stderr. `partial` marks a read that answered for only part of what was asked: the result keeps
- *  what was read, the outcome is `partial`, and the run exits 4. */
+ *  what was read, the outcome is `partial`, and the run exits 4. It writes only `ok` and `partial`: a
+ *  refusal or failure is thrown as a {@link CommandFailure} for the kernel to write. */
 export function writeResult<R>(
   presentation: Presentation,
   out: {

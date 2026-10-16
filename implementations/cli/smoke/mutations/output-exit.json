@@ -21,15 +21,15 @@
     {
       "name": "an unclassified error from a structured command exits 1",
       "file": "implementations/cli/src/command.ts",
-      "find": "    if (structured(cmd)) {\n",
-      "replace": "    if (false && structured(cmd)) {\n",
+      "find": "    if (structured(cmd, mode)) {\n",
+      "replace": "    if (false && structured(cmd, mode)) {\n",
       "expectRed": "an unclassified error from a structured command exits 3",
       "cell": "an unclassified error from a structured command exits 3"
     },
     {
       "name": "--json does not imply --no-input",
       "file": "implementations/cli/src/command.ts",
-      "find": "  if (structured(cmd) && parsed.values.json === true) disableInput();\n",
+      "find": "  if (structured(cmd, first) && parsed.values.json === true) disableInput();\n",
       "replace": "",
       "expectRed": "--json implies --no-input",
       "cell": "--json implies --no-input"
