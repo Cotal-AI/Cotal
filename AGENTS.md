@@ -233,6 +233,9 @@ produced them.
 
 - **Changesets.** Packages are 0.x, so a breaking change is a **minor**. The `fixed` group versions every package in lockstep, so one changeset
 bumps them all; list every package with a first-party change and write one clear summary.
+The summary's first sentence is the change's headline: the GitHub Release lists it under
+`## What changed` and the Discord announcement carries only those sentences, so write it as one
+plain sentence a user understands on its own, and put the mechanism after it.
 Verify the plan with `pnpm changeset status` before committing.
 - **PR title** is a plain Conventional Commit subject (`!` marks a breaking change). **PR body**
 states the full scope of the work, not just the headline.
