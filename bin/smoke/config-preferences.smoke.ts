@@ -82,10 +82,12 @@ const ansi = /\x1b\[/;
   check("setting the same value again is a no-op, exit 0, and writes nothing", again.status === 0 && again.envelope?.outcome === "no-op" && saved().revision === 1, shown(again));
   const plainSet = run(["config", "set", "persona", "reviewer", "--space", "demo", "--plain"]);
   check("--space saves a personal value for one space", plainSet.status === 0 && /persona = reviewer in space demo/.test(plainSet.stdout) && saved().spaces.demo?.persona === "reviewer" && saved().revision === 2, shown(plainSet));
+  run(["config", "set", "persona", "mine"]);
   const forSpace = run(["config", "--space", "demo", "--json"]);
-  check("reading through --space applies that space's value over the user's", settingOf(forSpace, "persona")?.winner?.source === "space" && settingOf(forSpace, "persona")?.winner?.name === "demo" && settingOf(forSpace, "harness")?.value === "opencode", forSpace.envelope?.result);
+  check("reading through --space applies that space's value over the user's", settingOf(forSpace, "persona")?.winner?.source === "space" && settingOf(forSpace, "persona")?.winner?.name === "demo" && settingOf(forSpace, "persona")?.shadowed[0]?.source === "user" && settingOf(forSpace, "harness")?.value === "opencode", forSpace.envelope?.result);
   const forUser = run(["config", "--user", "--json"]);
-  check("--user reads your defaults without any space's values", settingOf(forUser, "persona")?.value === "default", forUser.envelope?.result);
+  check("--user reads your defaults without any space's values", settingOf(forUser, "persona")?.value === "mine", forUser.envelope?.result);
+  run(["config", "unset", "persona"]);
   const unset = run(["config", "unset", "persona", "--space", "demo", "--json"]);
   const u = unset.envelope?.result as { previous: unknown; value: unknown } | undefined;
   check("unset removes the value and reports what it was", unset.status === 0 && unset.envelope?.outcome === "ok" && u?.previous === "reviewer" && u.value === null && saved().spaces.demo === undefined, shown(unset));
@@ -112,6 +114,8 @@ const ansi = /\x1b\[/;
   for (const [name, args, message] of refusals) {
     const r = run([...args, "--json"]);
     check(`refused: ${name}`, r.status === 1 && r.envelope?.outcome === "refused" && r.envelope.error?.code === "USAGE_INVALID" && message.test(r.envelope.error.message) && fileText() === before, shown(r));
+    // A refusal that wrote anyway is graded above. Put the file back so the later sections still run.
+    if (fileText() !== before) before === null ? rmSync(file) : writeFileSync(file, before);
   }
   const both = run(["config", "--json", "--plain"]);
   check("--json with --plain is refused", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));

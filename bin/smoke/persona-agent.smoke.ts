@@ -214,6 +214,25 @@ try {
     };
     const counts = () => ({ pin: builds.pin.length, other: builds.other.length });
     const reset = () => { builds.pin = []; builds.other = []; };
+    // A foreground spawn that refuses calls process.exit(1). Intercept it so a refusal grades the
+    // cell red instead of ending the suite, and keep what the spawn printed.
+    const foreground = async (args: string[]): Promise<string> => {
+      const realExit = process.exit.bind(process);
+      (process as unknown as { exit: (c?: number) => never }).exit = ((code?: number) => {
+        throw new Error(`process.exit(${code ?? 0})`);
+      }) as typeof process.exit;
+      try {
+        return await capture(async () => {
+          try {
+            await run("spawn", args);
+          } catch (e) {
+            console.log((e as Error).message);
+          }
+        });
+      } finally {
+        (process as unknown as { exit: typeof process.exit }).exit = realExit;
+      }
+    };
 
     save("harness", "other");
     reset();
@@ -250,13 +269,13 @@ try {
     save("persona", "pinned", SPACE);
     process.env.COTAL_DEFAULT_AGENT = "other";
     reset();
-    const g6 = await capture(() => run("spawn", ["--no-events", "--space", SPACE, "--name", "g6"]));
+    const g6 = await foreground(["--no-events", "--space", SPACE, "--name", "g6"]);
     ok("G6: foreground, the saved persona preference picks the persona and its pin builds the launch", /spawning g6/.test(g6) && builds.pin.length === 1 && builds.other.length === 0, { ...counts(), out: g6 });
     delete process.env.COTAL_DEFAULT_AGENT;
     save("persona", undefined, SPACE);
     save("harness", "other");
     reset();
-    const g7 = await capture(() => run("spawn", ["unpinned", "--no-events", "--space", SPACE, "--name", "g7"]));
+    const g7 = await foreground(["unpinned", "--no-events", "--space", SPACE, "--name", "g7"]);
     ok("G7: foreground, a saved user harness builds the launch of an unpinned persona", /spawning g7/.test(g7) && builds.other.length === 1 && builds.pin.length === 0, { ...counts(), out: g7 });
     save("harness", undefined);
   }

@@ -123,7 +123,7 @@
       "name": "a shadowed write is not reported",
       "file": "implementations/cli/src/commands/config.ts",
       "find": "  if (!winner || winner.source === (w.scope.space === null ? \"user\" : \"space\")) return [];",
-      "replace": "  if (!winner || winner) return [];",
+      "replace": "  if (!winner || winner.source !== \"default\") return [];",
       "expectRed": "a write that a variable outranks in this shell says so",
       "cell": "a write that a variable outranks in this shell says so",
       "afterRestore": "pnpm --filter cotal-ai... build"
