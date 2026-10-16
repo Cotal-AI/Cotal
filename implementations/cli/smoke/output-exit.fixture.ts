@@ -1,5 +1,5 @@
 // Subprocess entry for output-exit.smoke.ts: runs the SRC kernel (`runCli`) over a registry holding
-// two probe commands, because a classified failure ends the process. `probe` declares a JSON output;
+// probe commands, because a classified failure ends the process. `probe` declares a JSON output;
 // `legacy` declares none. Each throws what its --fail value names.
 // argv: the cotal words, e.g. `probe --json --fail conflict`
 import { Registry, type Command } from "@cotal-ai/core";
@@ -43,6 +43,17 @@ const legacy: Command = {
   },
 };
 
+// `shadow` declares the global --no-color, so it is registered only when the run asks for it: the
+// kernel refuses every command while one is on the surface.
+const shadow: Command = {
+  kind: "command",
+  name: "shadow",
+  summary: "a probe that declares a global flag",
+  flags: [{ name: "no-color", type: "string" }],
+  run: async (args) => console.log(`ran ${JSON.stringify(args.values)}`),
+};
+
 const registry = new Registry();
 registry.register(probe, legacy);
+if (process.env.OUTPUT_EXIT_SHADOW === "1") registry.register(shadow);
 await runCli(registry, process.argv.slice(2));

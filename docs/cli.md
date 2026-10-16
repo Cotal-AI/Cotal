@@ -61,9 +61,9 @@ that is not one of the command's subcommands when it declares them. The command 
 its help, exits 1, and does not run. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
-Command output, including error lines on stderr and the guided `setup` and `meshes add` prompts,
-is colored only when stdout is a terminal, so piped or redirected output is plain text. A non-empty
-`NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
+Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
+the `console` screen, is colored only when stdout is a terminal, so piped or redirected output is
+plain text. A non-empty `NO_COLOR` turns color off on a terminal too. `FORCE_COLOR` turns color on even when output is
 piped, unless it is `0` or `false`, and it takes precedence over `NO_COLOR`. `--no-color` turns
 color off for that run, whatever the environment says. It sets no `NO_COLOR` for the programs the
 run starts, but they are no longer forced into color by `FORCE_COLOR`.
@@ -72,8 +72,8 @@ run starts, but they are no longer forced into color by `FORCE_COLOR`.
 prompt behaves as it does without a terminal, `web` prints its link without opening it, and
 `personas edit` is refused. `--json` implies `--no-input`. Both flags work before the command word
 on every command, and after it on every command except one that takes its words raw. After `--`
-they are ordinary words. An extension command that declares a flag with either name does not
-receive it.
+they are ordinary words. No command may declare a flag with either name. An installed extension
+whose command declares one is an internal error, and `cotal` exits 1 before running any command.
 
 Commands come from the surfaces the binary composes: the base mesh CLI, the manager
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.

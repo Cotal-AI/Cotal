@@ -3,7 +3,7 @@
     "implementations/cli/smoke/command-kernel.smoke.ts",
     "implementations/cli/smoke/output-exit.fixture.ts"
   ],
-  "guard": "the kernel exits a classified failure by its outcome and writes its envelope on --json, reports an unclassified error from a structured command as unknown, keeps a usage error under --json to one envelope, makes --json imply --no-input, and version --json labels an unreadable extension list partial",
+  "guard": "the kernel exits a classified failure by its outcome and writes its envelope on --json, reports an unclassified error from a structured command as unknown, keeps a usage error under --json to one envelope, makes --json imply --no-input, version --json labels an unreadable extension list partial, and no command may declare a global flag's name",
   "command": "pnpm smoke:cli-kernel",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/output-exit.json",
   "why": [
@@ -65,6 +65,14 @@
       "replace": "      completeness: \"complete\",\n",
       "expectRed": "an unreadable manifest makes the extension list partial, not empty and complete",
       "cell": "an unreadable manifest makes the extension list partial, not empty and complete"
+    },
+    {
+      "name": "a command may declare a global flag",
+      "file": "implementations/cli/src/command.ts",
+      "find": ", ...globalFlagDeclarationProblems(cmd)];",
+      "replace": "];",
+      "expectRed": "a command that declares a global flag is an internal error that exits 1",
+      "cell": "a command that declares a global flag is an internal error that exits 1"
     }
   ]
 }

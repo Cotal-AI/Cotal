@@ -7,6 +7,7 @@ import {
   envelopeLine,
   exitCode,
   failureEnvelope,
+  globalFlagDeclarationProblems,
   hasMeshTargetFlags,
   isCommandFailure,
   isSeededCommand,
@@ -257,7 +258,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
       process.exit(1);
     }
     for (const cmd of commands) {
-      const problems = [...commandDeclarationProblems(cmd), ...outputDeclarationProblems(cmd)];
+      const problems = [...commandDeclarationProblems(cmd), ...outputDeclarationProblems(cmd), ...globalFlagDeclarationProblems(cmd)];
       if (problems.length) usageExit(`internal error: ${problems.join("; ")}`);
     }
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
