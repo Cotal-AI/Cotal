@@ -1,0 +1,3 @@
+# cotal completion: the per-shell stub status, completion script <shell>, and the refusal of the
+# completion <shell> form it replaced.
+smoke:completion-status

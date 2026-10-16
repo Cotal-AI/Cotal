@@ -593,6 +593,7 @@
     "smoke:ctl-trust:live": "tsx implementations/auth/smoke/ctl-trust.smoke.ts",
     "smoke:cli-kernel": "tsx implementations/cli/smoke/command-kernel.smoke.ts",
     "smoke:cli-entry": "pnpm --filter cotal-ai... build && tsx bin/smoke/cli-entry.smoke.ts",
+    "smoke:completion-status": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/completion-status.smoke.ts",
     "smoke:legacy-manager-report": "tsx implementations/cli/smoke/legacy-manager-report.smoke.ts",
     "smoke:legacy-packaged-manager": "tsx implementations/cli/smoke/legacy-packaged-manager.smoke.ts",
     "smoke:runtime-contract": "tsx packages/core/smoke/runtime-contract.smoke.ts",
