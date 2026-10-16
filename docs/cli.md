@@ -2551,21 +2551,32 @@ nothing, and `completion install` writes only shell configuration.
 ## completion
 
 ```bash
-cotal completion <bash|zsh|fish|powershell>   # print a stub to eval / source
-cotal completion install [shell]              # install it persistently
+cotal completion [--json|--plain]                    # which shells have the stub, and what loads it
+cotal completion script <bash|zsh|fish|powershell>   # print a stub as raw shell code
+cotal completion install [shell]                     # install it persistently
 ```
 
-Prints or installs shell completion. Completion candidates come from each command's declared flags
-and, where useful, live mesh state (spaces, personas, managed agents) resolved offline.
+Reports, prints or installs shell completion. Completion candidates come from each command's
+declared flags and, where useful, live mesh state (spaces, personas, managed agents) resolved
+offline.
+
+Bare `cotal completion` reads local files only. For each shell it shows whether the stub is
+installed, whether it matches the script this version prints (`current`) or not (`differs from
+this version`), the stub file, and the startup file that loads it. Cotal installs nothing for
+PowerShell. `--json` writes that report as one document with `target: null`.
 
 Enable completion in the current shell:
 
 ```bash
-source <(cotal completion bash)                              # bash
-source <(cotal completion zsh)                               # zsh
-cotal completion fish | source                               # fish
-cotal completion powershell | Out-String | Invoke-Expression # powershell
+source <(cotal completion script bash)                              # bash
+source <(cotal completion script zsh)                               # zsh
+cotal completion script fish | source                               # fish
+cotal completion script powershell | Out-String | Invoke-Expression # powershell
 ```
+
+`cotal completion script` prints raw shell code and takes no `--json`. The form it replaced,
+`cotal completion <shell>`, exits 1 with nothing on stdout and names its replacement; see
+[UPGRADING](UPGRADING.md#shell-completion-script-after-0820-unreleased).
 
 `cotal completion install` wires completion persistently. It detects the active shell from `$SHELL`
 or takes a shell name positionally:
@@ -2573,7 +2584,7 @@ or takes a shell name positionally:
 - **bash**: writes `~/.config/cotal/completion.bash` (or under `$XDG_CONFIG_HOME`) and appends a source line to `~/.bashrc`.
 - **zsh**: writes `~/.config/cotal/completion.zsh` (or under `$XDG_CONFIG_HOME`) and appends a source line to `~/.zshrc` (or `$ZDOTDIR/.zshrc`).
 - **fish**: writes `~/.config/fish/completions/cotal.fish` (or under `$XDG_CONFIG_HOME`), which fish loads automatically.
-- **powershell**: prints the snippet to add to `$PROFILE`.
+- **powershell**: prints the line to add to `$PROFILE`.
 
 The installed stub routes tab completion to the internal `cotal __complete` dispatcher, which
 evaluates candidates from local persona files and registered command specs without network calls.
