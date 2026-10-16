@@ -202,7 +202,7 @@ together under [Manifest deploys](#manifest-deploys).
 ## setup
 
 ```bash
-cotal setup [--destination local|self-hosted] [-H|--harness <connector>] [--project <dir>] [--space <name>]
+cotal setup [--destination <local|self-hosted>] [-H|--harness <connector>] [--project <dir>] [--space <name>]
             [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain]
 cotal setup --skills
 ```
