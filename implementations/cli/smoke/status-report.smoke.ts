@@ -91,6 +91,7 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
     titles(plain.stdout),
   );
   check("the report names no roster", !/roster/i.test(plain.stdout), plain.stdout);
+  check("the NATS row says where nats-server comes from in words", /^ {2}NATS: +(nats-server on PATH|bundled nats-server|missing)$/m.test(plain.stdout) && ["path", "bundled", "missing"].includes(env?.result?.machine?.nats), { nats: env?.result?.machine?.nats, out: plain.stdout.slice(0, 400) });
   check("each hint in the result is printed under Hints", (env?.result?.hints ?? []).every((hint) => plain.stdout.split("\nHints\n")[1]?.includes(hint)), { hints: env?.result?.hints, out: plain.stdout });
   check("no report line ends in padding", plain.stdout.split("\n").every((line) => !line.endsWith(" ")), plain.stdout);
 }
