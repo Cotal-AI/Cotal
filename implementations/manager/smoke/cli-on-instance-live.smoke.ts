@@ -469,6 +469,54 @@ try {
       partialEnv.warnings.some((w) => w.code === "MANAGER_CONTRACT_MISMATCH" && w.target.managerInstanceId === mismatched[0]!.instanceId),
     { status: partialJson.status, stdout: partialJson.stdout.slice(-800) });
 
+  // A catalog the connector could not read leaves the read partial. One the install has no way to
+  // list is a connector without a catalog: complete, exit 0, with the reason shown.
+  console.log("\n8. models: an unreadable catalog is partial, one the install cannot list is not");
+  const catalogStub = (name: string, listModels: NonNullable<Connector["listModels"]>): Connector =>
+    ({ kind: "connector", name, requires: ["node"], buildLaunch: connector.buildLaunch, listModels });
+  registry.register(catalogStub("models-listed", () => ({ source: "fixture catalog", models: [{ id: "fixture-model" }] })));
+  registry.register(catalogStub("models-broken", () => { throw new Error("fixture catalog could not be read"); }));
+  registry.register(catalogStub("models-unlisted", () => ({ models: [], unavailable: "this fixture install lists no catalog; pass --model" })));
+  type ModelsEnvelope = {
+    outcome: string; completeness: string; warnings: { code: string; target: { agent?: string } }[]; error?: { code: string };
+    result: { items: { agent: string; supported: boolean; models: { id: string }[]; unavailable?: string; error?: string }[] } | null;
+  };
+  const modelsJson = async (agent?: string): Promise<{ run: Run; env: ModelsEnvelope | undefined }> => {
+    const run = await cotal(["models", ...(agent ? ["--agent", agent] : []), "--json", "--space", space], root1);
+    mustHaveRun(run, `\`models${agent ? ` --agent ${agent}` : ""} --json\``);
+    let env: ModelsEnvelope | undefined;
+    try { env = JSON.parse(run.stdout) as ModelsEnvelope; } catch { env = undefined; }
+    return { run, env };
+  };
+  const listed = await modelsJson("models-listed");
+  check("a connector that lists its catalog is a complete read, exit 0",
+    listed.run.status === 0 && listed.env?.outcome === "ok" && listed.env.completeness === "complete" &&
+      listed.env.result?.items[0]?.supported === true && listed.env.result.items[0].models[0]?.id === "fixture-model" && listed.env.warnings.length === 0,
+    { status: listed.run.status, stdout: listed.run.stdout.slice(-600) });
+  const unlisted = await modelsJson("models-unlisted");
+  check("a catalog the install cannot list is supported: false with its reason, complete, exit 0, no warning",
+    unlisted.run.status === 0 && unlisted.env?.outcome === "ok" && unlisted.env.completeness === "complete" &&
+      unlisted.env.result?.items[0]?.supported === false && unlisted.env.result.items[0].unavailable === "this fixture install lists no catalog; pass --model" &&
+      unlisted.env.result.items[0].error === undefined && unlisted.env.warnings.length === 0,
+    { status: unlisted.run.status, stdout: unlisted.run.stdout.slice(-600) });
+  const broken = await modelsJson("models-broken");
+  check("the one catalog --agent names could not be read: failed, exit 5, with the connector's reason",
+    broken.run.status === 5 && broken.env?.outcome === "failed" && broken.env.error?.code === "OPERATION_FAILED" && /fixture catalog could not be read/.test(broken.run.stdout),
+    { status: broken.run.status, stdout: broken.run.stdout.slice(-600) });
+  const every = await modelsJson();
+  const rowOf = (agent: string) => every.env?.result?.items.find((row) => row.agent === agent);
+  check("every catalog with one unreadable is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+    every.run.status === 4 && every.env?.outcome === "partial" && every.env.completeness === "partial" &&
+      rowOf("models-broken")?.error === "fixture catalog could not be read" && rowOf("models-listed")?.models[0]?.id === "fixture-model" &&
+      rowOf("models-unlisted")?.supported === false &&
+      every.env.warnings.filter((w) => w.code === "MODEL_CATALOG_UNREADABLE").map((w) => w.target.agent).join() === "models-broken",
+    { status: every.run.status, stdout: every.run.stdout.slice(-900) });
+  const unlistedHuman = await cotal(["models", "--agent", "models-unlisted", "--space", space], root1);
+  mustHaveRun(unlistedHuman, "`models --agent models-unlisted`");
+  check("the report gives the reason the install lists no catalog and no failure",
+    unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
+    { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });
+
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {
   await m1?.stop({ withAgents: true }).catch(() => {});

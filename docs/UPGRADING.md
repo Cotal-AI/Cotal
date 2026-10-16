@@ -52,7 +52,9 @@ no outage window. Upgrading the `cotal` binary is the whole operation.
   refresh that `ps` or `models` needed and could not get exits 2 instead of 1. Under `--json` each is
   one `refused` envelope whose `error.code` names the reason.
 - `cotal models` exits 4 when a connector's catalog could not be read, and `cotal runtimes` exits 4
-  when an installed runtime provider fails to load. Both exited 0.
+  when an installed runtime provider fails to load. Both exited 0. `cotal models --agent <name>`
+  exits 5 when that one catalog could not be read. OpenCode 2.x, which has no catalog the CLI can
+  list, is reported `supported: false` with the reason in `unavailable` and does not fail the read.
 - The human reports of `ps`, `models` and `runtimes` are tables now, and `ps --wide` prints one
   labeled record per seat instead of a facts line under each row. Human output is not a parsing
   target; use `--json`.
