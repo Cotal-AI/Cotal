@@ -114,21 +114,21 @@ const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "cotal.ts");
 
 /** How the child ENDED rides in the result: a launch failure, a signal death, or this suite's own
  *  timeout each produce output that would otherwise be graded as if the command had spoken. */
-type Run = { status: number | null; out: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
+type Run = { status: number | null; out: string; stdout: string; timedOut: boolean; signal: NodeJS.Signals | null; launchError?: string };
 function cotal(args: string[], cwd: string, timeoutMs = 90_000): Promise<Run> {
   return new Promise((res) => {
     const child = spawn(TSX, [BIN, ...args], {
       cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" }, stdio: ["ignore", "pipe", "pipe"],
     });
-    let out = "", timedOut = false, settled = false;
+    let out = "", stdout = "", timedOut = false, settled = false;
     let status: number | null = null, signal: NodeJS.Signals | null = null;
     const done = (r: Run) => { if (settled) return; settled = true; clearTimeout(t); res(r); };
     const t = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, timeoutMs);
-    child.on("error", (e) => done({ status: null, out, timedOut, signal: null, launchError: e.message }));
-    child.stdout!.on("data", (d: Buffer) => { out += d.toString(); });
+    child.on("error", (e) => done({ status: null, out, stdout, timedOut, signal: null, launchError: e.message }));
+    child.stdout!.on("data", (d: Buffer) => { out += d.toString(); stdout += d.toString(); });
     child.stderr!.on("data", (d: Buffer) => { out += d.toString(); });
     child.on("exit", (s, sg) => { status = s; signal = sg; });
-    child.on("close", (s, sg) => done({ status: s ?? status, out, timedOut, signal: sg ?? signal }));
+    child.on("close", (s, sg) => done({ status: s ?? status, out, stdout, timedOut, signal: sg ?? signal }));
   });
 }
 
@@ -147,6 +147,18 @@ function mustHaveRun(r: Run, what: string): void {
 }
 
 const strip = (s: string): string => s.replace(/\x1b\[[0-9;]*m/g, "");
+
+type PsEnvelope = {
+  outcome: string; completeness: string; target: { scope?: string; managerInstanceId?: string | null } | null;
+  result: { items: { name?: string }[]; managers: { instanceId: string; state: string }[] } | null;
+  warnings: { code: string; target: { managerInstanceId?: string } }[]; error?: { code: string };
+};
+/** stdout as the one envelope `--json` promises, or undefined when it is anything else. */
+function envelopeOf(r: Run): PsEnvelope | undefined {
+  const lines = r.stdout.split("\n").filter(Boolean);
+  if (lines.length !== 1) return undefined;
+  try { return JSON.parse(lines[0]!) as PsEnvelope; } catch { return undefined; }
+}
 
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
@@ -189,10 +201,24 @@ try {
     new RegExp(`manager ${IID1}(\\s|$)`, "m").test(unpinnedOut) && new RegExp(`manager ${IID2}(\\s|$)`, "m").test(unpinnedOut),
     unpinnedOut.slice(-400));
 
+  const unpinnedJson = await cotal(["ps", "--json", "--space", space], root1);
+  mustHaveRun(unpinnedJson, "the unpinned `ps --json`");
+  const census = envelopeOf(unpinnedJson);
+  check("ps --json across both managers is one complete envelope with both instances answered",
+    unpinnedJson.status === 0 && census?.outcome === "ok" && census.completeness === "complete" && census.target?.scope === "all-managers" &&
+      JSON.stringify(census.result?.managers.map((m) => m.instanceId).sort()) === JSON.stringify([IID1, IID2].sort()) &&
+      census.result?.managers.every((m) => m.state === "answered") === true && census.warnings.length === 0,
+    { status: unpinnedJson.status, stdout: unpinnedJson.stdout.slice(-600) });
+
   // ---- 2. THE FLAG IS ACCEPTED AND VALIDATED --------------------------------------------------
   // Cheap, but it separates "the flag is gone" from "the flag is dead", which are different bugs
   // with different fixes. A malformed id must be refused at the CLI, never widened into a subject.
   console.log("\n2. the flag is parsed and its argument validated before any subject is built");
+  const bogusJson = await cotal(["ps", "--on", "4ik6rb0e", "--json", "--space", space], root1);
+  mustHaveRun(bogusJson, "`ps --on <malformed> --json`");
+  check("a malformed instance id under --json is one USAGE_INVALID envelope, exit 1",
+    bogusJson.status === 1 && envelopeOf(bogusJson)?.error?.code === "USAGE_INVALID",
+    { status: bogusJson.status, stdout: bogusJson.stdout.slice(-400) });
   const bogus = await cotal(["ps", "--on", "4ik6rb0e", "--space", space], root1);
   mustHaveRun(bogus, "`ps --on <malformed>`");
   check("a malformed instance id is REFUSED, not silently widened",
@@ -250,6 +276,13 @@ try {
       timedOutOnDescribe
         ? { defect: "describe timed out on the pinned rail; the mint did not receive the instance (this is the 0.17.0 regression)", tail: out.slice(-300) }
         : { status: r.status, tail: out.slice(-300) });
+    const pinned = await cotal(["ps", "--on", iid, "--json", "--space", space], root1);
+    mustHaveRun(pinned, `\`ps --on ${label} --json\``);
+    const env = envelopeOf(pinned);
+    check(`ps --on ${label} --json targets that one manager and names it answered`,
+      pinned.status === 0 && env?.outcome === "ok" && env.target?.scope === "manager" && env.target.managerInstanceId === iid &&
+        JSON.stringify(env.result?.managers) === JSON.stringify([{ instanceId: iid, state: "answered" }]),
+      { status: pinned.status, stdout: pinned.stdout.slice(-400) });
   }
 
   // describe --on <iid> SUCCEEDS and its attribution line names <iid>: the pinned instance
@@ -424,6 +457,17 @@ try {
       { status: result.status, out });
   }
   check("both describe orderings were observed", observed.has("census-a") && observed.has("census-b"), [...observed]);
+  // The same census as one document: the rows that were read, a warning naming the instance whose
+  // contract differs, and a partial outcome that exits 4 instead of a complete-looking list.
+  const partialJson = await cotal(["ps", "--json", "--space", space], root1);
+  mustHaveRun(partialJson, "mixed-contract `ps --json`");
+  const partialEnv = envelopeOf(partialJson);
+  const mismatched = partialEnv?.result?.managers.filter((m) => m.state === "contract-mismatch") ?? [];
+  check("a mixed-contract ps --json is one partial envelope: exit 4, the read row, and the mismatching instance named",
+    partialJson.status === 4 && partialEnv?.outcome === "partial" && partialEnv.completeness === "partial" && partialEnv.error?.code === "OPERATION_PARTIAL" &&
+      partialEnv.result?.items.length === 1 && mismatched.length === 1 &&
+      partialEnv.warnings.some((w) => w.code === "MANAGER_CONTRACT_MISMATCH" && w.target.managerInstanceId === mismatched[0]!.instanceId),
+    { status: partialJson.status, stdout: partialJson.stdout.slice(-800) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {

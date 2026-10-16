@@ -1,0 +1,68 @@
+{
+  "suite": [
+    "implementations/cli/smoke/read-envelopes.smoke.ts"
+  ],
+  "guard": "runtimes reports a provider that cannot load as a partial read, ps and models refuse an unresolvable mesh under its own code before any request, ps refuses a malformed --on as a usage envelope, and no report line ends in padding",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/read-envelopes.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/read-envelopes.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back. Two mutations are in @cotal-ai/workspace, which the binary's build closure includes."
+  ],
+  "mutations": [
+    {
+      "name": "a provider that cannot load leaves the read complete",
+      "file": "implementations/cli/src/commands/runtimes.ts",
+      "find": "      ...(failed.length ? { partial: { message:",
+      "replace": "      ...(false ? { partial: { message:",
+      "expectRed": "a provider that cannot load makes runtimes --json partial, exit 4",
+      "cell": "a provider that cannot load makes runtimes --json partial, exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a provider that cannot load is dropped from the list",
+      "file": "implementations/cli/src/commands/runtimes.ts",
+      "find": "      items.push({ name, state: \"installed\", package: pkg, reachable: null, error: (e as Error).message });\n",
+      "replace": "",
+      "expectRed": "a provider that cannot load makes runtimes --json partial, exit 4",
+      "cell": "a provider that cannot load makes runtimes --json partial, exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "no mesh is reported as an unavailable broker",
+      "file": "packages/workspace/src/connect.ts",
+      "find": "    case \"no-meshes\":\n    case \"unknown-space\":\n    case \"user-auth-unrecorded\":\n      return \"TARGET_NOT_FOUND\";\n",
+      "replace": "    case \"no-meshes\":\n      return \"TARGET_UNAVAILABLE\";\n    case \"unknown-space\":\n    case \"user-auth-unrecorded\":\n      return \"TARGET_NOT_FOUND\";\n",
+      "expectRed": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
+      "cell": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "ps exits on a connect refusal instead of throwing it",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on, { onRefusal: \"throw\" });",
+      "replace": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on);",
+      "expectRed": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
+      "cell": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "ps validates --on by exiting",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const on = onInstance(v.on, \"cotal ps\");",
+      "replace": "  const on = onInstanceOrExit(v.on, \"cotal ps\");",
+      "expectRed": "ps an empty --on is one USAGE_INVALID envelope, exit 1, before any mesh is resolved",
+      "cell": "ps an empty --on is one USAGE_INVALID envelope, exit 1, before any mesh is resolved",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a table line keeps the padding before an empty last cell",
+      "file": "packages/workspace/src/present.ts",
+      "find": ".join(\"  \")).replace(/ +$/, \"\");",
+      "replace": ".join(\"  \"));",
+      "expectRed": "no report line ends in padding",
+      "cell": "no report line ends in padding",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

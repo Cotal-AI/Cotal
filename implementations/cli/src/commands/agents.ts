@@ -1,8 +1,28 @@
 import { dialerFor, mintCreds, newIdentity, openSessionRail, peerLabel, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant, type SpaceAuth } from "@cotal-ai/core";
-import { ConnectRefusal, divergentCwdAnchor, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, targetFlags, userSessionAuth } from "@cotal-ai/workspace";
+import {
+  CommandFailure,
+  ConnectRefusal,
+  divergentCwdAnchor,
+  isWorkspaceTargetError,
+  jsonFlag,
+  loadMeshes,
+  plainFlag,
+  presentationOf,
+  renderWorkspaceError,
+  targetFlags,
+  userSessionAuth,
+  writeResult,
+  type Block,
+  type Cell,
+  type OutputWarning,
+  type Report,
+  type Section,
+  type Styled,
+  type Tone,
+} from "@cotal-ai/workspace";
 import { type NatsConnection } from "@nats-io/transport-node";
-import { c, presenceDetail } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
+import { c, presenceFacts } from "../ui.js";
+import { askManager, scatterManager, failIfNotOk, readFailure, resolveControlTarget, onInstance, onInstanceOrExit, onFlag, type ScatterInstanceLiveness, type ScatterInstanceReply } from "../lib/control.js";
 import { attachClient, detachKey, holdTerminal, isDetachPress, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -20,10 +40,9 @@ const nameFlag = (what: string) =>
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
 const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
-const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
 const slotsFlag = { name: "slots", type: "boolean", description: "list durable static slot rows instead of live seats (#1274); mutually exclusive with --wide" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, slotsFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, plainFlag, slotsFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
  *  which is right for a person at a terminal and wrong for a script that wants a single run with a
  *  single exit code. */
@@ -276,20 +295,19 @@ export function seatMissRefusal(
  *  - `not-probed` / `probe-refused`: this command could not ask. That is a fact about the command,
  *    not the instance, and saying so is what keeps a local gap from reading as a remote fault.
  */
-function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanceId: string): string {
+function silentManager(liveness: ScatterInstanceLiveness | undefined, instanceId: string): { state: Styled; remedy?: string } {
   if (liveness === "gone")
-    return (
-      c.red("registration is stale") +
-      c.dim(` (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)`) +
-      c.dim(`\n  ↳ remove the record: cotal deregister-instance --instance ${instanceId}`)
-    );
+    return {
+      state: { text: "registration is stale (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)", tone: "failed" },
+      remedy: `remove the record: cotal deregister-instance --instance ${instanceId}`,
+    };
   const why =
     liveness === "probe-refused"
       ? " (its liveness could not be probed: the broker refused this command's probe, named above)"
       : liveness === "not-probed"
         ? " (its liveness was not probed: this command holds no probe grant for it)"
         : " (either the host is alive and slow, or it died and its registration was never removed)";
-  return c.red("registered, no answer within the deadline") + c.dim(why);
+  return { state: { text: `registered, no answer within the deadline${why}`, tone: "failed" } };
 }
 
 /** The mesh column of one `ps` row. A verdict needs a fresh observer: when the manager reports its
@@ -299,89 +317,89 @@ function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanc
  *  on. A row from a manager that predates `meshView` carries no field and renders as before.
  *  An offline verdict says how long it has stood when the row carries `offlineSince` (#1208), so a
  *  seat that dropped a minute ago reads differently from one that dropped two days ago. */
-export function meshColumn(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): string {
-  if (r.meshView === "stale") return c.yellow("mesh unknown") + c.dim(" (manager's presence view is stale)");
-  if (r.meshView === "unpopulated") return c.yellow("mesh unknown") + c.dim(" (manager's presence view not yet populated)");
+export function meshCell(r: Pick<AgentRow, "mesh" | "meshView" | "condition" | "activeAt" | "offlineSince">, now = Date.now()): Styled {
+  if (r.meshView === "stale") return { text: "mesh unknown (manager's presence view is stale)", tone: "waiting" };
+  if (r.meshView === "unpopulated") return { text: "mesh unknown (manager's presence view not yet populated)", tone: "waiting" };
   // The harness-reported condition and the last work progress ride beside the status, as the roster
   // renders them (#618): a turn that died upstream 40m ago reads `waiting (rate_limit for 40m) ·
   // active 40m ago`, not a bare `waiting`, and a turn that stopped advancing shows the age of its
   // last event.
-  const condition = presenceDetail(r, now);
-  const mesh = r.mesh === "absent"
-    ? c.yellow("not in roster")
-    : r.mesh === "offline"
-      ? c.dim(r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`)
-      : r.mesh === "working"
-        ? c.green("working · progress unknown")
-        : r.mesh === "waiting"
-          ? c.yellow("waiting")
-          : c.cyan(r.mesh);
-  return mesh + condition;
+  const { condition, ages } = presenceFacts(r, now);
+  const detail = condition + ages;
+  if (r.mesh === "absent") return { text: `not in roster${detail}`, tone: "waiting" };
+  if (r.mesh === "offline")
+    return { text: `${r.offlineSince === undefined ? "mesh offline" : `mesh offline for ${fmtUptime(now - r.offlineSince)}`}${detail}`, tone: "hint" };
+  if (r.mesh === "working") return { text: `working · progress unknown${detail}`, tone: "ok" };
+  if (r.mesh === "waiting") return { text: `waiting${detail}`, tone: "waiting" };
+  return { text: `${r.mesh}${detail}` };
 }
 
-/** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
- *  the per-manager grouping a class scatter prints.
+/** The process column of one `ps` row, beside the mesh column and never folded into it.
  *
- *  Two facts, printed as two facts. The manager reports the PROCESS (`status` from the runtime
- *  handle, `uptimeMs` from its start) and the MESH presence separately, and they disagree in the
- *  common failure: a seat that is `running` for two days but `offline` on the mesh. Folding them
- *  into one word rendered ten live processes as "offline" and a 57h-old process with no roster
- *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
- *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
- *  or a seat that never joined. */
-function printAgentRow(r: AgentRow, indent = ""): void {
-  const proc =
-    r.status === "running"
-      ? c.green("running") + c.dim(" " + fmtUptime(r.uptimeMs))
-      : r.status === "exited"
-        ? c.red("exited") + c.dim(" after " + fmtUptime(r.uptimeMs))
-        : c.yellow(r.status) + c.dim(" " + fmtUptime(r.uptimeMs));
-  const mesh = meshColumn(r);
-  // Confirmed failure is red; ambiguity/warning states (unknown/stale) are yellow — the operator
-  // triages "definitely broken" before "might be".
-  const authColor = r.authHealth === "auth-renewal-failed" ? c.red : c.yellow;
-  console.log(
-    `${indent}${c.bold(peerLabel(r))}  ${c.dim(
-      agentIdentity(r),
-    )}  ${proc}  ${mesh}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
-  );
-  // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
-  // operator-exact sentence, verbatim (it already names the repair).
-  if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
+ *  Two facts, shown as two facts. The manager reports the PROCESS (`status` from the runtime handle,
+ *  `uptimeMs` from its start) and the MESH presence separately, and they disagree in the common
+ *  failure: a seat that is `running` for two days but `offline` on the mesh. Folding them into one
+ *  word rendered ten live processes as "offline" and a 57h-old process with no roster entry as
+ *  "starting…", both false. `mesh: absent` means exactly "not in the presence roster", so it prints
+ *  as that; the process age next to it tells the reader whether it is a fresh start or a seat that
+ *  never joined. */
+function processCell(r: AgentRow): Styled {
+  if (r.status === "running") return { text: `running ${fmtUptime(r.uptimeMs)}`, tone: "ok" };
+  if (r.status === "exited") return { text: `exited after ${fmtUptime(r.uptimeMs)}`, tone: "failed" };
+  return { text: `${r.status} ${fmtUptime(r.uptimeMs)}`, tone: "waiting" };
 }
 
-/** Extra operational facts for `--wide`. Model and requested variant are already in the compact
- *  identity row, so repeating them here would make wide output noisier without adding provenance.
- *  Only fields the manager actually recorded print; lifecycle uid is required on every row. */
-export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
-  const facts: string[] = [];
-  if (r.provider) facts.push(`provider ${r.provider}`);
-  if (r.cwd) facts.push(`cwd ${r.cwd}`);
-  if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
-  if (r.spawner) facts.push(`spawner ${r.spawner}`);
-  facts.push(`uid ${r.lifecycleUid}`);
-  if (r.instanceId) facts.push(`instance ${r.instanceId}`);
-  if (r.host) facts.push(`host ${r.host}`);
+/** Confirmed failure is red; ambiguity/warning states (unknown/stale) are amber, so the operator
+ *  triages "definitely broken" before "might be". */
+const authTone = (r: AgentRow): Tone => (r.authHealth === "auth-renewal-failed" ? "failed" : "waiting");
+
+/** Extra operational facts for `--wide`, as label and value. Model and requested variant are already
+ *  in the compact identity, so repeating them here would make wide output noisier without adding
+ *  provenance. Only fields the manager actually recorded appear; lifecycle uid is required on every
+ *  row. */
+function wideFields(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): [string, string][] {
+  const fields: [string, string][] = [];
+  if (r.provider) fields.push(["provider", r.provider]);
+  if (r.cwd) fields.push(["cwd", r.cwd]);
+  if (r.pid !== undefined) fields.push(["pid", String(r.pid)]);
+  if (r.spawner) fields.push(["spawner", r.spawner]);
+  fields.push(["uid", r.lifecycleUid]);
+  if (r.instanceId) fields.push(["instance", r.instanceId]);
+  if (r.host) fields.push(["host", r.host]);
   if (r.resume) {
     const { source, title, transcriptSha256, host, transferredAt } = r.resume;
-    facts.push(`forked from ${host ? `${host}:` : ""}${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}${transferredAt ? ` carried ${transferredAt}` : ""}`);
+    fields.push(["forked from", `${host ? `${host}:` : ""}${source}${title ? ` ${JSON.stringify(title)}` : ""}${transcriptSha256 ? ` sha256:${transcriptSha256}` : ""}${transferredAt ? ` carried ${transferredAt}` : ""}`]);
   }
-  return facts;
+  return fields;
 }
 
-function printWideFacts(r: AgentRow, indent = ""): void {
-  console.log(c.dim(`${indent}    ${agentWideFacts(r).join("  ·  ")}`));
+/** {@link wideFields} as one line of facts. */
+export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "spawner" | "lifecycleUid" | "instanceId" | "host" | "resume">): string[] {
+  return wideFields(r).map(([label, value]) => `${label} ${value}`);
 }
 
-/** How one seat renders in the chosen presentation. `--json` prints the manager's row EXACTLY as
- *  received; `--wide` adds the facts line under the compact row. */
-function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent = ""): void {
-  if (opts.json) {
-    console.log(JSON.stringify(r));
-    return;
-  }
-  printAgentRow(r, indent);
-  if (opts.wide) printWideFacts(r, indent);
+/** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
+ *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
+ *  sentence follows, verbatim (it already names the repair). */
+function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
+  const auth = rows.some((r) => r.authHealth);
+  const cells = (r: AgentRow): [string, Cell][] => [
+    ["NAME", peerLabel(r)],
+    ["AGENT", { text: agentIdentity(r), tone: "hint" }],
+    ["PROCESS", processCell(r)],
+    ["MESH", meshCell(r)],
+    ...(auth ? [["AUTH", r.authHealth ? { text: r.authHealth, tone: authTone(r) } : ""] as [string, Cell]] : []),
+  ];
+  const blocks: Block[] = wide
+    ? rows.flatMap((r, i): Block[] => [...(i ? [{ kind: "lines", lines: [""] } as const] : []), { kind: "fields", rows: [...cells(r), ...wideFields(r)] }])
+    : [{
+        kind: "table",
+        columns: cells(rows[0]!).map(([label]) => ({ key: label, label })),
+        rows: rows.map((r) => Object.fromEntries(cells(r))),
+      }];
+  const reasons = rows.filter((r) => r.authHealth && r.authReason).map((r): Cell => ({ text: `${peerLabel(r)}: ${r.authReason}`, tone: authTone(r) }));
+  if (reasons.length) blocks.push({ kind: "lines", lines: reasons });
+  return blocks;
 }
 
 /** One durable static slot row, the `slots` command's answer (#1274). Unlike `AgentRow` there is
@@ -404,146 +422,176 @@ type SlotRow = {
   managerInstanceId: string;
 };
 
-/** `--slots` rendering, beside `printSeat`. `--json` prints the row unchanged; the human form is
- *  one compact line naming phase, slot uid, cleanup, head and liveness. */
-function printSlot(r: SlotRow, opts: { json: boolean }, indent = ""): void {
-  if (opts.json) {
-    console.log(JSON.stringify(r));
-    return;
-  }
-  const cleanup = r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete);
-  const head = r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`;
-  console.log(`${indent}${r.name}  ${r.slotPhase}  slot ${r.slotLifecycleUid}  cleanupComplete=${cleanup}  head=${head}  live=${r.live}  readOrder=slot,head consistency=${r.consistency}`);
+/** `--slots`: one row per slot naming phase, slot uid, cleanup, head and liveness. The read order
+ *  and its consistency are the same on every row, so they are stated once. */
+function slotBlocks(rows: readonly SlotRow[]): Block[] {
+  return [
+    {
+      kind: "table",
+      columns: [
+        { key: "name", label: "NAME" },
+        { key: "phase", label: "PHASE" },
+        { key: "slot", label: "SLOT" },
+        { key: "cleanup", label: "CLEANUP COMPLETE" },
+        { key: "head", label: "HEAD" },
+        { key: "live", label: "LIVE" },
+      ],
+      rows: rows.map((r) => ({
+        name: r.name,
+        phase: r.slotPhase,
+        slot: r.slotLifecycleUid,
+        cleanup: r.cleanupComplete === undefined ? "unknown" : String(r.cleanupComplete),
+        head: r.headState === undefined ? "absent" : `${r.headState}${r.headOp ? ` op ${r.headOp.kind}:${r.headOp.opId}` : ""}`,
+        live: String(r.live),
+      })),
+    },
+    { kind: "lines", lines: [{ text: `read order slot,head; consistency ${rows[0]!.consistency}`, tone: "hint" }] },
+  ];
+}
+
+/** What one manager instance answered a `ps` census with. */
+export interface ManagerAnswer {
+  readonly instanceId: string;
+  /** `answered`; `silent` (registered, no answer within the deadline); `refused` (it answered with an
+   *  error); `contract-mismatch` (it serves a different `ps` contract, so its rows were not read). */
+  readonly state: "answered" | "silent" | "refused" | "contract-mismatch";
+  /** What this command established about a silent instance's liveness. */
+  readonly liveness?: ScatterInstanceLiveness;
+  /** A refusal's own sentence, with the endpoint's code when it carried one. */
+  readonly error?: string;
+  readonly code?: string;
+}
+
+/** What `cotal ps` read: each seat (or, with `--slots`, each static slot) exactly as its manager
+ *  returned it, and what each manager instance asked answered. A manager that did not answer is
+ *  listed, never dropped, so a short list is not mistaken for a complete one. */
+export interface PsResult {
+  readonly kind: "seats" | "slots";
+  readonly items: readonly unknown[];
+  readonly managers: readonly ManagerAnswer[];
+}
+
+/** `rowsOf` is each answered instance's rows as the census received them, so a row that names no
+ *  instance of its own is still listed under the manager that returned it. */
+function psView(result: PsResult, wide: boolean, rowsOf: ReadonlyMap<string, readonly unknown[]> = new Map()): Report {
+  const empty = result.kind === "slots" ? "(no nonretired static slots)" : "(no managed agents)";
+  const blocksFor = (rows: readonly unknown[]): Block[] =>
+    !rows.length ? [{ kind: "lines", lines: [{ text: empty, tone: "hint" }] }]
+    : result.kind === "slots" ? slotBlocks(rows as SlotRow[])
+    : seatBlocks(rows as AgentRow[], wide);
+  // A single manager that answered is the common case: a flat list, no per-manager grouping noise.
+  if (result.managers.length <= 1 && result.managers.every((m) => m.state === "answered")) return { sections: [{ blocks: blocksFor(result.items) }] };
+  // Several managers: one section each, named by the FULL instance id, since `--on` takes nothing
+  // shorter and this is precisely where it becomes the one way to address a manager. Silent and
+  // refused instances are shown, never dropped.
+  return {
+    sections: result.managers.map((m): Section => {
+      const title = `manager ${m.instanceId}`;
+      if (m.state === "silent") {
+        const silent = silentManager(m.liveness, m.instanceId);
+        return { title, blocks: [{ kind: "lines", lines: [silent.state, ...(silent.remedy ? [{ text: `↳ ${silent.remedy}`, tone: "hint" } as const] : [])] }] };
+      }
+      if (m.state === "contract-mismatch") return { title, blocks: [{ kind: "lines", lines: [{ text: "contract mismatch; seats not listed", tone: "failed" }] }] };
+      if (m.state === "refused") return { title, blocks: [{ kind: "lines", lines: [{ text: `list refused: ${m.error}`, tone: "failed" }] }] };
+      const rows = rowsOf.get(m.instanceId) ?? [];
+      const count = rows.length ? `${rows.length} ${result.kind === "slots" ? "slot" : "agent"}${rows.length === 1 ? "" : "s"}` : `no ${result.kind === "slots" ? "slots" : "agents"}`;
+      return { title, blocks: [{ kind: "lines", lines: [{ text: count, tone: "hint" }] }, ...(rows.length ? blocksFor(rows) : [])] };
+    }),
+  };
 }
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
-  // #651 presentations: the two forms are mutually exclusive because they answer "how do I read
-  // this" two different ways;
-  // inventing a precedence would be a silent fallback, so refuse instead.
-  const opts = { wide: v.wide === true, json: v.json === true, slots: v.slots === true };
-  if (opts.wide && opts.json) {
-    console.error(c.red("✗ --wide and --json are mutually exclusive: --wide is the human table, --json the machine form"));
-    process.exit(1);
-  }
-  if (opts.slots && opts.wide) {
-    console.error(c.red("✗ --slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts"));
-    process.exit(1);
-  }
-  const command = opts.slots ? "slots" : "ps";
-  const emptyLine = opts.slots ? "(no nonretired static slots)" : "(no managed agents)";
-  const print = opts.slots
-    ? (r: unknown, indent = ""): void => printSlot(r as SlotRow, { json: opts.json }, indent)
-    : (r: unknown, indent = ""): void => printSeat(r as AgentRow, opts, indent);
-  const on = onInstanceOrExit(v.on, "cotal ps");
+  // #651 presentations: --wide is a human layout and --json the document that already carries every
+  // field, so the pair asks one question two ways; inventing a precedence would be a silent
+  // fallback, so refuse instead.
+  const presentation = presentationOf(v);
+  const wide = v.wide === true;
+  const slots = v.slots === true;
+  if (wide && presentation === "json")
+    throw new CommandFailure("refused", "USAGE_INVALID", "--wide and --json are mutually exclusive: --wide is the human layout, --json the document with every field", { remedy: "drop --wide; --json already carries every field the manager recorded" });
+  if (slots && wide)
+    throw new CommandFailure("refused", "USAGE_INVALID", "--slots and --wide are mutually exclusive: --slots lists durable static slot rows, --wide the live seat facts", { remedy: "pass one of them" });
+  const command = slots ? "slots" : "ps";
+  const kind = slots ? "slots" : "seats";
+  const rowsOf = new Map<string, unknown[]>();
+  const view = (result: PsResult): Report => psView(result, wide, rowsOf);
+  const on = onInstance(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
-  const t = await resolveControlTarget(v, "control-caller-privileged", on);
-  // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
-  // single-manager view. Same path for both modes (no freeze; no scatter).
-  if (on !== undefined) {
-    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, { instanceId: on });
-    failIfNotOk(reply);
-    const rows = (reply.data as unknown[]) ?? [];
-    if (!rows.length) {
-      // A JSON stream with zero rows is zero lines on stdout, not a prose line that would
-      // corrupt a consumer reading JSONL.
-      if (!opts.json) console.log(c.dim(emptyLine));
-      return;
-    }
-    for (const r of rows) print(r);
-    return;
-  }
+  const t = await resolveControlTarget(v, "control-caller-privileged", on, { onRefusal: "throw" });
 
+  // One manager instance: `--on <instance>` pins ps to its `inst` route (P2 item 3 multi-manager),
+  // and in USER MODE (bearer present) the borrowed manager view pins one authorized instance and
+  // keeps the actor's existing command scopes. That view has no registry freeze rows and never
+  // scatters; the manager answers from its in-memory roster with an owner filter, which is not a
+  // complete multi-manager inventory (see docs/cli.md), and the target says so.
+  //
   // Mode chosen UP FRONT from the connection shape. Never try-scatter-catch-degrade: a silent
   // downgrade is the bug this branch fixes, and reintroducing it in the fix would be the whole
   // night in miniature.
-  //
-  // USER MODE (bearer present): the borrowed manager view pins one authorized instance and keeps
-  // the actor's existing command scopes. It has no registry freeze rows and never scatters.
-  // The manager answers from its in-memory roster with an owner filter; this is not a complete
-  // multi-manager inventory (see docs/cli.md).
-  //
-  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds
-  // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
-  // unreachable (pin 3).
-  if (t.auth.bearer) {
-    // No explicit --on on this branch; askManager uses the issuer's concrete selection.
-    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, {});
-    failIfNotOk(reply);
-    const rows = (reply.data as unknown[]) ?? [];
-    if (!rows.length) {
-      if (!opts.json) console.log(c.dim(emptyLine));
-      return;
-    }
-    for (const r of rows) print(r);
+  if (on !== undefined || t.auth.bearer) {
+    const instanceId = on ?? t.auth.managerInstanceId;
+    const target = { space: t.space, scope: "manager", managerInstanceId: instanceId ?? null };
+    const reply = await askManager(t.space, t.server, command, undefined, t.auth, "owner", undefined, on !== undefined ? { instanceId: on } : {});
+    if (!reply.ok) throw readFailure(reply, target);
+    const items = (reply.data as unknown[]) ?? [];
+    writeResult(presentation, { command: "ps", target, result: { kind, items, managers: instanceId ? [{ instanceId, state: "answered" }] : [] } }, view);
     return;
   }
 
+  // STATIC/OPEN (no bearer): class scatter. The operator instrument (or bare open connect) holds the
+  // freeze rows; every registered instance is attributed, and a non-answering one is labeled with
+  // what this command established about it (pin 3).
+  const target = { space: t.space, scope: "all-managers" };
   const scatter = await scatterManager(t.space, t.server, command, t.auth, t.spaceAuth);
-  if (!scatter.ok) {
-    console.error(c.red(`✗ ${scatter.error}`));
-    process.exit(1);
-  }
+  if (!scatter.ok) throw readFailure(scatter, target);
   // Stable ordering: reachable instances first, then by instance id.
   const instances = [...scatter.instances].sort(
     (a, b) => Number(b.reachable) - Number(a.reachable) || a.instanceId.localeCompare(b.instanceId),
   );
-  // A single-manager space is the common case — print a flat list, no per-manager grouping noise.
-  if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
-    const rows = (instances[0].data as unknown[]) ?? [];
-    if (!rows.length) {
-      if (!opts.json) console.log(c.dim(emptyLine));
-      return;
-    }
-    for (const r of rows) print(r);
-    return;
-  }
-  // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
-  //
-  // The header prints the FULL instance id, not a prefix. This block runs only in a multi-manager
-  // space (precisely when the split makes `--on <instance>` the one way to address a manager) and
-  // `--on` takes nothing but the whole 26-32 char lifecycle token (`assertLifecycleToken`). An
-  // abbreviated header therefore showed the operator an id that the very next command refuses
-  // (`"4ik6rb0e" is not a valid lifecycle token`), with the full value printed nowhere: the remedy
-  // was named and then withheld. Width costs one line here; the prefix cost the flag entirely.
-  let incomplete = false;
+  const items: unknown[] = [];
+  const managers: ManagerAnswer[] = [];
+  const warnings: OutputWarning[] = [];
   const mismatches: string[] = [];
   for (const inst of instances) {
-    const label = `manager ${inst.instanceId}`;
-    // Under --json the instance headers are STRUCTURE, not data: they go to stderr so stdout is
-    // pure rows (each row carries its own instanceId/host, so nothing is lost).
-    const header = (line: string): void => { (opts.json ? console.error : console.log)(line); };
+    const at = { space: t.space, managerInstanceId: inst.instanceId };
     if (!inst.reachable) {
-      incomplete = true;
       // Not "unreachable": the client holds no network verdict. What it knows is which question it
       // asked about this instance and what came back, which is narrower and more useful. The four
-      // cases and their wording are `silentManagerRow`.
-      header(`${c.bold(label)}  ${silentManagerRow(inst.liveness, inst.instanceId)}`);
+      // cases and their wording are `silentManager`.
+      managers.push({ instanceId: inst.instanceId, state: "silent", ...(inst.liveness ? { liveness: inst.liveness } : {}) });
+      warnings.push({ code: "MANAGER_SILENT", target: at, message: `manager ${inst.instanceId}: ${silentManager(inst.liveness, inst.instanceId).state.text}` });
       continue;
     }
     if (inst.error) {
-      incomplete = true;
       const mismatch = /^pinned digests (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64}) do not match the served contract (sha256:[a-f0-9]{64})\/(sha256:[a-f0-9]{64});/.exec(inst.error);
+      const code = inst.code === undefined ? {} : { code: inst.code };
       if (mismatch) {
-        header(`${c.bold(label)}  ${c.red("contract mismatch; seats not listed")}`);
+        managers.push({ instanceId: inst.instanceId, state: "contract-mismatch", error: inst.error, ...code });
         mismatches.push(`manager ${inst.instanceId}: requested input/output ${mismatch[1]} / ${mismatch[2]}; served input/output ${mismatch[3]} / ${mismatch[4]}`);
+        warnings.push({ code: "MANAGER_CONTRACT_MISMATCH", target: at, message: `manager ${inst.instanceId} serves a different ps contract; its seats were not listed` });
       } else {
-        header(`${c.bold(label)}  ${c.red(`list refused: ${inst.error}`)}`);
+        managers.push({ instanceId: inst.instanceId, state: "refused", error: inst.error, ...code });
+        warnings.push({ code: "MANAGER_REFUSED", target: at, message: `manager ${inst.instanceId} refused the list: ${inst.error}` });
       }
       continue;
     }
     const rows = (inst.data as unknown[]) ?? [];
-    header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
-    for (const r of rows) print(r, "  ");
+    managers.push({ instanceId: inst.instanceId, state: "answered" });
+    rowsOf.set(inst.instanceId, rows);
+    items.push(...rows);
   }
-  if (mismatches.length)
-    console.error(c.red(`✗ Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`));
-  if (incomplete) {
-    console.error(c.red("✗ Incomplete manager census: some instances did not return seats. Rows above are partial, not a complete list."));
-    process.exitCode = 1;
-
-  }
+  const unread = managers.filter((m) => m.state !== "answered").length;
+  const partial = unread
+    ? {
+        message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return seats. Rows above are partial, not a complete list.`,
+        remedy: mismatches.length
+          ? `Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`
+          : "retry, or read one manager with `cotal ps --on <instance>`",
+      }
+    : undefined;
+  writeResult(presentation, { command: "ps", target, result: { kind, items, managers }, completeness: partial ? "partial" : "complete", warnings, ...(partial ? { partial } : {}) }, view);
 }
 
 /** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
