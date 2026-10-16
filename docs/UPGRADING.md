@@ -34,6 +34,25 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Reads that install nothing after 0.82.0 (unreleased)
+
+A read no longer installs or refreshes the built-in connectors and the web dashboard before it
+runs. Nothing on a running mesh changes, and there is no outage window.
+
+### What stops working
+
+- On a fresh machine, `cotal status`, `cotal ext list`, `cotal ps`, `cotal runtimes`, `cotal docs`
+  and the other reads leave the extension root empty. `cotal setup`, or any command that is not a
+  read, installs the built-ins as before.
+- After an upgrade, a read does not refresh the built-ins. Where it would load one still at the
+  older version, such as a connector's setup row in `cotal status`, it names the package and its
+  version with `cotal ext seed` instead of loading it.
+
+### Before the upgrade
+
+A script that ran a read to install the built-ins, such as `cotal ext list` right after
+`npm i -g cotal-ai`, runs `cotal ext seed` instead.
+
 ## Space selection after 0.82.0 (unreleased)
 
 `cotal use` and the target a command picks without `--space` change. Nothing on a running mesh

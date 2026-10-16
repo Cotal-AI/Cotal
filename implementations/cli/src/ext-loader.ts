@@ -7,6 +7,7 @@ import {
   type RuntimeProvider,
 } from "@cotal-ai/core";
 import {
+  SEEDED_EXTENSIONS,
   connectorInstallHint,
   extensionLocalProcesses,
   extensionProvides,
@@ -18,6 +19,7 @@ import {
   type LocalProcess,
 } from "@cotal-ai/workspace";
 import { c } from "./ui.js";
+import { cliVersion } from "./lib/version.js";
 
 /** The official first-party runtimes, name → npm package. This is NOT authority — registration is
  *  still explicit (`cotal ext add` installs the package; importing it self-registers the provider).
@@ -190,6 +192,8 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
   if (registered) return registered as T;
   if (!installedEnabled)
     throw new Error(`no ${ref.kind} registered for "${ref.name}" - import its integration in this composition root`);
+  const skew = seededVersionSkew(ref);
+  if (skew) throw new Error(skew);
   return materializeFromManifest<T>(ref, {
     hint: (r) =>
       r.kind === "runtime"
@@ -198,6 +202,17 @@ export async function materializeExtension<T extends Extension = Extension>(ref:
           ? connectorInstallHint(r.name)
           : `no installed extension provides ${r.kind} "${r.name}" - install it with \`cotal ext add <npm-package>\``,
   });
+}
+
+/** Why the first-party package that provides `ref` must not load: the binary seeds it at its own
+ *  version, and the installed one differs, as after an upgrade until a command seeds again. A read
+ *  does not seed, so it reaches this. Loading it would pair this core with another version's package. */
+function seededVersionSkew(ref: ExtensionRef): string | undefined {
+  const ext = loadExtensionsManifest().extensions.find((candidate) =>
+    extensionProvides(candidate).some((provided) => provided.kind === ref.kind && provided.name === ref.name),
+  );
+  if (!ext || ext.version === cliVersion() || !Object.values(SEEDED_EXTENSIONS).some((seeded) => seeded.pkg === ext.pkg)) return undefined;
+  return `${ext.pkg} is ${ext.version} and this cotal is ${cliVersion()} - run \`cotal ext seed\` to bring it to this version`;
 }
 
 /** Resolve and probe an extension runtime before a manifest command mutates local or mesh state. */
