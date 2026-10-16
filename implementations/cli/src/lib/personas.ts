@@ -42,8 +42,9 @@ export function listPersonas(root: string): PersonaEntry[] {
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-  } catch {
-    return []; // no .cotal/agents yet — an empty catalog, not an error
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
   }
   return files.sort().map((f) => {
     const name = f.slice(0, -3);

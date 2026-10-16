@@ -120,17 +120,17 @@ export function personasComplete(argv: string[]): CompletionResult {
   if (positionals[0] === "show" || positionals[0] === "edit" || positionals[0] === "rm") {
     // Complete from the TARGET mesh's catalog, matching what the subcommand will actually open —
     // a <TAB> that offers a name the command then reports as missing is worse than no completion.
-    // Resolved offline (no probe), and FAIL CLOSED: with no single target, offer nothing rather
-    // than throw into the operator's shell (the same posture as `spawnComplete`).
+    // No single target offers no items; catalog failures reach the completion dispatcher.
+    let root: string;
     try {
-      const root = resolveMeshTarget(process.cwd(), {
+      root = resolveMeshTarget(process.cwd(), {
         space: completedFlagValue(argv, flags, "space"),
         server: completedFlagValue(argv, flags, "server"),
       }).root;
-      return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
     } catch {
       return { items: [], directive: "nofiles" };
     }
+    return { items: listPersonaNames(root).map((value) => ({ value })), directive: "nofiles" };
   }
   return { items: [], directive: "nofiles" };
 }
