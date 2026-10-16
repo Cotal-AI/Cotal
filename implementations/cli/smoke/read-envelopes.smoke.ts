@@ -69,7 +69,7 @@ const ansi = /\x1b\[/;
   const richText = rich.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   check("runtimes draws a colored table with its state words", rich.status === 0 && ansi.test(rich.stdout) && /RUNTIME\s+STATE/.test(richText) && /available · cotal ext add @cotal-ai\/tmux/.test(richText), shown(rich));
   const plain = run(["runtimes", "--plain"], { FORCE_COLOR: "1" });
-  check("runtimes --plain writes the same words with no ANSI", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout === richText, shown(plain));
+  check("runtimes --plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !ansi.test(plain.stdout) && plain.stdout === richText.replace(/·/g, "-"), shown(plain));
   check("no report line ends in padding", plain.stdout.split("\n").every((line) => !line.endsWith(" ")), plain.stdout);
   const both = run(["runtimes", "--json", "--plain"]);
   check("runtimes --json --plain is one USAGE_INVALID envelope, exit 1", both.status === 1 && both.envelope?.error?.code === "USAGE_INVALID", shown(both));

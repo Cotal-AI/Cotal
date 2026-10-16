@@ -15,6 +15,7 @@ const {
   isCommandFailure,
   presentationOf,
   renderReport,
+  wrapWords,
   writeResult,
 } = await import("@cotal-ai/workspace");
 import type { Report } from "@cotal-ai/workspace";
@@ -117,6 +118,41 @@ try {
 }
 check("a mark with no state word is refused", threw);
 
+// Long text wraps at spaces to the width it is given, and a word that cannot fit is never split.
+const wrapped = wrapWords("aaa bbb ccc ddd eee fff ggg", 20);
+check("wrapWords breaks at spaces within the width", JSON.stringify(wrapped) === JSON.stringify(["aaa bbb ccc ddd eee", "fff ggg"]), wrapped);
+const longWord = wrapWords(`${"x".repeat(30)} end`, 20);
+check("a word wider than the line keeps a line of its own, unsplit", JSON.stringify(longWord) === JSON.stringify(["x".repeat(30), "end"]), longWord);
+check("below 20 columns nothing is wrapped", wrapWords("a b c d e f g h i j k l m n o p", 10).length === 1, wrapWords("a b c d e f g h i j k l m n o p", 10));
+const kept = wrapWords(["[--space <s>]", "[--server <url>]", "[--creds <path>]"], 34);
+check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--space <s>] [--server <url>]", "[--creds <path>]"]), kept);
+const fits = (text: string, width: number) => text.split("\n").every((line) => displayWidth(line) <= width);
+const longField = renderReport({ sections: [{ blocks: [{ kind: "fields", rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] }] }] }, "plain", 40);
+check("a long field value fits the width", fits(longField, 40), longField);
+check("a long field value continues under itself", longField.split("\n").slice(2).every((line) => /^ {8}\S/.test(line)) && longField.split("\n").length > 2, longField);
+const longLine = renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [{ text: "working on a task with a description long enough to wrap", tone: "ok", mark: "●" }, { text: "    a note indented by four spaces, long enough to wrap", tone: "hint" }] }] }] }, "rich", 30).replace(/\x1b\[[0-9;]*m/g, "");
+check("a long line fits the width", fits(longLine, 30), longLine);
+const [markLine, ...afterMark] = longLine.split("\n");
+const noteAt = afterMark.findIndex((line) => line.startsWith("    a note"));
+check(
+  "a wrapped line continues under its text, past its mark and its leading spaces",
+  markLine!.startsWith("● working") && noteAt > 0 && afterMark.slice(0, noteAt).every((line) => /^ {2}\S/.test(line)) && afterMark.slice(noteAt + 1).every((line) => /^ {4}\S/.test(line)) && afterMark.length > noteAt + 1,
+  longLine,
+);
+
+// Plain draws a report's punctuation in ASCII; the content's own letters are kept.
+const punctuated: Report = { sections: [{ title: "Docs", blocks: [{ kind: "fields", rows: [["→ launches", "none installed · cotal ext seed"], ["space", "alpha"]] }, { kind: "lines", lines: ["a long nam…", "§14 Workflows — the run", "古い席"] }] }] };
+const plainPunct = renderReport(punctuated, "plain");
+check(
+  "plain draws the report's punctuation in ASCII",
+  !/[^\x00-\x7f]/.test(plainPunct.replace("古い席", "")) && ["-> launches:", "none installed - cotal ext seed", "a long nam...", "section 14 Workflows - the run", "古い席"].every((s) => plainPunct.includes(s)),
+  plainPunct,
+);
+check("rich keeps the punctuation", ["→ launches:", "·", "…", "§14", "—"].every((s) => renderReport(punctuated, "rich").includes(s)), renderReport(punctuated, "rich"));
+const valueAt = (line: string, value: string) => line.indexOf(value);
+const [launches, spaceRow] = plainPunct.split("\n").slice(1, 3);
+check("plain field values line up after an ASCII-drawn label", valueAt(launches!, "none") === valueAt(spaceRow!, "alpha") && valueAt(launches!, "none") > 0, [launches, spaceRow]);
+
 // --json and --plain choose the presentation; both at once is a usage refusal.
 check("--json selects json", presentationOf({ json: true }) === "json");
 check("--plain selects plain", presentationOf({ plain: true }) === "plain");
@@ -155,6 +191,28 @@ check("json writes nothing on stderr", asJson.err === "", asJson.err);
 const asPlain = capture(() => writeResult("plain", { command: "ps", target: null, result, warnings }, view));
 check("plain writes the report", asPlain.out === "a\n", asPlain.out);
 check("plain writes each warning on stderr", asPlain.err.includes("beta could not be read") && !ansi.test(asPlain.err), asPlain.err);
+const plainPartial = capture(() => writeResult("plain", { command: "ps", target: null, result, completeness: "partial", partial: { message: "1 of 2 catalogs could not be read", remedy: "reread one" } }, view));
+check("plain writes a partial result's line and remedy in ASCII", plainPartial.err === "! 1 of 2 catalogs could not be read\n  -> reread one\n", plainPartial.err);
+// A warning on a 40-column terminal fits it; one written to a pipe stays one line whatever the
+// stream reports as its columns.
+const longWarning = [{ code: "SCOPE_DENIED", target: { space: "beta" }, message: "beta could not be read because this identity has no grant for its channels" }];
+function onStderr(isTTY: boolean): { out: string; err: string } {
+  const saved = (["isTTY", "columns"] as const).map((key) => [key, Object.getOwnPropertyDescriptor(process.stderr, key)] as const);
+  Object.defineProperty(process.stderr, "isTTY", { value: isTTY, configurable: true });
+  Object.defineProperty(process.stderr, "columns", { value: 40, configurable: true });
+  try {
+    return capture(() => writeResult("plain", { command: "ps", target: null, result, warnings: longWarning }, view));
+  } finally {
+    for (const [key, descriptor] of saved)
+      if (descriptor) Object.defineProperty(process.stderr, key, descriptor);
+      else delete (process.stderr as unknown as Record<string, unknown>)[key];
+  }
+}
+const onTty = onStderr(true).err.trimEnd();
+check("a long warning on a terminal fits its width", fits(onTty, 40) && onTty.split("\n").length > 1, onTty);
+check("its continuation lines start under the text", onTty.split("\n").slice(1).every((line) => /^ {2}\S/.test(line)), onTty);
+const onPipe = onStderr(false).err;
+check("a long warning to a pipe stays one line", onPipe === `! ${longWarning[0]!.message}\n`, onPipe);
 
 // --no-color keeps the rich layout and drops its color.
 disableColor();

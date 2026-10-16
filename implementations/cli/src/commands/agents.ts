@@ -41,7 +41,7 @@ const nameFlag = (what: string) =>
 // seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
 // sent). Mutually exclusive because they are two answers to "how should I read this".
 const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: cwd, pid, spawner, lifecycle uid, host/instance" } as const;
-const slotsFlag = { name: "slots", type: "boolean", description: "list durable static slot rows instead of live seats (#1274); mutually exclusive with --wide" } as const;
+const slotsFlag = { name: "slots", type: "boolean", description: "list the durable static slots instead of live seats; not with --wide" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
 export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag, plainFlag, slotsFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,

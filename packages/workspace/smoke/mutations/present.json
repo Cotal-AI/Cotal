@@ -2,7 +2,7 @@
   "suite": [
     "packages/workspace/smoke/present.smoke.ts"
   ],
-  "guard": "a report aligns by display width, becomes labeled records when the terminal is too narrow, escapes untrusted text, keeps state words in plain output, and writes one result as the envelope or as its report",
+  "guard": "a report aligns by display width, becomes labeled records when the terminal is too narrow, wraps long values, lines and warnings at spaces with each continuation under its text, escapes untrusted text, keeps state words in plain output and draws its punctuation there in ASCII, and writes one result as the envelope or as its report",
   "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
   "completionMarker": "PRESENT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/mutations/present.json",
@@ -97,6 +97,146 @@
       "replace": "  for (const warning of [] as OutputWarning[]) console.error(",
       "expectRed": "plain writes each warning on stderr",
       "cell": "plain writes each warning on stderr",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "long text never wraps",
+      "file": "packages/workspace/src/present.ts",
+      "find": "    if (line && displayWidth(next) > width) {\n",
+      "replace": "    if (false) {\n",
+      "expectRed": "wrapWords breaks at spaces within the width",
+      "cell": "wrapWords breaks at spaces within the width",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a first word wider than the line leaves an empty line",
+      "file": "packages/workspace/src/present.ts",
+      "find": "    if (line && displayWidth(next) > width) {\n",
+      "replace": "    if (displayWidth(next) > width) {\n",
+      "expectRed": "a word wider than the line keeps a line of its own, unsplit",
+      "cell": "a word wider than the line keeps a line of its own, unsplit",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "narrow widths wrap",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  if (!(width >= 20) || displayWidth(words.join(\" \")) <= width) return [words.join(\" \")];\n",
+      "replace": "  if (displayWidth(words.join(\" \")) <= width) return [words.join(\" \")];\n",
+      "expectRed": "below 20 columns nothing is wrapped",
+      "cell": "below 20 columns nothing is wrapped",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "given words are split at their spaces",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  const words = typeof text === \"string\" ? text.split(\" \") : text;\n",
+      "replace": "  const words = (typeof text === \"string\" ? text : text.join(\" \")).split(\" \");\n",
+      "expectRed": "given words are kept whole",
+      "cell": "given words are kept whole",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a field value ignores the width",
+      "file": "packages/workspace/src/present.ts",
+      "find": "    const [first, ...rest] = drawWrapped(value, style, width - start);\n",
+      "replace": "    const [first, ...rest] = drawWrapped(value, style, Number.POSITIVE_INFINITY);\n",
+      "expectRed": "a long field value fits the width",
+      "cell": "a long field value fits the width",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a field value continues at the line start",
+      "file": "packages/workspace/src/present.ts",
+      "find": "...rest.map((line) => \" \".repeat(start) + line)];\n",
+      "replace": "...rest];\n",
+      "expectRed": "a long field value continues under itself",
+      "cell": "a long field value continues under itself",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a lines block is not wrapped",
+      "file": "packages/workspace/src/present.ts",
+      "find": "      else out.push(...block.lines.flatMap((line) => drawWrapped(line, style, width - indent.length).map((shown) => indent + shown)));\n",
+      "replace": "      else out.push(...block.lines.map((line) => indent + draw(line, style).shown));\n",
+      "expectRed": "a long line fits the width",
+      "cell": "a long line fits the width",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a continuation ignores the mark and leading spaces",
+      "file": "packages/workspace/src/present.ts",
+      "find": "    ...rest.map((words) => \" \".repeat(lead.length + markWidth + hang) + draw(piece(words), style).shown),\n",
+      "replace": "    ...rest.map((words) => \" \".repeat(hang) + draw(piece(words), style).shown),\n",
+      "expectRed": "a wrapped line continues under its text, past its mark and its leading spaces",
+      "cell": "a wrapped line continues under its text, past its mark and its leading spaces",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "warnings ignore the terminal's width",
+      "file": "packages/workspace/src/present.ts",
+      "find": "    const errWidth = terminalWidth(process.stderr);\n",
+      "replace": "    const errWidth = Number.POSITIVE_INFINITY;\n",
+      "expectRed": "a long warning on a terminal fits its width",
+      "cell": "a long warning on a terminal fits its width",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a warning continues at the line start",
+      "file": "packages/workspace/src/present.ts",
+      "find": "    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: \"waiting\" }, 2);\n",
+      "replace": "    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: \"waiting\" }, 0);\n",
+      "expectRed": "its continuation lines start under the text",
+      "cell": "its continuation lines start under the text",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a pipe's columns are read as a terminal width",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
+      "replace": "  return stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
+      "expectRed": "a long warning to a pipe stays one line",
+      "cell": "a long warning to a pipe stays one line",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "plain keeps the punctuation glyphs",
+      "file": "packages/workspace/src/present.ts",
+      "find": "  return style === \"plain\" ? text.replace(/[\u00b7\u2026\u2192\u21b3\u2014\u2013]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/\u00a7 ?/g, \"section \") : text;\n",
+      "replace": "  return text;\n",
+      "expectRed": "plain draws the report's punctuation in ASCII",
+      "cell": "plain draws the report's punctuation in ASCII",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a field label is measured before its punctuation is drawn",
+      "file": "packages/workspace/src/present.ts",
+      "find": "displayWidth(textOf(name, style)) + 1));",
+      "replace": "displayWidth(oneLine(name)) + 1));",
+      "expectRed": "plain field values line up after an ASCII-drawn label",
+      "cell": "plain field values line up after an ASCII-drawn label",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "plain marks a partial result with a glyph",
+      "file": "packages/workspace/src/present.ts",
+      "find": "      say({ text: `${presentation === \"plain\" ? \"!\" : \"\u2717\"} ${out.partial.message}`, tone: \"failed\" }, 2);\n",
+      "replace": "      say({ text: `\u2717 ${out.partial.message}`, tone: \"failed\" }, 2);\n",
+      "expectRed": "plain writes a partial result's line and remedy in ASCII",
+      "cell": "plain writes a partial result's line and remedy in ASCII",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }

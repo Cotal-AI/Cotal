@@ -87,6 +87,38 @@ try {
     );
   }
 
+  // Help fits the terminal: no line is wider than it, a usage option keeps its value, and a flag
+  // column too wide to leave its descriptions 30 columns puts each description under its flag.
+  const lines = (text: string) => text.split(/\r?\n/).filter((line) => line.trim() !== "");
+  const fit = (text: string, cols: number) => lines(text).filter((line) => [...line].length > cols);
+  for (const cols of [80, 60]) {
+    for (const argv of [[], ["help"], ["help", "spawn"]]) {
+      const pty = cotalPty(argv, { cwd: home, env, cols, rows: 200 });
+      ptys.push(pty);
+      const s = session(pty);
+      await until(() => s.exitCode !== undefined);
+      check(`${["cotal", ...argv].join(" ")} on a ${cols}-column terminal fits every line`, s.exitCode === 0 && fit(s.text(), cols).length === 0 && lines(s.text()).length > 10, fit(s.text(), cols));
+      if (argv[1] !== "spawn") continue;
+      const all = lines(s.text());
+      const usage = all.slice(all.findIndex((line) => line.startsWith("usage: ")), all.findIndex((line) => line.startsWith("aliases: ")));
+      check(`on ${cols} columns its usage wraps only between options`, usage.length > 1 && usage.every((line) => line.split("[").length === line.split("]").length && (line.startsWith("usage: ") || line.startsWith("       ["))), usage);
+      const space = all.findIndex((line) => line.trimStart().startsWith("--space <s>"));
+      check(
+        cols === 60 ? "on 60 columns a flag description goes under its flag" : "on 80 columns a flag description sits beside its flag",
+        cols === 60 ? all[space] === "      --space <s>" && /^ {10}target space/.test(all[space + 1] ?? "") : /^ {6}--space <s> +target space/.test(all[space] ?? ""),
+        all.slice(space, space + 2),
+      );
+    }
+  }
+
+  // A failure on a terminal wraps at spaces, each continuation line under its text.
+  const failPty = cotalPty(["ps"], { cwd: home, env, cols: 40, rows: 20 });
+  ptys.push(failPty);
+  const f = session(failPty);
+  await until(() => f.exitCode !== undefined);
+  const failLines = lines(f.text());
+  check("a failure on a 40-column terminal wraps under its text", f.exitCode === 2 && failLines.length > 1 && fit(f.text(), 40).length === 0 && failLines[0]!.startsWith("✗ ") && failLines.slice(1).every((line) => /^ {2}\S/.test(line)), failLines);
+
   // On a terminal, `meshes add` with no space asks for one. `--no-input` answers with the usage line
   // instead, in either position.
   const wizardPty = cotalPty(["meshes", "add"], { cwd: home, env });

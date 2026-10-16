@@ -114,9 +114,17 @@ document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ex
 failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
-report as plain lines: no color, no marks, ASCII labels. Pass one of `--json` and `--plain`; both is a
-`USAGE_INVALID` refusal. A table that does not fit the terminal is written as one labeled record per
-row, so no value is cut off.
+report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
+ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
+as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
+terminal is written as one labeled record per row, so no value is cut off.
+
+On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
+starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
+own and is never split. Help wraps the same way: a usage line breaks only between options, and when
+the flag names leave their descriptions fewer than 30 columns, each description goes on the lines
+under its flag. Output to a pipe or a file is never wrapped.
 
 A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
 `completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is

@@ -35,7 +35,7 @@ import { PermissionViolationError, type NatsConnection } from "@nats-io/transpor
 import { jetstreamManager } from "@nats-io/jetstream";
 import { CommandFailure, controlCaller, loadSpaceAuth, renderWorkspaceError, type ControlAuth, type RefusalCode } from "@cotal-ai/workspace";
 import { DEV_OWNER, type SpaceAuth } from "@cotal-ai/core";
-import { c, staleStoreHint } from "../ui.js";
+import { c, staleStoreHint, stderrLine } from "../ui.js";
 import { cliVersion } from "./version.js";
 
 /** The control auth shape and target resolver live in `@cotal-ai/workspace` (shared with every
@@ -209,7 +209,7 @@ export interface ManagerPin {
  *  ps/stop/attach/input/describe so they cannot drift. For stop and attach it is the seat-locality
  *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
  *  the one that wins the class queue. */
-export const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const satisfies FlagSpec;
+export const onFlag = { name: "on", type: "string", value: "<instance>", description: "ask only this manager instance, by the id `ps` prints, in a space with several managers" } as const satisfies FlagSpec;
 
 /** Read `--on` at the site that declares it. Absent stays absent (class rails). An EMPTY value
  *  (`--on=`, `--on ""`, or `--on "$INSTANCE"` with the variable unset) is refused here, up front:
@@ -239,7 +239,7 @@ export function onInstanceOrExit(on: string | undefined, verb: string): string |
   try {
     return onInstance(on, verb);
   } catch (e) {
-    console.error(c.red(`✗ ${(e as Error).message}`));
+    stderrLine("✗ ", (e as Error).message, c.red);
     process.exit(1);
   }
 }
@@ -711,11 +711,11 @@ export function readFailure(reply: { error?: string; code?: string; details?: un
 export function failIfNotOk(reply: ControlReply): void {
   if (!reply.ok) {
     const msg = reply.error ?? "error";
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", msg, c.red);
     // A manager-side stale-store durable collision (e.g. `spawn --detach` into a store minted by
     // an older Cotal generation) names its reset - the reply error stays verbatim.
     const hint = staleStoreHint(msg);
-    if (hint) console.error(c.dim(`  ↳ ${hint}`));
+    if (hint) stderrLine("  ↳ ", hint, c.dim);
     process.exit(1);
   }
 }
