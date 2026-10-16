@@ -181,8 +181,10 @@ function usageExit(message: string, cmd?: Command, json = false): never {
   // A JSON caller gets the refusal as an envelope, so stdout stays one document and the help text
   // the remedy names stays out of it.
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
+  // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
+  // sources or parses it gets nothing.
   console.error(c.red(`✗ ${message}`));
-  if (cmd) printCommandHelp(cmd);
+  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));
   process.exit(1);
 }
 

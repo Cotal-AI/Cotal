@@ -122,7 +122,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   models: { flags: [...TARGET, "agent:string", "refresh:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
-  // `who` and `whoami` (S1.4): the roster and the CLI's own identity, on the structured output contract.
+  // `who` and `whoami` (2026-10): the roster and the CLI's own identity, on the structured output contract.
   who: { flags: [...TARGET, "all:boolean", "waiting:boolean", "json:boolean:j", "plain:boolean"], positionals: false },
   whoami: { flags: ["space:string", "server:string", "json:boolean:j", "plain:boolean"], positionals: false },
   personas: {
@@ -135,12 +135,12 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  completion: { flags: [], positionals: true },
-  // `config` (S2.1): personal preferences, read through or written to your defaults or one space.
+  completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // `config` (2026-10): personal preferences, read through or written to your defaults or one space.
   config: { flags: ["json:boolean:j", "plain:boolean", "space:string", "user:boolean"], positionals: true },
-  // `--json` and `--plain` (S1.4): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.
+  // `--json` and `--plain` (2026-10): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.
   ext: { flags: ["force:boolean", "json:boolean:j", "plain:boolean", "repair:boolean", "reset:boolean"], positionals: true },
-  // `docs` (S1.4): this version's bundled docs, registered by the composition root.
+  // `docs` (2026-10): this version's bundled docs, registered by the composition root.
   docs: { flags: ["json:boolean:j", "plain:boolean", "refresh:boolean", "search:string"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {

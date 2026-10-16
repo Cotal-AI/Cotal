@@ -192,7 +192,7 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
   const human = cotal(["version", "--bogus"]);
   refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
-  check("a usage error without --json writes no envelope", envelopes(human).length === 0 && /usage: /.test(human.stdout), shown(human));
+  check("a usage error without --json writes no envelope and prints the help on stderr", envelopes(human).length === 0 && human.stdout === "" && /usage: /.test(human.stderr), shown(human));
   const helpJson = cotal(["help", "--json"]);
   refused("a command with no JSON output refuses --json", helpJson, /Unknown option '--json'/);
   check("a command with no JSON output writes no envelope for it", !helpJson.stdout.startsWith("{"), shown(helpJson));
