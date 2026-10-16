@@ -89,6 +89,10 @@ const QUESTION = "Which one?";
   check("a script with an ambiguous target is TARGET_AMBIGUOUS, exit 2", script.status === 2 && env1?.error?.code === "TARGET_AMBIGUOUS", shown(script));
   check("its message names the running spaces and its remedy says how to pick one",
     /alpha/.test(env1?.error?.message ?? "") && /beta/.test(env1?.error?.message ?? "") && /--space <name>/.test(env1?.error?.remedy ?? "") && !/--space <name>/.test(env1?.error?.message ?? ""), env1?.error);
+  const identity = run(["whoami", "--json"]);
+  const env2 = envelope(identity);
+  check("a command that resolves its own target refuses the same way, its remedy apart from its message",
+    identity.status === 2 && env2?.error?.code === "TARGET_AMBIGUOUS" && /--space <name>/.test(env2?.error?.remedy ?? "") && !/--space <name>/.test(env2?.error?.message ?? ""), env2?.error);
   const human = run(["who"]);
   check("a script's human output refuses without asking", human.status === 2 && !human.stdout.includes(QUESTION) && !human.stderr.includes(QUESTION) && /multiple meshes running/.test(human.stderr), shown(human));
 }
@@ -111,6 +115,11 @@ const QUESTION = "Which one?";
 
   const json = terminal(["who", "--json"]);
   check("--json on a terminal refuses without asking", await until(() => json.s.code !== undefined) && json.s.code === 2 && !json.s.text().includes(QUESTION) && /TARGET_AMBIGUOUS/.test(json.s.text()), { code: json.s.code, out: json.s.text().slice(-600) });
+
+  // `run` writes its own JSON lines and declares no structured output, so the kernel does not turn
+  // its --json into --no-input.
+  const lines = terminal(["run", "ps", "--json"]);
+  check("a command's own --json on a terminal is not asked either", await until(() => lines.s.code !== undefined) && lines.s.code !== 0 && !lines.s.text().includes(QUESTION), { code: lines.s.code, out: lines.s.text().slice(-600) });
 
   const noInput = terminal(["who", "--no-input"]);
   check("--no-input on a terminal refuses without asking", await until(() => noInput.s.code !== undefined) && noInput.s.code === 2 && !noInput.s.text().includes(QUESTION) && /multiple meshes running/.test(noInput.s.text()), { code: noInput.s.code, out: noInput.s.text().slice(-600) });

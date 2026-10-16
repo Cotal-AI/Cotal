@@ -59,8 +59,8 @@
     {
       "name": "a dangling selection gets no warning",
       "file": "implementations/cli/src/commands/space.ts",
-      "find": "if (result.current === null || result.currentRecorded) return [];",
-      "replace": "if (result.current === null || result.currentRecorded || result.items.length > 0) return [];",
+      "find": "if (result.current === null || result.currentRecorded || result.prepared.some((p) => p.current)) return [];",
+      "replace": "if (result.current === null || result.currentRecorded || result.prepared.some((p) => p.current) || result.items.length > 0) return [];",
       "expectRed": "a selection that names no registration is reported with a warning",
       "cell": "a selection that names no registration is reported with a warning",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -68,8 +68,8 @@
     {
       "name": "use selects an unregistered name",
       "file": "implementations/cli/src/commands/use.ts",
-      "find": "if (!m) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${name}\" is registered here`, { remedy: \"see the registered spaces with `cotal space`\" });",
-      "replace": "if (!m) {\n    setCurrent(name);\n    return;\n  }",
+      "find": "if (!m && !p) throw new CommandFailure(\"refused\", \"TARGET_NOT_FOUND\", `no space named \"${name}\" is registered here`, { remedy: \"see the registered spaces with `cotal space`\" });",
+      "replace": "if (!m && !p) {\n    setCurrent(name);\n    return;\n  }",
       "expectRed": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
       "cell": "use refuses an unregistered name with TARGET_NOT_FOUND and keeps the selection",
       "afterRestore": "pnpm --filter cotal-ai... build"

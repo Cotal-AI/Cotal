@@ -24,17 +24,8 @@
       "file": "implementations/cli/src/lib/choose-target.ts",
       "find": " || values.json === true) return;",
       "replace": ") return;",
-      "expectRed": "--json on a terminal refuses without asking",
-      "cell": "--json on a terminal refuses without asking",
-      "afterRestore": "pnpm --filter cotal-ai... build"
-    },
-    {
-      "name": "a selection does not stop the question",
-      "file": "implementations/cli/src/lib/choose-target.ts",
-      "find": "  if (!canPrompt() || getCurrent() !== undefined) return;\n",
-      "replace": "  if (!canPrompt()) return;\n",
-      "expectRed": "a selection on a terminal is the target, with no question",
-      "cell": "a selection on a terminal is the target, with no question",
+      "expectRed": "a command's own --json on a terminal is not asked either",
+      "cell": "a command's own --json on a terminal is not asked either",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -123,8 +114,8 @@
       "file": "implementations/cli/src/command.ts",
       "find": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message, remedy ? { remedy } : {}), json);",
       "replace": "        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code), message), json);",
-      "expectRed": "its message names the running spaces and its remedy says how to pick one",
-      "cell": "its message names the running spaces and its remedy says how to pick one",
+      "expectRed": "a command that resolves its own target refuses the same way, its remedy apart from its message",
+      "cell": "a command that resolves its own target refuses the same way, its remedy apart from its message",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
