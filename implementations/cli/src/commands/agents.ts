@@ -585,7 +585,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   const unread = managers.filter((m) => m.state !== "answered").length;
   const partial = unread
     ? {
-        message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return seats. Rows above are partial, not a complete list.`,
+        message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return ${kind}. Rows above are partial, not a complete list.`,
         remedy: mismatches.length
           ? `Managers in this space serve different ps contracts. ${mismatches.join("; ")}. Align the manager versions and retry.`
           : "retry, or read one manager with `cotal ps --on <instance>`",
