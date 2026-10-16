@@ -14,7 +14,7 @@
       "name": "create does not refuse a registered name",
       "file": "implementations/cli/src/commands/space-registration.ts",
       "find": "  if (registered) throw refuse(",
-      "replace": "  if (registered && false) throw refuse(",
+      "replace": "  if (registered && name === \"\") throw refuse(",
       "expectRed": "a registered name is CONFLICT",
       "cell": "a registered name is CONFLICT",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -23,7 +23,7 @@
       "name": "create does not refuse a prepared name",
       "file": "implementations/cli/src/commands/space-registration.ts",
       "find": "  if (prepared) throw refuse(",
-      "replace": "  if (prepared && false) throw refuse(",
+      "replace": "  if (prepared && name === \"\") throw refuse(",
       "expectRed": "a prepared name is CONFLICT, exit 2, naming its root",
       "cell": "a prepared name is CONFLICT, exit 2, naming its root",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -185,7 +185,7 @@
       "name": "not-started is not a target-unavailable code",
       "file": "packages/workspace/src/connect.ts",
       "find": "    case \"not-started\":\n      return \"TARGET_UNAVAILABLE\";\n",
-      "replace": "",
+      "replace": "    case \"not-started\":\n      return \"TARGET_NOT_FOUND\";\n",
       "expectRed": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
       "cell": "a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -203,7 +203,7 @@
       "name": "up starts a prepared space from another root",
       "file": "implementations/cli/src/commands/up.ts",
       "find": "  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root))\n",
-      "replace": "  if (prepared && false)\n",
+      "replace": "  if (prepared && space === \"\")\n",
       "expectRed": "up --space for it from another folder refuses, naming its root, and makes nothing there",
       "cell": "up --space for it from another folder refuses, naming its root, and makes nothing there",
       "afterRestore": "pnpm --filter cotal-ai... build"
