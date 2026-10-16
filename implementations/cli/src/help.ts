@@ -79,18 +79,19 @@ export function printEntry(commands: readonly Command[]): void {
 }
 
 /** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases,
- *  subcommands, flags, structured outputs and examples, all from the declared specs. */
-export function printCommandHelp(cmd: Command, sub?: Subcommand): void {
+ *  subcommands, flags, structured outputs and examples, all from the declared specs. Each line goes
+ *  to `out`, which a usage refusal points at stderr. */
+export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log): void {
   const path = sub ? `${cmd.name} ${sub.name}` : cmd.name;
-  console.log(`${c.bold(`cotal ${path}`)} - ${(sub ?? cmd).summary}`);
-  console.log(c.dim(`usage: ${sub ? (sub.usage ?? `cotal ${path}`) : commandUsage(cmd)}`));
+  out(`${c.bold(`cotal ${path}`)} - ${(sub ?? cmd).summary}`);
+  out(c.dim(`usage: ${sub ? (sub.usage ?? `cotal ${path}`) : commandUsage(cmd)}`));
   const aliases = (sub ?? cmd).aliases ?? [];
-  if (aliases.length) console.log(c.dim(`aliases: ${aliases.join(", ")}`));
+  if (aliases.length) out(c.dim(`aliases: ${aliases.join(", ")}`));
   const subs = (sub ? [] : (cmd.subcommands ?? [])).filter((s) => !s.hidden);
   if (subs.length) {
     const pad = Math.max(...subs.map((s) => label(s).length));
-    console.log(c.bold("subcommands:"));
-    for (const s of subs) console.log(`  ${label(s).padEnd(pad)}  ${c.dim(s.summary)}`);
+    out(c.bold("subcommands:"));
+    for (const s of subs) out(`  ${label(s).padEnd(pad)}  ${c.dim(s.summary)}`);
   }
   const flags = cmd.flags ?? [];
   if (flags.length) {
@@ -99,14 +100,14 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand): void {
       return `${f.short ? `-${f.short}, ` : "    "}--${f.name}${metavar}`;
     });
     const pad = Math.max(...left.map((s) => s.length));
-    console.log(c.bold("flags:"));
-    flags.forEach((f, i) => console.log(`  ${left[i]!.padEnd(pad)}  ${c.dim(f.description ?? "")}`));
+    out(c.bold("flags:"));
+    flags.forEach((f, i) => out(`  ${left[i]!.padEnd(pad)}  ${c.dim(f.description ?? "")}`));
   }
   const outputs = (sub ?? cmd).outputs ?? [];
-  if (outputs.length) console.log(c.dim(`structured output: ${outputs.join(", ")}`));
+  if (outputs.length) out(c.dim(`structured output: ${outputs.join(", ")}`));
   const examples = (sub ?? cmd).examples ?? [];
   if (examples.length) {
-    console.log(c.bold("examples:"));
-    for (const example of examples) console.log(`  ${example}`);
+    out(c.bold("examples:"));
+    for (const example of examples) out(`  ${example}`);
   }
 }

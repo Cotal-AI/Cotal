@@ -17,7 +17,7 @@ import { attach, attachFlags, input, inputFlags, managedAgentComplete, ps, psFla
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
-import { completion, completionComplete, complete } from "./commands/completion.js";
+import { completion, completionComplete, completionFlags, complete } from "./commands/completion.js";
 import { mint } from "./commands/mint.js";
 import { channels } from "./commands/channels.js";
 import { history, historyFlags } from "./commands/history.js";
@@ -109,9 +109,17 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "completion",
     group: "Setup",
-    summary: "shell completion - print a stub or install it persistently",
-    usage: "completion <bash|zsh|fish|powershell | install [shell]>",
-    positionals: "<bash|zsh|fish|powershell | install [shell]>",
+    summary: "shell completion - which shells have it, print a stub, or install it persistently",
+    usage: "cotal completion [--json|--plain] | script <bash|zsh|fish|powershell> | install [shell]",
+    positionals: "[script <shell> | install [shell]]",
+    flags: completionFlags,
+    outputs: ["json", "plain"],
+    subcommands: [
+      { name: "script", summary: "print a shell's completion stub as raw shell code", usage: "cotal completion script <bash|zsh|fish|powershell>" },
+      { name: "install", summary: "install the stub persistently (detects $SHELL)", usage: "cotal completion install [shell]" },
+      ...["bash", "zsh", "fish", "powershell"].map((name) => ({ name, summary: `replaced by completion script ${name}`, hidden: true })),
+    ],
+    examples: ["cotal completion", "source <(cotal completion script bash)", "cotal completion install"],
     run: completion,
     complete: completionComplete,
   },
