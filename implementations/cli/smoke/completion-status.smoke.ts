@@ -215,7 +215,8 @@ const codeOf = (stdout: string): unknown => {
     check(`completion ${shell} names completion script ${shell}`, old.stderr.includes(`cotal completion script ${shell}`), shown(old));
   }
   const oldJson = s.run(["completion", "bash", "--json"]);
-  check("completion bash --json is a USAGE_INVALID envelope", oldJson.status === 1 && codeOf(oldJson.stdout) === "USAGE_INVALID", shown(oldJson));
+  // A mode that declares no structured output refuses --json without an envelope, so stdout stays empty.
+  check("completion bash --json is refused with nothing on stdout", oldJson.status === 1 && oldJson.stdout === "" && /takes no --json/.test(oldJson.stderr), shown(oldJson));
   const missing = s.run(["completion", "script"]);
   check("completion script without a shell is refused", missing.status === 1 && missing.stdout === "" && /needs a shell/.test(missing.stderr), shown(missing));
   for (const word of ["tcsh", "bsah"]) {
@@ -227,7 +228,7 @@ const codeOf = (stdout: string): unknown => {
   const unknown = s.run(["completion", "script", "tcsh"]);
   check("completion script for an unknown shell is refused", unknown.status === 1 && unknown.stdout === "" && /no shell "tcsh"/.test(unknown.stderr), shown(unknown));
   const scriptJson = s.run(["completion", "script", "bash", "--json"]);
-  check("completion script takes no --json", scriptJson.status === 1 && codeOf(scriptJson.stdout) === "USAGE_INVALID", shown(scriptJson));
+  check("completion script takes no --json and writes nothing on stdout", scriptJson.status === 1 && scriptJson.stdout === "" && /takes no --json/.test(scriptJson.stderr), shown(scriptJson));
   const installJson = s.run(["completion", "install", "bash", "--json"]);
   check("completion install takes no --json and installs nothing", installJson.status === 1 && !existsSync(join(s.home, ".bashrc")), shown(installJson));
   const pwsh = s.run(["completion", "install", "powershell"]);
