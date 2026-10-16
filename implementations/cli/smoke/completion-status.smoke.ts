@@ -201,7 +201,7 @@ const codeOf = (stdout: string): unknown => {
   const zsh = s.shellOf(s.json({ ZDOTDIR: "zdot" }).env, "zsh");
   // Compared by realpath: the working directory a child reports can be the resolved form of tmpdir().
   const wiredIn = typeof zsh?.wiredIn === "string" ? zsh.wiredIn : "";
-  check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === realpathSync(join(zdot, ".zshrc")), zsh);
+  check("the status reads a relative ZDOTDIR from its working directory and names the absolute file", isAbsolute(wiredIn) && existsSync(wiredIn) && realpathSync(wiredIn) === join(realpathSync(zdot), ".zshrc"), zsh);
 }
 
 // ── script, and the form it replaced ───────────────────────────────────────────────────────────────
