@@ -29,7 +29,7 @@ process.on("exit", () => {
 type Envelope = {
   outcome: string; completeness: string; target: unknown; command: string;
   result: { items: { name: string; state: string; reachable: boolean | null; error: string | null }[] } | null;
-  warnings: { code: string; target: unknown }[]; error?: { code: string; message: string };
+  warnings: { code: string; target: unknown }[]; error?: { code: string; message: string; remedy?: string };
 };
 
 /** A sandboxed home, with an optional extensions manifest. */
