@@ -613,6 +613,7 @@ export async function readSeats(v: ConnectFlags, command: "ps" | "slots", on: st
     items.push(...rows);
   }
   const unread = managers.filter((m) => m.state !== "answered").length;
+  const kind = command === "slots" ? "slots" : "seats";
   const partial = unread
     ? {
         message: `Incomplete manager census: ${unread} of ${managers.length} instances did not return ${kind}. Rows above are partial, not a complete list.`,
