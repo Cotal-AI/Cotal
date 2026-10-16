@@ -100,6 +100,15 @@
       "replace": "const config = xdg || join(homedir(), \".config\");",
       "expectRed": "install ignores a relative XDG_CONFIG_HOME",
       "cell": "install ignores a relative XDG_CONFIG_HOME"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "install writes the stub before it checks the rc's directory",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "    if (current === undefined && !existsSync(dirname(rc)))\n",
+      "replace": "    if (current === \"\\u0000never\")\n",
+      "expectRed": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written",
+      "cell": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written"
     }
   ]
 }

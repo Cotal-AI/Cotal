@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import {
@@ -340,22 +340,39 @@ function install(shell?: string): void {
     // Write the stub to a cached file and source THAT from the rc — deterministic (process
     // substitution is slower and empirically flaky on macOS bash) and fast (no `cotal` spawn on
     // every shell start). Re-running regenerates the stub; the rc line is added at most once.
+    const zdotdir = process.env.ZDOTDIR;
+    if (sh === "zsh" && zdotdir && !isAbsolute(zdotdir))
+      throw new CommandFailure("refused", "USAGE_INVALID", `ZDOTDIR is relative (${zdotdir}), so the .zshrc zsh reads depends on the directory each shell starts in`, {
+        remedy: "set ZDOTDIR to an absolute path, then install again",
+      });
     const { stub, rc } = stubPaths(sh) as { stub: string; rc: string };
+    // The startup file is read, and its directory checked, before anything is written, so one that
+    // install cannot extend is refused with nothing changed.
+    const current = readText(rc);
+    if (typeof current === "object")
+      throw new CommandFailure("refused", current.code === "EACCES" ? "PERMISSION_DENIED" : "TARGET_UNAVAILABLE", `${rc} could not be read: ${current.code ?? current.message}`, {
+        remedy: "fix it, then install again",
+      });
+    if (current === undefined && !existsSync(dirname(rc)))
+      throw new CommandFailure("refused", "TARGET_NOT_FOUND", `${dirname(rc)} does not exist, so install cannot create ${rc}`, {
+        remedy: sh === "zsh" ? "create it, or point ZDOTDIR at the directory that holds your .zshrc" : "create it, then install again",
+      });
     mkdirSync(dirname(stub), { recursive: true });
     writeFileSync(stub, SCRIPTS[sh]);
     const line = sourceLine(stub);
-    let current = "";
-    try {
-      current = readFileSync(rc, "utf8");
-    } catch {
-      /* rc doesn't exist yet — appendFileSync creates it */
-    }
-    if (holdsSourceLine(current, stub)) {
+    if (current !== undefined && holdsSourceLine(current, stub)) {
       console.log(c.dim(`already installed in ${rc}`));
       console.log(c.dim(`  refreshed ${stub}`));
       return;
     }
-    appendFileSync(rc, `${current && !current.endsWith("\n") ? "\n" : ""}# cotal shell completion\n${line}\n`);
+    try {
+      appendFileSync(rc, `${current && !current.endsWith("\n") ? "\n" : ""}# cotal shell completion\n${line}\n`);
+    } catch (e) {
+      throw new CommandFailure("failed", "OPERATION_FAILED", `wrote ${stub} but could not add its line to ${rc}: ${(e as NodeJS.ErrnoException).code ?? (e as Error).message}`, {
+        changed: [stub],
+        remedy: `add this line to ${rc}: ${line}`,
+      });
+    }
     console.log(c.green(`✓ installed ${sh} completion`));
     console.log(c.dim(`  ${stub}\n  appended to ${rc}\n  open a new shell (or: source ${stub})`));
     return;

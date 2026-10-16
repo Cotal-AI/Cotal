@@ -150,6 +150,27 @@ const codeOf = (stdout: string): unknown => {
   }
 }
 
+// ── install refuses before it writes ────────────────────────────────────────────────────────────────
+{
+  const s = sandbox("/bin/zsh");
+  const stub = join(s.xdg, "cotal", "completion.zsh");
+  const missingDir = s.run(["completion", "install", "zsh"], { ZDOTDIR: join(s.home, "nowhere") });
+  check("install refuses a ZDOTDIR that does not exist, exit 2, with nothing written", missingDir.status === 2 && missingDir.stdout === "" && /does not exist, so install cannot create/.test(missingDir.stderr) && !existsSync(stub), shown(missingDir));
+  const relative = s.run(["completion", "install", "zsh"], { ZDOTDIR: "zdot" });
+  check("install refuses a relative ZDOTDIR, exit 1, with nothing written", relative.status === 1 && /ZDOTDIR is relative/.test(relative.stderr) && !existsSync(stub) && !existsSync(join(s.home, "zdot")), shown(relative));
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const rc = join(s.home, ".zshrc");
+    writeFileSync(rc, "# mine\n");
+    chmodSync(rc, 0o000);
+    const unreadable = s.run(["completion", "install", "zsh"]);
+    check("install refuses an rc it cannot read, exit 2, with nothing written", unreadable.status === 2 && /could not be read: EACCES/.test(unreadable.stderr) && !existsSync(stub), shown(unreadable));
+    chmodSync(rc, 0o400);
+    const readOnly = s.run(["completion", "install", "zsh"]);
+    chmodSync(rc, 0o600);
+    check("an rc it can read but not extend fails, exit 5, naming the stub it wrote and the line to add", readOnly.status === 5 && /wrote .*completion\.zsh but could not add its line/.test(readOnly.stderr) && readOnly.stderr.includes(`source "${stub}"`) && existsSync(stub), shown(readOnly));
+  }
+}
+
 // ── A relative XDG_CONFIG_HOME ──────────────────────────────────────────────────────────────────────
 {
   const s = sandbox();

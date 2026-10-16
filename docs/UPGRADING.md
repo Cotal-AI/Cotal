@@ -62,8 +62,7 @@ it cannot unload a completion function an already open shell has loaded.
 
 Search your shell startup files (`~/.bashrc`, `~/.zshrc`, fish's `config.fish`, PowerShell's
 `$PROFILE`) for `cotal completion` followed by a shell name. After the upgrade, `cotal completion`
-lists each installed stub and the startup file that holds the line `cotal completion install`
-wrote for it.
+lists each installed stub and where `cotal completion install` wired it in.
 
 ## CLI command resolution after 0.82.0 (unreleased)
 

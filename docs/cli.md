@@ -98,7 +98,7 @@ one JSON document on stdout. In this release those are `cotal version` and `cota
 | `target` | What it acted on, or `null` for a command that reads only local metadata |
 | `outcome` | `ok`, `no-op`, `refused`, `failed`, `partial` or `unknown` |
 | `completeness` | How much of the read scope the result covers: `complete`, `partial` or `not-checked`. It says nothing about whether the work succeeded |
-| `result` | The command's result, or `null` when it did not succeed |
+| `result` | The command's result. A `partial` read keeps what it read; a refused, failed or unknown run has `null` |
 | `warnings` | One `{code, target, message}` for each thing it could not read or check |
 | `error` | Present when the outcome is not `ok` or `no-op`: `{code, message, remedy, cause}`, where `cause` keeps an endpoint's own code, outcome and safe detail |
 | `changed` | What a command that did not succeed changed anyway |
@@ -2592,7 +2592,11 @@ or takes a shell name positionally:
 - **fish**: writes `~/.config/fish/completions/cotal.fish` (or under an absolute `$XDG_CONFIG_HOME`), which fish loads automatically.
 - **powershell**: refused with the line to add to `$PROFILE`.
 
-A relative `$XDG_CONFIG_HOME` is ignored, so the paths do not depend on the working directory.
+A relative `$XDG_CONFIG_HOME` is ignored, so the paths do not depend on the working directory. Before
+it writes anything, install reads the startup file: one it cannot read, a startup file whose
+directory does not exist, and a relative `$ZDOTDIR` are refused with nothing changed. If the line
+cannot be added after the stub is written, the run fails with exit 5 and names the stub it wrote
+and the line to add.
 
 The installed stub routes tab completion to the internal `cotal __complete` dispatcher, which
 evaluates candidates from local persona files and registered command specs without network calls.
