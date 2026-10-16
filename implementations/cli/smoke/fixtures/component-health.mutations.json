@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:component-health",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "minTicks": 13,
   "mutations": [
     {
@@ -51,8 +51,8 @@
     {
       "name": "bare status greens a live manager pid without asking its rail (#2073)",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "    if (noService) return `${c.red(`not serving (pid ${state.pid})`)}${c.dim(\" \u00b7 service endpoint not answering\")}`;",
-      "replace": "    if (noService) return `${unprobed}${c.dim(\" \u00b7 service unchecked\")}`;",
+      "find": "    if (noService)\n      return { name: \"manager\", state: \"not-serving\",",
+      "replace": "    if (false)\n      return { name: \"manager\", state: \"not-serving\",",
       "expectRed": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "cell": "bare status says not serving for a live pid whose rail does not answer (#2073)",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"

@@ -1,0 +1,77 @@
+{
+  "suite": [
+    "implementations/cli/smoke/status-report.smoke.ts"
+  ],
+  "guard": "bare status checks only the selected registration unless --all, reports a part it cannot read as partial with a named warning, prints its sections in the agreed order with the hints last, and refuses --components with --all",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/status-report.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/status-report.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "every registration is checked without --all",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "check: all || m.space === chosen ? (",
+      "replace": "check: true ? (",
+      "expectRed": "the other registration is not checked",
+      "cell": "the other registration is not checked",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--all is not passed to the mesh check",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "const meshes = await readMeshes(selected, Boolean(values.all));",
+      "replace": "const meshes = await readMeshes(selected, false);",
+      "expectRed": "--all checks every registration",
+      "cell": "--all checks every registration",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a status that could not read a part is reported complete",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "      ...(parts ? { partial: { message:",
+      "replace": "      ...(false ? { partial: { message:",
+      "expectRed": "an unreadable pidfile makes status partial with exit 4",
+      "cell": "an unreadable pidfile makes status partial with exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable pidfile is not named as a warning",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "      gaps.add(\"PIDFILE_UNREADABLE\",",
+      "replace": "      if (false) gaps.add(\"PIDFILE_UNREADABLE\",",
+      "expectRed": "the warning names the unreadable pidfile",
+      "cell": "the warning names the unreadable pidfile",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "unreadable trust material is not a gap",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "    gaps.add(\"AUTH_UNREADABLE\",",
+      "replace": "    if (false) gaps.add(\"AUTH_UNREADABLE\",",
+      "expectRed": "unreadable trust material is reported partial, not crashed on",
+      "cell": "unreadable trust material is reported partial, not crashed on",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the hints print before the selected mesh",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  const sections: Section[] = [machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected)];\n  if (r.hints.length) sections.push(",
+      "replace": "  const sections: Section[] = [machineSection(r.machine), extensionsSection(r.extensions), folderSection(r.folder, r.selected), ...meshesSections(r.meshes), selectedSection(r.selected)];\n  if (r.hints.length) sections.splice(4, 0, ",
+      "expectRed": "the sections keep the infrastructure order and end with the hints",
+      "cell": "the sections keep the infrastructure order and end with the hints",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--components runs with --all",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "  if (values.components && (presentation !== \"rich\" || values.all))",
+      "replace": "  if (values.components && presentation !== \"rich\")",
+      "expectRed": "status --components --all is refused before any probe, exit 1",
+      "cell": "status --components --all is refused before any probe, exit 1",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

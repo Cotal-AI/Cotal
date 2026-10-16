@@ -84,8 +84,8 @@ runtimes ship this way.
 ## Structured output
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
-one JSON document on stdout. In this release that is `cotal version`, `cotal ps`, `cotal models` and
-`cotal runtimes`. `cotal version --json` writes:
+one JSON document on stdout. In this release that is `cotal version`, `cotal status`, `cotal ps`,
+`cotal models` and `cotal runtimes`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -904,7 +904,8 @@ cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <h
 cotal meshes rm <space> [<space> …] [--force]
 cotal sync [--idp <auth base URL>]
 cotal use <space>
-cotal status [--space <s>] [--server <url>] [--components]
+cotal status [--json|--plain] [--all] [--space <s>] [--server <url>]
+cotal status --components [--space <s>] [--server <url>]
 ```
 
 `meshes` lists the meshes this machine knows; a `*` marks the `current` default a bare
@@ -1024,13 +1025,38 @@ spawn: a seat retained with `--no-events`, or on a connector without an event pl
 a resumed seat carries the requirement in its launch material.
 
 `use <space>` sets that default; the selection applies from every directory,
-including inside another mesh's project. `status` is a read-only report: machine prerequisites
-(starting with the installed `cotal-ai` version), the installed extensions and their versions, this
-folder's `.cotal/`, the recorded meshes, and a live snapshot of the selected mesh (roster, channels,
-membership feed). Stale Claude skills and out-of-date `.agents` skills recommend `cotal setup --skills`,
-not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the mesh to inspect; it starts
-nothing. The manager row asks the service endpoint once: a live process that does not answer is
-`not serving`, and a probe that could not be made leaves the row `running · service unchecked`.
+including inside another mesh's project. `status` is a read-only report in this order: this machine
+(the installed `cotal-ai` version, NATS and each named integration), the installed extensions and
+their versions, this folder's `.cotal/`, the recorded meshes, the selected mesh (its connection, the
+delivery responder, its channels and membership feed), then the hints. It lists no roster; `cotal ps`
+lists managed seats. Stale Claude skills and out-of-date `.agents` skills recommend
+`cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
+mesh to inspect; it starts nothing.
+
+Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
+recorded TLS requirement, and every other row reads `not checked`. `--all` checks every recorded
+mesh, including discovered ones, each with its own recorded TLS requirement.
+
+`status --json` writes one envelope whose `target` is `{space, scope}`, where `space` is the selected
+space or `null` and `scope` is `selected` or `all`. Its `result` is the report the text draws:
+
+| Field | Holds |
+|---|---|
+| `kind` | `infrastructure` |
+| `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
+| `extensions` | `root` and `items`, each `{package, label, version}` |
+| `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid` or `missing`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`) and `storedState` |
+| `meshes` | `current`, `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves; otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
+| `hints` | The hints, in the order the report prints them |
+
+An unreachable broker, a stopped process or an unbound responder is a state the report names, and
+`status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
+`partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
+extensions manifest, the connectors, the skills bundle, the web records, a user-auth login, or the
+selected mesh's channels. The manager row asks the service endpoint once: a live process that does
+not answer is `not serving`, and a probe that could not be made leaves the row
+`running · service unchecked`.
 A process row whose PID record exists but cannot be read, or exists under both its current and a
 pre-upgrade name, reads `pidfile unreadable` with the error, and the other rows still print. A live
 manager whose delivery-aware marker cannot be read keeps its row and names the failure as
@@ -1063,7 +1089,8 @@ Persona rows name the catalog they describe. If this folder and the selected mes
 catalogs, status names both and marks which one spawn launches from. A green `default` means the file
 passes the same agent-file loader spawn uses; a present but invalid file is reported as invalid.
 
-`cotal status --components` adds a fail-loud per-component health pass. It reads **each
+`cotal status --components` prints the report, then a fail-loud per-component health pass. It takes
+no `--json`, `--plain` or `--all`. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed

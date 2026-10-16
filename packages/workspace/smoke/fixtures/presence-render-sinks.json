@@ -1159,28 +1159,6 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/status.ts",
-      "kind": "derived-output",
-      "anchor": "`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}${activityAge(p)}`) : \"\"}`",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
-      }
-    },
-    {
-      "path": "implementations/cli/src/commands/status.ts",
-      "kind": "renderer-call",
-      "anchor": "statusBadge(p.status)",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/cli/src/ui.ts",
-        "anchor": "return c.green(\"● working · progress unknown\");"
-      }
-    },
-    {
       "path": "implementations/cli/src/commands/up.ts",
       "kind": "derived-output",
       "anchor": "`restore attempt ${maintenance.restore.attemptId} active listener ownership is ${status}; refusing ordinary startup`",

@@ -761,6 +761,10 @@ try {
       catalogCalls.push(opts.idpUrl);
       return opts.idpUrl === liveIdp ? [liveResult] : [liveResult, deadResult];
     },
+    // Status reads the selected discovered space's login state: no session here.
+    async userStatus() {
+      return { idpUrl: liveIdp };
+    },
   } as unknown as import("@cotal-ai/core").AuthProvider);
   const { prepareCatalogCommand } = await import("../src/commands/sync.js");
   const { status } = await import("../src/commands/status.js");
