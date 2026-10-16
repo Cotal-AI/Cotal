@@ -74,7 +74,7 @@
       "name": "a mark may stand for a state alone",
       "file": "packages/workspace/src/present.ts",
       "find": "cell.mark && !cell.text.trim()) throw",
-      "replace": "cell.mark && false) throw",
+      "replace": "cell.mark && cell.text === \"\\u0000never\") throw",
       "expectRed": "a mark with no state word is refused",
       "cell": "a mark with no state word is refused",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
