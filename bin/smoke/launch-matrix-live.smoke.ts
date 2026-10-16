@@ -235,12 +235,16 @@ try {
     fish.status === 0 && existsSync(fishFile) && readFileSync(fishFile, "utf8").includes("cotal __complete"), out(fish));
   const pwsh = cotal(["completion", "install", "powershell"]);
   check("completion install powershell prints the $PROFILE line instead of writing one",
-    out(pwsh).includes("cotal completion powershell | Out-String | Invoke-Expression"), out(pwsh));
+    out(pwsh).includes("cotal completion script powershell | Out-String | Invoke-Expression"), out(pwsh));
   const completed = cotal(["__complete", "sp"]);
   check("__complete answers the stubs' protocol", completed.status === 0 && /^spawn\t/m.test(completed.stdout), out(completed));
   for (const shell of ["bash", "zsh", "fish", "powershell"]) {
+    // The hand-wired startup line is a documented break: it must source nothing and name its replacement.
     const handWired = cotal(["completion", shell]);
-    check(`the hand-wired \`completion ${shell}\` prints a script today`, handWired.status === 0 && handWired.stdout.includes("__complete"), out(handWired));
+    check(`the hand-wired \`completion ${shell}\` exits 1 with nothing on stdout and names \`completion script ${shell}\``,
+      handWired.status === 1 && handWired.stdout === "" && handWired.stderr.includes(`cotal completion script ${shell}`), out(handWired));
+    const script = cotal(["completion", "script", shell]);
+    check(`\`completion script ${shell}\` prints a stub that calls \`cotal __complete\``, script.status === 0 && script.stdout.includes("__complete"), out(script));
   }
 
   // ---- Container commands -------------------------------------------------------------------------
