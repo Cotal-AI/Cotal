@@ -486,14 +486,20 @@ if (process.platform !== "win32") {
     const t = terminal(dir, ["--destination", "local", "--harness", "codex", "--project", dir, "--space", "pty-rt"], withMore);
     const asked = await t.at(RUNTIMES);
     await wait(500);
+    const listed = t.s.text().slice(t.s.text().lastIndexOf("Runtimes"));
     const frame = t.s.text().slice(t.s.text().lastIndexOf(RUNTIMES));
-    check("the runtimes question says pty is built in, and each row shows its state and host tool",
-      asked && /pty is built in and always set up/.test(frame) && /tmux\s+set up · tmux found/.test(frame) && /cmux\s+not set up · cmux not on PATH/.test(frame) && /herdr\s+not set up · herdr found/.test(frame), frame.slice(0, 900));
+    check("before the question every runtime is listed with its state and host tool, pty as built in",
+      asked && /pty\s+built in, always set up/.test(listed) && /orca\s+not set up · orca found/.test(listed) && /tmux\s+set up · tmux found/.test(listed) && /cmux\s+not set up · cmux not on PATH/.test(listed) && /herdr\s+not set up · herdr found/.test(listed), listed.slice(0, 900));
     check("installed runtimes and those whose tool was found start selected",
       /◼ orca\b/.test(frame) && /◼ tmux\b/.test(frame) && /◼ herdr\b/.test(frame) && /◻ cmux\b/.test(frame), frame.slice(0, 900));
     // The cursor starts on orca: leave orca, tmux and herdr, choose cmux.
     await t.answer(RUNTIMES, " " + DOWN + " " + DOWN + " " + DOWN + " " + ENTER);
-    check("the review lists the runtimes chosen", (await t.at(SAVE, t.cursor())) && /runtimes\s+pty, cmux/.test(t.s.text().slice(t.cursor())), t.s.text().slice(-700));
+    const reviewed = await t.at(SAVE, t.cursor());
+    const text = t.s.text();
+    const at = text.lastIndexOf(`◇  ${RUNTIMES}`);
+    const answer = at < 0 ? "" : text.slice(at + RUNTIMES.length + 3, text.indexOf("Your setup", at));
+    check("the answer names the runtimes chosen, and the review lists them",
+      reviewed && /\bcmux\b/.test(answer) && !/found|PATH|set up/.test(answer) && /runtimes\s+pty, cmux/.test(text.slice(t.cursor())), { answer, tail: text.slice(-700) });
     await t.answer(SAVE, ENTER);
     check("a chosen runtime whose host tool is missing is reported and not installed, and those left out are kept",
       (await t.exited()) && t.s.code === 4 && /the cmux runtime is not ready/.test(t.s.text()) && /the cmux runtime needs cmux on PATH/.test(t.s.text()) && !/installing @cotal-ai\/cmux/.test(t.s.text())

@@ -309,16 +309,17 @@ async function askHarness(candidates: readonly SetupConnectorCandidate[], initia
   );
 }
 
-/** The runtimes to set up besides `pty`. Installed ones and those whose host tool is on PATH start
- *  selected. Each row's state is part of its label, because clack shows a hint only on the focused
- *  and selected rows. */
+/** The runtimes to set up besides `pty`. Installed ones and those whose host tool is found start
+ *  selected. A note lists every runtime's state first, because clack shows a hint only on the
+ *  focused and selected rows, and a label is what the answer repeats. */
 async function askRuntimes(choices: readonly RuntimeChoice[], initial: readonly string[] | undefined): Promise<string[]> {
   const offered = choices.filter((r) => r.name !== "pty");
-  const width = Math.max(...offered.map((r) => r.name.length));
+  const width = Math.max(...choices.map((r) => r.name.length));
+  note(choices.map((r) => `${r.name.padEnd(width)}  ${r.name === "pty" ? "built in, always set up" : runtimeState(r)}`).join("\n"), "Runtimes");
   return abortIfCancel(
     await p.multiselect({
-      message: "Which runtimes do your agents run in? pty is built in and always set up",
-      options: offered.map((r) => ({ value: r.name, label: `${r.name.padEnd(width)}  ${runtimeState(r)}` })),
+      message: "Which runtimes do your agents run in?",
+      options: offered.map((r) => ({ value: r.name, label: r.name, hint: runtimeState(r) })),
       initialValues: [...(initial ?? offered.filter((r) => r.installed || r.found !== null).map((r) => r.name))],
       required: false,
     }),
@@ -621,7 +622,7 @@ async function setUpRuntimes(
       const reachable = (await materializeExtension<RuntimeProvider>({ kind: "runtime", name: r.name })).available();
       rows.push({ ...row, selected: true, state, reachable, error: null });
       if (!reachable)
-        problems.push({ message: `the ${r.name} runtime is set up but does not answer here`, remedy: `${r.tools.length > 0 ? `check that ${r.tools.join(" or ")} runs, then ` : ""}see \`cotal runtimes\`` });
+        problems.push({ message: `the ${r.name} runtime is set up but does not answer here`, remedy: `${r.tools.length > 0 ? `make sure ${r.tools.join(" or ")} works here, then ` : ""}see \`cotal runtimes\`` });
     } catch (e) {
       const error = (e as Error).message;
       rows.push({ ...row, selected: true, state, reachable: null, error });
