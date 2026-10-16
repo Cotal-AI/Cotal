@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
 import {
@@ -297,9 +297,10 @@ function localTarget(root: string, server: string, source: MeshTarget["source"])
 /** A `.cotal/` that a user actually created here — not the machine-home dir the cwd walk-up lands on
  *  from outside any project (which has no space, just the daemon's pid/onboard files). */
 function isGenuineSpace(root: string): boolean {
-  // Normalize both sides — COTAL_HOME may be relative or non-canonical, and a raw string compare
-  // would then let the real `~/.cotal` masquerade as a project space (or vice-versa).
-  return resolve(join(root, ".cotal")) !== resolve(homeCotalDir()) && existsSync(join(root, ".cotal"));
+  // Canonicalize both sides: COTAL_HOME may be relative or reached through a symlink, while the
+  // walked root comes from the canonical cwd, so a raw or lexical compare would let the real
+  // `~/.cotal` masquerade as a project space (or vice-versa).
+  return canonicalRoot(join(root, ".cotal")) !== canonicalRoot(homeCotalDir()) && existsSync(join(root, ".cotal"));
 }
 
 /**

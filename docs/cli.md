@@ -1396,8 +1396,11 @@ Asks the running manager for each connector's model catalog (model ids plus thei
 for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
 providers that enable `model_catalog = true` in the operator Jcode `config.toml`. Jcode's listed
 effort tiers render as `<tiers> (declared, not provider-verified)`, and launch can still refuse one.
-A connector without a catalog says so. A connector whose catalog could not be read makes the read
-`partial` (exit 4) with a `MODEL_CATALOG_UNREADABLE` warning naming it. A connector whose harness the manager did not find at boot
+A connector without a catalog says so with `supported: false`, and one whose install has no
+catalog it can list, such as OpenCode 2.x, gives the reason in `unavailable`; neither is a failed
+read. A connector whose catalog could not be read, or that the manager could not load, makes the
+read `partial` (exit 4) with a `MODEL_CATALOG_UNREADABLE` warning naming it, and when `--agent` names
+that connector the read fails (exit 5). A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog
 printed it. OpenCode and Codex ids are the full
@@ -2171,18 +2174,19 @@ Lists every agent runtime the manager can spawn through: the built-in `pty`, the
 provider is probed so you can see what is actually reachable on this machine before selecting it:
 
 ```
-RUNTIME  STATE                                      PACKAGE
+RUNTIME  STATE                  PACKAGE
 pty      built in
-orca     installed · reachable                      @cotal-ai/orca
-tmux     available · cotal ext add @cotal-ai/tmux
-cmux     available · cotal ext add @cotal-ai/cmux
-herdr    available · cotal ext add @cotal-ai/herdr
+orca     installed · reachable  @cotal-ai/orca
+tmux     not installed          @cotal-ai/tmux
+cmux     not installed          @cotal-ai/cmux
+herdr    not installed          @cotal-ai/herdr
+add one that is not installed with `cotal ext add <package>`
 ```
 
-`installed · reachable` / `unreachable` is the provider's own `available()` probe; `available` means
-it is a known runtime you can add with the shown command. `--json` writes one document whose
-`result.items` are `{name, state, package, reachable, error}`, with `state` one of `built-in`,
-`installed` or `available` and `reachable` null when the provider was not asked. An installed provider
+`installed · reachable` / `unreachable` is the provider's own `available()` probe; `not installed`
+means it is a known runtime you can add with `cotal ext add` and the package shown. `--json` writes
+one document whose `result.items` are `{name, state, package, reachable, error}`, with `state` one of
+`built-in`, `installed` or `not-installed` and `reachable` null when the provider was not asked. An installed provider
 whose package fails to load is shown with its error and makes the read `partial` (exit 4). The command
 reads this machine only, so its `target` is null. Selecting an unknown or uninstalled runtime
 via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
@@ -2792,8 +2796,9 @@ cotal docs --search <query> [--json | --plain]
 | `--plain` | off | The same report without color |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
-`cotal_docs`. Bare `docs` lists the pages; `result.pages` holds each page's slug, title, kind and
-summary, and `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
+`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Concept`, `Guide`, `Reference`,
+`Project`), each with its title; `result.pages` holds each page's slug, title, kind and summary, and
+`result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
 ignoring case and a trailing `.md`; `result.body` holds its Markdown. An unknown page is refused with
 `USAGE_INVALID`, naming every page.
 
