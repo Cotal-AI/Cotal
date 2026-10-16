@@ -62,6 +62,36 @@ no outage window. Upgrading the `cotal` binary is the whole operation.
 Search scripts for `cotal ps --json`, and for checks of the exit status of `ps`, `models` or
 `runtimes`. Change line-by-line reads of `ps --json` to read `result.items` from the one document.
 
+## Shell completion script after 0.82.0 (unreleased)
+
+`cotal completion <shell>` is now `cotal completion script <shell>`, and bare `cotal completion`
+reports which shells have the stub instead of printing usage. Nothing on a running mesh changes, and
+there is no outage window. Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+A startup line written by hand that runs the old form, such as `source <(cotal completion bash)` or
+the PowerShell profile line `cotal completion powershell | Out-String | Invoke-Expression`, now
+loads no completion. The command exits 1, prints nothing on stdout, so the shell sources nothing,
+and names the replacement on stderr. Replace the line with its new form:
+
+```bash
+source <(cotal completion script bash)                               # bash
+source <(cotal completion script zsh)                                # zsh
+cotal completion script fish | source                                # fish
+cotal completion script powershell | Out-String | Invoke-Expression  # PowerShell $PROFILE
+```
+
+A stub installed by `cotal completion install` keeps working with no change: it calls the hidden
+`cotal __complete` entry, which is unchanged. Upgrading does not edit your shell startup files, and
+it cannot unload a completion function an already open shell has loaded.
+
+### Before the upgrade
+
+Search your shell startup files (`~/.bashrc`, `~/.zshrc`, fish's `config.fish`, PowerShell's
+`$PROFILE`) for `cotal completion` followed by a shell name. After the upgrade, `cotal completion`
+lists each installed stub and the file that loads it.
+
 ## CLI command resolution after 0.82.0 (unreleased)
 
 The CLI now resolves and validates a command before it seeds connectors or writes configuration.

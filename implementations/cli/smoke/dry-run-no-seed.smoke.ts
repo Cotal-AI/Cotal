@@ -191,17 +191,17 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
   writeFileSync(join(seedDir, "stamp.json"), stagedStamp);
   const r = spawnSync(
     "node",
-    [BIN, "completion", "bash"],
+    [BIN, "completion", "script", "bash"],
     { cwd: sandboxRoot, env: { ...HOST_ENV, COTAL_HOME: join(sandboxRoot, "home"), XDG_CONFIG_HOME: cfg, COTAL_ALLOW_CHECKOUT_SEED: "1" }, encoding: "utf8" },
   );
   const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
   check(
-    "a newer-generation stamp does not gate `completion bash`: completion stub emitted with exit 0",
+    "a newer-generation stamp does not gate `completion script bash`: completion stub emitted with exit 0",
     r.status === 0 && /complete -F _cotal_complete cotal/.test(out) && !/older than the seed store/.test(out),
     { status: r.status, out: out.slice(0, 400) },
   );
   check(
-    "the staged newer-generation stamp is untouched by `completion bash`",
+    "the staged newer-generation stamp is untouched by `completion script bash`",
     readFileSync(join(seedDir, "stamp.json"), "utf8") === stagedStamp,
     readFileSync(join(seedDir, "stamp.json"), "utf8").slice(0, 200),
   );
