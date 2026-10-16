@@ -231,16 +231,17 @@ async function completionOut(positionals: string[]): Promise<string> {
 }
 
 // --- A classified failure sets the exit code its outcome names, with its envelope on --json -------
-// The kernel ends the process, so it runs in a child over two probe commands: `probe` declares a
-// JSON output and `legacy` declares none.
+// The kernel ends the process, so it runs in a child over probe commands: `probe` declares a JSON
+// output, `legacy` declares none, and `shadow` declares a global flag's name.
 {
   const fixture = join(import.meta.dirname, "output-exit.fixture.ts");
   const sandbox = mkdtempSync(join(tmpdir(), "cotal-output-exit-"));
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
-  const run = (...words: string[]) => {
+  const run = (...words: string[]) => runWith({}, ...words);
+  const runWith = (extra: Record<string, string>, ...words: string[]) => {
     const r = spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
       encoding: "utf8",
-      env: { ...env, COTAL_HOME: join(sandbox, "home"), XDG_CONFIG_HOME: join(sandbox, "cfg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1" },
+      env: { ...env, COTAL_HOME: join(sandbox, "home"), XDG_CONFIG_HOME: join(sandbox, "cfg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...extra },
     });
     const lines = r.stdout.split("\n").filter(Boolean);
     return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope: lines.length === 1 && lines[0]!.startsWith("{") ? JSON.parse(lines[0]!) : undefined };
@@ -286,6 +287,13 @@ async function completionOut(positionals: string[]): Promise<string> {
     assert.equal(bogus.envelope?.error?.code, "USAGE_INVALID", "a usage error under --json is one USAGE_INVALID envelope");
     assert.doesNotMatch(bogus.stdout, /usage:/, "a usage error under --json keeps the help text off stdout");
     assert.equal(run("probe", "-aj", "--bogus").envelope?.error?.code, "USAGE_INVALID", "-j inside a group of short flags asks for the usage envelope");
+
+    // A command that declares a global flag's name could receive it only as `--no-color=<value>`.
+    const shadowed = runWith({ OUTPUT_EXIT_SHADOW: "1" }, "shadow", "--no-color=red");
+    assert.equal(shadowed.status, 1, "a command that declares a global flag is an internal error that exits 1");
+    assert.match(shadowed.stderr, /internal error: command "shadow" declares --no-color, which is a global flag/, "the internal error names the command and the flag");
+    assert.doesNotMatch(shadowed.stdout, /ran/, "a command that declares a global flag never runs");
+    assert.doesNotMatch(runWith({ OUTPUT_EXIT_SHADOW: "1" }, "probe").stdout, /ran/, "a declared global flag stops every command, not only its own");
 
     const legacy = run("legacy", "--fail", "plain");
     assert.equal(legacy.status, 1, "an unclassified error from a command with no structured output still exits 1");
