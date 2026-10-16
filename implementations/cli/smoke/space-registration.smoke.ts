@@ -214,7 +214,7 @@ setCurrent("keep");
   const sentinel = entry?.userAuth?.sentinelCredsPath;
   check("its sentinel credential lands in a private file, not in the record", !!sentinel && existsSync(sentinel) && (process.platform === "win32" || (statSync(sentinel).mode & 0o077) === 0) && !JSON.stringify(registryFiles()).includes("sentinel-material"), sentinel);
   check("the selection is unchanged", getCurrent() === "keep");
-  check("the result carries the pins, not the sentinel", added.env?.result.space.userAuth?.idp.issuer === ISSUER && !added.stdout.includes("sentinel-material"), added.env?.result.space.userAuth);
+  check("the result carries the pins, not the sentinel", added.env?.result?.space?.userAuth?.idp.issuer === ISSUER && !added.stdout.includes("sentinel-material"), added.env?.result?.space?.userAuth);
 }
 
 // ── Forgetting a registration ──────────────────────────────────────────────────────────────────────────
