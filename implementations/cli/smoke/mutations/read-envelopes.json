@@ -63,6 +63,15 @@
       "expectRed": "no report line ends in padding",
       "cell": "no report line ends in padding",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a runtime that is not installed hides its package",
+      "file": "implementations/cli/src/commands/runtimes.ts",
+      "find": "package: row.package ? { text: row.package, tone: \"hint\" } : \"\"",
+      "replace": "package: row.state === \"installed\" && row.package ? { text: row.package, tone: \"hint\" } : \"\"",
+      "expectRed": "runtimes draws a colored table with its state words",
+      "cell": "runtimes draws a colored table with its state words",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }

@@ -2016,18 +2016,19 @@ Lists every agent runtime the manager can spawn through: the built-in `pty`, the
 provider is probed so you can see what is actually reachable on this machine before selecting it:
 
 ```
-RUNTIME  STATE                                      PACKAGE
+RUNTIME  STATE                  PACKAGE
 pty      built in
-orca     installed · reachable                      @cotal-ai/orca
-tmux     available · cotal ext add @cotal-ai/tmux
-cmux     available · cotal ext add @cotal-ai/cmux
-herdr    available · cotal ext add @cotal-ai/herdr
+orca     installed · reachable  @cotal-ai/orca
+tmux     not installed          @cotal-ai/tmux
+cmux     not installed          @cotal-ai/cmux
+herdr    not installed          @cotal-ai/herdr
+add one that is not installed with `cotal ext add <package>`
 ```
 
-`installed · reachable` / `unreachable` is the provider's own `available()` probe; `available` means
-it is a known runtime you can add with the shown command. `--json` writes one document whose
-`result.items` are `{name, state, package, reachable, error}`, with `state` one of `built-in`,
-`installed` or `available` and `reachable` null when the provider was not asked. An installed provider
+`installed · reachable` / `unreachable` is the provider's own `available()` probe; `not installed`
+means it is a known runtime you can add with `cotal ext add` and the package shown. `--json` writes
+one document whose `result.items` are `{name, state, package, reachable, error}`, with `state` one of
+`built-in`, `installed` or `not-installed` and `reachable` null when the provider was not asked. An installed provider
 whose package fails to load is shown with its error and makes the read `partial` (exit 4). The command
 reads this machine only, so its `target` is null. Selecting an unknown or uninstalled runtime
 via `up`/`spawn --runtime <name>` fails loud and, for a known one, points at the exact `cotal ext add`
