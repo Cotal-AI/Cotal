@@ -262,7 +262,7 @@ const ansi = /\x1b\[/;
   const other = run(["ext", "root"]);
   check("an invalid file stops other commands too, before they run", other.status === 1 && /the preferences file .* is invalid/.test(other.stderr) && other.stdout === "", shown(other));
   const write = run(["config", "set", "color", "never"]);
-  check("a write does not replace an invalid file", write.status === 1 && /is invalid/.test(write.stderr) && fileText()?.includes("spaces"), shown(write));
+  check("a write does not replace an invalid file", write.status === 1 && /is invalid/.test(write.stderr) && fileText()?.includes("spaces") === true, shown(write));
   const help = run(["config", "--help"]);
   check("help still works", help.status === 0 && /cotal config/.test(help.stdout), shown(help));
   rmSync(file);
