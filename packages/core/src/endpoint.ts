@@ -2832,6 +2832,26 @@ export class CotalEndpoint extends EventEmitter {
     return this.channelConfigs.get(channel)?.replayWindow ?? this.channelDefaults.replayWindow;
   }
 
+  /** A channel's effective replay policy read straight from the registry bucket, for a caller that
+   *  reads it right after start, before any watch cache has caught up, or that watches nothing. A
+   *  wildcard reads the space defaults only. A space with no registry bucket has the built-in policy. */
+  async channelReplayPolicy(channel: string): Promise<{ replay: boolean; window: string | null }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const kv = this.channelKv ?? (await openChannelRegistry(this.nc, this.space, { create: false }));
+    let cfg: ChannelConfig | undefined;
+    let defaults: ChannelDefaults | undefined;
+    try {
+      [cfg, defaults] = await Promise.all([
+        isConcreteChannel(channel) ? readChannelConfig(kv, channel) : Promise.resolve(undefined),
+        readChannelDefaults(kv),
+      ]);
+    } catch (e) {
+      // `open` binds lazily, so a space with no registry bucket surfaces on the first read.
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+    }
+    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };
+  }
+
   /** Effective delivery class for a channel (per-channel override ?? space default ?? "durable"),
    *  from the live watch cache — drives the non-gating delivery-health surface (only durable-class
    *  channels have a Plane-3 backstop to report on). */
@@ -2942,6 +2962,39 @@ export class CotalEndpoint extends EventEmitter {
     if (i >= 0) this.channels.splice(i, 1);
     this.joinSeq.delete(channel);
     return { left: true };
+  }
+
+  /**
+   * What the chat stream still holds and what removes the rest. `perSender` is the stream's
+   * per-subject cap: a subject is one sender on one channel, and past the cap that sender's oldest
+   * message on the channel is discarded. `maxAgeMs` is the stream's age limit. Each is `null` when
+   * the stream sets none. `senders` counts each sender's retained messages per channel, so a sender
+   * at the cap marks a channel whose retained history has lost that sender's older messages while
+   * other senders' messages from the same time remain.
+   */
+  async chatRetention(): Promise<{ perSender: number | null; maxAgeMs: number | null; senders: { channel: string; sender: string; messages: number }[] }> {
+    if (!this.nc) throw new Error(this.notLiveMsg());
+    const mgr = await jetstreamManager(this.nc);
+    let info;
+    try {
+      info = await mgr.streams.info(chatStream(this.space), { subjects_filter: ">" });
+    } catch (e) {
+      // As in listChannels: an absent CHAT stream holds nothing yet; any other failure stays loud.
+      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;
+      return { perSender: null, maxAgeMs: null, senders: [] };
+    }
+    const senders: { channel: string; sender: string; messages: number }[] = [];
+    for (const [subject, messages] of Object.entries(info.state.subjects ?? {})) {
+      const p = parseSubject(subject);
+      if (p?.kind === "chat" && isPrincipalOwnerToken(p.owner)) senders.push({ channel: p.rest, sender: p.sender, messages });
+    }
+    const cap = info.config.max_msgs_per_subject;
+    const age = info.config.max_age;
+    return {
+      perSender: typeof cap === "number" && cap > 0 ? cap : null,
+      maxAgeMs: typeof age === "number" && age > 0 ? Math.round(age / 1_000_000) : null,
+      senders: senders.sort((a, b) => a.channel.localeCompare(b.channel) || a.sender.localeCompare(b.sender)),
+    };
   }
 
   /** One coherent channel model for dashboards: every channel that has messages OR a registry
@@ -3323,7 +3376,7 @@ export class CotalEndpoint extends EventEmitter {
   async multiChannelHistory(
     channels: readonly string[],
     opts?: { limit?: number; signal?: AbortSignal; batch?: number },
-  ): Promise<{ channel: string; msg: HistoryMessage }[]> {
+  ): Promise<{ channel: string; seq: number; msg: HistoryMessage }[]> {
     const subjects = [...new Set(channels.map((channel) => {
       if (!isConcreteChannel(channel))
         throw new Error(`multiChannelHistory: "${channel}" is a wildcard channel - one consumer's filter subjects may not overlap, so name the concrete channels`);
@@ -3380,13 +3433,13 @@ export class CotalEndpoint extends EventEmitter {
     // payload's `ts` here instead would change which messages the page holds, which is the
     // selection question this pull request already had to answer once.
     const rows = pages.flat().sort((a, b) => a.seq - b.seq).slice(-limit);
-    return rows.map(({ subject, msg }) => {
+    return rows.map(({ seq, subject, msg }) => {
       const p = parseSubject(subject);
       // The filter set is built from chat subjects, so this cannot fire against a healthy broker.
       // It is here because the alternative to raising is tagging a message with a guess.
       if (p?.kind !== "chat")
         throw new Error(`multiChannelHistory: the broker delivered ${subject}, which is not a chat subject on this space`);
-      return { channel: p.rest, msg };
+      return { channel: p.rest, seq, msg };
     });
   }
 

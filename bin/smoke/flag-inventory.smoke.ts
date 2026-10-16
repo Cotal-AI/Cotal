@@ -157,7 +157,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [...TARGET, "desc:string", "instructions:string", "no-replay:boolean", "replay:boolean", "window:string"],
     positionals: true,
   },
-  history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
+  history: { flags: [...TARGET, "dms:boolean", "follow:boolean", "force:boolean", "from:string", "grep:string", "json:boolean:j", "limit:string", "plain:boolean", "since:string"], positionals: true },
   // The unified cleanup verb: `history clear`'s grammar + the local-state targets' --store-dir.
   clean: { flags: [...TARGET, "attempt:string", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server

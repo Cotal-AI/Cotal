@@ -1,0 +1,141 @@
+{
+  "suite": [
+    "implementations/cli/smoke/history-read.smoke.ts"
+  ],
+  "guard": "history reads the newest retained window with --limit, --since, --from and --grep applied to it, adds DMs only with --dms, names each sender at the chat stream's per-sender limit as a gap and each channel's replay policy from the registry, refuses an identity that may not read, names a user's denied channels, and follows as stream records ending with an end record",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/history-read.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-read.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back.",
+    "The user-auth read path is imported from source in process, so that mutation is read without the build."
+  ],
+  "mutations": [
+    {
+      "name": "a window shorter than the retained channel says nothing older is retained",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "olderRetained = retained === undefined ? null : retained > read.length;",
+      "replace": "olderRetained = retained === undefined ? null : false;",
+      "expectRed": "--limit 2 keeps the two newest and says older ones are retained",
+      "cell": "--limit 2 keeps the two newest and says older ones are retained",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--since a sequence keeps the message at that sequence",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (since?.kind === \"seq\" && (item.seq === null || item.seq <= since.seq)) return false;",
+      "replace": "if (since?.kind === \"seq\" && (item.seq === null || item.seq < since.seq)) return false;",
+      "expectRed": "--since a sequence keeps only later messages",
+      "cell": "--since a sequence keeps only later messages",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--since a time filters nothing",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (since?.kind === \"time\" && Date.parse(item.ts) <= since.ms) return false;",
+      "replace": "if (since?.kind === \"time\" && Date.parse(item.ts) < 0) return false;",
+      "expectRed": "--since a time keeps only messages after it",
+      "cell": "--since a time keeps only messages after it",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a window that misses --since claims to reach it",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "olderRetained === null ? null : false;",
+      "replace": "olderRetained === null ? null : true;",
+      "expectRed": "a window that does not reach back to --since says so",
+      "cell": "a window that does not reach back to --since says so",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--from filters nothing",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (from !== undefined && item.from.name !== from && item.from.id !== from) return false;",
+      "replace": "if (from !== undefined && from === \"\") return false;",
+      "expectRed": "--from keeps one sender's messages",
+      "cell": "--from keeps one sender's messages",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--grep matches case-sensitively",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (grep !== undefined && !item.text.toLowerCase().includes(grep.toLowerCase())) return false;",
+      "replace": "if (grep !== undefined && !item.text.includes(grep)) return false;",
+      "expectRed": "--grep matches text case-insensitively within the window",
+      "cell": "--grep matches text case-insensitively within the window",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--dms reads no DM history",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "    if (req.dms) {\n      const dms = (await ep.dmHistory(",
+      "replace": "    if (false) {\n      const dms = (await ep.dmHistory(",
+      "expectRed": "--dms adds DMs, each naming its recipient",
+      "cell": "--dms adds DMs, each naming its recipient",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a sender at the per-sender limit is not named as a gap",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": ".filter((s) => channels.includes(s.channel) && s.messages >= held.perSender!)",
+      "replace": ".filter((s) => channels.includes(s.channel) && s.messages > held.perSender!)",
+      "expectRed": "the gap is named: carol is at the per-sender limit on #general, dave is not",
+      "cell": "the gap is named: carol is at the per-sender limit on #general, dave is not",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the replay policy is not read from the registry",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "return { channel: ch, ...(await ep.channelReplayPolicy(ch)) };",
+      "replace": "return { channel: ch, replay: null, window: null };",
+      "expectRed": "retention names its per-sender limit, and the channel's replay setting is reported",
+      "cell": "retention names its per-sender limit, and the channel's replay setting is reported",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a space with no registry bucket fails the replay read",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (!isJetStreamMissing(e, JetStreamApiCodes.StreamNotFound)) throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };",
+      "replace": "      throw e;\n    }\n    return { replay: effectiveReplay(cfg, defaults), window: cfg?.replayWindow ?? defaults?.replayWindow ?? null };",
+      "expectRed": "a space with no channel registry has the built-in replay policy, and the read is complete",
+      "cell": "a space with no channel registry has the built-in replay policy, and the read is complete",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a credential that may not read history gets an unclassified failure",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (denial(e)) throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", `this identity may not read history in ${conn.space}",
+      "replace": "if (false) throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", `this identity may not read history in ${conn.space}",
+      "expectRed": "a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page",
+      "cell": "a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a user's denied channel is reported as unread, not denied",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (denial(e)) denied.push(ch);",
+      "replace": "if (false) denied.push(ch);",
+      "expectRed": "a user reads each channel it may, and a denied one is named, not shown empty",
+      "cell": "a user reads each channel it may, and a denied one is named, not shown empty",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a followed message is not written as an event record",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (presentation === \"json\") writeStreamRecord(streamRecord(\"history\", \"event\", target, entry.item));",
+      "replace": "if (presentation === \"json\") void 0;",
+      "expectRed": "a message sent while following is one event record",
+      "cell": "a message sent while following is one event record",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an interrupted follow writes no end record",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "if (presentation === \"json\") writeStreamRecord(streamRecord(\"history\", \"end\", target, { reason: ended ?? \"stopped\" }));",
+      "replace": "if (presentation === \"json\") void 0;",
+      "expectRed": "an interrupted follow ends with an end record and exit 0",
+      "cell": "an interrupted follow ends with an end record and exit 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 523,
+    "total": 527,
     "honest-text": 37,
     "presence-only-glyph/count": 59,
     "command-ack": 12,
-    "non-render/control": 415
+    "non-render/control": 419
   },
   "renderers": [
     {
@@ -475,6 +475,34 @@
       "path": "implementations/cli/src/commands/feedback.ts",
       "kind": "derived-output",
       "anchor": "`Feedback rejected (${res.status}${reply.error ? `: ${reply.error}` : \"\"}).`",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/history.ts",
+      "kind": "status-token",
+      "anchor": "p: ${entry.gap}`, tone: \"waiting\" });\n          } else if",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/history.ts",
+      "kind": "status-token",
+      "anchor": "xist is unknown\", tone: \"waiting\" });\n  if (r.window.reac",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/history.ts",
+      "kind": "status-token",
+      "anchor": "m are not shown`, tone: \"waiting\" });\n  if (r.retention) ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/history.ts",
+      "kind": "status-token",
+      "anchor": " there are gone`, tone: \"waiting\" });\n  }\n  if (r.dms) no",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
