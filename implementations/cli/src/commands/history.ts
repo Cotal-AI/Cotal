@@ -165,7 +165,6 @@ export async function history(args: ParsedArgs): Promise<void> {
     await ep.start();
   } catch (e) {
     await ep.stop().catch(() => {});
-    if (denial(e)) throw new CommandFailure("refused", "PERMISSION_DENIED", `this identity may not read history in ${conn.space}: ${(e as Error).message}`, { target });
     throw e;
   }
   let stopping = false;

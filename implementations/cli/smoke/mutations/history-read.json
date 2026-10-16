@@ -104,8 +104,8 @@
     {
       "name": "a credential that may not read history gets an unclassified failure",
       "file": "implementations/cli/src/commands/history.ts",
-      "find": "if (denial(e)) throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", `this identity may not read history in ${conn.space}",
-      "replace": "if (false) throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", `this identity may not read history in ${conn.space}",
+      "find": "if (denial(e)) throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", `this identity may not read ${req.channel ? `#${req.channel}` : \"channel history\"}",
+      "replace": "if (false) throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", `this identity may not read ${req.channel ? `#${req.channel}` : \"channel history\"}",
       "expectRed": "a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page",
       "cell": "a credential that may not read history is a PERMISSION_DENIED refusal, exit 2, not an empty page",
       "afterRestore": "pnpm --filter cotal-ai... build"
