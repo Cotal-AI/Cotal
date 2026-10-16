@@ -28,6 +28,8 @@ import { ext } from "./commands/ext.js";
 import { help, helpFlags, version, versionFlags } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
+import { who, whoFlags } from "./commands/who.js";
+import { whoami, whoamiFlags } from "./commands/whoami.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
 import { endpoints } from "./commands/endpoints.js";
 import { describeCmd, describeComplete, describeFlags, invokeCmd, invokeFlags } from "./commands/describe.js";
@@ -487,6 +489,28 @@ const baseCommands: Command[] = [
     summary: "list every endpoint in the live presence roster, including the manager",
     flags: [...targetFlags],
     run: endpoints,
+  },
+  {
+    kind: "command",
+    name: "who",
+    group: "Observe",
+    summary: "the live roster of the selected space: status, attention, harness, model, host and whether a manager runs each seat",
+    usage: "cotal who [--waiting] [--all] [--json|--plain] [--space <s>] [--server <url>] [--creds <path>]",
+    flags: whoFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal who", "cotal who --waiting", "cotal who --all --json"],
+    run: who,
+  },
+  {
+    kind: "command",
+    name: "whoami",
+    group: "Observe",
+    summary: "the identity this CLI acts under in the selected space, and what it may read, post and do",
+    usage: "cotal whoami [--json|--plain] [--space <s>] [--server <url>]",
+    flags: whoamiFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal whoami", "cotal whoami --json"],
+    run: whoami,
   },
   {
     kind: "command",

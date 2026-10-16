@@ -4,8 +4,8 @@
     {
       "name": "A partial manager census reports a complete one",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "completeness: partial ? \"partial\" : \"complete\", warnings, ...(partial ? { partial } : {}) }, view);",
-      "replace": "completeness: \"complete\", warnings }, view);",
+      "find": "      completeness: census.partial ? \"partial\" : \"complete\",\n      warnings: census.warnings,\n      ...(census.partial ? { partial: census.partial } : {}),\n",
+      "replace": "      completeness: \"complete\",\n      warnings: census.warnings,\n",
       "expectRed": "partial census attempt",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },

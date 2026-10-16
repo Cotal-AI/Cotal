@@ -1,0 +1,114 @@
+{
+  "suite": [
+    "implementations/cli/smoke/who-roster.smoke.ts"
+  ],
+  "guard": "who lists agents with their presence metadata, hides infrastructure endpoints unless --all, keeps condition rows under --waiting, reports managed only from a manager's answer and a census it could not read as partial, refuses a roster it may not read, and whoami reports each grant state with a ledger elsewhere as partial",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-roster.json",
+  "why": [
+    "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back.",
+    "The managed decision and the user-auth grant states are imported from source in process, so those mutations are read without the build."
+  ],
+  "mutations": [
+    {
+      "name": "infrastructure endpoints are listed by default",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "const listed = roster.filter((p) => v.all || p.card.kind !== \"endpoint\");",
+      "replace": "const listed = roster.filter((p) => true || p.card.kind !== \"endpoint\");",
+      "expectRed": "every agent is listed and the infrastructure endpoint is not",
+      "cell": "every agent is listed and the infrastructure endpoint is not",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "--waiting drops a row that reports a condition",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": ".filter((p) => !v.waiting || p.status === \"waiting\" || p.condition !== undefined)",
+      "replace": ".filter((p) => !v.waiting || p.status === \"waiting\")",
+      "expectRed": "--waiting keeps the waiting row and the row with a condition",
+      "cell": "--waiting keeps the waiting row and the row with a condition",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the harness is read from a key presence does not carry",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "harness: metaText(p, \"connector\"),",
+      "replace": "harness: metaText(p, \"harness\"),",
+      "expectRed": "harness, model and host come from the presence metadata",
+      "cell": "harness, model and host come from the presence metadata",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a census that could not be read says no seat is managed",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "      runs = () => null;\n",
+      "replace": "      runs = () => false;\n",
+      "expectRed": "the warning names the unread census and every agent's managed is unknown",
+      "cell": "the warning names the unread census and every agent's managed is unknown",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a census that could not be read is not a warning",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "      warnings.push({ code: \"MANAGERS_UNREAD\", target, message: `could not ask the managers which seats they run: ${failure.message}` });\n",
+      "replace": "\n",
+      "expectRed": "a manager that does not answer makes who partial with exit 4",
+      "cell": "a manager that does not answer makes who partial with exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a roster the identity may not read is not classified as denied",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    if (/permission/i.test(message))\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster",
+      "cell": "a credential that may not read presence is a PERMISSION_DENIED refusal, exit 2, not an empty roster",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an incomplete census says an unlisted seat is not managed",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "uids.has(p.lifecycleUid) ? true : everyManager ? false : null),",
+      "replace": "uids.has(p.lifecycleUid) ? true : false),",
+      "expectRed": "an incomplete census can only say a listed seat is managed",
+      "cell": "an incomplete census can only say a listed seat is managed",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "one manager's answer is not labeled as covering only its own seats",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "  if (!everyManager && !census.partial)\n",
+      "replace": "  if (false)\n",
+      "expectRed": "one manager's answer leaves other seats unknown and says so",
+      "cell": "one manager's answer leaves other seats unknown and says so",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a grant ledger on another machine reads as complete",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "      warnings.push({ code: \"GRANT_NOT_LOCAL\", target,",
+      "replace": "      void ({ code: \"GRANT_NOT_LOCAL\", target,",
+      "expectRed": "a grant ledger on another machine is a partial read, exit 4",
+      "cell": "a grant ledger on another machine is a partial read, exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a signed-in user without a grant is read as a remote ledger",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "if (grant === null || grant === \"not-granted\") result =",
+      "replace": "if (grant === null) result =",
+      "expectRed": "a signed-in user without a grant reads and posts nothing",
+      "cell": "a signed-in user without a grant reads and posts nothing",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a signer's identity is reported as an open mesh",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "? { ...base, identity: { kind: \"space-signer\", ...none },",
+      "replace": "? { ...base, identity: { kind: \"open\", ...none },",
+      "expectRed": "whoami on a signer's mesh is one complete envelope naming the signer",
+      "cell": "whoami on a signer's mesh is one complete envelope naming the signer",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}
