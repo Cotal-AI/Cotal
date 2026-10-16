@@ -1,0 +1,31 @@
+name: Diagnose Windows query phases
+on:
+  push:
+    branches: [diag/windows-native-phase-1016]
+permissions:
+  contents: read
+jobs:
+  phase:
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [windows-latest, windows-11-arm]
+        node: [22, 24, 26]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: pnpm/action-setup@v6.0.8
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @cotal-ai/core --filter @cotal-ai/workspace build
+      - name: Observe the unchanged query without interrupting at its original deadlines
+        run: node --import tsx scripts/diagnose-win-phase.mjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: win-phase-${{ matrix.runner }}-node${{ matrix.node }}
+          path: win-phase-diagnostic.json
+          if-no-files-found: error
