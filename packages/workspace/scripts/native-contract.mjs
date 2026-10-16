@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const root = fileURLToPath(new URL("..", import.meta.url));
-export const sourceFiles = ["native/win32-process.c", "native/node-sdk.json", "scripts/build-native.mjs", "scripts/native-contract.mjs"];
+export const sourceFiles = ["native/win32-process.c", "native/node-sdk.json", "scripts/build-native.mjs", "scripts/native-contract.mjs", "smoke/fixtures/win32-privilege-diagnostic.h"];
 export const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 export const sourceHashes = () => Object.fromEntries(sourceFiles.map((path) => [path, sha256(readFileSync(join(root, path)))]));
 export const sdk = JSON.parse(readFileSync(join(root, "native/node-sdk.json"), "utf8"));

@@ -5,6 +5,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
+#include "../smoke/fixtures/win32-privilege-diagnostic.h"
 
 static napi_value unreadable(napi_env env) {
   napi_value value;
@@ -20,7 +21,12 @@ static napi_value creation_token(napi_env env, napi_callback_info info) {
       napi_get_value_double(env, arg, &pid) != napi_ok || !isfinite(pid) ||
       pid < 1 || pid > INT32_MAX || pid != (double)(uint32_t)pid) return unreadable(env);
 
+  static unsigned probes = 0;
+  int debug = probes < 8 ? diagnostic_debug_enabled() : -1;
   HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+  DWORD error = process == NULL ? GetLastError() : 0;
+  if (probes++ < 8) fprintf(stderr, "NATIVE_QUERY {\"self\":%s,\"debugEnabled\":%d,\"opened\":%s,\"error\":%lu}\n",
+    (DWORD)pid == GetCurrentProcessId() ? "true" : "false", debug, process != NULL ? "true" : "false", (unsigned long)error);
   if (process == NULL) return unreadable(env);
   FILETIME creation, exit_time, kernel_time, user_time;
   BOOL ok = GetProcessTimes(process, &creation, &exit_time, &kernel_time, &user_time);

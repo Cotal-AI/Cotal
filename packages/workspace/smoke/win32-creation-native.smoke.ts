@@ -59,8 +59,11 @@ try {
       });
     });
     const denied = spawnSync(fixture, ["--probe", String(target.pid)], { encoding: "utf8", timeout: 5000 });
+    const native = nativeWin32CreationToken(target.pid!);
+    console.log(JSON.stringify({ scope: "diagnostic only, no qualification", denialProbeStatus: denied.status,
+      denialProbeSignal: denied.signal, denialProbeError: denied.error?.message, denialProbeOutput: denied.stdout.trim().slice(0, 1024), nativeTokenPresent: native !== undefined }));
     check("W6 an independently verified query denial stays unverified",
-      denied.status === 0 && denied.stdout.trim() === "denied" && nativeWin32CreationToken(target.pid!) === undefined);
+      denied.status === 0 && JSON.parse(denied.stdout).error === 5 && native === undefined);
   } finally {
     target.stdin.end();
     const killer = setTimeout(() => target.kill("SIGKILL"), 5000);

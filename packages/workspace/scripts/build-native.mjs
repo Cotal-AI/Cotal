@@ -40,7 +40,7 @@ try {
   const output = join(buildDir, "creation.node");
   execFileSync("cl.exe", ["/nologo", "/LD", "/O2", "/MT", "/W4", "/WX", "/std:c11",
     `/I${include}`, `/Fo${join(buildDir, "creation.obj")}`, join(root, "native/win32-process.c"),
-    "/link", "/Brepro", `/OUT:${output}`, library, "kernel32.lib"], { cwd: buildDir, stdio: "inherit" });
+    "/link", "/Brepro", `/OUT:${output}`, library, "kernel32.lib", "advapi32.lib"], { cwd: buildDir, stdio: "inherit" });
   const bytes = readFileSync(output);
   const receipt = { version: 1, platform: "win32", arch, nodeApi: 8,
     source: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),

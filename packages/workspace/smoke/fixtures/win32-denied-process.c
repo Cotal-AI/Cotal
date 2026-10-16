@@ -4,18 +4,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "win32-privilege-diagnostic.h"
 
 int main(int argc, char **argv) {
   if (argc == 3 && strcmp(argv[1], "--probe") == 0) {
-    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)strtoul(argv[2], NULL, 10));
-    if (process != NULL) {
-      CloseHandle(process);
-      fputs("readable\n", stdout);
-      return 1;
-    }
-    if (GetLastError() != ERROR_ACCESS_DENIED) return 2;
-    fputs("denied\n", stdout);
-    return 0;
+    int debug = diagnostic_debug_enabled();
+    DWORD pid = (DWORD)strtoul(argv[2], NULL, 10);
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    DWORD error = process == NULL ? GetLastError() : 0;
+    printf("{\"debugEnabled\":%d,\"self\":%s,\"opened\":%s,\"error\":%lu}\n", debug,
+      pid == GetCurrentProcessId() ? "true" : "false", process != NULL ? "true" : "false", (unsigned long)error);
+    if (process != NULL) { CloseHandle(process); return 1; }
+    return error == ERROR_ACCESS_DENIED ? 0 : 2;
   }
   if (argc != 1) return 2;
   PSECURITY_DESCRIPTOR descriptor = NULL;
