@@ -1,7 +1,7 @@
 import stringWidth from "string-width";
 import { c } from "./colors.js";
 import { oneLine } from "./one-line.js";
-import { CommandFailure, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
+import { CommandFailure, exitCode, writeEnvelope, type Completeness, type OutputWarning } from "./output.js";
 
 /**
  * The terminal presentation every command surface shares: one view model of a finished report,
@@ -149,17 +149,41 @@ export function presentationOf(values: { readonly json?: unknown; readonly plain
 
 /** One finished result in the presentation the run asked for: the envelope for `json`, otherwise the
  *  report `view` builds from the same result, fitted to the terminal stdout is, with each warning on
- *  stderr. */
+ *  stderr. `partial` marks a read that answered for only part of what was asked: the result keeps
+ *  what was read, the outcome is `partial`, and the run exits 4. */
 export function writeResult<R>(
   presentation: Presentation,
-  out: { command: string; target: unknown; result: R; completeness?: Completeness; warnings?: readonly OutputWarning[] },
+  out: {
+    command: string;
+    target: unknown;
+    result: R;
+    completeness?: Completeness;
+    warnings?: readonly OutputWarning[];
+    partial?: { message: string; remedy?: string };
+  },
   view: (result: R) => Report,
 ): void {
+  const outcome = out.partial ? "partial" : "ok";
+  const code = out.partial ? "OPERATION_PARTIAL" : undefined;
   if (presentation === "json") {
-    writeEnvelope({ schemaVersion: 1, command: out.command, target: out.target, outcome: "ok", completeness: out.completeness ?? "complete", result: out.result, warnings: out.warnings ?? [] });
-    return;
+    writeEnvelope({
+      schemaVersion: 1,
+      command: out.command,
+      target: out.target,
+      outcome,
+      completeness: out.completeness ?? "complete",
+      result: out.result,
+      warnings: out.warnings ?? [],
+      ...(out.partial ? { error: { code: "OPERATION_PARTIAL" as const, message: out.partial.message, ...(out.partial.remedy === undefined ? {} : { remedy: out.partial.remedy }) } } : {}),
+    });
+  } else {
+    const width = process.stdout.isTTY ? process.stdout.columns : Number.POSITIVE_INFINITY;
+    console.log(renderReport(view(out.result), presentation, width));
+    for (const warning of out.warnings ?? []) console.error(draw({ text: `! ${warning.message}`, tone: "waiting" }, presentation).shown);
+    if (out.partial) {
+      console.error(draw({ text: `✗ ${out.partial.message}`, tone: "failed" }, presentation).shown);
+      if (out.partial.remedy) console.error(draw({ text: `  ↳ ${out.partial.remedy}`, tone: "hint" }, presentation).shown);
+    }
   }
-  const width = process.stdout.isTTY ? process.stdout.columns : Number.POSITIVE_INFINITY;
-  console.log(renderReport(view(out.result), presentation, width));
-  for (const warning of out.warnings ?? []) console.error(draw({ text: `! ${warning.message}`, tone: "waiting" }, presentation).shown);
+  process.exitCode = exitCode(outcome, code);
 }
