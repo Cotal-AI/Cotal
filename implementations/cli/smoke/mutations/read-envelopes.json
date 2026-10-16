@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/read-envelopes.smoke.ts"
   ],
-  "guard": "runtimes reports a provider that cannot load as a partial read, ps and models refuse an unresolvable mesh under its own code before any request, ps refuses a malformed --on as a usage envelope, and no report line ends in padding",
+  "guard": "runtimes reports a provider that cannot load as a partial read, ps and models refuse an unresolvable mesh under its own code before any request, a home reached through a symlink is not a project, ps refuses a malformed --on as a usage envelope, and no report line ends in padding",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/read-envelopes.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/read-envelopes.json",
@@ -38,6 +38,15 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
+      "name": "the home check compares the spelling, not the canonical path",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "canonicalRoot(join(root, \".cotal\")) !== canonicalRoot(homeCotalDir())",
+      "replace": "join(root, \".cotal\") !== homeCotalDir()",
+      "expectRed": "ps --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home",
+      "cell": "ps --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
       "name": "ps exits on a connect refusal instead of throwing it",
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "  const t = await resolveControlTarget(v, \"control-caller-privileged\", on, { onRefusal: \"throw\" });",
@@ -62,6 +71,15 @@
       "replace": ".join(\"  \"));",
       "expectRed": "no report line ends in padding",
       "cell": "no report line ends in padding",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a runtime that is not installed hides its package",
+      "file": "implementations/cli/src/commands/runtimes.ts",
+      "find": "package: row.package ? { text: row.package, tone: \"hint\" } : \"\"",
+      "replace": "package: row.state === \"installed\" && row.package ? { text: row.package, tone: \"hint\" } : \"\"",
+      "expectRed": "runtimes draws a colored table with its state words",
+      "cell": "runtimes draws a colored table with its state words",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
