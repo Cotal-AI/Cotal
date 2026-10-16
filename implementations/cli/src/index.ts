@@ -277,7 +277,9 @@ const baseCommands: Command[] = [
     name: "sync",
     group: "Mesh",
     summary: "refresh signed-in space catalogs and report registry changes",
+    usage: "cotal sync [--idp <auth base URL>] [--json|--plain]",
     flags: syncFlags,
+    outputs: ["json", "plain"],
     run: sync,
   },
   {

@@ -1004,7 +1004,7 @@ cotal meshes add                      # guided, on a terminal
 cotal meshes add <space> --server <url> [--root <dir>] [--mode auth|open|user] [--tls] [--force]
 cotal meshes add <space> --mode user (--user-auth-file <bundle.json> | --from <https url>)
 cotal meshes rm <space> [<space> …] [--force]
-cotal sync [--idp <auth base URL>]
+cotal sync [--idp <auth base URL>] [--json|--plain]
 cotal status [--json|--plain] [--all] [--space <s>] [--server <url>]
 cotal status --components [--space <s>] [--server <url>]
 ```
@@ -1040,7 +1040,10 @@ account, print one warning for each failure, and continue. `cotal status` refres
 never refuses on a refresh failure, and lists each account as `fresh`, `updated`, `not-modified`,
 `no-catalog`, or `failed` with its error. `cotal sync` bypasses freshness and reports added, changed,
 removed, unchanged, and name collisions. `--idp` limits it to one signed-in account. It never connects
-to a broker.
+to a broker. `--json` gives each account under `accounts` with its `idp`, `state`, `catalog`, the
+five name lists, `selectionCleared` and `error`. An account whose catalog could not be refreshed keeps
+its last snapshot and is named in a `CATALOG_UNAVAILABLE` warning, so the result is partial, exit 4;
+when no account could be refreshed, `sync` refuses with `DEPENDENCY_UNAVAILABLE`, exit 2.
 
 The registry is updated under the same lock that guards the catalog cache, so a command never lists
 a discovered space set that another command is still writing. The cache records a fetched snapshot
