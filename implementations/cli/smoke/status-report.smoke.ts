@@ -84,7 +84,7 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   const rich = run(["status", ...unknown], { FORCE_COLOR: "1" });
   const plain = run(["status", ...unknown, "--plain"], { FORCE_COLOR: "1" });
   check("status draws a colored report", rich.status === 0 && /\x1b\[/.test(rich.stdout), shown(rich));
-  check("--plain writes the same words with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout), shown(plain));
+  check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout).replace(/·/g, "-"), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
     JSON.stringify(titles(plain.stdout)) === JSON.stringify(["Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Hints"]),

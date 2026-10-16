@@ -124,8 +124,9 @@ check("wrapWords breaks at spaces within the width", JSON.stringify(wrapped) ===
 const longWord = wrapWords(`${"x".repeat(30)} end`, 20);
 check("a word wider than the line keeps a line of its own, unsplit", JSON.stringify(longWord) === JSON.stringify(["x".repeat(30), "end"]), longWord);
 check("below 20 columns nothing is wrapped", wrapWords("a b c d e f g h i j k l m n o p", 10).length === 1, wrapWords("a b c d e f g h i j k l m n o p", 10));
-const kept = wrapWords(["[--space <s>]", "[--server <url>]", "[--creds <path>]"], 34);
-check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--space <s>] [--server <url>]", "[--creds <path>]"]), kept);
+// Broken at its spaces, "[--server" would still fit on the first line and leave "<url>]" alone.
+const kept = wrapWords(["[--a <x>]", "[--server <url>]"], 20);
+check("given words are kept whole", JSON.stringify(kept) === JSON.stringify(["[--a <x>]", "[--server <url>]"]), kept);
 const fits = (text: string, width: number) => text.split("\n").every((line) => displayWidth(line) <= width);
 const longField = renderReport({ sections: [{ blocks: [{ kind: "fields", rows: [["id", "x"], ["server", "nats://broker.example.com:4222 with a note that runs well past the line"]] }] }] }, "plain", 40);
 check("a long field value fits the width", fits(longField, 40), longField);

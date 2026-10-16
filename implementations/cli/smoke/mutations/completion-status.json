@@ -87,7 +87,7 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "a usage refusal prints the help on stdout",
       "file": "implementations/cli/src/command.ts",
-      "find": "  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));\n",
+      "find": "  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));\n",
       "replace": "  if (cmd) printCommandHelp(cmd);\n",
       "expectRed": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr",
       "cell": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr"
