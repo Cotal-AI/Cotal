@@ -138,7 +138,8 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   },
   completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
   // `space` (2026-10): the registered spaces and one in full, on the structured output contract.
-  space: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
+  // `space add` (2026-10) registers a space that runs elsewhere, from `--server` or a user-auth bundle.
+  space: { flags: ["allow-unencrypted-overlay:boolean", "file:string:f", "force:boolean", "from:string", "json:boolean:j", "mode:string", "plain:boolean", "root:string", "server:string", "tls:boolean", "yes:boolean:y"], positionals: true },
   // `config` (2026-10): personal preferences, read through or written to your defaults or one space.
   config: { flags: ["json:boolean:j", "plain:boolean", "space:string", "user:boolean"], positionals: true },
   // `--json` and `--plain` (2026-10): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.

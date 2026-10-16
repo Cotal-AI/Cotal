@@ -32,7 +32,7 @@
       "name": "a registered name is replaced without --force",
       "file": "implementations/cli/src/commands/space-registration.ts",
       "find": "  if (!force) throw refuse(\"CONFLICT\"",
-      "replace": "  if (false) throw refuse(\"CONFLICT\"",
+      "replace": "  if (!force && name === \"\") throw refuse(\"CONFLICT\"",
       "expectRed": "adding a registered name is CONFLICT, exit 2, naming forget and --force",
       "cell": "adding a registered name is CONFLICT, exit 2, naming forget and --force",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -41,7 +41,7 @@
       "name": "--force replaces a space this machine started",
       "file": "implementations/cli/src/commands/space-registration.ts",
       "find": "  if (existing.origin !== \"manual\")\n",
-      "replace": "  if (false)\n",
+      "replace": "  if (name === \"\")\n",
       "expectRed": "--force does not replace a space this machine started",
       "cell": "--force does not replace a space this machine started",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -113,7 +113,7 @@
       "name": "a running space is forgotten",
       "file": "implementations/cli/src/commands/space-registration.ts",
       "find": "    if (running) throw refuse(\"LIFECYCLE_BLOCKED\"",
-      "replace": "    if (false) throw refuse(\"LIFECYCLE_BLOCKED\"",
+      "replace": "    if (running && name === \"\") throw refuse(\"LIFECYCLE_BLOCKED\"",
       "expectRed": "a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down",
       "cell": "a space this machine is running is LIFECYCLE_BLOCKED, naming cotal down",
       "afterRestore": "pnpm --filter cotal-ai... build"
