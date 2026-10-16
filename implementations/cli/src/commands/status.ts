@@ -792,7 +792,7 @@ function machineSection(m: StatusResult["machine"]): Section {
   const tone = { ok: "ok", warn: "waiting", error: "failed", off: "hint" } as const;
   const rows: [string, Cell][] = [
     ["cotal-ai", cell(`v${m.version} (${m.install.kind === "source" ? "source checkout" : m.install.kind}: ${m.install.root})`, "ok")],
-    ["NATS", m.nats === "missing" ? cell("missing", "failed") : cell(m.nats, "ok")],
+    ["NATS", m.nats === "missing" ? cell("missing", "failed") : cell(m.nats === "path" ? "nats-server on PATH" : "bundled nats-server", "ok")],
     ...m.integrations.map((r): [string, Cell] => [r.name, cell(r.text, tone[r.state])]),
   ];
   if (m.connectors === null) rows.push(["Connectors", cell("unreadable - see the warning below", "failed")]);
