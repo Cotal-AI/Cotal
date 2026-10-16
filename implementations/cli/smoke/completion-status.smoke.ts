@@ -42,7 +42,7 @@ function sandbox(shell = "/bin/bash") {
     const r = run(["completion", "--json"], extraEnv);
     return { ...r, env: r.status === 0 && r.stdout.startsWith("{") ? JSON.parse(r.stdout) : undefined };
   };
-  const shellOf = (env: { result: { shells: { shell: string }[] } } | undefined, name: string) => env?.result.shells.find((s) => s.shell === name) as Record<string, unknown> | undefined;
+  const shellOf = (env: { result: { shells: { shell: string }[] } | null } | undefined, name: string) => env?.result?.shells.find((s) => s.shell === name) as Record<string, unknown> | undefined;
   return { home, xdg, run, json, shellOf };
 }
 const shown = (r: { status: number | null; stdout: string; stderr: string }) => ({ status: r.status, stdout: r.stdout.slice(0, 400), stderr: r.stderr.slice(0, 400) });
