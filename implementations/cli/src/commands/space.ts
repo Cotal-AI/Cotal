@@ -3,9 +3,11 @@ import {
   CommandFailure,
   brokerAnswers,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   jsonFlag,
   loadMeshes,
+  loadPreparedSpaces,
   plainFlag,
   presentationOf,
   pruneStaleMeshes,
@@ -13,15 +15,17 @@ import {
   type Cell,
   type MeshEntry,
   type OutputWarning,
+  type PreparedSpace,
   type Report,
+  type Section,
 } from "@cotal-ai/workspace";
-import { ADD_FLAGS, spaceAdd, spaceForget } from "./space-registration.js";
+import { ADD_FLAGS, spaceAdd, spaceCreate, spaceForget } from "./space-registration.js";
 
 export const spaceFlags = [
   jsonFlag,
   plainFlag,
   { name: "server", type: "string", value: "<url>", description: "add: the space's broker URL" },
-  { name: "root", type: "string", value: "<dir>", description: "add: the folder whose .cotal/auth holds the space's trust (default: this project)" },
+  { name: "root", type: "string", value: "<dir>", description: "add: the folder whose .cotal/auth holds the space's trust (default: this project); create: the folder it starts in (default: this one)" },
   { name: "mode", type: "string", value: "<auth|open|user>", description: "add: how the broker authenticates (default: auth when --root holds the space's trust, else open)" },
   { name: "file", short: "f", type: "string", value: "<bundle.json>", description: "add: a user-auth connection bundle exported where the space runs" },
   { name: "from", type: "string", value: "<https url>", description: "add: fetch the space's discovery document; its pins are shown and confirmed" },
@@ -62,6 +66,20 @@ interface SpacesResult {
   readonly current: string | null;
   readonly currentRecorded: boolean;
   readonly items: readonly SpaceRow[];
+  /** Spaces `cotal space create` prepared and no `cotal up` has started. They have no broker yet. */
+  readonly prepared: readonly PreparedRow[];
+}
+
+/** A prepared space, as `cotal space` lists it and `cotal space show` shows it. */
+export interface PreparedRow {
+  readonly space: string;
+  readonly root: string;
+  readonly preparedAt: string;
+  readonly current: boolean;
+}
+
+interface PreparedDetail extends PreparedRow {
+  readonly kind: "prepared-space";
 }
 
 /** One registration in full. Pins and endpoints are public; credential paths are left out. */
@@ -79,23 +97,26 @@ export interface SpaceDetail extends Omit<SpaceRow, "catalog"> {
 /**
  * `cotal space` lists the spaces this machine can reach, and `cotal space show [<name>]` shows one in
  * full. Both read the local registry and probe brokers; neither writes anything. A broker that does
- * not answer leaves its registration in place, reported `unreachable`. `space add` and
- * `space forget` change the registry (see `space-registration.ts`).
+ * not answer leaves its registration in place, reported `unreachable`. Spaces `space create`
+ * prepared are listed apart, with no broker to probe. `space add`, `space create` and
+ * `space forget` change what is recorded (see `space-registration.ts`).
  */
 export async function space(args: ParsedArgs): Promise<void> {
   const values = args.values as FlagValues<typeof spaceFlags>;
   const presentation = presentationOf(values);
   const [sub, ...rest] = args.positionals;
   if (sub === "add") return spaceAdd(rest, values, presentation);
-  const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined);
+  const addOnly = ADD_FLAGS.find((flag) => values[flag] !== undefined && !(sub === "create" && flag === "root"));
   if (addOnly) throw usage(`--${addOnly} is taken by \`cotal space add\` only`);
   if (sub === "forget") return spaceForget(rest, presentation);
+  if (sub === "create") return spaceCreate(rest, values.root, presentation);
   if (sub === undefined) {
     const sweep = await pruneStaleMeshes();
     const current = getCurrent() ?? null;
     const offline = new Set(sweep.offline);
     const items = loadMeshes().map((m) => row(m, current, m.origin === "catalog" ? "not-checked" : offline.has(m.space) ? "unreachable" : "reachable"));
-    const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), items };
+    const prepared = loadPreparedSpaces().map((p) => preparedRow(p, current));
+    const result: SpacesResult = { kind: "spaces", current, currentRecorded: current === null || items.some((s) => s.current), items, prepared };
     writeResult(presentation, { command: "space", target: null, result, warnings: selectionWarnings(result) }, spacesView);
     return;
   }
@@ -106,12 +127,22 @@ export async function space(args: ParsedArgs): Promise<void> {
     if (name === null)
       throw new CommandFailure("refused", "TARGET_NOT_FOUND", "no space is selected", { remedy: "name one with `cotal space show <name>`, or select one with `cotal use <name>`" });
     const m = findMesh(name);
-    if (!m) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { remedy: "see the registered spaces with `cotal space`" });
+    if (!m) {
+      const p = findPreparedSpace(name);
+      if (!p) throw new CommandFailure("refused", "TARGET_NOT_FOUND", `no space named "${name}" is registered here`, { remedy: "see the registered spaces with `cotal space`" });
+      const result: PreparedDetail = { kind: "prepared-space", ...preparedRow(p, current) };
+      writeResult(presentation, { command: "space", target: { space: p.space }, result }, preparedView);
+      return;
+    }
     const check: Check = m.origin === "catalog" ? "not-checked" : (await brokerAnswers(m.server)) ? "reachable" : "unreachable";
     writeResult(presentation, { command: "space", target: { space: m.space }, result: detail(m, current, check) }, spaceView);
     return;
   }
   throw usage(`cotal space has no subcommand "${sub}" - run \`cotal help space\``);
+}
+
+function preparedRow(p: PreparedSpace, current: string | null): PreparedRow {
+  return { space: p.space, root: p.root, preparedAt: p.ts, current: p.space === current };
 }
 
 function row(m: MeshEntry, current: string | null, check: Check): SpaceRow {
@@ -146,9 +177,9 @@ export function detail(m: MeshEntry, current: string | null, check: Check): Spac
 }
 
 /** A selection that names no registration still selects it: the command that targets it refuses
- *  rather than reaching another space. */
+ *  rather than reaching another space. A prepared space is selected, not missing. */
 function selectionWarnings(result: SpacesResult): OutputWarning[] {
-  if (result.current === null || result.currentRecorded) return [];
+  if (result.current === null || result.currentRecorded || result.prepared.some((p) => p.current)) return [];
   return [{ code: "SELECTION_NOT_REGISTERED", target: { space: result.current }, message: `the selected space "${result.current}" is not registered here - select another with \`cotal use <name>\`` }];
 }
 
@@ -164,8 +195,19 @@ function checkCell(s: Pick<SpaceRow, "check">): Cell {
 const nameCell = (s: Pick<SpaceRow, "space" | "current">): Cell => (s.current ? { text: `${s.space} (selected)`, tone: "selected" } : s.space);
 
 function spacesView(result: SpacesResult): Report {
+  const prepared: Section[] = result.prepared.length === 0 ? [] : [{
+    title: "Prepared, not started",
+    blocks: [
+      {
+        kind: "table",
+        columns: [{ key: "space", label: "SPACE" }, { key: "root", label: "ROOT" }],
+        rows: result.prepared.map((p) => ({ space: nameCell(p), root: { text: p.root, tone: "hint" } })),
+      },
+      { kind: "lines", lines: [{ text: "start one with `cotal up` in its root", tone: "hint" }] },
+    ],
+  }];
   if (result.items.length === 0)
-    return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "no spaces registered - `cotal up` starts one here, `cotal meshes add <space> --server <url>` registers one running elsewhere", tone: "hint" }] }] }] };
+    return { sections: [{ blocks: [{ kind: "lines", lines: [{ text: "no spaces registered - `cotal up` starts one here, `cotal space add <space> --server <url>` registers one running elsewhere", tone: "hint" }] }] }, ...prepared] };
   return {
     sections: [{
       blocks: [{
@@ -187,6 +229,19 @@ function spacesView(result: SpacesResult): Report {
           root: { text: s.root, tone: "hint" },
         })),
       }],
+    }, ...prepared],
+  };
+}
+
+function preparedView(p: PreparedDetail): Report {
+  const hints: Cell[] = [{ text: `start it with \`cotal up\` in ${p.root}`, tone: "hint" }];
+  if (!p.current) hints.push({ text: `select it with \`cotal use ${p.space}\``, tone: "hint" });
+  return {
+    sections: [{
+      blocks: [
+        { kind: "fields", rows: [["space", nameCell(p)], ["broker", { text: "not started", tone: "waiting" }], ["root", p.root], ["prepared", p.preparedAt]] },
+        { kind: "lines", lines: hints },
+      ],
     }],
   };
 }
@@ -219,7 +274,8 @@ function spaceView(s: SpaceDetail): Report {
 
 /** Argument completion: the subcommand, then registered names. */
 export function spaceComplete(argv: string[]): CompletionResult {
-  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "forget" }], directive: "nofiles" };
-  if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2) return { items: loadMeshes().map((m) => ({ value: m.space })), directive: "nofiles" };
+  if (argv.length <= 1) return { items: [{ value: "show" }, { value: "add" }, { value: "create" }, { value: "forget" }], directive: "nofiles" };
+  if ((argv[0] === "show" || argv[0] === "forget") && argv.length === 2)
+    return { items: [...loadMeshes().map((m) => ({ value: m.space })), ...loadPreparedSpaces().map((p) => ({ value: p.space }))], directive: "nofiles" };
   return { items: [], directive: "nofiles" };
 }

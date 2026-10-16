@@ -52,6 +52,8 @@ function renderTargetError(err: MeshTargetError): string {
         : `✗ registry entry "${d.space}" points at ${d.root}, whose auth is now for "${d.found}" - stale entry removed; re-run \`cotal up\` or check \`cotal meshes\``;
     case "unreadable-auth":
       return `✗ space "${d.space}"'s trust material under ${d.root} will not load (${err.message}) - repair or remove the account record, then re-run \`cotal up\``;
+    case "not-started":
+      return `✗ "${d.space}" is prepared but not started - start it with \`cotal up\` in ${d.root}`;
     case "user-auth-unrecorded":
       // U11: without a TRUSTED local record of the space's IdP there is no actionable
       // `cotal login --idp <?>` line to print — the honest recovery is re-registering the mesh

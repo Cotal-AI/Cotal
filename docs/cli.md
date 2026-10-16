@@ -913,6 +913,7 @@ cotal space [--json|--plain]
 cotal space show [<name>] [--json|--plain]
 cotal space add <name> --server <url> [--root <dir>] [--mode auth|open] [--tls] [--allow-unencrypted-overlay] [--force] [-y|--yes]
 cotal space add [<name>] (-f|--file <bundle.json> | --from <https url>) [--root <dir>] [--server <url>] [--force] [-y|--yes]
+cotal space create <name> [--root <dir>]
 cotal space forget <name>
 cotal use [<space>] [--json|--plain]
 ```
@@ -925,13 +926,15 @@ reads `not checked`. `space show [<name>]` shows one space in full, the selected
 given, and probes only that broker. Neither writes anything.
 
 `--json` writes one document. `space` gives `current` (the selected space or null),
-`currentRecorded` and `items`; each item is the row `cotal status --json` gives under
+`currentRecorded`, `items` and `prepared`; each item is the row `cotal status --json` gives under
 `meshes.items`: `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`,
 `current`, `check` (`reachable`, `unreachable` or `not-checked`) and `catalog`. `space show` adds
 `recordedAt`, `attachHost`, `maxSessions`, `storeDir`, `unencryptedOverlay`, the login pins of a
 user-auth space under `userAuth` and the catalog's `id`, `slug`, `kind` and `role`. It leaves
 credential paths out. A name that is not registered is refused with `TARGET_NOT_FOUND`, exit 2, and
-so is a bare `space show` with nothing selected.
+so is a bare `space show` with nothing selected. Each entry under `prepared` has `space`, `root`,
+`preparedAt` and `current`, and `space show` of a prepared space gives those with the kind
+`prepared-space`.
 
 `space add` registers a space that runs elsewhere, so `--space` and `use` can reach it. With
 `--server`, the trust comes from `--root`'s `.cotal/auth`, and the mode is `auth` when that folder
@@ -953,14 +956,24 @@ space that is down right now; a user-auth space is always checked. Declining the
 `no-op` with a `USER_CANCELLED` warning. `--json` gives the registration under `space`, in the
 shape `space show` gives, with `verified` and `replaced`.
 
+`space create <name>` prepares a space to start on this machine. It records the name and the root,
+which is `--root` or this folder, and makes `<root>/.cotal/`; `cotal up` in that root then starts the
+space under that name and drops the prepared record. It starts nothing and leaves the selection as it
+is. It refuses with `CONFLICT` a name that is registered or prepared, a folder that is already a
+space's root, and the home folder, whose `.cotal` holds this machine's own records. `space` lists
+prepared spaces under their own heading, and `space show` and `use` accept one. A command that
+targets a prepared space refuses with `TARGET_UNAVAILABLE`, exit 2, naming the root to start it in,
+and so does `cotal up --space <name>` run from another folder. `space add` refuses a prepared name.
+
 `space forget <name>` removes a registration this machine keeps. It stops nothing, deletes nothing on
 the broker, and keeps the files under its root. It refuses a space this machine is running with
 `LIFECYCLE_BLOCKED`, because `cotal down` stops it and drops the record, and a discovered space with
-`CONFLICT`, because its catalog keeps it. Forgetting the selected space clears the selection.
+`CONFLICT`, because its catalog keeps it. A prepared space is forgotten the same way, and the
+`.cotal/` that `space create` made stays. Forgetting the selected space clears the selection.
 
 `use <space>` selects the space commands target when none is named. It changes only the selection:
-it starts nothing and does not check the broker, so a stopped space can be selected and the command
-that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
+it starts nothing and does not check the broker, so a stopped or prepared space can be selected and
+the command that targets it reports that. Selecting the selected space again is a `no-op`. A name that is not
 registered is refused with `TARGET_NOT_FOUND`, exit 2, and the selection stays. Bare `use` reports
 the selection. A selection that names a space no longer registered is reported with a
 `SELECTION_NOT_REGISTERED` warning by `use` and `space`, and stays until `use` changes it.
@@ -969,8 +982,8 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
-`cotal meshes` still lists, registers and drops meshes. `space`, `space add` and `space forget`
-replace it, and its `--json` lines are the old shape. A bare `meshes add` on a terminal is still the
+`cotal meshes` still lists, registers and drops meshes. `space`, `space add`, `space create` and
+`space forget` replace it, and its `--json` lines are the old shape. A bare `meshes add` on a terminal is still the
 guided form.
 
 ## Mesh registry

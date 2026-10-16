@@ -334,6 +334,8 @@ export function targetErrorCode(code: MeshTargetErrorCode): RefusalCode {
     case "unknown-space":
     case "user-auth-unrecorded":
       return "TARGET_NOT_FOUND";
+    case "not-started":
+      return "TARGET_UNAVAILABLE";
     case "ambiguous-target":
       return "TARGET_AMBIGUOUS";
     case "default-occupied":
@@ -701,7 +703,7 @@ export async function resolveTargetOrThrow(flags: {
     // found is transient: the sweep keeps a crashed `up` mesh as offline, so it resolves again once
     // its broker is back. A record that exists and is broken, or several that match, is not.
     if (isWorkspaceTargetError(e)) {
-      const kind = e.code === "no-meshes" || e.code === "unknown-space" ? "transient" : "permanent";
+      const kind = e.code === "no-meshes" || e.code === "unknown-space" || e.code === "not-started" ? "transient" : "permanent";
       throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind, code: targetErrorCode(e.code) });
     }
     throw e;

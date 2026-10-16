@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_SERVER, DEFAULT_SPACE, personaDir, type SpaceAuth } from "@cotal-ai/core";
 import { accountInventory, authDir, findCotalRoot, hasUserAuthState, listSpaceAccounts, loadSpaceAuth, soleSpaceOf, userAuthSpacesOnDisk } from "./auth-paths.js";
+import { findPreparedSpace, preparedSpaceAt } from "./prepared-spaces.js";
 import {
   canonicalRoot,
   findMesh,
@@ -91,7 +92,8 @@ export type MeshTargetErrorCode =
   | "default-occupied"
   | "stale-auth-root"
   | "unreadable-auth"
-  | "user-auth-unrecorded";
+  | "user-auth-unrecorded"
+  | "not-started";
 
 /** Structured context for a {@link MeshTargetError} — enough for any surface to render its own
  *  recovery affordance (a CLI sentence, a web button, an SDK embed that wants no command at all). */
@@ -302,6 +304,13 @@ function isGenuineSpace(root: string): boolean {
   return resolve(join(root, ".cotal")) !== resolve(homeCotalDir()) && existsSync(join(root, ".cotal"));
 }
 
+/** Refuses `space` when it is prepared and not started, before anything dials the address it would
+ *  have: another broker may answer there. */
+function notStarted(space: string): void {
+  const prepared = findPreparedSpace(space);
+  if (prepared) throw new MeshTargetError("not-started", `"${space}" is prepared but not started`, { space, root: prepared.root });
+}
+
 /**
  * Resolve the mesh target by precedence (first match wins):
  *  1. `--space` — registry lookup (errors if that space isn't running).
@@ -312,16 +321,20 @@ function isGenuineSpace(root: string): boolean {
  *  5. The registry's *running* meshes: 0 ⇒ error; 1 ⇒ use it; N ⇒ error naming
  *     each + its root. `flags.offline` (from a sweep) is excluded here; a named `--space` and
  *     the selected `current` are not filtered.
+ * A space `cotal space create` prepared and no `up` started, named by `--space`, selected, or
+ * prepared at the local project, refuses as `not-started`.
  * No silent fallback — an unresolved target throws one human sentence.
  */
 export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTarget {
   const offline = new Set(flags.offline ?? []);
   if (flags.space) {
     const m = findMesh(flags.space);
-    if (!m)
+    if (!m) {
+      notStarted(flags.space);
       throw new MeshTargetError("unknown-space", `no mesh named "${flags.space}" is running`, {
         requested: flags.space,
       });
+    }
     // An explicit `--server` that overrides the recorded broker is an operator-supplied endpoint, not
     // the registry's — probing IT must never prune the recorded entry (a dead override would otherwise
     // delete a live registered mesh, and pre-pruning would block a live-override recovery). Mark it so
@@ -358,8 +371,10 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
   const current = getCurrent();
   if (current) {
     const cur = meshes.find((m) => m.space === current);
-    if (!cur)
+    if (!cur) {
+      notStarted(current);
       throw new MeshTargetError("unknown-space", `the selected space "${current}" is not registered here`, { requested: current, selected: true });
+    }
     // A selected space whose broker is down is still the target: the preflight reports it not
     // running, the way it does for a named `--space`, rather than another mesh answering instead.
     return targetFromEntry(cur, cur.server, "current");
@@ -398,6 +413,9 @@ export function resolveMeshTarget(cwd: string, flags: ResolveFlags = {}): MeshTa
       );
     const recorded = rootMatches[0];
     if (recorded) return targetFromEntry(recorded, recorded.server, "local-recorded");
+    // A space prepared here and not started has no broker: the default address may be another's.
+    const prepared = preparedSpaceAt(root);
+    if (prepared) notStarted(prepared.space);
     // No record for this root (migration, or our broker went down and the entry was just pruned).
     // Before guessing DEFAULT_SERVER, refuse if a DIFFERENT mesh is recorded there — otherwise the
     // fallback would silently join someone else's mesh on the default port with our persona (the

@@ -1,9 +1,10 @@
 /**
- * `cotal space add` and `cotal space forget`, driven through the built binary in a sandboxed
- * `COTAL_HOME`. An open broker and one that refuses a bare connect answer for real, another address
- * has nothing listening, and a stand-in exchange answers for a user-auth bundle's pins. Each refusal
- * is checked for its code and exit, and for writing nothing; each success for the record it writes
- * and for leaving the selection as it was.
+ * `cotal space add`, `cotal space create` and `cotal space forget`, driven through the built binary
+ * in a sandboxed `COTAL_HOME`. An open broker and one that refuses a bare connect answer for real,
+ * another address has nothing listening, and a stand-in exchange answers for a user-auth bundle's
+ * pins. Each refusal is checked for its code and exit, and for writing nothing; each success for the
+ * record it writes and for leaving the selection as it was. A prepared space is then started with
+ * `cotal up` in its root and stopped again.
  *
  * Needs `nats-server` on PATH.
  *
@@ -14,7 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SMOKE_BROKER_TOKEN, createSuite, freePort, listenOn, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, assertSmokeSandboxDown, createSuite, freePort, listenOn, recordSmokeSandbox, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -25,7 +26,7 @@ if (!existsSync(BIN)) {
 const home = mkdtempSync(join(tmpdir(), "cotal-space-registration-"));
 // Set before the workspace is imported: it reads COTAL_HOME on each call.
 process.env.COTAL_HOME = join(home, ".cotal");
-const { clearCurrent, findMesh, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
+const { clearCurrent, findMesh, findPreparedSpace, getCurrent, meshesDir, recordMesh, setCurrent } = await import("@cotal-ai/workspace");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 
 const { check, finish } = createSuite();
@@ -67,11 +68,12 @@ process.on("exit", () => {
 });
 
 // Asynchronous, so the stand-in exchange in this process can answer while the binary runs.
-const run = (args: string[], extraEnv: Record<string, string> = {}) =>
+const runEnv = { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1" };
+const run = (args: string[], extraEnv: Record<string, string> = {}, cwd = home) =>
   new Promise<{ status: number | null; stdout: string; stderr: string }>((done) => {
     const child = spawn(process.execPath, [BIN, ...args], {
-      cwd: home,
-      env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: join(home, ".config"), COTAL_HOME: process.env.COTAL_HOME!, COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
+      cwd,
+      env: { ...runEnv, ...extraEnv },
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 120_000,
     });
@@ -81,8 +83,8 @@ const run = (args: string[], extraEnv: Record<string, string> = {}) =>
     child.stderr.on("data", (d) => (stderr += d));
     child.on("close", (status) => done({ status, stdout, stderr }));
   });
-const json = async (args: string[]) => {
-  const r = await run([...args, "--json"]);
+const json = async (args: string[], cwd = home) => {
+  const r = await run([...args, "--json"], {}, cwd);
   let env: Record<string, any> | undefined;
   try {
     env = JSON.parse(r.stdout);
@@ -240,6 +242,86 @@ setCurrent("keep");
   check("forgetting keeps the root's files", existsSync(join(root, ".cotal")));
   const human = await run(["space", "forget", "keep"]);
   check("forgetting the selected space clears the selection and says so", human.status === 0 && getCurrent() === undefined && /forgot keep/.test(human.stdout) && /no space is selected now/.test(human.stdout), shown(human));
+}
+
+// ── Preparing a space with create, then starting it with up ────────────────────────────────────────────
+{
+  const before = registryFiles();
+  const fresh = join(home, "fresh");
+  mkdirSync(fresh);
+  const created = await json(["space", "create", "demo"], fresh);
+  const r = created.env?.result;
+  check("create prepares the space in this folder and makes its .cotal: ok, nothing registered", created.status === 0 && created.env?.outcome === "ok" && r?.kind === "space-created" && r.space === "demo" && r.root === fresh && existsSync(join(fresh, ".cotal")) && findPreparedSpace("demo")?.root === fresh && JSON.stringify(registryFiles()) === JSON.stringify(before), shown(created));
+  check("create leaves the selection as it is", getCurrent() === undefined && r?.current === false, getCurrent());
+  // Recorded once create has been checked for making its .cotal, so whatever starts in it is stopped
+  // with the suite.
+  const sandbox = recordSmokeSandbox({ root: fresh, cotalHome: process.env.COTAL_HOME!, xdgConfigHome: runEnv.XDG_CONFIG_HOME });
+
+  const spare = join(home, "spare");
+  mkdirSync(spare);
+  const again = await json(["space", "create", "demo", "--root", spare]);
+  check("a prepared name is CONFLICT, exit 2, naming its root", refused(again, 2, "CONFLICT") && again.env?.error?.message.includes(fresh), shown(again));
+  check("a registered name is CONFLICT", refused(await json(["space", "create", "listed", "--root", spare]), 2, "CONFLICT"));
+  check("a folder already prepared for a space is CONFLICT", refused(await json(["space", "create", "other"], fresh), 2, "CONFLICT"));
+  check("a folder a registration names as its root is CONFLICT", refused(await json(["space", "create", "other", "--root", root]), 2, "CONFLICT"));
+  const { createBrokerAuth, createSpaceAccountAuth } = await import("@cotal-ai/core");
+  const { authDir, saveBrokerAuth, saveSpaceAccountAuth } = await import("@cotal-ai/workspace");
+  const accountRoot = projectRoot("account-root");
+  const brokerAuth = await createBrokerAuth("held");
+  saveBrokerAuth(authDir(accountRoot), brokerAuth);
+  saveSpaceAccountAuth(authDir(accountRoot), await createSpaceAccountAuth(brokerAuth, "held"));
+  check("a folder whose .cotal holds another space's account is CONFLICT", refused(await json(["space", "create", "other", "--root", accountRoot]), 2, "CONFLICT"));
+  check("the home folder is CONFLICT", refused(await json(["space", "create", "other", "--root", home]), 2, "CONFLICT"));
+  check("a --root that is not a directory is USAGE_INVALID", refused(await json(["space", "create", "other", "--root", join(home, "absent")]), 1, "USAGE_INVALID"));
+  check("create takes exactly one name", refused(await json(["space", "create"], spare), 1, "USAGE_INVALID") && refused(await json(["space", "create", "a", "b"], spare), 1, "USAGE_INVALID"));
+  check("an add flag other than --root on create is USAGE_INVALID", refused(await json(["space", "create", "other", "--server", LIVE], spare), 1, "USAGE_INVALID"));
+  check("no refused create prepared anything or made a .cotal", findPreparedSpace("other") === undefined && findPreparedSpace("a") === undefined && !existsSync(join(spare, ".cotal")) && !existsSync(join(home, "absent")));
+  const add = await json(["space", "add", "demo", "--server", LIVE, "--root", root]);
+  check("adding a prepared name is CONFLICT, naming cotal up", refused(add, 2, "CONFLICT") && /cotal up/.test(add.env?.error?.remedy ?? "") && findMesh("demo") === undefined, shown(add));
+
+  const list = await json(["space"]);
+  check("space lists it apart from the registrations", list.env?.result.prepared.some((p: { space: string; root: string }) => p.space === "demo" && p.root === fresh) && !list.env.result.items.some((s: { space: string }) => s.space === "demo"), list.env?.result);
+  const show = await json(["space", "show", "demo"]);
+  check("space show shows it as prepared", show.status === 0 && show.env?.result.kind === "prepared-space" && show.env.result.root === fresh, shown(show));
+  const named = await json(["who", "--space", "demo"]);
+  check("a command naming it with --space is TARGET_UNAVAILABLE, naming its root", refused(named, 2, "TARGET_UNAVAILABLE") && named.env?.error?.message.includes(fresh), shown(named));
+  const inRoot = await json(["who"], fresh);
+  check("a command run in its root with nothing selected is TARGET_UNAVAILABLE", refused(inRoot, 2, "TARGET_UNAVAILABLE") && /prepared but not started/.test(inRoot.env?.error?.message ?? ""), shown(inRoot));
+  const selected = await json(["use", "demo"]);
+  check("use selects it and names its root", selected.status === 0 && getCurrent() === "demo" && selected.env?.result.preparedRoot === fresh && selected.env.result.currentRecorded === false, shown(selected));
+  const status = await run(["status", "--plain"]);
+  check("status says the selected space is prepared, not started", /current mesh "demo" is prepared, not started/.test(status.stdout), shown(status));
+  const listed = await json(["space"]);
+  check("a selected prepared space is not warned about as missing", listed.status === 0 && listed.env?.warnings.length === 0 && listed.env.result.prepared[0]?.current === true, listed.env?.warnings);
+  const human = await run(["space", "--plain"]);
+  check("the listing shows it under its own heading", /Prepared, not started/.test(human.stdout) && /demo \(selected\)/.test(human.stdout), shown(human));
+  const target = await json(["who"]);
+  check("a command that targets it is TARGET_UNAVAILABLE, naming cotal up in its root", refused(target, 2, "TARGET_UNAVAILABLE") && /cotal up/.test(target.env?.error?.message ?? "") && target.env?.error?.message.includes(fresh), shown(target));
+
+  // Under a root that hosts other spaces, so `up` would make this folder a root of its own.
+  const elsewhere = join(root, "elsewhere");
+  mkdirSync(elsewhere);
+  const server = `nats://127.0.0.1:${await freePort()}`;
+  const away = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "demo"], {}, elsewhere);
+  check("up --space for it from another folder refuses, naming its root, and makes nothing there", away.status === 1 && away.stderr.includes(`prepared in ${fresh}`) && !existsSync(join(elsewhere, ".cotal")), shown(away));
+  const otherName = await run(["up", "--detach", "--open", "--no-manager", "--server", server, "--space", "other"], {}, fresh);
+  check("up --space for another space in its root refuses", otherName.status === 1 && /root of "demo"/.test(otherName.stderr) && findMesh("other") === undefined, shown(otherName));
+
+  const up = await run(["up", "--detach", "--open", "--no-manager", "--server", server], {}, fresh);
+  const started = findMesh("demo");
+  check("up in its root starts it under its name, and the prepared record goes", up.status === 0 && started?.root === fresh && started.server === server && started.origin === "up" && findPreparedSpace("demo") === undefined, shown(up));
+  check("the selection still names it", getCurrent() === "demo", getCurrent());
+  const reads = await json(["space", "show", "demo"]);
+  check("space show now reports its broker answering", reads.env?.result.kind === "space" && reads.env.result.check === "reachable", reads.env?.result);
+  assertSmokeSandboxDown(sandbox, ["down"], { cwd: fresh, env: runEnv });
+  const down = await run(["down"], {}, fresh);
+  check("down stops it", down.status === 0, shown(down));
+
+  const later = join(home, "later");
+  mkdirSync(later);
+  await json(["space", "create", "later"], later);
+  const forgot = await json(["space", "forget", "later"]);
+  check("a prepared space is forgotten; the .cotal create made stays", forgot.status === 0 && forgot.env?.result.origin === "prepared" && forgot.env.result.server === null && findPreparedSpace("later") === undefined && existsSync(join(later, ".cotal")), shown(forgot));
 }
 
 finish();

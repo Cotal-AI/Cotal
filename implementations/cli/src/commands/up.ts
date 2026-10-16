@@ -62,10 +62,14 @@ import {
   listSpaceAccounts,
   preloadSpaceAccounts,
   putSpaceAuth,
+  canonicalRoot,
   clearCurrent,
   findMesh,
+  findPreparedSpace,
   getCurrent,
   loadMeshes,
+  preparedSpaceAt,
+  removePreparedSpace,
   localMeshesForRoot,
   connectionEvictorCredsKey,
   membershipConfigPath,
@@ -2665,13 +2669,18 @@ function refuseOpenOverUserState(open: boolean, space: string): void {
 function ensureRootForSpace(space: string): void {
   const root = cotalRoot();
   const cwd = process.cwd();
+  // A prepared space starts only in the root `cotal space create` gave it. Checked before the mkdir
+  // below, so a refused start leaves nothing behind.
+  const prepared = findPreparedSpace(space);
+  if (prepared && canonicalRoot(prepared.root) !== canonicalRoot(root))
+    throw new Error(`space "${space}" is prepared in ${prepared.root} - start it with \`cotal up\` there, or \`cotal space forget ${space}\` to start it here`);
   // What spaces does this root already host? Prefer auth material; fall back to a live MeshEntry
   // whose root is this directory (open meshes have no auth dir).
   const hosted = listSpaceAccounts(authDir(root));
   if (hosted.includes(space)) return;
   const existing = hosted.length
     ? hosted
-    : [loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space].filter((s): s is string => !!s);
+    : [loadMeshes().find((m) => m.root === root || realpathSafe(m.root) === realpathSafe(root))?.space ?? preparedSpaceAt(root)?.space].filter((s): s is string => !!s);
   if (existing.length === 0 || existing.includes(space)) return;
   const names = existing.map((s) => `"${s}"`).join(", ");
   if (root !== cwd) {
@@ -2804,7 +2813,7 @@ export const recordOurMeshForTest = (m: MeshEntry, provenance: Provenance): void
  *  mesh; just say another is the default and how to switch. */
 function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   const cur = getCurrent();
-  const usableCurrent = cur && findMesh(cur) ? cur : undefined; // compute before recording m
+  const usableCurrent = cur && (findMesh(cur) || findPreparedSpace(cur)) ? cur : undefined; // compute before recording m
   const prior = findMesh(m.space);
   const origin = provenance === "refresh" && (prior?.origin === "manual" || prior?.origin === "catalog") ? prior.origin : "up";
   // A REFRESH starts nothing: it concluded the mesh is up from reachability alone, so `m` holds only
@@ -2816,6 +2825,7 @@ function recordOurMesh(m: MeshEntry, provenance: Provenance): void {
   if (provenance === "refresh" && !prior)
     throw new Error(`mesh "${m.space}" was removed from the registry while \`cotal up\` refreshed it - not re-recording it from an earlier read`);
   recordMesh(provenance === "refresh" ? { ...prior, ...m, origin } : { ...m, origin });
+  removePreparedSpace(m.space); // started: the registration is its record now
   if (!usableCurrent) {
     setCurrent(m.space);
     return;
