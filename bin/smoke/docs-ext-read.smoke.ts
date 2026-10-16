@@ -34,10 +34,10 @@ type Envelope = {
   warnings: unknown[];
   error?: { code: string; message: string };
 };
-function run(args: string[]) {
+function run(args: string[], extraEnv: Record<string, string> = {}) {
   const r = spawnSync(process.execPath, [BIN, ...args], {
     cwd: home,
-    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1" },
+    env: { ...HOST_ENV, HOME: home, USERPROFILE: home, XDG_CONFIG_HOME: xdg, COTAL_HOME: join(home, ".cotal-home"), COTAL_SKIP_CONNECTOR_SEED: "1", ...extraEnv },
     encoding: "utf8",
     timeout: 60_000,
   });
@@ -55,7 +55,9 @@ const shown = (r: { status: number | null; stdout: string; stderr: string }) => 
   check("docs --json is one complete ok envelope with no target", json.status === 0 && json.envelope?.outcome === "ok" && json.envelope.completeness === "complete" && json.envelope.target === null && json.stderr === "", shown(json));
   check("the index is this version's: the three normative sources and the pages", r?.kind === "docs-index" && r.version === VERSION && JSON.stringify(r.sources.map((s) => s.slug)) === JSON.stringify(["spec", "lang", "schema"]) && r.pages.some((p) => p.slug === "architecture" && p.summary.length > 0), r && { kind: r.kind, version: r.version, sources: r.sources, pages: r.pages.length });
   const plain = run(["docs", "--plain"]);
-  check("the plain index names the version, both groups and how to read a page", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.startsWith(`Cotal v${VERSION} documentation`) && /^Normative sources$/m.test(plain.stdout) && /^Pages$/m.test(plain.stdout) && /cotal docs <page>/.test(plain.stdout), shown(plain));
+  check("the plain index names the version, both groups and how to read a page", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout.startsWith(`Cotal v${VERSION} documentation`) && /^Normative sources$/m.test(plain.stdout) && /^Concept$/m.test(plain.stdout) && /^Reference$/m.test(plain.stdout) && /cotal docs <page>/.test(plain.stdout), shown(plain));
+  const narrow = run(["docs", "--plain"], { COLUMNS: "80" });
+  check("the index groups pages by category in PAGE and TITLE tables that fit 80 columns", narrow.status === 0 && /^ {2}architecture +\S/m.test(narrow.stdout) && !/^ {2}PAGE:/m.test(narrow.stdout) && narrow.stdout.split("\n").every((line) => line.length <= 80), shown(narrow));
 }
 
 // ── docs: one page ───────────────────────────────────────────────────────────────────────────────
