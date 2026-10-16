@@ -28,7 +28,7 @@ import { workspaceSecretStore } from "./secret-store-fs.js";
 import { findMesh, pruneMesh, type UserAuthInfo } from "./mesh-registry.js";
 import { isWorkspaceTargetError, resolveMeshTarget, type MeshTarget } from "./mesh-target.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS, preflightTarget, pruneStaleMeshes } from "./preflight.js";
-import { renderWorkspaceError } from "./render.js";
+import { renderWorkspaceError, workspaceErrorParts, type WorkspaceError, type WorkspaceErrorParts } from "./render.js";
 import { CommandFailure, type RefusalCode } from "./output.js";
 import type { MeshTargetErrorCode } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
@@ -309,18 +309,28 @@ export class ConnectRefusal extends Error {
   /** The stable code a structured command reports this refusal under (`AUTH_REQUIRED`,
    *  `TARGET_UNAVAILABLE`, ...). Every refusal names one, so none reaches a script unclassified. */
   readonly code: RefusalCode;
-  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }) {
+  /** The sentence as its message and remedy, when it was written in two parts. */
+  readonly parts: WorkspaceErrorParts | undefined;
+  constructor(readonly rendered: string, readonly hint: string | undefined, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode; parts?: WorkspaceErrorParts }) {
     super(rendered, options);
     this.name = "ConnectRefusal";
     this.kind = options.kind ?? "permanent";
     this.code = options.code;
+    this.parts = options.parts;
   }
 
-  /** This refusal as a command's classified failure: the same sentence and hint, and its code. */
+  /** This refusal as a command's classified failure under its code: the message, and the remedy
+   *  apart from it. */
   failure(): CommandFailure {
-    const remedy = this.hint?.trim();
-    return new CommandFailure("refused", this.code, this.rendered.replace(/^✗ /, ""), remedy ? { remedy } : {});
+    const remedy = this.parts?.remedy ?? this.hint?.trim();
+    return new CommandFailure("refused", this.code, this.parts?.message ?? this.rendered.replace(/^✗ /, ""), remedy ? { remedy } : {});
   }
+}
+
+/** A refusal over a workspace failure: the one-line sentence for a terminal, its parts for a
+ *  structured command. */
+function workspaceRefusal(e: WorkspaceError, options: { cause?: unknown; kind?: ConnectRefusalKind; code: RefusalCode }): ConnectRefusal {
+  return new ConnectRefusal(renderWorkspaceError(e), undefined, { ...options, parts: workspaceErrorParts(e) });
 }
 
 export function isConnectRefusal(e: unknown): e is ConnectRefusal {
@@ -672,7 +682,7 @@ export async function reachableOrThrow(server: string, auth: RawAuth = {}): Prom
   const kind = probe.reason === "timeout" || probe.reason === "unreachable" ? "transient" : "permanent";
   const code: RefusalCode =
     kind === "transient" ? "TARGET_UNAVAILABLE" : probe.reason === "auth-required" && hasAuth ? "PERMISSION_DENIED" : "AUTH_REQUIRED";
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }), undefined, { kind, code });
+  throw workspaceRefusal({ kind: "reachable", reason: probe.reason, server, hasAuth }, { kind, code });
 }
 
 /** {@link reachableOrThrow} with the exiting disposition. */
@@ -704,7 +714,7 @@ export async function resolveTargetOrThrow(flags: {
     // its broker is back. A record that exists and is broken, or several that match, is not.
     if (isWorkspaceTargetError(e)) {
       const kind = e.code === "no-meshes" || e.code === "unknown-space" || e.code === "not-started" ? "transient" : "permanent";
-      throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }), undefined, { cause: e, kind, code: targetErrorCode(e.code) });
+      throw workspaceRefusal({ kind: "target", error: e }, { cause: e, kind, code: targetErrorCode(e.code) });
     }
     throw e;
   }
@@ -725,11 +735,8 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // user target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    throw new ConnectRefusal(
-      `✗ no mesh running at ${target.server} - mesh "${target.space}" is recorded at ${target.root} but not running; run \`cotal up\` there to restart`,
-      undefined,
-      { kind: "transient", code: "TARGET_UNAVAILABLE" },
-    );
+    const parts = { message: `no mesh running at ${target.server}; mesh "${target.space}" is recorded at ${target.root} but not running`, remedy: "run `cotal up` there to restart" };
+    throw new ConnectRefusal(`✗ ${parts.message} - ${parts.remedy}`, undefined, { kind: "transient", code: "TARGET_UNAVAILABLE", parts });
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
@@ -739,7 +746,7 @@ export async function preflightOrThrow(target: MeshTarget, probeCreds?: string):
   // The message reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = r.prune ? pruneMesh(target.space, r.kind === "unreachable" ? "gone" : "mismatch") : false;
   const kind = r.kind === "unreachable" || r.kind === "slow-link" ? "transient" : "permanent";
-  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }), undefined, { kind, code: preflightCode(r.kind) });
+  throw workspaceRefusal({ kind: "preflight", failure: r.kind, target, pruned }, { kind, code: preflightCode(r.kind) });
 }
 
 /** {@link preflightOrThrow} with the exiting disposition. */

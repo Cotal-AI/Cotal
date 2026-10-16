@@ -982,6 +982,16 @@ A command run without `--space` targets the selection. When the selected space's
 refuses with `TARGET_UNAVAILABLE`, exit 2, and when the selection names a space no longer registered
 it refuses with `TARGET_NOT_FOUND`. Neither reaches another mesh.
 
+With no `--space`, `--server` or `--creds`, nothing selected and no project in the folder, a command
+that several running spaces could serve asks which one when it runs in a terminal. The answer is the
+target of that one run, and the selection stays as it is; cancelling the question does nothing and
+exits 0. A script, a `--json` caller and `--no-input` are not asked: the command refuses with
+`TARGET_AMBIGUOUS`, exit 2, naming the running spaces. Every refusal of a target puts what to run next
+in `error.remedy`, apart from `error.message`.
+
+A manifest's `space:` is the target of `up -f` and `spawn -f`. A `--space` that names another space is
+refused before anything is written.
+
 `cotal meshes` still lists, registers and drops meshes. `space`, `space add`, `space create` and
 `space forget` replace it, and its `--json` lines are the old shape. A bare `meshes add` on a terminal is still the
 guided form.

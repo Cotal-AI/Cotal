@@ -71,7 +71,9 @@ the three `agents:` forms, channel cards, and the resolution rules are in the
 | `cotal down [-f <file>]` | Tear down (see "Tearing down" below). |
 
 `up -f` and `spawn -f` accept `--dry-run` (preview the plan, change nothing). `up -f` also takes
-`--server` / `--host` / `--space` / `--runtime` / `--open` to override the file for one run.
+`--server` / `--host` / `--runtime` / `--open` to override the file for one run. The manifest's
+`space:` is the target of both: a `--space` that names another space is refused before anything is
+written.
 
 > If a Cotal mesh is already running at the manifest's broker address (e.g. the default
 > `127.0.0.1:4222` from `cotal up`), `up -f` **refuses**; it never re-seeds a live broker. The

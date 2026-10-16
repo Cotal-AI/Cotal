@@ -602,6 +602,7 @@
     "smoke:completion-status": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/completion-status.smoke.ts",
     "smoke:space-reads": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-reads.smoke.ts",
     "smoke:space-registration": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/space-registration.smoke.ts",
+    "smoke:target-resolution": "pnpm --filter cotal-ai... build && tsx implementations/cli/smoke/target-resolution.smoke.ts",
     "smoke:legacy-manager-report": "tsx implementations/cli/smoke/legacy-manager-report.smoke.ts",
     "smoke:legacy-packaged-manager": "tsx implementations/cli/smoke/legacy-packaged-manager.smoke.ts",
     "smoke:runtime-contract": "tsx packages/core/smoke/runtime-contract.smoke.ts",

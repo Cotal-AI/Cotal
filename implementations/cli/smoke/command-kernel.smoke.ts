@@ -297,7 +297,8 @@ async function completionOut(positionals: string[]): Promise<string> {
     const target = run("probe", "--json", "--fail", "target");
     assert.equal(target.status, 2, "an unresolvable target exits 2");
     assert.equal(target.envelope?.error?.code, "TARGET_AMBIGUOUS", "an ambiguous target is TARGET_AMBIGUOUS");
-    assert.match(target.envelope?.error?.message ?? "", /multiple meshes running - a \(\/a\), b \(\/b\)/, "an unresolvable target keeps its rendered sentence");
+    assert.equal(target.envelope?.error?.message, "multiple meshes running: a (/a), b (/b)", "an unresolvable target's message says what was found");
+    assert.equal(target.envelope?.error?.remedy, "pick one with `--space <name>` or set a default with `cotal use <name>`", "an unresolvable target's remedy is apart from its message");
     const catalog = run("probe", "--json", "--fail", "catalog");
     assert.equal(catalog.status, 2, "a space catalog that stopped the command exits 2");
     assert.equal(catalog.envelope?.error?.code, "DEPENDENCY_UNAVAILABLE", "a failed catalog refresh is DEPENDENCY_UNAVAILABLE");
@@ -468,7 +469,7 @@ async function completionOut(positionals: string[]): Promise<string> {
   const line = refused.events.find((event) => event.includes("running manager continuity check"));
   assert.ok(line, "the refusal is printed under the continuity-check marker");
   assert.ok(
-    line.includes("Pick one with `--space <name>` or set a default with `cotal use <name>`"),
+    line.includes("pick one with `--space <name>` or set a default with `cotal use <name>`"),
     "the standing refusal carries the workspace renderer's remedy sentence",
   );
   assert.ok(!refused.events.includes("reconcile"), "a standing refusal still writes nothing");

@@ -94,11 +94,14 @@ const ansi = /\x1b\[/;
     const json = run([command, "--json"]);
     check(`${command} --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2`,
       json.status === 2 && json.envelope?.outcome === "refused" && json.envelope.command === command && json.envelope.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
+    check(`${command} --json with no mesh gives the remedy apart from the message`,
+      json.envelope?.error?.message === "no mesh running" && json.envelope.error.remedy === "run `cotal up` in a project, or pass `--server`", json.envelope?.error);
     const human = run([command]);
     check(`${command} with no mesh exits 2 with the sentence on stderr and nothing on stdout`, human.status === 2 && human.stdout === "" && /no mesh running/.test(human.stderr), shown(human));
   }
   const named = run(["models", "--json", "--space", "nope"]);
   check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh named "nope"/.test(named.envelope.error.message), shown(named));
+  check("an unknown --space refusal names where to look in its remedy", named.envelope?.error?.remedy === "see `cotal meshes`", named.envelope?.error);
 }
 
 // ── ps: its usage refusals are envelopes too ──────────────────────────────────────────────────────
