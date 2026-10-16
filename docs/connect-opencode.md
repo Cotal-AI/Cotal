@@ -204,8 +204,9 @@ Reasoning is off by default.
 - **On 2.x, the event plane needs `--no-events`.** The AG-UI event plane is not carried on
   OpenCode 2.x yet; spawn with `--no-events`. A registration that requires events cannot opt out,
   so the 2.x connector refuses it with the same message.
-- **On 2.x, `cotal models` is refused.** The 2.x catalog is served by a running opencode
-  server, not the CLI, so pass `--model provider/model` directly instead.
+- **On 2.x, `cotal models` lists no OpenCode catalog.** The 2.x catalog is served by a running
+  opencode server, not the CLI, so the connector reports `supported: false` with that reason. Pass
+  `--model provider/model` directly instead.
 
 ## See also
 

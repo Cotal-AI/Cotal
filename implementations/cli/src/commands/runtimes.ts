@@ -9,7 +9,7 @@ export const runtimesFlags = [jsonFlag, plainFlag] as const satisfies readonly F
  *  that is not installed, or one whose package failed to load (`error`). */
 export interface RuntimeRow {
   readonly name: string;
-  readonly state: "built-in" | "installed" | "available";
+  readonly state: "built-in" | "installed" | "not-installed";
   readonly package: string | null;
   readonly reachable: boolean | null;
   readonly error: string | null;
@@ -41,7 +41,7 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
   for (const name of names) {
     if (!providers.has(name)) {
       // Official but not installed: one `cotal ext add` away.
-      items.push({ name, state: "available", package: OFFICIAL_RUNTIMES[name] ?? null, reachable: null, error: null });
+      items.push({ name, state: "not-installed", package: OFFICIAL_RUNTIMES[name] ?? null, reachable: null, error: null });
       continue;
     }
     const pkg = providers.get(name) ?? OFFICIAL_RUNTIMES[name] ?? null;
@@ -69,7 +69,7 @@ export async function runtimes(args: ParsedArgs): Promise<void> {
 
 function stateCell(row: RuntimeRow): Styled {
   if (row.state === "built-in") return { text: "built in", tone: "hint" };
-  if (row.state === "available") return { text: `available · cotal ext add ${row.package}`, tone: "hint" };
+  if (row.state === "not-installed") return { text: "not installed", tone: "hint" };
   // The load error itself follows the report as a warning, so the row keeps to the state.
   if (row.error !== null) return { text: "installed · load failed", tone: "failed" };
   return row.reachable ? { text: "installed · reachable", tone: "ok" } : { text: "installed · unreachable", tone: "waiting" };
@@ -81,8 +81,10 @@ function runtimesView(result: { items: readonly RuntimeRow[] }): Report {
       blocks: [{
         kind: "table",
         columns: [{ key: "name", label: "RUNTIME" }, { key: "state", label: "STATE" }, { key: "package", label: "PACKAGE" }],
-        rows: result.items.map((row) => ({ name: row.name, state: stateCell(row), package: row.state === "installed" && row.package ? { text: row.package, tone: "hint" } : "" })),
-      }],
+        rows: result.items.map((row) => ({ name: row.name, state: stateCell(row), package: row.package ? { text: row.package, tone: "hint" } : "" })),
+      }, ...(result.items.some((row) => row.state === "not-installed")
+        ? [{ kind: "lines" as const, lines: [{ text: "add one that is not installed with `cotal ext add <package>`", tone: "hint" as const }] }]
+        : [])],
     }],
   };
 }

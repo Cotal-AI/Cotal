@@ -72,6 +72,15 @@
       "expectRed": "status --components --all is refused before any probe, exit 1",
       "cell": "status --components --all is refused before any probe, exit 1",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the NATS row prints the raw source value",
+      "file": "implementations/cli/src/commands/status.ts",
+      "find": "cell(m.nats === \"path\" ? \"nats-server on PATH\" : \"bundled nats-server\", \"ok\")",
+      "replace": "cell(m.nats, \"ok\")",
+      "expectRed": "the NATS row says where nats-server comes from in words",
+      "cell": "the NATS row says where nats-server comes from in words",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
