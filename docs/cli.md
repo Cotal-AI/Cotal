@@ -85,7 +85,7 @@ runtimes ship this way.
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
 one JSON document on stdout. In this release that is `cotal version`, `cotal status`, `cotal ps`,
-`cotal models` and `cotal runtimes`. `cotal version --json` writes:
+`cotal who`, `cotal whoami`, `cotal models` and `cotal runtimes`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
