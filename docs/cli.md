@@ -58,7 +58,7 @@ that must seed from a checkout also set `COTAL_ALLOW_CHECKOUT_SEED=1`, as descri
 An undeclared flag is a usage error, and so is a flag given more than once unless it is
 repeatable, as `--opt` and `down --session-store` are. So is an unknown command, and a first word
 that is not one of the command's subcommands when it declares them. The command prints the error and
-its help, exits 1, and does not run. A usage error is found before any effect, so it never seeds
+its help on stderr, writes nothing on stdout, exits 1, and does not run. A usage error is found before any effect, so it never seeds
 connectors or writes configuration. Help, version and completion never do either.
 
 Command output, including error lines on stderr, the guided `setup` and `meshes add` prompts and
@@ -84,8 +84,8 @@ runtimes ship this way.
 ## Structured output
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
-one JSON document on stdout. In this release that is `cotal version`, `cotal ps`, `cotal models` and
-`cotal runtimes`. `cotal version --json` writes:
+one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
+`cotal ps`, `cotal models` and `cotal runtimes`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -178,7 +178,7 @@ failure.
 | Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
 | Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
 | Extensions & misc | [`ext`](#ext) | Install / remove operator CLI extensions |
-| Extensions & misc | [`completion`](#completion) | Print or install shell completion |
+| Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
 | Workflow runs | [`run`](#run) | Operate durable workflow runs: start, resume, list, inspect, answer a checkpoint, check an edited program with migrate |
@@ -2587,7 +2587,7 @@ nothing, and `completion install` writes only shell configuration.
 ## completion
 
 ```bash
-cotal completion [--json|--plain]                    # which shells have the stub, and what loads it
+cotal completion [--json|--plain]                    # which shells have the stub, and where it is wired in
 cotal completion script <bash|zsh|fish|powershell>   # print a stub as raw shell code
 cotal completion install [shell]                     # install it persistently
 ```
@@ -2598,8 +2598,13 @@ offline.
 
 Bare `cotal completion` reads local files only. For each shell it shows whether the stub is
 installed, whether it matches the script this version prints (`current`) or not (`differs from
-this version`), the stub file, and the startup file that loads it. Cotal installs nothing for
-PowerShell. `--json` writes that report as one document with `target: null`.
+this version`), the stub file, and where `completion install` wired it in: the startup file that
+holds the install line as a line of its own, or fish's completions directory. `no install line`
+means that line was not found, not that the shell loads no completion another way. A startup file
+whose install line names a stub that is gone is named in a hint. Cotal installs nothing for
+PowerShell. `--json` writes that report as one document with `target: null`. A stub or startup
+file it cannot read is reported `unreadable` with a `COMPLETION_UNREADABLE` warning, and the run is
+`partial` and exits 4.
 
 Enable completion in the current shell:
 
@@ -2617,10 +2622,12 @@ cotal completion script powershell | Out-String | Invoke-Expression # powershell
 `cotal completion install` wires completion persistently. It detects the active shell from `$SHELL`
 or takes a shell name positionally:
 
-- **bash**: writes `~/.config/cotal/completion.bash` (or under `$XDG_CONFIG_HOME`) and appends a source line to `~/.bashrc`.
-- **zsh**: writes `~/.config/cotal/completion.zsh` (or under `$XDG_CONFIG_HOME`) and appends a source line to `~/.zshrc` (or `$ZDOTDIR/.zshrc`).
-- **fish**: writes `~/.config/fish/completions/cotal.fish` (or under `$XDG_CONFIG_HOME`), which fish loads automatically.
-- **powershell**: prints the line to add to `$PROFILE`.
+- **bash**: writes `~/.config/cotal/completion.bash` (or under an absolute `$XDG_CONFIG_HOME`) and appends a source line to `~/.bashrc`.
+- **zsh**: writes `~/.config/cotal/completion.zsh` (or under an absolute `$XDG_CONFIG_HOME`) and appends a source line to `~/.zshrc` (or `$ZDOTDIR/.zshrc`).
+- **fish**: writes `~/.config/fish/completions/cotal.fish` (or under an absolute `$XDG_CONFIG_HOME`), which fish loads automatically.
+- **powershell**: refused with the line to add to `$PROFILE`.
+
+A relative `$XDG_CONFIG_HOME` is ignored, so the paths do not depend on the working directory.
 
 The installed stub routes tab completion to the internal `cotal __complete` dispatcher, which
 evaluates candidates from local persona files and registered command specs without network calls.

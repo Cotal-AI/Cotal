@@ -21,12 +21,12 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "a stub reads as loaded whatever the rc file says",
+      "name": "a stub reads as wired in whatever the rc file says",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "paths.rc && readIfPresent(paths.rc)?.includes(`source \"${paths.stub}\"`) ? paths.rc : null;",
-      "replace": "paths.rc && content !== undefined ? paths.rc : null;",
-      "expectRed": "a stub no rc file sources is loaded by nothing",
-      "cell": "a stub no rc file sources is loaded by nothing",
+      "find": "wiredIn: rc && holdsSourceLine(rc, paths.stub) ? paths.rc : null };",
+      "replace": "wiredIn: rc !== null && content !== undefined ? paths.rc : null };",
+      "expectRed": "a stub whose rc lost the install line is wired in nowhere",
+      "cell": "a stub whose rc lost the install line is wired in nowhere",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -64,6 +64,42 @@
       "expectRed": "help does not list the replaced shell forms",
       "cell": "help does not list the replaced shell forms",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a commented-out install line counts",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "rc.split(/\\r?\\n/).some((line) => line.trim() === sourceLine(stub))",
+      "replace": "rc.includes(sourceLine(stub))",
+      "expectRed": "a commented-out install line wires nothing in",
+      "cell": "a commented-out install line wires nothing in"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a file it cannot read stops the status",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "    return (e as NodeJS.ErrnoException).code === \"ENOENT\" ? undefined : (e as NodeJS.ErrnoException);\n",
+      "replace": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return undefined;\n    throw e;\n",
+      "expectRed": "a stub it cannot read makes the status partial, exit 4",
+      "cell": "a stub it cannot read makes the status partial, exit 4"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a usage refusal prints the help on stdout",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));\n",
+      "replace": "  if (cmd) printCommandHelp(cmd);\n",
+      "expectRed": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr",
+      "cell": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a relative XDG_CONFIG_HOME is used",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "const config = xdg && isAbsolute(xdg) ? xdg : join(homedir(), \".config\");",
+      "replace": "const config = xdg || join(homedir(), \".config\");",
+      "expectRed": "install ignores a relative XDG_CONFIG_HOME",
+      "cell": "install ignores a relative XDG_CONFIG_HOME"
     }
   ]
 }

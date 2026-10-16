@@ -1,6 +1,6 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join } from "node:path";
 import {
   findCommand,
   findSubcommand,
@@ -10,7 +10,7 @@ import {
   type FlagValues,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, jsonFlag, plainFlag, presentationOf, writeResult, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { commandSurface } from "../ext-loader.js";
 import { c } from "../ui.js";
 
@@ -182,9 +182,15 @@ const LOAD_NOW: Record<string, string> = {
 export async function completion(args: ParsedArgs): Promise<void> {
   const [sub, shell] = args.positionals;
   const values = args.values as FlagValues<typeof completionFlags>;
-  if (sub === undefined) return writeResult(presentationOf(values), { command: "completion", target: null, result: completionStatus() }, statusView);
+  if (sub === undefined) {
+    const presentation = presentationOf(values);
+    const { status, unread } = completionStatus();
+    const partial = unread.length ? { completeness: "partial" as const, warnings: unread, partial: { message: `completion could not read ${unread.length === 1 ? "one file" : `${unread.length} files`}`, remedy: "fix or remove each file a warning names" } } : {};
+    return writeResult(presentation, { command: "completion", target: null, result: status, ...partial }, statusView);
+  }
   if (values.json || values.plain)
     throw new CommandFailure("refused", "USAGE_INVALID", `cotal completion ${sub} takes no --json or --plain`, { remedy: "run `cotal completion --json` for the status" });
+  if (args.positionals.length > 2) throw new CommandFailure("refused", "USAGE_INVALID", `cotal completion ${sub} takes one shell`, { remedy: `run \`cotal help completion\`` });
   if (sub === "install") return install(shell);
   if (sub === "script") {
     const script = shell === undefined ? undefined : SCRIPTS[shell];
@@ -200,58 +206,87 @@ export async function completion(args: ParsedArgs): Promise<void> {
   throw new CommandFailure("refused", "USAGE_INVALID", `\`cotal completion ${sub}\` is now \`cotal completion script ${sub}\``, { remedy: `load it with: ${LOAD_NOW[sub]}` });
 }
 
-type StubState = "missing" | "current" | "differs";
+type StubState = "missing" | "current" | "differs" | "unreadable";
 
-/** One shell's completion as this machine has it. `loadedBy` is the file that sources the stub, or
- *  null when nothing does; fish loads its completions directory itself, and Cotal installs nothing
- *  for PowerShell, whose profile it does not edit. */
+/** One shell's completion as this machine has it. `wiredIn` is where `completion install` wires the
+ *  stub in: the startup file holding the line it writes, or fish's completions directory, which fish
+ *  loads by itself. It is null when that wiring is not found, which does not mean the shell loads no
+ *  completion some other way. Cotal installs nothing for PowerShell, whose profile it does not edit. */
 export interface ShellCompletion {
   readonly shell: string;
   readonly stub: string | null;
   readonly state: StubState | "not-installed-by-cotal";
-  readonly loadedBy: string | null;
+  readonly wiredIn: string | null;
 }
 
-/** The stub file and the rc file that sources it, per shell Cotal installs for. */
+export interface CompletionStatus {
+  /** The shell `$SHELL` names, when it is one Cotal completes. */
+  readonly shell: string | null;
+  readonly shells: ShellCompletion[];
+}
+
+/** The stub file and the rc file that sources it, per shell Cotal installs for. A relative
+ *  `XDG_CONFIG_HOME` is ignored, as the XDG base directory spec asks, so the paths do not depend on
+ *  the working directory. */
 function stubPaths(shell: string): { stub: string; rc?: string } | undefined {
-  const config = process.env.XDG_CONFIG_HOME || join(homedir(), ".config");
+  const xdg = process.env.XDG_CONFIG_HOME;
+  const config = xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".config");
   if (shell === "fish") return { stub: join(config, "fish", "completions", "cotal.fish") };
   if (shell === "bash") return { stub: join(config, "cotal", "completion.bash"), rc: join(homedir(), ".bashrc") };
   if (shell === "zsh") return { stub: join(config, "cotal", "completion.zsh"), rc: join(process.env.ZDOTDIR || homedir(), ".zshrc") };
   return undefined;
 }
 
-function readIfPresent(path: string): string | undefined {
+/** The line `completion install` adds to a startup file for `stub`. */
+const sourceLine = (stub: string): string => `source "${stub}"`;
+
+/** Whether a startup file holds the install line as a line of its own, so a comment or a longer
+ *  line that only contains it does not count. */
+const holdsSourceLine = (rc: string, stub: string): boolean => rc.split(/\r?\n/).some((line) => line.trim() === sourceLine(stub));
+
+/** A file's text, `undefined` when it does not exist, or the error that stopped the read. */
+function readText(path: string): string | undefined | NodeJS.ErrnoException {
   try {
     return readFileSync(path, "utf8");
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw e;
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? undefined : (e as NodeJS.ErrnoException);
   }
 }
 
-/** Each shell's stub against the script this binary prints. Reads local files only. */
-export function completionStatus(): { shell: string | null; shells: ShellCompletion[] } {
+/** Each shell's stub against the script this binary prints, and a warning for each file it could
+ *  not read. Reads local files only. */
+export function completionStatus(): { status: CompletionStatus; unread: OutputWarning[] } {
+  const unread: OutputWarning[] = [];
+  const read = (shell: string, path: string): string | undefined | null => {
+    const text = readText(path);
+    if (typeof text !== "object") return text;
+    unread.push({ code: "COMPLETION_UNREADABLE", target: { shell }, message: `${path} could not be read: ${text.code ?? text.message}` });
+    return null;
+  };
   const shells = Object.keys(SCRIPTS).map((shell): ShellCompletion => {
     const paths = stubPaths(shell);
-    if (!paths) return { shell, stub: null, state: "not-installed-by-cotal", loadedBy: null };
-    const content = readIfPresent(paths.stub);
-    const state: StubState = content === undefined ? "missing" : content === SCRIPTS[shell] ? "current" : "differs";
-    const loadedBy = shell === "fish" ? (content === undefined ? null : dirname(paths.stub)) : paths.rc && readIfPresent(paths.rc)?.includes(`source "${paths.stub}"`) ? paths.rc : null;
-    return { shell, stub: paths.stub, state, loadedBy };
+    if (!paths) return { shell, stub: null, state: "not-installed-by-cotal", wiredIn: null };
+    const content = read(shell, paths.stub);
+    const state: StubState = content === null ? "unreadable" : content === undefined ? "missing" : content === SCRIPTS[shell] ? "current" : "differs";
+    if (!paths.rc) return { shell, stub: paths.stub, state, wiredIn: content === undefined ? null : dirname(paths.stub) };
+    const rc = read(shell, paths.rc);
+    return { shell, stub: paths.stub, state, wiredIn: rc && holdsSourceLine(rc, paths.stub) ? paths.rc : null };
   });
   const detected = basename(process.env.SHELL ?? "");
-  return { shell: SCRIPTS[detected] ? detected : null, shells };
+  return { status: { shell: SCRIPTS[detected] ? detected : null, shells }, unread };
 }
 
 const STATE: Record<ShellCompletion["state"], Styled> = {
   current: { text: "current", tone: "ok" },
   differs: { text: "differs from this version", tone: "waiting" },
   missing: { text: "not installed", tone: "hint" },
+  unreadable: { text: "unreadable", tone: "failed" },
   "not-installed-by-cotal": { text: "not installed by cotal", tone: "hint" },
 };
 
-function statusView(status: ReturnType<typeof completionStatus>): Report {
+function statusView(status: CompletionStatus): Report {
+  // A startup line left pointing at a stub that is gone fails when the shell starts.
+  const dangling = status.shells.filter((s) => s.state === "missing" && s.wiredIn !== null);
   return {
     sections: [
       {
@@ -262,21 +297,22 @@ function statusView(status: ReturnType<typeof completionStatus>): Report {
             columns: [
               { key: "shell", label: "SHELL" },
               { key: "state", label: "STUB" },
-              { key: "loaded", label: "LOADED BY" },
+              { key: "wired", label: "WIRED IN" },
               { key: "stub", label: "FILE" },
             ],
             rows: status.shells.map((s) => ({
               shell: s.shell === status.shell ? { text: `${s.shell} (this shell)`, tone: "selected" } : s.shell,
               state: STATE[s.state],
-              loaded: s.loadedBy ?? (s.state === "current" || s.state === "differs" ? { text: "nothing", tone: "waiting" } : ""),
+              wired: s.wiredIn ?? (s.state === "current" || s.state === "differs" ? { text: "no install line", tone: "hint" } : ""),
               stub: s.stub ?? "",
             })),
           },
           {
             kind: "lines",
             lines: [
+              ...dangling.map((s) => ({ text: `${s.wiredIn} sources ${s.stub}, which is missing: run \`cotal completion install ${s.shell}\``, tone: "waiting" as const })),
               { text: "install: cotal completion install [shell]", tone: "hint" },
-              { text: `this shell only: ${LOAD_NOW[status.shell ?? "bash"]}`, tone: "hint" },
+              ...(status.shell ? [{ text: `this shell only: ${LOAD_NOW[status.shell]}`, tone: "hint" as const }] : []),
             ],
           },
         ],
@@ -290,10 +326,7 @@ function statusView(status: ReturnType<typeof completionStatus>): Report {
  *  unsupported one (no silent guess). Idempotent — re-running once installed is a no-op. */
 function install(shell?: string): void {
   const sh = shell ?? basename(process.env.SHELL ?? "");
-  if (!SCRIPTS[sh]) {
-    console.error(c.red(`can't install for "${sh || "unknown shell"}" - pass one of: bash, zsh, fish`));
-    process.exit(1);
-  }
+  if (!SCRIPTS[sh]) throw new CommandFailure("refused", "USAGE_INVALID", `can't install for "${sh || "unknown shell"}"`, { remedy: "pass one of: bash, zsh, fish" });
   if (sh === "fish") {
     // Fish auto-loads files from its completions dir — drop the stub straight in (no rc edit).
     const file = stubPaths("fish")!.stub;
@@ -310,14 +343,14 @@ function install(shell?: string): void {
     const { stub, rc } = stubPaths(sh) as { stub: string; rc: string };
     mkdirSync(dirname(stub), { recursive: true });
     writeFileSync(stub, SCRIPTS[sh]);
-    const line = `source "${stub}"`;
+    const line = sourceLine(stub);
     let current = "";
     try {
       current = readFileSync(rc, "utf8");
     } catch {
       /* rc doesn't exist yet — appendFileSync creates it */
     }
-    if (current.includes(line)) {
+    if (holdsSourceLine(current, stub)) {
       console.log(c.dim(`already installed in ${rc}`));
       console.log(c.dim(`  refreshed ${stub}`));
       return;
@@ -327,10 +360,8 @@ function install(shell?: string): void {
     console.log(c.dim(`  ${stub}\n  appended to ${rc}\n  open a new shell (or: source ${stub})`));
     return;
   }
-  // powershell: $PROFILE isn't resolvable from here, so print the exact line rather than guess.
-  console.error(c.red("auto-install isn't supported for powershell."));
-  console.error(c.dim(`  add to your $PROFILE:  ${LOAD_NOW.powershell}`));
-  process.exit(1);
+  // powershell: $PROFILE isn't resolvable from here, so name the exact line rather than guess.
+  throw new CommandFailure("refused", "USAGE_INVALID", "auto-install isn't supported for powershell", { remedy: `add to your $PROFILE: ${LOAD_NOW.powershell}` });
 }
 
 /** Argument completion for `cotal completion` itself: its subcommands, then the shells. */
