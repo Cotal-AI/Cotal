@@ -4,7 +4,7 @@
     "packages/core/smoke/agent-file.smoke.ts",
     "implementations/manager/smoke/start-overrides.smoke.ts"
   ],
-  "guard": "a persona file's agent: pin picks the spawn harness on every launch path: flag > file > COTAL_DEFAULT_AGENT > default, and a pin naming an unregistered connector fails loud",
+  "guard": "a persona file's agent: pin picks the spawn harness on every launch path: flag > file > COTAL_DEFAULT_AGENT > default, and a pin naming an unregistered connector fails loud; a saved harness and persona preference reach both launch paths below the variable and the pin",
   "command": "pnpm build && pnpm smoke:persona-agent",
   "completionMarker": "persona-agent 869 reachability smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/persona-agent.json",
@@ -63,8 +63,8 @@
       "cell": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
       "name": "cli drops the detached caller's default instead of carrying it separately",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "    defaultAgent: defaultAgentOverride(),",
-      "replace": "    defaultAgent: undefined,",
+      "find": "    agent: values.agent,\n    defaultAgent,\n",
+      "replace": "    agent: values.agent,\n    defaultAgent: undefined,\n",
       "expectRed": "C: detached caller COTAL_DEFAULT_AGENT reached the manager for an unpinned persona",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
@@ -81,8 +81,8 @@
       "cell": "D: foreground honored the persona's agent: pin",
       "name": "foreground ignores the pin when resolving its connector",
       "file": "implementations/cli/src/commands/spawn.ts",
-      "find": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });",
-      "replace": "  const agentType = resolveAgentType({ flag: values.agent });",
+      "find": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });",
+      "replace": "  const agentType = resolveAgentType({ flag: values.agent, callerDefault: callerHarness(space) });",
       "expectRed": "D: foreground honored the persona's agent: pin",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
@@ -101,7 +101,7 @@
       "file": "packages/core/src/agent-file.ts",
       "find": "    tags: list(\"tags\"),\n    agent: str(\"agent\"),\n    subscribe,",
       "replace": "    tags: list(\"tags\"),\n    subscribe,",
-      "expectRed": "✗ FAIL: a hand-written agent: parses as the modelled harness pin",
+      "expectRed": "\u2717 FAIL: a hand-written agent: parses as the modelled harness pin",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
       "completionMarker": "agent-file yaml smoke:",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -112,7 +112,7 @@
       "file": "packages/core/src/agent-file.ts",
       "find": "  const known = new Set([\"name\", \"role\", \"kind\", \"description\", \"tags\", \"subscribe\", \"allowSubscribe\", \"allowPublish\", \"quiet\", \"muted\", \"agent\", \"model\", \"variant\", \"launchOptions\", \"capabilities\", \"owner\"]);",
       "replace": "  const known = new Set([\"name\", \"role\", \"kind\", \"description\", \"tags\", \"subscribe\", \"allowSubscribe\", \"allowPublish\", \"quiet\", \"muted\", \"model\", \"variant\", \"launchOptions\", \"capabilities\", \"owner\"]);",
-      "expectRed": "✗ FAIL: a modelled agent: no longer lands in meta",
+      "expectRed": "\u2717 FAIL: a modelled agent: no longer lands in meta",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
       "completionMarker": "agent-file yaml smoke:",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -123,7 +123,7 @@
       "file": "packages/core/src/agent-file.ts",
       "find": "  if (def.agent) fm.agent = def.agent;\n  if (def.model) fm.model = def.model;",
       "replace": "  if (def.model) fm.model = def.model;",
-      "expectRed": "✗ FAIL: round-trips the agent harness pin",
+      "expectRed": "\u2717 FAIL: round-trips the agent harness pin",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:agent-file",
       "completionMarker": "agent-file yaml smoke:",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
@@ -134,10 +134,37 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "const agent = resolveAgentType({ flag: opts.agent, pin: def?.agent, callerDefault: opts.defaultAgent });",
       "replace": "const agent = resolveAgentType({ flag: opts.agent });",
-      "expectRed": "✗ persona agent: pin picks the harness (file beats env)",
+      "expectRed": "\u2717 persona agent: pin picks the harness (file beats env)",
       "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:start-overrides",
       "completionMarker": "START-OVERRIDES SMOKE FAILED",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "cell": "G1: a saved user harness reaches the manager as the caller default for an unpinned persona",
+      "name": "the caller default leaves out the saved harness",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  const winner = resolvePreference(\"harness\", { space, preferences: cachedPreferences() }).winner;",
+      "replace": "  const winner = resolvePreference(\"harness\", { space, preferences: { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } }).winner;",
+      "expectRed": "G1: a saved user harness reaches the manager as the caller default for an unpinned persona",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "G5: a saved persona preference picks the persona of a bare detached spawn",
+      "name": "a bare spawn leaves out the saved persona",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  const winner = resolvePreference(\"persona\", ctx).winner!;",
+      "replace": "  const winner = resolvePreference(\"persona\", { ...ctx, preferences: { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } }).winner!;",
+      "expectRed": "G5: a saved persona preference picks the persona of a bare detached spawn",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "cell": "G7: foreground, a saved user harness builds the launch of an unpinned persona",
+      "name": "foreground leaves out the caller default",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });",
+      "replace": "  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });",
+      "expectRed": "G7: foreground, a saved user harness builds the launch of an unpinned persona",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

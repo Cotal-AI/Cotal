@@ -2,6 +2,7 @@ import { writeSync } from "node:fs";
 import { commandDeclarationProblems, findCommand, findSubcommand, parseCommandArgs, type Command, type ParsedArgs, type Registry } from "@cotal-ai/core";
 import {
   CommandFailure,
+  cachedPreferences,
   disableColor,
   disableInput,
   envelopeLine,
@@ -316,6 +317,16 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     parsed = parseOrExit(cmd, rest);
   }
   if (!cmd || !parsed) throw new Error("internal error: dispatch reached its effects without a parsed command");
+  // A preferences file that does not validate stops every command, as a broken config file does, so
+  // nothing runs on a default the person did not mean. Help has already returned above.
+  if (!cmd.name.startsWith("__")) {
+    try {
+      cachedPreferences();
+    } catch (e) {
+      if (!isCommandFailure(e)) throw e;
+      failureExit(cmd, e, structured(cmd, parsed.positionals[0]) && parsed.values.json === true);
+    }
+  }
   try {
     if (opts.extensions && cmd.requiredExtensions) {
       for (const ref of cmd.requiredExtensions(parsed)) await materializeExtension(ref);

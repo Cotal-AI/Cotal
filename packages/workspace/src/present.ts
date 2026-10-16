@@ -151,8 +151,9 @@ export function presentationOf(values: { readonly json?: unknown; readonly plain
 /** One finished result in the presentation the run asked for: the envelope for `json`, otherwise the
  *  report `view` builds from the same result, fitted to the terminal stdout is, with each warning on
  *  stderr. `partial` marks a read that answered for only part of what was asked: the result keeps
- *  what was read, the outcome is `partial`, and the run exits 4. It writes only `ok` and `partial`: a
- *  refusal or failure is thrown as a {@link CommandFailure} for the kernel to write. */
+ *  what was read, the outcome is `partial`, and the run exits 4. `noOp` marks a change that was
+ *  already in place: the outcome is `no-op` and the run exits 0. It writes only `ok`, `no-op` and
+ *  `partial`: a refusal or failure is thrown as a {@link CommandFailure} for the kernel to write. */
 export function writeResult<R>(
   presentation: Presentation,
   out: {
@@ -162,10 +163,12 @@ export function writeResult<R>(
     completeness?: Completeness;
     warnings?: readonly OutputWarning[];
     partial?: { message: string; remedy?: string };
+    noOp?: boolean;
   },
   view: (result: R) => Report,
 ): void {
-  const outcome = out.partial ? "partial" : "ok";
+  if (out.partial && out.noOp) throw new Error("internal error: a result is partial or a no-op, not both");
+  const outcome = out.partial ? "partial" : out.noOp ? "no-op" : "ok";
   const code = out.partial ? "OPERATION_PARTIAL" : undefined;
   if (presentation === "json") {
     writeEnvelope({

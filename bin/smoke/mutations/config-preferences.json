@@ -1,0 +1,132 @@
+{
+  "suite": [
+    "bin/smoke/config-preferences.smoke.ts"
+  ],
+  "guard": "cotal config resolves each preference in the named order, refuses a stale or invalid write and never resets an invalid file, stops every command over one, and color, the personas editor and the detach key read the saved preferences",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/config-preferences.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/config-preferences.json",
+  "why": [
+    "The suite drives the built binary, and its in-process cells import the workspace build, so each mutation rebuilds the binary and its packages and the restore rebuilds them back."
+  ],
+  "mutations": [
+    {
+      "name": "the environment no longer outranks saved values",
+      "file": "packages/workspace/src/preferences.ts",
+      "find": "  for (const name of spec.env) {\n    const raw = env[name];",
+      "replace": "  for (const name of [] as string[]) {\n    const raw = env[name];",
+      "expectRed": "COTAL_DEFAULT_AGENT beats the space's and the user's saved harness, which it lists as shadowed",
+      "cell": "COTAL_DEFAULT_AGENT beats the space's and the user's saved harness, which it lists as shadowed",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the user's value outranks the space's",
+      "file": "packages/workspace/src/preferences.ts",
+      "find": "  if (spaceValue !== undefined) layers.push({ source: \"space\", name: ctx.space, value: spaceValue });\n  const userValue = prefs.defaults[key];\n  if (userValue !== undefined) layers.push({ source: \"user\", value: userValue });",
+      "replace": "  const userValue = prefs.defaults[key];\n  if (userValue !== undefined) layers.push({ source: \"user\", value: userValue });\n  if (spaceValue !== undefined) layers.push({ source: \"space\", name: ctx.space, value: spaceValue });",
+      "expectRed": "reading through --space applies that space's value over the user's",
+      "cell": "reading through --space applies that space's value over the user's",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a stale write is not refused",
+      "file": "packages/workspace/src/preferences.ts",
+      "find": "    if (current.revision !== expectedRevision)\n",
+      "replace": "    if (false)\n",
+      "expectRed": "a write from a stale revision is refused with CONFLICT and changes nothing",
+      "cell": "a write from a stale revision is refused with CONFLICT and changes nothing",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unchanged write is written again",
+      "file": "packages/workspace/src/preferences.ts",
+      "find": "    if (target[spec.key] === value) return { changed: false, revision: current.revision };\n",
+      "replace": "",
+      "expectRed": "setting the same value again is a no-op, exit 0, and writes nothing",
+      "cell": "setting the same value again is a no-op, exit 0, and writes nothing",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a per-space write of a user-only key is accepted",
+      "file": "packages/workspace/src/preferences.ts",
+      "find": "    if (!spec.perSpace) throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${key} has no per-space value; set it for the user`);\n",
+      "replace": "",
+      "expectRed": "refused: color saved for one space",
+      "cell": "refused: color saved for one space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an invalid file reads as no preferences",
+      "file": "packages/workspace/src/preferences.ts",
+      "find": "  return parsePreferences(text);\n",
+      "replace": "  try {\n    return parsePreferences(text);\n  } catch {\n    return EMPTY;\n  }\n",
+      "expectRed": "an invalid file (not JSON) is refused with SCHEMA_INVALID, naming the file",
+      "cell": "an invalid file (not JSON) is refused with SCHEMA_INVALID, naming the file",
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "note": "Restores a silent reset: the preferences a person saved would vanish without a word."
+    },
+    {
+      "name": "the kernel runs commands over an invalid file",
+      "file": "implementations/cli/src/command.ts",
+      "find": "      cachedPreferences();\n",
+      "replace": "",
+      "expectRed": "an invalid file stops other commands too, before they run",
+      "cell": "an invalid file stops other commands too, before they run",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "color ignores the saved preference",
+      "file": "packages/workspace/src/colors.ts",
+      "find": "  return mode === \"always\" || (mode === \"auto\" && Boolean(process.stdout.isTTY));",
+      "replace": "  return mode !== \"never\" && Boolean(process.stdout.isTTY);",
+      "expectRed": "a saved color=always colors piped output",
+      "cell": "a saved color=always colors piped output",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "personas edit reads only the environment",
+      "file": "implementations/cli/src/commands/personas.ts",
+      "find": "  const editor = resolvePreference(\"editor\", { preferences: cachedPreferences() }).value;",
+      "replace": "  const editor = process.env.VISUAL || process.env.EDITOR;",
+      "expectRed": "personas edit opens the saved editor when VISUAL and EDITOR are unset",
+      "cell": "personas edit opens the saved editor when VISUAL and EDITOR are unset",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the detach key ignores the saved preference",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "  const resolved = resolvePreference(\"detach-key\", { preferences: cachedPreferences() });",
+      "replace": "  const resolved = resolvePreference(\"detach-key\", { preferences: { schemaVersion: 1, revision: 0, defaults: {}, spaces: {} } });",
+      "expectRed": "a saved detach-key rebinds it and names its source",
+      "cell": "a saved detach-key rebinds it and names its source",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "bare config ignores the selected space",
+      "file": "implementations/cli/src/commands/config.ts",
+      "find": "  const selected = getCurrent();\n",
+      "replace": "  const selected = getCurrent() && undefined;\n",
+      "expectRed": "bare config reads through the selected space",
+      "cell": "bare config reads through the selected space",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a harness is not checked against the known connectors",
+      "file": "implementations/cli/src/commands/config.ts",
+      "find": "    if (key === \"harness\" && value !== undefined) checkHarness(value);\n",
+      "replace": "",
+      "expectRed": "refused: a harness no connector provides, naming the known ones",
+      "cell": "refused: a harness no connector provides, naming the known ones",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a shadowed write is not reported",
+      "file": "implementations/cli/src/commands/config.ts",
+      "find": "  if (!winner || winner.source === (w.scope.space === null ? \"user\" : \"space\")) return [];",
+      "replace": "  if (!winner || winner) return [];",
+      "expectRed": "a write that a variable outranks in this shell says so",
+      "cell": "a write that a variable outranks in this shell says so",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

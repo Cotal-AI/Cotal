@@ -11,7 +11,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { inputDisabledByFlag, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
+import { cachedPreferences, inputDisabledByFlag, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, resolvePreference, targetFlags } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -196,8 +196,9 @@ function show(name: string | undefined, values: { space?: string; server?: strin
   process.stdout.write(readFileSync(path, "utf8"));
 }
 
-/** `cotal personas edit <name>` — open the card in $EDITOR (or $VISUAL), then re-validate on exit
- *  so a save that breaks the frontmatter fails loud instead of silently shipping a bad card. */
+/** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,
+ *  then the saved one), then re-validate on exit so a save that breaks the frontmatter fails loud
+ *  instead of silently shipping a bad card. */
 function edit(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   const path = agentFilePath(targetRoot(values), name);
@@ -206,9 +207,9 @@ function edit(name: string | undefined, values: { space?: string; server?: strin
     console.error(c.red(`personas edit opens an editor, and --no-input forbids one - edit ${path} directly`));
     process.exit(1);
   }
-  const editor = process.env.VISUAL || process.env.EDITOR;
+  const editor = resolvePreference("editor", { preferences: cachedPreferences() }).value;
   if (!editor) {
-    console.error(c.red("no editor set - export EDITOR (or VISUAL), e.g. export EDITOR=vim"));
+    console.error(c.red("no editor set - export EDITOR (or VISUAL), e.g. export EDITOR=vim, or save one with `cotal config set editor vim`"));
     process.exit(1);
   }
   // Hand the terminal to the editor (inherit stdio so it draws). $EDITOR may carry flags
