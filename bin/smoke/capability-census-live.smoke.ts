@@ -99,7 +99,7 @@ try {
     check(`every request ${label} issued matches its owner rows and its case`, problems.length === 0, problems);
   }
   // The kernel's own commands answer from local metadata, so against a live mesh they issue nothing.
-  for (const argv of [["help"], ["help", "--all"], ["version"]]) {
+  for (const argv of [["help"], ["help", "--all"], ["version"], ["version", "--json"]]) {
     let result: { status: number | null; output: string } | undefined;
     const observed = await observeRequests(nc, SPACE, async () => { result = await cotal(...argv); });
     const label = `cotal ${argv.join(" ")}`;
