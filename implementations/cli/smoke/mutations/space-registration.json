@@ -144,6 +144,15 @@
       "expectRed": "a bundle that is not JSON is SCHEMA_INVALID, exit 1",
       "cell": "a bundle that is not JSON is SCHEMA_INVALID, exit 1",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the home check compares the spelling, not the canonical path",
+      "file": "implementations/cli/src/commands/meshes-add.ts",
+      "find": "canonicalRoot(join(root, \".cotal\")) === canonicalRoot(homeCotalDir())",
+      "replace": "join(root, \".cotal\") === homeCotalDir()",
+      "expectRed": "nor is a home reached through a symlink",
+      "cell": "nor is a home reached through a symlink",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }

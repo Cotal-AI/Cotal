@@ -4,6 +4,7 @@ import { mkSecretDir, probeConnect, writeSecretFileAtomic, type SpaceAuth } from
 import {
   assertPinnedFetchUrl,
   authDir,
+  canonicalRoot,
   checkUserBundle,
   classifyJoinTarget,
   findCotalRoot,
@@ -164,7 +165,7 @@ export function checkRoot(flag: string | undefined, cwd: string): Check<string> 
       : bad(`✗ --root ${dir} is not a directory - it must be the folder holding this mesh's .cotal/auth and .cotal/agents`, "USAGE_INVALID");
   }
   const root = findCotalRoot(cwd);
-  if (!isDir(join(root, ".cotal")) || resolve(root, ".cotal") === resolve(homeCotalDir()))
+  if (!isDir(join(root, ".cotal")) || canonicalRoot(join(root, ".cotal")) === canonicalRoot(homeCotalDir()))
     return bad("✗ --root <dir> is required outside a mesh project - it is the folder whose .cotal/auth holds this mesh's credentials and whose .cotal/agents holds its personas", "USAGE_INVALID");
   return good(root);
 }
