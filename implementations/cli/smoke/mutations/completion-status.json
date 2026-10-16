@@ -69,7 +69,7 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "a commented-out install line counts",
       "file": "implementations/cli/src/commands/completion.ts",
-      "find": "rc.split(/\\r?\\n/).some((line) => line.trim() === sourceLine(stub))",
+      "find": "rc.split(\"\\n\").some((line) => line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub))",
       "replace": "rc.includes(sourceLine(stub))",
       "expectRed": "a commented-out install line wires nothing in",
       "cell": "a commented-out install line wires nothing in"
