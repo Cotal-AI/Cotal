@@ -10,6 +10,15 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
+      "name": "A partial --slots census says seats were not returned",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "instances did not return ${kind}.",
+      "replace": "instances did not return seats.",
+      "expectRed": "a mixed-contract ps --slots is partial, exit 4, and names the slots that were not returned",
+      "cell": "a mixed-contract ps --slots is partial, exit 4, and names the slots that were not returned",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
       "name": "The --on refusal drops the identifier guidance and reverts to the mint's bare grammar sentence",
       "file": "implementations/cli/src/lib/control.ts",
       "find": "    throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `${(e as Error).message}. --on wants the manager INSTANCE id as \\`cotal ps\\` prints it (the \\`manager <id>\\` header in a multi-manager space, the \\`instance\\` field of \\`cotal ps --wide\\`), not the roster's principal id (\\`local.U…\\`, as \\`cotal endpoints\\` shows it)${principalClause}: \\`${verb} --on <instance>\\``);",

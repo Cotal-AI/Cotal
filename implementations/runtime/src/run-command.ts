@@ -659,8 +659,8 @@ function renderLangProblem(d: EpErrorDetail): string {
   return `  ${String(d.code ?? "L????")} ${String(d.title ?? "")} (${at})\n    ${String(d.cause ?? "")}\n    fix: ${String(d.fix ?? "")}`;
 }
 
-/** `--json` prints each row unchanged as one JSON object per line, as `cotal ps --json` does for
- *  seats: stdout carries rows only, so an empty journal prints nothing there. */
+/** `--json` prints each journal row unchanged as one JSON object per line: stdout carries rows
+ *  only, so an empty journal prints nothing there. */
 function printJournal(runId: string, rows: readonly RunJournalRow[], json: boolean): void {
   if (json) {
     for (const r of rows) console.log(JSON.stringify(r));
