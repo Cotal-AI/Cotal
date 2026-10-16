@@ -2,7 +2,7 @@
   "suite": [
     "implementations/manager/smoke/cli-on-instance-live.smoke.ts"
   ],
-  "guard": "cotal models reads each connector's catalog from a real manager: a catalog the connector could not read makes the listing partial with exit 4 and fails a read of that one connector with exit 5, and a connector whose install lists no catalog is supported: false with its reason, a complete read",
+  "guard": "cotal models reads each connector's catalog from a real manager: a catalog the connector could not read, or an installed connector the manager could not load, makes the listing partial with exit 4 and fails a read of that one connector with exit 5, and a connector whose install lists no catalog is supported: false with its reason, a complete read",
   "command": "pnpm --filter cotal-ai... build && pnpm smoke:cli-on-instance",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/models-catalog.json",
   "why": [
@@ -22,10 +22,19 @@
     {
       "name": "an unreadable catalog leaves the listing complete",
       "file": "implementations/cli/src/commands/models.ts",
-      "find": "const failed = items.filter((row) => row.supported && row.error);",
-      "replace": "const failed = items.filter((row) => row.supported && row.error && false);",
+      "find": "const failed = items.filter((row) => row.error);",
+      "replace": "const failed = items.filter((row) => row.error && false);",
       "expectRed": "every catalog with one unreadable is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
       "cell": "every catalog with one unreadable is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a connector the manager could not load is not counted as unread",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "const failed = items.filter((row) => row.error);",
+      "replace": "const failed = items.filter((row) => row.supported && row.error);",
+      "expectRed": "an installed connector that cannot load is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+      "cell": "an installed connector that cannot load is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
@@ -35,6 +44,15 @@
       "replace": "\"no model catalog exposed\"",
       "expectRed": "the report gives the reason the install lists no catalog and no failure",
       "cell": "the report gives the reason the install lists no catalog and no failure",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the report shows a load failure as a missing catalog",
+      "file": "implementations/cli/src/commands/models.ts",
+      "find": "  if (row.error) blocks.push({ kind: \"lines\", lines: [{ text: row.error, tone: \"failed\" }] });",
+      "replace": "  if (row.error && row.supported) blocks.push({ kind: \"lines\", lines: [{ text: row.error, tone: \"failed\" }] });",
+      "expectRed": "the report names the load failure under that connector, not a missing catalog",
+      "cell": "the report names the load failure under that connector, not a missing catalog",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {

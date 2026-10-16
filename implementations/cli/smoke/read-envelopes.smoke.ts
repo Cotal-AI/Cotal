@@ -9,7 +9,7 @@
  * Run: pnpm smoke:read-envelopes
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite } from "@cotal-ai/smoke-kit";
@@ -32,10 +32,16 @@ type Envelope = {
   warnings: { code: string; target: unknown }[]; error?: { code: string; message: string };
 };
 
-/** A sandboxed home, with an optional extensions manifest. */
-function sandbox(manifest?: unknown) {
-  const home = mkdtempSync(join(tmpdir(), "cotal-read-envelopes-"));
-  roots.push(home);
+/** A sandboxed home, with an optional extensions manifest. `viaLink` reaches it through a symlink,
+ *  as a home on a linked volume is, so the command's cwd is canonical and its HOME is not. */
+function sandbox(manifest?: unknown, viaLink = false) {
+  const real = mkdtempSync(join(tmpdir(), "cotal-read-envelopes-"));
+  roots.push(real);
+  const home = viaLink ? `${real}-link` : real;
+  if (viaLink) {
+    symlinkSync(real, home, "junction");
+    roots.push(home);
+  }
   const xdg = join(home, ".config");
   if (manifest !== undefined) {
     mkdirSync(join(xdg, "cotal", "extensions"), { recursive: true });
@@ -99,6 +105,16 @@ const ansi = /\x1b\[/;
   }
   const named = run(["models", "--json", "--space", "nope"]);
   check("models --json --space <unknown> names the space it could not find", named.status === 2 && named.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh named "nope"/.test(named.envelope.error.message), shown(named));
+}
+
+// ── ps and models: a home reached through a symlink is still no project ──────────────────────────
+{
+  const run = sandbox(undefined, true);
+  for (const command of ["ps", "models"]) {
+    const json = run([command, "--json"]);
+    check(`${command} --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home`,
+      json.status === 2 && json.envelope?.error?.code === "TARGET_NOT_FOUND" && /no mesh running/.test(json.envelope.error.message), shown(json));
+  }
 }
 
 // ── ps: its usage refusals are envelopes too ──────────────────────────────────────────────────────

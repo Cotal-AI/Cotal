@@ -1293,8 +1293,8 @@ providers that enable `model_catalog = true` in the operator Jcode `config.toml`
 effort tiers render as `<tiers> (declared, not provider-verified)`, and launch can still refuse one.
 A connector without a catalog says so with `supported: false`, and one whose install has no
 catalog it can list, such as OpenCode 2.x, gives the reason in `unavailable`; neither is a failed
-read. A connector whose catalog could not be read makes the read
-`partial` (exit 4) with a `MODEL_CATALOG_UNREADABLE` warning naming it, and when `--agent` names
+read. A connector whose catalog could not be read, or that the manager could not load, makes the
+read `partial` (exit 4) with a `MODEL_CATALOG_UNREADABLE` warning naming it, and when `--agent` names
 that connector the read fails (exit 5). A connector whose harness the manager did not find at boot
 reports the reason boot recorded, as a spawn does, so restart the manager after installing it. Pick
 a result with `cotal spawn --model <id> --variant <v>`, where `<id>` is the model id as the catalog

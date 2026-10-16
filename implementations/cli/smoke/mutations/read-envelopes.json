@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/read-envelopes.smoke.ts"
   ],
-  "guard": "runtimes reports a provider that cannot load as a partial read, ps and models refuse an unresolvable mesh under its own code before any request, ps refuses a malformed --on as a usage envelope, and no report line ends in padding",
+  "guard": "runtimes reports a provider that cannot load as a partial read, ps and models refuse an unresolvable mesh under its own code before any request, a home reached through a symlink is not a project, ps refuses a malformed --on as a usage envelope, and no report line ends in padding",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/read-envelopes.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/read-envelopes.json",
@@ -35,6 +35,15 @@
       "replace": "    case \"no-meshes\":\n      return \"TARGET_UNAVAILABLE\";\n    case \"unknown-space\":\n    case \"user-auth-unrecorded\":\n      return \"TARGET_NOT_FOUND\";\n",
       "expectRed": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
       "cell": "ps --json with no mesh is one TARGET_NOT_FOUND envelope, exit 2",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the home check compares the spelling, not the canonical path",
+      "file": "packages/workspace/src/mesh-target.ts",
+      "find": "canonicalRoot(join(root, \".cotal\")) !== canonicalRoot(homeCotalDir())",
+      "replace": "join(root, \".cotal\") !== homeCotalDir()",
+      "expectRed": "ps --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home",
+      "cell": "ps --json from a home reached through a symlink is TARGET_NOT_FOUND, not a mesh in that home",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {

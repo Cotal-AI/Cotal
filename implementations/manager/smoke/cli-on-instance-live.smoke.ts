@@ -66,7 +66,7 @@ import { join } from "node:path";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity, registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
-import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
+import { authDir, saveExtensionsManifest, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, freePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const TSX = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", "tsx");
@@ -419,9 +419,11 @@ try {
   const contractFile = join(variant, "manager-service-contract.js");
   const source = readFileSync(contractFile, "utf8");
   const oldSchema = 'const PS_OUTPUT_SCHEMA = { type: "array", items: AGENT_ROW_SCHEMA };';
-  if (source.split(oldSchema).length !== 2) throw new Error("fixture requires the compiled ps schema in manager/dist; build before running");
+  const oldSlotsSchema = 'const SLOTS_OUTPUT_SCHEMA = { type: "array", items: SLOT_ROW_SCHEMA };';
+  if (source.split(oldSchema).length !== 2 || source.split(oldSlotsSchema).length !== 2) throw new Error("fixture requires the compiled ps and slots schemas in manager/dist; build before running");
   writeFileSync(contractFile, source.replace(oldSchema,
-    'const PS_OUTPUT_SCHEMA = { type: "array", items: { ...AGENT_ROW_SCHEMA, properties: { ...AGENT_ROW_SCHEMA.properties, fixtureVariant: { type: "string" } } } };'));
+    'const PS_OUTPUT_SCHEMA = { type: "array", items: { ...AGENT_ROW_SCHEMA, properties: { ...AGENT_ROW_SCHEMA.properties, fixtureVariant: { type: "string" } } } };').replace(oldSlotsSchema,
+    'const SLOTS_OUTPUT_SCHEMA = { type: "array", items: { ...SLOT_ROW_SCHEMA, properties: { ...SLOT_ROW_SCHEMA.properties, fixtureVariant: { type: "string" } } } };'));
   const { Manager: VariantManager } = await import(join(variant, "manager.js"));
   const stub = join(import.meta.dirname, "e2e-stub.mjs");
   const envFor = (o: LaunchOpts): Record<string, string> => ({
@@ -468,6 +470,12 @@ try {
       partialEnv.result?.items.length === 1 && mismatched.length === 1 &&
       partialEnv.warnings.some((w) => w.code === "MANAGER_CONTRACT_MISMATCH" && w.target.managerInstanceId === mismatched[0]!.instanceId),
     { status: partialJson.status, stdout: partialJson.stdout.slice(-800) });
+  // `--slots` reads static slots, and its partial census says so rather than naming seats.
+  const partialSlots = await cotal(["ps", "--slots", "--space", space], root1);
+  mustHaveRun(partialSlots, "mixed-contract `ps --slots`");
+  check("a mixed-contract ps --slots is partial, exit 4, and names the slots that were not returned",
+    partialSlots.status === 4 && /instances did not return slots\./.test(strip(partialSlots.out)) && !/did not return seats/.test(strip(partialSlots.out)),
+    { status: partialSlots.status, out: strip(partialSlots.out).slice(-600) });
 
   // A catalog the connector could not read leaves the read partial. One the install has no way to
   // list is a connector without a catalog: complete, exit 0, with the reason shown.
@@ -516,6 +524,34 @@ try {
   check("the report gives the reason the install lists no catalog and no failure",
     unlistedHuman.status === 0 && strip(unlistedHuman.out).includes("this fixture install lists no catalog; pass --model") && !/could not be read/.test(strip(unlistedHuman.out)),
     { status: unlistedHuman.status, out: strip(unlistedHuman.out).slice(-400) });
+
+  // A manager on installed extensions lists every connector its manifest names, so one whose package
+  // cannot be loaded still has a row. That row is an unread catalog, not a connector without one.
+  console.log("\n9. models: an installed connector the manager cannot load leaves the read partial");
+  await m1.stop({ withAgents: true });
+  await mixedManager.stop({ withAgents: true });
+  process.env.XDG_CONFIG_HOME = join(home, "xdg");
+  saveExtensionsManifest({
+    extensions: [{
+      pkg: "@fixture/models-unloadable", version: "1.0.0", spec: "@fixture/models-unloadable@1.0.0",
+      provides: [{ kind: "connector", name: "models-listed" }, { kind: "connector", name: "models-unloadable" }], commands: [],
+      connectors: [{ name: "models-listed", requires: ["node"] }, { name: "models-unloadable", requires: ["node"] }],
+    }],
+  });
+  m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: mkRoot("ws4"), installedExtensions: true });
+  await m1.start();
+  const installed = await modelsJson();
+  const installedRow = (agent: string) => installed.env?.result?.items.find((row) => row.agent === agent);
+  check("an installed connector that cannot load is partial, exit 4, with MODEL_CATALOG_UNREADABLE naming only that one",
+    installed.run.status === 4 && installed.env?.outcome === "partial" && installed.env.completeness === "partial" &&
+      /not installed at/.test(installedRow("models-unloadable")?.error ?? "") && installedRow("models-listed")?.models[0]?.id === "fixture-model" &&
+      installed.env.warnings.filter((w) => w.code === "MODEL_CATALOG_UNREADABLE").map((w) => w.target.agent).join() === "models-unloadable",
+    { status: installed.run.status, stdout: installed.run.stdout.slice(-900) });
+  const installedHuman = await cotal(["models", "--space", space], root1);
+  mustHaveRun(installedHuman, "`models` with an unloadable installed connector");
+  check("the report names the load failure under that connector, not a missing catalog",
+    installedHuman.status === 4 && /models-unloadable[\s\S]*not installed at/.test(strip(installedHuman.out)) && !strip(installedHuman.out).includes("no model catalog exposed"),
+    { status: installedHuman.status, out: strip(installedHuman.out).slice(-600) });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} passed, ${fail} failed`);
 } finally {

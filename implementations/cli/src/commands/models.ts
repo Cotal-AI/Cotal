@@ -23,7 +23,7 @@ export function modelsComplete(argv: string[]): CompletionResult {
 /** What `cotal models` read: each connector's catalog exactly as the manager returned it. A
  *  connector that exposes no catalog says so (`supported: false`, with the reason in `unavailable`
  *  when it implements a catalog this install cannot list); one whose catalog could not be
- *  read carries its `error` and makes the read partial. */
+ *  read, or that the manager could not load, carries its `error` and makes the read partial. */
 export interface ModelsResult {
   readonly items: readonly ConnectorModelCatalog[];
 }
@@ -36,7 +36,7 @@ export async function models(args: ParsedArgs): Promise<void> {
   const reply = await askManager(t.space, t.server, "models", { agent: v.agent, refresh: v.refresh === true }, t.auth, "owner");
   if (!reply.ok) throw readFailure(reply, target);
   const items = Array.isArray(reply.data) ? reply.data as ConnectorModelCatalog[] : [reply.data as ConnectorModelCatalog];
-  const failed = items.filter((row) => row.supported && row.error);
+  const failed = items.filter((row) => row.error);
   writeResult(
     presentation,
     {
@@ -60,8 +60,8 @@ function modelsView(result: ModelsResult): Report {
 function catalogSection(row: ConnectorModelCatalog): Section {
   const blocks: Block[] = [];
   if (row.source) blocks.push({ kind: "lines", lines: [{ text: row.source, tone: "hint" }] });
-  if (!row.supported) blocks.push({ kind: "lines", lines: [{ text: row.unavailable ?? "no model catalog exposed", tone: "hint" }] });
-  else if (row.error) blocks.push({ kind: "lines", lines: [{ text: row.error, tone: "failed" }] });
+  if (row.error) blocks.push({ kind: "lines", lines: [{ text: row.error, tone: "failed" }] });
+  else if (!row.supported) blocks.push({ kind: "lines", lines: [{ text: row.unavailable ?? "no model catalog exposed", tone: "hint" }] });
   else if (!row.models.length) blocks.push({ kind: "lines", lines: [{ text: "(no models reported)", tone: "hint" }] });
   else {
     const named = row.models.some((m) => m.name && m.name !== m.id);
