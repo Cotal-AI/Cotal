@@ -1,10 +1,10 @@
 import type { ParsedArgs } from "@cotal-ai/core";
-import { getCurrent, isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget } from "@cotal-ai/workspace";
+import { isWorkspaceTargetError, pruneStaleMeshes, resolveMeshTarget } from "@cotal-ai/workspace";
 import { canPrompt } from "../commands/meshes-wizard.js";
 
 /**
- * With no `--space`, `--server` or `--creds` and no selection, a command that several running
- * meshes could serve asks a terminal which one. The answer becomes this operation's `--space`, so
+ * With no `--space`, `--server` or `--creds`, a command that several running meshes could serve
+ * asks a terminal which one. A selection resolves the target, so it is never ambiguous. The answer becomes this operation's `--space`, so
  * every later resolution in it reads the same name, and the selection is left as it is. A script,
  * a `--json` caller or `--no-input` is not asked, and the command refuses with `TARGET_AMBIGUOUS`.
  * Cancelling the question does nothing and exits 0.
@@ -12,7 +12,7 @@ import { canPrompt } from "../commands/meshes-wizard.js";
 export async function chooseMeshTarget(args: ParsedArgs): Promise<void> {
   const values = args.values as { space?: string; server?: string; creds?: string; json?: boolean };
   if (values.space !== undefined || values.server !== undefined || values.creds !== undefined || values.json === true) return;
-  if (!canPrompt() || getCurrent() !== undefined) return;
+  if (!canPrompt()) return;
   // The registry alone first, so a target that resolves costs no broker probe; only an ambiguous one
   // is checked against the brokers that answer, as the command itself would check it.
   if (!runningChoices([])) return;
