@@ -10,24 +10,24 @@
 import * as p from "@clack/prompts";
 import { colorEnabled } from "@cotal-ai/workspace";
 
-const USE_ANSI = colorEnabled();
-const TRUECOLOR =
-  USE_ANSI && (process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit");
+// Read on each call, so `--no-color` applied after this module loads still turns color off.
+const useAnsi = (): boolean => colorEnabled();
+const trueColor = (): boolean => useAnsi() && (process.env.COLORTERM === "truecolor" || process.env.COLORTERM === "24bit");
 
 const BRAND = [88, 166, 255] as const; // #58a6ff
 const GREEN = [63, 185, 80] as const; // #3fb950
 
 function rgb([r, g, b]: readonly [number, number, number], s: string, bold = false): string {
-  if (!USE_ANSI) return s;
-  if (TRUECOLOR) return `\x1b[${bold ? "1;" : ""}38;2;${r};${g};${b}m${s}\x1b[0m`;
+  if (!useAnsi()) return s;
+  if (trueColor()) return `\x1b[${bold ? "1;" : ""}38;2;${r};${g};${b}m${s}\x1b[0m`;
   return `\x1b[${bold ? "1;" : ""}34m${s}\x1b[0m`; // 16-color blue/green fallback
 }
 
 export const brand = (s: string) => rgb(BRAND, s);
 export const brandBold = (s: string) => rgb(BRAND, s, true);
-export const ok = (s: string) => (USE_ANSI ? (TRUECOLOR ? rgb(GREEN, s) : `\x1b[32m${s}\x1b[0m`) : s);
-export const dim = (s: string) => (USE_ANSI ? `\x1b[2m${s}\x1b[0m` : s);
-export const bold = (s: string) => (USE_ANSI ? `\x1b[1m${s}\x1b[0m` : s);
+export const ok = (s: string) => (useAnsi() ? (trueColor() ? rgb(GREEN, s) : `\x1b[32m${s}\x1b[0m`) : s);
+export const dim = (s: string) => (useAnsi() ? `\x1b[2m${s}\x1b[0m` : s);
+export const bold = (s: string) => (useAnsi() ? `\x1b[1m${s}\x1b[0m` : s);
 
 /** Multi-line strings get colored line-by-line so the SGR reset doesn't bleed across
  *  clack's `│` gutter prefix. Used as the `format` callback for `note()` bodies. */

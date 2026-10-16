@@ -25,7 +25,7 @@ import { clean, cleanComplete } from "./commands/clean.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
 import { ext } from "./commands/ext.js";
-import { help, helpFlags, version } from "./commands/help.js";
+import { help, helpFlags, version, versionFlags } from "./commands/help.js";
 import { topology } from "./commands/topology.js";
 import { status, statusFlags } from "./commands/status.js";
 import { doctor, doctorFlags } from "./commands/doctor.js";
@@ -69,6 +69,9 @@ const baseCommands: Command[] = [
     name: "version",
     group: "Setup",
     summary: "print this binary's version and each installed extension's",
+    flags: versionFlags,
+    outputs: ["json"],
+    examples: ["cotal version", "cotal version --json"],
     run: version,
   },
   {

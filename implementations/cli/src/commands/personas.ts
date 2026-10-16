@@ -11,7 +11,7 @@ import {
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
+import { inputDisabledByFlag, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, targetFlags } from "@cotal-ai/workspace";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -202,6 +202,10 @@ function edit(name: string | undefined, values: { space?: string; server?: strin
   if (!name) return usage();
   const path = agentFilePath(targetRoot(values), name);
   if (!existsSync(path)) return notFound(name, path);
+  if (inputDisabledByFlag()) {
+    console.error(c.red(`personas edit opens an editor, and --no-input forbids one - edit ${path} directly`));
+    process.exit(1);
+  }
   const editor = process.env.VISUAL || process.env.EDITOR;
   if (!editor) {
     console.error(c.red("no editor set - export EDITOR (or VISUAL), e.g. export EDITOR=vim"));

@@ -446,6 +446,7 @@
   "cli:update--space": "pending:update",
   "cli:use": "pending:space use",
   "cli:version": "current:version",
+  "cli:version--json": "current:version --json",
   "cli:web": "pending:service start web",
   "cli:web--creds": "pending:service start web",
   "cli:web--detach": "pending:service start web",

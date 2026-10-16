@@ -17,6 +17,9 @@
  *      (core's clearChannel, the web dashboard's delete, with a bare connection on an open mesh).
  *      The deleted channel's tab leaves the strip on the next channel poll, and never shows a
  *      badge on the way out (its watermark is dropped only once the tab is gone).
+ *   4. Color follows the CLI's decision: `--no-color` paints the TUI with no ANSI color even under
+ *      `FORCE_COLOR`, and so does a non-empty `NO_COLOR`. `FORCE_COLOR` alone paints color, so the
+ *      color check can see color.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -144,6 +147,27 @@ try {
   check("delchan: the deleted channel's tab is gone on the next poll", strips.length > 0 && !strips[strips.length - 1].includes("#doomed"), strips.at(-1));
   check("delchan: the tab never carried a badge on the way out", !/#doomed \d+ \+\d/.test(clean(s.out.slice(dm))), clean(s.out.slice(dm)).match(/#doomed \d+ \+\d/)?.[0]);
   check("console quits cleanly", await s.quit(), s.exited);
+
+  console.log("4. color follows --no-color and NO_COLOR");
+  // An SGR sequence that sets a foreground or background color. Bold, dim and resets are not color.
+  const colored = (raw: string) =>
+    [...raw.matchAll(/\x1b\[([0-9;]*)m/g)].some((m) => m[1].split(";").some((p) => /^(3[0-8]|4[0-8]|9[0-7]|10[0-7])$/.test(p)));
+  const paint = async (args: string[], env: Record<string, string>) => {
+    const c = new ConsoleSession([...args, "--space", space, "--server", SERVERS], home, env, { cols: 140, rows: 36 });
+    try {
+      const painted = await c.waitFor(`${space} · #`, 40_000);
+      await wait(1500); // the roster and the channel strip paint after the frame
+      return { painted, colored: colored(c.out), tail: clean(c.out).slice(-200) };
+    } finally {
+      await c.close();
+    }
+  };
+  const forced = await paint([], { FORCE_COLOR: "1" });
+  check("FORCE_COLOR alone paints the console in color", forced.painted && forced.colored, forced.tail);
+  const flagged = await paint(["--no-color"], { FORCE_COLOR: "1" });
+  check("--no-color paints the console with no ANSI color, even under FORCE_COLOR", flagged.painted && !flagged.colored, flagged.tail);
+  const noColor = await paint([], { NO_COLOR: "1" });
+  check("a non-empty NO_COLOR paints the console with no ANSI color", noColor.painted && !noColor.colored, noColor.tail);
 } catch (e) {
   fail++;
   console.error("  ✗ threw:", (e as Error).stack ?? (e as Error).message);

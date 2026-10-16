@@ -193,6 +193,116 @@ async function completionOut(positionals: string[]): Promise<string> {
   }
 }
 
+// --- version --json is one envelope; an unreadable extensions manifest makes its list partial -----
+// The binary's overlay refuses a corrupt manifest before version runs; a composition root without
+// extensions reaches version's own read.
+{
+  const { runCli } = await import("../src/command.js");
+  const { extensionsManifestPath } = await import("@cotal-ai/workspace");
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const xdg = mkdtempSync(join(tmpdir(), "cotal-version-json-"));
+  process.env.XDG_CONFIG_HOME = xdg;
+  const capture = async (argv: string[]) => {
+    let out = "";
+    const real = process.stdout.write;
+    process.stdout.write = ((chunk: string) => ((out += chunk), true)) as typeof process.stdout.write;
+    try {
+      await runCli(registry, argv);
+    } finally {
+      process.stdout.write = real;
+    }
+    return out;
+  };
+  try {
+    const clean = JSON.parse(await capture(["version", "--json"]));
+    assert.equal(clean.completeness, "complete", "version --json with a readable manifest is complete");
+    assert.deepEqual(clean.warnings, [], "version --json with a readable manifest has no warnings");
+    mkdirSync(join(extensionsManifestPath(), ".."), { recursive: true });
+    writeFileSync(extensionsManifestPath(), "{ not json");
+    const corrupt = JSON.parse(await capture(["version", "--json"]));
+    assert.equal(corrupt.outcome, "ok", "version --json still reports the binary's version");
+    assert.equal(corrupt.completeness, "partial", "an unreadable manifest makes the extension list partial, not empty and complete");
+    assert.equal(corrupt.warnings[0]?.code, "EXTENSIONS_UNREADABLE", "an unreadable manifest is named in a warning");
+  } finally {
+    rmSync(xdg, { recursive: true, force: true });
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+  }
+}
+
+// --- A classified failure sets the exit code its outcome names, with its envelope on --json -------
+// The kernel ends the process, so it runs in a child over probe commands: `probe` declares a JSON
+// output, `legacy` declares none, and `shadow` declares a global flag's name.
+{
+  const fixture = join(import.meta.dirname, "output-exit.fixture.ts");
+  const sandbox = mkdtempSync(join(tmpdir(), "cotal-output-exit-"));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_")));
+  const run = (...words: string[]) => runWith({}, ...words);
+  const runWith = (extra: Record<string, string>, ...words: string[]) => {
+    const r = spawnSync(process.execPath, [...process.execArgv, fixture, ...words], {
+      encoding: "utf8",
+      env: { ...env, COTAL_HOME: join(sandbox, "home"), XDG_CONFIG_HOME: join(sandbox, "cfg"), COTAL_SKIP_CONNECTOR_SEED: "1", NO_COLOR: "1", ...extra },
+    });
+    const lines = r.stdout.split("\n").filter(Boolean);
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, envelope: lines.length === 1 && lines[0]!.startsWith("{") ? JSON.parse(lines[0]!) : undefined };
+  };
+  try {
+    const ok = run("probe", "--json");
+    assert.equal(ok.status, 0, "probe --json exits 0");
+    assert.equal(ok.envelope?.outcome, "ok", "probe --json writes one ok envelope");
+    assert.equal(ok.envelope?.result?.input, false, "--json implies --no-input");
+    assert.equal(run("probe").stdout, "ran input:true\n", "control: without --json or --no-input, input is allowed");
+    assert.equal(run("probe", "--no-input").stdout, "ran input:false\n", "--no-input after the command's words disables input");
+
+    const conflict = run("probe", "--json", "--fail", "conflict");
+    assert.equal(conflict.status, 2, "a boundary refusal exits 2");
+    assert.equal(conflict.envelope?.error?.code, "CONFLICT", "a refusal's envelope carries its stable code");
+    assert.deepEqual(conflict.envelope?.error?.cause, { code: "E_LEASE", outcome: "not-executed" }, "a refusal's envelope keeps the native cause");
+    assert.deepEqual(conflict.envelope?.target, { space: "s1" }, "a refusal's envelope names its target");
+    assert.match(conflict.stderr, /the lease is held\n.*wait for the holder to release it/, "a refusal prints its message and remedy on stderr");
+
+    const human = run("probe", "--fail", "conflict");
+    assert.equal(human.status, 2, "a refusal without --json exits 2 as well");
+    assert.equal(human.stdout, "", "a refusal without --json writes nothing on stdout");
+
+    const usage = run("probe", "--json", "--fail", "usage");
+    assert.equal(usage.status, 1, "a usage refusal raised by the command exits 1");
+    assert.equal(usage.envelope?.error?.code, "USAGE_INVALID", "a command's usage refusal keeps its code");
+
+    const partial = run("probe", "-j", "--fail", "partial");
+    assert.equal(partial.status, 4, "a partial outcome exits 4");
+    assert.deepEqual(partial.envelope?.changed, [{ seat: "a" }], "a partial outcome reports what it changed");
+
+    const failed = run("probe", "--json", "--fail", "failed");
+    assert.equal(failed.status, 5, "a failed outcome exits 5");
+    assert.equal(failed.envelope?.outcome, "failed", "a failed outcome writes its envelope");
+
+    const plain = run("probe", "--json", "--fail", "plain");
+    assert.equal(plain.status, 3, "an unclassified error from a structured command exits 3");
+    assert.equal(plain.envelope?.error?.code, "OPERATION_UNKNOWN", "an unclassified error from a structured command is unknown");
+    assert.equal(plain.envelope?.error?.message, "socket closed mid-request", "the unknown envelope keeps the error's message");
+
+    const bogus = run("probe", "--json", "--bogus");
+    assert.equal(bogus.status, 1, "a usage error under --json exits 1");
+    assert.equal(bogus.envelope?.error?.code, "USAGE_INVALID", "a usage error under --json is one USAGE_INVALID envelope");
+    assert.doesNotMatch(bogus.stdout, /usage:/, "a usage error under --json keeps the help text off stdout");
+    assert.equal(run("probe", "-aj", "--bogus").envelope?.error?.code, "USAGE_INVALID", "-j inside a group of short flags asks for the usage envelope");
+
+    // A command that declares a global flag's name could receive it only as `--no-color=<value>`.
+    const shadowed = runWith({ OUTPUT_EXIT_SHADOW: "1" }, "shadow", "--no-color=red");
+    assert.equal(shadowed.status, 1, "a command that declares a global flag is an internal error that exits 1");
+    assert.match(shadowed.stderr, /internal error: command "shadow" declares --no-color, which is a global flag/, "the internal error names the command and the flag");
+    assert.doesNotMatch(shadowed.stdout, /ran/, "a command that declares a global flag never runs");
+    assert.doesNotMatch(runWith({ OUTPUT_EXIT_SHADOW: "1" }, "probe").stdout, /ran/, "a declared global flag stops every command, not only its own");
+
+    const legacy = run("legacy", "--fail", "plain");
+    assert.equal(legacy.status, 1, "an unclassified error from a command with no structured output still exits 1");
+    assert.equal(run("legacy", "--fail", "failed").status, 5, "a classified failure from a command with no structured output exits by its outcome");
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
 // --- __complete offers declared flag names on a `-` prefix --------------------------------------
 {
   const spawnCmd = registry.all<Command>("command").find((c) => c.name === "spawn");

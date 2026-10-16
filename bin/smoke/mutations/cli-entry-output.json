@@ -1,0 +1,75 @@
+{
+  "suite": [
+    "bin/smoke/cli-entry.smoke.ts"
+  ],
+  "guard": "the built binary writes one envelope for version --json and for a usage error under --json, accepts --no-color and --no-input before and after the command word but not after --, turns color off under --no-color even for text computed at import, and refuses to open an editor under --no-input",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/cli-entry-output.json",
+  "why": [
+    "Scripts reach these through the installed binary, so the suite drives the built binary and each mutation rebuilds it and the restore rebuilds it back.",
+    "The title mutation restores the bug where help's title decided color when its module loaded, before the kernel read --no-color."
+  ],
+  "mutations": [
+    {
+      "name": "--no-color is accepted but ignored",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (word === \"--no-color\") disableColor();\n",
+      "replace": "  if (word === \"--no-color\") {}\n",
+      "expectRed": "cotal --no-color help prints with no ANSI color",
+      "cell": "cotal --no-color help prints with no ANSI color",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "leading global flags are not read",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  while (lead < argv.length && takeGlobalFlag(argv[lead]!)) lead++;\n",
+      "replace": "  while (false && lead < argv.length && takeGlobalFlag(argv[lead]!)) lead++;\n",
+      "expectRed": "--no-input before the command word is accepted",
+      "cell": "--no-input before the command word is accepted",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a global flag after -- is taken",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  const end = words.indexOf(\"--\");\n",
+      "replace": "  const end = -1;\n",
+      "expectRed": "a global flag after -- is a word",
+      "cell": "a global flag after -- is a word",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the usage envelope is not written for -j",
+      "file": "implementations/cli/src/command.ts",
+      "find": "(word) => word === \"--json\" || word === \"-j\" ||",
+      "replace": "(word) => word === \"--json\" ||",
+      "expectRed": "an unexpected argument under -j is a USAGE_INVALID envelope",
+      "cell": "an unexpected argument under -j is a USAGE_INVALID envelope",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "help's title decides color when it loads",
+      "file": "implementations/cli/src/help.ts",
+      "find": "const title = (): string => `${c.bold(\"cotal\")} - lateral agent coordination over NATS`;\n",
+      "replace": "const titleAtLoad = `${c.bold(\"cotal\")} - lateral agent coordination over NATS`;\nconst title = (): string => titleAtLoad;\n",
+      "expectRed": "cotal --no-color help prints with no ANSI color",
+      "cell": "cotal --no-color help prints with no ANSI color",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "personas edit opens the editor under --no-input",
+      "file": "implementations/cli/src/commands/personas.ts",
+      "find": "  if (inputDisabledByFlag()) {\n    console.error(c.red(`personas edit opens an editor",
+      "replace": "  if (false && inputDisabledByFlag()) {\n    console.error(c.red(`personas edit opens an editor",
+      "expectRed": "personas edit --no-input refuses to open an editor",
+      "cell": "personas edit --no-input refuses to open an editor",
+      "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}

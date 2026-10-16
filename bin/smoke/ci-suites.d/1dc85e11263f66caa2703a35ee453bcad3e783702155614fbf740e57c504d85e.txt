@@ -1,0 +1,2 @@
+# --no-input opens no browser from `cotal web`.
+smoke:web-no-input

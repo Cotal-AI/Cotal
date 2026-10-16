@@ -16,7 +16,8 @@ const GROUP_ORDER = ["Setup", "Mesh", "Messaging", "Agents", "Observe", "Extensi
 /** The commands the bare entry screen suggests, in order. */
 const ENTRY_COMMANDS = ["setup", "up", "spawn", "ps", "attach", "send", "status"];
 
-const TITLE = `${c.bold("cotal")} - lateral agent coordination over NATS`;
+/** The title line, built on each call so `--no-color` read after import still applies. */
+const title = (): string => `${c.bold("cotal")} - lateral agent coordination over NATS`;
 
 /** A command's name with its aliases, as help lists it. */
 function label(cmd: Command | Subcommand): string {
@@ -42,11 +43,12 @@ export function printCommandList(commands: readonly Command[], all: boolean): vo
   };
   const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
   const pad = Math.max(...visible.map((cmd) => label(cmd).length));
-  let out = `${TITLE}\n`;
+  let out = `${title()}\n`;
   for (const [group, cmds] of ordered) {
     out += `\n${c.bold(group)}\n`;
     for (const cmd of cmds) out += `  ${label(cmd).padEnd(pad)}  ${c.dim(cmd.summary)}\n`;
   }
+  out += `\n${c.dim("Every command also takes --no-color (no ANSI color) and --no-input (never prompt).")}`;
   out += `\n${c.dim("Run `cotal help <command>` for a command's flags.")}`;
   if (!all && listed(commands, true).length > visible.length) out += `\n${c.dim("Run `cotal help --all` to include hidden commands.")}`;
   console.log(out);
@@ -55,7 +57,7 @@ export function printCommandList(commands: readonly Command[], all: boolean): vo
 /** The bare `cotal` screen: the selected space, a few common commands, and where to find the rest.
  *  It reads the local selection only. */
 export function printEntry(commands: readonly Command[]): void {
-  let out = `${TITLE}\n\n`;
+  let out = `${title()}\n\n`;
   const space = getCurrent();
   let recorded = false;
   try {

@@ -4,7 +4,9 @@
  * Bare `cotal`, help and version read local metadata only, and every usage error is refused before
  * any effect: no connector seed, no config write. An alias resolves to the same command as its name
  * (help, refusal and parse), and a word that only prefixes a command selects nothing. A short flag
- * parses as its long form, and a wrong-case short flag or a missing value is refused.
+ * parses as its long form, and a wrong-case short flag or a missing value is refused. `version --json`
+ * writes one envelope, and a usage error under `--json` is one refusal envelope. `--no-color` and
+ * `--no-input` are accepted by every command in any position before `--`.
  *
  * The aliases and short flags come from the registry the binary composes (the same imports as
  * `bin/run.ts`), and help must list each alias, so a new alias is covered without editing this file.
@@ -152,6 +154,77 @@ const aliases = commands.flatMap((cmd) => (cmd.aliases ?? []).map((alias) => ({ 
   check("version prints the binary version", /^cotal-ai \d+\.\d+\.\d+/.test(version.stdout), shown(version));
   check("--version and -V print the same", same(version, cotal(["--version"])) && same(version, cotal(["-V"])));
   refused("-v is not the version flag", cotal(["-v"]), /-v is not the version flag - run `cotal version` or `cotal -V`/);
+}
+
+// ── Structured output: one envelope on stdout, the usage refusal included ────────────────────────
+{
+  const envelopes = (r: Run) => {
+    try {
+      return r.stdout.split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, any>);
+    } catch {
+      return [];
+    }
+  };
+  const text = cotal(["version"]);
+  const json = cotal(["version", "--json"]);
+  local("version --json writes nothing", json);
+  const [env] = envelopes(json);
+  check(
+    "version --json is one ok envelope with no target",
+    envelopes(json).length === 1 && env?.schemaVersion === 1 && env.command === "version" && env.target === null && env.outcome === "ok" && env.completeness === "complete" && Array.isArray(env.warnings) && !("error" in env),
+    shown(json),
+  );
+  check("version --json reports the version the text prints", `cotal-ai ${env?.result?.version}` === text.stdout.split("\n")[0], { json: env?.result, text: text.stdout });
+  check("version -j, --version --json and -V -j print the same envelope", same(json, cotal(["version", "-j"])) && same(json, cotal(["--version", "--json"])) && same(json, cotal(["-V", "-j"])));
+  const colored = cotal(["version", "--json"], undefined, { FORCE_COLOR: "1" });
+  check("forced color never reaches the envelope", colored.stdout === json.stdout, shown(colored));
+
+  const bogus = cotal(["version", "--json", "--bogus"]);
+  refused("a usage error under --json is refused", bogus, /Unknown option '--bogus'/);
+  const [refusal] = envelopes(bogus);
+  check(
+    "a usage error under --json is one USAGE_INVALID envelope naming the help to read",
+    envelopes(bogus).length === 1 && refusal?.outcome === "refused" && refusal.result === null && refusal.error?.code === "USAGE_INVALID" && refusal.error.remedy === "run `cotal help version`",
+    shown(bogus),
+  );
+  const extra = cotal(["version", "-j", "extra"]);
+  refused("an unexpected argument under -j is refused", extra, /Unexpected argument 'extra'/);
+  check("an unexpected argument under -j is a USAGE_INVALID envelope", envelopes(extra)[0]?.error?.code === "USAGE_INVALID", shown(extra));
+  const human = cotal(["version", "--bogus"]);
+  refused("a usage error without --json is refused", human, /Unknown option '--bogus'/);
+  check("a usage error without --json writes no envelope", envelopes(human).length === 0 && /usage: /.test(human.stdout), shown(human));
+  const helpJson = cotal(["help", "--json"]);
+  refused("a command with no JSON output refuses --json", helpJson, /Unknown option '--json'/);
+  check("a command with no JSON output writes no envelope for it", !helpJson.stdout.startsWith("{"), shown(helpJson));
+}
+
+// ── Global flags: accepted by every command, before or after its words, and text after -- ─────────
+{
+  const ansi = /\x1b\[/;
+  const forced = { FORCE_COLOR: "1" };
+  check("control: forced color colors help", ansi.test(cotal(["help"], undefined, forced).stdout));
+  for (const argv of [["--no-color", "help"], ["help", "--no-color"], ["help", "spawn", "--no-color"], ["spawn", "--no-color", "--help"], ["--no-color"]])
+  {
+    const r = cotal(argv, undefined, forced);
+    check(`cotal ${argv.join(" ")} prints with no ANSI color`, r.status === 0 && r.stdout.length > 0 && !ansi.test(r.stdout), shown(r));
+  }
+  const refusal = cotal(["--no-color", "nope"], undefined, forced);
+  check("control: forced color colors a refusal", ansi.test(cotal(["nope"], undefined, forced).stderr));
+  check("a refusal under --no-color has no ANSI color", refusal.status === 1 && !ansi.test(refusal.stderr), shown(refusal));
+  check("--no-input before the command word is accepted", same(cotal(["--no-input", "version"]), cotal(["version"])));
+  check("--no-input after the command's words is accepted", same(cotal(["version", "--no-input"]), cotal(["version"])));
+  check("--no-input and --no-color together are accepted", same(cotal(["--no-input", "version", "--no-color"]), cotal(["version"])));
+  refused("a global flag after -- is a word", cotal(["ext", "--", "--no-input"]), /cotal ext has no subcommand "--no-input"/);
+  // `personas edit` opens an editor, which --no-input forbids. The control runs a do-nothing editor.
+  const persona = (home: string) => {
+    mkdirSync(join(home, "..", ".cotal", "agents"), { recursive: true });
+    writeFileSync(join(home, "..", ".cotal", "agents", "x.md"), "---\nname: x\n---\nhi\n");
+  };
+  const editor = { ...noSeed, VISUAL: 'node -e ""', EDITOR: 'node -e ""' };
+  const edited = cotal(["personas", "edit", "x"], persona, editor);
+  check("control: personas edit runs the editor", edited.status === 0 && edited.stdout.includes('saved "x"'), shown(edited));
+  const forbidden = cotal(["personas", "edit", "x", "--no-input"], persona, editor);
+  check("personas edit --no-input refuses to open an editor", forbidden.status === 1 && /--no-input forbids one/.test(forbidden.stderr) && !forbidden.stdout.includes("saved"), shown(forbidden));
 }
 
 // ── Unknown words, prefixes, uninstalled seeded commands ──────────────────────────────────────────

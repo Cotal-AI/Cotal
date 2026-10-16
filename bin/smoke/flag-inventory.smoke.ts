@@ -17,6 +17,7 @@
 import nodeAssert from "node:assert/strict";
 import { countedAssert, emitSentinel } from "@cotal-ai/smoke-kit";
 import { registry, type Command } from "@cotal-ai/core";
+import { GLOBAL_FLAGS } from "@cotal-ai/workspace";
 import "@cotal-ai/cli"; // registers the base CLI commands
 import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
@@ -37,7 +38,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   update: { flags: [...TARGET, "self:boolean"], positionals: false },
   // The command kernel's local entries (2026-10): `help [command…] [--all]` and `version`.
   help: { flags: ["all:boolean"], positionals: true },
-  version: { flags: [], positionals: false },
+  version: { flags: ["json:boolean:j"], positionals: false },
   up: {
     flags: [
       "channels:string", "detach:boolean", "dry-run:boolean", "file:string:f", "host:string",
@@ -292,6 +293,8 @@ for (const cmd of commands) {
   assert.deepEqual(declared, [...golden.flags].sort(), `flags of \`${cmd.name}\` match golden`);
   assert.equal(cmd.positionals !== undefined, golden.positionals, `positionals gate of \`${cmd.name}\``);
   assert.equal(Boolean(cmd.rawArgs), Boolean(golden.rawArgs), `rawArgs of \`${cmd.name}\``);
+  // The global flags are the kernel's, so a command that declared one would never receive it.
+  for (const global of GLOBAL_FLAGS) assert.ok(!(cmd.flags ?? []).some((f) => f.name === global), `\`${cmd.name}\` does not declare the global --${global}`);
   // Every declared flag is parseable metadata: string flags carry a metavar or default help.
   for (const f of cmd.flags ?? []) {
     assert.ok(f.name && (f.type === "string" || f.type === "boolean"), `flag spec sane on ${cmd.name} --${f.name}`);
