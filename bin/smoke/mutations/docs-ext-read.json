@@ -108,6 +108,24 @@
       "expectRed": "help names the listing's structured output and no other mode's",
       "cell": "help names the listing's structured output and no other mode's",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the index shows each page's summary sentence again",
+      "file": "bin/docs.ts",
+      "find": "rows: pages.map((p) => ({ slug: { text: p.slug, tone: \"command\" as const }, title: p.title })) });",
+      "replace": "rows: pages.map((p) => ({ slug: { text: p.slug, tone: \"command\" as const }, title: (p as { summary?: string }).summary || p.title })) });",
+      "expectRed": "the index groups pages by category in PAGE and TITLE tables that fit 80 columns",
+      "cell": "the index groups pages by category in PAGE and TITLE tables that fit 80 columns",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the index puts every page under one heading",
+      "file": "bin/docs.ts",
+      "find": "for (const p of r.pages) groups.set(category(p.kind), [...(groups.get(category(p.kind)) ?? []), p]);",
+      "replace": "for (const p of r.pages) groups.set(\"Pages\", [...(groups.get(\"Pages\") ?? []), p]);",
+      "expectRed": "the plain index names the version, both groups and how to read a page",
+      "cell": "the plain index names the version, both groups and how to read a page",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }

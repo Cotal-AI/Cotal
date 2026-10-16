@@ -2723,8 +2723,9 @@ cotal docs --search <query> [--json | --plain]
 | `--plain` | off | The same report without color |
 
 Reads the docs bundled with this installed version, offline: the same pages agents read with
-`cotal_docs`. Bare `docs` lists the pages; `result.pages` holds each page's slug, title, kind and
-summary, and `result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
+`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Concept`, `Guide`, `Reference`,
+`Project`), each with its title; `result.pages` holds each page's slug, title, kind and summary, and
+`result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
 ignoring case and a trailing `.md`; `result.body` holds its Markdown. An unknown page is refused with
 `USAGE_INVALID`, naming every page.
 
