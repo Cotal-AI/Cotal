@@ -1,6 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   findCommand,
   findSubcommand,
@@ -227,13 +227,14 @@ export interface CompletionStatus {
 
 /** The stub file and the rc file that sources it, per shell Cotal installs for. A relative
  *  `XDG_CONFIG_HOME` is ignored, as the XDG base directory spec asks, so the paths do not depend on
- *  the working directory. */
+ *  the working directory. A relative `ZDOTDIR` is read from the working directory, as zsh reads it,
+ *  and resolved so the status names the file it read. */
 function stubPaths(shell: string): { stub: string; rc?: string } | undefined {
   const xdg = process.env.XDG_CONFIG_HOME;
   const config = xdg && isAbsolute(xdg) ? xdg : join(homedir(), ".config");
   if (shell === "fish") return { stub: join(config, "fish", "completions", "cotal.fish") };
   if (shell === "bash") return { stub: join(config, "cotal", "completion.bash"), rc: join(homedir(), ".bashrc") };
-  if (shell === "zsh") return { stub: join(config, "cotal", "completion.zsh"), rc: join(process.env.ZDOTDIR || homedir(), ".zshrc") };
+  if (shell === "zsh") return { stub: join(config, "cotal", "completion.zsh"), rc: resolve(process.env.ZDOTDIR || homedir(), ".zshrc") };
   return undefined;
 }
 
@@ -241,8 +242,9 @@ function stubPaths(shell: string): { stub: string; rc?: string } | undefined {
 const sourceLine = (stub: string): string => `source "${stub}"`;
 
 /** Whether a startup file holds the install line as a line of its own, so a comment or a longer
- *  line that only contains it does not count. */
-const holdsSourceLine = (rc: string, stub: string): boolean => rc.split(/\r?\n/).some((line) => line.trim() === sourceLine(stub));
+ *  line that only contains it does not count. Only spaces and tabs around it are blanks: bash keeps
+ *  a carriage return in the file name it sources, so a CRLF copy of the line loads nothing. */
+const holdsSourceLine = (rc: string, stub: string): boolean => rc.split("\n").some((line) => line.replace(/^[ \t]+|[ \t]+$/g, "") === sourceLine(stub));
 
 /** A file's text, `undefined` when it does not exist, or the error that stopped the read. */
 function readText(path: string): string | undefined | NodeJS.ErrnoException {

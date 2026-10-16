@@ -2564,12 +2564,15 @@ offline.
 Bare `cotal completion` reads local files only. For each shell it shows whether the stub is
 installed, whether it matches the script this version prints (`current`) or not (`differs from
 this version`), the stub file, and where `completion install` wired it in: the startup file that
-holds the install line as a line of its own, or fish's completions directory. `no install line`
+holds the install line as a line of its own, or fish's completions directory. Spaces and tabs
+around the line still count; a copy that ends in a carriage return does not, because bash keeps
+that character in the file name and loads nothing. `no install line`
 means that line was not found, not that the shell loads no completion another way. A startup file
 whose install line names a stub that is gone is named in a hint. Cotal installs nothing for
 PowerShell. `--json` writes that report as one document with `target: null`. A stub or startup
 file it cannot read is reported `unreadable` with a `COMPLETION_UNREADABLE` warning, and the run is
-`partial` and exits 4.
+`partial` and exits 4. A relative `$ZDOTDIR` is read from the working directory, as zsh reads it,
+and the report names the absolute file.
 
 Enable completion in the current shell:
 
