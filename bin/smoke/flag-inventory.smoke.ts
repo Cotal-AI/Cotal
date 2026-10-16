@@ -136,9 +136,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
-  // `--json` and `--plain` (S1.4): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.
+  // `--json` and `--plain` (2026-10): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.
   ext: { flags: ["force:boolean", "json:boolean:j", "plain:boolean", "repair:boolean", "reset:boolean"], positionals: true },
-  // `docs` (S1.4): this version's bundled docs, registered by the composition root.
+  // `docs` (2026-10): this version's bundled docs, registered by the composition root.
   docs: { flags: ["json:boolean:j", "plain:boolean", "refresh:boolean", "search:string"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
