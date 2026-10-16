@@ -32,7 +32,7 @@ import "@cotal-ai/connector-core/agui-render";
 import { registry } from "@cotal-ai/core";
 
 // A CLI must exit quietly when its stdout is closed early — piped to `head`, a pager that quits,
-// or a shell's process substitution (`source <(cotal completion bash)`). Node otherwise turns the
+// or a shell's process substitution (`source <(cotal completion script bash)`). Node otherwise turns the
 // closed-pipe write into a fatal unhandled 'error' event with a stack trace. Mirror SIGPIPE: exit
 // 0. Registered before any command can write.
 process.stdout.on("error", (e: NodeJS.ErrnoException) => {

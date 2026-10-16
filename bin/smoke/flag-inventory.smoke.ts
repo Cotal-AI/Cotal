@@ -134,7 +134,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     ],
     positionals: true,
   },
-  completion: { flags: [], positionals: true },
+  completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
   // `--json` (2026-10, #3238): bare `ext` / `ext list` print one JSON object per extension; the other subcommands refuse it.
   ext: { flags: ["force:boolean", "json:boolean", "repair:boolean", "reset:boolean"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },

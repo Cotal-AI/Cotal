@@ -1,0 +1,132 @@
+{
+  "suite": [
+    "implementations/cli/smoke/completion-status.smoke.ts"
+  ],
+  "guard": "cotal completion reports each shell's stub as current, differs or missing and the rc file that loads it, prints the stub with completion script <shell>, refuses the replaced completion <shell> form with nothing on stdout, refuses --json on a subcommand, and keeps the replaced forms out of help and completion",
+  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/completion-status.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/completion-status.json",
+  "why": [
+    "A startup line sources whatever `cotal completion <shell>` prints, so the suite drives the built binary: each mutation rebuilds it and the restore rebuilds it back.",
+    "The refusal mutation restores the old behavior of printing the stub for a shell name, which a hand-wired startup line would keep sourcing without ever seeing the replacement."
+  ],
+  "mutations": [
+    {
+      "name": "an edited stub reads as current",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "content === undefined ? \"missing\" : content === SCRIPTS[shell] ? \"current\" : \"differs\";",
+      "replace": "content === undefined ? \"missing\" : \"current\";",
+      "expectRed": "an edited stub differs from this version",
+      "cell": "an edited stub differs from this version",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a stub reads as wired in whatever the rc file says",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "wiredIn: rc && holdsSourceLine(rc, paths.stub) ? paths.rc : null };",
+      "replace": "wiredIn: rc !== null && content !== undefined ? paths.rc : null };",
+      "expectRed": "a stub whose rc lost the install line is wired in nowhere",
+      "cell": "a stub whose rc lost the install line is wired in nowhere",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "zsh's rc ignores $ZDOTDIR",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "rc: resolve(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
+      "replace": "rc: resolve(homedir(), \".zshrc\") };",
+      "expectRed": "zsh's rc is read from $ZDOTDIR",
+      "cell": "zsh's rc is read from $ZDOTDIR",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "completion <shell> still prints the stub",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "  throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `\\`cotal completion ${sub}\\` is now ",
+      "replace": "  if (SCRIPTS[sub]) return void process.stdout.write(SCRIPTS[sub]);\n  throw new CommandFailure(\"refused\", \"USAGE_INVALID\", `\\`cotal completion ${sub}\\` is now ",
+      "expectRed": "completion bash exits 1 and writes nothing on stdout",
+      "cell": "completion bash exits 1 and writes nothing on stdout",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a subcommand takes --json",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "  if (values.json || values.plain)\n",
+      "replace": "  if (sub === \"\\u0000never\" && (values.json || values.plain))\n",
+      "expectRed": "completion install takes no --json and installs nothing",
+      "cell": "completion install takes no --json and installs nothing",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the replaced shell forms are listed",
+      "file": "implementations/cli/src/index.ts",
+      "find": "summary: `replaced by completion script ${name}`, hidden: true })),",
+      "replace": "summary: `replaced by completion script ${name}`, hidden: false })),",
+      "expectRed": "help does not list the replaced shell forms",
+      "cell": "help does not list the replaced shell forms",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a commented-out install line counts",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "rc.split(\"\\n\").some((line) => line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub))",
+      "replace": "rc.includes(sourceLine(stub))",
+      "expectRed": "a commented-out install line wires nothing in",
+      "cell": "a commented-out install line wires nothing in"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a file it cannot read stops the status",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "    return (e as NodeJS.ErrnoException).code === \"ENOENT\" ? undefined : (e as NodeJS.ErrnoException);\n",
+      "replace": "    if ((e as NodeJS.ErrnoException).code === \"ENOENT\") return undefined;\n    throw e;\n",
+      "expectRed": "a stub it cannot read makes the status partial, exit 4",
+      "cell": "a stub it cannot read makes the status partial, exit 4"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a usage refusal prints the help on stdout",
+      "file": "implementations/cli/src/command.ts",
+      "find": "  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));\n",
+      "replace": "  if (cmd) printCommandHelp(cmd);\n",
+      "expectRed": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr",
+      "cell": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "a relative XDG_CONFIG_HOME is used",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "const config = xdg && isAbsolute(xdg) ? xdg : join(homedir(), \".config\");",
+      "replace": "const config = xdg || join(homedir(), \".config\");",
+      "expectRed": "install ignores a relative XDG_CONFIG_HOME",
+      "cell": "install ignores a relative XDG_CONFIG_HOME"
+    },
+    {
+      "afterRestore": "pnpm --filter cotal-ai... build",
+      "name": "install writes the stub before it checks the rc's directory",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "    if (current === undefined && !existsSync(dirname(rc)))\n",
+      "replace": "    if (current === \"\\u0000never\")\n",
+      "expectRed": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written",
+      "cell": "install refuses a ZDOTDIR that does not exist, exit 2, with nothing written"
+    },
+    {
+      "name": "a CRLF install line counts as wired in",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "line.replace(/^[ \\t]+|[ \\t]+$/g, \"\") === sourceLine(stub)",
+      "replace": "line.trim() === sourceLine(stub)",
+      "expectRed": "an install line that ends in a carriage return wires nothing in",
+      "cell": "an install line that ends in a carriage return wires nothing in",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the status reports a relative ZDOTDIR as a relative path",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "rc: resolve(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
+      "replace": "rc: join(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
+      "expectRed": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
+      "cell": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}
