@@ -7,6 +7,7 @@ import {
   envelopeLine,
   exitCode,
   failureEnvelope,
+  globalFlagDeclarationProblems,
   hasMeshTargetFlags,
   isCommandFailure,
   isConnectRefusal,
@@ -266,6 +267,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
         ...commandDeclarationProblems(cmd),
         ...outputDeclarationProblems(cmd),
         ...(cmd.subcommands ?? []).flatMap((sub) => outputDeclarationProblems({ name: `${cmd.name} ${sub.name}`, outputs: sub.outputs, flags: cmd.flags })),
+        ...globalFlagDeclarationProblems(cmd),
       ];
       if (problems.length) usageExit(`internal error: ${problems.join("; ")}`);
     }
