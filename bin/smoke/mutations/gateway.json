@@ -90,8 +90,9 @@
       "file": "extensions/connector-core/src/gateway.ts",
       "find": "const own = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);",
       "replace": "const own = cotalToolSpecs(ADVERTISED, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);",
-      "expectRed": "an omitted channel uses that connection's own default",
-      "cell": "an omitted channel uses that connection's own default"
+      "expectRed": "orientation names this connection",
+      "cell": "orientation names this connection",
+      "note": "The connection's own configuration carries its name into the orientation card. The default-channel cell stays green under this mutation because the MeshAgent resolves an omitted channel from its own subscription, not from the spec's configuration."
     }
   ]
 }
