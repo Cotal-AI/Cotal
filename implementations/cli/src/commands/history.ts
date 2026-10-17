@@ -90,9 +90,17 @@ const UNIT_MS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 
 
 function parseSince(raw: string | undefined, now: number): Since | undefined {
   if (raw === undefined) return undefined;
-  if (/^\d+$/.test(raw)) return { kind: "seq", seq: Number(raw), text: raw };
+  if (/^\d+$/.test(raw)) {
+    const seq = Number(raw);
+    if (!Number.isSafeInteger(seq)) throw usage("--since sequence must be a whole number this client can represent without rounding");
+    return { kind: "seq", seq, text: raw };
+  }
   const age = /^(\d+)([smhd])$/.exec(raw);
-  if (age) return { kind: "time", ms: now - Number(age[1]) * UNIT_MS[age[2]!]!, text: new Date(now - Number(age[1]) * UNIT_MS[age[2]!]!).toISOString() };
+  if (age) {
+    const at = new Date(now - Number(age[1]) * UNIT_MS[age[2]!]!);
+    if (!Number.isFinite(at.getTime())) throw usage("--since age is outside the supported date range");
+    return { kind: "time", ms: at.getTime(), text: at.toISOString() };
+  }
   const at = Date.parse(raw);
   if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString() };
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);

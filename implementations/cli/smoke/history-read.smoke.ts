@@ -217,6 +217,12 @@ try {
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
 
+  const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
+  const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
+  check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
+  const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
+  check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
+
   // ── a credential that may not read history ──────────────────────────────────────────────────────
   const probe = join(home, "probe.creds");
   writeFileSync(probe, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });

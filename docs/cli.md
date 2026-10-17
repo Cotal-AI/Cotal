@@ -2247,7 +2247,8 @@ Reads the newest retained messages in the selected space, newest last: one chann
 channel the identity may read. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
-whether the window goes back to `--since`.
+whether the window goes back to `--since`. An age outside the supported date range or a sequence
+that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
 The report shows each message's local time, with its date when it is not today; `result.items[].ts`
 is the ISO time.
 
