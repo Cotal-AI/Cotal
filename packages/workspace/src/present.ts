@@ -156,8 +156,16 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
       (indent + cells.map((cell, i) => (i === cells.length - 1 ? draw(cell, style).shown : drawPadded(cell, style, widths[i]!))).join("  ")).replace(/ +$/, "");
     return [line(table.columns.map(label)), ...table.rows.map((row) => line(table.columns.map((column) => cellOf(row, column))))];
   }
-  // Too narrow for the columns: one labeled record per row, so nothing is clipped.
-  const records = table.rows.map((row) => renderFields({ kind: "fields", rows: table.columns.map((column) => [column.label, cellOf(row, column)]) }, style, indent, width));
+  // Too narrow for the columns: one labeled record per row, so nothing is clipped. Its labels read
+  // as the other reports' fields do, and a field the row leaves empty is left out.
+  const records = table.rows.map((row) =>
+    renderFields(
+      { kind: "fields", rows: table.columns.filter((column) => textOf(cellOf(row, column), "plain") !== "").map((column) => [column.label.toLowerCase(), cellOf(row, column)]) },
+      style,
+      indent,
+      width,
+    ),
+  );
   return records.flatMap((record, i) => (i === 0 ? record : ["", ...record]));
 }
 

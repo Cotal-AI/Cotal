@@ -4,6 +4,7 @@ import {
   CotalEndpoint,
   dialerFor,
   EpEnvelopeError,
+  formatAge,
   isReachable,
   mintCreds,
   mintLifecycleUid,
@@ -919,7 +920,7 @@ function selectedSection(s: SelectedResult): Section {
   if (s.snapshot.state === "unavailable" || (s.mode === "user" && s.snapshot.state === "skipped")) rows.push(["live snapshot", cell(`${s.snapshot.state === "unavailable" ? "unavailable" : "not read"} (${s.snapshot.reason})`, s.snapshot.state === "unavailable" ? "failed" : "hint")]);
   if (s.channels) rows.push(["channels", s.channels.length ? s.channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none"]);
   if (s.membershipFeed)
-    rows.push(["membership feed", s.membershipFeed.asOf ? cell(`${s.membershipFeed.entries} entries · ${s.membershipFeed.asOf}`, "ok") : cell("no heartbeat", "hint")]);
+    rows.push(["membership feed", s.membershipFeed.asOf ? cell(`${s.membershipFeed.entries} entries · updated ${formatAge(Math.max(0, Date.now() - Date.parse(s.membershipFeed.asOf)))} ago`, "ok") : cell("no heartbeat", "hint")]);
   return { title: "Selected Mesh", blocks: [{ kind: "fields", rows }] };
 }
 

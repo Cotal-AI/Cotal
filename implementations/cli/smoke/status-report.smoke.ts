@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { renderReport } from "@cotal-ai/workspace";
+import { statusView } from "../src/commands/status.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -110,6 +112,10 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   check("the selected registration is checked and reported unreachable", byName(selected.envelope).alpha === "unreachable", byName(selected.envelope));
   check("the other registration is not checked", byName(selected.envelope).beta === "not-checked", byName(selected.envelope));
   check("an unreachable selected mesh is a fact, not a partial read", selected.status === 0 && selected.envelope?.completeness === "complete" && selected.envelope.result?.selected.connection === "unreachable", shown(selected));
+  // The membership feed's time is shown as an age; the document keeps the ISO time it was read at.
+  const fed = { ...selected.envelope!.result!, selected: { ...selected.envelope!.result!.selected, membershipFeed: { entries: 2, asOf: new Date(Date.now() - 90_000).toISOString() } } };
+  const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0]), "plain");
+  check("the membership feed row says how long ago it was updated", /^ {2}membership feed: +2 entries - updated 1m ago$/m.test(fedReport), fedReport.split("\n").filter((l) => /membership/.test(l)));
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);

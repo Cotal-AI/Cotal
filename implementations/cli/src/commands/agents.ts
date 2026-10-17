@@ -381,7 +381,8 @@ export function agentWideFacts(r: Pick<AgentRow, "provider" | "cwd" | "pid" | "s
 
 /** The seats one manager answered with: a table, or with `--wide` one labeled record per seat. A
  *  failing bearer refresh is a detached seat's only window to the operator, so the provider's own
- *  sentence follows, verbatim (it already names the repair). */
+ *  sentence follows, verbatim (it already names the repair). A record's labels read as its facts'
+ *  do, and a field the seat leaves empty is left out. */
 function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
   const auth = rows.some((r) => r.authHealth);
   const cells = (r: AgentRow): [string, Cell][] => [
@@ -392,7 +393,7 @@ function seatBlocks(rows: readonly AgentRow[], wide: boolean): Block[] {
     ...(auth ? [["AUTH", r.authHealth ? { text: r.authHealth, tone: authTone(r) } : ""] as [string, Cell]] : []),
   ];
   const blocks: Block[] = wide
-    ? rows.flatMap((r, i): Block[] => [...(i ? [{ kind: "lines", lines: [""] } as const] : []), { kind: "fields", rows: [...cells(r), ...wideFields(r)] }])
+    ? rows.flatMap((r, i): Block[] => [...(i ? [{ kind: "lines", lines: [""] } as const] : []), { kind: "fields", rows: [...cells(r).filter(([, value]) => value !== "").map(([label, value]): [string, Cell] => [label.toLowerCase(), value]), ...wideFields(r)] }])
     : [{
         kind: "table",
         columns: cells(rows[0]!).map(([label]) => ({ key: label, label })),

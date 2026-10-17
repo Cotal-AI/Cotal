@@ -239,6 +239,26 @@
       "cell": "plain writes a partial result's line and remedy in ASCII",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a narrow table's records keep the column headers as labels",
+      "file": "packages/workspace/src/present.ts",
+      "find": ".map((column) => [column.label.toLowerCase(), cellOf(row, column)])",
+      "replace": ".map((column) => [column.label, cellOf(row, column)])",
+      "expectRed": "a narrow terminal gets labeled records",
+      "cell": "a narrow terminal gets labeled records",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
+    },
+    {
+      "name": "a narrow table's records print a field the row leaves empty",
+      "file": "packages/workspace/src/present.ts",
+      "find": "table.columns.filter((column) => textOf(cellOf(row, column), \"plain\") !== \"\").map(",
+      "replace": "table.columns.map(",
+      "expectRed": "a record leaves out a field its row leaves empty",
+      "cell": "a record leaves out a field its row leaves empty",
+      "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:present",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build"
     }
   ]
 }

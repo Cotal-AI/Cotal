@@ -82,7 +82,7 @@ try {
     const text = r.text();
     check(
       `a report on a ${cols}-column terminal is ${records ? "one labeled record" : "a table"}`,
-      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? /NAME: +古い席-long-name/.test(text) && /STATE: +\* working/.test(text) : /NAME +STATE/.test(text)),
+      r.exitCode === 0 && text.includes("古い席-long-name") && (records ? /name: +古い席-long-name/.test(text) && /state: +\* working/.test(text) : /NAME +STATE/.test(text)),
       text,
     );
   }

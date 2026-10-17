@@ -106,7 +106,9 @@ check(
 
 // Too narrow for the table: one labeled record per row, nothing clipped.
 const narrow = renderReport(report, "plain", 20);
-check("a narrow terminal gets labeled records", /NAME: +古い席/.test(narrow) && /STATE: +failed/.test(narrow), narrow);
+check("a narrow terminal gets labeled records", /name: +古い席/.test(narrow) && /state: +failed/.test(narrow), narrow);
+const narrowEmpty = renderReport({ sections: [{ blocks: [{ kind: "table", columns: [{ key: "a", label: "NAME" }, { key: "b", label: "NOTE" }], rows: [{ a: "long value here", b: "" }] }] }] }, "plain", 20);
+check("a record leaves out a field its row leaves empty", /name: +long value here/.test(narrowEmpty) && !/note:/i.test(narrowEmpty), narrowEmpty);
 check("a record keeps every value", ["古い席", "seat-2", "working", "failed", "fine", "spoof"].every((word) => narrow.includes(word)), narrow);
 check("a table that fits stays a table", renderReport(report, "plain", 80) === plain);
 
