@@ -416,8 +416,8 @@
     {
       "name": "L2 a conversation is verified when any message is",
       "file": "implementations/web/client/src/lib/dms.ts",
-      "find": "pair.messages.every((m) => m.senderId !== undefined)",
-      "replace": "pair.messages.some((m) => m.senderId !== undefined)",
+      "find": "verified: messages.every((m) => m.senderId !== undefined),",
+      "replace": "verified: messages.some((m) => m.senderId !== undefined),",
       "expectRed": "7.1 a conversation is verified only when every message carries the sender the server checked",
       "cell": "7.1 a conversation is verified only when every message carries the sender the server checked"
     },
@@ -440,18 +440,18 @@
     {
       "name": "D3 the counterparty is named by raw id",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "{`with ${displayNameOf(conv.with, idx, self)}`}",
-      "replace": "{`with ${conv.with}`}",
+      "find": "{`with ${displayNameOf(withWhom, idx, self)}`}",
+      "replace": "{`with ${withWhom}`}",
       "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
       "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
     },
     {
       "name": "D4 a two-party route opens the peer's newest conversation instead",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "convs.find((c) => c.with === withWhom)",
-      "replace": "convs[0]",
-      "expectRed": "7.2 the header draws the peer's character, name, role and harness, and who it talks with",
-      "cell": "7.2 the header draws the peer's character, name, role and harness, and who it talks with"
+      "find": "return dmPairs(dms).find((c) => c.key === key);",
+      "replace": "return dmPairs(dms).find((c) => c.parts.includes(peer));",
+      "expectRed": "7.3 the list holds that conversation only, oldest first",
+      "cell": "7.3 the list holds that conversation only, oldest first"
     },
     {
       "name": "D7 a verified conversation is marked unverified",
@@ -464,8 +464,8 @@
     {
       "name": "D5 a one-peer route opens the peer's newest conversation, though the operator is not in it",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "withWhom === undefined ? undefined :",
-      "replace": "withWhom === undefined ? convs[0] :",
+      "find": "if (withWhom === undefined) return undefined;",
+      "replace": "if (withWhom === undefined) return dmPairs(dms).find((c) => c.parts.includes(peer));",
       "expectRed": "7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet",
       "cell": "7.5 a route naming only the peer opens no conversation of two other agents, and says there is none yet"
     },
@@ -736,8 +736,8 @@
     {
       "name": "H4 a DM read replaces a live-verified DM with its unverified history copy",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "store.set((s) => ({ dms: keepVerified(dms.map((msg): StoredMessage => ({ msg })), s.dms) }))",
-      "replace": "store.set({ dms: dms.map((msg): StoredMessage => ({ msg })) })",
+      "find": "store.set((s) => ({ dms: keepVerified(dms.map((msg): StoredMessage => ({ msg })), s.dms).slice(-DM_WINDOW), dmsCut: dms.length >= DM_WINDOW })),",
+      "replace": "store.set({ dms: dms.map((msg): StoredMessage => ({ msg })), dmsCut: dms.length >= DM_WINDOW }),",
       "expectRed": "11.4 a direct message received live keeps its verified copy when a refresh reads the DMs back, and a conversation never seen live stays unverified",
       "cell": "11.4 a direct message received live keeps its verified copy when a refresh reads the DMs back, and a conversation never seen live stays unverified"
     },
@@ -764,6 +764,86 @@
       "replace": "",
       "expectRed": "11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too",
       "cell": "11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too"
+    },
+    {
+      "name": "DW1 live DMs are appended with no limit, so a page left open grows without bound",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "const drop = Math.max(0, s.dms.length + 1 - DM_WINDOW);",
+      "replace": "const drop = 0;",
+      "expectRed": "12.1 live DMs past the window keep the newest 500, as Activity keeps its newest",
+      "cell": "12.1 live DMs past the window keep the newest 500, as Activity keeps its newest"
+    },
+    {
+      "name": "DW2 a live DM is appended whether or not the page holds it",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "if (e.mode !== \"unicast\" || dmIdsFor(s.dms).has(msg.id)) return { activity };",
+      "replace": "if (e.mode !== \"unicast\") return { activity };",
+      "expectRed": "12.2 a DM the page already holds, read or live, is kept once when the feed delivers it again",
+      "cell": "12.2 a DM the page already holds, read or live, is kept once when the feed delivers it again"
+    },
+    {
+      "name": "DW3 every DM read calls the window cut, even one that held all the server had",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "dmsCut: dms.length >= DM_WINDOW })),",
+      "replace": "dmsCut: true })),",
+      "expectRed": "12.3 a DM read that comes back short of the window held all the server had, so the window is not cut",
+      "cell": "12.3 a DM read that comes back short of the window held all the server had, so the window is not cut"
+    },
+    {
+      "name": "DW4 the window counts as cut once it is full, though nothing was dropped",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "dmsCut: s.dmsCut || drop > 0 };",
+      "replace": "dmsCut: s.dmsCut || dms.length >= DM_WINDOW };",
+      "expectRed": "12.3b and a live DM that only fills it drops nothing, so it is still not cut",
+      "cell": "12.3b and a live DM that only fills it drops nothing, so it is still not cut"
+    },
+    {
+      "name": "DW5 a DM read that fills the window is taken as all the server had",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "dmsCut: dms.length >= DM_WINDOW })),",
+      "replace": "dmsCut: false })),",
+      "expectRed": "12.4 a DM read that fills the window may have left older DMs on the server, so the window is cut",
+      "cell": "12.4 a DM read that fills the window may have left older DMs on the server, so the window is cut"
+    },
+    {
+      "name": "DW6 a live DM that pushes the oldest out leaves the window marked whole",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "dmsCut: s.dmsCut || drop > 0 };",
+      "replace": "dmsCut: s.dmsCut };",
+      "expectRed": "12.5 a live DM that pushes the oldest out marks the window cut",
+      "cell": "12.5 a live DM that pushes the oldest out marks the window cut"
+    },
+    {
+      "name": "DW7 the DM view never says a conversation may start before what it holds",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{conv && cut && <div className=\"ui-cutoff\">",
+      "replace": "{conv && false && <div className=\"ui-cutoff\">",
+      "expectRed": "12.6 while the window is cut, every conversation opens on a quiet line saying earlier messages are not loaded, including one whose oldest message is not the window's oldest",
+      "cell": "12.6 while the window is cut, every conversation opens on a quiet line saying earlier messages are not loaded, including one whose oldest message is not the window's oldest"
+    },
+    {
+      "name": "DW8 the cut-off line shows only on the conversation holding the window's oldest message, so a later one is called complete",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{conv && cut && <div className=\"ui-cutoff\">",
+      "replace": "{conv && cut && conv.messages[0] === dms[0] && <div className=\"ui-cutoff\">",
+      "expectRed": "12.6 while the window is cut, every conversation opens on a quiet line saying earlier messages are not loaded, including one whose oldest message is not the window's oldest",
+      "cell": "12.6 while the window is cut, every conversation opens on a quiet line saying earlier messages are not loaded, including one whose oldest message is not the window's oldest"
+    },
+    {
+      "name": "DW9 the DM view says earlier messages are missing when the window holds everything",
+      "file": "implementations/web/client/src/ui/views/DmView.tsx",
+      "find": "{conv && cut && <div className=\"ui-cutoff\">",
+      "replace": "{conv && <div className=\"ui-cutoff\">",
+      "expectRed": "12.7 while the window holds all the server had, no conversation says so",
+      "cell": "12.7 while the window holds all the server had, no conversation says so"
+    },
+    {
+      "name": "DW10 a DM dropped off the front of the window is still counted as held, so its ids pile up and it is never taken again",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      for (let i = 0; i < drop; i++) countDm(s.dms[i].msg.id, -1);\n",
+      "replace": "",
+      "expectRed": "12.8 the window forgets an id it dropped: that DM delivered again is held again, as the newest",
+      "cell": "12.8 the window forgets an id it dropped: that DM delivered again is held again, as the newest"
     }
   ]
 }

@@ -160,8 +160,8 @@
     {
       "name": "K20 a delivered post keeps its own row, so it shows twice",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      return { activity, dms };\n    });\n    pruneDelivered();\n",
-      "replace": "      return { activity, dms };\n    });\n",
+      "find": "      return { activity, dms, dmsCut: s.dmsCut || drop > 0 };\n    });\n    pruneDelivered();\n",
+      "replace": "      return { activity, dms, dmsCut: s.dmsCut || drop > 0 };\n    });\n",
       "expectRed": "2.5 the row goes once the feed delivers the message itself",
       "cell": "2.5 the row goes once the feed delivers the message itself"
     },
@@ -480,8 +480,8 @@
     {
       "name": "K60 the DM header does not know the operator's own id",
       "file": "implementations/web/client/src/ui/views/DmView.tsx",
-      "find": "{`with ${displayNameOf(conv.with, idx, self)}`}",
-      "replace": "{`with ${displayNameOf(conv.with, idx)}`}",
+      "find": "{`with ${displayNameOf(withWhom, idx, self)}`}",
+      "replace": "{`with ${displayNameOf(withWhom, idx)}`}",
       "expectRed": "3.21 the conversation with the operator says operator (you) while the roster does not name it",
       "cell": "3.21 the conversation with the operator says operator (you) while the roster does not name it"
     },

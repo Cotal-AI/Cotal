@@ -8,7 +8,9 @@
  *  What is pinned, beyond the markup: every name comes from the roster by id and never from a
  *  payload; an event channel (`run.*`) is the one row drawn with the plug icon; no footer line
  *  claims the operator's place on the roster before `/api/meta` has said what the dashboard can post
- *  as (compose.smoke.ts pins the lines it draws after); and no DM row reads "to you". */
+ *  as (compose.smoke.ts pins the lines it draws after); and no DM row reads "to you". The direct
+ *  messages list the ten most recent conversations and the open one, then a "Show all" button that
+ *  lists the rest in place, and a roster change redraws the names without regrouping the DMs. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { Plug01Icon } from "@hugeicons/core-free-icons";
@@ -28,6 +30,7 @@ import type { Api, Controller } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type StoredMessage } from "../client/src/state/types.js";
 import { UNVERIFIED } from "../client/src/ui/MessageRow.tsx";
+import { DM_ROWS, Sidebar } from "../client/src/ui/Sidebar.tsx";
 import { mount } from "./mount.js";
 import { renderShell, startTags, unescapeHtml } from "./render-shell.js";
 
@@ -313,6 +316,56 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
     g.setInterval = realSet;
     g.clearInterval = realClear;
   }
+}
+
+// ── 10. A long list of conversations ─────────────────────────────────────────────────────────────
+// Twelve conversations, each david with another agent, the newest first: c0 is the newest, c11 the oldest.
+{
+  const many = Array.from({ length: 12 }, (_, i) => entry(`local.a${i}`, `agent${i}`, "idle"));
+  const people = [...roster, ...many];
+  const talk = many.map((p, i) => dm(`c${i}`, p.card.id, "local.dav", 1000 - i, p.card.id));
+  const routeTo = (i: number): Route => ({ view: "dm", peer: `local.a${i}`, with: "local.dav" });
+  const toggle = (html: string) => startTags(section(html, "Direct messages"), "button").find((b) => b.class?.includes("ui-row-more"));
+  const toggleText = (html: string) => strip(/<button [^>]*class="ui-row ui-row-more"[^>]*>([\s\S]*?)<\/button>/.exec(section(html, "Direct messages"))?.[1] ?? "");
+  const html = renderShell({ roster: people, dms: talk });
+  same("10.1 with twelve conversations the sidebar lists the ten most recent, newest first",
+    dms(html).map((r) => r.attrs.href), Array.from({ length: DM_ROWS }, (_, i) => formatRoute(routeTo(i))));
+  ok("10.2 then a Show all button with the count, collapsed",
+    toggle(html)?.type === "button" && toggle(html)?.["aria-expanded"] === "false" && toggleText(html) === "Show all 12", { tag: toggle(html), text: toggleText(html) });
+  const openOld = renderShell({ roster: people, dms: talk }, routeTo(11));
+  same("10.3 an open conversation older than the ten is listed too, after them, and is the current row",
+    dms(openOld).map((r) => [r.attrs.href, r.attrs["aria-current"] ?? null]).slice(DM_ROWS - 1),
+    [[formatRoute(routeTo(9)), null], [formatRoute(routeTo(11)), "page"]]);
+  const ten = renderShell({ roster: people, dms: talk.slice(0, DM_ROWS) });
+  ok("10.4 with ten conversations every one is listed and there is no button", dms(ten).length === DM_ROWS && toggle(ten) === undefined, toggle(ten));
+
+  const store = createStore<DashboardState>({ ...initialState, roster: people, dms: talk });
+  const m = await mount(createElement(Sidebar, { store, route: { view: "activity" }, msgPerSecond: () => 0 }));
+  const listed = () => [...m.container.querySelectorAll("nav a.ui-row")].filter((a) => a.getAttribute("href")?.startsWith("#/dm")).length;
+  const button = () => m.container.querySelector("button.ui-row-more") as HTMLButtonElement | null;
+  await m.run(() => button()?.click());
+  ok("10.5 Show all lists every conversation in place, and the button then reads Show fewer, expanded",
+    listed() === 12 && button()?.getAttribute("aria-expanded") === "true" && button()?.textContent === "Show fewer", { listed: listed(), button: button()?.outerHTML });
+  await m.run(() => button()?.click());
+  ok("10.6 and Show fewer goes back to the ten, collapsed, with the count",
+    listed() === DM_ROWS && button()?.getAttribute("aria-expanded") === "false" && button()?.textContent === "Show all 12", { listed: listed(), button: button()?.outerHTML });
+  await m.unmount();
+
+  // The conversations are grouped from the DMs alone. A list that counts how often it is walked
+  // shows whether a roster change, which comes with every heartbeat, grouped them again.
+  let walks = 0;
+  const counted = talk.slice() as StoredMessage[];
+  const walk = Array.prototype[Symbol.iterator];
+  counted[Symbol.iterator] = function (this: StoredMessage[]) { walks++; return walk.call(this); };
+  const live = createStore<DashboardState>({ ...initialState, roster: people, dms: counted });
+  const shown = await mount(createElement(Sidebar, { store: live, route: { view: "activity" }, msgPerSecond: () => 0 }));
+  const before = walks;
+  const renamed = people.map((p) => (p.card.id === "local.dav" ? { ...p, card: { ...p.card, name: "dave" }, ts: 2 } : { ...p, ts: 2 }));
+  await shown.run(() => live.set({ roster: renamed }));
+  const firstLabel = shown.container.querySelector("nav a.ui-row[href^='#/dm'] .ui-row-lbl")?.textContent;
+  ok("10.7 a roster change does not group the DMs again", before > 0 && walks === before, { before, after: walks });
+  ok("10.8 and the rows take their names from the new roster", firstLabel === "agent0, dave", firstLabel);
+  await shown.unmount();
 }
 
 await closeDom();

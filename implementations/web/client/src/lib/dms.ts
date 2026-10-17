@@ -24,20 +24,31 @@ export interface DmPeer {
   last: number;
 }
 
+/** How many direct messages the dashboard holds: the newest, space-wide. The controller asks the
+ *  server for this many and drops the oldest once a live one would pass it, so a conversation whose
+ *  earlier messages fall before the window shows only its part inside it. */
+export const DM_WINDOW = 500;
+
+/** The messages two parties exchanged, oldest first. `parts` holds both ids sorted, and `opener` is
+ *  the sender of the first message held, which is how the sidebar names the conversation. */
+export interface DmPair {
+  key: string;
+  parts: [string, string];
+  opener: string;
+  messages: StoredMessage[];
+  last: number;
+  verified: boolean;
+}
+
 const SEP = "\u0001";
 
-/** Group DMs into per-peer rows; each peer lists its counterparties (conversations). Work is
- *  O(peers with DMs), never the n² pair cross-product: only pairs that actually talked. A peer
- *  absent from the roster is offline with no role.
- *
- *  The sender is the verified `senderId` when the row has one, and the payload's `from.id` only for
- *  a history row, which carries no verified sender. */
-export function dmPeers(dms: StoredMessage[], roster: RosterEntry[]): DmPeer[] {
-  const idx = nameIndex(roster);
-  const byId = new Map<string, RosterEntry>();
-  for (const p of roster) if (p.card?.id) byId.set(p.card.id, p);
-  const statusOf = (id: string): string => byId.get(id)?.status ?? "offline";
+/** The key of the conversation between `a` and `b`, in either order. */
+export const pairKey = (a: string, b: string): string => [a, b].sort().join(SEP);
 
+/** Every pair that talked, in the order each first appears in `dms`. The sender is the verified
+ *  `senderId` when the row has one, and the payload's `from.id` only for a history row, which carries
+ *  no verified sender. */
+function group(dms: StoredMessage[]): DmPair[] {
   const pairs = new Map<string, { parts: [string, string]; messages: StoredMessage[] }>();
   for (const m of dms) {
     const from = m.senderId ?? m.msg.from?.id;
@@ -49,17 +60,44 @@ export function dmPeers(dms: StoredMessage[], roster: RosterEntry[]): DmPeer[] {
     if (!pair) pairs.set(key, (pair = { parts, messages: [] }));
     pair.messages.push(m);
   }
+  const out: DmPair[] = [];
+  for (const [key, { parts, messages }] of pairs) {
+    messages.sort((a, b) => a.msg.ts - b.msg.ts);
+    const first = messages[0];
+    out.push({
+      key,
+      parts,
+      opener: first.senderId ?? first.msg.from?.id ?? parts[0],
+      messages,
+      last: messages[messages.length - 1]?.msg.ts ?? 0,
+      verified: messages.every((m) => m.senderId !== undefined),
+    });
+  }
+  return out;
+}
+
+/** The conversations in `dms`, newest first. It reads no roster, so a view memoizes it on the DM list
+ *  alone and a roster change, which comes with every heartbeat, does not regroup the messages. */
+export function dmPairs(dms: StoredMessage[]): DmPair[] {
+  return group(dms).sort((a, b) => b.last - a.last);
+}
+
+/** Group DMs into per-peer rows; each peer lists its counterparties (conversations). Work is
+ *  O(peers with DMs), never the n² pair cross-product: only pairs that actually talked. A peer
+ *  absent from the roster is offline with no role. */
+export function dmPeers(dms: StoredMessage[], roster: RosterEntry[]): DmPeer[] {
+  const idx = nameIndex(roster);
+  const byId = new Map<string, RosterEntry>();
+  for (const p of roster) if (p.card?.id) byId.set(p.card.id, p);
+  const statusOf = (id: string): string => byId.get(id)?.status ?? "offline";
 
   const peers = new Map<string, { id: string; conversations: DmConversation[]; last: number }>();
-  for (const [key, pair] of pairs) {
-    pair.messages.sort((a, b) => a.msg.ts - b.msg.ts);
-    const last = pair.messages[pair.messages.length - 1]?.msg.ts ?? 0;
-    const verified = pair.messages.every((m) => m.senderId !== undefined);
-    for (const id of pair.parts) {
-      const other = pair.parts[0] === id ? pair.parts[1] : pair.parts[0];
+  for (const { key, parts, messages, last, verified } of group(dms)) {
+    for (const id of parts) {
+      const other = parts[0] === id ? parts[1] : parts[0];
       let peer = peers.get(id);
       if (!peer) peers.set(id, (peer = { id, conversations: [], last: 0 }));
-      peer.conversations.push({ key, with: other, messages: pair.messages, last, verified });
+      peer.conversations.push({ key, with: other, messages, last, verified });
       peer.last = Math.max(peer.last, last);
     }
   }

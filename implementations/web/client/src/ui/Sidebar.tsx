@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Icon } from "../icons/Icon.tsx";
 import { RailIcon } from "../icons/rail.tsx";
 import { footerLine } from "../lib/compose.js";
-import { dmPeers } from "../lib/dms.js";
+import { dmPairs, pairKey } from "../lib/dms.js";
 import { displayNameOf, nameIndex } from "../lib/names.js";
 import { rosterRows, waiting } from "../lib/roster.js";
 import { formatRoute, type Route } from "../lib/route.js";
@@ -19,6 +19,9 @@ import { StaleMarker } from "./StaleMarker.tsx";
 /** How often the Activity row redraws its rate. The rate falls as the window slides past old
  *  messages, with no message to trigger a render, so the row asks again on this beat. */
 const RATE_TICK_MS = 1000;
+
+/** How many direct message conversations the sidebar lists before "Show all". */
+export const DM_ROWS = 10;
 
 /** A channel the runtime writes a run's events to (`run.build-0412`). */
 const isEventChannel = (channel: string): boolean => channel.startsWith("run.");
@@ -51,6 +54,11 @@ function Row({ to, here, bold, title, children }: { to: Route; here: boolean; bo
  *  named, and linked, opener first: the sender of its first message, then the other party, as the
  *  mock writes "reviewer_2, david".
  *
+ *  The conversations are grouped from the DMs alone and named from the roster as they are drawn, so
+ *  the heartbeats that change the roster every two seconds do not regroup them. The ten most recent
+ *  are listed, and the open conversation too when it is older, then a "Show all" button with the
+ *  count, which lists every one in place and then reads "Show fewer".
+ *
  *  While the first roster and channel reads are outstanding the places are skeleton rows.
  *
  *  The footer's second line is the operator's place on the roster (`footerLine`): nothing until
@@ -81,19 +89,13 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
   const needing = waiting(rows).length;
   const line = footerLine(post, self !== null && roster.some((p) => p.card.id === self));
-  const conversations = useMemo(() => {
-    const seen = new Map<string, { pair: [string, string]; last: number; verified: boolean }>();
-    for (const peer of dmPeers(dms, roster))
-      for (const c of peer.conversations) {
-        if (seen.has(c.key)) continue;
-        const first = c.messages[0];
-        const opener = first?.senderId ?? first?.msg.from?.id;
-        const pair: [string, string] = opener === c.with ? [c.with, peer.id] : [peer.id, c.with];
-        seen.set(c.key, { pair, last: c.last, verified: c.verified });
-      }
-    return [...seen.values()].sort((a, b) => b.last - a.last);
-  }, [dms, roster]);
-  const open = route.view === "dm" ? route : null;
+  const conversations = useMemo(() => dmPairs(dms), [dms]);
+  const [allDms, setAllDms] = useState(false);
+  const openKey = route.view === "dm" && route.with !== undefined ? pairKey(route.peer, route.with) : null;
+  const listed = useMemo(
+    () => (allDms ? conversations : conversations.filter((c, i) => i < DM_ROWS || c.key === openKey)),
+    [conversations, allDms, openKey],
+  );
   return (
     <>
       <div className="ui-side-head">
@@ -131,21 +133,25 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
           );
         })}
         <div className="ui-sec">Direct messages</div>
-        {conversations.map(({ pair: [a, b], verified }) => (
-          <Row
-            key={`${a}\u0001${b}`}
-            to={{ view: "dm", peer: a, with: b }}
-            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}
-          >
-            <span className="ui-stack">
-              {[a, b].map((id) => (
-                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={false} />
-              ))}
-            </span>
-            <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
-            {!verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
-          </Row>
-        ))}
+        {listed.map(({ key, parts, opener: a, verified }) => {
+          const b = parts[0] === a ? parts[1] : parts[0];
+          return (
+            <Row key={key} to={{ view: "dm", peer: a, with: b }} here={key === openKey}>
+              <span className="ui-stack">
+                {[a, b].map((id) => (
+                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={false} />
+                ))}
+              </span>
+              <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
+              {!verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
+            </Row>
+          );
+        })}
+        {conversations.length > DM_ROWS && (
+          <button type="button" className="ui-row ui-row-more" aria-expanded={allDms} onClick={() => setAllDms((v) => !v)}>
+            <span className="ui-row-lbl">{allDms ? "Show fewer" : `Show all ${conversations.length}`}</span>
+          </button>
+        )}
       </nav>}
       <div className="ui-side-foot">
         <span className="ui-me">OP</span>

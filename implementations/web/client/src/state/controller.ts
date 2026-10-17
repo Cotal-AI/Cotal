@@ -7,6 +7,7 @@
 // read issued before it.
 import type { ActivityEntry, ActivityPage, ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, Meta, PresenceView, RosterEntry, SendAnswer } from "../api/types.js";
 import { composeKey, refusalText, type ComposeTarget } from "../lib/compose.js";
+import { DM_WINDOW } from "../lib/dms.js";
 import { createEventOrder, type EventOrder, type FeedEntryLike, type OrderNote } from "../lib/eventOrder.js";
 import { displayNameOf, nameIndex } from "../lib/names.js";
 import { presenceViewMark } from "../lib/roster.js";
@@ -124,6 +125,25 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
   /** Rewrite one target's draft, leaving every other draft alone. */
   const putDraft = (key: string, edit: (d: Draft) => Draft) =>
     store.set((s) => ({ drafts: { ...s.drafts, [key]: edit(s.drafts[key] ?? BLANK) } }));
+  // THE DM IDS, COUNTED, KEPT BESIDE THE LIST, so a live DM's duplicate check is a lookup and not a
+  // scan of every DM held. Counted rather than a set because a history read can repeat an id, and
+  // dropping one copy off the front must not forget the other. `dmIdsOf` is the list they count: any
+  // other list in the store, a read's or a seeded one, is counted afresh before it is used.
+  let dmIds = new Map<string | undefined, number>();
+  let dmIdsOf: StoredMessage[] | null = null;
+  const countDm = (id: string | undefined, by: number) => {
+    const n = (dmIds.get(id) ?? 0) + by;
+    if (n > 0) dmIds.set(id, n);
+    else dmIds.delete(id);
+  };
+  const dmIdsFor = (dms: StoredMessage[]) => {
+    if (dmIdsOf !== dms) {
+      dmIds = new Map();
+      for (const d of dms) countDm(d.msg.id, 1);
+      dmIdsOf = dms;
+    }
+    return dmIds;
+  };
   /** Numbers each post the composer sends, for its row's key. */
   let posted = 0;
   /** Drop every answered post whose message the page now holds, in Activity, the DMs or the open
@@ -267,8 +287,14 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
           : [{ name: "peers", read: () => api.roster(), apply: supersededByFeed("peers", (roster: RosterEntry[]) => store.set({ roster })) }]),
         { name: "channels", read: () => api.channels(), apply: (channels: ChannelInfo[]) => store.set({ channels }) },
         // Like channel history, a DM history row carries no verified sender, so a DM the page holds
-        // verified keeps that copy.
-        { name: "direct messages", read: () => api.dms(500), apply: (dms: CotalMessage[]) => store.set((s) => ({ dms: keepVerified(dms.map((msg): StoredMessage => ({ msg })), s.dms) })) },
+        // verified keeps that copy. A read that fills the window may have left older DMs on the
+        // server; one that came back short holds all the server had.
+        {
+          name: "direct messages",
+          read: () => api.dms(DM_WINDOW),
+          apply: (dms: CotalMessage[]) =>
+            store.set((s) => ({ dms: keepVerified(dms.map((msg): StoredMessage => ({ msg })), s.dms).slice(-DM_WINDOW), dmsCut: dms.length >= DM_WINDOW })),
+        },
         // Always read: the Activity view and the Needs card both draw it. An envelope, never a bare
         // array, so a caller that ignores `partial` breaks here instead of drawing a short page.
         { name: "activity", read: () => api.activity(200), apply: (p: ActivityPage) => { batch = p.entries; activityPage = p; } },
@@ -359,9 +385,16 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
         activity.push(x);
         if (activity.length > ACTIVITY_CAP) activity.shift();
       }
-      // The DM keeps the sender the server read off the subject, which the payload cannot forge.
-      const dms = e.mode === "unicast" && !s.dms.some((d) => d.msg.id === msg.id) ? [...s.dms, { msg: e.msg, senderId: e.senderId }] : s.dms;
-      return { activity, dms };
+      if (e.mode !== "unicast" || dmIdsFor(s.dms).has(msg.id)) return { activity };
+      // The DM keeps the sender the server read off the subject, which the payload cannot forge. The
+      // list keeps the newest `DM_WINDOW`, as Activity keeps its newest, and says when it dropped one.
+      const drop = Math.max(0, s.dms.length + 1 - DM_WINDOW);
+      const dms = s.dms.slice(drop);
+      dms.push({ msg: e.msg, senderId: e.senderId });
+      for (let i = 0; i < drop; i++) countDm(s.dms[i].msg.id, -1);
+      countDm(msg.id, 1);
+      dmIdsOf = dms;
+      return { activity, dms, dmsCut: s.dmsCut || drop > 0 };
     });
     pruneDelivered();
     const channel = msg.channel;

@@ -214,26 +214,26 @@
       "cell": "4.11 and says nothing of the kind once a channel exists"
     },
     {
-      "name": "SB27 conversations are not deduped, so each shows once per peer",
-      "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "seen.set(c.key, { pair, last: c.last, verified: c.verified });",
-      "replace": "seen.set(peer.id + c.key, { pair, last: c.last, verified: c.verified });",
+      "name": "SB27 a conversation is keyed by who sent each message, so a pair that answered each other shows as two rows",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "const parts = [from, to].sort() as [string, string];",
+      "replace": "const parts = [from, to] as [string, string];",
       "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
       "cell": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first"
     },
     {
       "name": "SB28 conversations list oldest first",
-      "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": ".sort((a, b) => b.last - a.last);",
-      "replace": ".sort((a, b) => a.last - b.last);",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "return group(dms).sort((a, b) => b.last - a.last);",
+      "replace": "return group(dms).sort((a, b) => a.last - b.last);",
       "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
       "cell": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first"
     },
     {
-      "name": "SB29 a conversation is named and linked in the order it was met in, not opener first",
-      "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "opener === c.with ? [c.with, peer.id] : [peer.id, c.with]",
-      "replace": "[peer.id, c.with]",
+      "name": "SB29 a conversation is named and linked in id order, not opener first",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "opener: first.senderId ?? first.msg.from?.id ?? parts[0],",
+      "replace": "opener: parts[0],",
       "expectRed": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first",
       "cell": "5.1 one row per conversation, newest first, though each talks under both its peers, linked opener first"
     },
@@ -264,8 +264,8 @@
     {
       "name": "SB33 only one orientation of the open pair is current",
       "file": "implementations/web/client/src/ui/Sidebar.tsx",
-      "find": "((open.peer === a && open.with === b) || (open.peer === b && open.with === a))",
-      "replace": "(open.peer === a && open.with === b)",
+      "find": "pairKey(route.peer, route.with)",
+      "replace": "`${route.peer}\\u0001${route.with}`",
       "expectRed": "5.6 the row whose pair is open is current, whichever party the address names first",
       "cell": "5.6 the row whose pair is open is current, whichever party the address names first"
     },
@@ -416,8 +416,8 @@
     {
       "name": "SB52 the DM grouping treats every conversation as verified",
       "file": "implementations/web/client/src/lib/dms.ts",
-      "find": "const verified = pair.messages.every((m) => m.senderId !== undefined);",
-      "replace": "const verified = true;",
+      "find": "verified: messages.every((m) => m.senderId !== undefined),",
+      "replace": "verified: true,",
       "expectRed": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one",
       "cell": "5.10 a conversation holding a history row, whose sender nothing checked, says unverified with the message rows' tooltip, and only that one"
     },
@@ -436,6 +436,86 @@
       "replace": "closed: { text: \"Reconnecting\", title: \"Reconnecting to cotal web\" },",
       "expectRed": "6.4d a feed the browser closed for good reads Disconnected, says why and what to do, and keeps the down shape",
       "cell": "6.4d a feed the browser closed for good reads Disconnected, says why and what to do, and keeps the down shape"
+    },
+    {
+      "name": "SB54 the sidebar lists every conversation, however many there are",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "allDms ? conversations : conversations.filter((c, i) => i < DM_ROWS || c.key === openKey)",
+      "replace": "conversations",
+      "expectRed": "10.1 with twelve conversations the sidebar lists the ten most recent, newest first",
+      "cell": "10.1 with twelve conversations the sidebar lists the ten most recent, newest first"
+    },
+    {
+      "name": "SB55 the Show all button drops the count it promises",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "`Show all ${conversations.length}`",
+      "replace": "\"Show all\"",
+      "expectRed": "10.2 then a Show all button with the count, collapsed",
+      "cell": "10.2 then a Show all button with the count, collapsed"
+    },
+    {
+      "name": "SB56 the Show all button does not say whether the list is expanded",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "aria-expanded={allDms} ",
+      "replace": "",
+      "expectRed": "10.2 then a Show all button with the count, collapsed",
+      "cell": "10.2 then a Show all button with the count, collapsed"
+    },
+    {
+      "name": "SB57 an open conversation older than the ten is hidden until the reader asks for all",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "i < DM_ROWS || c.key === openKey",
+      "replace": "i < DM_ROWS",
+      "expectRed": "10.3 an open conversation older than the ten is listed too, after them, and is the current row",
+      "cell": "10.3 an open conversation older than the ten is listed too, after them, and is the current row"
+    },
+    {
+      "name": "SB58 the button shows with exactly ten conversations, though there is nothing more to show",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{conversations.length > DM_ROWS && (",
+      "replace": "{conversations.length >= DM_ROWS && (",
+      "expectRed": "10.4 with ten conversations every one is listed and there is no button",
+      "cell": "10.4 with ten conversations every one is listed and there is no button"
+    },
+    {
+      "name": "SB59 Show all is drawn but lists nothing more",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "allDms ? conversations :",
+      "replace": "false ? conversations :",
+      "expectRed": "10.5 Show all lists every conversation in place, and the button then reads Show fewer, expanded",
+      "cell": "10.5 Show all lists every conversation in place, and the button then reads Show fewer, expanded"
+    },
+    {
+      "name": "SB60 the expanded button still offers to show all",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "{allDms ? \"Show fewer\" : `Show all ${conversations.length}`}",
+      "replace": "{`Show all ${conversations.length}`}",
+      "expectRed": "10.5 Show all lists every conversation in place, and the button then reads Show fewer, expanded",
+      "cell": "10.5 Show all lists every conversation in place, and the button then reads Show fewer, expanded"
+    },
+    {
+      "name": "SB61 the button only ever expands, so the list cannot be shortened again",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "onClick={() => setAllDms((v) => !v)}",
+      "replace": "onClick={() => setAllDms(true)}",
+      "expectRed": "10.6 and Show fewer goes back to the ten, collapsed, with the count",
+      "cell": "10.6 and Show fewer goes back to the ten, collapsed, with the count"
+    },
+    {
+      "name": "SB62 the conversations are grouped again on every roster change",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "const conversations = useMemo(() => dmPairs(dms), [dms]);",
+      "replace": "const conversations = useMemo(() => dmPairs(dms), [dms, roster]);",
+      "expectRed": "10.7 a roster change does not group the DMs again",
+      "cell": "10.7 a roster change does not group the DMs again"
+    },
+    {
+      "name": "SB63 the name index is built once and never follows the roster",
+      "file": "implementations/web/client/src/ui/Sidebar.tsx",
+      "find": "const idx = useMemo(() => nameIndex(roster), [roster]);",
+      "replace": "const idx = useMemo(() => nameIndex(roster), []);",
+      "expectRed": "10.8 and the rows take their names from the new roster",
+      "cell": "10.8 and the rows take their names from the new roster"
     }
   ]
 }

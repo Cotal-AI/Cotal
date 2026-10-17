@@ -44,8 +44,8 @@
     {
       "name": "S1 a live DM is stored without the sender the server verified, so a DM view can only name the payload's own claim",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "[...s.dms, { msg: e.msg, senderId: e.senderId }] : s.dms;",
-      "replace": "[...s.dms, { msg: e.msg }] : s.dms;",
+      "find": "dms.push({ msg: e.msg, senderId: e.senderId });",
+      "replace": "dms.push({ msg: e.msg });",
       "expectRed": "a live DM keeps the server's verified senderId in the DM list, not the payload's from",
       "cell": "a live DM keeps the server's verified senderId in the DM list, not the payload's from"
     },

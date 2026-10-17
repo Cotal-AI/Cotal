@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { composeKey, composeTarget } from "../../lib/compose.js";
-import { dmPeers } from "../../lib/dms.js";
+import { dmPairs, pairKey } from "../../lib/dms.js";
 import { displayNameOf, nameIndex } from "../../lib/names.js";
 import { rosterRows } from "../../lib/roster.js";
 import { useStore } from "../../state/hooks.js";
@@ -11,7 +11,7 @@ import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
 import { harnessName, UNVERIFIED } from "../MessageRow.tsx";
 import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
 
-/** One direct message conversation, from `dmPeers`. The header is the peer the route names: its
+/** One direct message conversation, from `dmPairs`. The header is the peer the route names: its
  *  character, name, role and harness from the roster by id, and who it talks with. A route that names
  *  only the peer is a Message button's, so it opens the operator's conversation with the peer, and
  *  none when there is none yet: never another agent's conversation under a composer that posts to the
@@ -22,7 +22,18 @@ import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
  *  A view that posts to an agent (`composeTarget`) has the composer in its dock, and the operator's
  *  posts that no conversation holds yet follow the messages. A conversation between two agents says so
  *  in the dock's place, with Message for the operator's own conversation with the peer. The
- *  operator's own id reads "operator (you)" until the roster names it. */
+ *  operator's own id reads "operator (you)" until the roster names it.
+ *
+ *  The conversation is found among the DMs alone, so a roster change does not regroup them.
+ *
+ *  WHEN A THREAD MAY BE CUT OFF. The page holds a window, the newest `DM_WINDOW` DMs space-wide, and
+ *  nothing in it says where any one conversation started. Once a DM read has filled that window, or
+ *  it has dropped a message (`dmsCut`), any conversation may have older messages outside it, including one whose
+ *  oldest message held is not the window's oldest: it may have talked before the window opened and
+ *  been quiet while other pairs filled it. So every conversation says "Earlier messages aren't
+ *  loaded" while the window is cut, and none does while the window holds all the server had. That
+ *  can say it of a conversation that did start inside the window, but it never calls a conversation
+ *  complete when it may not be. */
 export function DmView({ store, peer, with: other }: { store: Store<DashboardState>; peer: string; with?: string }) {
   const dms = useStore(store, (s) => s.dms);
   const roster = useStore(store, (s) => s.roster);
@@ -31,9 +42,13 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peers = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
-  const convs = useMemo(() => dmPeers(dms, roster).find((p) => p.id === peer)?.conversations ?? [], [dms, roster, peer]);
+  const cut = useStore(store, (s) => s.dmsCut);
   const withWhom = other ?? self ?? undefined;
-  const conv = withWhom === undefined ? undefined : convs.find((c) => c.with === withWhom);
+  const conv = useMemo(() => {
+    if (withWhom === undefined) return undefined;
+    const key = pairKey(peer, withWhom);
+    return dmPairs(dms).find((c) => c.key === key);
+  }, [dms, peer, withWhom]);
   const me = peers.get(peer);
   const name = displayNameOf(peer, idx, self);
   const sub = [me?.role, me?.harness && harnessName(me.harness)].filter(Boolean).join(" · ");
@@ -49,12 +64,13 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
         <Avatar vendor={me?.harness} status={me?.status ?? "offline"} size={22} />
         <h1>{name}</h1>
         {sub && <span className="ui-topic">{sub}</span>}
-        {conv && <span className="ui-topic">{`with ${displayNameOf(conv.with, idx, self)}`}</span>}
+        {conv && withWhom !== undefined && <span className="ui-topic">{`with ${displayNameOf(withWhom, idx, self)}`}</span>}
         {conv && !conv.verified && <span className="ui-unverified" title={UNVERIFIED}>unverified</span>}
       </header>
       <div className="ui-scroll" ref={scroll.ref} onScroll={scroll.onScroll}>
         {conv || sent > 0 ? (
           <div className="ui-col">
+            {conv && cut && <div className="ui-cutoff">Earlier messages aren't loaded</div>}
             {conv && <MessageList messages={conv.messages} idx={idx} peers={peers} />}
             {target && <OutgoingRows store={store} target={target} shown={shown} />}
           </div>

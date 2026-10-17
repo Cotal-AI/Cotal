@@ -8,14 +8,15 @@
  *  nothing verified says so; the working line names a working member of THIS channel; a Needs card
  *  dismissal lasts until that agent's status changes and survives blocked storage; and a reopen keeps
  *  the rows and the scroll position while its history loads. A reload from history keeps the copy of
- *  a message the page saw verified live, in a channel, the DMs and Activity. */
+ *  a message the page saw verified live, in a channel, the DMs and Activity. The DMs are a window of
+ *  the newest 500, and once it may not reach back to a conversation's start the DM view says so. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
 import { wave } from "../client/src/art/index.ts";
-import { dmPeers } from "../client/src/lib/dms.js";
+import { DM_WINDOW, dmPeers } from "../client/src/lib/dms.js";
 import { rosterRows } from "../client/src/lib/roster.js";
 import { formatRoute, type Route } from "../client/src/lib/route.js";
 import { Shell } from "../client/src/Shell.tsx";
@@ -569,6 +570,75 @@ const frame = (id: string, seq: number) =>
   await refreshing;
   same("11.7 a frame the feed's order machine held back during a refresh keeps its verified copy when Activity's backfill carries it too",
     [heldBack, h.store.get().activity.map((e) => [e.msg.id, (e as FeedMessage).senderId ?? null])], [0, [["f2", "local.dav"]]]);
+}
+
+// ── 12. The DM window ────────────────────────────────────────────────────────────────────────────
+// The page holds the newest `DM_WINDOW` direct messages space-wide, and knows when that window may not
+// reach back to the start: a read that filled it, or a live DM that pushed the oldest out.
+const unicast = (id: string, from = "local.dav", to = "local.rv2"): FeedMessage =>
+  ({ mode: "unicast", senderId: from, msg: msg(id, from, `dm ${id}`, at(12, 0), { to, channel: undefined }) }) as FeedMessage;
+const dmRead = (n: number, prefix = "r") =>
+  Array.from({ length: n }, (_, i) => msg(`${prefix}${i}`, "local.rev", `read ${i}`, at(9, 0) + i, { to: "local.pln", channel: undefined }));
+{
+  const h = harness({});
+  for (let i = 0; i < DM_WINDOW + 3; i++) h.ctl.onMessage(unicast(`l${i}`));
+  const ids = h.store.get().dms.map((d) => d.msg.id);
+  same("12.1 live DMs past the window keep the newest 500, as Activity keeps its newest",
+    [ids.length, ids[0], ids.at(-1)], [DM_WINDOW, "l3", `l${DM_WINDOW + 2}`]);
+}
+{
+  const h = harness({ ...bootReads, dms: async () => dmRead(3) });
+  await h.ctl.refresh();
+  h.ctl.onMessage(unicast("r1", "local.rev", "local.pln"));
+  h.ctl.onMessage(unicast("n1"));
+  h.ctl.onMessage(unicast("n1"));
+  same("12.2 a DM the page already holds, read or live, is kept once when the feed delivers it again",
+    h.store.get().dms.map((d) => d.msg.id), ["r0", "r1", "r2", "n1"]);
+}
+{
+  const h = harness({ ...bootReads, dms: async () => dmRead(DM_WINDOW - 1) });
+  await h.ctl.refresh();
+  ok("12.3 a DM read that comes back short of the window held all the server had, so the window is not cut",
+    h.store.get().dms.length === DM_WINDOW - 1 && h.store.get().dmsCut === false, h.store.get().dmsCut);
+  h.ctl.onMessage(unicast("n1"));
+  ok("12.3b and a live DM that only fills it drops nothing, so it is still not cut",
+    h.store.get().dms.length === DM_WINDOW && h.store.get().dmsCut === false, h.store.get().dmsCut);
+  h.ctl.onMessage(unicast("n2"));
+  ok("12.5 a live DM that pushes the oldest out marks the window cut",
+    h.store.get().dms.length === DM_WINDOW && h.store.get().dms[0].msg.id === "r1" && h.store.get().dmsCut === true, h.store.get().dmsCut);
+}
+{
+  const h = harness({ ...bootReads, dms: async () => dmRead(DM_WINDOW) });
+  await h.ctl.refresh();
+  ok("12.4 a DM read that fills the window may have left older DMs on the server, so the window is cut",
+    h.store.get().dms.length === DM_WINDOW && h.store.get().dmsCut === true, h.store.get().dmsCut);
+}
+{
+  const h = harness({});
+  for (let i = 0; i < DM_WINDOW; i++) h.ctl.onMessage(unicast(`l${i}`));
+  h.ctl.onMessage(unicast("l500"));
+  h.ctl.onMessage(unicast("l0"));
+  const ids = h.store.get().dms.map((d) => d.msg.id);
+  same("12.8 the window forgets an id it dropped: that DM delivered again is held again, as the newest",
+    [ids.length, ids[0], ids.at(-1)], [DM_WINDOW, "l2", "l0"]);
+}
+{
+  // Two conversations: rev and pln hold the window's oldest message, and dav and rv2 start later.
+  const window: StoredMessage[] = [
+    { msg: msg("w1", "local.rev", "Oldest in the window.", at(9, 0), { to: "local.pln", channel: undefined }), senderId: "local.rev" },
+    { msg: msg("w2", "local.dav", "Starts later.", at(9, 5), { to: "local.rv2", channel: undefined }), senderId: "local.dav" },
+    { msg: msg("w3", "local.rv2", "A reply.", at(9, 6), { to: "local.dav", channel: undefined }), senderId: "local.rv2" },
+  ];
+  const first = (cut: boolean, route: Route) => {
+    const col = centre(shellDom({ space: "main", roster, dms: window, dmsCut: cut }, route)).querySelector(".ui-scroll .ui-col");
+    return [col?.firstElementChild?.className ?? null, textOf(col?.firstElementChild)];
+  };
+  same("12.6 while the window is cut, every conversation opens on a quiet line saying earlier messages are not loaded, including one whose oldest message is not the window's oldest",
+    [first(true, { view: "dm", peer: "local.rev", with: "local.pln" }), first(true, { view: "dm", peer: "local.dav", with: "local.rv2" })],
+    [["ui-cutoff", "Earlier messages aren't loaded"], ["ui-cutoff", "Earlier messages aren't loaded"]]);
+  ok("12.7 while the window holds all the server had, no conversation says so",
+    [{ view: "dm", peer: "local.rev", with: "local.pln" }, { view: "dm", peer: "local.dav", with: "local.rv2" }].every((r) => first(false, r as Route)[0] !== "ui-cutoff")
+      && textOf(centre(shellDom({ space: "main", roster, dms: window, dmsCut: false }, { view: "dm", peer: "local.dav", with: "local.rv2" }))).includes("Starts later."));
 }
 
 await closeDom();

@@ -396,6 +396,10 @@ pre code { background: none; padding: 0; }
 .ui-space-static { cursor: default; }
 .ui-space-static:hover { background: none; }
 .ui-beat-empty { padding: 4px 8px; font-size: 12.5px; }
+/* The sidebar's "Show all" toggle under the conversations: a row, quieter than the rows it lists. */
+.ui-row-more .ui-row-lbl { color: var(--side-dim); }
+/* The DM view's first line when the conversation may start before the messages the page holds. */
+.ui-cutoff { color: var(--dim); font-size: 12.5px; text-align: center; margin: 0 0 12px; }
 /* A feed that is down: a hollow dashed dot in place of the filled green one, so the state is its shape and its word. */
 .ui-live-down i { background: transparent; border: 1.5px dashed var(--faint); box-shadow: none; }
 /* A view fills the centre with the mock's bar, scroll and dock. The phase 1 roster list that still

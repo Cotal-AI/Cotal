@@ -58,7 +58,12 @@ export interface DashboardState {
   /** Newest last, capped at 500. The backfill holds chat and unicast entries; the live feed adds
    *  anycast too, with its verified `senderId`. */
   activity: (ActivityEntry | FeedMessage)[];
+  /** Newest last, capped at `DM_WINDOW` (500) space-wide. */
   dms: StoredMessage[];
+  /** True when the DMs held may not reach back to the start: the last DM read filled the window, so
+   *  the server may hold older ones, or a live DM pushed the oldest out. A read that came back short
+   *  of the window held everything the server had, and sets it false. */
+  dmsCut: boolean;
   open: { channel: string; messages: StoredMessage[] } | null;
   stale: StaleMark[];
   /** Newest last, capped at 50. */
@@ -88,6 +93,7 @@ export const initialState: DashboardState = {
   unread: {},
   activity: [],
   dms: [],
+  dmsCut: false,
   open: null,
   stale: [],
   orderNotes: [],
