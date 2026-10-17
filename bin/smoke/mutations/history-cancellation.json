@@ -9,7 +9,7 @@
   "command": "pnpm smoke:history-cancellation",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/history-cancellation.json",
   "why": [
-    "FOUR MUTATIONS across the public API, broker pull buffering, newest-N paging, and dashboard threading.",
+    "Mutations across the public API, broker pull buffering, newest-N paging, and dashboard threading.",
     "",
     "M1 removes the public AbortSignal. The real constrained-link call stays pending and retains its",
     "ephemeral consumer.",
@@ -43,8 +43,8 @@
       "command": "pnpm smoke:web-activity-read-cost",
       "afterRestore": "pnpm --filter @cotal-ai/core build",
       "completionMarker": "activity-read-cost smoke:",
-      "find": "      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });",
-      "replace": "      const iter = await consumer.fetch({ max_messages: pending });",
+      "find": "      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });\n      const stop = () => iter.stop(abortReason(signal));\n      signal?.addEventListener(\"abort\", stop, { once: true });",
+      "replace": "      const iter = await consumer.fetch({ max_messages: pending });\n      const stop = () => iter.stop(abortReason(signal));\n      signal?.addEventListener(\"abort\", stop, { once: true });",
       "expectRed": "7.3 and the whole aborted read moves far less than the backlog it was reading",
       "cell": "7.3 and the whole aborted read moves far less than the backlog it was reading"
     },
