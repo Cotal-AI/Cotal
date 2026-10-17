@@ -2250,6 +2250,8 @@ channel the identity may read. `--limit` bounds the read, and `--since`, `--from
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
 whether the window goes back to `--since`.
+The report shows each message's local time, with its date when it is not today; `result.items[].ts`
+is the ISO time.
 
 Retained history is not every message sent. The chat stream keeps a fixed number of messages per
 sender on each channel, so a busy sender's oldest messages are discarded while other senders'

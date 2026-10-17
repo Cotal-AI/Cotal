@@ -208,6 +208,8 @@ try {
 
   const plain = await run(["history", "general", "--plain"]);
   check("the plain report is a table and names the retention and replay", plain.status === 0 && /^TIME\s+WHERE\s+FROM\s+MESSAGE/m.test(plain.stdout) && /#general\s+alice\s+deploy started/.test(plain.stdout) && /retention: /.test(plain.stdout) && /#general replay to new members: on \(24h\)/.test(plain.stdout) && !/\x1b\[/.test(plain.stdout), shown(plain));
+  const localTime = items[0] ? new Date(items[0].ts).toLocaleTimeString() : "";
+  check("the plain report shows each message's local time, not the ISO time JSON carries", localTime !== "" && plain.stdout.includes(localTime) && !/\d{4}-\d\d-\d\dT\d\d:/.test(plain.stdout) && /^\d{4}-\d\d-\d\dT/.test(items[0]!.ts), { localTime, stdout: plain.stdout.slice(0, 600) });
 
   // ── usage ───────────────────────────────────────────────────────────────────────────────────────
   for (const args of [["general", "--dms"], ["--limit", "0"], ["--limit", "1001"], ["--since", "yesterday-ish"], ["--dms", "--since", "5"], ["general", "ops"], ["--force"], ["--json", "--plain"]]) {
@@ -243,6 +245,7 @@ try {
   fp.child.kill("SIGINT");
   await fp.exited;
   check("--follow --plain appends each matching message as a line", shownLine && fp.lines.some((l) => /#ops\s+bob: a plain line/.test(l)) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
+  check("a followed line shows the local time, not the ISO time", fp.lines.some((l) => /bob: a plain line/.test(l) && !/^\d{4}-\d\d-\d\dT/.test(l)), fp.lines.slice(-4));
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {
