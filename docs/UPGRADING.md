@@ -109,14 +109,16 @@ Upgrading the `cotal` binary is the whole operation.
 ### What stops working
 
 - `cotal status` exits 4 when it could not read part of what it reports, such as a PID record, the
-  folder's trust material or a user-auth login. It exited 0. An unreachable broker, a stopped process
+  folder's trust material, a persona catalog, a mesh registry record or a user-auth login. It exited
+  0. An unreachable broker, a stopped process
   or an unbound responder still exits 0.
 - The recorded meshes list checks only the selected mesh and reads `not checked` for the others. Pass
   `--all` to check every one.
 - The report no longer lists the roster or prints a `cotal status` title line, and its standalone
   hints moved to a `Hints` section at the end. Rows are labeled `name: value`. Human output is not a
   parsing target; use `--json`.
-- `--components` is refused with `--json`, `--plain` or `--all`.
+- `--components` is refused with `--json`, `--plain` or `--all`. Its exit, `0` to `3` by component
+  health, replaces the report's, so it does not exit 4 for a partial report.
 
 ### Before the upgrade
 

@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { renderReport } from "@cotal-ai/workspace";
+import { statusView } from "../src/commands/status.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -36,8 +38,8 @@ type Envelope = {
   result: {
     kind: string;
     machine: { nats: string };
-    folder: { auth: { state: string }; processes: { name: string; state: string }[] | null };
-    meshes: { items: Mesh[] };
+    folder: { auth: { state: string }; personas: { root: string; default: string; error: string | null }; processes: { name: string; state: string }[] | null };
+    meshes: { current: string | null; unreadable: { file: string; error: string }[]; items: Mesh[] };
     selected: { resolved: boolean; code?: string; space?: string; connection?: string };
     hints: string[];
   } | null;
@@ -85,7 +87,7 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   const rich = run(["status", ...unknown], { FORCE_COLOR: "1" });
   const plain = run(["status", ...unknown, "--plain"], { FORCE_COLOR: "1" });
   check("status draws a colored report", rich.status === 0 && /\x1b\[/.test(rich.stdout), shown(rich));
-  check("--plain writes the same words with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout), shown(plain));
+  check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout).replace(/·/g, "-"), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
     JSON.stringify(titles(plain.stdout)) === JSON.stringify(["Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Hints"]),
@@ -110,6 +112,10 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   check("the selected registration is checked and reported unreachable", byName(selected.envelope).alpha === "unreachable", byName(selected.envelope));
   check("the other registration is not checked", byName(selected.envelope).beta === "not-checked", byName(selected.envelope));
   check("an unreachable selected mesh is a fact, not a partial read", selected.status === 0 && selected.envelope?.completeness === "complete" && selected.envelope.result?.selected.connection === "unreachable", shown(selected));
+  // The membership feed's time is shown as an age; the document keeps the ISO time it was read at.
+  const fed = { ...selected.envelope!.result!, selected: { ...selected.envelope!.result!.selected, membershipFeed: { entries: 2, asOf: new Date(Date.now() - 90_000).toISOString() } } };
+  const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0]), "plain");
+  check("the membership feed row says how long ago it was updated", /^ {2}membership feed: +2 entries - updated 1m ago$/m.test(fedReport), fedReport.split("\n").filter((l) => /membership/.test(l)));
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
@@ -143,6 +149,44 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   check("its warning is AUTH_UNREADABLE and a hint names the repair", env?.warnings.some((w) => w.code === "AUTH_UNREADABLE") === true && (env?.result?.hints ?? []).some((h) => /repair or remove|check permissions/.test(h)), { warnings: env?.warnings, hints: env?.result?.hints });
 }
 
+// ── a persona catalog, the current-mesh pointer or a registry record it cannot read is partial ────
+{
+  const { home, run } = sandbox();
+  // The catalog path exists and is not a directory. An absent one is the empty catalog above.
+  writeFileSync(join(home, ".cotal", "agents"), "");
+  const json = run(["status", "--space", "nosuch", "--json"]);
+  const env = json.envelope;
+  check("an unreadable persona catalog is partial with exit 4", json.status === 4 && env?.outcome === "partial" && env.completeness === "partial", shown(json));
+  check("the catalog is unreadable, not missing, and its warning names it", env?.result?.folder.personas.default === "unreadable" && env.warnings.some((w) => w.code === "PERSONAS_UNREADABLE" && w.message.includes(env.result!.folder.personas.root)), { personas: env?.result?.folder.personas, warnings: env?.warnings });
+  const plain = run(["status", "--space", "nosuch", "--plain"]);
+  check("the report names the catalog unreadable, not no default", /personas:\s+unreadable: /.test(plain.stdout) && !/no default/.test(plain.stdout), plain.stdout);
+}
+{
+  const { home, run } = sandbox();
+  const pointer = join(home, ".cotal-home", "current-mesh");
+  mkdirSync(pointer, { recursive: true });
+  const json = run(["status", "--space", "nosuch", "--json"]);
+  const env = json.envelope;
+  check("an unreadable current-mesh pointer is partial with exit 4", json.status === 4 && env?.outcome === "partial", shown(json));
+  check("the pointer is named as unreadable, not read as unset", env?.result?.meshes.current === null && env.result.meshes.unreadable.some((u) => u.file === pointer) && env.warnings.some((w) => w.code === "MESH_REGISTRY_UNREADABLE" && w.message.includes(pointer)), { meshes: env?.result?.meshes, warnings: env?.warnings });
+}
+{
+  const { home, run } = sandbox();
+  const add = run(["meshes", "add", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--mode", "open", "--root", home, "--force"]);
+  check("control: alpha is registered", add.status === 0, shown(add));
+  const clean = run(["status", "--space", "alpha", "--json"]);
+  check("control: with every registry file readable the run is complete", clean.status === 0 && clean.envelope?.completeness === "complete", shown(clean));
+  const record = join(home, ".cotal-home", "meshes", "space.dead.json");
+  writeFileSync(record, "{not json");
+  const json = run(["status", "--space", "alpha", "--json"]);
+  const env = json.envelope;
+  check("a registry record that will not parse is partial with exit 4, not unknown", json.status === 4 && env?.outcome === "partial" && env.result !== null, shown(json));
+  check("the record is named and the readable records are still listed", env?.result?.meshes.unreadable.some((u) => u.file === record) === true && env.result.meshes.items.some((m) => m.space === "alpha") && env.warnings.some((w) => w.code === "MESH_REGISTRY_UNREADABLE" && w.message.includes(record)), { meshes: env?.result?.meshes, warnings: env?.warnings });
+  check("the selection is unresolved by the unreadable record", env?.result?.selected.resolved === false && env.result.selected.code === "registry-unreadable", env?.result?.selected);
+  const plain = run(["status", "--space", "alpha", "--plain"]);
+  check("the report names the record under the recorded meshes", plain.status === 4 && /unreadable: .*space\.dead\.json does not parse/.test(plain.stdout.split("\nRecorded Meshes\n")[1]?.split("\nSelected Mesh\n")[0] ?? ""), shown(plain));
+}
+
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────
 {
   const { run } = sandbox();
@@ -150,6 +194,8 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  const plainOnly = run(["status", "--components", "--plain"]);
+  check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
 }

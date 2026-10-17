@@ -68,7 +68,9 @@ let specBody = "";
   check("a page is the bundled copy, with no refresh asked", json.status === 0 && r?.kind === "docs-page" && r.slug === "architecture" && r.source === "bundled" && r.refresh === null && r.body.startsWith("# Architecture"), r && { ...r, body: r.body.slice(0, 80) });
   const plain = run(["docs", "ARCHITECTURE.md", "--plain"]);
   const lines = plain.stdout.split("\n");
-  check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(r?.body.split("\n")[2] ?? "\u0000"), shown(plain));
+  // A line of the page with no punctuation that plain writes in ASCII, so it reads the same in both.
+  const asciiLine = r?.body.split("\n").find((line) => line.length > 20 && /^[\x20-\x7e]+$/.test(line));
+  check("a page's slug is matched without case or .md, and the plain page says which copy it is", plain.status === 0 && lines[0] === `bundled v${VERSION}` && plain.stdout.includes("# Architecture") && plain.stdout.includes(asciiLine ?? "\u0000"), shown(plain));
   const spec = run(["docs", "spec", "--json"]);
   specBody = (spec.envelope?.result as { body?: string } | undefined)?.body ?? "";
   check("spec, lang and schema are pages too", spec.status === 0 && specBody.length > 0 && run(["docs", "lang", "--json"]).status === 0 && run(["docs", "schema", "--json"]).status === 0, shown(spec));
