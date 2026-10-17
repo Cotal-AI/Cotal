@@ -1,0 +1,25 @@
+{
+  "command": "pnpm smoke:web-agent-session-live",
+  "suite": [
+    "implementations/web/smoke/agent-session-live.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "the tap sends an agent's frames to every open feed rather than to the feeds watching that agent",
+      "file": "implementations/web/src/web.ts",
+      "find": "      for (const res of watchers.targets(verdict.agent)) if (!res.writableEnded) send(res, \"agent-frame\", verdict.data);",
+      "replace": "      for (const res of feeds.values()) if (!res.writableEnded) send(res, \"agent-frame\", verdict.data);",
+      "expectRed": "2.6 a second feed that does not watch receives nothing for the agent",
+      "cell": "2.6 a second feed that does not watch receives nothing for the agent"
+    },
+    {
+      "name": "unwatch answers 204 and does nothing, so a closed session keeps receiving its agent's frames",
+      "file": "implementations/web/src/web.ts",
+      "find": "        else watchers.unwatch(agent.id, feed);",
+      "replace": "        else void feed;",
+      "expectRed": "6.2 after unwatch, the next frame reaches no feed",
+      "cell": "6.2 after unwatch, the next frame reaches no feed"
+    }
+  ]
+}

@@ -25,12 +25,13 @@
  * the fixture data below and asserted in both directions, because a filter that is too eager deletes
  * a person's messages from the view they were sent to.
  *
- * WHAT IS DELIBERATELY NOT FILTERED is asserted here too, as SOURCE-SHAPE cells and labelled as
- * such: the live SSE tap (frames are marked, never dropped) and `/api/channels/<name>/history` (a
- * caller naming an event channel gets it, or the surface could render a frame it could never fetch).
- * Those two are pinned by reading the shipped source rather than by executing a request, because the
- * request handler is a closure inside `web()` and no seam reaches it. Stated as the weaker evidence
- * it is, so a later reader does not mistake it for a behavioural test.
+ * WHAT IS DELIBERATELY NOT FILTERED is asserted here too. `/api/channels/<name>/history` (a caller
+ * naming an event channel gets it, or the surface could render a frame it could never fetch) is
+ * pinned as SOURCE-SHAPE cells and labelled as such, because the request handler is a closure inside
+ * `web()` and no seam reaches it. Stated as the weaker evidence it is, so a later reader does not
+ * mistake it for a behavioural test. The live tap is a behavioural cell over `classifyTap`: it sends
+ * an agent's frames only to the feeds watching that agent, so a frame is never a `message`, and it
+ * uses the same derivation, so the near-miss names still are.
  *
  * Run: pnpm smoke:web-events-filter
  */
@@ -38,7 +39,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CotalMessage } from "@cotal-ai/core";
-import { activityBackfill, chatOnly, type ActivitySource } from "../src/web.js";
+import { chatSubject } from "@cotal-ai/core";
+import { activityBackfill, chatOnly, classifyTap, type ActivitySource } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -163,9 +165,10 @@ console.log("web-events-filter smoke");
   ok("4.2 the feed is DMs only, not an error", out.every((e) => e.mode === "unicast"));
 }
 
-// ── 5. what is NOT filtered, pinned as SOURCE-SHAPE claims ──────────────────────────────────────
-// Weaker evidence than the cells above, and labelled so: the request handler is a closure inside
-// `web()`, so these read the shipped source instead of issuing a request.
+// ── 5. what is NOT filtered ─────────────────────────────────────────────────────────────────────
+// 5.1 to 5.3 are SOURCE-SHAPE claims, weaker evidence than the cells above, and labelled so: the
+// request handler is a closure inside `web()`, so these read the shipped source instead of issuing
+// a request. 5.4 calls the tap's classifier.
 {
   const src = readFileSync(join(here, "..", "src", "web.ts"), "utf8");
   // Two call sites: the channel list and the activity backfill. The declaration carries a type
@@ -179,8 +182,11 @@ console.log("web-events-filter smoke");
   ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", !routeBody.includes("chatOnly"), routeBody.slice(0, 200));
   ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", routeBody.includes("channelHistory"));
 
-  const tap = src.slice(src.indexOf("ep.tap("), src.indexOf("ep.tap(") + 200);
-  ok("5.4 SOURCE-SHAPE: the live tap is not filtered, so frames stay visible", !tap.includes("chatOnly"), tap.slice(0, 120));
+  // Every channel in the fixture, as the live tap would receive it on the chat plane.
+  const tapped = Object.fromEntries(CHANNELS.map(({ channel }) =>
+    [channel, classifyTap(chatSubject("filter-test", "local", "alice", channel), msg(channel, 1))?.event]));
+  ok("5.4 the live tap sends a frame on a principal-shaped channel as no `message`, and the near-miss names as `message`",
+    EVENT_CHANNELS.every((c) => tapped[c] === "agent-frame") && KEPT.every((c) => tapped[c] === "message"), tapped);
 }
 
 console.log(`web-events-filter smoke: ${cells - failed} passed, ${failed} failed`);

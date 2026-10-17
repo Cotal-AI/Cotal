@@ -1,0 +1,2 @@
+# The tap sends an agent's frames only to the feeds watching it, the watch map counts once and forgets a closed feed, and the events read is bounded.
+smoke:web-agent-session

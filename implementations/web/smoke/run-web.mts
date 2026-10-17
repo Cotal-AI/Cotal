@@ -7,8 +7,20 @@
  *  ignored rather than guessed at.
  *
  *  Not shipped and not imported by shipped code: this file lives under `smoke/`. */
-import { CotalEndpoint } from "@cotal-ai/core";
+import { CotalEndpoint, spacePrefix } from "@cotal-ai/core";
 import { web } from "../src/web.js";
+
+/** An event channel's history is refused the way a broker refuses a read the credential does not
+ *  carry, so a suite can read the events route's answer to a refusal on an open mesh. Every other
+ *  channel reads normally. */
+if (process.env.COTAL_WEB_SMOKE_REFUSE_EVENTS === "1") {
+  const channelHistory = CotalEndpoint.prototype.channelHistory;
+  CotalEndpoint.prototype.channelHistory = function (channel, opts) {
+    return channel.startsWith("events.")
+      ? Promise.reject(new Error(`Permissions Violation for Subscription to "${spacePrefix(this.space)}.chat.*.*.${channel}"`))
+      : channelHistory.call(this, channel, opts);
+  };
+}
 
 if (process.env.COTAL_WEB_SMOKE_REJECT_HISTORY === "1") {
   CotalEndpoint.prototype.dmHistory = async () => { throw new Error("timeout"); };

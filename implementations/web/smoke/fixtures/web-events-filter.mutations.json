@@ -21,6 +21,14 @@
       "find": "      const channels = chatOnly(await ep.listChannels());",
       "replace": "      const channels = await ep.listChannels();",
       "expectRed": "5.1 SOURCE-SHAPE: chatOnly has exactly two call sites"
+    },
+    {
+      "name": "F4 the live tap classifies by the bare events. prefix, so a human channel called events.standup is taken for an agent's stream and its messages reach only the feeds watching an agent that does not exist",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const agent = channel === undefined ? null : eventChannelPrincipal(channel);",
+      "replace": "  const agent = channel?.startsWith(\"events.\") ? { owner: \"local\", actor: \"x\" } : null;",
+      "expectRed": "5.4 the live tap sends a frame on a principal-shaped channel as no `message`, and the near-miss names as `message`",
+      "cell": "5.4 the live tap sends a frame on a principal-shaped channel as no `message`, and the near-miss names as `message`"
     }
   ],
   "suite": [

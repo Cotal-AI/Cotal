@@ -1,0 +1,57 @@
+{
+  "command": "pnpm smoke:web-agent-session",
+  "suite": [
+    "implementations/web/smoke/agent-session.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "the tap forwards an agent's frames as message again, so every browser receives every agent's frames whether or not anyone watches",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const agent = channel === undefined ? null : eventChannelPrincipal(channel);",
+      "replace": "  const agent = null as { owner: string; actor: string } | null;",
+      "expectRed": "1.1 a chat message on events.local.abc is an agent-frame for local.abc, not a message",
+      "cell": "1.1 a chat message on events.local.abc is an agent-frame for local.abc, not a message"
+    },
+    {
+      "name": "a repeated watch from one feed is counted twice, so that feed receives each frame twice and one unwatch no longer matches one watch",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (!feeds.includes(feed)) feeds.push(feed);",
+      "replace": "    feeds.push(feed);",
+      "expectRed": "2.1 two watches from one feed count once",
+      "cell": "2.1 two watches from one feed count once"
+    },
+    {
+      "name": "a closed feed's watches are never forgotten, so the map keeps a dead connection per agent it ever watched",
+      "file": "implementations/web/src/web.ts",
+      "find": "    for (const agent of [...(this.byFeed.get(feed) ?? [])]) this.unwatch(agent, feed);",
+      "replace": "    void feed;",
+      "expectRed": "2.6 drop removes a feed from every agent it watched",
+      "cell": "2.6 drop removes a feed from every agent it watched"
+    },
+    {
+      "name": "the per-feed ceiling is gone, so one browser can grow the watch map without bound by asking for ids nobody runs",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (!held.has(agent) && held.size >= this.perFeed)",
+      "replace": "    if (false)",
+      "expectRed": "2.9 a feed already at the ceiling is refused a new agent as a bad request, and holds what it held",
+      "cell": "2.9 a feed already at the ceiling is refused a new agent as a bad request, and holds what it held"
+    },
+    {
+      "name": "the history read asks for limit rather than limit + 1, so it can never learn that an earlier page exists and Load earlier is never offered",
+      "file": "implementations/web/src/web.ts",
+      "find": "{ limit: limit + 1, signal: clock.signal }",
+      "replace": "{ limit, signal: clock.signal }",
+      "expectRed": "4.2 more is true when limit + 1 came back",
+      "cell": "4.2 more is true when limit + 1 came back"
+    },
+    {
+      "name": "a broker refusal rethrows instead of answering, so a per-user mesh shows a 503 rather than the refusal and the grant that fixes it",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (isPermissionDenied(e)) {",
+      "replace": "    if (false) {",
+      "expectRed": "4.7 a denial answers { refused } with the error's text unchanged and the grant grantFor gave",
+      "cell": "4.7 a denial answers { refused } with the error's text unchanged and the grant grantFor gave"
+    }
+  ]
+}
