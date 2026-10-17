@@ -90,9 +90,17 @@ const UNIT_MS: Record<string, number> = { s: 1_000, m: 60_000, h: 3_600_000, d: 
 
 function parseSince(raw: string | undefined, now: number): Since | undefined {
   if (raw === undefined) return undefined;
-  if (/^\d+$/.test(raw)) return { kind: "seq", seq: Number(raw), text: raw };
+  if (/^\d+$/.test(raw)) {
+    const seq = Number(raw);
+    if (!Number.isSafeInteger(seq)) throw usage("--since sequence must be a whole number this client can represent without rounding");
+    return { kind: "seq", seq, text: raw };
+  }
   const age = /^(\d+)([smhd])$/.exec(raw);
-  if (age) return { kind: "time", ms: now - Number(age[1]) * UNIT_MS[age[2]!]!, text: new Date(now - Number(age[1]) * UNIT_MS[age[2]!]!).toISOString() };
+  if (age) {
+    const at = new Date(now - Number(age[1]) * UNIT_MS[age[2]!]!);
+    if (!Number.isFinite(at.getTime())) throw usage("--since age is outside the supported date range");
+    return { kind: "time", ms: at.getTime(), text: at.toISOString() };
+  }
   const at = Date.parse(raw);
   if (Number.isFinite(at)) return { kind: "time", ms: at, text: new Date(at).toISOString() };
   throw usage(`--since takes a time (ISO 8601, or an age such as 30m, 2h, 1d) or a chat stream sequence, not "${raw}"`);
@@ -154,6 +162,7 @@ export async function history(args: ParsedArgs): Promise<void> {
     space: conn.space,
     servers: conn.server,
     ...endpointAuth(conn),
+    ...(conn.mode === "user" ? { lifecycleUid: conn.epCaller?.uid } : {}),
     channels: [],
     consume: false,
     registerPresence: false,
@@ -172,7 +181,10 @@ export async function history(args: ParsedArgs): Promise<void> {
     // A follow taps before it reads, so nothing sent between the read and the tap is lost; the
     // snapshot and the live feed are reconciled by message id.
     const live = v.follow ? openLive(ep, conn, channel, Boolean(v.dms)) : undefined;
-    const { result, warnings } = await readWindow(ep, conn, { channel, dms: Boolean(v.dms), limit, since, from: v.from, grep: v.grep, target });
+    const { result, warnings } = await readWindow(ep, conn, { channel, dms: Boolean(v.dms), limit, since, from: v.from, grep: v.grep, target }).catch((e: unknown) => {
+      if (e instanceof CommandFailure) throw e;
+      throw new CommandFailure("failed", "OPERATION_FAILED", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });
+    });
     const partial = warnings.length
       ? { message: `history could not read ${warnings.length === 1 ? "one part" : `${warnings.length} parts`} of what it reports; the warnings name ${warnings.length === 1 ? "it" : "each"}` }
       : undefined;
@@ -208,7 +220,7 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
   if (user && req.dms)
     throw new CommandFailure("refused", "PERMISSION_DENIED", "DM history is readable only with the space signer's audit credential; a user-auth identity holds no DM read grant", { target: req.target });
   if (user && req.since?.kind === "seq")
-    throw new CommandFailure("refused", "UNSUPPORTED", "a user-auth identity reads history through the delivery daemon, which reports no stream sequence; give --since a time", { target: req.target });
+    throw new CommandFailure("refused", "UNSUPPORTED", "stream-sequence cursors are not supported for user-auth history; give --since a time", { target: req.target });
 
   // The channel list with its retained counts. A named channel needs it only for the count, so a
   // failure there is a part not read; reading every channel needs it to know what to read.
@@ -246,12 +258,13 @@ export async function readWindow(ep: CotalEndpoint, conn: Connection, req: Windo
       read = merged.slice(-req.limit);
     }
   } else {
-    // A user-auth identity reads through the delivery daemon, which checks its read grant on every
-    // call. A channel outside the grant is refused, never an empty page.
+    // Use this connection's broker-confined channel grant, not the delivery ACL mirror that human
+    // CLI actors do not enroll in. One budget covers the whole serial channel walk.
+    const signal = AbortSignal.timeout(30_000);
     let incomplete = false;
     for (const ch of channels) {
       try {
-        const page = await ep.readHistory(ch, { limit: req.limit });
+        const page = await ep.channelHistoryPage(ch, { limit: req.limit, signal });
         read.push(...page.items.map((msg) => itemOf(msg, { channel: ch })));
         if (!page.complete) incomplete = true;
       } catch (e) {

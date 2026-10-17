@@ -154,6 +154,24 @@
       "expectRed": "a followed line shows the local time, not the ISO time",
       "cell": "a followed line shows the local time, not the ISO time",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an out-of-range history age becomes an unknown failure",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "    if (!Number.isFinite(at.getTime())) throw usage(\"--since age is outside the supported date range\");\n",
+      "replace": "",
+      "expectRed": "an unrepresentable --since age is a usage error before connecting",
+      "cell": "an unrepresentable --since age is a usage error before connecting",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an inexact history sequence is rounded and sent",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "    if (!Number.isSafeInteger(seq)) throw usage(\"--since sequence must be a whole number this client can represent without rounding\");\n",
+      "replace": "",
+      "expectRed": "an inexact --since sequence is a usage error before connecting",
+      "cell": "an inexact --since sequence is a usage error before connecting",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
