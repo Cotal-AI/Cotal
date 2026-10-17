@@ -1,0 +1,24 @@
+{
+  "command": "pnpm smoke:history-recent",
+  "suite": [
+    "packages/core/smoke/history-recent.smoke.ts"
+  ],
+  "mutations": [
+    {
+      "name": "the publisher option is ignored, so a read that names one principal returns the channel from every sender, forged rows included",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const subject = from === undefined\n      ? chatSubject(this.space, \"*\", \"*\", channel)",
+      "replace": "    const subject = true\n      ? chatSubject(this.space, \"*\", \"*\", channel)",
+      "expectRed": "publisher: a read names one principal and returns only what that principal published",
+      "cell": "publisher: a read names one principal and returns only what that principal published"
+    },
+    {
+      "name": "a wildcard publisher is passed through, so a caller that meant one principal silently reads every sender",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      : chatSubject(this.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);",
+      "replace": "      : chatSubject(this.space, from.owner, from.actor, channel);",
+      "expectRed": "publisher: a wildcard in either slot is refused rather than read as any sender",
+      "cell": "publisher: a wildcard in either slot is refused rather than read as any sender"
+    }
+  ]
+}

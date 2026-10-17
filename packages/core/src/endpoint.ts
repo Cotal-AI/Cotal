@@ -119,6 +119,7 @@ import {
 } from "./channels.js";
 import {
   anycastSubject,
+  assertValidOwnerToken,
   assertValidRole,
   CHANNEL_DEFAULTS_KEY,
   chatStream,
@@ -3269,15 +3270,26 @@ export class CotalEndpoint extends EventEmitter {
    *  reclaims its ephemeral consumer before the promise rejects. Returns `HistoryMessage[]`
    *  (#1413): every field present on a row was checked by the drain before the row was
    *  returned — a stored row missing `ts` / `space` / `parts` / `from.name` is dropped, never
-   *  returned with that member silently `undefined`. */
+   *  returned with that member silently `undefined`.
+   *
+   *  `publisher` reads only what that one principal published on the channel, by filtering on its
+   *  own subject (`chat.<owner>.<actor>.<channel>`). The subject's sender slots are what the
+   *  broker's publish permissions police, so on a mesh with permissions every row of such a read was
+   *  published by that principal: the same guarantee a live subscription to that subject gives.
+   *  Without it the read is the channel from any sender. */
   async channelHistory(
     channel: string,
-    opts?: { limit?: number; signal?: AbortSignal },
+    opts?: { limit?: number; signal?: AbortSignal; publisher?: { owner: string; actor: string } },
   ): Promise<HistoryMessage[]> {
-    // history from any sender
+    const from = opts?.publisher;
+    // A publisher is one principal. A `*` in either slot would widen the read back to any sender
+    // while the caller believes it narrowed it, so both slots are checked as concrete tokens.
+    const subject = from === undefined
+      ? chatSubject(this.space, "*", "*", channel)
+      : chatSubject(this.space, assertValidOwnerToken(from.owner), assertValidOwnerToken(from.actor), channel);
     return (await this.streamHistory(
       chatStream(this.space),
-      [chatSubject(this.space, "*", "*", channel)],
+      [subject],
       opts?.limit ?? 100,
       undefined,
       opts?.signal,
