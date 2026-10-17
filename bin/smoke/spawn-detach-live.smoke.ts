@@ -202,7 +202,7 @@ try {
     bareLines.length === 2 && /^NAME\s+AGENT\s+PROCESS\s+MESH/.test(bareLines[0] ?? "") && /e2e · fancy \(high\) · pty/.test(bareLines[1] ?? ""), psBare2);
   const psWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
   ok("ps --wide adds operational facts without duplicating model or requested variant",
-    /AGENT:\s+e2e · fancy \(high\) · pty/.test(psWide) && !/model:?\s+fancy/.test(psWide) && /pid:\s+\d+/.test(psWide) && /uid:\s+[a-z0-9]{26,}/.test(psWide) && /instance:\s+[a-z0-9]{26,}/.test(psWide) && /host:\s+\S/.test(psWide), psWide);
+    /agent:\s+e2e · fancy \(high\) · pty/.test(psWide) && !/model:?\s+fancy/.test(psWide) && /pid:\s+\d+/.test(psWide) && /uid:\s+[a-z0-9]{26,}/.test(psWide) && /instance:\s+[a-z0-9]{26,}/.test(psWide) && /host:\s+\S/.test(psWide), psWide);
   const psJson = await capture(() => run("ps", ["--space", SPACE, "--json"]));
   let psEnvelope: { outcome?: string; result?: { items?: Record<string, unknown>[] } } | undefined;
   try { psEnvelope = JSON.parse(psJson); } catch { /* graded below */ }
@@ -219,11 +219,11 @@ try {
     lutWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
     if (!/lutist/.test(lutWide)) await sleep(250);
   }
-  // Each seat is one record; the identity is its AGENT field and the operational facts follow it.
-  const lutRecord = lutWide.split("\n\n").find((record) => /NAME:\s+lutist/.test(record)) ?? "";
-  const lutFacts = lutRecord.split("\n").filter((line) => !/^\s*(NAME|AGENT|PROCESS|MESH|AUTH):/.test(line)).join("\n");
+  // Each seat is one record; the identity is its agent field and the operational facts follow it.
+  const lutRecord = lutWide.split("\n\n").find((record) => /name:\s+lutist/.test(record)) ?? "";
+  const lutFacts = lutRecord.split("\n").filter((line) => !/^\s*(name|agent|process|mesh|auth):/.test(line)).join("\n");
   ok("ps --wide keeps a variant-without-model in identity and out of operational facts",
-    /AGENT:\s+e2e · variant high · pty/.test(lutRecord) && !/variant high|model/.test(lutFacts), lutWide);
+    /agent:\s+e2e · variant high · pty/.test(lutRecord) && !/variant high|model/.test(lutFacts), lutWide);
   const lutJsonOut = await capture(() => run("ps", ["--space", SPACE, "--json"]));
   let lutJson: Record<string, unknown> | undefined;
   try { lutJson = (JSON.parse(lutJsonOut) as { result: { items: Record<string, unknown>[] } }).result.items.find((row) => row.name === "lutist"); } catch { /* graded below */ }

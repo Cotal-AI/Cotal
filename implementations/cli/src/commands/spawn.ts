@@ -413,7 +413,7 @@ export const spawnFlags = [
   { name: "dry-run", type: "boolean", description: "with -f: print the plan, mutate nothing" },
   { name: "allow-stale", type: "string", value: "<a,b>", description: "with -f: waive named stale agents (apply-only)" },
   { name: "runtime", type: "string", value: "<name>", description: "with -f: override the manifest's runtime" },
-  { name: "on", type: "string", value: "<instance>", description: "with --detach: target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not roster's `local.…` principal id" },
+  { name: "on", type: "string", value: "<instance>", description: "with --detach: launch through one manager instance, by the id `ps` prints, in a space with several managers; by default any one takes it" },
   { name: "expect-owner", type: "string", value: "<u_…>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the owner the managed handoff must carry` },
   { name: "expect-lifecycle-uid", type: "string", value: "<uid>", description: `with ${MANAGED_HANDOFF_FILE_ENV}: the lifecycle UID the managed handoff must carry` },
 ] as const satisfies readonly FlagSpec[];

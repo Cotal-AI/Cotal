@@ -305,8 +305,8 @@ function statusView(status: CompletionStatus): Report {
             rows: status.shells.map((s) => ({
               shell: s.shell === status.shell ? { text: `${s.shell} (this shell)`, tone: "selected" } : s.shell,
               state: STATE[s.state],
-              wired: s.wiredIn ?? (s.state === "current" || s.state === "differs" ? { text: "no install line", tone: "hint" } : ""),
-              stub: s.stub ?? "",
+              wired: s.wiredIn ?? { text: s.state === "current" || s.state === "differs" ? "no install line" : "not wired in", tone: "hint" },
+              stub: s.stub ?? { text: "none", tone: "hint" },
             })),
           },
           {

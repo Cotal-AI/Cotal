@@ -4,8 +4,8 @@
  * connects, writes, seeds or imports an extension.
  */
 import { commandUsage, type Command, type Subcommand } from "@cotal-ai/core";
-import { getCurrent, readMesh } from "@cotal-ai/workspace";
-import { c } from "./ui.js";
+import { getCurrent, readMesh, terminalWidth } from "@cotal-ai/workspace";
+import { c, hang } from "./ui.js";
 
 /** Display order for the help groups — an explicit ranking, NOT registration order: modules
  *  self-register on import and the dev runner (tsx) doesn't guarantee entry-import evaluation
@@ -18,6 +18,17 @@ const ENTRY_COMMANDS = ["setup", "up", "spawn", "ps", "attach", "send", "status"
 
 /** The title line, built on each call so `--no-color` read after import still applies. */
 const title = (): string => `${c.bold("cotal")} - lateral agent coordination over NATS`;
+
+/** A name column and its description. When the names leave the description fewer than 30 columns,
+ *  each description goes on the lines under its name instead. */
+function describe(names: readonly string[], texts: readonly string[], width: number): string[] {
+  const pad = Math.max(...names.map((name) => name.length));
+  if (width - pad - 4 >= 30) return names.flatMap((name, i) => hang(`  ${name.padEnd(pad)}  `, texts[i]!, width, c.dim));
+  return names.flatMap((name, i) => [`  ${name.trimEnd()}`, ...hang(" ".repeat(10), texts[i]!, width, c.dim)]);
+}
+
+/** A usage line's words, each bracketed option with its value kept whole. */
+const usageWords = (usage: string): string[] => usage.match(/\[[^\]]*\]|\S+/g) ?? [usage];
 
 /** A command's name with its aliases, as help lists it. */
 function label(cmd: Command | Subcommand): string {
@@ -43,14 +54,16 @@ export function printCommandList(commands: readonly Command[], all: boolean): vo
   };
   const ordered = [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b));
   const pad = Math.max(...visible.map((cmd) => label(cmd).length));
+  const width = terminalWidth(process.stdout);
   let out = `${title()}\n`;
   for (const [group, cmds] of ordered) {
     out += `\n${c.bold(group)}\n`;
-    for (const cmd of cmds) out += `  ${label(cmd).padEnd(pad)}  ${c.dim(cmd.summary)}\n`;
+    // Padded to the widest name in every group, so the descriptions line up across groups.
+    out += `${describe(cmds.map((cmd) => label(cmd).padEnd(pad)), cmds.map((cmd) => cmd.summary), width).join("\n")}\n`;
   }
-  out += `\n${c.dim("Every command also takes --no-color (no ANSI color) and --no-input (never prompt).")}`;
-  out += `\n${c.dim("Run `cotal help <command>` for a command's flags.")}`;
-  if (!all && listed(commands, true).length > visible.length) out += `\n${c.dim("Run `cotal help --all` to include hidden commands.")}`;
+  const notes = ["Every command also takes --no-color (no ANSI color) and --no-input (never prompt).", "Run `cotal help <command>` for a command's flags."];
+  if (!all && listed(commands, true).length > visible.length) notes.push("Run `cotal help --all` to include hidden commands.");
+  for (const note of notes) out += `\n${hang("", note, width, c.dim).join("\n")}`;
   console.log(out);
 }
 
@@ -70,28 +83,29 @@ export function printEntry(commands: readonly Command[]): void {
   else out += `Selected space: ${c.bold(space)}\n`;
   const common = ENTRY_COMMANDS.map((name) => commands.find((cmd) => cmd.name === name)).filter((cmd): cmd is Command => cmd !== undefined);
   if (common.length) {
-    const pad = Math.max(...common.map((cmd) => cmd.name.length));
     out += `\n${c.bold("Common commands")}\n`;
-    for (const cmd of common) out += `  ${cmd.name.padEnd(pad)}  ${c.dim(cmd.summary.split(" - ")[0]!)}\n`;
+    out += `${describe(common.map((cmd) => cmd.name), common.map((cmd) => cmd.summary.split(" - ")[0]!), terminalWidth(process.stdout)).join("\n")}\n`;
   }
-  out += `\n${c.dim("Run `cotal help` for every command, `cotal help <command>` for one.")}`;
+  out += `\n${hang("", "Run `cotal help` for every command, `cotal help <command>` for one.", terminalWidth(process.stdout), c.dim).join("\n")}`;
   console.log(out);
 }
 
 /** One command's help, or one subcommand's when `sub` is given: summary, usage, aliases,
  *  subcommands, flags, structured outputs and examples, all from the declared specs. Each line goes
- *  to `out`, which a usage refusal points at stderr. */
-export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log): void {
+ *  to `out`, which a usage refusal points at stderr, wrapped to `width`; examples are never wrapped,
+ *  so each stays one line to copy. */
+export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: string) => void = console.log, width = terminalWidth(process.stdout)): void {
   const path = sub ? `${cmd.name} ${sub.name}` : cmd.name;
-  out(`${c.bold(`cotal ${path}`)} - ${(sub ?? cmd).summary}`);
-  out(c.dim(`usage: ${sub ? (sub.usage ?? `cotal ${path}`) : commandUsage(cmd)}`));
+  const lines = (many: string[]) => many.forEach((line) => out(line));
+  const name = `cotal ${path}`;
+  lines(hang(`${name} - `, (sub ?? cmd).summary, width).map((line, i) => (i === 0 ? c.bold(name) + line.slice(name.length) : line)));
+  lines(hang("usage: ", usageWords(sub ? (sub.usage ?? `cotal ${path}`) : commandUsage(cmd)), width, c.dim).map((line, i) => (i === 0 ? c.dim(line.slice(0, 7)) + line.slice(7) : line)));
   const aliases = (sub ?? cmd).aliases ?? [];
   if (aliases.length) out(c.dim(`aliases: ${aliases.join(", ")}`));
   const subs = (sub ? [] : (cmd.subcommands ?? [])).filter((s) => !s.hidden);
   if (subs.length) {
-    const pad = Math.max(...subs.map((s) => label(s).length));
     out(c.bold("subcommands:"));
-    for (const s of subs) out(`  ${label(s).padEnd(pad)}  ${c.dim(s.summary)}`);
+    lines(describe(subs.map(label), subs.map((s) => s.summary), width));
   }
   const flags = cmd.flags ?? [];
   if (flags.length) {
@@ -99,9 +113,8 @@ export function printCommandHelp(cmd: Command, sub?: Subcommand, out: (line: str
       const metavar = f.type === "string" ? ` ${f.value ?? "<value>"}` : "";
       return `${f.short ? `-${f.short}, ` : "    "}--${f.name}${metavar}`;
     });
-    const pad = Math.max(...left.map((s) => s.length));
     out(c.bold("flags:"));
-    flags.forEach((f, i) => out(`  ${left[i]!.padEnd(pad)}  ${c.dim(f.description ?? "")}`));
+    lines(describe(left, flags.map((f) => f.description ?? ""), width));
   }
   const outputs = (sub ?? cmd).outputs ?? [];
   if (outputs.length) out(c.dim(`structured output: ${outputs.join(", ")}`));
