@@ -1050,6 +1050,11 @@ lists managed seats. Stale Claude skills and out-of-date `.agents` skills recomm
 `cotal setup --skills`, not unscoped `cotal setup`. `status` takes `--space` / `--server` to pick the
 mesh to inspect; it starts nothing.
 
+Status displays broker addresses without URL user information, query parameters or fragments,
+including component facts. Saved addresses and connection inputs are unchanged. An address that
+cannot be displayed safely is `null` in JSON, `unavailable` in text, and names a
+`BROKER_ADDRESS_INVALID` warning with a partial result. Its broker component is refused.
+
 Only the selected mesh is checked. Its row in the recorded meshes dials its address with its
 recorded TLS requirement, and every other row reads `not checked`. `--all` checks every recorded
 mesh, including discovered ones, each with its own recorded TLS requirement.

@@ -23,7 +23,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, brokerAddressForDisplay, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -123,7 +123,7 @@ export interface StatusResult {
     unreadable: { file: string; error: string }[];
     items: {
       space: string;
-      server: string;
+      server: string | null;
       mode: MeshEntry["mode"];
       root: string;
       origin: MeshEntry["origin"] | null;
@@ -144,7 +144,7 @@ type SelectedResult =
   | {
       resolved: true;
       space: string;
-      server: string;
+      server: string | null;
       mode: MeshTarget["mode"];
       source: string;
       root: string;
@@ -171,6 +171,14 @@ class Gaps {
     if (this.warnings.some((w) => w.code === code && w.message === message)) return;
     this.warnings.push({ code, target, message });
   }
+}
+
+/** Keep unsafe stored addresses explicit without exposing their original text. */
+function displayStatusBroker(server: string, space: string, gaps: Gaps): string | null {
+  const display = brokerAddressForDisplay(server);
+  if (display !== undefined) return display;
+  gaps.add("BROKER_ADDRESS_INVALID", `broker address for '${space}' cannot be displayed`, { space });
+  return null;
 }
 
 /** `cotal status` — detailed, read-only diagnostics for the local machine + selected mesh. */
@@ -622,7 +630,7 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
   const items = await Promise.all(
     entries.map(async (m) => ({
       space: m.space,
-      server: m.server,
+      server: displayStatusBroker(m.server, m.space, gaps),
       mode: m.mode,
       root: m.root,
       origin: m.origin ?? null,
@@ -665,7 +673,7 @@ async function readSelected(selected: Selected, responder: DeliveryResponderStat
   const base = {
     resolved: true as const,
     space: target.space,
-    server: target.server,
+    server: displayStatusBroker(target.server, target.space, gaps),
     mode: target.mode,
     source: target.source,
     root: target.root,
@@ -910,7 +918,7 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
         space: x.current ? cell(`* ${x.space}`, "selected") : `  ${x.space}`,
         check: check[x.check],
         mode: x.mode,
-        server: x.server,
+        server: x.server ?? cell("unavailable", "failed"),
         root: x.root,
         // A `down` record means two different things, and the repair differs: a mesh this machine
         // started can be re-`up`ed here, one registered by hand runs somewhere this machine doesn't
@@ -935,7 +943,7 @@ function selectedSection(s: SelectedResult): Section {
   if (!s.resolved) return { title: "Selected Mesh", blocks: [{ kind: "fields", rows: [["target", cell(s.code, "failed")]] }] };
   const rows: [string, Cell][] = [
     ["space", s.space],
-    ["server", s.server],
+    ["server", s.server ?? cell("unavailable", "failed")],
     ["mode", s.mode],
   ];
   if (s.eventsRequired) rows.push(["events", "required"]);
@@ -1394,13 +1402,16 @@ async function webHealth(context: LocalProcessContext): Promise<ComponentHealth>
 }
 
 async function brokerHealth(target: MeshTarget): Promise<ComponentHealth> {
+  const address = brokerAddressForDisplay(target.server);
+  if (address === undefined)
+    return { name: "broker", verdict: "refused", facts: ["registered address unavailable", "invalid broker address"] };
   try {
     const reachable = await isReachable(target.server, target.tlsRequired ? { tls: true } : {});
     return reachable
-      ? { name: "broker", verdict: "serving", facts: [`registered ${target.server}`, "reachable"] }
-      : { name: "broker", verdict: "not-serving", facts: [`registered ${target.server}`, "unreachable"] };
+      ? { name: "broker", verdict: "serving", facts: [`registered ${address}`, "reachable"] }
+      : { name: "broker", verdict: "not-serving", facts: [`registered ${address}`, "unreachable"] };
   } catch (e) {
-    return { name: "broker", verdict: "refused", facts: [`registered ${target.server}`, `probe refused: ${(e as Error).message}`] };
+    return { name: "broker", verdict: "refused", facts: [`registered ${address}`, `probe refused: ${(e as Error).message}`] };
   }
 }
 
