@@ -273,9 +273,9 @@ Three identity layers, in increasing permanence
   picking one. The manager auto-numbers its own spawns (`reviewer` → `reviewer_2`).
   The connector and the CLI print a peer with one label (in the roster, message attribution,
   `cotal endpoints` and the console): `name/role`, or the bare name when it has no role. A
-  line break or bracket in either part prints as a space. That label is not an address, because `/` is
-  reserved for `owner/name` handles: a target written that way is refused, and the refusal
-  gives the bare name.
+  control character, Unicode line or paragraph separator, or bracket in either part prints as a
+  space. That label is not an address, because `/` is reserved for `owner/name` handles: a target
+  written that way is refused, and the refusal gives the bare name.
 - **`role`** is the addressable service, which makes it the anycast address:
   `svc.reviewer` reaches "whoever is a reviewer", so the label carries routing meaning.
 - **The instance id** is the authoritative address: the presence key, the unicast target,
