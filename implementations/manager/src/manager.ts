@@ -1,6 +1,6 @@
 import { createHash, randomUUID, randomBytes } from "node:crypto";
 import { hostname } from "node:os";
-import { credsAuthenticator } from "@nats-io/transport-node";
+import { credsAuthenticator, TimeoutError } from "@nats-io/transport-node";
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync } from "node:fs";
 import { isAbsolute, join, dirname, resolve } from "node:path";
 import Headless from "@xterm/headless";
@@ -13,6 +13,7 @@ import {
   DEFAULT_SERVER,
   DEV_OWNER,
   MANAGER_LEASE_RENEW_MS,
+  MANAGER_LEASE_TTL_MS,
   STANDING_RENEWABLE_TTL_SEC,
   assertLifecycleToken,
   discardLaunchArtifacts,
@@ -3149,15 +3150,28 @@ export class Manager {
    *  complete either way, and a row that could not be released is left for the bucket TTL, with one
    *  line of warning so the cost (a same-root restart waiting out the TTL) is not silent. */
   private async releaseOwnManagerLease(): Promise<void> {
+    // A timed-out read proved nothing: a reconnect can drop the request in flight, and giving up on
+    // it skips the delete and leaves a same-root restart the whole TTL. Each timeout has already spent
+    // one attempt deadline, so asking again needs no pause, and past one TTL the row has lapsed anyway.
+    const deadline = Date.now() + MANAGER_LEASE_TTL_MS;
+    const readOwn = async () => {
+      for (;;) {
+        try {
+          return await this.ep.readOwnManagerLease(this.managerInstanceId);
+        } catch (e) {
+          if (!(e instanceof TimeoutError) || Date.now() >= deadline) throw e;
+        }
+      }
+    };
     try {
-      const own = await this.ep.readOwnManagerLease(this.managerInstanceId);
+      const own = await readOwn();
       if (own !== undefined && own.info.pid === process.pid)
         await this.ep.releaseManagerLease(this.managerInstanceId, own.revision);
     } catch {
       // Best-effort, like the release it wraps: a broker failure here is recovered by the bucket TTL.
     }
     try {
-      const stillOurs = await this.ep.readOwnManagerLease(this.managerInstanceId);
+      const stillOurs = await readOwn();
       if (stillOurs !== undefined && stillOurs.info.pid === process.pid)
         console.error(`! manager instance ${this.managerInstanceId} could not release its liveness lease (space "${this.space}"); a same-root restart inside the bucket TTL will be refused`);
     } catch {

@@ -227,7 +227,8 @@ laterally; the manager only births and configures them.
   holds lose everything. Each change of state is one line in the manager's log, not one line per
   tick.
   A clean stop waits for a renew already in flight and then releases the key at the broker's own
-  revision, so a same-root restart never waits out the bucket TTL.
+  revision, so a same-root restart never waits out the bucket TTL. A read of the key that times out
+  during the stop, as one can while the connection reconnects, is asked again for up to one TTL.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
