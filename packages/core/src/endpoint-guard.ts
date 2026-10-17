@@ -19,6 +19,7 @@
  * every path that is not a well-formed, obligation-valid ALLOW or HOLD is a refusal.
  */
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { canonicalJson } from "./canonical.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import { verifyArtifactSignature, resolveAnchorForUse, assertAnchorScopeCovers, type AnchorResolver } from "./endpoint-signing.js";
@@ -98,11 +99,7 @@ function parseObligation(raw: unknown, i: number): Omit<GuardObligation, "sig"> 
 async function withGateBudget<T>(p: Promise<T> | T, remainingMs: number, what: string): Promise<T> {
   if (remainingMs <= 0)
     throw new EpEnvelopeError("permission-denied", `${what} found the guard budget already exhausted; the gate is one bounded operation and timeout is DENY (SPEC 13.6: fail closed)`);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("permission-denied", `${what} did not answer within the remaining ${remainingMs}ms guard budget; timeout is DENY (SPEC 13.6: fail closed)`)), remainingMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
+  return withDeadline(Promise.resolve(p), remainingMs, () => new EpEnvelopeError("permission-denied", `${what} did not answer within the remaining ${remainingMs}ms guard budget; timeout is DENY (SPEC 13.6: fail closed)`));
 }
 
 /** Verify one obligation against the trust-anchor registry: D28 signature over the EXACT RAW

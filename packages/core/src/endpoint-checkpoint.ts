@@ -38,6 +38,7 @@ import type { KV } from "@nats-io/kv";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type MsgHdrs, type NatsConnection } from "@nats-io/transport-node";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { canonicalJson } from "./canonical.js";
 import { epfSubject, eptSubject, parseEpSubject, assertIdToken, type EpCaller } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, createRecordEntry, updateRecordEntry, assertStatusValue, readRecordLeader, isCasLoss } from "./endpoint-records.js";
@@ -745,15 +746,10 @@ export async function startTimerWriter(
   };
 }
 
-/** Race the fresh-check against the writer's budget: a stuck status authority is a bounded
- *  `unavailable` refusal, never a hung writer. Races `Promise.resolve(p)` unconditionally so a
- *  non-native thenable cannot bypass the deadline. */
-async function withStatusBudget<T>(p: Promise<T> | T, budgetMs: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; the timer writer is bounded and fails closed (SPEC 13.2)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
+/** Bound a writer read by the writer's budget: a stuck status authority is a bounded
+ *  `unavailable` refusal, never a hung writer. */
+function withStatusBudget<T>(p: Promise<T>, budgetMs: number, what: string): Promise<T> {
+  return withDeadline(p, budgetMs, () => new EpEnvelopeError("unavailable", `${what} did not answer within ${budgetMs}ms; the timer writer is bounded and fails closed (SPEC 13.2)`));
 }
 
 /** LEADER-SERVED status read for the writer's fresh-check (distsys 8dcad72 M2): the fence the

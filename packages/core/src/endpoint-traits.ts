@@ -25,6 +25,7 @@
  */
 import { canonicalJson, contractDigest, isContractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { ContractInvalidError, compileContract } from "./schema-profile.js";
 import { verifyClusterManifest, isReverseDnsUrn, TRAIT_GUARDED, TRAIT_PRICED, GOVERNED_TRAIT_URNS } from "./endpoint-cluster.js";
 import { runGuardGate, type GuardCallSeam, type GuardObligation } from "./endpoint-guard.js";
@@ -466,24 +467,6 @@ export function assertGovernedSurfaceFor(surface: EpGovernedSurface, serve: EpSe
  *  MUST be bounded — a never-settling seam is timeout→deny, never a hung request. */
 export const REFERENCE_GOVERNED_SEAM_DEADLINE_MS = 15_000;
 
-/** Race a fail-closed seam against its deadline: a never-settling guard/proof becomes DENY
- *  (`permission-denied`) at the bound, so it can never hold the request or `serveEndpoint.stop()`
- *  open (§13.6: timeout or unreachable is deny). The seam's own throw is re-raised for the
- *  caller to map; only the timeout is synthesized here. */
-async function raceSeam<T>(work: Promise<T> | T, ms: number, what: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      Promise.resolve(work),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new EpEnvelopeError("permission-denied", `${what} did not answer within the ${ms}ms bound; timeout is deny (SPEC 13.6: fail closed, never a hung request)`)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
-  }
-}
-
 /** The GUARD wiring (§13.6/§13.9): the raw class-call seam to the guard endpoint plus the
  *  trust-anchor resolver its OBLIGATION VERIFICATION requires. There is ONE guard gate,
  *  {@link import("./endpoint-guard.js").runGuardGate} — this bundle is what the serve boundary
@@ -597,7 +580,9 @@ export async function assertGovernedPreEffect(args: {
       throw new EpEnvelopeError("permission-denied", `command "${args.command}" is priced and this instance wired no proof verifier; an unverifiable proof never effects (SPEC 13.10: fail closed)`);
     let ok: boolean;
     try {
-      ok = await raceSeam(verify({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, proof: args.auth, value: priced.value }), seamMs, `the payment-proof verifier for "${args.command}"`);
+      // A never-settling verifier is DENY at the bound, so it cannot hold the request or `serveEndpoint.stop()` open (SPEC 13.6).
+      ok = await withDeadline(Promise.resolve(verify({ endpoint: args.endpoint, command: args.command, caller: args.caller, requestId: args.requestId, proof: args.auth, value: priced.value })), seamMs,
+        () => new EpEnvelopeError("permission-denied", `the payment-proof verifier for "${args.command}" did not answer within the ${seamMs}ms bound; timeout is deny (SPEC 13.6: fail closed, never a hung request)`));
     } catch (e) {
       if (e instanceof EpEnvelopeError) throw e; // the bound's deny, already fail-closed
       throw new EpEnvelopeError("permission-denied", `the payment-proof verifier failed (${(e as Error)?.message ?? String(e)}); verification fails closed (SPEC 13.10)`);

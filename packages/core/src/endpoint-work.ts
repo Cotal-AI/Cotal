@@ -36,6 +36,7 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, rawDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { epwSubject, epfSubject, assertBoundedOwner, assertLifecycleToken, type EpCaller } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, createRecordEntry, updateRecordEntry, openRecordsBucket } from "./endpoint-records.js";
 import { epfStreamName, readLastFact, type AcceptanceFact } from "./endpoint-journal.js";
@@ -647,7 +648,8 @@ export async function commitWorkItem(
     const budget = epochResolveBudgetMs ?? 5_000;
     if (!Number.isSafeInteger(budget) || budget <= 0)
       throw new EpEnvelopeError("failed-precondition", `epochResolveBudgetMs must be a positive integer; got ${JSON.stringify(epochResolveBudgetMs)}`);
-    const current = await resolveWithBudget(resolveCurrentEpoch(bound), budget);
+    const current = await withDeadline(Promise.resolve(resolveCurrentEpoch(bound)), budget,
+      () => new EpEnvelopeError("unavailable", `the fresh-epoch resolver did not answer within ${budget}ms; a stuck lifecycle authority is a bounded refusal, never a hung commit (SPEC 13.8)`));
     if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
       throw new EpEnvelopeError("internal", `the fresh-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.8)`);
     if (current === null)
@@ -675,18 +677,6 @@ export async function commitWorkItem(
     throw new EpEnvelopeError("expired", `a concurrent redelivery advanced the lease to attempt ${now2.attempt}; this commit is superseded (SPEC 13.5)`);
   }
   return publishTerminal(ctx, ref, terminalOf(ref, settled));
-}
-
-/** Bound the fresh-epoch resolver await: past the budget the commit REFUSES `unavailable`
- *  (fail-closed, retryable) instead of hanging on a stuck lifecycle authority. */
-async function resolveWithBudget(p: Promise<number | null> | number | null, budgetMs: number): Promise<number | null> {
-  // race Promise.resolve(p) UNCONDITIONALLY: a non-native/cross-realm thenable is not an
-  // `instanceof Promise`, and returning it directly would await it unbounded.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the fresh-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung commit (SPEC 13.8)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
 }
 
 async function publishCreateOnly(js: JetStreamClient, subject: string, bytes: Uint8Array): Promise<{ won: boolean }> {

@@ -41,6 +41,7 @@ import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManage
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { canonicalJson, contractDigest } from "./canonical.js";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { withDeadline } from "./deadline.js";
 import { epfSubject, assertIdToken, endpointToken, type EpCaller, type ParsedEpRequest } from "./endpoint-subjects.js";
 import { RECORD_KINDS, recordSpecKey, recordStatusKey, recordAtomicKey, createRecordEntry, updateRecordEntry, assertStatusValue, openRecordsBucket, readRecordLeader, decodeEntry } from "./endpoint-records.js";
 import { epfStreamName, epfGoalBindSubject, readLastFact, parseDecisionFact } from "./endpoint-journal.js";
@@ -201,17 +202,6 @@ function assertClosedKeys(o: Record<string, unknown>, allowed: readonly string[]
   for (const k of Object.keys(o))
     if (!allowed.includes(k))
       throw new EpEnvelopeError("internal", `${what} carries unknown field ${JSON.stringify(k)}; a closed schema admits no extras - garbled state never authorizes (SPEC 13.4)`);
-}
-
-/** Bound an executor-epoch resolver await: past the budget the caller REFUSES `unavailable`
- *  (fail-closed, retryable) instead of hanging. Races `Promise.resolve` unconditionally so a
- *  non-native thenable cannot bypass the deadline. */
-async function resolveWithBudget(p: Promise<number | null> | number | null, budgetMs: number): Promise<number | null> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the executor-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung transition (SPEC 13.6)`)), budgetMs);
-  });
-  try { return await Promise.race([Promise.resolve(p), deadline]); } finally { clearTimeout(timer); }
 }
 
 // ---- the goal bind (§13.4 item 3, canonicalizer-owned) ---------------------------------------
@@ -561,7 +551,8 @@ async function assertExecutorCurrency(
     throw new EpEnvelopeError("failed-precondition", `goal "${goalId}" is pinned to a target lifecycle; this requires a fresh-epoch resolver (SPEC 13.6: a superseded epoch cannot commit transitions)`);
   if (executor.lifecycleUid !== spec.target.lifecycleUid)
     throw new EpEnvelopeError("expired", `goal "${goalId}" was accepted against lifecycle ${spec.target.lifecycleUid} but the executor is ${executor.lifecycleUid}; a goal is never effectful against a same-name successor (SPEC 13.6)`);
-  const current = await resolveWithBudget(resolveCurrentEpoch(spec.target), budgetMs);
+  const current = await withDeadline(Promise.resolve(resolveCurrentEpoch(spec.target)), budgetMs,
+    () => new EpEnvelopeError("unavailable", `the executor-epoch resolver did not answer within ${budgetMs}ms; a stuck lifecycle authority is a bounded refusal, never a hung transition (SPEC 13.6)`));
   if (current !== null && (typeof current !== "number" || !Number.isSafeInteger(current) || current < 0))
     throw new EpEnvelopeError("internal", `the fresh-epoch resolver returned ${JSON.stringify(current)}; a non-integer epoch never authorizes (SPEC 13.6)`);
   if (current === null)
