@@ -363,8 +363,8 @@ try {
   await endpoint.start();
   check("existing provider bearer connects from the registry-only participant", endpoint.principal.owner === owner && endpoint.principal.actor === "cli", endpoint.principal);
 
-  // Manager.start() needs both endpoint stream setup (manager.ts:4566-4579) and records/auth KV
-  // authority for service registration (manager.ts:4509-4522, 4696). A normal user bearer is
+  // Manager.start() needs both endpoint stream setup and records/auth KV authority for service
+  // registration (both in manager.ts registerManagerService). A normal user bearer is
   // intentionally an agent-profile bearer. Probe the first write-free prerequisite: even
   // STREAM.INFO on records is broker-denied; no client-side inference can promote it.
   const nc = await connect({ servers: server, ...standaloneConnectOpts({ bearer: material.bearer, sentinelCreds: material.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });

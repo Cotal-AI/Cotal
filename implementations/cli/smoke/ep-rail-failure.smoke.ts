@@ -86,20 +86,20 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
     r.unanswered === true && l.unanswered === true && r.error !== l.error, { versioned: r.error, legacy: l.error });
 }
 {
-  // endpoint-invoke.ts:179 the responder's OWN ok:false describe reply, rethrown under its code (unmarked).
+  // endpoint-invoke.ts describeEndpoint `reply.ok !== true`: the responder's OWN ok:false describe reply, rethrown under its code (unmarked).
   const r = epRailFailure(ep("unavailable", "describe(manager) failed: trusted auth view failed"));
   c("answered ok:false describe (`unavailable`, unmarked): unanswered=false, printed as is, NO verdict", r.unanswered === false && r.error === "unavailable: describe(manager) failed: trusted auth view failed", r);
   const p = epRailFailure(ep("unavailable", "describe(manager) failed: trusted auth view failed"), { instanceId: IID });
   c("answered ok:false describe pinned: still no 'did not answer'", p.unanswered === false && !VERDICT.test(p.error ?? ""), p);
 }
 {
-  // endpoint-contract-store.ts:225 a store read AFTER an answered describe (unmarked `unavailable`).
+  // endpoint-contract-store.ts fetchContractArtifact: a store read AFTER an answered describe (unmarked `unavailable`).
   const r = epRailFailure(ep("unavailable", "the contract-store read for abc failed (a failed observation is never absence, SPEC 13.7): stream not found"));
   c("post-describe store read (`unavailable`, unmarked): unanswered=false, NO verdict", r.unanswered === false && r.error?.startsWith("unavailable: the contract-store read") === true && !VERDICT.test(r.error), r);
   // endpoint-verbs.ts epCall `one`: a VALID reply landed with no budget left to verify currency (unmarked `deadline-exceeded`).
   const b = epRailFailure(ep("deadline-exceeded", "no budget left to verify the `one` responder's currency within 2000ms (SPEC 13.5)"));
   c("valid reply, no budget left (`deadline-exceeded`, unmarked): unanswered=false, NO verdict", b.unanswered === false && !VERDICT.test(b.error ?? ""), b);
-  // endpoint-verbs.ts:288 / endpoint-invoke.ts:125 the caller's own reply subscription failed (unmarked `unavailable`).
+  // endpoint-verbs.ts epCall / endpoint-invoke.ts describeEndpoint: the caller's own reply subscription failed (unmarked `unavailable`).
   const s = epRailFailure(ep("unavailable", "the caller's reply subscription failed: boom"));
   c("caller-side subscription failure (`unavailable`, unmarked): unanswered=false, NO verdict", s.unanswered === false && !VERDICT.test(s.error ?? ""), s);
 }

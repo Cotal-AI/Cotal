@@ -2,7 +2,7 @@
  * B6: who may address a SPECIFIC instance (`--on`), and who may not.
  *
  * `epRequestGrantRows` emits the instance form `ep.inst.<endpoint>.<instanceId>.<command>…` ONLY when
- * a capability carries `instanceId` (`endpoint-grants.ts:62-70`). No profile sets it:
+ * a capability carries `instanceId` (its `if (cap.instanceId)` branch). No profile sets it:
  * `operatorInstrumentCapabilities` builds `one`/`all` routes and nothing else, while its own comment
  * at the `ps` route decision already names the missing case - *"the other reads stay `one`-only
  * (anycast, or `inst` when a resolve pins `--on`)"*. So `--on` is dead on any authed mesh by
@@ -131,10 +131,10 @@ for (const p of ALLOWED) {
 }
 
 // CELL 4 - THE ADVERSARIAL DENIED ARM. Cell 2 only shows agents get no instance row when nobody
-// hands them one. The agent profile ALSO honours `opts.endpointCapabilities` (provision.ts:1115),
-// so the real question is what happens when a pinned capability IS supplied for an agent. Whatever
-// this measures is the truth about where the operator-only boundary actually lives: in the row
-// builder, or in the mint authority that decides what capabilities a principal is granted.
+// hands them one. The agent profile ALSO honours `opts.endpointCapabilities` (provision.ts
+// permissionsFor), so the real question is what happens when a pinned capability IS supplied for an
+// agent. Whatever this measures is the truth about where the operator-only boundary actually lives:
+// in the row builder, or in the mint authority that decides what capabilities a principal is granted.
 console.log("\nCELL 4 - if a pinned capability is handed to an AGENT, where is the boundary?");
 {
   const agentPinned = instRows(rowsFor("agent", "plain", {
@@ -150,7 +150,7 @@ console.log("\nCELL 4 - if a pinned capability is handed to an AGENT, where is t
     // REACHABILITY, AS OBSERVED ON 2026-08-10 AT `2cb88763`, AND DELIBERATELY NOT AS A GUARANTEE.
     // No production path mints an agent with a pinned capability: the agent-mint sites pass explicit
     // field-by-field opts and none lists `endpointCapabilities` (note `capabilities` is a DIFFERENT
-    // field and is easy to mistake for it at a glance). But `provisionAgent` (provision.ts:712)
+    // field and is easy to mistake for it at a glance). But `provisionAgent` (provision.ts)
     // spreads `{ ...opts }` straight into the agent mint, so a future caller building opts from a
     // payload gains this silently - no error, no refusal, a valid pinned row in an agent JWT.
     // The honest label is UNREACHABLE FROM TODAY'S CALLERS, UNENFORCED BY CONSTRUCTION. It is held

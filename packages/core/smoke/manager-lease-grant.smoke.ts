@@ -27,9 +27,9 @@
  *
  * ONE DEFECT WORTH LEAVING WRITTEN DOWN, because it is invisible to every check this repo runs.
  * The first version called `setupSpaceStreams(SERVERS, space, auth)` positionally against a
- * signature that takes an OPTIONS OBJECT (`streams.ts:281-287`). `opts.servers` was therefore
- * undefined, `connect` fell back to its default target, and THE FIXTURE RAN AGAINST WHATEVER
- * BROKER HAPPENED TO BE ON `:4222` rather than its own. It surfaced only as an Authorization
+ * signature that takes an OPTIONS OBJECT. `opts.servers` was therefore undefined, `connect` fell
+ * back to its default target, and THE FIXTURE RAN AGAINST WHATEVER BROKER HAPPENED TO BE ON
+ * `:4222` rather than its own. It surfaced only as an Authorization
  * Violation in setup. `pnpm typecheck` is green through this: the tsconfigs include `src` only,
  * so no smoke file is typechecked and a wrong-arity call here is caught by nothing but running it.
  * An authed fixture must therefore prove it is talking to ITS OWN server, because being pointed
@@ -84,10 +84,11 @@ const lease = (instanceId: string) => ({ instanceId, holder, pid: 1, root: "/tmp
  *  verdict on binding a push consumer over `$KV.<bucket>.>` under this credential.
  *
  *  `standaloneConnectOpts`, not a bare `credsAuthenticator`: a scoped grant allows only
- *  `_INBOX_<connId>.>` (`provision.ts:1205`) and a push consumer's deliver subject IS an inbox
- *  subject. A bare connect keeps the default `_INBOX.` prefix, so the ALLOWED arm would be refused
- *  on its subscription. That is a red rather than a false green, but it would break the
- *  discriminator: both arms denied, for a reason with nothing to do with the grant under test. */
+ *  `_INBOX_<connId>.>` (provision.ts supervisorPermissions) and a push consumer's deliver
+ *  subject IS an inbox subject. A bare connect keeps the default `_INBOX.` prefix, so the ALLOWED
+ *  arm would be refused on its subscription. That is a red rather than a false green, but it would
+ *  break the discriminator: both arms denied, for a reason with nothing to do with the grant under
+ *  test. */
 async function consumerBind(creds: string, bucket: string): Promise<"allowed" | "denied"> {
   const nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
   try {
@@ -116,9 +117,9 @@ try {
   if (!up) throw new Error(`fixture broker never came up on ${SERVERS} - refusing to report on a server that never started`);
 
   // `provisioner` for the pre-create, `supervisor` for everything under test. setupSpaceStreams
-  // CREATES the streams and buckets (`streams.ts:317` creates managerBucket itself) and the
-  // supervisor grant carries no stream create (`provision.ts:1181`), so this is the same split
-  // production uses at `cotal up` rather than one invented for the fixture.
+  // CREATES the streams and buckets (managerBucket comes from streams.ts ttlBuckets) and the
+  // supervisor grant carries no stream create (provision.ts supervisorPermissions), so this is the
+  // same split production uses at `cotal up` rather than one invented for the fixture.
   const setupCreds = await mintCreds(auth, newIdentity(), "provisioner");
   await setupSpaceStreams({ servers: SERVERS, space, creds: setupCreds });
   const supCreds = await mintCreds(auth, newIdentity(), "supervisor");
