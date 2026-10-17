@@ -251,9 +251,9 @@ export function migrateLegacyCotalMaterial(root: string, space: string, kind: st
  *
  * Adding a tenant to such a root creates the one state segmentation cannot resolve — legacy material
  * whose owner is unrecorded — and it is the only door that creates it, because `up` cannot mint a
- * second tenant on an established root (`ensureRootForSpace` refuses at `up.ts:2233`). Checking here
- * costs one inventory read in a verb that is already taking the lock and reading the inventory
- * (`per-space-lifecycle.md` §2.1 step 1).
+ * second tenant on an established root (`ensureRootForSpace` in the CLI's `up` command refuses).
+ * Checking here costs one inventory read in a verb that is already taking the lock and reading the
+ * inventory (`per-space-lifecycle.md` §2.1 step 1).
  *
  * This keeps that state from being CREATED. It does not keep it from being ENCOUNTERED — roots
  * already multi-tenant when this series lands, and backups of them, bypass the door entirely. Rule 4
