@@ -5,6 +5,7 @@ import {
   currentPhase,
   fontFamily,
   gridLine,
+  horizontalPath,
   pick,
   spliceWordmark,
   STATUS,
@@ -73,12 +74,7 @@ const down = (col: number): Cell[] => [
   { row: 5, col },
   { row: 6, col },
 ];
-const busRun = (c1: number, c2: number): Cell[] => {
-  const step = c2 >= c1 ? 1 : -1;
-  const out: Cell[] = [];
-  for (let c = c1; c !== c2 + step; c += step) out.push({ row: 6, col: c });
-  return out;
-};
+const busRun = (c1: number, c2: number) => horizontalPath(6, c1, c2);
 
 function flowDots(mode: string, t: number): Dot[] {
   const [A, B, Cc] = TAP as [number, number, number];
