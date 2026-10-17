@@ -110,6 +110,7 @@ import {
   type ManagerFinalizeEvidence,
   type ProcessOwner,
   type RestoreListenerProof,
+  type StoreIdentity,
   readBrokerPolicy,
   writeBrokerPolicy,
   removePidPair,
@@ -1553,27 +1554,35 @@ function readNatsInfo(endpoint: string, timeoutMs = 2_000): Promise<Record<strin
   });
 }
 
-async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<RestoreListenerProof> {
-  const proof = prepared.listenerProof;
-  if (!proof) throw new Error(`restore attempt ${prepared.attemptId} has no bound listener proof`);
-  if (proof.attemptId !== prepared.attemptId || proof.serverName !== prepared.serverName ||
-      proof.serverNonce !== prepared.serverNonce || proof.serverEndpoint !== prepared.server ||
+/** Prove a recovered attempt's live bound listener IS ours end-to-end before adoption: launch
+ *  binding, durable journal match, local pid + exact pidfile, store identity, mesh identity, the
+ *  raw NATS INFO server name, and an authenticated connect confirming name + JetStream. Each attempt
+ *  kind supplies only its journal match, which yields the store identity the journal recorded. */
+async function proveBoundListener(
+  kind: "restore" | "resume",
+  attempt: Pick<PendingOrdinaryResume, "attemptId" | "serverName" | "serverNonce" | "server" | "root" | "space" | "mode">,
+  proof: RestoreListenerProof | undefined,
+  journalStore: (proof: RestoreListenerProof) => StoreIdentity | undefined,
+  store: { path: string; changed: string },
+): Promise<RestoreListenerProof> {
+  const label = `${kind} attempt ${attempt.attemptId}`;
+  if (!proof) throw new Error(`${label} has no bound listener proof`);
+  if (proof.attemptId !== attempt.attemptId || proof.serverName !== attempt.serverName ||
+      proof.serverNonce !== attempt.serverNonce || proof.serverEndpoint !== attempt.server ||
       proof.serverName !== `${proof.attemptId}-${proof.serverNonce}` || !/^[0-9a-f]{32}$/.test(proof.serverNonce) ||
-      proof.processOwner.id !== `restore-listener-${proof.serverNonce}`)
-    throw new Error(`restore attempt ${prepared.attemptId} listener proof does not match its launch record`);
-  const journal = readMaintenanceJournal(prepared.root);
-  if (!journal || (journal.state !== "commit-intent" && journal.state !== "manager-committed" && journal.state !== "degraded" && journal.state !== "active") ||
-      journal.restore.attemptId !== prepared.attemptId || !journal.listenerProof ||
-      !sameRestoreListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
-    throw new Error(`restore attempt ${prepared.attemptId} listener proof does not exactly match durable recovery state`);
+      proof.processOwner.id !== `${kind}-listener-${proof.serverNonce}`)
+    throw new Error(`${label} listener proof does not match its launch record`);
+  const recorded = journalStore(proof);
+  if (!recorded)
+    throw new Error(`${label} listener proof does not exactly match durable recovery state`);
   if (proof.processOwner.host !== hostname())
-    throw new Error(`restore attempt ${prepared.attemptId} listener process ownership is not live and local`);
+    throw new Error(`${label} listener process ownership is not live and local`);
   try {
     process.kill(proof.processOwner.pid, 0);
   } catch {
-    throw new Error(`restore attempt ${prepared.attemptId} listener process ownership is not live and local`);
+    throw new Error(`${label} listener process ownership is not live and local`);
   }
-  const pidPath = join(prepared.root, ".cotal", "nats.pid");
+  const pidPath = join(attempt.root, ".cotal", "nats.pid");
   let exactPidFile = false;
   try {
     const stat = lstatSync(pidPath);
@@ -1581,32 +1590,42 @@ async function provePreparedRestoreListener(prepared: PreparedRestore): Promise<
       readFileSync(pidPath, "utf8") === String(proof.processOwner.pid);
   } catch { /* absent or unprovable */ }
   if (!exactPidFile)
-    throw new Error(`restore attempt ${prepared.attemptId} listener pidfile does not match its process proof`);
-  const target = readStoreIdentity(prepared.targetPath);
-  if (!sameStoreIdentity(target, proof.target) || !sameStoreIdentity(journal.restore.target, proof.target))
-    throw new Error(`restore attempt ${prepared.attemptId} target identity changed`);
-  const mesh = findMesh(prepared.space);
-  if (mesh && (mesh.server !== prepared.server || mesh.root !== prepared.root || mesh.mode !== prepared.mode))
-    throw new Error(`restore attempt ${prepared.attemptId} conflicts with the recorded mesh identity`);
+    throw new Error(`${label} listener pidfile does not match its process proof`);
+  if (!sameStoreIdentity(readStoreIdentity(store.path), proof.target) || !sameStoreIdentity(recorded, proof.target))
+    throw new Error(`${label} ${store.changed}`);
+  const mesh = findMesh(attempt.space);
+  if (mesh && (mesh.server !== attempt.server || mesh.root !== attempt.root || mesh.mode !== attempt.mode))
+    throw new Error(`${label} conflicts with the recorded mesh identity`);
 
   const info = await readNatsInfo(proof.serverEndpoint);
   if (info.server_name !== proof.serverName)
-    throw new Error(`restore attempt ${prepared.attemptId} reached a foreign NATS server name/nonce`);
+    throw new Error(`${label} reached a foreign NATS server name/nonce`);
 
-  const auth = await resumeControlAuth(prepared.root, prepared.mode);
+  const auth = await resumeControlAuth(attempt.root, attempt.mode);
   const nc = await connect({
-    servers: prepared.server,
+    servers: attempt.server,
     ...standaloneConnectOpts({ ...auth, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
     maxReconnectAttempts: 0,
   });
   try {
     if (nc.info?.server_name !== proof.serverName)
-      throw new Error(`restore attempt ${prepared.attemptId} authenticated to a foreign NATS server name/nonce`);
-    if (!nc.info.jetstream) throw new Error(`restore attempt ${prepared.attemptId} listener has no JetStream`);
+      throw new Error(`${label} authenticated to a foreign NATS server name/nonce`);
+    if (!nc.info.jetstream) throw new Error(`${label} listener has no JetStream`);
   } finally {
     await nc.drain().catch(() => {});
   }
   return proof;
+}
+
+function provePreparedRestoreListener(prepared: PreparedRestore): Promise<RestoreListenerProof> {
+  return proveBoundListener("restore", prepared, prepared.listenerProof, (proof) => {
+    const journal = readMaintenanceJournal(prepared.root);
+    if (!journal || (journal.state !== "commit-intent" && journal.state !== "manager-committed" && journal.state !== "degraded" && journal.state !== "active") ||
+        journal.restore.attemptId !== prepared.attemptId || !journal.listenerProof ||
+        !sameRestoreListenerProof(journal.listenerProof, proof) || journal.launch.server !== proof.serverEndpoint)
+      return undefined;
+    return journal.restore.target;
+  }, { path: prepared.targetPath, changed: "target identity changed" });
 }
 
 function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: number, startedAt: string, heldLock?: MaintenanceLock): void {
@@ -1629,63 +1648,15 @@ function bindSpawnedOrdinaryResumeListener(pending: PendingOrdinaryResume, pid: 
   }
 }
 
-/** Prove the recovered attempt's live bound listener IS ours end-to-end before adoption: launch
- *  binding, durable journal match, local pid + exact pidfile, source identity, mesh identity, the
- *  raw NATS INFO server name, and an authenticated connect confirming name + JetStream. */
-async function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<RestoreListenerProof> {
-  const proof = pending.adoptProof;
-  if (!proof) throw new Error(`resume attempt ${pending.attemptId} has no bound listener proof`);
-  if (proof.attemptId !== pending.attemptId || proof.serverName !== pending.serverName ||
-      proof.serverNonce !== pending.serverNonce || proof.serverEndpoint !== pending.server ||
-      proof.serverName !== `${proof.attemptId}-${proof.serverNonce}` || !/^[0-9a-f]{32}$/.test(proof.serverNonce) ||
-      proof.processOwner.id !== `resume-listener-${proof.serverNonce}`)
-    throw new Error(`resume attempt ${pending.attemptId} listener proof does not match its launch record`);
-  const journal = readMaintenanceJournal(pending.root);
-  if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId ||
-      !journal.listenerProof || !sameRestoreListenerProof(journal.listenerProof, proof) ||
-      journal.ordinaryResume.launch.server !== proof.serverEndpoint)
-    throw new Error(`resume attempt ${pending.attemptId} listener proof does not exactly match durable recovery state`);
-  if (proof.processOwner.host !== hostname())
-    throw new Error(`resume attempt ${pending.attemptId} listener process ownership is not live and local`);
-  try {
-    process.kill(proof.processOwner.pid, 0);
-  } catch {
-    throw new Error(`resume attempt ${pending.attemptId} listener process ownership is not live and local`);
-  }
-  const pidPath = join(pending.root, ".cotal", "nats.pid");
-  let exactPidFile = false;
-  try {
-    const stat = lstatSync(pidPath);
-    exactPidFile = stat.isFile() && !stat.isSymbolicLink() &&
-      readFileSync(pidPath, "utf8") === String(proof.processOwner.pid);
-  } catch { /* absent or unprovable */ }
-  if (!exactPidFile)
-    throw new Error(`resume attempt ${pending.attemptId} listener pidfile does not match its process proof`);
-  const source = readStoreIdentity(pending.storeDir);
-  if (!sameStoreIdentity(source, proof.target) || !sameStoreIdentity(journal.source, proof.target))
-    throw new Error(`resume attempt ${pending.attemptId} preserved source identity changed`);
-  const mesh = findMesh(pending.space);
-  if (mesh && (mesh.server !== pending.server || mesh.root !== pending.root || mesh.mode !== pending.mode))
-    throw new Error(`resume attempt ${pending.attemptId} conflicts with the recorded mesh identity`);
-
-  const info = await readNatsInfo(proof.serverEndpoint);
-  if (info.server_name !== proof.serverName)
-    throw new Error(`resume attempt ${pending.attemptId} reached a foreign NATS server name/nonce`);
-
-  const auth = await resumeControlAuth(pending.root, pending.mode);
-  const nc = await connect({
-    servers: pending.server,
-    ...standaloneConnectOpts({ ...auth, /* not yet wired to a recorded transport - see broker-policy/MeshEntry work */ tls: false }),
-    maxReconnectAttempts: 0,
-  });
-  try {
-    if (nc.info?.server_name !== proof.serverName)
-      throw new Error(`resume attempt ${pending.attemptId} authenticated to a foreign NATS server name/nonce`);
-    if (!nc.info.jetstream) throw new Error(`resume attempt ${pending.attemptId} listener has no JetStream`);
-  } finally {
-    await nc.drain().catch(() => {});
-  }
-  return proof;
+function proveOrdinaryResumeListener(pending: PendingOrdinaryResume): Promise<RestoreListenerProof> {
+  return proveBoundListener("resume", pending, pending.adoptProof, (proof) => {
+    const journal = readMaintenanceJournal(pending.root);
+    if (!journal || !("ordinaryResume" in journal) || journal.ordinaryResume.attemptId !== pending.attemptId ||
+        !journal.listenerProof || !sameRestoreListenerProof(journal.listenerProof, proof) ||
+        journal.ordinaryResume.launch.server !== proof.serverEndpoint)
+      return undefined;
+    return journal.source;
+  }, { path: pending.storeDir, changed: "preserved source identity changed" });
 }
 
 /** Light wire check for a freshly SPAWNED ordinary-resume listener: the greeted server must carry
