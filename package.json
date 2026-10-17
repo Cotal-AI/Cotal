@@ -150,6 +150,7 @@
     "smoke:web-identity": "tsx implementations/web/smoke/identity.smoke.ts",
     "smoke:web-proxy-order": "tsx implementations/web/smoke/slow-link-serialization.probe.ts",
     "smoke:web-session": "tsx implementations/web/smoke/session.smoke.ts",
+    "smoke:web-session-parts": "tsx implementations/web/smoke/session-parts.smoke.ts",
     "smoke:codex-installed": "pnpm --filter cotal-ai... build && tsx extensions/connector-codex/smoke/codex-installed.smoke.ts",
     "smoke:codex-live": "tsx extensions/connector-codex/smoke/codex-live.smoke.ts",
     "smoke:codex-tui-live": "tsx extensions/connector-codex/smoke/codex-tui-live.smoke.ts",

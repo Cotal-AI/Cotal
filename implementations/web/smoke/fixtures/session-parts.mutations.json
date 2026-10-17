@@ -1,0 +1,89 @@
+{
+  "command": "pnpm smoke:web-session-parts",
+  "suite": [
+    "implementations/web/smoke/session-parts.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "SP1 SaidBlock sets the agent's text as HTML without renderMarkdown, so an img with onerror and a javascript: link reach the page",
+      "file": "implementations/web/client/src/ui/session/SaidBlock.tsx",
+      "find": "dangerouslySetInnerHTML={{ __html: renderMarkdown(withCut(text, cut)) }}",
+      "replace": "dangerouslySetInnerHTML={{ __html: withCut(text, cut) }}",
+      "expectRed": "2.1 a said text with <img onerror> and a javascript: link renders sanitized",
+      "cell": "2.1 a said text with <img onerror> and a javascript: link renders sanitized"
+    },
+    {
+      "name": "SP2 ToolRow renders the tool name as HTML, so <b>x</b> becomes a bold element",
+      "file": "implementations/web/client/src/ui/session/ToolRow.tsx",
+      "find": "<code title={call.full}>{call.name}</code>",
+      "replace": "<code title={call.full} dangerouslySetInnerHTML={{ __html: call.name }} />",
+      "expectRed": "2.2 a tool name <b>x</b> renders as escaped text, with the full name as its title",
+      "cell": "2.2 a tool name <b>x</b> renders as escaped text, with the full name as its title"
+    },
+    {
+      "name": "SP3 the foot ignores progress, so a working row whose progress is unknown still draws the moving dots",
+      "file": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "find": "{row.progress?.kind !== \"unknown\" && <span className=\"ui-dots\">",
+      "replace": "{true && <span className=\"ui-dots\">",
+      "expectRed": "7.1 the foot for a working row with unknown progress has no moving dots, and one without has them",
+      "cell": "7.1 the foot for a working row with unknown progress has no moving dots, and one without has them"
+    },
+    {
+      "name": "SP4 the compact list keeps reasoning, so the panel shows it",
+      "file": "implementations/web/client/src/ui/session/SessionList.tsx",
+      "find": "steps.filter((s) => s.kind !== \"prompt\" && s.kind !== \"reasoning\")",
+      "replace": "steps.filter((s) => s.kind !== \"prompt\")",
+      "expectRed": "8.1 SessionList in compact never renders a reasoning step and never a prompt, and the full view does",
+      "cell": "8.1 SessionList in compact never renders a reasoning step and never a prompt, and the full view does"
+    },
+    {
+      "name": "SP5 RunError draws the condition line with no condition",
+      "file": "implementations/web/client/src/ui/session/RunError.tsx",
+      "find": "      {condition !== undefined && (\n        <span>\n          Presence reports <code>{condition.code}</code>\n          {wireDate(condition.since) && <> since <Time ts={condition.since} /></>}.",
+      "replace": "      {(\n        <span>\n          Presence reports <code>{condition?.code}</code>\n          {wireDate(condition?.since) && <> since <Time ts={condition?.since} /></>}.",
+      "expectRed": "6.1 the run error without a condition has no \"Presence reports\"",
+      "cell": "6.1 the run error without a condition has no \"Presence reports\""
+    },
+    {
+      "name": "SP6 every live step rises on the list's first draw, so a session that opens animates everything already there",
+      "file": "implementations/web/client/src/ui/session/SessionList.tsx",
+      "find": "return (step) => now !== undefined && (now.rising.has(step.key) || (step.live && !now.known.has(step.key)));",
+      "replace": "return (step) => step.live && (now === undefined || now.rising.has(step.key) || !now.known.has(step.key));",
+      "expectRed": "10.1 nothing rises on the first draw, only a live step that arrives after it rises, and it keeps its class",
+      "cell": "10.1 nothing rises on the first draw, only a live step that arrives after it rises, and it keeps its class"
+    },
+    {
+      "name": "SP7 the condition goes on every run error, so an old failed turn reads as explained by what presence says now",
+      "file": "implementations/web/client/src/ui/session/SessionList.tsx",
+      "find": "{part(step, compact, highlight, i === last ? condition : undefined)}",
+      "replace": "{part(step, compact, highlight, condition)}",
+      "expectRed": "10.4 the run error carries presence's condition only when it is the last step",
+      "cell": "10.4 the run error carries presence's condition only when it is the last step"
+    },
+    {
+      "name": "SP8 the compact post keeps its Open in link",
+      "file": "implementations/web/client/src/ui/session/PostRow.tsx",
+      "find": "        {!compact && (\n          <>\n            <span className=\"ui-sp\" />",
+      "replace": "        {(\n          <>\n            <span className=\"ui-sp\" />",
+      "expectRed": "5.2 the compact post has no link",
+      "cell": "5.2 the compact post has no link"
+    },
+    {
+      "name": "SP9 the turn line drops the full view's mesh sentence",
+      "file": "implementations/web/client/src/ui/session/TurnLine.tsx",
+      "find": "{mesh ? `${BY.mesh}. Its text stays where it was sent.` : BY[source]}",
+      "replace": "{BY[source]}",
+      "expectRed": "1.1 each turn source renders its words, and the full view's mesh line says where the text is",
+      "cell": "1.1 each turn source renders its words, and the full view's mesh line says where the text is"
+    },
+    {
+      "name": "SP10 the jump button drops the singular",
+      "file": "implementations/web/client/src/ui/session/JumpButton.tsx",
+      "find": "{count === 1 ? \"1 new step\" : `${count} new steps`}",
+      "replace": "{`${count} new steps`}",
+      "expectRed": "9.1 the jump button reads \"1 new step\" and \"3 new steps\"",
+      "cell": "9.1 the jump button reads \"1 new step\" and \"3 new steps\""
+    }
+  ]
+}

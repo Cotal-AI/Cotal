@@ -1,0 +1,2 @@
+# The session parts draw turns, prose, tool groups, posts and the footer as the agents mock does, with agent text sanitized.
+smoke:web-session-parts
