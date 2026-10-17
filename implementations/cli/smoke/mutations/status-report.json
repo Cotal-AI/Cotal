@@ -22,8 +22,8 @@
     {
       "name": "--all is not passed to the mesh check",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "const meshes = await readMeshes(selected, Boolean(values.all));",
-      "replace": "const meshes = await readMeshes(selected, false);",
+      "find": "const meshes = await readMeshes(selected, Boolean(values.all), gaps);",
+      "replace": "const meshes = await readMeshes(selected, false, gaps);",
       "expectRed": "--all checks every registration",
       "cell": "--all checks every registration",
       "afterRestore": "pnpm --filter cotal-ai... build"
