@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { renderMarkdown } from "../../lib/md.js";
-import { withCut } from "./SaidBlock.tsx";
+import { markdownCut } from "./SaidBlock.tsx";
 
 /** A prompt longer than this many characters of source text clamps, as a message body does. */
 const CLAMP = 280;
@@ -9,7 +9,7 @@ const CLAMP = 280;
  *  text through the sanitized Markdown, clamped past 280 characters with Show more and Show less. */
 export function PromptBlock({ text, cut }: { text: string; cut: boolean }) {
   const [open, setOpen] = useState(false);
-  const src = withCut(text, cut);
+  const src = markdownCut(text, cut);
   const long = src.length > CLAMP;
   return (
     <div className="ui-prompt">

@@ -19,6 +19,7 @@ import type { SessionStep, ToolCall, TurnSource } from "../client/src/lib/sessio
 import { JumpButton } from "../client/src/ui/session/JumpButton.tsx";
 import { PostRow } from "../client/src/ui/session/PostRow.tsx";
 import { PromptBlock } from "../client/src/ui/session/PromptBlock.tsx";
+import { Reasoning } from "../client/src/ui/session/Reasoning.tsx";
 import { RunError } from "../client/src/ui/session/RunError.tsx";
 import { SaidBlock } from "../client/src/ui/session/SaidBlock.tsx";
 import { SessionFoot } from "../client/src/ui/session/SessionFoot.tsx";
@@ -26,6 +27,7 @@ import { SessionList } from "../client/src/ui/session/SessionList.tsx";
 import { ToolGroup } from "../client/src/ui/session/ToolGroup.tsx";
 import { ToolRow } from "../client/src/ui/session/ToolRow.tsx";
 import { TurnLine } from "../client/src/ui/session/TurnLine.tsx";
+import { UnknownStep } from "../client/src/ui/session/UnknownStep.tsx";
 import { mount } from "./mount.js";
 
 let n = 0;
@@ -96,6 +98,13 @@ const call = (name: string, ts = T): ToolCall => ({ name, full: name.startsWith(
     [all(tool, "b").length, code?.textContent, code?.getAttribute("title")],
     [0, "<b>x</b>", "mcp__evil__<b>x</b>"]);
   same("2.3 a cut paragraph ends with the trailing ellipsis", text(draw("2.3", createElement(SaidBlock, { text: "Running the suite", cut: true }))), "Running the suite …");
+  const fenced = draw("2.4", createElement(SaidBlock, { text: "Running:\n```sh\nnode app/chess.test.mjs", cut: true }));
+  same("2.4 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block",
+    [text(fenced.querySelector("pre")), text(fenced).endsWith("…"), all(fenced, "pre").some((pre) => text(pre).includes("…"))],
+    ["node app/chess.test.mjs", true, false]);
+  const unknown = draw("2.5", createElement(UnknownStep, { label: "Custom event \"<b>x</b>\"", ts: T }));
+  same("2.5 an unknown step's label <b>x</b> renders as text, not markup",
+    [all(unknown, "b").length, text(unknown.querySelector(".ui-tc-line span"))], [0, "Custom event \"<b>x</b>\""]);
 }
 
 // ── 3. Tool groups ───────────────────────────────────────────────────────────────────────────────
@@ -237,6 +246,17 @@ same("9.1 the jump button reads \"1 new step\" and \"3 new steps\"",
   same("10.3 a long prompt clamps with Show more, and opens with Show less",
     [before, [text(more()), m.container.querySelector(".ui-prompt .ui-tx.ui-clamp") !== null], text(m.container.querySelector(".ui-prompt > span"))],
     [["Show more", true], ["Show less", false], "Prompt"]);
+  await m.unmount();
+}
+{
+  const m = await mount(createElement(Reasoning, { text: "<b>x</b> then the attack map", cut: true }));
+  const button = m.container.querySelector(".ui-think > button") as HTMLButtonElement;
+  const collapsed = [button.getAttribute("aria-expanded"), m.container.querySelector(".ui-think-body") === null, text(button)];
+  await m.run(() => button.click());
+  const body = m.container.querySelector(".ui-think-body");
+  same("10.5 reasoning is collapsed by default, and opened its body is plain text",
+    [collapsed, button.getAttribute("aria-expanded"), body?.children.length, text(body)],
+    [["false", true, "Reasoning"], "true", 0, "<b>x</b> then the attack map …"]);
   await m.unmount();
 }
 {

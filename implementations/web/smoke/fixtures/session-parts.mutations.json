@@ -8,8 +8,8 @@
     {
       "name": "SP1 SaidBlock sets the agent's text as HTML without renderMarkdown, so an img with onerror and a javascript: link reach the page",
       "file": "implementations/web/client/src/ui/session/SaidBlock.tsx",
-      "find": "dangerouslySetInnerHTML={{ __html: renderMarkdown(withCut(text, cut)) }}",
-      "replace": "dangerouslySetInnerHTML={{ __html: withCut(text, cut) }}",
+      "find": "dangerouslySetInnerHTML={{ __html: renderMarkdown(markdownCut(text, cut)) }}",
+      "replace": "dangerouslySetInnerHTML={{ __html: markdownCut(text, cut) }}",
       "expectRed": "2.1 a said text with <img onerror> and a javascript: link renders sanitized",
       "cell": "2.1 a said text with <img onerror> and a javascript: link renders sanitized"
     },
@@ -84,6 +84,14 @@
       "replace": "{`${count} new steps`}",
       "expectRed": "9.1 the jump button reads \"1 new step\" and \"3 new steps\"",
       "cell": "9.1 the jump button reads \"1 new step\" and \"3 new steps\""
+    },
+    {
+      "name": "SP11 a cut stream inside an open code fence keeps the ellipsis inside the fence, where it reads as the agent's own output",
+      "file": "implementations/web/client/src/ui/session/SaidBlock.tsx",
+      "find": "return open ? `${text}\\n\\`\\`\\`\\n …` : `${text} …`;",
+      "replace": "return `${text} …`;",
+      "expectRed": "2.4 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block",
+      "cell": "2.4 a paragraph cut inside an open code fence closes the fence first, so the trailing ellipsis sits outside the code block"
     }
   ]
 }
