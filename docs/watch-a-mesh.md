@@ -245,11 +245,13 @@ The card tells the view whether to expect events: `meta["ai.cotal.events"]` is `
   refusal and, where a grant would help, gives the mesh owner the command to copy.
 - `<name>'s session didn't load`: the read failed another way. Try again reads it again.
 
-A session shows only frames the agent published. The live feed drops a frame on
-`events.<owner>.<actor>` unless that agent published it, and the history read takes the channel from
-the agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`, so a frame someone else
-published there is never read. Both checks rest on the subject's sender, which the broker's publish
-permissions police.
+Both the live feed and the history read check who sent a frame by its subject. The live feed drops
+a frame on `events.<owner>.<actor>` whose subject names another sender, and the history read takes
+the channel from the agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`. The check is
+only as strong as the mesh's publish permissions. On a mesh with auth, only the agent holds the grant
+to publish on its own subject, so a session shows only frames the agent published. On an open mesh
+there are no publish permissions, and any raw NATS client can publish on an agent's own subject, so
+a session there can show frames the agent did not publish.
 
 Some limits are known. The dashboard's observer still hears every agent's frames through its
 existing chat tap, since event channels sit under `cotal.<space>.chat.>` and a wildcard cannot
