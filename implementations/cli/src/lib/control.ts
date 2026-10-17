@@ -197,16 +197,16 @@ async function askManagerEp(
 export type ManagerReply = ControlReply & { unanswered?: boolean };
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
- *  (`ps`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator typed, if
+ *  (`ps`, `stop`, `attach`, `spawn --detach`, `models`), with `instanceId` set to what the operator typed, if
  *  anything. Its presence is what lets the renderer offer `--on` as a remedy: a command without the
- *  flag (`models`, `up`, `down`) rides the same rails, splits the same way, and must not be told to
+ *  flag (`up`, `down`) rides the same rails, splits the same way, and must not be told to
  *  type a flag it does not have. Absence of a pin therefore never means "not passed". */
 export interface ManagerPin {
   instanceId?: string;
 }
 
 /** `--on <instance>`: address ONE manager instance instead of the class queue. Shared by
- *  ps/stop/attach/input/describe so they cannot drift. For stop and attach it is the seat-locality
+ *  ps/stop/attach/input/describe/models so they cannot drift. For stop and attach it is the seat-locality
  *  escape hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily
  *  the one that wins the class queue. */
 export const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast; `ps`'s instance id, not the roster's `local.…` principal id" } as const satisfies FlagSpec;

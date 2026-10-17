@@ -1241,7 +1241,7 @@ client observes an existing same-host consumer.
 ## models
 
 ```bash
-cotal models [--agent <connector>] [--refresh]
+cotal models [--agent <connector>] [--refresh] [--on <instance>]
 ```
 
 | Flag | Default | Meaning |
@@ -1249,6 +1249,7 @@ cotal models [--agent <connector>] [--refresh]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--agent <connector>` | all registered connectors | Connector whose catalog to list |
 | `--refresh` | off | Ask the connector to refresh its provider cache |
+| `--on <instance>` | class anycast | Ask one manager instance (the whole id, as `ps` prints it). On a user-auth mesh where you run more than one live manager, an unpinned call is refused and `--on` picks one |
 
 Asks the running manager for each connector's model catalog (model ids plus their variants)
 for connectors that expose one. OpenCode and Codex query harness/provider surfaces; Jcode reads
@@ -2599,6 +2600,10 @@ cotal run answer <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoi
 cotal run amend <runId> <stepKey> [--value <json>] [--artifact <ref>] [--endpoint <ep>] [--local --by <who>]
 cotal run migrate <runId> --local --file <program> [--endpoint <ep>]
 ```
+
+Every hosted verb takes `--on <instance>` to address one manager instance, the whole id as `ps`
+prints it. On a user-auth mesh where you run more than one live manager, an unpinned hosted verb is
+refused and `--on` picks one. `--on` is refused with `--local`.
 
 `start` hands the program to the mesh's manager, which validates it, mints the run id (the record
 never takes a caller-supplied one), drives it in its own process, and answers with the id once the

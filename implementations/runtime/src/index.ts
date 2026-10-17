@@ -86,6 +86,7 @@ const runCommand: Command = {
   flags: [
     ...targetFlags,
     { name: "file", type: "string", short: "f", value: "<program>", description: "cotal-lang program source (start; resume --local when no program is recorded)" },
+    { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space; not with --local); `ps`'s instance id" },
     { name: "local", type: "boolean", description: "drive in this process instead of on the manager (bare broker, or a run the manager cannot host)" },
     { name: "admit-read", type: "string", value: "<channels>", description: "start --local: the channels the run may read, comma-separated patterns or `none` (required; SPEC 14.8)" },
     { name: "admit-publish", type: "string", value: "<channels>", description: "start --local: the channels the run may post to, comma-separated patterns or `none` (required; SPEC 14.8)" },

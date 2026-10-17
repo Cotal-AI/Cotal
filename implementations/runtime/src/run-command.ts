@@ -22,6 +22,7 @@ import type { NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
 import {
+  assertLifecycleToken,
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   LANG_PROBLEM_DETAIL_KIND,
@@ -84,6 +85,9 @@ interface RunValues {
   value?: string;
   artifact?: string;
   local?: boolean;
+  /** The manager instance a hosted verb addresses; without it the auth service selects the owner's
+   *  one live manager and refuses when there are several. */
+  on?: string;
   /** `--local start` only: the channel ceiling the operator admits the run under (SPEC 14.8),
    *  comma-separated channel patterns; `none` is deny-all. Both are REQUIRED for a local start:
    *  a local run never defaults to the host's own scope. */
@@ -605,6 +609,8 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
     process.exit(1);
   }
   const auth: ControlAuth = t.auth;
+  // A static instrument minted for `--on` carries no instance field, so the pin is read from the flag too.
+  const instanceId = auth.managerInstanceId ?? values.on;
   const connectOpts = standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true });
   const nc = await dialerFor(t.server)({ servers: t.server, ...connectOpts, maxReconnectAttempts: 0 });
   try {
@@ -615,7 +621,7 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
       : who.caller;
     const service = await resolveService(nc, t.space, BASELINE_LIFECYCLE_ENDPOINT, caller, {
       deadlineMs: 10_000,
-      ...(auth.managerInstanceId !== undefined ? { instanceId: auth.managerInstanceId } : {}),
+      ...(instanceId !== undefined ? { instanceId } : {}),
     });
     // A start or resume is answered only once the drive has activated, which the manager waits on
     // for a bounded time; the deadline here outlives that wait, so the manager's own "still
@@ -649,8 +655,9 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
  *  holds the run capability's full answer reach. Outside a managed seat, keep the ordinary operator
  *  target resolution unchanged. */
 async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
-  const seat = values.creds === undefined ? await resolveSeatControlTarget(values) : undefined;
-  return seat?.mode === "auth" ? seat : resolveControlTarget(values, "control-caller-privileged");
+  const on = values.on === undefined ? undefined : assertLifecycleToken(values.on, "--on");
+  const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
+  return seat?.mode === "auth" ? seat : resolveControlTarget(values, "control-caller-privileged", on);
 }
 
 function renderLangProblem(d: EpErrorDetail): string {
@@ -824,6 +831,10 @@ export async function runWorkflow(args: ParsedArgs): Promise<void> {
   }
   if (values.json === true && verb !== "ps" && verb !== "journal") {
     console.error(`run ${verb}: --json is taken by \`ps\` and \`journal\` only`);
+    process.exit(1);
+  }
+  if (values.on !== undefined && values.local === true) {
+    console.error(`run ${verb}: --on names the manager that hosts the call, and --local drives from this process instead; pass one of them`);
     process.exit(1);
   }
   if (verb === "revoke") {
