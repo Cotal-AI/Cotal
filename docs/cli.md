@@ -2361,8 +2361,9 @@ says the connection was re-established and messages sent while it was down are n
 `error` record names a failure on the live feed, and an `end` record closes the stream. The exit
 code is the snapshot's.
 
-`history clear` purges retained channel history; `--dms` extends it to direct-message history. It is
-the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
+`history clear` purges retained history from every channel in the selected space; `--dms` extends
+it to direct-message history. It refuses extra channel names, read filters and `--follow` before
+purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
 purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 
 ## console
