@@ -6,7 +6,11 @@
  *
  * Proves:
  *   - an authoritative collision moves to the next name, and nothing else does;
+ *   - an invalid name is refused before any issue, and exhaustion tries every variant;
+ *   - concurrent connects against an atomic issuer get distinct names;
  *   - a missing, unknown, or other account's handle runs nothing, with no default connection;
+ *   - an unauthenticated call runs nothing on any tool;
+ *   - each call runs on its connection's own channels, and the advertised send default names none;
  *   - two connections of one account are independent mesh identities;
  *   - disconnect closes one connection and leaves the other working;
  *   - only the remote subset is offered, and the orientation card says so.
@@ -48,24 +52,31 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const configFor = (name: string): AgentConfig => ({
+// A connection named inc... reads #incidents, the others #lobby, so a call that ran on the wrong
+// configuration would land on the wrong channel.
+const configFor = (name: string): AgentConfig => {
+  const channel = name.startsWith("inc") ? "incidents" : "lobby";
+  return {
   space,
   name,
   servers,
-  subscribe: ["lobby"],
-  allowSubscribe: ["lobby"],
-  allowPublish: ["lobby"],
+  subscribe: [channel],
+  allowSubscribe: [channel],
+  allowPublish: [channel],
   kind: "agent",
   tls: false,
   id: `${name}_${randomUUID().slice(0, 8)}`,
   lifecycleUid: mintLifecycleUid(),
-});
+  };
+};
 
-// The issuer this host stands in for: names are unique per account, "quota_probe" fails the way a
-// quota refusal does, and every attempt is logged so a retry under another name is visible.
+// The issuer this host stands in for: names are unique per account and reserved atomically before
+// the slow start, "quota_probe" fails the way a quota refusal does, every "full" variant is taken,
+// and every attempt is logged so a retry under another name is visible.
 const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" };
 const live = new Map<string, { account: string; conn: GatewayConnection }>();
 const opened: string[] = [];
+const reserved = new Set<string>();
 const host: GatewayHost = {
   account(auth: AuthInfo | undefined): string {
     const account = auth?.extra?.account;
@@ -75,13 +86,19 @@ const host: GatewayHost = {
   async open(account, name) {
     opened.push(`${account}/${name}`);
     if (name === "quota_probe") throw new Error("quota exceeded");
-    for (const r of live.values()) if (r.account === account && r.conn.config.name === name) throw new NameTaken(name);
+    if (name === "full" || name.startsWith("full_")) throw new NameTaken(name);
+    const key = `${account}/${name}`;
+    if (reserved.has(key)) throw new NameTaken(name);
+    reserved.add(key);
     const config = configFor(name);
     const agent = new MeshAgent(config);
     agent.on("error", () => {});
     agent.start();
     for (let i = 0; i < 50 && !agent.connected; i++) await sleep(100);
-    if (!agent.connected) throw new Error(`${name} did not connect`);
+    if (!agent.connected) {
+      reserved.delete(key);
+      throw new Error(`${name} did not connect`);
+    }
     const conn = { id: randomUUID(), agent, config };
     live.set(conn.id, { account, conn });
     return conn;
@@ -94,11 +111,11 @@ const host: GatewayHost = {
     const r = live.get(id);
     if (!r || r.account !== account) return false;
     live.delete(id);
+    reserved.delete(`${account}/${r.conn.config.name}`);
     await r.conn.agent.stop();
     return true;
   },
 };
-const template = configFor("template");
 
 const readBody = (req: IncomingMessage): Promise<unknown> =>
   new Promise((resolve, reject) => {
@@ -115,7 +132,7 @@ const http = createServer(async (req, res) => {
   const account = token ? BEARERS[token] : undefined;
   if (account) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: token!, clientId: "smoke", scopes: [], extra: { account } };
   const server = new McpServer({ name: "cotal-gateway-smoke", version: "0.0.0" });
-  registerCotalGatewayTools(server, host, template);
+  registerCotalGatewayTools(server, host);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   res.on("close", () => {
     void transport.close();
@@ -142,11 +159,14 @@ const call = async (client: Client, name: string, args: Record<string, unknown>)
 };
 const idOf = (r: CallResult): string => /connection_id: (\S+)/.exec(r.text)?.[1] ?? "";
 
-const observer = new CotalEndpoint({ space, servers, card: { name: "observer", kind: "agent", id: "observer" }, channels: ["lobby"], lifecycleUid: mintLifecycleUid() });
+const observer = new CotalEndpoint({ space, servers, card: { name: "observer", kind: "agent", id: "observer" }, channels: ["lobby", "incidents"], lifecycleUid: mintLifecycleUid() });
 observer.on("error", () => {});
 const heard: string[] = [];
+const heardOn = new Map<string, string>();
 observer.on("message", (m: CotalMessage, d: Delivery) => {
-  heard.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""));
+  const text = m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
+  heard.push(text);
+  if (m.channel) heardOn.set(text, m.channel);
   d.ack();
 });
 
@@ -192,12 +212,29 @@ try {
   check("another account's names are its own", !other.isError && other.text.startsWith("Connected as claude."), other);
   const idB = idOf(other);
 
+  const invalid = await call(a, "cotal_connect", { name: "claude/admin" });
+  check("an invalid name is refused before any open", invalid.isError && invalid.text.includes("invalid name") && !opened.some((o) => o.includes("claude/admin")), { invalid, opened });
+  const full = await call(a, "cotal_connect", { name: "full" });
+  const fullTries = opened.filter((o) => o === "acct_a/full" || o.startsWith("acct_a/full_"));
+  check(
+    "an exhausted name tries every variant and says so",
+    full.isError && full.text.includes("are all taken") && fullTries.length === 20 && fullTries[19] === "acct_a/full_20",
+    { full, fullTries },
+  );
+  const burst = await Promise.all(Array.from({ length: 4 }, () => call(a, "cotal_connect", { name: "burst" })));
+  const burstNames = burst.map((r) => /^Connected as (\S+?)[. ]/.exec(r.text)?.[1] ?? "").sort();
+  check("concurrent connects get distinct names", burstNames.join(",") === "burst,burst_2,burst_3,burst_4", burst);
+
   // ---- no fallback ----
   const missing = await a.callTool({ name: "cotal_roster", arguments: {} }).then(
     (r) => ({ isError: (r as { isError?: boolean }).isError === true, text: JSON.stringify(r) }),
     (e: unknown) => ({ isError: true, text: String(e) }),
   );
   check("a call without connection_id is refused", missing.isError && missing.text.includes("connection_id"), missing);
+  const anonSend = await call(anon, "cotal_send", { connection_id: id1, text: "from-anon", channel: "lobby" });
+  check("an unauthenticated routed call is refused", anonSend.isError && anonSend.text.startsWith("not authenticated"), anonSend);
+  const anonBye = await call(anon, "cotal_disconnect", { connection_id: id1 });
+  check("an unauthenticated disconnect is refused", anonBye.isError && anonBye.text.startsWith("not authenticated"), anonBye);
   const unknown = await call(a, "cotal_send", { connection_id: "not-a-connection", text: "from-unknown", channel: "lobby" });
   check("an unknown connection_id is refused", unknown.isError && unknown.text.startsWith("CONNECTION_REQUIRED"), unknown);
   const foreign = await call(b, "cotal_send", { connection_id: id1, text: "from-foreign", channel: "lobby" });
@@ -210,7 +247,15 @@ try {
   check("a connection sends under its own identity", !sent.isError, sent);
   for (let i = 0; i < 30 && !heard.includes("hello-from-claude"); i++) await sleep(100);
   check("the send reached the mesh", heard.includes("hello-from-claude"), heard);
-  check("refused sends reached nothing", !heard.includes("from-unknown") && !heard.includes("from-foreign"), heard);
+  check("refused sends reached nothing", !heard.includes("from-unknown") && !heard.includes("from-foreign") && !heard.includes("from-anon"), heard);
+
+  const sendTool = tools.find((t) => t.name === "cotal_send");
+  const channelText = JSON.stringify((sendTool?.inputSchema.properties as Record<string, unknown> | undefined)?.channel ?? "");
+  check("the advertised send default names no connection's channel", channelText.includes("this connection's default") && !channelText.includes("lobby"), channelText);
+  const inc = await call(a, "cotal_connect", { name: "inc_watch" });
+  const incSent = await call(a, "cotal_send", { connection_id: idOf(inc), text: "default-channel-probe" });
+  for (let i = 0; i < 30 && !heardOn.has("default-channel-probe"); i++) await sleep(100);
+  check("an omitted channel uses that connection's own default", !incSent.isError && heardOn.get("default-channel-probe") === "incidents", { incSent, channel: heardOn.get("default-channel-probe") });
 
   for (let i = 0; i < 30; i++) {
     const roster = await call(a, "cotal_roster", { connection_id: id1 });

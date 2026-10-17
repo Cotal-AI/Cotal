@@ -1,6 +1,8 @@
 {
-  "suite": ["extensions/connector-core/smoke/gateway.smoke.ts"],
-  "guard": "a remote conversation renames only on an authoritative collision, a missing or foreign connection_id runs nothing, and the gateway offers and reports only its remote tool subset",
+  "suite": [
+    "extensions/connector-core/smoke/gateway.smoke.ts"
+  ],
+  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset",
   "command": "pnpm smoke:gateway",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
   "why": [
@@ -50,6 +52,46 @@
       "replace": "const visible: OrientationTool[] = cotalToolSpecs(config, source, env).map((s) => ({",
       "expectRed": "orientation lists only offered tools",
       "cell": "orientation lists only offered tools"
+    },
+    {
+      "name": "a routed tool falls back to a fixed account when the request is unauthenticated",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        try {\n          account = host.account(extra.authInfo);",
+      "replace": "        try {\n          account = extra.authInfo ? host.account(extra.authInfo) : \"acct_a\";",
+      "expectRed": "an unauthenticated routed call is refused",
+      "cell": "an unauthenticated routed call is refused"
+    },
+    {
+      "name": "cotal_connect stops after two names",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "export const GATEWAY_NAME_ATTEMPTS = 20;",
+      "replace": "export const GATEWAY_NAME_ATTEMPTS = 2;",
+      "expectRed": "an exhausted name tries every variant and says so",
+      "cell": "an exhausted name tries every variant and says so"
+    },
+    {
+      "name": "an invalid name reaches the host instead of being refused first",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "          assertValidName(candidate);\n",
+      "replace": "",
+      "expectRed": "an invalid name is refused before any open",
+      "cell": "an invalid name is refused before any open"
+    },
+    {
+      "name": "the advertised send default comes from the empty advertising configuration",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "const shape = channel ? spec.schema.extend({ channel: channel.describe(SEND_CHANNEL) }) : spec.schema;",
+      "replace": "const shape = spec.schema;",
+      "expectRed": "the advertised send default names no connection's channel",
+      "cell": "the advertised send default names no connection's channel"
+    },
+    {
+      "name": "a call runs on the advertising configuration instead of its connection's own",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "const own = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);",
+      "replace": "const own = cotalToolSpecs(ADVERTISED, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);",
+      "expectRed": "an omitted channel uses that connection's own default",
+      "cell": "an omitted channel uses that connection's own default"
     }
   ]
 }

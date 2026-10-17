@@ -16,6 +16,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
+import { assertValidName } from "@cotal-ai/core";
 import { cotalToolSpecs, parseToolArgs, type ToolResult } from "./tool-specs.js";
 import type { MeshAgent } from "./agent.js";
 import type { AgentConfig } from "./config.js";
@@ -45,7 +46,10 @@ export interface GatewayHost {
    *  authentication; the tool then runs nothing. */
   account(auth: AuthInfo | undefined): string;
   /** Open a fresh connection for `account` named exactly `name`. Throw {@link NameTaken} only for
-   *  an authoritative name collision. */
+   *  an authoritative name collision. The collision check and the issue must be one atomic step per
+   *  account: an `open` racing another for the same name throws `NameTaken` rather than also
+   *  succeeding, or two conversations end up sharing one name. Error messages reach the caller,
+   *  so they must not carry secrets. */
   open(account: string, name: string): Promise<GatewayConnection>;
   /** The connection `id` if `account` owns it, otherwise undefined. Never a default. */
   find(account: string, id: string): Promise<GatewayConnection | undefined>;
@@ -83,6 +87,26 @@ const CONNECTION_REQUIRED =
   "CONNECTION_REQUIRED: no connection with that connection_id belongs to this account. Call cotal_connect " +
   "for this conversation and pass the connection_id it returns. Nothing was done.";
 
+/** One tool list serves every connection, so the advertised shapes come from a configuration with
+ *  no identity and no channels. Each call still runs against its connection's own configuration. */
+const ADVERTISED: AgentConfig = {
+  space: "",
+  name: "",
+  servers: "",
+  subscribe: [],
+  allowSubscribe: [],
+  allowPublish: [],
+  kind: "agent",
+  tls: false,
+};
+
+/** `cotal_send`'s channel description is the one advertised text that names a configuration's
+ *  default channel. Connections can read different channels, so the advertised text names none. */
+const SEND_CHANNEL =
+  "Channel to send on. Omit it to use this connection's default, the first concrete channel it reads " +
+  "(cotal_orientation lists them); with none, an omitted channel is refused. Concrete only, not a wildcard " +
+  "like team.>; reply on the channel you received a message on.";
+
 const CONNECTION_ID = z
   .string()
   .min(1)
@@ -103,16 +127,10 @@ function errorText(e: unknown): string {
  * Register the remote surface on `server`: `cotal_connect`, `cotal_disconnect`, and each tool in
  * {@link GATEWAY_TOOLS} with a required `connection_id`.
  *
- * `template` is the configuration shape the host issues. It supplies only the advertised schemas
- * and descriptions. Each call is parsed and run against the spec built from that connection's own
- * configuration, so a connection's channels and grants decide what the call does.
+ * Each call is parsed and run against the spec built from that connection's own configuration, so a
+ * connection's channels and grants decide what the call does.
  */
-export function registerCotalGatewayTools(
-  server: McpServer,
-  host: GatewayHost,
-  template: AgentConfig,
-  source = "gateway",
-): void {
+export function registerCotalGatewayTools(server: McpServer, host: GatewayHost, source = "gateway"): void {
   server.registerTool(
     "cotal_connect",
     {
@@ -134,6 +152,12 @@ export function registerCotalGatewayTools(
         return refuse(`not authenticated: ${errorText(e)}`);
       }
       for (const candidate of gatewayNames(name)) {
+        // A name the mesh would refuse is the caller's to fix, not a collision to rename around.
+        try {
+          assertValidName(candidate);
+        } catch (e) {
+          return refuse(`cotal_connect: ${errorText(e)}`);
+        }
         try {
           const c = await host.open(account, candidate);
           const renamed = candidate === name ? "" : ` (${JSON.stringify(name)} was taken)`;
@@ -169,13 +193,15 @@ export function registerCotalGatewayTools(
     },
   );
 
-  for (const spec of cotalToolSpecs(template, source, undefined, GATEWAY_TOOLS)) {
+  for (const spec of cotalToolSpecs(ADVERTISED, source, undefined, GATEWAY_TOOLS)) {
+    const channel = spec.name === "cotal_send" ? (spec.schema.shape.channel as z.ZodType | undefined) : undefined;
+    const shape = channel ? spec.schema.extend({ channel: channel.describe(SEND_CHANNEL) }) : spec.schema;
     server.registerTool(
       spec.name,
       {
         title: spec.title,
         description: `${spec.description} Requires this conversation's connection_id from cotal_connect.`,
-        inputSchema: spec.schema.extend({ connection_id: CONNECTION_ID }),
+        inputSchema: shape.extend({ connection_id: CONNECTION_ID }),
       },
       async (args: Record<string, unknown>, extra) => {
         const { connection_id, ...rest } = args as { connection_id: string } & Record<string, unknown>;
@@ -188,6 +214,7 @@ export function registerCotalGatewayTools(
         const c = await host.find(account, connection_id);
         if (!c) return refuse(CONNECTION_REQUIRED);
         const own = cotalToolSpecs(c.config, source, undefined, GATEWAY_TOOLS).find((s) => s.name === spec.name);
+        // Unreachable while GATEWAY_TOOLS holds no capability-gated tool; a future one refuses here.
         if (!own) return refuse(`${spec.name} is not available on this connection.`);
         try {
           return toContent(await own.run(c.agent, c.config, parseToolArgs(own, rest)));

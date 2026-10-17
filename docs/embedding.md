@@ -246,7 +246,7 @@ auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim
 
 ### Remote MCP gateway
 
-`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, template, source?)` for
+`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, source?)` for
 a service that serves Cotal to a hosted MCP client over HTTP. A hosted client can send many
 conversations through one bearer and one MCP session, so a request does not say which conversation
 sent it. Each conversation calls `cotal_connect` and passes the `connection_id` it returns on every
@@ -260,12 +260,15 @@ The host implements `GatewayHost`:
 - `open(account, name)` issues and starts a new connection under that name. It throws `NameTaken`
   only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
   and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
-  other name is tried.
+  other name is tried. The collision check and the issue must be one atomic step per account, so
+  two conversations asking for one name at once get different names. Error messages reach the
+  caller and must not carry secrets.
 - `find(account, id)` and `close(account, id)` act only on a connection that account owns.
 
-`GATEWAY_TOOLS` names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and
-reconnect belong to a supervised local seat and are left out. `template` is the configuration shape
-the host issues and supplies the advertised schemas. Each call runs against the connection's own
+`cotal_connect` refuses a name `assertValidName` rejects before it calls `open`. `GATEWAY_TOOLS`
+names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and reconnect belong
+to a supervised local seat and are left out. One tool list serves every connection, so no
+advertised text names one connection's channels. Each call runs against that connection's own
 configuration. Authentication, credential issuance and revocation, the HTTP transport and durable
 connection records stay with the host.
 
