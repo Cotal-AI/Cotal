@@ -65,7 +65,7 @@ Upgrading the `cotal` binary is the whole operation.
 ### What stops working
 
 - `cotal status` exits 4 when it could not read part of what it reports, such as a PID record, the
-  folder's trust material, a persona catalog, a mesh registry record or a user-auth login. It exited
+  folder's trust material, a persona catalog, the mesh registry or one of its records, or a user-auth login. It exited
   0. An unreachable broker, a stopped process
   or an unbound responder still exits 0.
 - The recorded meshes list checks only the selected mesh and reads `not checked` for the others. Pass
