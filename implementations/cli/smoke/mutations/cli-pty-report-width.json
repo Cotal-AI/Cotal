@@ -13,8 +13,8 @@
     {
       "name": "a report ignores the terminal's width",
       "file": "packages/workspace/src/present.ts",
-      "find": "  const width = process.stdout.isTTY ? process.stdout.columns : Number.POSITIVE_INFINITY;\n",
-      "replace": "  const width = Number.POSITIVE_INFINITY;\n",
+      "find": "  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;\n",
+      "replace": "  return Number.POSITIVE_INFINITY;\n",
       "expectRed": "a report on a 20-column terminal is one labeled record",
       "cell": "a report on a 20-column terminal is one labeled record",
       "command": "pnpm --filter @cotal-ai/workspace build && pnpm smoke:cli-pty",
