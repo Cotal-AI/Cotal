@@ -525,6 +525,7 @@ export class MeshAgent extends EventEmitter {
     // back — the persona file is a shared template). muted/quiet are validated disjoint at file load.
     for (const c of config.quiet ?? []) this.channelModes.set(c, "quiet");
     for (const c of config.muted ?? []) this.channelModes.set(c, "muted");
+    const userAuth = config.userAuth;
     this.ep = new CotalEndpoint({
       space: config.space,
       environment: this.launchEnv === undefined ? undefined : this.launchEnv.COTAL_ENVIRONMENT ?? null,
@@ -538,7 +539,8 @@ export class MeshAgent extends EventEmitter {
       acceptedToken: config.acceptedToken,
       // USER MODE: the endpoint execs the spawner-provided argv per bearer refresh — the exchange
       // protocol lives entirely behind that command, this runtime just runs it and reads a line.
-      bearer: config.userAuth ? () => this.execBearerCmd(config.userAuth!.bearerCmd) : undefined,
+      // An in-process host supplies the function itself.
+      bearer: userAuth ? (userAuth.bearer ?? (() => this.execBearerCmd(userAuth.bearerCmd!))) : undefined,
       sentinelCreds: config.userAuth?.sentinelCreds,
       tls: config.tls,
       ackWaitMs: config.ackWaitMs, // undefined → endpoint default (60s); shortened in tests to observe redelivery
@@ -2177,10 +2179,13 @@ export class MeshAgent extends EventEmitter {
     try {
       const input = clean && Object.keys(clean).length ? clean : undefined;
       if (this.config.userAuth) {
+        const bearerCmd = this.config.userAuth.bearerCmd;
+        if (!bearerCmd)
+          return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };
         const managerInstanceId = opts.instanceId ?? this.config.managerInstanceId;
         const { instanceId: _instanceId, follow, ...invokeOpts } = opts;
         const bearer = (signal?: AbortSignal) => this.execBearerCmd([
-          ...this.config.userAuth!.bearerCmd,
+          ...bearerCmd,
           "--manager-call",
           ...(managerInstanceId ? ["--manager-instance", managerInstanceId] : []),
         ], signal);
@@ -2194,7 +2199,7 @@ export class MeshAgent extends EventEmitter {
               const instanceId = attributed.responder?.instanceId;
               if (!instanceId) throw new Error("accepted goal has no broker-attributed manager instance");
               const bearer = (signal?: AbortSignal) => this.execBearerCmd([
-                ...this.config.userAuth!.bearerCmd,
+                ...bearerCmd,
                 "--manager-call", "--manager-instance", instanceId,
               ], signal, Math.min(30_000, context.deadlineMs));
               // Validate the renewed bearer against the accepting identity, not mutable session state.

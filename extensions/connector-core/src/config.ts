@@ -38,8 +38,14 @@ export interface AgentConfig {
   /** USER-MODE launch (a spawned agent on a user-auth mesh): the agent's owner+actor principal,
    *  the sentinel creds content it presents alongside its bearers, and the argv it EXECS for a
    *  fresh bearer (initial connect + every refresh — the exchange protocol stays behind that
-   *  command). All four env vars come from the spawner together; mutually exclusive with creds. */
-  userAuth?: { owner: string; actor: string; sentinelCreds: string; bearerCmd: string[] };
+   *  command). All four env vars come from the spawner together; mutually exclusive with creds.
+   *  A host that runs agents in its own process passes `bearer` instead of `bearerCmd`: a function
+   *  returning a fresh bearer. Such an agent has no manager-call bearer, so manager operations
+   *  (spawn, despawn, persona, run) refuse. */
+  userAuth?: { owner: string; actor: string; sentinelCreds: string } & (
+    | { bearerCmd: string[]; bearer?: undefined }
+    | { bearer: () => Promise<string>; bearerCmd?: undefined }
+  );
   name: string;
   role?: string;
   description?: string;

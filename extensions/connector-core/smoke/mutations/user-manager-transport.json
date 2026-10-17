@@ -1,9 +1,11 @@
 {
-  "suite": ["extensions/connector-core/smoke/user-manager-transport.smoke.ts"],
+  "suite": [
+    "extensions/connector-core/smoke/user-manager-transport.smoke.ts"
+  ],
   "guard": "A real MeshAgent user spawn reaches the real Manager, records its requested model and follows the accepted goal.",
   "command": "pnpm exec tsx extensions/connector-core/smoke/user-manager-transport.smoke.ts",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/user-manager-transport.json",
-  "completionMarker": "COTAL_SMOKE_SENTINEL cells=48",
+  "completionMarker": "COTAL_SMOKE_SENTINEL cells=51",
   "mutations": [
     {
       "name": "omit the recorded model from the real spawn result",
@@ -20,6 +22,22 @@
       "replace": "        r = false\n",
       "expectRed": "first real spawn followed canonical goal to terminal",
       "cell": "first real spawn followed canonical goal to terminal"
+    },
+    {
+      "name": "the host bearer function is ignored and the agent tries to exec a bearer command it does not have",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "bearer: userAuth ? (userAuth.bearer ?? (() => this.execBearerCmd(userAuth.bearerCmd!))) : undefined,",
+      "replace": "bearer: userAuth ? () => this.execBearerCmd(userAuth.bearerCmd!) : undefined,",
+      "expectRed": "MeshAgent connected on the user-auth broker with a host bearer function",
+      "cell": "MeshAgent connected on the user-auth broker with a host bearer function"
+    },
+    {
+      "name": "a host-bearer agent sends a manager call through a missing bearer command",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        if (!bearerCmd)\n          return { ok: false, error: `${command}: this agent's bearer comes from its host, which issues no manager-call bearer, so manager operations are unavailable` };\n",
+      "replace": "",
+      "expectRed": "a host-bearer agent refuses manager calls with no manager-call bearer",
+      "cell": "a host-bearer agent refuses manager calls with no manager-call bearer"
     }
   ]
 }

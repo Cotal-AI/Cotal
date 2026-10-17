@@ -314,6 +314,11 @@ explicit `card.owner` and `card.actor`. The first-party surfaces already do this
 (`UserViewAuth.source`, the connector's `agentBearerCommand`). A string bearer is for a short
 one-shot connection.
 
+A `MeshAgent` a host runs in its own process takes the same kind of source. Pass
+`userAuth.bearer`, a function returning a fresh bearer, instead of `userAuth.bearerCmd`, the argv a
+launched seat execs. Such an agent has no manager-call bearer, so its spawn, despawn, persona and
+run calls return a refusal without reaching a manager.
+
 Long-lived hosts must also subscribe to the endpoint's `warning` event. It carries conditions the
 endpoint is surviving, including failed credential renewal, reconnect retries, a durable leave
 it keeps retrying after the broker refuses a durable channel's live subscription, and a channel
