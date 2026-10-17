@@ -189,11 +189,17 @@ collectDoorCalls(CLI_AST);
 check("the CLI calls the shared name door (call sites: detached + foreground)",
   DOOR_CALLS.length === 2,
   { sites: DOOR_CALLS.length });
+// Parentheses change no behaviour, so they must not change the verdict.
+const unparen = (node: ts.Expression): ts.Expression =>
+  ts.isParenthesizedExpression(node) ? unparen(node.expression) : node;
 check("the CLI keys the door on the target mesh's auth mode, not on a restated grammar",
-  DOOR_CALLS.length > 0 && DOOR_CALLS.every(({ arguments: [, mode] }) =>
-    mode !== undefined && ts.isBinaryExpression(mode) && mode.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
-    ts.isPropertyAccessExpression(mode.left) && mode.left.name.text === "mode" &&
-    ts.isStringLiteralLike(mode.right) && mode.right.text === "user"));
+  DOOR_CALLS.length > 0 && DOOR_CALLS.every(({ arguments: [, arg] }) => {
+    const mode = arg && unparen(arg);
+    if (mode === undefined || !ts.isBinaryExpression(mode) || mode.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken)
+      return false;
+    const [left, right] = [unparen(mode.left), unparen(mode.right)];
+    return ts.isPropertyAccessExpression(left) && left.name.text === "mode" && ts.isStringLiteralLike(right) && right.text === "user";
+  }));
 
 console.log(
   failed === 0
