@@ -38,12 +38,23 @@ export interface PersonaEntry {
 /** List the persona files, each parsed (a malformed file becomes an entry with `error`, not a
  *  throw). Returns `[]` when the directory is absent. Filesystem-only — no mesh, no network. */
 export function listPersonas(root: string): PersonaEntry[] {
+  try {
+    return readPersonas(root);
+  } catch {
+    return []; // absent, or unreadable: this caller lists either as an empty catalog
+  }
+}
+
+/** {@link listPersonas}, except that only an absent directory is an empty catalog: one that exists
+ *  and cannot be read throws, for a report that must not show it as empty. */
+export function readPersonas(root: string): PersonaEntry[] {
   const dir = personaDir(root);
   let files: string[];
   try {
     files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-  } catch {
-    return []; // no .cotal/agents yet — an empty catalog, not an error
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw e;
   }
   return files.sort().map((f) => {
     const name = f.slice(0, -3);

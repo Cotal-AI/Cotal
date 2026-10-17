@@ -40,8 +40,8 @@
     {
       "name": "--no-input is asked",
       "file": "implementations/cli/src/lib/choose-target.ts",
-      "find": "  if (!canPrompt() || getCurrent() !== undefined) return;\n",
-      "replace": "  if (getCurrent() !== undefined) return;\n",
+      "find": "  if (!canPrompt()) return;\n",
+      "replace": "",
       "expectRed": "--no-input on a terminal refuses without asking",
       "cell": "--no-input on a terminal refuses without asking",
       "afterRestore": "pnpm --filter cotal-ai... build"
