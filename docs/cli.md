@@ -1064,18 +1064,19 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
 | `extensions` | `root` and `items`, each `{package, label, version}` |
 | `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`) and `storedState` |
-| `meshes` | `current`, `unreadable` (each registry file or current-mesh pointer that could not be read, as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
-| `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when a registry record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
+| `meshes` | `current`, `unreadable` (the registry directory, a record or the current-mesh pointer that could not be read, or a pointer that is empty, each as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when the registry directory or a record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
 | `hints` | The hints, in the order the report prints them |
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
-extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, a mesh
-registry record, the current-mesh pointer, a user-auth login, or the selected mesh's channels. Only
-an absent catalog, registry or pointer reads as empty or unset. A registry record that cannot be
-read also leaves the selected mesh unresolved, because resolution refuses that record, and the
-readable records are still listed. The manager row asks the service endpoint once: a live process that does
+extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, the mesh
+registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
+channels. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
+named too. A registry directory or record that cannot be read also leaves the selected mesh
+unresolved, because resolution refuses it, and the readable records are still listed. The manager
+row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`.
 A process row whose PID record exists but cannot be read, or exists under both its current and a

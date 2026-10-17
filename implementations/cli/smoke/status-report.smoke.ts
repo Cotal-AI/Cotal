@@ -172,6 +172,27 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
 }
 {
   const { home, run } = sandbox();
+  // Cotal never writes an empty pointer: `use` writes a name and clearing removes the file.
+  const pointer = join(home, ".cotal-home", "current-mesh");
+  mkdirSync(join(home, ".cotal-home"), { recursive: true });
+  writeFileSync(pointer, "");
+  const json = run(["status", "--space", "nosuch", "--json"]);
+  const env = json.envelope;
+  check("an empty current-mesh pointer is named, and the run is partial", json.status === 4 && env?.outcome === "partial" && env.warnings.some((w) => w.code === "MESH_REGISTRY_UNREADABLE" && w.message.includes(pointer) && /is empty/.test(w.message)), { status: json.status, warnings: env?.warnings });
+}
+{
+  const { home, run } = sandbox();
+  // A path that exists and is not a directory, so the registry cannot be listed on every platform.
+  const registry = join(home, ".cotal-home", "meshes");
+  mkdirSync(join(home, ".cotal-home"), { recursive: true });
+  writeFileSync(registry, "");
+  const json = run(["status", "--json"]);
+  const env = json.envelope;
+  check("an unreadable registry directory is partial with exit 4, not unknown", json.status === 4 && env?.outcome === "partial" && env.result !== null, shown(json));
+  check("the registry is named and the selection is unresolved by it", env?.result?.meshes.unreadable.some((u) => u.file === registry) === true && env.result.selected.resolved === false && env.result.selected.code === "registry-unreadable" && env.warnings.some((w) => w.code === "MESH_REGISTRY_UNREADABLE" && w.message.includes(registry)), { meshes: env?.result?.meshes, selected: env?.result?.selected, warnings: env?.warnings });
+}
+{
+  const { home, run } = sandbox();
   const add = run(["meshes", "add", "alpha", "--server", `nats://127.0.0.1:${await freePort()}`, "--mode", "open", "--root", home, "--force"]);
   check("control: alpha is registered", add.status === 0, shown(add));
   const clean = run(["status", "--space", "alpha", "--json"]);
