@@ -33,6 +33,7 @@ import {
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
 import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { clean, nodePty } from "./_console-pty.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -246,6 +247,18 @@ try {
   await fp.exited;
   check("--follow --plain appends each matching message as a line", shownLine && fp.lines.some((l) => /#ops\s+bob: a plain line/.test(l)) && !fp.lines.some((l) => l.includes("filtered out")), fp.lines.slice(-4));
   check("a followed line shows the local time, not the ISO time", fp.lines.some((l) => /bob: a plain line/.test(l) && !/^\d{4}-\d\d-\d\dT/.test(l)), fp.lines.slice(-4));
+
+  // A followed line is drawn for the terminal it is shown in, as the window above it is.
+  const tty = nodePty([BIN, "history", "--follow", "--grep", "wrapped"], { cwd: shell, env: isolatedEnv as Record<string, string>, cols: 60, rows: 30 });
+  let ttyOut = "";
+  tty.onData((d) => (ttyOut += d));
+  for (const t0 = Date.now(); Date.now() - t0 < 30_000 && !/replay to new members/.test(clean(ttyOut)); ) await wait(100);
+  const words = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+  await bob.multicast(`wrapped ${words}`, { channel: "ops" });
+  for (const t0 = Date.now(); Date.now() - t0 < 30_000 && !clean(ttyOut).includes("papa"); ) await wait(100);
+  tty.kill();
+  const ttyLines = clean(ttyOut).split(/\r?\n/);
+  check("a followed line wraps at word boundaries in a 60-column terminal", clean(ttyOut).includes("papa") && ttyLines.every((l) => l.length <= 60) && words.split(" ").every((w) => ttyLines.some((l) => new RegExp(`\\b${w}\\b`).test(l))), ttyLines.slice(-6));
 
   // ── a retention gap ─────────────────────────────────────────────────────────────────────────────
   {

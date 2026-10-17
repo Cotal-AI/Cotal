@@ -10,6 +10,7 @@ import {
   renderReport,
   streamRecord,
   targetFlags,
+  terminalWidth,
   writeResult,
   writeStreamRecord,
   type Cell,
@@ -369,7 +370,7 @@ function openLive(ep: CotalEndpoint, conn: Connection, channel: string | undefin
         ended = reason;
         wake?.();
       });
-      const line = (cell: Cell) => process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [cell] }] }] }, presentation === "rich" ? "rich" : "plain")}\n`);
+      const line = (cell: Cell) => process.stdout.write(`${renderReport({ sections: [{ blocks: [{ kind: "lines", lines: [cell] }] }] }, presentation === "rich" ? "rich" : "plain", terminalWidth(process.stdout))}\n`);
       for (;;) {
         while (queue.length) {
           const entry = queue.shift()!;
