@@ -1,0 +1,31 @@
+{
+  "suite": [
+    "extensions/connector-core/smoke/card-host.smoke.ts"
+  ],
+  "guard": "the agent card says whether the session arms its event plane: meta[\"ai.cotal.events\"] is \"on\" only when the connector's own predicate says so, and an agent file cannot declare it",
+  "command": "pnpm smoke:card-host",
+  "completionMarker": "card-host smoke passed",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/card-events.json",
+  "why": [
+    "card-host.smoke.ts imports ../src/agent.js through tsx, so a mutation of agent.ts is read from",
+    "src and the command needs no build."
+  ],
+  "mutations": [
+    {
+      "name": "the card always says the event plane is on",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? \"on\" : \"off\";\n",
+      "replace": "  meta[EVENTS_META_KEY] = \"on\";\n",
+      "expectRed": "a session without COTAL_EVENTS reads off over the wire",
+      "cell": "a session without COTAL_EVENTS reads off over the wire"
+    },
+    {
+      "name": "an agent file's own ai.cotal.events survives the overlay",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? \"on\" : \"off\";\n",
+      "replace": "  if (!(EVENTS_META_KEY in meta)) meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? \"on\" : \"off\";\n",
+      "expectRed": "an agent file declaring ai.cotal.events on cannot arm an unarmed session",
+      "cell": "an agent file declaring ai.cotal.events on cannot arm an unarmed session"
+    }
+  ]
+}
