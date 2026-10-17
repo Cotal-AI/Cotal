@@ -1039,11 +1039,11 @@ state wins):
 - **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
   `web.session` once it was listening, which must name the same PID. The probe presents the
   readiness nonce recorded beside that address, the one credential the dashboard accepts on
-  `/api/meta`. An answer with a status outside 2xx is `not-serving`, and the row names that status,
-  such as `HTTP 401`. A live PID with no recorded address (the dashboard is still writing it, or an
-  earlier build started it), or an unrecognizable process record, is `refused`, not a green
-  default-port guess. A `web.session` that exists but cannot be read is also `refused`, and the row
-  names the read error.
+  `/api/meta`. The probe follows no redirect. An answer with a status outside 2xx, a 3xx included,
+  is `not-serving`, and the row names that status, such as `HTTP 401`. A live PID with no recorded
+  address (the dashboard is still writing it, or an earlier build started it), or an unrecognizable
+  process record, is `refused`, not a green default-port guess. A `web.session` that exists but
+  cannot be read is also `refused`, and the row names the read error.
 - **broker**: the registered mesh URL dialed from this host with its recorded TLS requirement.
 
 `absent` means Cotal has no live local component record (or has a stale record); `not-serving`
@@ -2130,7 +2130,7 @@ over your login, and a channel purge asks for its own channel-purger view per cl
 ledger scope `admin`. The public exchange serves `channel-purger` for a remote owner; it still
 refuses the startup admin view, so a remote `cotal web` is not a complete channel-management
 surface. Detached mode re-execs the current Cotal installation, writes diagnostics to
-the mesh root's `.cotal/web.log`, and reports success only after the HTTP server answers. If the server is not ready before the deadline, the timeout error ends with `; last probe <url>: <outcome>`: the bound probe address (`http://127.0.0.1:<port>/api/meta` on the default host, not the browser launch URL), then a transport error such as `ECONNREFUSED`, an HTTP refusal status such as `HTTP 401`, or `answered space <space>, pid <pid>` when a different process on the port answered with another space or pid (space cut to 40 characters, pid cut to 20, a value that is neither text nor a short number named by its type, the `<url>: <outcome>` text capped at 300 bytes including the `...` that marks a cut). It requires
+the mesh root's `.cotal/web.log`, and reports success only after the HTTP server answers. If the server is not ready before the deadline, the timeout error ends with `; last probe <url>: <outcome>`: the bound probe address (`http://127.0.0.1:<port>/api/meta` on the default host, not the browser launch URL), then a transport error such as `ECONNREFUSED`, an HTTP status outside 2xx such as `HTTP 401` (the probe follows no redirect, so a 3xx is reported the same way), or `answered space <space>, pid <pid>` when a different process on the port answered with another space or pid (space cut to 40 characters, pid cut to 20, a value that is neither text nor a short number named by its type, the `<url>: <outcome>` text capped at 300 bytes including the `...` that marks a cut). It requires
 a recorded mesh root, but can be launched from any directory once `cotal up` has recorded the mesh.
 See [Watch a mesh](watch-a-mesh.md).
 

@@ -30,12 +30,15 @@ export interface WebMeta {
 /** One readiness request to the dashboard whose base address is `url`, presenting `readiness` when
  *  there is one. `cotal web --detach` polls it and `cotal status` sends it once, so both send the
  *  same request and read its answer the same way. Resolves to the HTTP status, plus the parsed body
- *  only when the answer is OK, because no other answer has a defined body. A transport error, the
- *  timeout, or an OK body that is not JSON rejects. */
+ *  only when the answer is OK, because no other answer has a defined body. A redirect is not
+ *  followed: it would carry the readiness header to an address or path the port's owner picked and
+ *  take the identity from there, so a 3xx resolves to its status like any other answer that is not
+ *  OK. A transport error, the timeout, or an OK body that is not JSON rejects. */
 export async function probeWebReadiness(url: string, readiness: string | undefined): Promise<{ status: number; meta?: WebMeta }> {
   const res = await fetch(new URL(WEB_READINESS_PATH, url), {
     signal: AbortSignal.timeout(500),
     headers: readiness === undefined ? {} : { [WEB_READINESS_HEADER]: readiness },
+    redirect: "manual",
   });
   return res.ok ? { status: res.status, meta: await res.json() as WebMeta } : { status: res.status };
 }
