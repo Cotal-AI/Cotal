@@ -963,6 +963,31 @@ try {
   check("that label is not a part left unread: who exits 0, ok and complete",
     !deniedWho.timedOut && deniedWho.status === 0 && deniedWhoEnvelope?.outcome === "ok" && deniedWhoEnvelope.completeness === "complete", deniedWho);
 
+  // The same narrow bearer has no admin grant and no human delivery ACL mirror. History must
+  // use its real channel grant, include its own send and refuse a channel outside that grant.
+  grantActor(dir, { ...cliRow0, scope: [] });
+  try {
+  const nativeText = `narrow native history ${Date.now()}`;
+  const postedHistory = await cliResult(["send", "msg", "general", nativeText, "--space", SPACE]);
+  check("narrow user sends its own history fixture message", postedHistory.status === 0 && !postedHistory.timedOut, postedHistory);
+  const parseHistory = (r: { out: string }) => {
+    try { return JSON.parse(r.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as {
+      outcome: string; result: { items: { text: string; channel: string | null }[] } | null;
+      error?: { code: string }; warnings: { code: string }[];
+    }; } catch { return undefined; }
+  };
+  const narrowHistory = await cliResult(["history", "general", "--json", "--space", SPACE]);
+  check("native narrow user history reads its own message without capabilities or a delivery ACL row",
+    narrowHistory.status === 0 && !narrowHistory.timedOut && parseHistory(narrowHistory)?.result?.items.some((m) => m.text === nativeText && m.channel === "general") === true,
+    narrowHistory);
+  const deniedHistory = await cliResult(["history", "ops.secret", "--json", "--space", SPACE]);
+  check("native narrow user history refuses a channel outside its grant without content",
+    deniedHistory.status === 2 && parseHistory(deniedHistory)?.error?.code === "PERMISSION_DENIED" && parseHistory(deniedHistory)?.result === null,
+    deniedHistory);
+  } finally {
+    grantActor(dir, cliRow0); // subsequent manager tests still need the original spawn grant
+  }
+
   // The mutation proof runs this same fixture with only the native endpoint setup and B1g. It is
   // not a substitute: the full smoke still runs every section below. It keeps the old-guard red
   // bounded so a timeout cannot be mistaken for a named assertion failure.
@@ -1892,7 +1917,8 @@ try {
   // 42/125 -> 50/133: B1g's eight #2312 cells (precondition, two controls, five refusals).
   // 50/133 -> 57/140: seven owner-equal event-plane admission and grant cells.
   // 57/140 -> 59/142: B1g's two `cotal who` cells for the census this bearer may not ask.
-  const EXPECTED = endpointCliFocus ? 59 : 142;
+  // 142 -> 145: real CLI send, capability-free channel read and denied-channel history.
+  const EXPECTED = endpointCliFocus ? 62 : 145;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);

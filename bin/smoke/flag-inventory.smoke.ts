@@ -23,6 +23,7 @@ import "@cotal-ai/manager"; // registers supervise/start/stop/ps/attach
 import "@cotal-ai/delivery"; // registers deliver
 import "@cotal-ai/auth"; // registers login/logout
 import "@cotal-ai/runtime"; // registers run
+import "../docs.js"; // registers docs, which the composition root adds
 
 /** flag spec inventory as "name:type" (+ ":short" when aliased), sorted. */
 const TARGET = ["creds:string", "server:string", "space:string"];
@@ -135,8 +136,10 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     positionals: true,
   },
   completion: { flags: ["json:boolean:j", "plain:boolean"], positionals: true },
-  // `--json` (2026-10, #3238): bare `ext` / `ext list` print one JSON object per extension; the other subcommands refuse it.
-  ext: { flags: ["force:boolean", "json:boolean", "repair:boolean", "reset:boolean"], positionals: true },
+  // `--json` and `--plain` (2026-10): bare `ext` / `ext list` write one envelope or a plain report; the other subcommands refuse both.
+  ext: { flags: ["force:boolean", "json:boolean:j", "plain:boolean", "repair:boolean", "reset:boolean"], positionals: true },
+  // `docs` (2026-10): this version's bundled docs, registered by the composition root.
+  docs: { flags: ["json:boolean:j", "plain:boolean", "refresh:boolean", "search:string"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
     // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
@@ -157,7 +160,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [...TARGET, "desc:string", "instructions:string", "no-replay:boolean", "replay:boolean", "window:string"],
     positionals: true,
   },
-  history: { flags: [...TARGET, "dms:boolean", "force:boolean"], positionals: true },
+  history: { flags: [...TARGET, "dms:boolean", "follow:boolean", "force:boolean", "from:string", "grep:string", "json:boolean:j", "limit:string", "plain:boolean", "since:string"], positionals: true },
   // The unified cleanup verb: `history clear`'s grammar + the local-state targets' --store-dir.
   clean: { flags: [...TARGET, "attempt:string", "dms:boolean", "force:boolean", "store-dir:string"], positionals: true },
   // Stage 2b: feedback is the CLIENT only (declared flags, real help); the --keys intake server

@@ -85,8 +85,8 @@ runtimes ship this way.
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
 one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
-`cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal models` and `cotal runtimes`.
-`cotal version --json` writes:
+`cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal history`, `cotal models`,
+`cotal runtimes`, bare `cotal ext` and `cotal docs`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -108,10 +108,23 @@ Diagnostics stay on stderr. A usage error under `--json` is a `refused` envelope
 `USAGE_INVALID`, and the help it names stays off stdout. A command without a JSON output refuses
 `--json` as an unknown option.
 
+A subcommand's help has its own `structured output` line, and only the forms that show one write a
+document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ext root` and
+`ext seed` report as text, refuse `--json` and `--plain` with a usage error, and exit 1 on any
+failure.
+
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
-report as plain lines: no color, no marks, ASCII labels. Pass one of `--json` and `--plain`; both is a
-`USAGE_INVALID` refusal. A table that does not fit the terminal is written as one labeled record per
-row, so no value is cut off.
+report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
+ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
+as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
+terminal is written as one labeled record per row, so no value is cut off.
+
+On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
+starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
+own and is never split. Help wraps the same way: a usage line breaks only between options, and when
+the flag names leave their descriptions fewer than 30 columns, each description goes on the lines
+under its flag. Output to a pipe or a file is never wrapped.
 
 A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
 `completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
@@ -169,7 +182,7 @@ failure.
 | Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
 | Messaging & watching | [`channels`](#channels) | Inspect or set the channel registry |
-| Messaging & watching | [`history`](#history) | Clear retained message history |
+| Messaging & watching | [`history`](#history) | Read retained messages, or clear them |
 | Messaging & watching | [`console`](#console) | Live protocol view for a space (TUI, or `--plain` line stream) |
 | Messaging & watching | [`web`](#web) | Browser dashboard (installed as the `@cotal-ai/web` extension) |
 | Extensions & misc | [`linear`](#linear) | Serve the official Linear MCP server as an endpoint agents can call (installed as the `@cotal-ai/linear` extension) |
@@ -180,7 +193,8 @@ failure.
 | Auth & meshes | [`doctor`](#doctor) | Credential-health diagnosis and repair (`doctor auth`) |
 | Auth & meshes | [`join`](#join) | Join a space as your own presence (interactive) |
 | Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
-| Extensions & misc | [`ext`](#ext) | Install / remove operator CLI extensions |
+| Extensions & misc | [`ext`](#ext) | List, install and remove operator CLI extensions |
+| Extensions & misc | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
 | Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
@@ -1056,11 +1070,13 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
-extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, the mesh
+connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
 channels. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
 named too. A registry directory or record that cannot be read also leaves the selected mesh
-unresolved, because resolution refuses it, and the readable records are still listed. The manager
+unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
+unreadable extensions manifest is refused while loading the command surface, before this report
+can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`.
@@ -2232,18 +2248,61 @@ and the read-only admin view are not.
 ## history
 
 ```bash
+cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json | --plain]
 cotal history clear --force [--dms] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Target mesh |
-| `--dms` | off | Also clear DM history |
-| `--force` | none | Required: clear without prompting |
+| `--dms` | off | Also read DM history, which needs a DM read grant. With `clear`, also clear DM history |
+| `--since <time\|seq>` | none | Only messages after an ISO 8601 time, an age such as `30m`, `2h` or `1d`, or a chat stream sequence |
+| `--limit <n>` | 50 | How many of the newest retained messages to read, 1 to 1000 |
+| `--from <name>` | none | Keep messages from this sender name or id |
+| `--grep <text>` | none | Keep messages whose text contains this, ignoring case |
+| `--follow` | off | Keep listening and print each new message |
+| `--json` / `-j` | off | One JSON document, or with `--follow` one JSON record per line |
+| `--plain` | off | The same report without color or marks |
+| `--force` | none | `clear`: required, clear without prompting |
 
-Purges retained channel history; `--dms` extends it to direct-message history. An alias of
-[`clean history`](#clean). On a user-auth mesh the purge rides a short-lived purger view over
-your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
+Reads the newest retained messages in the selected space, newest last: one channel, or every
+channel the identity may read. `--limit` bounds the read, and `--since`, `--from` and `--grep` then
+filter that window on this machine. They do not search the whole stream. `result.window` says how
+many messages were read, whether older retained messages exist that the window did not reach, and
+whether the window goes back to `--since`. An age outside the supported date range or a sequence
+that cannot be represented without rounding is a `USAGE_INVALID` refusal before connecting.
+The report shows each message's local time, with its date when it is not today; `result.items[].ts`
+is the ISO time.
+
+Retained history is not every message sent. The chat stream keeps a fixed number of messages per
+sender on each channel, so a busy sender's oldest messages are discarded while other senders'
+messages from the same time remain. `result.retention` names the limit and each sender at it on the
+channels read, and the report prints a `gap` line for each. A gap is a fact about the stream, not a
+partial read. `result.replay` gives each channel's replay policy for new members, read from the
+channel registry. DM gaps are not reported.
+
+A channel the identity may not read is refused with `PERMISSION_DENIED` (exit 2), never shown as
+empty. On a user-auth mesh each channel read uses the connection's broker-enforced channel grant.
+Revocation follows the effective credential and connection retirement, as it does for live channel
+reads. Concurrent commands sharing one identity wait for the broker to release its transient history
+reader; no command deletes another reader. Each channel has a ten-second read budget, with a
+thirty-second budget for the whole channel walk. A busy or cut-short read fails with `OPERATION_FAILED` (exit 5) rather than showing
+an empty conversation. Reading every channel leaves out channels the grant does not cover and names
+them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are not available to a
+user-auth identity. A part that could not be read is a warning and a `partial` run (exit 4): the
+retention, a replay policy, the channel list when a channel is named, or one channel of several.
+
+`--follow` prints the window and then each new message until interrupted. With `--json` each line is
+one record: `{"schemaVersion":1,"stream":"history","type":<type>,"target":…,"receivedAt":…,"data":…}`.
+The first record is a `snapshot` holding the window, then one `event` per message. A `gap` record
+says the connection was re-established and messages sent while it was down are not shown. An
+`error` record names a failure on the live feed, and an `end` record closes the stream. The exit
+code is the snapshot's.
+
+`history clear` purges retained history from every channel in the selected space; `--dms` extends
+it to direct-message history. It refuses extra channel names, read filters and `--follow` before
+purging. These inputs cannot narrow a clear operation. It is the same operation as [`clean history`](#clean). On a user-auth mesh the purge rides a short-lived
+purger view over your login, which needs ledger scope `admin` ([Identity & auth](identity-and-auth.md)).
 
 ## console
 
@@ -2588,10 +2647,9 @@ renders its channel / role / ACL graph. See [Define a team](define-a-team.md) an
 ## ext
 
 ```bash
-cotal ext                 # same as `list`
+cotal ext [list] [--json | --plain]
 cotal ext add <npm-package>
 cotal ext remove <name>
-cotal ext list [--json]
 cotal ext root            # print just the install prefix (scriptable)
 cotal ext seed [--repair|--reset|--force]
 ```
@@ -2609,11 +2667,12 @@ root kept **separate** from npm's own global tree. These packages never show up 
 `cotal ext` (or the Extensions section of `cotal status`) is the canonical inventory. `cotal ext root`
 prints only the path, for scripts. The versions shown are the manifest pin recorded at add time.
 
-`ext list --json` (or bare `ext --json`) prints one JSON object per installed extension per line:
-`pkg`, `version`, `spec` (what `ext add` was given), `seeded` (`true` for an entry the built-in seed
-installed) and `provides` (the `kind:name` refs the table shows). No header or footer reaches stdout,
-and an empty prefix prints nothing and exits 0. The table is presentation and is not a stable parsing
-target. The other `ext` subcommands refuse `--json`.
+Bare `ext --json` (or `ext list --json`) writes one JSON document: `result.root` is the install
+prefix and `result.items` holds one row per installed extension with `pkg`, `version`, `spec` (what
+`ext add` was given), `seeded` (`true` for an entry the built-in seed installed) and `provides` (the
+`kind:name` refs the table shows). An empty prefix is an empty list. `--plain` writes the same report
+without color. The other `ext` subcommands refuse `--json` and `--plain` with `USAGE_INVALID`.
+`ext root` stays a raw path for `$(cotal ext root)`.
 
 An installed package whose directory is gone is reported as not installed. One whose `package.json`
 is not JSON or has no `version` is reported as corrupt, naming the package and its `package.json`.
@@ -2688,6 +2747,34 @@ generation (see [Plumbing](#plumbing)).
 `cotal completion` skips the seed as well, so a shell profile that sources its stub never reconciles
 and is never refused by the store's generation or the source-checkout guard. Printing a stub writes
 nothing, and `completion install` writes only shell configuration.
+
+## docs
+
+```bash
+cotal docs [<page>] [--refresh] [--json | --plain]
+cotal docs --search <query> [--json | --plain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--search <query>` | none | Show the sections that best match a query, each naming its page |
+| `--refresh` | off | With a page: also try the version-pinned copy on docs.cotal.ai |
+| `--json` / `-j` | off | One JSON document |
+| `--plain` | off | The same report without color |
+
+Reads the docs bundled with this installed version, offline: the same pages agents read with
+`cotal_docs`. Bare `docs` lists the pages by category (`Start here`, `Concept`, `Guide`, `Reference`,
+`Project`), each with its title; `result.pages` holds each page's slug, title, kind and summary, and
+`result.sources` the normative `spec`, `lang` and `schema`. A page is named by its slug,
+ignoring case and a trailing `.md`; `result.body` holds its Markdown. An unknown page is refused with
+`USAGE_INVALID`, naming every page.
+
+`--refresh` fetches the page from the immutable path for this version on docs.cotal.ai.
+`result.source` says which copy was served, `bundled` or `docs.cotal.ai`, and `result.refresh` says
+what the fetch did: `served`, `not-published` (the path has no copy) or `unreachable`. The bundled
+copy is served whenever the fetch does not succeed. `--refresh` applies only to a page.
+
+`--search` ranks sections by the words of the query. A search with no match is an empty result.
 
 ## completion
 

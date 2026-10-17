@@ -17,6 +17,7 @@ import "@cotal-ai/manager"; // self-registers `supervise` — the agent-supervis
 import "@cotal-ai/delivery"; // self-registers `deliver` — the server-side Plane-3 delivery daemon
 import "@cotal-ai/runtime"; // self-registers `run` — the workflow-run operator surface (start/resume/ps/journal/answer)
 import "@cotal-ai/auth"; // self-registers login / logout — per-user IdP sessions (device-code sign-in)
+import "./docs.js"; // self-registers `docs`; the docs bundle loads only when `docs` runs
 // Self-registers the `ag-ui.frame` part renderer, so `cotal console` and `cotal join` draw an event
 // frame instead of `[unrenderable part kind "ag-ui.frame"]`.
 //

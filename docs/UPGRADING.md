@@ -34,6 +34,54 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Extension listing output after 0.82.0 (unreleased)
+
+`cotal ext --json` and `cotal ext list --json` now write one JSON document instead of one JSON line
+per extension. Nothing on a running mesh changes, and there is no outage window. Upgrading the
+`cotal` binary is the whole operation.
+
+### What stops working
+
+- A script that reads `cotal ext list --json` line by line reads one envelope instead. The rows it
+  read are now `result.items`, each with the same fields, and `result.root` is the install prefix.
+  With `jq`, `cotal ext list --json | jq -c '.result.items[]'` prints the rows as before. An empty
+  prefix writes an envelope with no items instead of nothing.
+- A usage error from `cotal ext` exits 1 as one `refused` envelope under `--json`, and `--plain` or
+  `--json` on `ext add`, `ext remove`, `ext root` or `ext seed` is refused. `cotal ext root` still
+  prints the path alone.
+- The human listing is a table now. Human output is not a parsing target; use `--json`.
+
+### Before the upgrade
+
+Search scripts for `cotal ext list --json` and `cotal ext --json`, and change line-by-line reads to
+read `result.items` from the one document.
+
+## History reads after 0.82.0 (unreleased)
+
+`cotal history [channel]` reads retained messages. Clearing is now `cotal history clear --force`.
+This changes the CLI grammar only. Stored messages, credentials, agents and running services do not
+migrate or restart, and there is no outage window. Upgrade the CLI and its first-party components
+together through the normal update path; a separate broker or manager can stay running.
+
+### What stops working
+
+- Replace a script's `cotal history --force` with `cotal history clear --force`. The former is
+  refused rather than clearing anything. Add `--dms` to the explicit clear command only when the
+  purge should include direct messages and the identity holds that authority.
+- `history clear` accepts no channel argument, read filters or `--follow`. It purges every channel
+  in the selected space; these inputs are refused rather than treated as a selective purge.
+- Bare `history` reads channels within the caller's read grant. It never clears stored messages.
+  Use `--json` and `result.items` for scripts; the human report is not a parsing target.
+- A user-auth history read uses the connection's channel grant. DM audit history and stream-sequence
+  cursors are not available through that ordinary human credential. Use a time with `--since`.
+
+### Before the upgrade
+
+Find scripts that pass `--force` to `history` and change their explicit purge invocation. No stored
+state or credential backup is needed for this CLI-only transition. Keep the deployment's usual
+backup procedure before an intentional history purge; reads do not make a backup or restore data
+that retention has already removed.
+
 ## Status output after 0.82.0 (unreleased)
 
 `cotal status` writes one structured document with `--json`, takes `--plain` and `--all`, and exits by

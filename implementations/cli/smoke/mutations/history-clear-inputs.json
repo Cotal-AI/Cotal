@@ -1,0 +1,69 @@
+{
+  "suite": [
+    "implementations/cli/smoke/history-read.smoke.ts"
+  ],
+  "guard": "history clear refuses misleading channel selection, read filters and follow mode before a destructive whole-space purge",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/history-read.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-clear-inputs.json",
+  "why": [
+    "A fresh complete dependency build precedes these proofs. Every mutation changes only the CLI package and recompiles that package before the real binary runs; restoration rebuilds the same package.",
+    "Each native case first proves valid purge and both channel sentinels. Removing its guard must fail its named preservation assertion. The normal clear --dms path is exercised separately."
+  ],
+  "mutations": [
+    {
+      "name": "clear accepts an extra channel",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "    if (rest.length) throw usage(\"history clear takes no channel; it clears every channel in the selected space\");\n",
+      "replace": "",
+      "expectRed": "history clear refuses an extra channel before purging either channel",
+      "cell": "history clear refuses an extra channel before purging either channel",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "clear accepts --since",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "v.since !== undefined || ",
+      "replace": "",
+      "expectRed": "history clear refuses --since before purging either channel",
+      "cell": "history clear refuses --since before purging either channel",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "clear accepts --limit",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "v.limit !== undefined || ",
+      "replace": "",
+      "expectRed": "history clear refuses --limit before purging either channel",
+      "cell": "history clear refuses --limit before purging either channel",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "clear accepts --from",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "v.from !== undefined || ",
+      "replace": "",
+      "expectRed": "history clear refuses --from before purging either channel",
+      "cell": "history clear refuses --from before purging either channel",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "clear accepts --grep",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "v.grep !== undefined || ",
+      "replace": "",
+      "expectRed": "history clear refuses --grep before purging either channel",
+      "cell": "history clear refuses --grep before purging either channel",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "clear accepts --follow",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": " || v.follow)",
+      "replace": ")",
+      "expectRed": "history clear refuses --follow before purging either channel",
+      "cell": "history clear refuses --follow before purging either channel",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

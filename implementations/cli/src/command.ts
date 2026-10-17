@@ -16,8 +16,9 @@ import {
   outputDeclarationProblems,
   renderWorkspaceError,
   targetErrorCode,
+  terminalWidth,
 } from "@cotal-ai/workspace";
-import { c, staleStoreHint } from "./ui.js";
+import { c, staleStoreHint, stderrLine } from "./ui.js";
 import {
   isExtensionStub,
   materializeExtension,
@@ -60,15 +61,18 @@ function ownWords(cmd: Command | undefined, words: readonly string[]): string[] 
   return cmd && (cmd.rawArgs || cmd.name.startsWith("__")) ? [...words] : stripGlobalFlags(words);
 }
 
-/** Whether `cmd` declares a structured output, so it reports every outcome by the 0 to 5 table. */
-function structured(cmd: Command): boolean {
-  return (cmd.outputs ?? []).some((mode) => mode === "json" || mode === "ndjson");
+/** Whether the invoked mode declares a structured output, so it reports every outcome by the 0 to 5
+ *  table: the subcommand `first` selects, else the command's bare form. */
+function structured(cmd: Command, first: string | undefined): boolean {
+  const sub = findSubcommand(cmd, first);
+  return ((sub ? sub.outputs : cmd.outputs) ?? []).some((mode) => mode === "json" || mode === "ndjson");
 }
 
 /** Whether `args` ask `cmd` for JSON before any `--`: `--json`, `-j`, or `-j` in a group of the
- *  command's boolean short flags. Read from the words, because a usage error has no parse. */
+ *  command's boolean short flags. Read from the words, because a usage error has no parse, so the mode
+ *  is the first word that is not a flag. */
 function asksForJson(cmd: Command, args: readonly string[]): boolean {
-  if (!structured(cmd)) return false;
+  if (!structured(cmd, args.find((word) => !word.startsWith("-")))) return false;
   const booleans = new Set((cmd.flags ?? []).flatMap((flag) => (flag.type === "boolean" && flag.short ? [flag.short] : [])));
   const end = args.indexOf("--");
   return (end === -1 ? args : args.slice(0, end)).some(
@@ -80,8 +84,8 @@ function asksForJson(cmd: Command, args: readonly string[]): boolean {
  *  for, and the exit code its outcome sets. The envelope is written synchronously, because stdout
  *  to a pipe is asynchronous on some platforms and `exit` would cut it short. */
 function failureExit(cmd: Command, failure: CommandFailure, json: boolean): never {
-  console.error(c.red(`✗ ${failure.message}`));
-  if (failure.remedy) console.error(c.dim(`  ↳ ${failure.remedy}`));
+  stderrLine("✗ ", failure.message, c.red);
+  if (failure.remedy) stderrLine("  ↳ ", failure.remedy, c.dim);
   if (json) writeSync(1, envelopeLine(failureEnvelope(cmd.name, failure)));
   process.exit(exitCode(failure.outcome, failure.code));
 }
@@ -179,8 +183,8 @@ function usageExit(message: string, cmd?: Command, json = false): never {
   if (cmd && json) failureExit(cmd, new CommandFailure("refused", "USAGE_INVALID", message, { remedy: `run \`cotal help ${cmd.name}\`` }), true);
   // The help goes to stderr with the reason, so a refused run leaves stdout empty and a script that
   // sources or parses it gets nothing.
-  console.error(c.red(`✗ ${message}`));
-  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));
+  stderrLine("✗ ", message, c.red);
+  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));
   process.exit(1);
 }
 
@@ -200,7 +204,7 @@ function parseOrExit(cmd: Command, rest: string[]): ParsedArgs {
   if (cmd.subcommands?.length && first !== undefined && !findSubcommand(cmd, first))
     usageExit(`cotal ${cmd.name} has no subcommand "${first}" - run \`cotal help ${cmd.name}\``, cmd, json);
   // `--json` implies `--no-input`: a script reading one document cannot answer a prompt.
-  if (structured(cmd) && parsed.values.json === true) disableInput();
+  if (structured(cmd, first) && parsed.values.json === true) disableInput();
   return canonicalSubcommand(cmd, parsed);
 }
 
@@ -247,7 +251,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       if (await extSeedGate(registry, argv)) return;
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
   }
@@ -258,11 +262,16 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     } catch (e) {
       // A corrupt extensions manifest must not silently shrink the surface — fatal and loud, but
       // rendered as the CLI's one red line, not an unhandled-rejection stack dump.
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
     for (const cmd of commands) {
-      const problems = [...commandDeclarationProblems(cmd), ...outputDeclarationProblems(cmd), ...globalFlagDeclarationProblems(cmd)];
+      const problems = [
+        ...commandDeclarationProblems(cmd),
+        ...outputDeclarationProblems(cmd),
+        ...(cmd.subcommands ?? []).flatMap((sub) => outputDeclarationProblems({ name: `${cmd.name} ${sub.name}`, outputs: sub.outputs, flags: cmd.flags })),
+        ...globalFlagDeclarationProblems(cmd),
+      ];
       if (problems.length) usageExit(`internal error: ${problems.join("; ")}`);
     }
     setCommandSurface(commands); // the completion dispatcher reads the SAME surface help renders
@@ -292,7 +301,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       await reconcileSeededConnectors();
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
     commands = surface();
@@ -306,7 +315,7 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     try {
       cmd = await materializeExtensionCommand(cmd);
     } catch (e) {
-      console.error(c.red(`✗ ${(e as Error).message}`));
+      stderrLine("✗ ", (e as Error).message, c.red);
       process.exit(1);
     }
     parsed = parseOrExit(cmd, rest);
@@ -320,14 +329,15 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     if (cmd.prepare) await cmd.prepare(parsed);
     await cmd.run(parsed);
   } catch (e) {
-    const json = structured(cmd) && parsed.values.json === true;
+    const mode = parsed.positionals[0];
+    const json = structured(cmd, mode) && parsed.values.json === true;
     // A usage error a command raises from its own checks prints the command's help, not a stack trace.
     if (isArgError(e)) usageExit((e as Error).message.split(".")[0]!, cmd, json);
     if (isCommandFailure(e)) failureExit(cmd, e, json);
     // A command that declares a structured output reports by the outcome table. A target it could
     // not resolve or connect to is refused before any request, under the refusal's own code; a
     // failure it did not classify is unknown: it may have had effects that cannot be attributed.
-    if (structured(cmd)) {
+    if (structured(cmd, mode)) {
       if (isConnectRefusal(e)) failureExit(cmd, e.failure(), json);
       if (isWorkspaceTargetError(e))
         failureExit(cmd, new CommandFailure("refused", targetErrorCode(e.code), renderWorkspaceError({ kind: "target", error: e }).replace(/^✗ /, "")), json);
@@ -350,11 +360,11 @@ export async function runCli(registry: Registry, argv: string[], opts: RunCliOpt
     // contract is "denied, not absent", not a crash. The full stack stays available under
     // COTAL_DEBUG for diagnosis.
     const msg = e instanceof Error ? e.message : String(e);
-    console.error(c.red(`✗ ${msg}`));
+    stderrLine("✗ ", msg, c.red);
     // Known failure signatures get a one-line operator hint (e.g. a stale-store durable
     // collision names the `cotal clean` reset) - the error itself stays verbatim.
     const hint = staleStoreHint(msg);
-    if (hint) console.error(c.dim(`  ↳ ${hint}`));
+    if (hint) stderrLine("  ↳ ", hint, c.dim);
     if (process.env.COTAL_DEBUG && e instanceof Error && e.stack) console.error(c.dim(e.stack));
     process.exit(1);
   }

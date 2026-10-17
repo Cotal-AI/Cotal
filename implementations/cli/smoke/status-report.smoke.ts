@@ -14,6 +14,8 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSuite, freePort } from "@cotal-ai/smoke-kit";
+import { renderReport } from "@cotal-ai/workspace";
+import { statusView } from "../src/commands/status.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
 if (!existsSync(BIN)) {
@@ -85,7 +87,7 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   const rich = run(["status", ...unknown], { FORCE_COLOR: "1" });
   const plain = run(["status", ...unknown, "--plain"], { FORCE_COLOR: "1" });
   check("status draws a colored report", rich.status === 0 && /\x1b\[/.test(rich.stdout), shown(rich));
-  check("--plain writes the same words with no ANSI", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout), shown(plain));
+  check("--plain writes the same words with no ANSI and ASCII punctuation", plain.status === 0 && !/\x1b\[/.test(plain.stdout) && plain.stdout === strip(rich.stdout).replace(/·/g, "-"), shown(plain));
   check(
     "the sections keep the infrastructure order and end with the hints",
     JSON.stringify(titles(plain.stdout)) === JSON.stringify(["Machine", "Extensions", "This Folder", "Recorded Meshes", "Selected Mesh", "Hints"]),
@@ -110,6 +112,10 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
   check("the selected registration is checked and reported unreachable", byName(selected.envelope).alpha === "unreachable", byName(selected.envelope));
   check("the other registration is not checked", byName(selected.envelope).beta === "not-checked", byName(selected.envelope));
   check("an unreachable selected mesh is a fact, not a partial read", selected.status === 0 && selected.envelope?.completeness === "complete" && selected.envelope.result?.selected.connection === "unreachable", shown(selected));
+  // The membership feed's time is shown as an age; the document keeps the ISO time it was read at.
+  const fed = { ...selected.envelope!.result!, selected: { ...selected.envelope!.result!.selected, membershipFeed: { entries: 2, asOf: new Date(Date.now() - 90_000).toISOString() } } };
+  const fedReport = renderReport(statusView(fed as unknown as Parameters<typeof statusView>[0]), "plain");
+  check("the membership feed row says how long ago it was updated", /^ {2}membership feed: +2 entries - updated 1m ago$/m.test(fedReport), fedReport.split("\n").filter((l) => /membership/.test(l)));
   const plain = run(["status", "--space", "alpha", "--plain"]);
   check("the report says not checked for the other registration", /beta\s+not checked/.test(plain.stdout), plain.stdout);
   const all = run(["status", "--space", "alpha", "--all", "--json"]);
@@ -209,6 +215,8 @@ const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-
     const r = run(["status", ...args]);
     check(`status ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
+  const plainOnly = run(["status", "--components", "--plain"]);
+  check("status --components --plain is refused before any probe, exit 1", plainOnly.status === 1 && plainOnly.stdout === "" && /--components checks the selected mesh/.test(plainOnly.stderr), shown(plainOnly));
   const all = run(["status", "--components", "--all"]);
   check("status --components --all is refused before any probe, exit 1", all.status === 1 && all.stdout === "" && /--components checks the selected mesh/.test(all.stderr), shown(all));
 }
