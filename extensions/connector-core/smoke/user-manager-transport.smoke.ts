@@ -752,11 +752,14 @@ try {
     allowSubscribe: [],
     allowPublish: [],
   });
-  await agent.start();
-  await agent.whenConnected();
-  check("MeshAgent connected on the user-auth broker with a host bearer function", agent.connected === true);
+  // Bounded: a bearer source that never yields must turn this scenario red, not hang the suite.
+  const hostedStart = await Promise.race([
+    agent.start().then(() => agent!.whenConnected()).then(() => "connected", (e: unknown) => `failed: ${(e as Error).message}`),
+    wait(30_000).then(() => "timed out after 30 s"),
+  ]);
+  check("MeshAgent connected on the user-auth broker with a host bearer function", hostedStart === "connected" && agent.connected === true, hostedStart);
   check("the host bearer function supplied the connection's bearer", hostBearerCalls >= 1, hostBearerCalls);
-  const hostedPersonas = await agent.listPersonas();
+  const hostedPersonas = agent.connected ? await agent.listPersonas() : { ok: false, error: "not connected" };
   check(
     "a host-bearer agent refuses manager calls with no manager-call bearer",
     hostedPersonas.ok === false && /issues no manager-call bearer/.test(String((hostedPersonas as { error?: unknown }).error ?? "")),
