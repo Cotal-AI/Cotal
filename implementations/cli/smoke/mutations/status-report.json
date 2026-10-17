@@ -101,19 +101,19 @@
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
-      "name": "a registry record that will not parse ends the report",
+      "name": "a registry record that will not parse hides the readable records",
       "file": "packages/workspace/src/mesh-registry.ts",
       "find": "      unusable.push(e);\n      continue;\n",
       "replace": "      throw e;\n",
-      "expectRed": "a registry record that will not parse is partial with exit 4, not unknown",
-      "cell": "a registry record that will not parse is partial with exit 4, not unknown",
+      "expectRed": "the record is named and the readable records are still listed",
+      "cell": "the record is named and the readable records are still listed",
       "afterRestore": "pnpm --filter cotal-ai... build"
     },
     {
       "name": "a selection the registry refused is not reported",
       "file": "implementations/cli/src/commands/status.ts",
       "find": "    if (isMeshRegistryError(e)) {\n      gaps.add(",
-      "replace": "    if (false as boolean) {\n      gaps.add(",
+      "replace": "    if (isMeshRegistryError(e) && false) {\n      gaps.add(",
       "expectRed": "the selection is unresolved by the unreadable record",
       "cell": "the selection is unresolved by the unreadable record",
       "afterRestore": "pnpm --filter cotal-ai... build"

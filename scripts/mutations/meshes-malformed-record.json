@@ -34,7 +34,7 @@
       "name": "a file that does not parse is skipped again",
       "file": "packages/workspace/src/mesh-registry.ts",
       "find": "      unusable.push(e);\n      continue;\n",
-      "replace": "      continue;\n",
+      "replace": "      if (e.cause === undefined) unusable.push(e);\n      continue;\n",
       "expectRed": "a registry file that does not parse refuses naming the file (no silent skip)",
       "cell": "a registry file that does not parse refuses naming the file (no silent skip)",
       "command": "pnpm build >/dev/null && pnpm smoke:meshes-registry",
