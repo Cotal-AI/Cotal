@@ -927,9 +927,9 @@
     },
     {
       "name": "PS2 a plane the card says is off still opens a session",
-      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
-      "find": "useSession(off ? null : controller, id);",
-      "replace": "useSession(controller, id);",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "useSession(entry && plane !== \"off\" ? controller : null, id);",
+      "replace": "useSession(entry ? controller : null, id);",
       "expectRed": "8.5 with the plane off the section opens no session",
       "cell": "8.5 with the plane off the section opens no session"
     },
@@ -964,6 +964,14 @@
       "replace": "channel={channel} clock={clock}",
       "expectRed": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
       "cell": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does"
+    },
+    {
+      "name": "PS7 the Agent tab lets go of the session while the centre shows it, so opening the session closes and reopens it",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "useSession(entry && plane !== \"off\" ? controller : null, id);",
+      "replace": "useSession(entry && plane !== \"off\" && !(route?.view === \"agent\" && route.id === id) ? controller : null, id);",
+      "expectRed": "8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views",
+      "cell": "8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views"
     }
   ]
 }

@@ -18,6 +18,7 @@ import { focusComposer } from "../Composer.tsx";
 import { CopyCommand } from "../CopyCommand.tsx";
 import { clock as hhmm, harnessName, UNVERIFIED } from "../MessageRow.tsx";
 import { StatusWord } from "../Status.tsx";
+import { useSession } from "../views/SessionView.tsx";
 import { SessionPreview } from "./SessionPreview.tsx";
 
 /** How many of the agent's own messages in the open channel the tab lists, newest first. */
@@ -39,8 +40,9 @@ const BEAT_MS = 1000;
  *    session goes to the agent's session at `#/agent/<id>`. The attach and stop commands are for the
  *    reader to copy, with the name quoted for a shell when it needs it. Tab reaches them in that
  *    order, then the session's tool groups.
- *  - Under the profile, the Session section (agents mock S3): the last few steps, live. It is left
- *    out while the centre shows this agent's session (`route`), which already has them.
+ *  - Under the profile, the Session section (agents mock S3): the last few steps, live. The tab
+ *    keeps the agent's session open whatever the route; the section is left out while the centre
+ *    shows this agent's session (`route`), which already has the steps.
  *  - Model reads "not reported" when the card has none. Attention shows only Do not disturb or
  *    Focus. The heartbeat is labelled as a heartbeat and reads its age from `now`, redrawn every second.
  *  - Channels are the agent's, decided as the Members tab decides them, with its quiet or muted
@@ -70,6 +72,12 @@ export function AgentTab({ store, controller = null, id, channel, route, clock }
     return () => clearInterval(t);
   }, []);
   const entry = roster.find((p) => p.card.id === id);
+  const plane = useMemo(() => (entry ? rosterRows([entry], { includeOffline: true })[0].events : undefined), [entry]);
+  // The tab holds the agent's session open, not the Session section, and it does so on every route.
+  // Opening the agent's session in the centre hides the section but keeps this view, so the session
+  // is never closed and opened again between the panel and the full view. A plane the card says is
+  // off publishes nothing to watch, so no session is opened for it.
+  useSession(entry && plane !== "off" ? controller : null, id);
   const badgeOf = useBadgeOf();
   const mine = useMemo(
     () => (entry ? agentChannels(id, membership, channels.map((c) => c.channel), activity, entry.channelModes) : { channels: [], wide: false }),
@@ -108,7 +116,7 @@ export function AgentTab({ store, controller = null, id, channel, route, clock }
           <CopyCommand icon={StopCircleIcon} command={`cotal stop --name ${shellArg(row.name)}`} />
         </div>
       </div>
-      {!(route?.view === "agent" && route.id === id) && <SessionPreview store={store} controller={controller} id={id} />}
+      {!(route?.view === "agent" && route.id === id) && <SessionPreview store={store} id={id} />}
       <dl className="ui-kv">
         {row.harness && <><dt>Harness</dt><dd>{harnessName(row.harness)}</dd></>}
         <dt>Model</dt>

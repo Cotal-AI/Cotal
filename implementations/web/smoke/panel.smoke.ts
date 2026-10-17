@@ -29,6 +29,7 @@ import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
 import { DeleteChannelDialog } from "../client/src/ui/panel/DeleteChannelDialog.tsx";
 import { PANEL_KEY } from "../client/src/ui/panel/RightPanel.tsx";
 import { TopologyTab } from "../client/src/ui/panel/TopologyTab.tsx";
+import { harness } from "./controller-harness.js";
 import { errorsDuring, mount, type Mounted } from "./mount.js";
 import { renderShell } from "./render-shell.js";
 
@@ -574,6 +575,32 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
     stops, ["Message", "Open session", "Copy", "Copy", "group 2 tool calls"]);
   ok("8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity",
     fullFoot === "reviewer is working Reviewing the presence TTL diff", fullFoot);
+}
+{
+  // The shipped controller over a fake Api that records the watch, the read and the unwatch, under
+  // the real shell. reviewer's Agent tab is open beside #review, then Open session goes to its session.
+  const calls: string[] = [];
+  const h = harness({
+    agentEvents: async (id, limit) => {
+      calls.push(`read ${id} ${limit}`);
+      return { frames: [], more: false };
+    },
+    watch: async (id, feed) => void calls.push(`watch ${id} ${feed}`),
+    unwatch: async (id, feed) => void calls.push(`unwatch ${id} ${feed}`),
+  });
+  h.store.set(() => seed({ roster: othersAnd(withPlane("on")) }));
+  h.ctl.onHello("feed-1");
+  const controller = { ...h.ctl, open: async () => undefined } as Controller;
+  const m = await mount(createElement(Harness, { store: h.store, controller, initial: inReview }));
+  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => textOf(b) === "reviewer")));
+  await m.run(() => sleep(0));
+  const before = [...calls];
+  await m.run(() => goTo({ view: "agent", id: "local.rev" }));
+  await m.run(() => sleep(0));
+  same("8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views",
+    [before, calls.slice(before.length), h.store.get().sessions["local.rev"]?.views, pane(m.container).querySelector(".ui-lt-head")],
+    [["watch local.rev feed-1", "read local.rev 200"], [], 2, null]);
+  await m.unmount();
 }
 
 await closeDom();

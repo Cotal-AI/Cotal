@@ -16,6 +16,9 @@ import { hhmm } from "./session/Time.tsx";
 export const LONG_PRESS_MS = 500;
 /** A touch that moves further than this is a scroll, not a press. */
 export const PRESS_SLOP_PX = 8;
+/** How long after a fired press lifts its own click may still arrive. A click later than this is a
+ *  new one, so it goes through. */
+export const PRESS_CLICK_MS = 100;
 
 /** The parts of a pointer event and of an element the long press uses. Spelled out rather than
  *  taken from the DOM lib, because the suites typecheck the components that render on the server
@@ -31,7 +34,9 @@ type Page = { document: { body: unknown } };
 /** A touch held `LONG_PRESS_MS` on the element around `child` (the message row) calls `onPress`. A
  *  mouse or a pen never does: they have the hover action. Moving more than `PRESS_SLOP_PX`, lifting
  *  or a cancelled pointer ends the press. The click that ends a press that fired is the press's, so
- *  it does not also follow a link or open the sender under the finger. */
+ *  it does not also follow a link or open the sender under the finger. A browser may send no click
+ *  after a long press, so that hold lasts only `PRESS_CLICK_MS` past the lift, and a later click (Enter
+ *  on the Session link) goes through. */
 function useLongPress(child: { current: unknown }, onPress: () => void): void {
   const press = useRef(onPress);
   press.current = onPress;
@@ -41,6 +46,7 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let start: { id: number; x: number; y: number } | undefined;
     let fired = false;
+    let settle: ReturnType<typeof setTimeout> | undefined;
     const cancel = () => {
       clearTimeout(timer);
       timer = undefined;
@@ -64,6 +70,9 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
     };
     const up = (e: Press) => {
       if (start !== undefined && e.pointerId === start.id) cancel();
+      if (!fired) return;
+      clearTimeout(settle);
+      settle = setTimeout(() => { fired = false; }, PRESS_CLICK_MS);
     };
     const click = (e: Press) => {
       if (!fired) return;
@@ -83,6 +92,7 @@ function useLongPress(child: { current: unknown }, onPress: () => void): void {
     row.addEventListener("contextmenu", menu);
     return () => {
       cancel();
+      clearTimeout(settle);
       row.removeEventListener("pointerdown", down);
       row.removeEventListener("pointermove", move);
       row.removeEventListener("pointerup", up);

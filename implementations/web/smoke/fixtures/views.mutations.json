@@ -908,6 +908,14 @@
       "replace": "onClick={onClose}",
       "expectRed": "13.7 View agent closes the sheet and opens the sender's Agent tab",
       "cell": "13.7 View agent closes the sheet and opens the sender's Agent tab"
+    },
+    {
+      "name": "MA9 a press that fired keeps swallowing clicks until one comes, so the next Enter on the Session link is lost",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "      settle = setTimeout(() => { fired = false; }, PRESS_CLICK_MS);\n",
+      "replace": "",
+      "expectRed": "13.10 after a press that fired with no click of its own, a later click on the row's Session link goes through",
+      "cell": "13.10 after a press that fired with no click of its own, a later click on the row's Session link goes through"
     }
   ]
 }

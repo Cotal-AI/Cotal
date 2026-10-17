@@ -703,6 +703,17 @@ const rowWith = (root: Element, body: string) => all(root, ".ui-msg").find((r) =
   ok("13.8 a touch that moves 20px before 500ms is a scroll and opens nothing", sheet() === null);
   await hold("mouse");
   ok("13.9 a mouse held past 500ms opens nothing: the long press is for touch", sheet() === null);
+
+  // A press that opened the sheet and was never followed by a click: the next click is a new one.
+  await hold();
+  await m.run(() => { document.dispatchEvent(new KeyboardEventOf("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await m.run(() => sleep(200));
+  const link = rowWith(m.container, "This fails on empty input.")?.querySelector(".ui-msg-acts a") ?? null;
+  let reached: boolean | undefined;
+  // The link's own listener: it sees the click only if the row let it through, and keeps jsdom from following the hash.
+  link?.addEventListener("click", (e) => { reached = !e.defaultPrevented; e.preventDefault(); });
+  await m.run(() => { link?.dispatchEvent(new (dom.window.MouseEvent as typeof MouseEvent)("click", { bubbles: true, cancelable: true })); });
+  ok("13.10 after a press that fired with no click of its own, a later click on the row's Session link goes through", reached === true, reached);
   await m.unmount();
 }
 

@@ -1,8 +1,8 @@
 {
   "expected": {
     "total": 612,
-    "honest-text": 53,
-    "presence-only-glyph/count": 109,
+    "honest-text": 57,
+    "presence-only-glyph/count": 105,
     "command-ack": 12,
     "non-render/control": 438
   },
@@ -3979,22 +3979,34 @@
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{` is ${statusLabel(working)} `}",
-      "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+      "class": "honest-text",
+      "rationale": "The channel working line, <name> is <statusLabel> <activity>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the line with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+      }
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "` is ${statusLabel(working)} `",
-      "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+      "class": "honest-text",
+      "rationale": "The channel working line, <name> is <statusLabel> <activity>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the line with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+      }
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "statusLabel(working)",
-      "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+      "class": "honest-text",
+      "rationale": "The channel working line, <name> is <statusLabel> <activity>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the line with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+      }
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -4028,8 +4040,12 @@
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{working && (\n            <div className=\"ui-typing\">\n              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} badge={badgeOf(working.id)} />\n              <b>{working.name}</b>\n              {` is ${statusLabel(working)} `}\n              {working.progress?.kind !== \"unknown\" && <span className=\"ui-dots\"><i /><i /><i /></span>}\n              {working.activity && <span>{working.activity}</span>}\n            </div>\n          )}",
-      "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is statusLabel's, the status presence reports, with no progress claim; the avatar carries the agent's initial badge."
+      "class": "honest-text",
+      "rationale": "The channel working line, <name> is <statusLabel> <activity>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the line with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/views.smoke.ts",
+        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working with its activity, with no moving dots\""
+      }
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
