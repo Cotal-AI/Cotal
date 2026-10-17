@@ -1409,7 +1409,8 @@ may read DM history: on an open mesh, or with the space signer's audit credentia
 reads local configuration and does not contact the broker to check its authentication requirements.
 An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
 and connection refusals omit URL user information, query strings and fragments. An address that
-cannot be parsed safely makes `whoami` refuse rather than print the raw value.
+cannot be parsed safely makes `whoami` refuse rather than print the raw value. Recovery instructions use a
+`<url>` placeholder rather than a secret-stripped connection address.
 
 ## Endpoint control
 

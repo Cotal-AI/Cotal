@@ -9,7 +9,8 @@
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-url-privacy.json",
   "why": [
     "A complete exact-source dependency build precedes the proof. Each mutation rebuilds both changed operator packages; restoration rebuilds them too.",
-    "Saved-registry cases run the real built CLI in JSON, plain and default layouts, with bare/multiple addresses, user/password, token, query, fragment and invalid input. A real offline who refusal exercises the shared renderer. Diagnostics replace every synthetic marker before logging. The original native baseline is 41 passed and 23 named privacy failures."
+    "Saved-registry cases run the real built CLI in JSON, plain and default layouts, with bare/multiple addresses, user/password, token, query, fragment and invalid input. A real offline who refusal exercises the shared renderer. Diagnostics replace every synthetic marker before logging. The original native baseline is 41 passed and 23 named privacy failures.",
+    "The real auth-required broker, reached through a manual open registry entry with synthetic URL user information, exercises the auth-mismatch recovery branch. Recovery copy requests the original URL with a placeholder, never a secret-stripped connection argument."
   ],
   "mutations": [
     {
@@ -91,6 +92,15 @@
       "replace": "\"SCHEMA_INVALID\"",
       "expectRed": "whoami --json treats an unparseable --server as safe usage refusal",
       "cell": "whoami --json treats an unparseable --server as safe usage refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "auth recovery command reuses the redacted display address",
+      "file": "packages/workspace/src/render.ts",
+      "find": "cotal meshes add ${t.space} --server <url> --mode auth --force",
+      "replace": "cotal meshes add ${t.space} --server ${server} --mode auth --force",
+      "expectRed": "who --json keeps a placeholder for a private broker URL in auth recovery",
+      "cell": "who --json keeps a placeholder for a private broker URL in auth recovery",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
     }
   ]

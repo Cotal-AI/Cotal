@@ -11,3 +11,5 @@ For a remote user-auth registration, a cached login remains a login even when th
 `whoami` also skips dispatcher catalog refresh, so a cached login and an uncached catalog do not make this local identity read contact the IdP.
 
 Broker addresses in identity reports and shared connection-failure messages omit URL user information, query strings and fragments. Stored connection values and connection behavior are unchanged. An unparseable address is refused by `whoami` without printing it.
+
+Use a URL placeholder in auth-mismatch recovery instructions rather than a display address with connection data removed.

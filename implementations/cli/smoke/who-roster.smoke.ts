@@ -124,6 +124,7 @@ try {
     recordMesh({ space: "openmesh", server: `nats://127.0.0.1:${await pickFreePort()}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     for (const entry of urlCases)
       recordMesh({ space: entry.space, server: entry.server, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    recordMesh({ space: "url-auth-recovery", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:${port}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -244,6 +245,13 @@ try {
     const safe = [urlUser, urlPassword, urlToken].every((marker) => !invalid.stdout.includes(marker) && !invalid.stderr.includes(marker));
     const shownInvalid = shown(invalid);
     check(`whoami ${format} treats an unparseable --server as safe usage refusal`, invalid.status === 1 && safe && (format !== "--json" || invalid.envelope?.error?.code === "USAGE_INVALID"), { status: shownInvalid.status, stdout: redactUrlMarkers(shownInvalid.stdout), stderr: redactUrlMarkers(shownInvalid.stderr) });
+  }
+  for (const format of ["--json", "--plain", undefined] as const) {
+    const read = await run(["who", "--space", "url-auth-recovery", ...(format ? [format] : [])]);
+    const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
+    const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
+    const detail = shown(read);
+    check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
   }
   const unknown = await run(["whoami", "--space", "not-registered-whoami", "--server", "nats://127.0.0.1:1", "--json"]);
   check("whoami refuses an unregistered --space even with --server", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
