@@ -22,12 +22,22 @@ export interface RosterRow {
   ts: number;
   statusSince?: number;
   progress?: { kind: "unknown" };
+  /** The card's `ai.cotal.events`: "on" or "off" when it says, absent when it does not. */
+  events?: "on" | "off";
 }
 
 // `card.meta` is free-form advisory display metadata, so a reserved key is read only when it is a string.
 const metaText = (meta: Record<string, unknown> | undefined, key: string): string | undefined => {
   const v = meta?.[key];
   return typeof v === "string" ? v : undefined;
+};
+
+/** Whether the agent publishes its event plane, as its card says, as a row field that is absent when
+ *  the card does not say. Any value but the two the connector writes says nothing, so the view never
+ *  calls a plane on or off on a guess. */
+const eventsFlag = (meta: Record<string, unknown> | undefined): Pick<RosterRow, "events"> => {
+  const v = metaText(meta, "ai.cotal.events");
+  return v === "on" || v === "off" ? { events: v } : {};
 };
 
 /** A status's place in `STATUS_ORDER`. The wire can carry a status outside the four, which sorts
@@ -55,6 +65,7 @@ export function rosterRows(roster: RosterEntry[], opts: { includeOffline?: boole
       ts: p.ts,
       statusSince: p.statusSince,
       progress: p.progress,
+      ...eventsFlag(p.card.meta),
     }));
 }
 

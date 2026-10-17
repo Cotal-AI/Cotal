@@ -108,6 +108,54 @@
       "replace": "  if (false) {",
       "expectRed": "1.1a meta REJECTS a 500 rather than resolving with its body as data",
       "cell": "1.1a meta REJECTS a 500 rather than resolving with its body as data"
+    },
+    {
+      "name": "H14 the agent events read stops forwarding the limit the controller asked for, so Load earlier reads the same page again",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "/events?limit=${limit}`",
+      "replace": "/events?limit=200`",
+      "expectRed": "6.1 agentEvents GETs /api/agents/<id>/events with the limit the controller asked for",
+      "cell": "6.1 agentEvents GETs /api/agents/<id>/events with the limit the controller asked for"
+    },
+    {
+      "name": "H15 the watch drops its feed, so the server cannot tell which browser to forward the agent's frames to",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "noContent(`${agent(id)}/watch?feed=${encodeURIComponent(feed)}`, `watch ${id}`)",
+      "replace": "noContent(`${agent(id)}/watch`, `watch ${id}`)",
+      "expectRed": "6.4a watch is a POST to /api/agents/<id>/watch?feed=<feed>, both encoded",
+      "cell": "6.4a watch is a POST to /api/agents/<id>/watch?feed=<feed>, both encoded"
+    },
+    {
+      "name": "H16 the unwatch posts to the watch route, so closing a session keeps the agent's frames coming",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "noContent(`${agent(id)}/unwatch?feed=${encodeURIComponent(feed)}`, `unwatch ${id}`)",
+      "replace": "noContent(`${agent(id)}/watch?feed=${encodeURIComponent(feed)}`, `unwatch ${id}`)",
+      "expectRed": "6.5a unwatch is a POST to /api/agents/<id>/unwatch?feed=<feed>, both encoded",
+      "cell": "6.5a unwatch is a POST to /api/agents/<id>/unwatch?feed=<feed>, both encoded"
+    },
+    {
+      "name": "H17 the agent id is no longer encoded, so an id with a slash or a hash changes the route it asks for",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "const agent = (id: string) => `/api/agents/${encodeURIComponent(id)}`;",
+      "replace": "const agent = (id: string) => `/api/agents/${id}`;",
+      "expectRed": "6.1 agentEvents GETs /api/agents/<id>/events with the limit the controller asked for",
+      "cell": "6.1 agentEvents GETs /api/agents/<id>/events with the limit the controller asked for"
+    },
+    {
+      "name": "H18 a watch takes any 2xx as success, so an answer the route never gives passes as a watch",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "    if (res.status === 204) return;",
+      "replace": "    if (res.ok) return;",
+      "expectRed": "6.7 watch: any answer but a 204 throws, a 200 included",
+      "cell": "6.7 watch: any answer but a 204 throws, a 200 included"
+    },
+    {
+      "name": "H19 a refused watch throws without the server's text, so the reader is not told why",
+      "file": "implementations/web/client/src/api/http.ts",
+      "find": "    if (!res.ok) await readJson<never>(res, what);\n",
+      "replace": "",
+      "expectRed": "6.6 watch: a 400 throws naming the request and the server's text",
+      "cell": "6.6 watch: a 400 throws naming the request and the server's text"
     }
   ],
   "suite": [

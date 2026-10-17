@@ -80,6 +80,9 @@ export function startDashboard(deps: {
       deps.onArrival?.();
       controller.onMessage(e);
     },
+    hello: controller.onHello,
+    // A frame is not a message: it is not counted toward the message rate.
+    agentFrame: controller.onAgentFrame,
   };
   // One retry pending at most, and pending exactly while the store holds a retryable refusal, by
   // whichever read left it there (a refresh or a channel's history). It fires one refresh, which

@@ -10,6 +10,7 @@ import type {
   RosterEntry,
 } from "../api/types.js";
 import type { OrderNote } from "../lib/eventOrder.js";
+import type { SessionFrame } from "../lib/session.js";
 import type { StaleMark } from "../lib/snapshot.js";
 
 /** A channel row. A live message can name a channel before the next `/api/channels` read does, so
@@ -48,6 +49,27 @@ export interface Draft {
   outgoing: Outgoing[];
 }
 
+/** One agent's session as this page holds it, while at least one view of it is open. */
+export interface SessionState {
+  /** Views of this agent open on this page (the panel section, the full view). */
+  views: number;
+  /** The agent's frames, oldest first, unique by message id, holding at most `SESSION_EVENT_CAP`
+   *  events. */
+  frames: SessionFrame[];
+  /** The agent's own verified chat posts (feed rows with senderId === id and mode "chat"), oldest first, at most 500. */
+  posts: StoredMessage[];
+  load: "loading" | "ok" | "refused" | "failed";
+  /** Refused: the broker's text. Failed: the read's error. */
+  reason?: string;
+  /** Refused: the command that would grant this dashboard the read, when the mesh has one. */
+  grant?: string;
+  /** True when the channel holds frames older than the ones held: the last read said so, or the
+   *  cap dropped some. */
+  more: boolean;
+  /** Frames asked for by the last read. */
+  limit: number;
+}
+
 export interface DashboardState {
   space: string | null;
   connection: Connection;
@@ -82,6 +104,8 @@ export interface DashboardState {
   operatorId: string | null;
   /** By `composeKey`. */
   drafts: Record<string, Draft>;
+  /** By roster id, one for each agent with a view open on this page. */
+  sessions: Record<string, SessionState>;
 }
 
 export const initialState: DashboardState = {
@@ -102,4 +126,5 @@ export const initialState: DashboardState = {
   post: null,
   operatorId: null,
   drafts: {},
+  sessions: {},
 };

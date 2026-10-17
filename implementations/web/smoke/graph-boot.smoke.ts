@@ -98,6 +98,9 @@ function newDashboard(opts: { refuseMembershipRead?: boolean } = {}) {
     }),
     deleteChannel: async () => { throw new Error("deleteChannel not expected in this boot"); },
     send: async () => { throw new Error("send not expected in this boot"); },
+    agentEvents: async () => { throw new Error("agentEvents not expected in this boot"); },
+    watch: async () => { throw new Error("watch not expected in this boot"); },
+    unwatch: async () => { throw new Error("unwatch not expected in this boot"); },
   };
   let handlers: FeedHandlers | null = null;
   let opened = 0;
@@ -303,6 +306,7 @@ async function main() {
     const record: FeedHandlers = {
       open: () => void fired.push("open"), error: () => void fired.push("error"), closed: () => void fired.push("closed"),
       roster: () => undefined, presenceView: () => undefined, membership: () => undefined, membershipFailed: () => undefined, message: () => undefined,
+      hello: () => undefined, agentFrame: () => undefined,
     };
     const retrying = source(0);
     openFeed(record, () => retrying);

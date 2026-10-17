@@ -5,8 +5,9 @@
  * JSON, and `fetch()` does not reject on a 500. So a route that reads its body without consulting
  * the status stores the refusal as data. `readJson` (lib/snapshot.ts) is the gate, and
  * `client/src/api/http.ts` is the one place the client makes a request, so this suite drives
- * `httpApi(fakeFetch)` for every one of its eight methods: meta, roster, channels, activity, dms,
- * history, membership and deleteChannel.
+ * `httpApi(fakeFetch)` for every one of its nine reads and writes: meta, roster, channels, activity,
+ * dms, history, membership, deleteChannel and agentEvents. The two agent watches answer 204 with no
+ * body, so section 6 holds them to that: a 204 is success and anything else throws.
  *
  * WHAT A CELL PROVES. The fake answers `{ ok: false, status: 500, json: { error: "boom" } }`. A
  * method that went through the gate rejects, and its message names the read and the server's own
@@ -57,6 +58,7 @@ const METHODS: { id: string; what: string; run: (api: ReturnType<typeof httpApi>
   { id: "history", what: `#${CHANNEL} history`, run: (a) => a.history(CHANNEL, 200) },
   { id: "membership", what: "membership", run: (a) => a.membership() },
   { id: "deleteChannel", what: `delete #${CHANNEL}`, run: (a) => a.deleteChannel(CHANNEL) },
+  { id: "agentEvents", what: "local.abc events", run: (a) => a.agentEvents("local.abc", 200) },
 ];
 
 /** What one call did: it rejected with `error`, or it resolved with `value`. Kept apart on purpose,
@@ -159,6 +161,45 @@ const messageOf = (o: Outcome): string => (o.rejected ? o.error.message : `RESOL
   }
   ok("5.1 with no fetch passed, a request goes through the global fetch as it is when the request is made",
     seen.length === 1 && seen[0] === "late:/api/meta", seen);
+}
+
+// ── 6. ONE AGENT'S EVENT PLANE: the read and the two watches ────────────────────────────────────
+/** An id that is not URL-safe, so a cell can tell an encoded path from a raw one. Real ids are
+ *  `<owner>.<actor>`; the server refuses this one, which does not matter to the client's request. */
+const AGENT = "own er/x.y#1";
+const FEED = "f/1 2";
+{
+  const { calls, fetchImpl } = fake({ ok: true, status: 200, body: { frames: [], more: false } });
+  await httpApi(fetchImpl).agentEvents(AGENT, 400);
+  ok("6.1 agentEvents GETs /api/agents/<id>/events with the limit the controller asked for",
+    calls[0]?.url === `/api/agents/${encodeURIComponent(AGENT)}/events?limit=400` && (calls[0]?.init === undefined || calls[0]?.init.method === undefined), calls[0]);
+  ok("6.2 CONTROL: the encoding is not a no-op for this id, so 6.1 can tell it from none", encodeURIComponent(AGENT) !== AGENT);
+}
+{
+  const refused = { refused: "Permissions Violation for Subscription to \"cotal.main.chat.local.abc.events.local.abc\"", grant: "cotal mint watcher --profile agent --allow-subscribe 'events.local.abc' --provision" };
+  const { fetchImpl } = fake({ ok: true, status: 200, body: refused });
+  const got = await settle(() => httpApi(fetchImpl).agentEvents("local.abc", 200));
+  ok("6.3 a { refused } answer is passed through as data, with its grant", !got.rejected && JSON.stringify(got.value) === JSON.stringify(refused), messageOf(got));
+}
+for (const [n, route] of [[4, "watch"], [5, "unwatch"]] as const) {
+  const { calls, fetchImpl } = fake({ ok: true, status: 204 });
+  const got = await settle(() => httpApi(fetchImpl)[route](AGENT, FEED));
+  const c = calls[0];
+  ok(`6.${n}a ${route} is a POST to /api/agents/<id>/${route}?feed=<feed>, both encoded`,
+    c?.url === `/api/agents/${encodeURIComponent(AGENT)}/${route}?feed=${encodeURIComponent(FEED)}` && c?.init?.method === "POST", c);
+  ok(`6.${n}b ${route} sends no body`, c?.init?.body === undefined, c?.init);
+  ok(`6.${n}c ${route} takes a 204 with no body as success`, !got.rejected && got.value === undefined, messageOf(got));
+}
+for (const route of ["watch", "unwatch"] as const) {
+  const { fetchImpl } = fake({ ok: false, status: 400, body: { error: "unknown feed f-9" } });
+  const got = await settle(() => httpApi(fetchImpl)[route]("local.abc", "f-9"));
+  ok(`6.6 ${route}: a 400 throws naming the request and the server's text`,
+    got.rejected && got.error.message.includes(`${route} local.abc`) && got.error.message.includes("unknown feed f-9") && got.error.message.includes("400"), messageOf(got));
+}
+for (const route of ["watch", "unwatch"] as const) {
+  const { fetchImpl } = fake({ ok: true, status: 200, body: {} });
+  const got = await settle(() => httpApi(fetchImpl)[route]("local.abc", "f-1"));
+  ok(`6.7 ${route}: any answer but a 204 throws, a 200 included`, got.rejected && got.error.message.includes("200"), messageOf(got));
 }
 
 console.log(failed === 0 ? `web http api: ${cells} cells OK` : `web http api: ${failed}/${cells} FAILED`);

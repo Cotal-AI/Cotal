@@ -1,7 +1,7 @@
 // The live feed: one `EventSource` on `/feed`, each event decoded and handed to a handler. The
 // handlers are the dashboard's (state/boot.ts wires them to the controller), so this module knows
 // the wire and nothing about the state.
-import type { FeedMessage, MembershipSnapshot, PresenceView, RosterEntry } from "./types.js";
+import type { AgentFrame, FeedMessage, MembershipSnapshot, PresenceView, RosterEntry } from "./types.js";
 
 export interface FeedHandlers {
   open(): void;
@@ -15,6 +15,11 @@ export interface FeedHandlers {
   membership(m: MembershipSnapshot): void;
   membershipFailed(reason: string): void;
   message(e: FeedMessage): void;
+  /** The connection's own id, the first event on every connection. A reconnect is a new connection
+   *  with a new id, and the server has forgotten every watch the old one held. */
+  hello(feed: string): void;
+  /** A frame from an agent this connection watches. */
+  agentFrame(f: AgentFrame): void;
 }
 
 /** The part of `EventSource` the feed uses, so a smoke can supply a source of its own. */
@@ -52,5 +57,7 @@ export function openFeed(handlers: FeedHandlers, make: (url: string) => FeedSour
   on<MembershipSnapshot>("membership", (d) => handlers.membership(d));
   on<{ reason: string }>(MEMBERSHIP_READ_FAILED, (d) => handlers.membershipFailed(d.reason));
   on<FeedMessage>("message", (d) => handlers.message(d));
+  on<{ feed: string }>("hello", (d) => handlers.hello(d.feed));
+  on<AgentFrame>("agent-frame", (d) => handlers.agentFrame(d));
   return () => es.close();
 }

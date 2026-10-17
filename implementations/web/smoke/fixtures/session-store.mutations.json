@@ -1,0 +1,93 @@
+{
+  "command": "pnpm smoke:web-session-store",
+  "guard": "an agent's session is held only while a view of it is open: one watch and one read per agent however many views, the watch before the read, nothing asked of an agent with no event plane, at most 2,000 events held, and only the agent's verified chat posts kept as its posts",
+  "why": [
+    "This suite runs `tsx` directly over `client/src`, with no build step and no compiled second copy, so no `afterRestore` is needed on any mutation here."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the session reads before it watches, so a frame published between the read and the watch reaches neither",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));\n      if (!current()) return;\n      const page = await api.agentEvents(id, limit);",
+      "replace": "      const page = await api.agentEvents(id, limit);\n      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));\n      if (!current()) return;",
+      "expectRed": "2.1 the watch is issued before the read, and the read waits for the watch to be answered",
+      "cell": "2.1 the watch is issued before the read, and the read waits for the watch to be answered"
+    },
+    {
+      "name": "S2 views are not counted, so closing one of two views unwatches the agent and forgets the session the other view still shows",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if (s.views > 1) return putSession(id, (x) => ({ ...x, views: x.views - 1 }));\n",
+      "replace": "",
+      "expectRed": "1.2 one closeSession of two views keeps the session and unwatches nothing",
+      "cell": "1.2 one closeSession of two views keeps the session and unwatches nothing"
+    },
+    {
+      "name": "S3 the cap check is removed, so a session holds every event it is sent and the browser's memory grows without bound",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "  while (n > SESSION_EVENT_CAP && drop < frames.length) n -= frames[drop++].events.length;",
+      "replace": "  while (false && drop < frames.length) n -= frames[drop++].events.length;",
+      "expectRed": "7.1 2,001 events drop the oldest frame and set more",
+      "cell": "7.1 2,001 events drop the oldest frame and set more"
+    },
+    {
+      "name": "S4 posts take history rows by the payload's own from, so an unverified row reads as the agent's own post",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "  for (const m of s.open?.messages ?? []) take(m?.msg, m?.senderId);",
+      "replace": "  for (const m of s.open?.messages ?? []) take(m?.msg, m?.senderId ?? m?.msg?.from?.id);",
+      "expectRed": "9.3 a history row from the agent (no senderId) does not land in posts, seeded or live",
+      "cell": "9.3 a history row from the agent (no senderId) does not land in posts, seeded or live"
+    },
+    {
+      "name": "S5 the card's off is ignored, so an agent that publishes no events is still watched and read",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      const off = entry !== undefined && rosterRows([entry], { includeOffline: true })[0]?.events === \"off\";",
+      "replace": "      const off = entry !== undefined && false;",
+      "expectRed": "3.1 an agent whose row says off is neither watched nor read and ends ok",
+      "cell": "3.1 an agent whose row says off is neither watched nor read and ends ok"
+    },
+    {
+      "name": "S6 a live frame is added even when its message is already held, so a frame read from history shows twice",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    if (frames.some((f) => ids.has(f.id))) continue;\n",
+      "replace": "",
+      "expectRed": "4.3 a frame already held from history is not added twice",
+      "cell": "4.3 a frame already held from history is not added twice"
+    },
+    {
+      "name": "S7 a reconnect forgets the open sessions, so the new feed is never asked to forward them and their live frames stop",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      for (const [id, life] of lives) if (life.plane) void syncSession(id, life, store.get().sessions[id]?.limit ?? SESSION_PAGE, true);",
+      "replace": "      void lives;",
+      "expectRed": "5.1 onHello after a reconnect watches every open session on the new feed and re-reads each at its limit",
+      "cell": "5.1 onHello after a reconnect watches every open session on the new feed and re-reads each at its limit"
+    },
+    {
+      "name": "S8 Load earlier ignores the read ceiling, so it asks the server for more than its history limit accepts",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      if (!s || !life || !s.more || s.limit >= SESSION_LIMIT_MAX || eventCount(s.frames) >= SESSION_EVENT_CAP) return;\n      await syncSession(id, life, Math.min(s.limit + SESSION_PAGE, SESSION_LIMIT_MAX), false);",
+      "replace": "      if (!s || !life || !s.more || eventCount(s.frames) >= SESSION_EVENT_CAP) return;\n      await syncSession(id, life, s.limit + SESSION_PAGE, false);",
+      "expectRed": "6.2 loadEarlier steps by 200 and never reads above 2000",
+      "cell": "6.2 loadEarlier steps by 200 and never reads above 2000"
+    },
+    {
+      "name": "S9 a refused read empties the session, so the reader loses what was on screen",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "        putSession(id, (s) => ({ ...s, load: \"refused\", reason: page.refused, grant: page.grant }));",
+      "replace": "        putSession(id, (s) => ({ ...s, frames: [], load: \"refused\", reason: page.refused, grant: page.grant }));",
+      "expectRed": "8.1 a refusal keeps the held frames and sets the broker's reason and the grant",
+      "cell": "8.1 a refusal keeps the held frames and sets the broker's reason and the grant"
+    },
+    {
+      "name": "S10 the card flag takes any string, so a card saying yes reads as a plane that is on or off",
+      "file": "implementations/web/client/src/lib/roster.ts",
+      "find": "  return v === \"on\" || v === \"off\" ? { events: v } : {};",
+      "replace": "  return v !== undefined ? { events: v as \"on\" | \"off\" } : {};",
+      "expectRed": "10.2 and leaves events absent for true, \"yes\", or no key",
+      "cell": "10.2 and leaves events absent for true, \"yes\", or no key"
+    }
+  ],
+  "suite": [
+    "implementations/web/smoke/controller-harness.ts",
+    "implementations/web/smoke/session-store.smoke.ts"
+  ]
+}

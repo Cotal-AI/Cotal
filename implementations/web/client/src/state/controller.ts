@@ -1,19 +1,34 @@
-// The dashboard's data logic: the bootstrap reads, the order machines, the live feed and the two
-// writes the page makes (deleting a channel and posting as the operator). It reads only through the
-// injected `Api` and writes only to the store, so the smoke suites drive it in Node over a fake `Api`.
+// The dashboard's data logic: the bootstrap reads, the order machines, the live feed, the agent
+// sessions and the two writes the page makes (deleting a channel and posting as the operator). It
+// reads only through the injected `Api` and writes only to the store, so the smoke suites drive it in
+// Node over a fake `Api`.
 //
 // Ported from the old plain-JS pages: `refresh()`, `select()`, `onMessage()` and `deleteChannel()`
 // from the console page, and the rule from the graph page that a live feed outranks a bootstrap
 // read issued before it.
-import type { ActivityEntry, ActivityPage, ChannelInfo, CotalMessage, FeedMessage, MembershipSnapshot, Meta, PresenceView, RosterEntry, SendAnswer } from "../api/types.js";
+import type {
+  ActivityEntry,
+  ActivityPage,
+  AgentEventsPage,
+  AgentFrame,
+  ChannelInfo,
+  CotalMessage,
+  FeedMessage,
+  MembershipSnapshot,
+  Meta,
+  PresenceView,
+  RosterEntry,
+  SendAnswer,
+} from "../api/types.js";
 import { composeKey, refusalText, type ComposeTarget } from "../lib/compose.js";
 import { DM_WINDOW } from "../lib/dms.js";
 import { createEventOrder, type EventOrder, type FeedEntryLike, type OrderNote } from "../lib/eventOrder.js";
 import { displayNameOf, nameIndex } from "../lib/names.js";
-import { presenceViewMark } from "../lib/roster.js";
+import { presenceViewMark, rosterRows } from "../lib/roster.js";
+import { eventCount, framesOf, SESSION_EVENT_CAP, type SessionFrame } from "../lib/session.js";
 import { refreshAll, type StaleMark } from "../lib/snapshot.js";
 import type { Store } from "./store.js";
-import type { ChannelRow, DashboardState, Draft, Outgoing, StoredMessage } from "./types.js";
+import type { ChannelRow, DashboardState, Draft, Outgoing, SessionState, StoredMessage } from "./types.js";
 
 /** The server's reads and its two writes. Each read throws on a refusal (see `readJson`), and `send`
  *  throws `SendRefused` with the status and the server's text. */
@@ -27,6 +42,12 @@ export interface Api {
   membership(): Promise<MembershipSnapshot>;
   deleteChannel(channel: string): Promise<{ ok: true; channel: string; purged: number }>;
   send(target: ComposeTarget, text: string): Promise<SendAnswer>;
+  /** One agent's newest `limit` frame messages. The broker's refusal is an answer; any other failure throws. */
+  agentEvents(id: string, limit: number): Promise<AgentEventsPage>;
+  /** Have the server forward `id`'s frames to the feed `feed`. */
+  watch(id: string, feed: string): Promise<void>;
+  /** Stop forwarding them. */
+  unwatch(id: string, feed: string): Promise<void>;
 }
 
 export interface Controller {
@@ -44,6 +65,20 @@ export interface Controller {
   send(target: ComposeTarget, text: string): Promise<void>;
   /** What the reader has typed for `target`. Editing a refused draft clears the refusal. */
   draft(target: ComposeTarget, text: string): void;
+  /** One more view of this agent on this page. The first view watches the agent and reads its newest
+   *  frames, unless its card says it publishes none. */
+  openSession(id: string): void;
+  /** One fewer; at zero the session is forgotten and the agent unwatched. */
+  closeSession(id: string): void;
+  /** Read `SESSION_PAGE` more frames, up to `SESSION_LIMIT_MAX`, while the channel holds more and the
+   *  session is below the event cap. */
+  loadEarlier(id: string): Promise<void>;
+  /** Read again at the session's current limit (Try again). */
+  reloadSession(id: string): Promise<void>;
+  /** The feed's id for this connection. Every open session is watched on it and read again. */
+  onHello(feed: string): void;
+  /** A live frame from a watched agent. */
+  onAgentFrame(f: AgentFrame): void;
 }
 
 /** `createOrder` builds the order machine for a lane: the feed's, or the open channel's. The
@@ -61,6 +96,13 @@ type Wire = { id?: string; channel?: string };
 
 const ACTIVITY_CAP = 500;
 const NOTES_CAP = 50;
+/** The frames a session's first read asks for, and how many more each Load earlier adds. */
+export const SESSION_PAGE = 200;
+/** The most frames one read asks for: the server's `MAX_HISTORY_LIMIT`, restated because the client
+ *  imports nothing from the server. */
+export const SESSION_LIMIT_MAX = 2000;
+/** The newest posts a session keeps. */
+const SESSION_POSTS_CAP = 500;
 /** A target nothing has been typed for. */
 const BLANK: Draft = { text: "", outgoing: [] };
 
@@ -75,6 +117,62 @@ function keepVerified<T extends { msg: { id?: string } }>(rows: T[], ...held: re
   for (const list of held)
     for (const h of list) if (h?.msg?.id !== undefined && (h as { senderId?: string }).senderId !== undefined) verified.set(h.msg.id, h);
   return verified.size ? rows.map((r) => (r?.msg?.id !== undefined ? verified.get(r.msg.id) : undefined) ?? r) : rows;
+}
+
+/** A time to order by. A frame or message whose time is not a number sorts first rather than
+ *  breaking the sort. */
+const timeOf = (ts: unknown): number => (typeof ts === "number" && Number.isFinite(ts) ? ts : 0);
+
+/** `held` with the frames of every message in `msgs` it does not hold yet, appended, or `held`
+ *  itself when there were none. A message any of whose frames is held is skipped whole, so the frames
+ *  stay unique by message id and one message is never half added. */
+function addFrames(held: SessionFrame[], msgs: readonly CotalMessage[], live: boolean): SessionFrame[] {
+  const ids = new Set(held.map((f) => f.id));
+  let out = held;
+  for (const msg of msgs) {
+    const frames = framesOf(msg, live);
+    if (frames.some((f) => ids.has(f.id))) continue;
+    if (out === held) out = held.slice();
+    for (const f of frames) {
+      ids.add(f.id);
+      out.push(f);
+    }
+  }
+  return out;
+}
+
+/** `frames` without its oldest frames while the events they hold exceed `SESSION_EVENT_CAP`, and
+ *  whether any went. */
+function capFrames(frames: SessionFrame[]): { frames: SessionFrame[]; dropped: boolean } {
+  let n = eventCount(frames);
+  let drop = 0;
+  while (n > SESSION_EVENT_CAP && drop < frames.length) n -= frames[drop++].events.length;
+  return { frames: drop ? frames.slice(drop) : frames, dropped: drop > 0 };
+}
+
+/** `id`'s own verified chat posts among the rows the page already holds: Activity's live rows and the
+ *  open channel's, oldest first, unique by message id, the newest `SESSION_POSTS_CAP`. A history row
+ *  has no verified sender, so it is never taken for the agent's own, whatever its `from` says. */
+function postsOf(s: DashboardState, id: string): StoredMessage[] {
+  const seen = new Set<string>();
+  const out: StoredMessage[] = [];
+  const take = (msg: CotalMessage | undefined, senderId: string | undefined) => {
+    if (!msg || senderId !== id || seen.has(msg.id)) return;
+    seen.add(msg.id);
+    out.push({ msg, senderId });
+  };
+  for (const e of s.activity) if (e?.mode === "chat") take(e.msg, (e as { senderId?: string }).senderId);
+  for (const m of s.open?.messages ?? []) take(m?.msg, m?.senderId);
+  return out.sort((a, b) => timeOf(a.msg.ts) - timeOf(b.msg.ts)).slice(-SESSION_POSTS_CAP);
+}
+
+/** A held session's life. A new one starts with each first view, so a read that lands after its
+ *  session closed, or closed and opened again, finds another life and applies nothing. `reads`
+ *  numbers its reads so only the latest applies; `plane` is false when the card says the agent
+ *  publishes no events, and then nothing is watched or read. */
+interface Life {
+  reads: number;
+  plane: boolean;
 }
 
 export function createController(store: Store<DashboardState>, api: Api, opts: ControllerOptions = {}): Controller {
@@ -185,6 +283,74 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       learnOperator();
     });
   };
+
+  // THE SESSIONS. The page's feed id is kept here, not in the store: no view draws it, and each
+  // connection has its own, which `onHello` replaces. The server forwards an agent's frames only to
+  // the feeds watching it, so a session watches on open and unwatches when its last view closes.
+  let feedId: string | null = null;
+  /** By roster id, one for each session in the store. */
+  const lives = new Map<string, Life>();
+  // EACH AGENT'S WATCH REQUESTS GO OUT ONE AT A TIME. Unchained, a close's unwatch could reach the
+  // server after the watch of a reopen that followed it, and the server would stop forwarding to a
+  // session the page holds open. A failed request does not break the chain, and an agent's entry is
+  // removed once its chain is idle, so the map holds only agents with a request in flight.
+  const watchChain = new Map<string, Promise<void>>();
+  const inOrder = (id: string, call: () => Promise<void>): Promise<void> => {
+    const next = (watchChain.get(id) ?? Promise.resolve()).then(call);
+    const tail = next.catch(() => undefined);
+    watchChain.set(id, tail);
+    void tail.then(() => {
+      if (watchChain.get(id) === tail) watchChain.delete(id);
+    });
+    return next;
+  };
+  /** Rewrite one session, leaving every other alone. A session that has closed stays closed. */
+  const putSession = (id: string, edit: (s: SessionState) => SessionState) =>
+    store.set((st) => {
+      const cur = st.sessions[id];
+      return cur ? { sessions: { ...st.sessions, [id]: edit(cur) } } : {};
+    });
+  /** The settled answer of a read, with no refusal or failure left on it. */
+  const settledOk = ({ reason: _reason, grant: _grant, ...s }: SessionState): SessionState => ({ ...s, load: "ok" });
+
+  /** Watch `id` on this page's feed, when one is known, and then read its newest `limit` frames. The
+   *  watch goes first, so a frame published between the two arrives live or is in the read, never in
+   *  neither. The read merges into what is held. A refusal and a failure keep the frames held. */
+  async function syncSession(id: string, life: Life, limit: number, watch: boolean): Promise<void> {
+    const n = ++life.reads;
+    const current = () => lives.get(id) === life && life.reads === n;
+    putSession(id, (s) => ({ ...s, limit }));
+    try {
+      const feed = feedId;
+      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));
+      if (!current()) return;
+      const page = await api.agentEvents(id, limit);
+      if (!current()) return;
+      if ("refused" in page) {
+        putSession(id, (s) => ({ ...s, load: "refused", reason: page.refused, grant: page.grant }));
+        return;
+      }
+      putSession(id, (s) => {
+        const merged = addFrames(s.frames, page.frames, false);
+        // A history read lands among frames that arrived live, so the union is put back in time order.
+        // The sort is stable, so one message's frames keep their order.
+        const sorted = merged === s.frames ? merged : merged.slice().sort((a, b) => timeOf(a.ts) - timeOf(b.ts));
+        const capped = capFrames(sorted);
+        return settledOk({ ...s, frames: capped.frames, more: page.more || capped.dropped });
+      });
+    } catch (err) {
+      if (!current()) return;
+      const reason = err instanceof Error ? err.message : String(err);
+      putSession(id, ({ grant: _grant, ...s }) => ({ ...s, load: "failed", reason }));
+    }
+  }
+
+  /** The agent's own verified post, kept for its session: newest last, once, the newest `SESSION_POSTS_CAP`. */
+  const putPost = (id: string, post: StoredMessage) =>
+    putSession(id, (s) => {
+      if (s.posts.some((p) => p.msg.id === post.msg.id)) return s;
+      return { ...s, posts: [...s.posts, post].slice(-SESSION_POSTS_CAP) };
+    });
 
   /** Close the open channel. A load still in flight no longer owns the view, so it is superseded. */
   const close = () => {
@@ -397,6 +563,9 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       return { activity, dms, dmsCut: s.dmsCut || drop > 0 };
     });
     pruneDelivered();
+    // A post the server verified as the agent's own lands in its open session. A DM, an anycast and a
+    // row with no verified sender never do.
+    if (e.mode === "chat" && e.senderId !== undefined && store.get().sessions[e.senderId]) putPost(e.senderId, { msg: e.msg, senderId: e.senderId });
     const channel = msg.channel;
     if (!channel) return;
     // A live message can beat the next channel read. Keep its count; its policy stays unknown until
@@ -495,6 +664,60 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     },
     draft(target, text) {
       putDraft(composeKey(target), (d) => ({ text, outgoing: d.outgoing }));
+    },
+    openSession(id) {
+      if (store.get().sessions[id]) return putSession(id, (s) => ({ ...s, views: s.views + 1 }));
+      const entry = store.get().roster.find((p) => p.card.id === id);
+      const off = entry !== undefined && rosterRows([entry], { includeOffline: true })[0]?.events === "off";
+      const life: Life = { reads: 0, plane: !off };
+      lives.set(id, life);
+      // An agent that publishes no events has no session to read: what it posted is all there is.
+      store.set((st) => ({
+        sessions: { ...st.sessions, [id]: { views: 1, frames: [], posts: postsOf(st, id), load: off ? "ok" : "loading", more: false, limit: SESSION_PAGE } },
+      }));
+      if (life.plane) void syncSession(id, life, SESSION_PAGE, true);
+    },
+    closeSession(id) {
+      const s = store.get().sessions[id];
+      if (!s) return;
+      if (s.views > 1) return putSession(id, (x) => ({ ...x, views: x.views - 1 }));
+      const life = lives.get(id);
+      lives.delete(id);
+      store.set((st) => ({ sessions: Object.fromEntries(Object.entries(st.sessions).filter(([k]) => k !== id)) }));
+      // A refused unwatch is not said: the session is gone, a frame for it is dropped on arrival, and
+      // the server forgets this feed's watches when the feed closes.
+      const feed = feedId;
+      if (life?.plane && feed !== null) void inOrder(id, () => api.unwatch(id, feed)).catch(() => undefined);
+    },
+    async loadEarlier(id) {
+      const s = store.get().sessions[id];
+      const life = lives.get(id);
+      if (!s || !life || !s.more || s.limit >= SESSION_LIMIT_MAX || eventCount(s.frames) >= SESSION_EVENT_CAP) return;
+      await syncSession(id, life, Math.min(s.limit + SESSION_PAGE, SESSION_LIMIT_MAX), false);
+    },
+    async reloadSession(id) {
+      const s = store.get().sessions[id];
+      const life = lives.get(id);
+      if (!s || !life?.plane) return;
+      // Watched again too: the watch may be what failed, and the server counts a feed once per agent.
+      putSession(id, (x) => ({ ...x, load: "loading" }));
+      await syncSession(id, life, s.limit, true);
+    },
+    onHello(feed) {
+      // A new connection holds no watches, and frames published while the old one was down were not
+      // forwarded, so every open session is watched on it and read again at its limit.
+      feedId = feed;
+      for (const [id, life] of lives) if (life.plane) void syncSession(id, life, store.get().sessions[id]?.limit ?? SESSION_PAGE, true);
+    },
+    onAgentFrame(f) {
+      store.set((st) => {
+        const s = st.sessions[f.id];
+        if (!s) return {};
+        const added = addFrames(s.frames, [f.msg], true);
+        if (added === s.frames) return {};
+        const capped = capFrames(added);
+        return { sessions: { ...st.sessions, [f.id]: { ...s, frames: capped.frames, more: s.more || capped.dropped } } };
+      });
     },
   };
 }

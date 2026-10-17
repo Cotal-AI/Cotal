@@ -17,6 +17,9 @@ export const unusedApi: Api = {
   membership: async () => { throw new Error("membership not expected in this cell"); },
   deleteChannel: async () => { throw new Error("deleteChannel not expected in this cell"); },
   send: async () => { throw new Error("send not expected in this cell"); },
+  agentEvents: async () => { throw new Error("agentEvents not expected in this cell"); },
+  watch: async () => { throw new Error("watch not expected in this cell"); },
+  unwatch: async () => { throw new Error("unwatch not expected in this cell"); },
 };
 
 /** A bounded `/api/activity` page carrying `entries`, complete. */

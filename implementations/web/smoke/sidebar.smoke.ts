@@ -241,6 +241,9 @@ const rateOf = (html: string) => /<span class="ui-row-n">([^<]*)<\/span>/.exec(a
     membership: async () => ({ members: [] }) as never,
     deleteChannel: async (channel) => ({ ok: true, channel, purged: 0 }),
     send: async () => { throw new Error("send not expected here"); },
+    agentEvents: async () => { throw new Error("agentEvents not expected here"); },
+    watch: async () => { throw new Error("watch not expected here"); },
+    unwatch: async () => { throw new Error("unwatch not expected here"); },
   };
   const frame = (id: string): FeedMessage => ({ mode: "chat", channel: "general", senderId: "local.dav", msg: { id, ts: 1, space: "main", from: { id: "local.dav" }, parts: [{ kind: "text", text: "hi" }] } as unknown as CotalMessage });
   let handlers!: FeedHandlers;
