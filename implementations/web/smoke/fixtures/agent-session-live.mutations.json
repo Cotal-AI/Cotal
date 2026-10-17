@@ -28,6 +28,14 @@
       "replace": "    const publisher = undefined;",
       "expectRed": "8.2 the events route reads only the frames the agent published: the forged one is absent and the agent's own are all there",
       "cell": "8.2 the events route reads only the frames the agent published: the forged one is absent and the agent's own are all there"
+    },
+    {
+      "name": "the events route answers any method as a read, so a POST or DELETE to it reads the agent's history",
+      "file": "implementations/web/src/web.ts",
+      "find": "        if (req.method !== \"GET\") {\n          res.writeHead(405, { \"content-type\": \"application/json\", allow: \"GET\" });",
+      "replace": "        if (false) {\n          res.writeHead(405, { \"content-type\": \"application/json\", allow: \"GET\" });",
+      "expectRed": "4.6 any method but GET on the events route is a 405 saying GET only, and no read",
+      "cell": "4.6 any method but GET on the events route is a 405 saying GET only, and no read"
     }
   ]
 }

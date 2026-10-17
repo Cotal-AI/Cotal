@@ -222,6 +222,9 @@ try {
     over?.status === 400 && String(parsed(over).error ?? "").includes(`${MAX_HISTORY_LIMIT} messages`), over);
   const notAnId = await call(`${W}/api/agents/abc/events`, web.cookie);
   ok("4.5 /api/agents/abc/events is a 400: abc is not an agent id", notAnId?.status === 400 && notAnId.body.includes("abc"), notAnId);
+  const posted = await call(`${W}/api/agents/${AGENT_PATH}/events?limit=2`, web.cookie, "POST");
+  ok("4.6 any method but GET on the events route is a 405 saying GET only, and no read",
+    posted?.status === 405 && parsed(posted).error === "GET only" && !("frames" in parsed(posted)), posted);
 
   // ── 5. watch refusals ─────────────────────────────────────────────────────────────────────────
   console.log("5. a watch names a feed that is open");

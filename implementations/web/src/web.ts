@@ -1595,6 +1595,11 @@ export async function web(args: ParsedArgs): Promise<void> {
         return;
       }
       if (action === "events") {
+        // A read, so GET only. Any other method is named as refused, never answered as a read.
+        if (req.method !== "GET") {
+          res.writeHead(405, { "content-type": "application/json", allow: "GET" });
+          return void res.end(JSON.stringify({ error: "GET only" }));
+        }
         const agent = agentIdFromPath(rest.slice(0, cut));
         const limit = historyLimit(query, 200);
         // BOUNDED LIKE ITS SIBLINGS, with their wording: a late read and a failed one are 503s
