@@ -2,16 +2,17 @@ import * as pty from "@lydell/node-pty";
 import Headless from "@xterm/headless";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { SpawnRefused, type AgentHandle, type AttachSession, type LaunchSpec, type Runtime, type RuntimeReference } from "@cotal-ai/core";
-import { ConnectorDiagnosticReader, StartupConfirmGate, unsupportedTransport, preferSeatForOomKill } from "@cotal-ai/seat";
+import {
+  ConnectorDiagnosticReader,
+  DEFAULT_COLS,
+  DEFAULT_ROWS,
+  GRACE_MS,
+  SCROLLBACK_ROWS,
+  StartupConfirmGate,
+  unsupportedTransport,
+  preferSeatForOomKill,
+} from "@cotal-ai/seat";
 import { preparePtyLaunch } from "./windows-launch.js";
-
-const DEFAULT_COLS = 120;
-const DEFAULT_ROWS = 32;
-/** How many rows of history the attach-time screen mirror retains (see spawn) so a late attach
- *  still sees output that scrolled past. */
-const SCROLLBACK_ROWS = 1000;
-/** Grace window for a clean exit before a graceful stop escalates to SIGKILL. */
-const GRACE_MS = 3_000;
 
 /**
  * In-process node-pty ownership. The worker is the child's parent, so killing
