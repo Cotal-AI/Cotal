@@ -12,7 +12,7 @@
  * Run: pnpm smoke:who-roster
  */
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -79,9 +79,9 @@ const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
 for (const key of Object.keys(cleanEnv)) if (key.startsWith("COTAL_") || key === "FORCE_COLOR" || key === "NO_COLOR") delete cleanEnv[key];
 const isolatedEnv: NodeJS.ProcessEnv = { ...cleanEnv, HOME: home, USERPROFILE: home, TMPDIR: home, COTAL_HOME: join(home, ".cotal"), XDG_CONFIG_HOME: xdg, COTAL_SKIP_CONNECTOR_SEED: "1" };
 
-const run = (args: string[], extra: NodeJS.ProcessEnv = {}): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
+const run = (args: string[], extra: NodeJS.ProcessEnv = {}, preload?: string): Promise<{ status: number; stdout: string; stderr: string; envelope?: Envelope }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [...(preload ? ["--import", preload] : []), BIN, ...args], { cwd: shell, env: { ...isolatedEnv, ...extra }, timeout: 120_000 }, (err, stdout, stderr) => {
       const lines = stdout.split("\n").filter(Boolean);
       const envelope = lines.length === 1 && lines[0]!.startsWith("{") ? (JSON.parse(lines[0]!) as Envelope) : undefined;
       resolve({ status: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, envelope });
@@ -150,6 +150,19 @@ try {
   check("with no manager on the roster, no seat is managed and nothing is asked", env?.result?.managers === "none-present" && Object.values(rows).every((r) => r.managed === false), env?.result);
   check("--json writes nothing on stderr", json.stderr === "", json.stderr);
 
+  // Real CLI children read the owned broker while a test-only preload holds or fails their live
+  // KV iterators. Presence state is computed by core, not supplied by a fake endpoint or view.
+  const faultPreload = join(import.meta.dirname, "fixtures", "who-watch-fault.mjs");
+  for (const [fault, code] of [["unpopulated", "ROSTER_INCOMPLETE"], ["stale", "ROSTER_STALE"], ["error", "ROSTER_ERROR"]] as const) {
+    const trace = join(home, `who-${fault}.json`);
+    const read = await run(["who", "--json"], { SMOKE_WHO_WATCH_FAULT: fault, SMOKE_WHO_WATCH_TRACE: trace }, faultPreload);
+    const observed = existsSync(trace) ? JSON.parse(readFileSync(trace, "utf8")) as { fault: string; events: string[] } : undefined;
+    check(`a live ${fault} roster is partial with ${code} and exit 4`,
+      observed?.fault === fault && observed.events.some((e) => e.startsWith("observed ")) && read.status === 4 &&
+      read.envelope?.outcome === "partial" && read.envelope.completeness === "partial" &&
+      read.envelope.warnings.some((w) => w.code === code), { observed, ...shown(read) });
+  }
+
   const waiting = await run(["who", "--waiting", "--json"]);
   check("--waiting keeps the waiting row and the row with a condition", Object.keys(rowsOf(waiting)).sort().join() === "bob,carol" && waiting.envelope?.target.scope === "waiting", Object.keys(rowsOf(waiting)));
   const all = await run(["who", "--all", "--json"]);
@@ -188,6 +201,7 @@ try {
   check("its report names the space and what the identity may do", mePlain.status === 0 && new RegExp(`space:\\s+${space}`).test(mePlain.stdout) && /identity:\s+this machine's space signer/.test(mePlain.stdout) && /capabilities:\s+all/.test(mePlain.stdout), shown(mePlain));
   const open = await run(["whoami", "--space", "openmesh", "--json"]);
   check("whoami on an open mesh says nothing is authenticated", open.status === 0 && open.envelope?.result?.identity?.kind === "open", shown(open));
+  check("whoami on an open mesh reports DM history as readable without a credential", open.status === 0 && open.envelope?.result?.dms === true, shown(open));
   const noCreds = await run(["whoami", "--creds", probe, "--json"]);
   check("whoami takes no --creds: it is a usage error", noCreds.status === 1 && noCreds.envelope?.error?.code === "USAGE_INVALID", shown(noCreds));
   const both = await run(["who", "--json", "--plain"]);

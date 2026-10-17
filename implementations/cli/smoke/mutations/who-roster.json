@@ -1,6 +1,7 @@
 {
   "suite": [
-    "implementations/cli/smoke/who-roster.smoke.ts"
+    "implementations/cli/smoke/who-roster.smoke.ts",
+    "implementations/cli/smoke/fixtures/who-watch-fault.mjs"
   ],
   "guard": "who lists agents with their presence metadata, hides infrastructure endpoints unless --all, keeps condition rows under --waiting, reports managed only from a manager's answer, a census it could not read as partial and a scoped answer as a label, refuses a roster it may not read, and whoami reports each grant state with a ledger elsewhere as partial",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
@@ -9,7 +10,8 @@
   "why": [
     "The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back.",
     "The managed decision and the user-auth grant states are imported from source in process, so those mutations are read without the build.",
-    "The remote-login cells drive the built binary with a real remote registration and cached login through the native auth provider. They do not invent an owner field the provider does not return."
+    "The remote-login cells drive the built binary with a real remote registration and cached login through the native auth provider. They do not invent an owner field the provider does not return.",
+    "The live roster-gap cells preload only a bounded KV-iterator fault into the real built CLI. They hold real replay entries or fail the real watcher; core computes presenceView and getRoster itself. No endpoint reply, presence state, clock or report result is supplied by the fixture."
   ],
   "mutations": [
     {
@@ -163,6 +165,42 @@
       "replace": "    flags: whoamiFlags,\n",
       "expectRed": "whoami stays offline with a cached login and an uncached catalog",
       "cell": "whoami stays offline with a cached login and an uncached catalog",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "open mesh identity claims that DM history needs a credential",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "result = { ...base, identity: { kind: \"open\", ...none }, read: \"all\", post: \"all\", dms: true, capabilities: \"all\" };",
+      "replace": "result = { ...base, identity: { kind: \"open\", ...none }, read: \"all\", post: \"all\", dms: false, capabilities: \"all\" };",
+      "expectRed": "whoami on an open mesh reports DM history as readable without a credential",
+      "cell": "whoami on an open mesh reports DM history as readable without a credential",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "unfinished snapshot is reported as complete",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    if (pv.state === \"unpopulated\")\n      warnings.push({ code: \"ROSTER_INCOMPLETE\", target, message: `the roster snapshot did not finish within ${SNAPSHOT_MS / 1000}s, so rows may be missing` });\n",
+      "replace": "",
+      "expectRed": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "cell": "a live unpopulated roster is partial with ROSTER_INCOMPLETE and exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "stale watch is reported as current",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    if (pv.state === \"stale\")\n      warnings.push({ code: \"ROSTER_STALE\", target, message: `no presence update arrived within the liveness window, so rows are last-known as of ${iso(pv.staleSince)}` });\n",
+      "replace": "",
+      "expectRed": "a live stale roster is partial with ROSTER_STALE and exit 4",
+      "cell": "a live stale roster is partial with ROSTER_STALE and exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "watch errors are not reported as unread",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    for (const message of errors) warnings.push({ code: \"ROSTER_ERROR\", target, message });\n",
+      "replace": "",
+      "expectRed": "a live error roster is partial with ROSTER_ERROR and exit 4",
+      "cell": "a live error roster is partial with ROSTER_ERROR and exit 4",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
