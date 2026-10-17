@@ -5484,7 +5484,7 @@ export class Manager {
   }
 
   /** The refusal for a launch choice the connector cannot honour. Spawn and resume both ask before
-   *  any reserve or mint, so a rule changed here holds on both paths. */
+   *  a seat's launch is built, so a rule changed here holds on both paths. */
   private capabilityRefusal(connector: Connector, launch: { variant?: string; prompt?: string; exact: boolean }): string | undefined {
     if (launch.variant && !connector.supportsModelVariant)
       return `${connector.name} connector does not support model variants (variant)`;
