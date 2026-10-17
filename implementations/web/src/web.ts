@@ -8,8 +8,14 @@ import { dirname, extname, join } from "node:path";
 import {
   CotalEndpoint,
   deliveryOf,
+  eventChannel,
+  eventChannelPrincipal,
   isEventChannel,
+  isPermissionDenied,
+  parsePrincipalKey,
   parseSubject,
+  principalKey,
+  type DeliveryMode,
   type PresenceView,
   spacePrefix,
   credsClaims,
@@ -366,9 +372,10 @@ export interface ActivitySource {
  * surfaces share this classifier rather than each spelling the convention, so they cannot disagree
  * about what a channel is.
  *
- * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still carries frames, marked
- * rather than dropped: dropping them would delete the only traffic this release taught the surface
- * to draw, and delete it silently. And `/api/channels/<name>/history` still serves an event channel
+ * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still receives frames, and
+ * sends each one as an `agent-frame` only to the feeds watching that agent (see {@link classifyTap}
+ * and {@link SessionWatchers}), never as a `message` to every browser and never dropped for a
+ * watcher. And `/api/channels/<name>/history` still serves an event channel
  * when a caller names one, because that route answers a question about a channel the caller already
  * identified; a filter there would mean the dashboard could render a frame it could never fetch. */
 export function chatOnly<T extends { channel: string }>(rows: readonly T[]): T[] {
@@ -656,6 +663,206 @@ export function historyLimit(query: URLSearchParams, fallback: number): number {
   if (n > MAX_HISTORY_LIMIT)
     throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);
   return n;
+}
+
+/** An agent id out of a path segment: decoded, and a principal key, or a BadRequest naming it.
+ *
+ *  The id is the roster's `card.id`, which is `principalKey(owner, actor).key` by construction, so
+ *  the agent is named by its principal and never by a display name: two live agents with one name
+ *  never share a session. The answer's `id` is rebuilt from the parsed tokens rather than passed
+ *  through, so the id a route acts on is the one the event channel is formed from. */
+export function agentIdFromPath(raw: string): { id: string; owner: string; actor: string } {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new BadRequest(`agent id ${quoteForOperator(raw)} is not valid percent-encoded text`);
+  }
+  const principal = parsePrincipalKey(decoded);
+  if (principal === null)
+    throw new BadRequest(`agent id ${quoteForOperator(decoded)} is not an agent id: <owner>.<actor>, each of [A-Za-z0-9_]`);
+  return { id: principalKey(principal.owner, principal.actor).key, ...principal };
+}
+
+/** What the live tap does with one message. A chat message on a principal-shaped event channel is an
+ *  agent frame for `principalKey(owner, actor).key`; everything else goes out as today's `message`.
+ *
+ *  WHY FRAMES LEAVE THE BROADCAST. The observer taps `chat.>`, and an agent's event channel is a
+ *  chat channel, so this one subscription receives every agent's frames. A NATS wildcard cannot
+ *  exclude a sub-tree, so the observer still receives them; what changes is who it forwards them to.
+ *  Sent as `message` to every browser, each frame cost every open dashboard a write whether or not
+ *  anyone was reading that agent. As `agent-frame` it reaches only the feeds watching that agent.
+ *
+ *  The agent is the event channel's principal, the same derivation `chatOnly` filters on, so a
+ *  near-miss name such as `events.standup` stays an ordinary `message`. The channel is the one the
+ *  broker policed, taken from the subject, never the payload's own claim.
+ *
+ *  A FRAME FROM ANYONE BUT THE AGENT IS DROPPED, and dropped rather than sent on as a `message`. The
+ *  subject's sender is the verified publisher, and a frame is that agent's only when the agent
+ *  published it. On a mesh where another principal may write the channel (an open mesh, or a grant
+ *  wider than the agent's own), a forged frame would otherwise read as the agent's session, and
+ *  falling through to `message` would hand it to every browser instead. */
+export function classifyTap(subject: string, msg: CotalMessage | undefined):
+  | { event: "message"; data: { mode: DeliveryMode; senderId?: string; channel?: string; msg: CotalMessage } }
+  | { event: "agent-frame"; agent: string; data: { id: string; msg: CotalMessage } }
+  | null {
+  const mode = deliveryOf(subject);
+  if (!mode || !msg) return null;
+  // senderId is the subject's sender token, the *verified* publisher (the server policed who could
+  // publish it), vs the advisory `from` in the payload.
+  const parsed = parseSubject(subject);
+  const senderId = parsed?.sender;
+  // The channel the broker actually POLICED, taken from the subject rather than the payload: a
+  // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
+  // minted grant, while `msg.channel` is publisher-supplied and backed by nothing.
+  //
+  // Gated on kind, and the gate is load-bearing rather than defensive: `rest` is the channel only
+  // on the chat plane. On `inst` it is the RECIPIENT (`subjects.ts:599`) and on `svc` the route
+  // (`:603`), so forwarding it ungated would label a DM's recipient as a channel.
+  const channel = parsed?.kind === "chat" ? parsed.rest : undefined;
+  const agent = channel === undefined ? null : eventChannelPrincipal(channel);
+  if (agent !== null) {
+    const id = principalKey(agent.owner, agent.actor).key;
+    if (senderId !== id) return null;
+    return { event: "agent-frame", agent: id, data: { id, msg } };
+  }
+  return { event: "message", data: { mode, senderId, channel, msg } };
+}
+
+/** The most bytes a feed may have waiting to be sent before the server gives up on it. A browser on
+ *  a slow link, watching a busy agent, cannot take frames as fast as the tap produces them, and
+ *  every byte it has not taken waits in this process. Past this the feed is told why and ended, and
+ *  the browser's own reconnect opens a fresh one, watches again and reads the gap from history. */
+export const MAX_FEED_BUFFER_BYTES = 1_048_576;
+
+/** Writes one SSE event to a feed, and ends a feed whose unsent bytes have passed `ceiling` after
+ *  telling it so with one `overflow` event `{ reason }`. A feed that has ended takes nothing more.
+ *  Every event on every feed goes through here, so no route can buffer past the ceiling. */
+export function writeFeed(
+  res: { readonly writableEnded: boolean; readonly writableLength: number; write(chunk: string): unknown; end(): unknown },
+  event: string,
+  data: unknown,
+  ceiling: number = MAX_FEED_BUFFER_BYTES,
+): void {
+  if (res.writableEnded) return;
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  if (res.writableLength > ceiling) {
+    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;
+    res.write(`event: overflow\ndata: ${JSON.stringify({ reason })}\n\n`);
+    res.end();
+  }
+}
+
+/** The most agents one feed may watch at once. A watch is a row in a map this process holds for as
+ *  long as the feed is open, and the id is the caller's, so without a ceiling one browser could
+ *  grow that map without bound by asking for ids nobody runs. The dashboard watches the agent whose
+ *  session is open, in the panel and the centre, so it never comes near this. */
+export const MAX_WATCHES_PER_FEED = 64;
+
+/** Which feeds watch which agent. A feed is counted once per agent however many times it asks.
+ *
+ *  This is the refcount behind "subscribe on demand": the tap already receives every frame, so an
+ *  agent with no watcher costs no browser anything, and an agent leaves the map with its last
+ *  watcher. Both directions are kept so `drop` touches only the agents its feed held, and so the
+ *  per-feed ceiling is a lookup rather than a scan. */
+export class SessionWatchers<F> {
+  private readonly byAgent = new Map<string, F[]>();
+  private readonly byFeed = new Map<F, Set<string>>();
+
+  constructor(private readonly perFeed: number = MAX_WATCHES_PER_FEED) {}
+
+  /** Throws a BadRequest when the feed already watches `perFeed` other agents. */
+  watch(agent: string, feed: F): void {
+    const held = this.byFeed.get(feed) ?? new Set<string>();
+    if (!held.has(agent) && held.size >= this.perFeed)
+      throw new BadRequest(`this feed already watches ${this.perFeed} agents, the most one feed may watch at once`);
+    const feeds = this.byAgent.get(agent) ?? [];
+    if (!feeds.includes(feed)) feeds.push(feed);
+    this.byAgent.set(agent, feeds);
+    held.add(agent);
+    this.byFeed.set(feed, held);
+  }
+
+  unwatch(agent: string, feed: F): void {
+    const feeds = this.byAgent.get(agent);
+    if (feeds !== undefined) {
+      const rest = feeds.filter((f) => f !== feed);
+      if (rest.length === 0) this.byAgent.delete(agent);
+      else this.byAgent.set(agent, rest);
+    }
+    const held = this.byFeed.get(feed);
+    if (held !== undefined) {
+      held.delete(agent);
+      if (held.size === 0) this.byFeed.delete(feed);
+    }
+  }
+
+  /** A feed closed: forget every watch it held. */
+  drop(feed: F): void {
+    for (const agent of [...(this.byFeed.get(feed) ?? [])]) this.unwatch(agent, feed);
+  }
+
+  targets(agent: string): readonly F[] {
+    return [...(this.byAgent.get(agent) ?? [])];
+  }
+
+  /** Agents with at least one watcher. An agent with none is absent, not zero. */
+  agents(): string[] {
+    return [...this.byAgent.keys()];
+  }
+}
+
+/** The events read ran past its deadline. Its own type, so the route can tell it from a refusal
+ *  (an answer) and from any other failure (a 503 with the reason). */
+export class AgentEventsLate extends Error {}
+
+/** One agent's newest frames within the deadline. Reads `limit + 1` from `events.<owner>.<actor>`
+ *  with `channelHistory` and answers the newest `limit`, oldest first, with `more` when one more
+ *  existed. A permission denial (`isPermissionDenied` from core) is an answer, `{ refused }` with the
+ *  broker's own text and the grant command for this mesh. The deadline throws `AgentEventsLate`; any
+ *  other failure rethrows.
+ *
+ *  BOUNDED TWICE. The caller's `limit` is already capped at {@link MAX_HISTORY_LIMIT}, so one read
+ *  holds at most one more message than that, and the read races the same deadline its siblings do,
+ *  with the signal handed down so a late read stops its pull and drops its consumer.
+ *
+ *  `channelHistory`, not the mediated `readHistory`: the mediated read caps a page at 200 and has
+ *  no cursor, and this is the same credential the channel history route already reads with. */
+export async function agentEventsPage(
+  source: { channelHistory(channel: string, opts: { limit: number; signal: AbortSignal }): Promise<CotalMessage[]> },
+  agent: { owner: string; actor: string },
+  limit: number,
+  grantFor: (channel: string, owner: string) => string | undefined,
+  deadlineMs: number = AGGREGATION_DEADLINE_MS,
+): Promise<{ frames: CotalMessage[]; more: boolean } | { refused: string; grant?: string }> {
+  const channel = eventChannel(agent);
+  const clock = deadline(deadlineMs);
+  try {
+    const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal }), clock.until);
+    if (page === LATE) throw new AgentEventsLate(`${channel}: the read did not finish within ${deadlineMs}ms`);
+    const more = page.length > limit;
+    // Not `slice(-limit)`: at a limit of 0 that is `slice(-0)`, the whole page.
+    return { frames: more ? page.slice(page.length - limit) : page, more };
+  } catch (e) {
+    if (e instanceof AgentEventsLate) throw e;
+    if (isPermissionDenied(e)) {
+      const grant = grantFor(channel, agent.owner);
+      return { refused: e instanceof Error ? e.message : String(e), ...(grant === undefined ? {} : { grant }) };
+    }
+    throw e;
+  } finally {
+    clock.done();
+  }
+}
+
+/** The command that lets a reader see one agent's event channel, as `docs/connect-claude.md` gives
+ *  it for each kind of mesh, or nothing on an open mesh, where there is no grant to give. */
+export function eventsGrantFor(mode: "user" | "static" | "open"): (channel: string, owner: string) => string | undefined {
+  if (mode === "user")
+    return (channel, owner) => `cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' --allow-publish ''`;
+  if (mode === "static")
+    return (channel) => `cotal mint watcher --profile agent --allow-subscribe '${channel}' --provision`;
+  return () => undefined;
 }
 
 /** One aggregated page, and what it is missing. `partial` and the counts are ALWAYS present, so a
@@ -1101,10 +1308,15 @@ export async function web(args: ParsedArgs): Promise<void> {
 
   const clients = new Set<ServerResponse>();
   const send = (res: ServerResponse, event: string, data: unknown) =>
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    writeFeed(res, event, data);
   const broadcast = (event: string, data: unknown) => {
     for (const res of clients) if (!res.writableEnded) send(res, event, data);
   };
+  // Each open feed by the id its `hello` named, so a watch request can say which feed it is for.
+  // A feed leaves this map, and every watch it held, when its connection closes.
+  const feeds = new Map<string, ServerResponse>();
+  const watchers = new SessionWatchers<ServerResponse>();
+  const grantFor = eventsGrantFor(user ? "user" : conn.creds ? "static" : "open");
 
   // Presence changes → push the whole roster; the client just re-renders it.
   // Trailing-edge debounce: a stall-recovery replay is one burst of N keys, and pushing
@@ -1136,22 +1348,17 @@ export async function web(args: ParsedArgs): Promise<void> {
   // allows exactly the MESSAGING plane (SPEC 13.9/13.11: chat + inst + svc, enumerated — never
   // the space-wide `>`, which would also plain-subscribe the v0.4 endpoint request rails), so
   // the tap is one subscription per plane.
-  const onTap = (subject: string, msg: unknown) => {
-    const mode = deliveryOf(subject);
-    if (!mode || !msg) return;
-    // senderId is the subject's sender token — the *verified* publisher (the server
-    // policed who could publish it), vs the advisory `from` in the payload.
-    const parsed = parseSubject(subject);
-    const senderId = parsed?.sender;
-    // The channel the broker actually POLICED, taken from the subject rather than the payload: a
-    // publish grant is per-channel (`chat.<owner>.<actor>.<ch>`), so this token is covered by the
-    // minted grant, while `msg.channel` is publisher-supplied and backed by nothing. The verified
-    // value was already parsed on the line above and was being dropped.
-    //
-    // Gated on kind, and the gate is load-bearing rather than defensive: `rest` is the channel only
-    // on the chat plane. On `inst` it is the RECIPIENT (`subjects.ts:599`) and on `svc` the route
-    // (`:603`), so forwarding it ungated would label a DM's recipient as a channel.
-    const channel = parsed?.kind === "chat" ? parsed.rest : undefined;
+  //
+  // An agent's frames go only to the feeds watching that agent, and to none when nobody watches;
+  // they are never broadcast as `message` (see `classifyTap`). Everything else is broadcast.
+  const onTap = (subject: string, tapped: unknown) => {
+    const verdict = classifyTap(subject, tapped as CotalMessage | undefined);
+    if (verdict === null) return;
+    if (verdict.event === "agent-frame") {
+      for (const res of watchers.targets(verdict.agent)) if (!res.writableEnded) send(res, "agent-frame", verdict.data);
+      return;
+    }
+    const { mode, senderId, channel, msg } = verdict.data;
     broadcast("message", { mode, senderId, channel, msg });
   };
   for (const plane of ["chat", "inst", "svc"])
@@ -1209,6 +1416,10 @@ export async function web(args: ParsedArgs): Promise<void> {
         connection: "keep-alive",
       });
       clients.add(res);
+      // The feed's id comes first, so a browser can watch an agent before the roster arrives.
+      const feed = randomUUID();
+      feeds.set(feed, res);
+      send(res, "hello", { feed });
       send(res, "roster", rosterSnapshot());
       send(res, "presence-view", ep.presenceView());
       // Seed this client's graph with the current membership snapshot (the live tap only carries
@@ -1216,7 +1427,15 @@ export async function web(args: ParsedArgs): Promise<void> {
       void ep.readMembership()
         .then((m) => { if (!res.writableEnded) send(res, "membership", m); })
         .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
-      req.on("close", () => clients.delete(res));
+      // Both ends, because either can end a feed: the browser going away closes the request, and
+      // an overflow ends the response while the socket may stay open. Forgetting twice is harmless.
+      const forget = () => {
+        clients.delete(res);
+        feeds.delete(feed);
+        watchers.drop(res);
+      };
+      req.on("close", forget);
+      res.on("close", forget);
       return;
     }
     if (path === READINESS_PATH) {
@@ -1329,6 +1548,39 @@ export async function web(args: ParsedArgs): Promise<void> {
         return json(res, { error: e instanceof Error ? e.message : String(e) }, 503);
       } finally {
         clock.done();
+      }
+    }
+    // One agent's session: watch and unwatch its live frames on one feed, and read its history.
+    // `<id>` is the roster id, `<owner>.<actor>`, percent-encoded, so a raw `/` never belongs to it.
+    if (path.startsWith("/api/agents/")) {
+      const rest = path.slice("/api/agents/".length);
+      const cut = rest.lastIndexOf("/");
+      const action = cut === -1 ? "" : rest.slice(cut + 1);
+      if ((action === "watch" || action === "unwatch") && req.method === "POST") {
+        // No body, so these stay out of `BODY_ROUTES`, and they change no mesh state: a watch is a
+        // row in this process's map, which the feed's close removes.
+        const agent = agentIdFromPath(rest.slice(0, cut));
+        const feedId = query.get("feed");
+        if (!feedId) throw new BadRequest("feed required: the id the feed's hello event named");
+        const feed = feeds.get(feedId);
+        if (feed === undefined) throw new BadRequest(`feed ${quoteForOperator(feedId)} is not an open feed`);
+        if (action === "watch") watchers.watch(agent.id, feed);
+        else watchers.unwatch(agent.id, feed);
+        res.writeHead(204).end();
+        return;
+      }
+      if (action === "events") {
+        const agent = agentIdFromPath(rest.slice(0, cut));
+        const limit = historyLimit(query, 200);
+        // BOUNDED LIKE ITS SIBLINGS, with their wording: a late read and a failed one are 503s
+        // that say which, while a refusal is an answer the session view shows as it came.
+        try {
+          return json(res, await agentEventsPage(ep, agent, limit, grantFor));
+        } catch (e) {
+          if (e instanceof AgentEventsLate)
+            return json(res, { error: `${agent.id} events: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
+          return json(res, { error: `${agent.id} events: the read failed: ${e instanceof Error ? e.message : String(e)}` }, 503);
+        }
       }
     }
     // Delete a channel and its content. A write path, so it's POST-gated. The client reaches it
