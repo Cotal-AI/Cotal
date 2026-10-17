@@ -118,7 +118,7 @@
  *
  *       **Those two cells build their records BY HAND, and that limit is theirs:** they prove each
  *       mechanism discriminates, and prove nothing about a real entry point reaching it. The
- *       population cell (`split:every-run-opened-came-from-a-promptSource-bearing-record`) is the
+ *       population cell (`split:every-run-opened-came-from-an-ATTRIBUTABLE-record`) is the
  *       half that walks 5938 real records. **Neither is sufficient alone and the pair is stated as
  *       a pair** — the same shape as the `[P5]` probe composing with `smoke:cas-preflight-cluster`.
  *
@@ -436,9 +436,9 @@ c("session:is-a-multi-turn-session-with-tool-use", (() => {
 //
 // That is a COVERAGE gap, not a bad token: §3.1's own session measured `kind:"human"` 44 times
 // beside 3068 `kind:"channel"` injections, so the predicate does select on a session containing
-// what it selects. Ruled: run-opening keys on `promptSource` PRESENT — a positive marker, present
-// on all 67 mesh deliveries and both sdk prompts, absent on all 824 tool results and on the
-// compaction summary — and provenance becomes a FIELD (`cotal.turnSource`), never a gate.
+// what it selects. Ruled: run-opening enumerates `origin.kind` in `ORIGIN_RULE` and, for an
+// origin-less record, `promptSource` in `ABSENT_ORIGIN_RULE` (both in `agui-map.ts`; restated once
+// below as `attributableTurn`), and provenance becomes a FIELD (`cotal.turnSource`), never a gate.
 //
 // **AND THE REPAIR THAT WAS NOT TAKEN, recorded so nobody re-derives it:** "origin absent = human"
 // selects 825 of the interactive session's 892 user entries, because in a Claude session `user` is
@@ -471,22 +471,6 @@ const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>
 // Whether this session contains anything the enumeration opens a run on. Computed once, here,
 // because both the population cells below and PART 3 are unassertable without it.
 /**
- * The enumeration RESTATED, by hand, and this is the one restatement in the file.
- *
- * Written out rather than imported, because a suite that imports the predicate under test asserts
- * only that the code equals itself. Written ONCE rather than twice, because the file previously
- * carried two copies of it and they are what went wrong: the mapper gained `auto-continuation` and
- * absent-origin `typed`, both copies kept the older two-value rule, and the assertability helper
- * then disagreed with the cell in a way no arm could show until a session containing those values
- * turned up. Two restatements do not double-check a rule, they double the number of places it can
- * be stale. One restatement, two call sites.
- *
- * Both levels, in the order the mapper reads them: `origin.kind` where there is one, and the
- * absent-origin table where there is not. A value in neither table is not "false" here, it is a
- * value this restatement has not been told about, and the mapper THROWS on it, so returning false
- * would quietly disagree with a loud refusal.
- */
-/**
  * A `user` entry that carries a PROMPT rather than a tool result, which is the shape question the
  * attribution question sits behind. AN ARRAY IS TWO DIFFERENT RECORDS WEARING ONE SHAPE: the
  * harness writes an array for tool results, and a person writes one by attaching something to a
@@ -503,6 +487,22 @@ const carriesPromptShape = (e: ClaudeEntry): boolean => {
   return !c.some((b) => b.type === "tool_result" && b.tool_use_id);
 };
 
+/**
+ * The enumeration RESTATED, by hand, and this is the one restatement in the file.
+ *
+ * Written out rather than imported, because a suite that imports the predicate under test asserts
+ * only that the code equals itself. Written ONCE rather than twice, because the file previously
+ * carried two copies of it and they are what went wrong: the mapper gained `auto-continuation` and
+ * absent-origin `typed`, both copies kept the older two-value rule, and the assertability helper
+ * then disagreed with the cell in a way no arm could show until a session containing those values
+ * turned up. Two restatements do not double-check a rule, they double the number of places it can
+ * be stale. One restatement, two call sites.
+ *
+ * Both levels, in the order the mapper reads them: `origin.kind` where there is one, and the
+ * absent-origin table where there is not. A value in neither table is not "false" here, it is a
+ * value this restatement has not been told about, and the mapper THROWS on it, so returning false
+ * would quietly disagree with a loud refusal.
+ */
 const attributableTurn = (e: ClaudeEntry): boolean => {
   if (e.type !== "user" || !carriesPromptShape(e)) return false;
   if (e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) return false;
@@ -616,8 +616,8 @@ c("resume:CONTROL-an-unseeded-mapper-drops-the-same-assistant-record", (() => {
 })());
 
 // And the same claim over the REAL population rather than one hand-built record: every run opened
-// across the session must come from a record carrying `promptSource`. A count is not enough here —
-// the mapper could open the right NUMBER of runs off the wrong records.
+// across the session must come from a record `attributableTurn` admits. A count is not enough
+// here — the mapper could open the right NUMBER of runs off the wrong records.
 if (OPENERS > 0) c("split:every-run-opened-came-from-an-ATTRIBUTABLE-record", (() => {
   let n = 0;
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: () => `run-${(n += 1)}`, now: () => 0 });
