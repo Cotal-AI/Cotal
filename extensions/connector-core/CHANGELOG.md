@@ -1,5 +1,17 @@
 # @cotal-ai/connector-core
 
+## 0.85.0
+
+### Minor Changes
+
+- 662d6e3: `AgentConfig.userAuth` accepts `bearer`, a function returning a fresh bearer, in place of `bearerCmd`. A service that runs agents in its own process can now renew each agent's user-mode credential without executing a command per refresh. Such an agent has no manager-call bearer, so its spawn, despawn, persona and run calls are refused with a message that says so. Launched seats keep using `bearerCmd` unchanged.
+- 64d877d: `@cotal-ai/connector-core` now exports `handleGatewayRequest`, which serves one HTTP request to a remote gateway endpoint with the package's own MCP server and Streamable HTTP transport. A service that embeds the gateway authenticates the request and passes the result in. It no longer builds an MCP server, so its own MCP SDK or zod version cannot conflict with the one the tools use. The endpoint is stateless: each POST gets a fresh server and a JSON response, and GET and DELETE answer 405. `GATEWAY_INSTRUCTIONS` is the default server instructions text.
+- aff52d8: `@cotal-ai/connector-core` now exports `registerCotalGatewayTools`, the Cotal tool surface for a remote MCP server that serves many conversations at once. Each conversation calls `cotal_connect` with a name and passes the returned `connection_id` on every other call. A taken name moves to `name_2` and onward only when the host reports a real name collision, and an invalid name is refused before anything is issued. A missing, unknown or other-account handle runs nothing and never falls back to another connection. The embedding service supplies authentication, credential issuance, revocation and storage through `GatewayHost`. `cotalToolSpecs` takes an optional set of offered tool names, and the orientation card lists only those.
+
+### Patch Changes
+
+- f03a436: `cotal_send` without a `channel` no longer defaults to a channel the agent may only read. On a mesh that enforces ACLs, the default is now the first channel the agent reads and may post to, so a read-only announcements channel listed first is skipped. An agent that may post to none of the channels it reads gets a clear refusal before anything is sent, instead of a broker permissions violation. On an open mesh the default is unchanged. The remote gateway's advertised `cotal_send` text says the same.
+
 ## 0.84.0
 
 ## 0.83.0

@@ -1,5 +1,18 @@
 # @cotal-ai/runtime
 
+## 0.85.0
+
+### Patch Changes
+
+- d5e7a87: The manager's `turn` command schemas now live in `@cotal-ai/core` as `TURN_INPUT_SCHEMA` and `TURN_OUTPUT_SCHEMA`. The manager registers them unchanged, so its cluster document and contract digests stay the same. The five runtime suites that serve a manager-shaped `turn` compile the same objects instead of their own copies, which had drifted from the manager's contract and could not notice it changing.
+- Updated dependencies [6e10d50]
+- Updated dependencies [ff09b5c]
+- Updated dependencies [7840cea]
+- Updated dependencies [d5e7a87]
+  - @cotal-ai/core@0.85.0
+  - @cotal-ai/workspace@0.85.0
+  - @cotal-ai/lang@0.85.0
+
 ## 0.84.0
 
 ### Patch Changes

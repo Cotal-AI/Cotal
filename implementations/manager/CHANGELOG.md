@@ -1,5 +1,20 @@
 # @cotal-ai/manager
 
+## 0.85.0
+
+### Patch Changes
+
+- 6e10d50: A detached Claude Code spawn no longer fails its startup confirmation when Claude skips the development-channels warning and opens its input screen. Claude 2.1.301 does that when channels are off for the session, for example under a Team or Enterprise organization that has not set `channelsEnabled: true` in managed settings. Such a seat now stays up, and gets mesh messages through its hooks only, so a message does not wake it while it is idle. When the warning appears it is still answered with one Enter, and an unknown startup dialog still gets no key and fails within 15 seconds. A launch recipe can now declare `LaunchSpec.confirmReady`, texts that show the harness reached its input screen. Seeing one on two screen reads in a row ends the startup watch with no key. The PTY, tmux, cmux, Orca and Herdr runtimes honour it; a custom runtime that ignores it keeps failing such a launch as before.
+- ff09b5c: A detached Claude Code spawn into a folder Claude has not trusted no longer fails its startup confirmation when Claude draws the trust dialog as a numbered list with Yes first and selected. The managed launch now confirms that layout with Enter, and still answers the layout with No first by moving to Yes before confirming. It never confirms while No is selected. A startup choice can now be marked `optional`, so a choice that never appears does not block the next one. A custom runtime that answers `LaunchSpec.confirmBefore` with its own matcher must honour that flag; runtimes that use the core or seat startup sequence get it already.
+- d5e7a87: The manager's `turn` command schemas now live in `@cotal-ai/core` as `TURN_INPUT_SCHEMA` and `TURN_OUTPUT_SCHEMA`. The manager registers them unchanged, so its cluster document and contract digests stay the same. The five runtime suites that serve a manager-shaped `turn` compile the same objects instead of their own copies, which had drifted from the manager's contract and could not notice it changing.
+- Updated dependencies [6e10d50]
+- Updated dependencies [ff09b5c]
+- Updated dependencies [7840cea]
+- Updated dependencies [d5e7a87]
+  - @cotal-ai/core@0.85.0
+  - @cotal-ai/seat@0.85.0
+  - @cotal-ai/workspace@0.85.0
+
 ## 0.84.0
 
 ### Patch Changes
