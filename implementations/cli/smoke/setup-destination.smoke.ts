@@ -375,9 +375,12 @@ function terminal(cwd: string, args: string[] = [], extraEnv: Record<string, str
   const s = { raw: "", code: undefined as number | undefined, text: () => clean(s.raw) };
   pty.onData((d) => (s.raw += d));
   pty.onExit((e) => (s.code = e.exitCode));
+  // A session that missed a question is off script: its later questions would only time out one by
+  // one, so they are not waited for, and the session is stopped instead of awaited.
+  let lost = false;
   const at = async (marker: string, from = 0): Promise<boolean> => {
-    for (const t0 = Date.now(); Date.now() - t0 < 90_000; await wait(100)) if (s.text().indexOf(marker, from) >= 0) return true;
-    return false;
+    for (const t0 = Date.now(); Date.now() - t0 < (lost ? 0 : 90_000); await wait(100)) if (s.text().indexOf(marker, from) >= 0) return true;
+    return s.text().indexOf(marker, from) >= 0;
   };
   // Output already answered: a question asked again is looked for after it.
   let cursor = 0;
@@ -385,12 +388,14 @@ function terminal(cwd: string, args: string[] = [], extraEnv: Record<string, str
   const answer = async (marker: string, keys: string): Promise<boolean> => {
     const found = await at(marker, cursor);
     if (found) cursor = s.text().indexOf(marker, cursor) + marker.length;
+    else lost = true;
     await wait(250);
     pty.write(keys);
     return found;
   };
   const exited = async (): Promise<boolean> => {
-    for (const t0 = Date.now(); Date.now() - t0 < 120_000; await wait(100)) if (s.code !== undefined) return true;
+    if (lost && s.code === undefined) pty.kill();
+    for (const t0 = Date.now(); Date.now() - t0 < 120_000; await wait(100)) if (s.code !== undefined) return !lost;
     return false;
   };
   return { s, at, answer, exited, write: (keys: string) => pty.write(keys), cursor: () => cursor };

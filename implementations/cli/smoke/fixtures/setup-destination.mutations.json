@@ -167,7 +167,7 @@
       "name": "an unknown --runtime is accepted",
       "file": "implementations/cli/src/commands/setup.ts",
       "find": "    if (!choice) throw usage(`--runtime ${name} is not a runtime",
-      "replace": "    if (!choice && name === \"\") throw usage(`--runtime ${name} is not a runtime",
+      "replace": "    if (!choice) continue;\n    if (name === \"\") throw usage(`--runtime ${name} is not a runtime",
       "expectRed": "an unknown --runtime is USAGE_INVALID, naming the runtimes setup offers",
       "cell": "an unknown --runtime is USAGE_INVALID, naming the runtimes setup offers",
       "afterRestore": "pnpm --filter cotal-ai... build"
