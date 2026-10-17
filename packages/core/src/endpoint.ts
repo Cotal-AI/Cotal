@@ -3115,7 +3115,6 @@ export class CotalEndpoint extends EventEmitter {
       watch.arm = watch.arm.catch(() => {}).then(async () => {
         await this.disarmMembershipWatch(watch);
         await this.deleteRetainedMembershipConsumer(watch);
-        if (watch.consumerStream || watch.consumerName) return;
         this.finishMembershipWatchStop(watch);
       }).catch((err) => {
         // A real authorization/server failure remains loud. A terminal close is retained rather than
