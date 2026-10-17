@@ -277,6 +277,43 @@ try {
     check("the report names the gap", new RegExp(`gap: #general holds ${cap} from carol, the per-sender limit, so their older messages there are gone`).test(gapPlain.stdout), gapPlain.stdout);
   }
 
+  // ── destructive clear accepts no selection or read mode ──────────────────────────────────────
+  {
+    const writer = new CotalEndpoint({ space: openSpace, servers: openServers, channels: [], consume: false, registerPresence: false, watchPresence: false, card: { name: "clear-sentinel", kind: "endpoint" } });
+    endpoints.push(writer);
+    await writer.start();
+    const cases = [
+      ["an extra channel", ["general"]],
+      ["--since", ["--since", "1h"]],
+      ["--limit", ["--limit", "1"]],
+      ["--from", ["--from", "nobody"]],
+      ["--grep", ["--grep", "no matching sentinel"]],
+      ["--follow", ["--follow"]],
+    ] as const;
+    for (const [label, args] of cases) {
+      const cleared = await run(["history", "clear", "--force", "--space", openSpace]);
+      const empty = await run(["history", "--space", openSpace, "--json"]);
+      if (cleared.status !== 0 || empty.status !== 0 || empty.envelope?.result?.items.length !== 0)
+        throw new Error(`clear fixture's valid purge control failed: ${JSON.stringify({ cleared: shown(cleared), empty: shown(empty) })}`);
+      const sentinels = [`general sentinel ${randomUUID()}`, `ops sentinel ${randomUUID()}`];
+      await writer.multicast(sentinels[0]!, { channel: "general" });
+      await writer.multicast(sentinels[1]!, { channel: "ops" });
+      const before = await run(["history", "--space", openSpace, "--json"]);
+      if (before.status !== 0 || texts(before).length !== 2 || !sentinels.every((text) => texts(before).includes(text)))
+        throw new Error(`clear fixture did not seed both channels: ${JSON.stringify(shown(before))}`);
+      const refused = await run(["history", "clear", ...args, "--force", "--space", openSpace]);
+      const after = await run(["history", "--space", openSpace, "--json"]);
+      check(`history clear refuses ${label} before purging either channel`, refused.status === 1 && after.status === 0 && texts(after).length === 2 && sentinels.every((text) => texts(after).includes(text)), { refused: shown(refused), after: shown(after) });
+    }
+  }
+
+  {
+    const before = await run(["history", "--dms", "--json"]);
+    const cleared = await run(["history", "clear", "--force", "--dms"]);
+    const after = await run(["history", "--dms", "--json"]);
+    check("explicit history clear with --dms still purges authorized channel and DM history", before.status === 0 && before.envelope?.result?.items.some((item) => item.channel !== null) === true && before.envelope?.result?.items.some((item) => item.to !== null) === true && cleared.status === 0 && after.status === 0 && after.envelope?.result?.items.length === 0, { before: shown(before), cleared: shown(cleared), after: shown(after) });
+  }
+
   // ── a space with no channel registry ────────────────────────────────────────────────────────────
   {
     const bare = await run(["history", "general", "--space", bareSpace, "--json"]);

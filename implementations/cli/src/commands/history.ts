@@ -136,6 +136,9 @@ export async function history(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof historyFlags>;
   const [first, ...rest] = args.positionals;
   if (first === "clear") {
+    if (rest.length) throw usage("history clear takes no channel; it clears every channel in the selected space");
+    if (v.since !== undefined || v.limit !== undefined || v.from !== undefined || v.grep !== undefined || v.follow)
+      throw usage("history clear does not accept --since, --limit, --from, --grep or --follow; it clears every channel in the selected space");
     if (v.json || v.plain) throw usage("history clear writes no structured or plain report yet; drop --json and --plain");
     if (!v.force) {
       console.error(c.red("refusing to clear history without --force"));
@@ -458,4 +461,3 @@ function historyView(r: HistoryResult, space: string): Report {
     ],
   };
 }
-
