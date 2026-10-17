@@ -32,7 +32,7 @@
     {
       "name": "S4 posts are appended at the end instead of merged by time, so a post the agent made mid-turn shows after everything it did later",
       "file": "implementations/web/client/src/lib/session.ts",
-      "find": "    while (next < ordered.length && s.at !== undefined && (ordered[next].at as number) < s.at) merged.push(ordered[next++]);\n",
+      "find": "    while (next < ordered.length && before(ordered[next].at, s.at)) merged.push(ordered[next++]);\n",
       "replace": "",
       "expectRed": "post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not",
       "cell": "post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not"
@@ -44,6 +44,14 @@
       "replace": "  [\"channel\", \"prompt\"],",
       "expectRed": "turn source: a channel turn has source mesh",
       "cell": "turn source: a channel turn has source mesh"
+    },
+    {
+      "name": "S6 an open stream is no longer cut at a run boundary, so a paragraph cut off mid-turn is drawn after every later turn instead of inside its own",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "      if (type === \"RUN_STARTED\" || type === \"RUN_FINISHED\" || type === \"RUN_ERROR\") cutOpen();\n",
+      "replace": "",
+      "expectRed": "a stream open when its turn ends is drawn cut inside the turn",
+      "cell": "a stream open when its turn ends is drawn cut inside the turn"
     }
   ]
 }

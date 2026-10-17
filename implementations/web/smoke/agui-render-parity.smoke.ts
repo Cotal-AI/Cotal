@@ -391,8 +391,17 @@ console.log(`
     plane drops them, so the fold draws neither; if one arrives it is not drawn.
   · Where a call lands. The fold places a call where it starts and draws it once;
     the renderer prints it where it ends, prints an END with no START as "?()",
-    and adds " …" to a call with no END. No corpus frame has another event
-    between a call's start and its end.
+    and adds " …" to a call with no END. This is not hypothetical: the pi
+    mapper publishes TOOL_CALL_START in the frame of the assistant message and
+    the END in the later frame of its toolResult
+    (extensions/pi/src/agui-map.ts:32), so on a pi session the renderer prints
+    the call as "name() …" at the end of the start's frame and again as "?()"
+    in the END's frame, where the fold draws it once, in the start's place. No
+    corpus frame has another event between a call's start and its end.
+  · Where a cut stream lands. The fold cuts a stream still open at the next
+    RUN_STARTED, RUN_FINISHED or RUN_ERROR, inside its turn; the renderer
+    flushes it at the end of the frame. No corpus frame has an open stream
+    before a run event.
   · Which text is a prompt. Both are \`» \` lines to the renderer.
   · Labels. A turn, an end, an error, an unknown marker and reasoning compare as
     the fact alone: the fold carries no run id, outcome, error message or code.

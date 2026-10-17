@@ -194,6 +194,12 @@ ok("toolShortName(Bash) stays Bash", toolShortName("Bash") === "Bash");
     steps.map((s) => s.kind));
 }
 {
+  const odd = (id: string, ts: unknown) => ({ ...post(id, 0, id), msg: { ...post(id, 0, id).msg, ts } as unknown as CotalMessage });
+  const steps = foldSession([frame("f1", [started("human", at(10, 0))])], [odd("nan", Number.NaN), odd("str", "5"), post("m1", at(9, 0), "a"), odd("inf", Infinity)]);
+  ok("a post whose ts is not a finite number goes last, in arrival order",
+    steps.map((s) => (s.kind === "post" ? s.msg.id : s.kind)).join(" ") === "m1 turn nan str inf", steps.map((s) => (s.kind === "post" ? s.msg.id : s.kind)));
+}
+{
   const dm = { msg: { id: "d1", ts: at(10, 0), space: "s", from: { id: "local.engine", name: "engine" }, parts: [], to: "x" } as CotalMessage, senderId: "local.engine" };
   ok("a message with no channel is never a post row", foldSession([], [dm]).length === 0);
 }
@@ -216,7 +222,23 @@ ok("an empty text gives no item", foldSession([frame("f", text("a", ""))], []).l
   const steps = foldSession([frame("f", [{ type: "CUSTOM", name: "checkpoint" }, { type: "CUSTOM" }, { type: "CUSTOM", name: "" }, { type: "STATE_SNAPSHOT" }])], []);
   const labels = steps.map((s) => (s.kind === "unknown" ? s.label : s.kind));
   ok("CUSTOM and an unknown type are named",
-    labels.join("|") === "Custom event checkpoint|Custom event (unnamed)|Custom event |Unrecognised event STATE_SNAPSHOT", labels);
+    labels.join("|") === 'Custom event "checkpoint"|Custom event (unnamed)|Custom event ""|Unrecognised event "STATE_SNAPSHOT"', labels);
+}
+{
+  const steps = foldSession([frame("f", [{ type: "CUSTOM", name: "" }, { type: "" }, { type: "CUSTOM", name: 7 }])], []);
+  const labels = steps.map((s) => (s.kind === "unknown" ? s.label : s.kind));
+  ok("an empty type or name is quoted, never a label that ends in a bare space",
+    labels.join("|") === 'Custom event ""|Unrecognised event ""|Custom event (unnamed)' && labels.every((l) => !l.endsWith(" ")), labels);
+}
+{
+  const steps = foldSession([frame("f", [
+    started("human"), ...text("a", "half a sent", { end: false }), finished(),
+    started("channel"), { type: "REASONING_MESSAGE_CONTENT", messageId: "n", delta: "thinking" }, { type: "RUN_ERROR" },
+    started("human"), ...text("b", "next", { end: false }), started("human"),
+  ])], []);
+  const cut = steps.filter((s) => (s.kind === "said" || s.kind === "reasoning") && s.cut).length;
+  ok("a stream open when its turn ends is drawn cut inside the turn",
+    shape(steps) === "turn(prompt) said turnEnd turn(mesh) reasoning runError turn(prompt) said turn(prompt)" && cut === 3, shape(steps));
 }
 {
   const steps = foldSession([frame("f", [started("human"), null, 42, { type: 5 }, ...text("a", "after"), finished()])], []);

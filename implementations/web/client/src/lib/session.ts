@@ -179,6 +179,13 @@ export function foldSession(frames: readonly SessionFrame[], posts: readonly Sto
     flat.push({ item: { kind: k, key: s.key, text: s.text, cut }, at: at ?? s.at, live: s.live && live });
   };
 
+  // A stream still open when a turn ends or another begins is drawn cut there, with the same mark, so
+  // it stays inside its turn. One still open at the end of the fold is drawn cut at the end.
+  const cutOpen = (): void => {
+    for (const id of [...text.keys()]) flush(text, id, "said", true);
+    for (const id of [...reasoning.keys()]) flush(reasoning, id, "reasoning", true);
+  };
+
   for (const f of frames) {
     const frameTs = finite(f.ts);
     f.events.forEach((ev, i) => {
@@ -193,6 +200,7 @@ export function foldSession(frames: readonly SessionFrame[], posts: readonly Sto
       const isObj = typeof e === "object" && e !== null;
       const type = isObj ? str(e.type) : undefined;
       const at = (isObj ? finite(e.timestamp) : undefined) ?? frameTs;
+      if (type === "RUN_STARTED" || type === "RUN_FINISHED" || type === "RUN_ERROR") cutOpen();
       switch (type) {
         case "RUN_STARTED": {
           const source = turnSource(e);
@@ -243,30 +251,30 @@ export function foldSession(frames: readonly SessionFrame[], posts: readonly Sto
           break;
 
         case "CUSTOM":
-          flat.push({ item: { kind: "unknown", key, label: `Custom event ${str(e.name) ?? "(unnamed)"}`, ts: at }, at, live });
+          flat.push({ item: { kind: "unknown", key, label: `Custom event ${str(e.name) === undefined ? "(unnamed)" : JSON.stringify(e.name)}`, ts: at }, at, live });
           break;
 
         // Named, never skipped: a skipped event is a hole in a transcript that still looks complete.
         default:
-          flat.push({ item: { kind: "unknown", key, label: `Unrecognised event ${type ?? "null"}`, ts: at }, at, live });
+          flat.push({ item: { kind: "unknown", key, label: `Unrecognised event ${JSON.stringify(type ?? null)}`, ts: at }, at, live });
       }
     });
   }
 
-  // A stream that ended without its END still shows, marked cut, in the order its id was first seen.
-  for (const id of [...text.keys()]) flush(text, id, "said", true);
-  for (const id of [...reasoning.keys()]) flush(reasoning, id, "reasoning", true);
+  cutOpen();
 
-  // Posts by time, stable, then each one before the first frame step whose time is later.
+  // Posts by time, stable, then each one before the first frame step whose time is later. A post whose
+  // ts is not a finite number has no time to place it by, so it goes last, in arrival order.
   const ordered = posts
     .filter((p) => typeof p.msg.channel === "string")
-    .map((p, i) => ({ p, i }))
-    .sort((a, b) => a.p.msg.ts - b.p.msg.ts || a.i - b.i)
-    .map(({ p }): Flat => ({ item: { kind: "post", key: `post:${p.msg.id}`, channel: p.msg.channel as string, msg: p.msg }, at: p.msg.ts, live: true }));
+    .map((p, i) => ({ p, i, at: finite(p.msg.ts) }))
+    .sort((a, b) => (a.at ?? Infinity) - (b.at ?? Infinity) || a.i - b.i)
+    .map(({ p, at }): Flat => ({ item: { kind: "post", key: `post:${p.msg.id}`, channel: p.msg.channel as string, msg: p.msg }, at, live: true }));
+  const before = (post: number | undefined, step: number | undefined) => post !== undefined && step !== undefined && post < step;
   const merged: Flat[] = [];
   let next = 0;
   for (const s of flat) {
-    while (next < ordered.length && s.at !== undefined && (ordered[next].at as number) < s.at) merged.push(ordered[next++]);
+    while (next < ordered.length && before(ordered[next].at, s.at)) merged.push(ordered[next++]);
     merged.push(s);
   }
   while (next < ordered.length) merged.push(ordered[next++]);
