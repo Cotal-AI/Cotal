@@ -49,6 +49,7 @@ import {
   workPoolContext,
 } from "@cotal-ai/core";
 import type { PoolCleanerBind, RetirementExecutorBind } from "./retirement-barrier.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The infra owner for cleaner/executor principals: CONNZ-attributable (`local` passes the
  *  delivery daemon's owner check, evict-exec.ts), reserved so it never collides with an agent
@@ -144,7 +145,7 @@ async function release(clients: Map<string, AuthorityClient | "opening">, key: s
 export function makeRetirementCleaners(opts: {
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): {

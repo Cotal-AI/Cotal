@@ -36,6 +36,7 @@ import { assertInboxConnId, newIdentity, principalKey, principalTags, token } fr
 import type { JWTVerifyGetKey, CryptoKey } from "jose";
 import { validateUserToken, type ValidatedUserToken } from "./token.js";
 import { SESSION_EXP } from "./permissions.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The one subject the callout serves (ADR-26). */
 export const AUTH_CALLOUT_SUBJECT = "$SYS.REQ.USER.AUTH";
@@ -144,7 +145,7 @@ export interface StartAuthCalloutOpts {
   /** The auth account (response issuer): its pub + the signing seed the response is signed with. */
   authAccount: { pub: string; signingSeed: string };
   /** The data account users are bound into: its pub + the signing seed that mints user JWTs. */
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   /** The space — enforced as the bearer's audience. */
   space: string;
   /** Pinned bearer verification: the key resolver (pinned JWKS/local key) + exact issuer. */

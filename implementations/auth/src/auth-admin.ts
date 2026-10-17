@@ -67,6 +67,7 @@ import { authCommandDefs, type AuthServiceHandlers } from "./auth-service-contra
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { runAgentRetirementBarrier, type RetirementDeps } from "./retirement-barrier.js";
 import { observeGate, readLifecycleHeadForOperation, type LifecycleRegistry } from "./lifecycle-registry.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The LISTENER profile (SPEC 13.9 "Auth endpoint rail" row): serve + bounded replies on the auth
  *  endpoint's class rail, plus the ONE leader-served gate read the authz check performs.
@@ -154,7 +155,7 @@ export interface AuthAdminListener {
 export async function openAuthAdminListener(opts: {
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   reg: LifecycleRegistry;
   retirement: RetirementDeps;
   barrierFlight: RetirementFlights;

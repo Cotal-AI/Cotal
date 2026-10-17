@@ -22,6 +22,7 @@
 import { EVICT_PRINCIPALS_MAX, type EvictionResult } from "@cotal-ai/core";
 import type { EvictPrincipal } from "./credential-ledger.js";
 import { withDeliveryAdminEndpoint } from "./delivery-admin.js";
+import type { ServiceKeys } from "./store.js";
 
 /** Accept one daemon eviction result only when it verifiably describes `principal`; anything else
  *  maps to `failClosed`, so it never authorizes. */
@@ -58,7 +59,7 @@ export function checkedEviction<T>(principal: string, data: unknown, failClosed:
 export function makeDeliveryAdminEvictor(opts: {
   space: string;
   server: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): EvictPrincipal {

@@ -125,6 +125,7 @@ import {
   loadServiceKeys,
   saveAuthServiceInfo,
   spaceIssuer,
+  type ServiceKeys,
 } from "./store.js";
 
 /** JWKS max-age seconds — the cache contract's knob. Exported so a rotation tool can compute the
@@ -391,7 +392,7 @@ export interface OpenAuthAuthorityPlaneOptions {
   /** A hosted context's injected store, which then keeps the restart identity with the other auth
    *  secret kinds: its serve seed is a private key. */
   identityStore?: SecretStore;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   log: (line: string) => void;
   /** SMOKE-ONLY eviction override for the barrier executor's boot resume. Production
    *  compositions never set this: the real capability is the delivery daemon's

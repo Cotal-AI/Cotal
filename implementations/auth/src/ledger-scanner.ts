@@ -68,6 +68,7 @@ import { EpEnvelopeError, assertInboxConnId, assertLifecycleToken, endpointToken
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The ONE literal consumer name every scan over the auth stream reuses (the grant pins exactly
  *  this token). Scans over it serialize on the MODULE-LEVEL per-space chain below, never a
@@ -178,7 +179,7 @@ export interface LedgerScannerCandidate {
 export async function openAuthLedgerScannerCandidate(opts: {
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
 }): Promise<LedgerScannerCandidate> {

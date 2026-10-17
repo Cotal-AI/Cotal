@@ -52,6 +52,7 @@ import { EpEnvelopeError, RECORD_KINDS, assertInboxConnId, assertPrincipalOwnerT
 import { openAuthorityClient, type AuthorityClient } from "./authority-client.js";
 import { guardedScan, type ScanGuard } from "./plane-claim.js";
 import { serializedFor } from "./serialized.js";
+import type { ServiceKeys } from "./store.js";
 
 /** The ONE literal consumer name every obligation scan over the records stream reuses (the grant
  *  pins exactly this token; separate from the auth-ledger scanner's — fact-5, one name per stream).
@@ -164,7 +165,7 @@ export interface RecordsScannerCandidate {
 export async function openRecordsScannerCandidate(opts: {
   server: string;
   space: string;
-  dataAccount: { pub: string; signingSeed: string };
+  dataAccount: ServiceKeys["dataAccount"];
   onConnection?: import("./authority-client.js").AuthorityClientOpts["onConnection"];
   log: (line: string) => void;
   /** SMOKE-ONLY scanner observation hooks. Production leaves this absent. */

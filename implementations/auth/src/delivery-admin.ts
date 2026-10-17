@@ -6,7 +6,7 @@
  */
 import { CotalEndpoint, mintCreds, newIdentity } from "@cotal-ai/core";
 import type { AuthorityClientOpts } from "./authority-client.js";
-import { dataAccountAuth } from "./store.js";
+import { dataAccountAuth, type ServiceKeys } from "./store.js";
 
 /** One delivery-admin call runs in a 15s request budget; 60s covers connect, the call and teardown
  *  with margin, and bounds a copied credential to a minute where the `supervisor` default is a
@@ -16,7 +16,7 @@ const DELIVERY_ADMIN_CRED_TTL_SECONDS = 60;
 /** Run `work` on a short-lived, non-participating endpoint holding one `profile` credential minted
  *  from the data account's signing seed. A failed stop never replaces the outcome. */
 export async function withDeliveryAdminEndpoint<T>(
-  opts: { space: string; server: string; dataAccount: { pub: string; signingSeed: string }; onConnection?: AuthorityClientOpts["onConnection"] },
+  opts: { space: string; server: string; dataAccount: ServiceKeys["dataAccount"]; onConnection?: AuthorityClientOpts["onConnection"] },
   profile: "supervisor" | "endpoint-evictor",
   name: string,
   work: (ep: CotalEndpoint) => Promise<T>,

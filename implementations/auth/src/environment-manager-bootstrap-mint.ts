@@ -5,6 +5,7 @@ import {
 import type { EnvironmentManagerAdmissionCoordinates } from "./environment-manager-admission.js";
 import { finalizeAgentMint, markLedgerRowRevoked, stageAgentMint } from "./credential-ledger.js";
 import { registryStores, type LifecycleRegistry } from "./lifecycle-registry.js";
+import type { ServiceKeys } from "./store.js";
 
 /** Host-only signing inputs. The public nkey and credential ID are recorded before this call;
  * neither a guest request nor this helper chooses a new admission or permission profile. */
@@ -12,7 +13,7 @@ interface BootstrapMintInput {
   publicId: string;
   credentialId: string;
   expiresAt: number;
-  account: { pub: string; signingSeed: string };
+  account: ServiceKeys["dataAccount"];
 }
 
 /** Internal one-shot mint after native admission staging. A reserved or ambiguous attempt stays
