@@ -132,10 +132,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
-  // An agent's session goes back to the channel the reader last had open, else to the Agents view.
-  const back = places.visited !== null
-    ? { label: `#${places.visited}`, route: { view: "channel", channel: places.visited } satisfies Route }
-    : { label: "Agents", route: { view: "agents", group: "status" } satisfies Route };
+  const back = useBack(route);
   const session = { controller, phone, back, panelOpen: shown, toggle: panel.toggle, details: panel.selectAgent };
   const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, session);
   const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} panel={panel} clock={clock} />;
@@ -184,11 +181,8 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
  *
  *  A conversation is named by both parties, so the link opens the conversation it stands for. A
  *  visit from a Message button names only the agent: the operator is the other party, and until
- *  `self`, the operator's id, is known that visit is no place to land.
- *
- *  `visited` is the channel the reader last had open, or null before any: where an agent's session
- *  goes back to. */
-function usePlaces(route: Route, channels: DashboardState["channels"], dms: DashboardState["dms"], roster: DashboardState["roster"], self: string | null): Places & { visited: string | null } {
+ *  `self`, the operator's id, is known that visit is no place to land. */
+function usePlaces(route: Route, channels: DashboardState["channels"], dms: DashboardState["dms"], roster: DashboardState["roster"], self: string | null): Places {
   const [last, setLast] = useState<{ channel: string | null; dm: { peer: string; with?: string } | null }>({ channel: null, dm: null });
   let seen = last;
   if (route.view === "channel" && last.channel !== route.channel) seen = { ...last, channel: route.channel };
@@ -199,5 +193,35 @@ function usePlaces(route: Route, channels: DashboardState["channels"], dms: Dash
   const other = seen.dm === null ? null : (seen.dm.with ?? self);
   const newest = peers[0]?.conversations[0];
   const dm = seen.dm !== null && other !== null && peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm.peer, with: other } : peers[0] && newest ? { peer: peers[0].id, with: newest.with } : null;
-  return { channel, dm, visited: seen.channel };
+  return { channel, dm };
+}
+
+/** What an agent's session calls the place it goes back to: the channel by name, any other view by
+ *  the name the rail or the sidebar gives it. */
+function placeLabel(r: Route): string {
+  switch (r.view) {
+    case "channel":
+      return `#${r.channel}`;
+    case "activity":
+      return "Activity";
+    case "dm":
+      return "Direct messages";
+    case "topology":
+      return "Topology";
+    case "needs":
+      return "Needs you";
+    case "agents":
+    case "agent":
+      return "Agents";
+  }
+}
+
+/** Where an agent's session goes back to: the last route the reader had that was not a session,
+ *  with its label, or the Agents view when the page opened on a session. Kept as the route changes,
+ *  during render, so the crumb never draws a frame that points at the place before. */
+function useBack(route: Route): { label: string; route: Route } {
+  const [from, setFrom] = useState<Route | null>(null);
+  if (route.view !== "agent" && (from === null || formatRoute(from) !== formatRoute(route))) setFrom(route);
+  const last = route.view !== "agent" ? route : from;
+  return last !== null ? { label: placeLabel(last), route: last } : { label: "Agents", route: { view: "agents", group: "status" } };
 }

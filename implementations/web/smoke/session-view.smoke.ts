@@ -3,8 +3,8 @@
  *
  *  Section 1 pairs `openSession` with `closeSession`. Section 2 renders every state's words. Section 3
  *  is the plane note, section 4 Load earlier and the cap, section 5 the composer, section 6 the Live
- *  chip, section 7 the arrival at a message, and section 8 which steps rise in. Section 9 mounts
- *  `App` with a fake address to read where the crumb goes back to.
+ *  chip, section 7 the arrival at a message, and section 8 which steps rise or fade in. Section 9
+ *  mounts `App` with a fake address to read where the crumb goes back to.
  *
  *  The DOM is jsdom, installed first: the prose renders through `lib/md.ts`, whose sanitizer needs a
  *  window, and React's client reads `window` when it loads. */
@@ -81,6 +81,11 @@ const said = (id: string, body: string, ts = T, live = false): SessionFrame => (
     { type: "TEXT_MESSAGE_CONTENT", messageId: id, delta: body, timestamp: ts },
     { type: "TEXT_MESSAGE_END", messageId: id, timestamp: ts },
   ],
+});
+/** One tool call, START and END, as a frame. */
+const called = (id: string, name: string, ts = T, live = false): SessionFrame => ({
+  id, ts, live,
+  events: [{ type: "TOOL_CALL_START", toolCallId: id, toolCallName: name, timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: id, timestamp: ts }],
 });
 /** engine's own verified post on #team. */
 const posted = (id: string, body: string, ts = T): StoredMessage => ({
@@ -286,6 +291,38 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   await m.unmount();
 }
 
+{
+  // jsdom has no layout, so the scroll box reports a fixed height and every scroll is logged: a
+  // write of scrollTop on the list (the pin taking the view to the bottom) and a scrollIntoView.
+  const log: string[] = [];
+  const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+  const keys = ["scrollIntoView", "scrollTop", "scrollHeight", "clientHeight"];
+  const saved = new Map(keys.map((k) => [k, Object.getOwnPropertyDescriptor(proto, k)]));
+  Object.defineProperty(proto, "scrollIntoView", { configurable: true, writable: true, value(this: HTMLElement) { log.push(`into:${this.getAttribute("data-post")}`); } });
+  Object.defineProperty(proto, "scrollHeight", { configurable: true, get: () => 1000 });
+  Object.defineProperty(proto, "clientHeight", { configurable: true, get: () => 100 });
+  Object.defineProperty(proto, "scrollTop", { configurable: true, get: () => 0, set(this: HTMLElement, v: number) { if (this.classList.contains("ui-scroll")) log.push(`top:${v}`); } });
+  try {
+    const { root, store, m } = await open(
+      { roster: [entry("working", "on")], sessions: { [ENGINE]: session({ load: "loading", posts: [posted("m-1", "app/chess.js is ready"), posted("m-2", "Later", T + MIN)] }) } },
+      "m-1",
+    );
+    const loading = [...log];
+    // The history read lands, then a step arrives live.
+    await m.run(() => putSession(store, (s) => ({ ...s, load: "ok", frames: [said("f1", "Telling the team", T - MIN)] })));
+    await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, said("f2", "Arrived live", T + 2 * MIN, true)] })));
+    same("7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following",
+      { loading, after: log, jump: text(root.querySelector(".ui-bar .ui-jump")) },
+      { loading: ["top:1000"], after: ["top:1000", "top:1000", "into:m-1"], jump: "1 new step" });
+    await m.unmount();
+  } finally {
+    for (const [k, d] of saved) {
+      if (d) Object.defineProperty(proto, k, d);
+      else delete proto[k];
+    }
+  }
+}
+
 // ── 8. Which steps rise in ──────────────────────────────────────────────────────────────────────
 {
   const { root, store, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ more: true, frames: [said("f2", "The newest page", T)] }) } });
@@ -299,6 +336,18 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   same("8.2 a step appended live after mount carries ui-in, and the held steps still do not",
     steps().map((d) => [text(d), d.classList.contains("ui-in")]),
     [["An older page", false], ["The newest page", false], ["Arrived live", true]]);
+  await m.unmount();
+}
+{
+  // A group of two already there, a paragraph, then one call; a second call then joins that one.
+  const { root, store, m } = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({
+    frames: [called("c0", "Read", T - 2 * MIN), called("c1", "Read", T - 2 * MIN), said("p1", "Running the tests", T - MIN), called("c2", "Bash", T)],
+  }) } });
+  const before = { groups: all(root, ".ui-tg").length, row: text(root.querySelector(".ui-sess > div > .ui-tc-line code")) };
+  await m.run(() => putSession(store, (s) => ({ ...s, frames: [...s.frames, called("c3", "cotal_inbox", T + MIN, true)] })));
+  same("8.3 a call that joins a single one fades the new group in, and a group there at first paint does not fade",
+    { before, fades: all(root, ".ui-tg").map((g) => g.classList.contains("ui-xfade")) },
+    { before: { groups: 1, row: "Bash" }, fades: [false, true] });
   await m.unmount();
 }
 
@@ -332,6 +381,13 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   same("9.3 with no channel visited the crumb goes back to Agents",
     crumb(m2.container), { href: "#/agents", title: "Back to Agents", label: "Agents" });
   await m2.unmount();
+  const via = rig("#/channel/team");
+  const m3 = await mount(createElement(App, { host: via.host, start: via.start }));
+  await m3.run(() => via.go("#/activity"));
+  await m3.run(() => via.go(`#/agent/${ENGINE}`));
+  same("9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel",
+    crumb(m3.container), { href: "#/activity", title: "Back to Activity", label: "Activity" });
+  await m3.unmount();
 }
 
 console.log(`session-view: ${n} checks passed`);

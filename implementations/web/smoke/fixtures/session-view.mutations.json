@@ -1,6 +1,6 @@
 {
   "command": "pnpm smoke:web-session-view",
-  "guard": "the session view opens and closes its session in pairs, says every state in the mock's words, shows the plane note only when the card says the plane is on, animates only steps that arrive live after mount, and shows Live only for an agent that is online",
+  "guard": "the session view opens and closes its session in pairs, says every state in the mock's words, shows the plane note only when the card says the plane is on, animates only steps that arrive live after mount, keeps a reader at the message they arrived at, shows Live only for an agent that is online, and goes back where the reader came from",
   "why": [
     "This suite runs `tsx` directly over `client/src`, with no build step and no compiled second copy, so no `afterRestore` is needed on any mutation here."
   ],
@@ -66,12 +66,44 @@
       "cell": "2.2 refused names the session, quotes the broker's reason as text and offers the grant to copy"
     },
     {
-      "name": "SV8 the crumb ignores the channel the reader came from",
+      "name": "SV8 the crumb forgets where the reader came from and always goes back to Agents",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "const back = places.visited !== null",
-      "replace": "const back = false",
+      "find": "const last = route.view !== \"agent\" ? route : from;",
+      "replace": "const last = route.view !== \"agent\" ? route : null;",
       "expectRed": "9.1 the crumb links back to the channel the reader came from",
       "cell": "9.1 the crumb links back to the channel the reader came from"
+    },
+    {
+      "name": "SV9 the arrival scroll does not wait for the read in flight",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "arrived.current === at || load === \"loading\") return;",
+      "replace": "arrived.current === at) return;",
+      "expectRed": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following",
+      "cell": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following"
+    },
+    {
+      "name": "SV10 the arrival leaves the view following, so the next step pulls it to the bottom",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "    scroll.unpin();\n",
+      "replace": "",
+      "expectRed": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following",
+      "cell": "7.2 arriving while the read is in flight waits for it, scrolls to the post after the pin, and stops following"
+    },
+    {
+      "name": "SV11 a group that a joining call makes appears at once",
+      "file": "implementations/web/client/src/ui/session/ToolGroup.tsx",
+      "find": "<ToolGroup calls={calls} compact={compact} className={fade} />",
+      "replace": "<ToolGroup calls={calls} compact={compact} />",
+      "expectRed": "8.3 a call that joins a single one fades the new group in, and a group there at first paint does not fade",
+      "cell": "8.3 a call that joins a single one fades the new group in, and a group there at first paint does not fade"
+    },
+    {
+      "name": "SV12 only a channel is remembered as the place to go back to",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "if (route.view !== \"agent\" && (from === null",
+      "replace": "if (route.view === \"channel\" && (from === null",
+      "expectRed": "9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel",
+      "cell": "9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel"
     }
   ]
 }

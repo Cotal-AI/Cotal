@@ -42,6 +42,9 @@ same("an undecodable dm peer gives the default route", parseRoute("#/dm/%E0%A4%A
 same("an agent hash gives the agent's session with no message", parseRoute("#/agent/local.abc", "/"), { view: "agent", id: "local.abc" });
 same("an agent hash with a message id gives that message as at", parseRoute("#/agent/local.abc/m-1", "/"), { view: "agent", id: "local.abc", at: "m-1" });
 same("an undecodable agent id gives the default route", parseRoute("#/agent/%E0%A4%A", "/"), DEFAULT_ROUTE);
+same("an agent id outside <owner>.<actor> gives the default route",
+  ["#/agent/team", "#/agent/a.b.c", "#/agent/a%20b.c", "#/agent/.abc", "#/agent/a-b.c/m-1"].map((h) => parseRoute(h, "/")),
+  [DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE, DEFAULT_ROUTE]);
 same("an event channel hash opens that agent's session", parseRoute("#/channel/events.local.abc", "/"), { view: "agent", id: "local.abc" });
 same("a channel named events.standup stays a channel", parseRoute("#/channel/events.standup", "/"), { view: "channel", channel: "events.standup" });
 ok("formatRoute encodes the agent id and the message id", formatRoute({ view: "agent", id: "a/b", at: "m 1#" }) === "#/agent/a%2Fb/m%201%23", formatRoute({ view: "agent", id: "a/b", at: "m 1#" }));
@@ -63,7 +66,7 @@ const valid: Route[] = [
   { view: "needs" },
   { view: "agent", id: "local.abc" },
   { view: "agent", id: "local.abc", at: "m-1" },
-  { view: "agent", id: "a/b%c", at: "x y?#" },
+  { view: "agent", id: "local.abc", at: "x y?#" },
 ];
 for (const r of valid) same(`parseRoute reads back formatRoute for ${JSON.stringify(r)}`, parseRoute(formatRoute(r), "/"), r);
 for (const hash of ["#/channel/team.backend", "#/dm/local.ab/local.cd", "#/agents", "#/agents/host", "#/activity", "#/topology", "#/needs", "#/agent/local.abc", "#/agent/local.abc/m-1"]) {

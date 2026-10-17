@@ -92,7 +92,8 @@ function SessionSkeleton() {
  *    agent's posts), and with no steps the plane on or the card silent.
  *  - Following: while the reader is at the bottom, new steps scroll into view. Scrolled up, the jump
  *    button counts the live steps that arrived since, and takes the reader back down.
- *  - Arriving at a message (`at`): once the steps hold that post, it is scrolled into view and marked,
+ *  - Arriving at a message (`at`): once the steps hold that post and no read is in flight, it is
+ *    scrolled into view and marked,
  *    and following stops until the reader returns to the bottom. With no such post the view opens at
  *    the bottom.
  *  - The dock is the agent's direct message composer, read only when posting is off, as in DmView.
@@ -153,17 +154,21 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
     setAway(null);
   };
 
-  // ARRIVING AT A MESSAGE. Scrolled to once, when the post is first held; the scroll event that
-  // follows unpins the reader, so new steps no longer pull the view away from it.
+  // ARRIVING AT A MESSAGE. Scrolled to once, when the post is held and no read is in flight: the
+  // posts are often held before the history read lands, and the pinned scroll takes the view to the
+  // bottom when it does. This effect runs after the pin's, and stops following itself, so neither
+  // that read nor a new step pulls the view away from the post.
   const arrived = useRef<string | undefined>(undefined);
   const holdsAt = at !== undefined && steps.some((s) => s.kind === "post" && s.msg.id === at);
   useLayoutEffect(() => {
-    if (!holdsAt || at === undefined || arrived.current === at) return;
+    if (!holdsAt || at === undefined || arrived.current === at || load === "loading") return;
     const el = scroller();
     if (!el) return;
     const found = Array.from(el.querySelectorAll("[data-post]")).find((p) => p.getAttribute("data-post") === at);
     if (!found) return;
     arrived.current = at;
+    scroll.unpin();
+    setAway(new Set(steps.map((s) => s.key)));
     found.scrollIntoView?.({ block: "center" });
   });
 

@@ -16,6 +16,10 @@ export const DEFAULT_ROUTE: Route = { view: "activity" };
 
 const TOPOLOGY: Route = { view: "topology" };
 
+/** An agent's roster id, `<owner>.<actor>`, each token of [A-Za-z0-9_], as the server's agent routes
+ *  require. Restated because the client imports nothing from the server or core. */
+const AGENT_ID = /^[A-Za-z0-9_]+\.[A-Za-z0-9_]+$/;
+
 /** A hash segment as text, or undefined when it is not valid percent-encoding. */
 function decode(segment: string): string | undefined {
   try {
@@ -43,7 +47,7 @@ function fromHash(hash: string): Route | undefined {
     case "agent": {
       if (!a) return undefined;
       const id = decode(a);
-      if (!id) return undefined;
+      if (!id || !AGENT_ID.test(id)) return undefined;
       if (b === undefined) return { view: "agent", id };
       const at = b === "" ? undefined : decode(b);
       return at ? { view: "agent", id, at } : undefined;

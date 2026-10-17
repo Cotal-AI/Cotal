@@ -92,6 +92,14 @@
       "replace": "return { view: \"channel\", channel };",
       "expectRed": "an event channel hash opens that agent's session",
       "cell": "an event channel hash opens that agent's session"
+    },
+    {
+      "name": "an agent id is taken whatever its shape",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "if (!id || !AGENT_ID.test(id)) return undefined;",
+      "replace": "if (!id) return undefined;",
+      "expectRed": "an agent id outside <owner>.<actor> gives the default route",
+      "cell": "an agent id outside <owner>.<actor> gives the default route"
     }
   ]
 }

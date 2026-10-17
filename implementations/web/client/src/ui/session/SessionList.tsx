@@ -8,8 +8,7 @@ import { RunError, type RunErrorCondition } from "./RunError.tsx";
 import { SaidBlock } from "./SaidBlock.tsx";
 import { SessionFoot } from "./SessionFoot.tsx";
 import { Time } from "./Time.tsx";
-import { ToolGroup } from "./ToolGroup.tsx";
-import { ToolRow } from "./ToolRow.tsx";
+import { ToolStep } from "./ToolGroup.tsx";
 import { TurnLine } from "./TurnLine.tsx";
 import { UnknownStep } from "./UnknownStep.tsx";
 
@@ -48,7 +47,7 @@ function part(step: SessionStep, compact: boolean, highlight: string | undefined
     case "said":
       return <SaidBlock text={step.text} cut={step.cut} />;
     case "tools":
-      return step.calls.length === 1 ? <ToolRow call={step.calls[0]!} /> : <ToolGroup calls={step.calls} compact={compact} />;
+      return <ToolStep calls={step.calls} compact={compact} />;
     case "turnEnd":
       return <div className="ui-tend">Turn ended <Time ts={step.ts} /></div>;
     case "runError":
