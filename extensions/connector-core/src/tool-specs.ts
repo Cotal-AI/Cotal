@@ -633,6 +633,22 @@ export function channelMeta(i: InboxItem): Record<string, string> {
   return m;
 }
 
+/**
+ * The channel a send with none goes to, from the channels the agent reads. A mesh that enforces
+ * ACLs refuses a post outside `allowPublish`, so there the default is the first concrete channel
+ * the agent reads AND may post to: a read-only channel such as an announcements feed is never it.
+ * An open mesh enforces no post ACL, so there it is the first concrete channel read, as the
+ * endpoint resolves it. A wildcard subscription like `team.>` is not a destination. Undefined when
+ * no channel qualifies; a send without a channel is then refused.
+ */
+export function defaultSendChannel(config: Pick<AgentConfig, "allowPublish" | "creds" | "userAuth">, reading: readonly string[]): string | undefined {
+  const concrete = reading.filter(isConcreteChannel);
+  return isAuthed(config) ? concrete.find((c) => channelInAllow(config.allowPublish, c)) : concrete[0];
+}
+
+const NO_POSTABLE_DEFAULT =
+  "you may post to none of the channels you read, so there is no default and an omitted channel is refused - name one your post ACL allows (cotal_orientation lists them)";
+
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
  *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
@@ -659,10 +675,7 @@ export function cotalToolSpecs(
   // The same rule for the workflow-run door (SPEC 14.3): the `run` capability mints the manager's
   // run-* rows, so cotal_run is advertised only where the wire would admit it.
   const canRun = !isAuthed(config) || (config.capabilities?.includes("run") ?? false);
-  // The default broadcast target, the same one the endpoint resolves: the first CONCRETE channel of
-  // the read set (a wildcard subscription like `team.>` is not a destination). Undefined when the
-  // agent is on no channel, in which case there IS no default and a send without one is refused.
-  const defaultChannel = config.subscribe.find(isConcreteChannel);
+  const defaultChannel = defaultSendChannel(config, config.subscribe);
   const specs: CotalToolSpecDecl[] = [
     {
       name: "cotal_orientation",
@@ -1051,7 +1064,7 @@ export function cotalToolSpecs(
           .string()
           .optional()
           .describe(
-            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : config.subscribe.some(isConcreteChannel) ? `REQUIRED: ${NO_POSTABLE_DEFAULT}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -1060,11 +1073,13 @@ export function cotalToolSpecs(
             "Names of peers to call out (e.g. ['bob']). Everyone on the channel still receives the message, but a mentioned peer gets high-priority delivery (eg @bob): woken now if idle, instead of waiting for its next idle moment. Use sparingly: a mention WAKES that peer, so only call someone out when you need THAT specific peer to act now; never mention in an acknowledgement, thanks, or sign-off, or mentions ping-pong between peers and wake the channel in a loop.",
           ),
       },
-      async run(agent, _config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
+      async run(agent, config, { text: msg, channel, mentions }: { text: string; channel?: string; mentions?: string[] }) {
         try {
-          const target = channel ?? agent.joinedChannels().find(isConcreteChannel);
+          const joined = agent.joinedChannels();
+          const target = channel ?? defaultSendChannel(config, joined);
+          if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);
           const receipt = target !== undefined ? await agent.describeSendChannel(target) : undefined;
-          const m = await agent.send(msg, channel, mentions);
+          const m = await agent.send(msg, target, mentions);
           const dest = `Sent to #${m.channel}${m.mentions?.length ? ` (mentioned @${m.mentions.join(", @")})` : ""}`;
           return ok(receipt ? `${dest} (${receipt}).` : `${dest}.`);
         } catch (e) {

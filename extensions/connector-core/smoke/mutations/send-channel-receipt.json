@@ -16,6 +16,12 @@
     "",
     "N3 makes every name look pre-existing, so the tool receipt never says new channel.",
     "",
+    "N5 makes the authed default the first concrete channel again: the live Cloud refusal on #announce.",
+    "",
+    "N6 drops the refusal when no read channel is postable.",
+    "",
+    "N7 sends the raw argument instead of the resolved default.",
+    "",
     "NO BUILD STEP: the suite imports ../src."
   ],
   "mutations": [
@@ -54,6 +60,33 @@
       "expectRed": "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
       "cell": "1229:e send under an unpopulated view that never populates refuses naming the view condition, not \"unknown mention\"",
       "note": "#1229: the unpopulated wait-and-recheck exists so a mention of a live peer is not rejected while the roster refills after a reconnect. Dropping the wait restores the reported defect: cell (e) sees the old 'unknown mention' refusal under a view that cannot support an absence verdict."
+    },
+    {
+      "name": "N5 the authed default is the first concrete channel read, restoring the refused #announce default",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  return isAuthed(config) ? concrete.find((c) => channelInAllow(config.allowPublish, c)) : concrete[0];",
+      "replace": "  return concrete[0];",
+      "expectRed": "an omitted channel goes to the first channel the agent may post to",
+      "cell": "an omitted channel goes to the first channel the agent may post to",
+      "note": "The live Cloud defect: an agent reading [announce, team.rocket] with post rights on team.rocket only sent to #announce and the broker refused it."
+    },
+    {
+      "name": "N6 no refusal before sending when the agent may post to none of the channels it reads",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (target === undefined && joined.some(isConcreteChannel)) return err(`Couldn't send: ${NO_POSTABLE_DEFAULT}.`);\n",
+      "replace": "",
+      "expectRed": "with no channel it may post to, an omitted channel is refused before sending",
+      "cell": "with no channel it may post to, an omitted channel is refused before sending",
+      "note": "Without the guard the send goes out with no channel, the endpoint picks the read-only one, and the broker refusal is the only signal."
+    },
+    {
+      "name": "N7 the resolved default is computed but the raw argument is sent, so the endpoint picks the read-only channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const m = await agent.send(msg, target, mentions);",
+      "replace": "          const m = await agent.send(msg, channel, mentions);",
+      "expectRed": "an omitted channel goes to the first channel the agent may post to",
+      "cell": "an omitted channel goes to the first channel the agent may post to",
+      "note": "The receipt would describe team.rocket while the message went to the endpoint default."
     }
   ]
 }

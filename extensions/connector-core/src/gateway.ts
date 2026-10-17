@@ -106,9 +106,9 @@ const ADVERTISED: AgentConfig = {
 /** `cotal_send`'s channel description is the one advertised text that names a configuration's
  *  default channel. Connections can read different channels, so the advertised text names none. */
 const SEND_CHANNEL =
-  "Channel to send on. Omit it to use this connection's default, the first concrete channel it reads " +
-  "(cotal_orientation lists them); with none, an omitted channel is refused. Concrete only, not a wildcard " +
-  "like team.>; reply on the channel you received a message on.";
+  "Channel to send on. Omit it to use this connection's default, the first concrete channel it reads and " +
+  "may post to (cotal_orientation lists both); with none, an omitted channel is refused. Concrete only, not " +
+  "a wildcard like team.>; reply on the channel you received a message on.";
 
 const CONNECTION_ID = z
   .string()

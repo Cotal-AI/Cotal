@@ -29,7 +29,9 @@ read row at all. That agent is still a full mesh participant, on the roster and 
 and anycast, it just has no channel traffic. `general` is an ordinary channel with no special
 status, so an agent that wants it lists it (the personas `cotal setup` seeds do). An agent on no
 channel also has no default send channel: `cotal_send` without an explicit `channel` is refused
-until it joins one.
+until it joins one. On a mesh that enforces ACLs, the default is the first channel the agent reads
+and may post to, so a read-only channel such as an announcements feed is never the default. An
+agent that may post to none of the channels it reads has no default either.
 
 ## Delivery classes
 

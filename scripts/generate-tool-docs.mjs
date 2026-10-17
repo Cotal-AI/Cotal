@@ -59,7 +59,7 @@ const ANNOTATIONS = {
     effect: "publishes to a channel",
     availability: "always (the broker enforces your post ACL)",
     notes:
-      "Fails loud when the channel is outside your `allowPublish`. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.",
+      "Fails loud when the channel is outside your `allowPublish`. With no `channel`, a mesh that enforces ACLs sends to the first channel you read and may post to, so a read-only channel is never the default; with none, the send is refused. An open mesh sends to the first channel you read. An unknown name in `mentions` aborts the whole broadcast. A send to a name with no registry entry and no prior traffic still succeeds (ad hoc create is allowed) but the receipt says so, and names close matches when it can, so a typo is not identical to a send into a known room.",
   },
   cotal_dm: { effect: "sends a private message to one peer", availability: "always" },
   cotal_anycast: {

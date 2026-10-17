@@ -319,5 +319,40 @@ const proto = MeshAgent.prototype as unknown as {
   }
 }
 
+// The default for a send with no channel. On a mesh that enforces ACLs it is the first channel the
+// agent reads and may post to, so a read-only announcements channel listed first is skipped. Live
+// repro: a Cloud agent reading [announce, team.rocket] defaulted to #announce and was refused.
+{
+  const userAuth = { owner: "u_x", actor: "alice", sentinelCreds: "creds", bearerCmd: ["true"] };
+  const base = { space: "demo", name: "alice", servers: "nats://127.0.0.1:4222", kind: "agent", tls: false } as const;
+  const run = async (cfg: AgentConfig, joined: string[]) => {
+    const sent: (string | undefined)[] = [];
+    const agent = stubAgent({ joined, listed: joined.map((channel) => ({ channel })) });
+    (agent as unknown as { send: MeshAgentType["send"] }).send = async (_t, channel) => {
+      sent.push(channel);
+      return { id: "m", ts: 1, space: "demo", from: { id: "a", name: "alice", kind: "agent" }, channel: channel ?? joined[0], parts: [] } as never;
+    };
+    (agent as unknown as { describeSendChannel: MeshAgentType["describeSendChannel"] }).describeSendChannel = async () => "existing channel";
+    const send = cotalToolSpecs(cfg, "smoke").find((s) => s.name === "cotal_send")!;
+    const result = await send.run(agent, cfg, { text: "hi" });
+    const described = (send.schema.shape.channel as { description?: string } | undefined)?.description ?? "";
+    return { result, sent, described };
+  };
+
+  const authed = { ...base, subscribe: ["announce", "team.rocket"], allowSubscribe: ["announce", "team.rocket"], allowPublish: ["team.rocket", "team.rocket.>"], userAuth } as AgentConfig;
+  const skip = await run(authed, ["announce", "team.rocket"]);
+  check("an omitted channel goes to the first channel the agent may post to", !skip.result.isError && skip.sent[0] === "team.rocket", skip);
+  check("the advertised default is the first channel the agent may post to", skip.described.includes("default: team.rocket"), skip.described);
+
+  const readOnly = { ...base, subscribe: ["announce"], allowSubscribe: ["announce"], allowPublish: [], userAuth } as AgentConfig;
+  const none = await run(readOnly, ["announce"]);
+  check("with no channel it may post to, an omitted channel is refused before sending", none.result.isError === true && none.sent.length === 0 && none.result.text.includes("post to none"), none);
+  check("the advertised text says there is no default to post to", none.described.includes("post to none"), none.described);
+
+  const open = { ...base, subscribe: ["announce", "lobby"], allowSubscribe: ["announce", "lobby"], allowPublish: [] } as AgentConfig;
+  const unchanged = await run(open, ["announce", "lobby"]);
+  check("an open mesh, which enforces no post ACL, keeps the first channel read", !unchanged.result.isError && unchanged.sent[0] === "announce", unchanged);
+}
+
 console.log(`\nSEND-CHANNEL-RECEIPT SMOKE ${fail === 0 ? "OK" : "FAILED"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);
