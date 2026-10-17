@@ -2224,7 +2224,10 @@ the verb exists to inspect); when neither a card nor the durable can be found, i
 `max_msgs_per_subject` / `discard` limits (`--json` prints the same facts as one object), followed
 by a bounded, unacked read of up to `--limit` (default 20) recent candidate message ids under the
 heading `recent candidate ids (from the ack floor; not proof of a hole)`, a list of what is
-there, not proof that nothing was lost.
+there, not proof that nothing was lost. Each candidate line reads
+`<id>  from=<label>  principal=<owner>.<actor>  ts=<ms>`. The label is the sender's display name
+(`name/role` when it has a role), which the sender chooses. The principal comes from the message
+subject, which the broker pins to the sender's credential.
 
 The verb needs the `admin` credential profile: it runs through the same static-mesh route as
 `cotal mint --profile admin`, and refuses a user-mode mesh, naming the retired static credential,
