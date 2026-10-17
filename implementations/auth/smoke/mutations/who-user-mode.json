@@ -1,0 +1,31 @@
+{
+  "suite": [
+    "implementations/auth/smoke/ps-user-mode.smoke.ts"
+  ],
+  "guard": "user-mode who reports the one manager's answer as a scope label and still exits 0, ok and complete",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:ps-user-mode",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/who-user-mode.json",
+  "why": [
+    "The suite signs a real user in with an admin grant against a live broker and manager, so the census answers for that user's own seats. The CLI child runs the built dist, so each mutation rebuilds it and the restore rebuilds it back."
+  ],
+  "mutations": [
+    {
+      "name": "who drops the census's scope label",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "      labels.push(...judged.labels);\n",
+      "replace": "",
+      "expectRed": "user-mode who labels the manager's answer as covering this user's own seats",
+      "cell": "user-mode who labels the manager's answer as covering this user's own seats",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "who counts a scope label as a part left unread",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "  const unread = warnings.length;\n",
+      "replace": "  const unread = warnings.length + labels.length;\n",
+      "expectRed": "that label is not a part left unread: user-mode who exits 0, ok and complete",
+      "cell": "that label is not a part left unread: user-mode who exits 0, ok and complete",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}
