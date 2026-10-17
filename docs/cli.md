@@ -85,7 +85,8 @@ runtimes ship this way.
 
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
 one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
-`cotal status`, `cotal ps`, `cotal models` and `cotal runtimes`. `cotal version --json` writes:
+`cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal models` and `cotal runtimes`.
+`cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -162,6 +163,8 @@ failure.
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
 | Agents & personas | [`seats`](#seats) | List the pty seat custodians an earlier Linux manager left, and drain the ones whose agent has exited |
 | Agents & personas | [`reconcile-gate`](#reconcile-gate) | Unfreeze an issuance gate left frozen by a crashed restart when the successor cannot boot-heal it (holder gone, complete CONNZ sweep) |
+| Messaging & watching | [`who`](#who) | The live roster of the selected space, and whether a manager runs each seat |
+| Messaging & watching | [`whoami`](#whoami) | The identity this CLI acts under, and what it may read, post and do |
 | Messaging & watching | [`endpoints`](#endpoints) | List every endpoint in the live presence roster, including infrastructure |
 | Messaging & watching | [`describe` / `invoke`](#endpoint-control) | Resolve a v0.4 service's command surface off the wire; invoke one command by name |
 | Messaging & watching | [`send`](#send) | Send one message, then exit: DM a peer, post a channel, or ask a role |
@@ -1344,6 +1347,65 @@ cotal endpoints [--space <s>] [--server <url>] [--creds <path>]
 Lists the mesh presence roster: agents, the manager, and any other protocol endpoint, with each
 endpoint's role, kind, status, and current activity. Unlike `ps`, this is a read-only presence view;
 it is not limited to child processes owned by the manager.
+
+## who
+
+```bash
+cotal who [--waiting] [--all] [--json | --plain] [--space <s>] [--server <url>] [--creds <path>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--waiting` | off | Only rows that are waiting or report a condition |
+| `--all` | off | Also list infrastructure endpoints such as the manager |
+| `--json` / `-j` | off | One JSON document: `result.items` holds one row per participant |
+| `--plain` | off | The same report without color or marks |
+
+Reads the live presence roster of the selected space. Each row has the participant's name, role, kind, status and condition,
+activity, attention mode, harness, model and host, as its presence reports them. Infrastructure
+endpoints are hidden unless `--all` asks for them; the report says how many it hid.
+
+`managed` says whether a manager runs the seat. With no manager on the roster it is `false` for
+every row and no manager is asked. Otherwise every registered manager is asked for its seats, and a
+seat is matched on its lifecycle UID. In a user-auth space the manager answers only for the
+caller's own seats, so other seats show `managed: null` with a `MANAGED_SCOPE` warning. An
+identity the broker does not let ask the managers, such as a user whose grant has no `admin`, sees
+every seat `null` with a `MANAGERS_DENIED` warning. These two warnings say how far the identity's
+grant reaches; the roster itself was read in full, so they do not make the run partial. A manager
+that does not answer leaves every unmatched seat `null` with a warning.
+
+A part `who` could not read makes the run `partial` (exit 4): a roster snapshot that did not finish
+(`ROSTER_INCOMPLETE`), a roster that has gone stale (`ROSTER_STALE`), an error on the roster watch
+(`ROSTER_ERROR`), or a manager census it could not read in full (`MANAGERS_UNREAD`, and the warnings
+`ps` names). A credential that may not read the roster is refused with `PERMISSION_DENIED` (exit 2),
+never shown an empty roster.
+
+## whoami
+
+```bash
+cotal whoami [--json | --plain] [--space <s>] [--server <url>]
+```
+
+Reports the identity this CLI acts under in the selected space and what it may read, post and do.
+It reads the mesh registry, the login cache and, when it is on this machine, the user-auth grant
+ledger. It does not refresh the remote space catalog or contact the IdP. A one-shot command has no
+session, so there is no unread count or connection state to report.
+
+| Mesh | `identity.kind` | What it may do |
+|---|---|---|
+| Open | `open` | Everything; the broker authenticates nothing |
+| Static auth, signer on this machine | `space-signer` | Everything; each command mints its own short-lived credential for its task, so there is no standing principal |
+| Static auth, no signer here | `no-credential` | Nothing without `--creds <file>` |
+| User auth | `user` | The signed-in user's `cli` actor: `read`, `post` and `capabilities` are its ledger row |
+
+A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
+"not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
+cannot be read here: `read`, `post` and `capabilities` are `null`, the run is `partial` (exit 4) and
+the `GRANT_NOT_LOCAL` warning says so. A remote registration can hold a cached login without the
+secret that derives its owner and principal. Those fields stay `null`; the report calls the
+principal unknown on this machine, rather than calling the user signed out. The cached expiry is
+advisory and the command does not verify the login with the IdP. `dms` says whether the identity
+may read DM history, which only the space signer can.
 
 ## Endpoint control
 
