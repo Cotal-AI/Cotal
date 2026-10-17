@@ -972,6 +972,14 @@
       "replace": "useSession(entry && plane !== \"off\" && !(route?.view === \"agent\" && route.id === id) ? controller : null, id);",
       "expectRed": "8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views",
       "cell": "8.13 opening the agent's session beside its Agent tab keeps the session the tab holds: no unwatch, no second watch or read, and two views"
+    },
+    {
+      "name": "PS8 the Session section shows Live while the feed is down, so it claims new steps will appear when none can arrive",
+      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "find": "  const live = connection === \"connected\" && session?.load === \"ok\"",
+      "replace": "  const live = session?.load === \"ok\"",
+      "expectRed": "8.14 the section shows no Live while the feed is down, though the read went through and the agent is working",
+      "cell": "8.14 the section shows no Live while the feed is down, though the read went through and the agent is working"
     }
   ]
 }

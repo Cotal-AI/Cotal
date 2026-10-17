@@ -22,8 +22,8 @@ const NO_POSTS: StoredMessage[] = [];
  *    route, so hiding this section beside the full view never closes the session.
  *  - The steps are the compact list's: never a prompt or reasoning. The six are counted after those
  *    are left out, and `SessionList` draws the footer under them.
- *  - Live shows on the same terms as in the full view: the read went through, the card does not say
- *    the plane is off, and the agent is online.
+ *  - Live shows on the same terms as in the full view: the feed is connected, the read went through,
+ *    the card does not say the plane is off, and the agent is online.
  *  - When the card says the plane is off, the section is only the note.
  *
  *  Names and status come from the roster by id, never from a frame. An id the roster does not hold
@@ -31,6 +31,7 @@ const NO_POSTS: StoredMessage[] = [];
 export function SessionPreview({ store, id }: { store: Store<DashboardState>; id: string }) {
   const roster = useStore(store, (s) => s.roster);
   const session = useStore(store, (s) => s.sessions[id]);
+  const connection = useStore(store, (s) => s.connection);
   const entry = roster.find((p) => p.card.id === id);
   const row = useMemo(() => (entry ? rosterRows([entry], { includeOffline: true })[0] : undefined), [entry]);
   const off = row?.events === "off";
@@ -42,7 +43,7 @@ export function SessionPreview({ store, id }: { store: Store<DashboardState>; id
     [frames, posts],
   );
   if (!row) return null;
-  const live = session?.load === "ok" && !off && row.status !== "offline";
+  const live = connection === "connected" && session?.load === "ok" && !off && row.status !== "offline";
   return (
     <>
       <div className="ui-lt-head">

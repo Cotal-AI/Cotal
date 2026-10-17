@@ -521,7 +521,7 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
     all(rev, ".ui-actions > a").map((a) => [textOf(a), a.getAttribute("href")]),
     [["Message", formatRoute({ view: "dm", peer: "local.rev" })], ["Open session", "#/agent/local.rev"]]);
 
-  const on = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
+  const on = tabWith(withPlane("on"), { connection: "connected", sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
   const chip = on.querySelector(".ui-lt-head .ui-livechip") as HTMLElement | null;
   ok("8.2 with the plane on and the read through, the Session section is headed Session with Live, and follows the profile",
     textOf(on.querySelector(".ui-lt-head h5")) === "Session" && textOf(chip) === "Live" && chip?.title === "New steps appear as reviewer publishes them"
@@ -559,7 +559,7 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
     textOf(ownSession).slice(0, 200));
   const fullFoot = textOf(beside.querySelector("main .ui-sess > .ui-sess-foot"));
 
-  const offline = tabWith(withPlane("on", { status: "offline", ts: at(10, 52) }), { sessions: { "local.rev": sessionOf() } });
+  const offline = tabWith(withPlane("on", { status: "offline", ts: at(10, 52) }), { connection: "connected", sessions: { "local.rev": sessionOf() } });
   ok("8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live",
     footOf(offline) === "reviewer is offline. Last heartbeat 10:52." && offline.querySelector(".ui-livechip") === null, footOf(offline));
   const unknown = tabWith(withPlane("on", { progress: { kind: "unknown" } } as Partial<RosterEntry>), { sessions: { "local.rev": sessionOf() } });
@@ -568,6 +568,11 @@ const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-f
   const waiting = tabWith(withPlane("on", { status: "waiting", statusSince: at(10, 49) }), { sessions: { "local.rev": sessionOf() } });
   ok("8.10 the section's footer says a waiting agent is waiting and when it reported",
     footOf(waiting) === "reviewer is waiting Reported 10:49.", footOf(waiting));
+
+  const down = (["reconnecting", "closed", "connecting"] as const).map((connection) =>
+    [connection, tabWith(withPlane("on"), { connection, sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } }).querySelector(".ui-livechip") !== null]);
+  same("8.14 the section shows no Live while the feed is down, though the read went through and the agent is working",
+    down, [["reconnecting", false], ["closed", false], ["connecting", false]]);
 
   const tools = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ frames: [twoCalls()] }) } });
   const stops = all(tools, "a[href], button").map((el) => (el.hasAttribute("aria-expanded") ? `group ${textOf(el)}` : textOf(el)));

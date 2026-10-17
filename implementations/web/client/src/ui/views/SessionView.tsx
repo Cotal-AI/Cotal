@@ -82,7 +82,8 @@ function SessionSkeleton() {
  *
  *  - The header: the crumb back to `back`, the avatar with its badge, the name, role and harness, the
  *    status pill, then Live or the jump to new steps, and the panel button. Live shows only when the
- *    read went through, the agent's card does not say its plane is off, and the agent is online. On a
+ *    feed is connected, the read went through, the agent's card does not say its plane is off, and
+ *    the agent is online: while the feed is down no new step can arrive. On a
  *    phone the crumb is the back button, the pill is left out, and Agent details opens the panel.
  *  - The list: the event plane note when the card says the plane is on, Load earlier while the channel
  *    holds more and the session is below the cap (or the cap line at it), the folded steps and the
@@ -116,6 +117,7 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
   const roster = useStore(store, (s) => s.roster);
   const self = useStore(store, (s) => s.operatorId);
   const post = useStore(store, (s) => s.post);
+  const connection = useStore(store, (s) => s.connection);
   const session: SessionState | undefined = useStore(store, (s) => s.sessions[id]);
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const entry = roster.find((p) => p.card.id === id);
@@ -172,7 +174,7 @@ export function SessionView({ store, controller, id, at, back, phone = false, on
     found.scrollIntoView?.({ block: "center" });
   });
 
-  const live = load === "ok" && plane !== "off" && known !== undefined && known.status !== "offline";
+  const live = connection === "connected" && load === "ok" && plane !== "off" && known !== undefined && known.status !== "offline";
   const events = eventCount(frames);
   const atCap = events >= SESSION_EVENT_CAP || (session?.limit ?? 0) >= SESSION_LIMIT_MAX;
   const more = session?.more === true && plane !== "off";

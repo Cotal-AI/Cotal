@@ -36,8 +36,8 @@
     {
       "name": "SV4 Live shows for an offline agent",
       "file": "implementations/web/client/src/ui/views/SessionView.tsx",
-      "find": "const live = load === \"ok\" && plane !== \"off\" && known !== undefined && known.status !== \"offline\";",
-      "replace": "const live = load === \"ok\" && plane !== \"off\" && known !== undefined;",
+      "find": "  const live = connection === \"connected\" && load === \"ok\" && plane !== \"off\" && known !== undefined && known.status !== \"offline\";",
+      "replace": "  const live = connection === \"connected\" && load === \"ok\" && plane !== \"off\" && known !== undefined;",
       "expectRed": "6.1 Live is absent for an offline agent, and shown for a working one",
       "cell": "6.1 Live is absent for an offline agent, and shown for a working one"
     },
@@ -104,6 +104,14 @@
       "replace": "if (route.view === \"channel\" && (from === null",
       "expectRed": "9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel",
       "cell": "9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel"
+    },
+    {
+      "name": "SV13 Live shows while the feed is down, so the view claims new steps will appear when none can arrive",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "  const live = connection === \"connected\" && load === \"ok\" && plane !== \"off\"",
+      "replace": "  const live = load === \"ok\" && plane !== \"off\"",
+      "expectRed": "6.2 Live is absent while the feed is down, though the read went through and the agent is working",
+      "cell": "6.2 Live is absent while the feed is down, though the read went through and the agent is working"
     }
   ]
 }

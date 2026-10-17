@@ -270,13 +270,24 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
 
 // ── 6. The Live chip ────────────────────────────────────────────────────────────────────────────
 {
-  const off = await open({ roster: [entry("offline", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
+  const off = await open({ connection: "connected", roster: [entry("offline", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
   const offline = off.root.querySelector(".ui-livechip") !== null;
   await off.m.unmount();
-  const on = await open({ roster: [entry("working", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
+  const on = await open({ connection: "connected", roster: [entry("working", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
   const working = text(on.root.querySelector(".ui-bar .ui-livechip"));
   await on.m.unmount();
   same("6.1 Live is absent for an offline agent, and shown for a working one", { offline, working }, { offline: false, working: "Live" });
+}
+{
+  // The same working agent and the same good read, with the feed down: no new step can arrive.
+  const seen: [string, boolean][] = [];
+  for (const connection of ["reconnecting", "closed", "connecting"] as const) {
+    const v = await open({ connection, roster: [entry("working", "on")], sessions: { [ENGINE]: session({ frames: [said("f1", "Hello")] }) } });
+    seen.push([connection, v.root.querySelector(".ui-livechip") !== null]);
+    await v.m.unmount();
+  }
+  same("6.2 Live is absent while the feed is down, though the read went through and the agent is working",
+    seen, [["reconnecting", false], ["closed", false], ["connecting", false]]);
 }
 
 // ── 7. Arriving at a message ────────────────────────────────────────────────────────────────────
