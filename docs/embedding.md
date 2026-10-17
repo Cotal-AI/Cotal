@@ -244,6 +244,31 @@ delivery-admin responder. Reclaiming a held claim from a dead predecessor needs 
 instance first: its admin rail must complete the broker connection-liveness sweep before the
 auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim.
 
+### Remote MCP gateway
+
+`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, template, source?)` for
+a service that serves Cotal to a hosted MCP client over HTTP. A hosted client can send many
+conversations through one bearer and one MCP session, so a request does not say which conversation
+sent it. Each conversation calls `cotal_connect` and passes the `connection_id` it returns on every
+other tool call. A missing, unknown or other-account handle returns `CONNECTION_REQUIRED` and runs
+nothing. No call falls back to another connection of the account.
+
+The host implements `GatewayHost`:
+
+- `account(auth)` returns the account the request authenticated as, read from the SDK's `AuthInfo`.
+  It throws when the request has none, and the tool then runs nothing.
+- `open(account, name)` issues and starts a new connection under that name. It throws `NameTaken`
+  only when the issuer reports that the name exists. `cotal_connect` then tries `name_2`, `name_3`
+  and so on, up to `GATEWAY_NAME_ATTEMPTS` names. Any other error goes back to the caller and no
+  other name is tried.
+- `find(account, id)` and `close(account, id)` act only on a connection that account owns.
+
+`GATEWAY_TOOLS` names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and
+reconnect belong to a supervised local seat and are left out. `template` is the configuration shape
+the host issues and supplies the advertised schemas. Each call runs against the connection's own
+configuration. Authentication, credential issuance and revocation, the HTTP transport and durable
+connection records stay with the host.
+
 ### Remote manager client composition
 
 `@cotal-ai/manager` exports the `remoteManagerClient` namespace, containing the stock remote

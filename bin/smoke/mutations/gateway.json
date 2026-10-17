@@ -1,0 +1,55 @@
+{
+  "suite": "extensions/connector-core/smoke/gateway.smoke.ts",
+  "guard": "a remote conversation renames only on an authoritative collision, a missing or foreign connection_id runs nothing, and the gateway offers and reports only its remote tool subset",
+  "command": "pnpm smoke:gateway",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
+  "why": [
+    "A hosted MCP client pools one bearer and one MCP session across conversations, so the",
+    "connection_id is the only thing that keeps one conversation's words under its own identity.",
+    "Each mutation below removes one rule that carries that guarantee. No build is needed: the",
+    "suite imports ../src/gateway.js and ../src/tool-specs.js directly."
+  ],
+  "mutations": [
+    {
+      "name": "cotal_connect retries every failure under the next name",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "if (e instanceof NameTaken) continue;",
+      "replace": "continue;",
+      "expectRed": "a non-collision failure is reported",
+      "cell": "a non-collision failure is reported",
+      "note": "A quota refusal would then be retried as quota_probe_2 and succeed, turning a refusal the user must see into a silent rename."
+    },
+    {
+      "name": "an unknown connection_id reports success instead of refusing",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "if (!c) return refuse(CONNECTION_REQUIRED);",
+      "replace": "if (!c) return toContent({ text: \"ok\" });",
+      "expectRed": "an unknown connection_id is refused",
+      "cell": "an unknown connection_id is refused"
+    },
+    {
+      "name": "a rename is no longer reported to the conversation",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "const renamed = candidate === name ? \"\" : ` (${JSON.stringify(name)} was taken)`;",
+      "replace": "const renamed = \"\";",
+      "expectRed": "a taken name moves to the next one and says so",
+      "cell": "a taken name moves to the next one and says so"
+    },
+    {
+      "name": "the offered filter is dropped, so seat authority is advertised remotely",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    .filter((spec) => !offered || offered.has(spec.name))\n",
+      "replace": "",
+      "expectRed": "seat authority is not offered",
+      "cell": "seat authority is not offered"
+    },
+    {
+      "name": "the orientation card lists the full stdio surface",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({",
+      "replace": "const visible: OrientationTool[] = cotalToolSpecs(config, source, env).map((s) => ({",
+      "expectRed": "orientation lists only offered tools",
+      "cell": "orientation lists only offered tools"
+    }
+  ]
+}

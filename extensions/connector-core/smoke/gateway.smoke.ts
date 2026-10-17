@@ -1,0 +1,253 @@
+/**
+ * Remote gateway surface (registerCotalGatewayTools), driven end to end: its OWN nats-server, a
+ * real Streamable HTTP MCP server with bearer auth, and the real SDK client. Every call shares one
+ * bearer per account, as a hosted MCP client does across conversations, so only the explicit
+ * connection_id can tell two conversations apart.
+ *
+ * Proves:
+ *   - an authoritative collision moves to the next name, and nothing else does;
+ *   - a missing, unknown, or other account's handle runs nothing, with no default connection;
+ *   - two connections of one account are independent mesh identities;
+ *   - disconnect closes one connection and leaves the other working;
+ *   - only the remote subset is offered, and the orientation card says so.
+ *
+ * Run: pnpm smoke:gateway
+ */
+import { strict as assert } from "node:assert";
+import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync } from "node:fs";
+import { createServer, type IncomingMessage } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CotalEndpoint, isReachable, mintLifecycleUid, type CotalMessage, type Delivery } from "@cotal-ai/core";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { MeshAgent } from "../src/agent.js";
+import type { AgentConfig } from "../src/config.js";
+import { NameTaken, registerCotalGatewayTools, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const PORT = await pickFreePort();
+const servers = `nats://127.0.0.1:${PORT}`;
+const space = "gatewaysmoke";
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
+
+let pass = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+  pass++;
+  console.log(`  ✓ ${name}`);
+};
+
+const configFor = (name: string): AgentConfig => ({
+  space,
+  name,
+  servers,
+  subscribe: ["lobby"],
+  allowSubscribe: ["lobby"],
+  allowPublish: ["lobby"],
+  kind: "agent",
+  tls: false,
+  id: `${name}_${randomUUID().slice(0, 8)}`,
+  lifecycleUid: mintLifecycleUid(),
+});
+
+// The issuer this host stands in for: names are unique per account, "quota_probe" fails the way a
+// quota refusal does, and every attempt is logged so a retry under another name is visible.
+const BEARERS: Record<string, string> = { "tok-a": "acct_a", "tok-b": "acct_b" };
+const live = new Map<string, { account: string; conn: GatewayConnection }>();
+const opened: string[] = [];
+const host: GatewayHost = {
+  account(auth: AuthInfo | undefined): string {
+    const account = auth?.extra?.account;
+    if (typeof account !== "string") throw new Error("no valid bearer");
+    return account;
+  },
+  async open(account, name) {
+    opened.push(`${account}/${name}`);
+    if (name === "quota_probe") throw new Error("quota exceeded");
+    for (const r of live.values()) if (r.account === account && r.conn.config.name === name) throw new NameTaken(name);
+    const config = configFor(name);
+    const agent = new MeshAgent(config);
+    agent.on("error", () => {});
+    agent.start();
+    for (let i = 0; i < 50 && !agent.connected; i++) await sleep(100);
+    if (!agent.connected) throw new Error(`${name} did not connect`);
+    const conn = { id: randomUUID(), agent, config };
+    live.set(conn.id, { account, conn });
+    return conn;
+  },
+  async find(account, id) {
+    const r = live.get(id);
+    return r && r.account === account ? r.conn : undefined;
+  },
+  async close(account, id) {
+    const r = live.get(id);
+    if (!r || r.account !== account) return false;
+    live.delete(id);
+    await r.conn.agent.stop();
+    return true;
+  },
+};
+const template = configFor("template");
+
+const readBody = (req: IncomingMessage): Promise<unknown> =>
+  new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined));
+    req.on("error", reject);
+  });
+
+// Stateless Streamable HTTP: a fresh server per request, so nothing survives between calls except
+// what the host stores. The bearer decides the account and nothing else.
+const http = createServer(async (req, res) => {
+  const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
+  const account = token ? BEARERS[token] : undefined;
+  if (account) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: token!, clientId: "smoke", scopes: [], extra: { account } };
+  const server = new McpServer({ name: "cotal-gateway-smoke", version: "0.0.0" });
+  registerCotalGatewayTools(server, host, template);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  res.on("close", () => {
+    void transport.close();
+    void server.close();
+  });
+  await server.connect(transport);
+  await transport.handleRequest(req, res, await readBody(req));
+});
+const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
+const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
+
+const clientFor = async (token?: string): Promise<Client> => {
+  const client = new Client({ name: "gateway-smoke-client", version: "0.0.0" });
+  const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+  await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }));
+  return client;
+};
+type CallResult = { text: string; isError: boolean };
+const call = async (client: Client, name: string, args: Record<string, unknown>): Promise<CallResult> => {
+  const r = (await client.callTool({ name, arguments: args })) as { content?: { type: string; text?: string }[]; isError?: boolean };
+  return { text: (r.content ?? []).map((c) => c.text ?? "").join("\n"), isError: r.isError === true };
+};
+const idOf = (r: CallResult): string => /connection_id: (\S+)/.exec(r.text)?.[1] ?? "";
+
+const observer = new CotalEndpoint({ space, servers, card: { name: "observer", kind: "agent", id: "observer" }, channels: ["lobby"], lifecycleUid: mintLifecycleUid() });
+observer.on("error", () => {});
+const heard: string[] = [];
+observer.on("message", (m: CotalMessage, d: Delivery) => {
+  heard.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""));
+  d.ack();
+});
+
+try {
+  await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
+  await observer.start();
+
+  const a = await clientFor("tok-a");
+  const b = await clientFor("tok-b");
+  const anon = await clientFor();
+
+  // ---- the offered surface ----
+  const tools = (await a.listTools()).tools;
+  const names = new Set(tools.map((t) => t.name));
+  check("connect and disconnect are offered", names.has("cotal_connect") && names.has("cotal_disconnect"));
+  check("seat authority is not offered", !["cotal_spawn", "cotal_despawn", "cotal_persona", "cotal_run", "cotal_reconnect", "cotal_yield"].some((n) => names.has(n)));
+  const routed = tools.filter((t) => t.name !== "cotal_connect");
+  check(
+    "every routed tool requires connection_id",
+    routed.length === 14 && routed.every((t) => (t.inputSchema.required ?? []).includes("connection_id")),
+    routed.map((t) => t.name),
+  );
+
+  // ---- authentication ----
+  const unauth = await call(anon, "cotal_connect", { name: "ghost" });
+  check("an unauthenticated connect is refused", unauth.isError && unauth.text.includes("not authenticated"), unauth);
+  check("an unauthenticated connect opens nothing", !opened.some((o) => o.endsWith("/ghost")), opened);
+
+  // ---- name allocation ----
+  const first = await call(a, "cotal_connect", { name: "claude" });
+  const id1 = idOf(first);
+  check("the requested name is used when free", !first.isError && first.text.startsWith("Connected as claude.") && id1 !== "", first);
+  const second = await call(a, "cotal_connect", { name: "claude" });
+  const id2 = idOf(second);
+  check("a taken name moves to the next one and says so", !second.isError && second.text.startsWith('Connected as claude_2 ("claude" was taken).'), second);
+  check("the two conversations hold different connections", id2 !== "" && id2 !== id1);
+  check("the collision was retried only on NameTaken", opened.filter((o) => o.startsWith("acct_a/")).join(",") === "acct_a/claude,acct_a/claude,acct_a/claude_2", opened);
+  const quota = await call(a, "cotal_connect", { name: "quota_probe" });
+  check("a non-collision failure is reported", quota.isError && quota.text.includes("quota exceeded"), quota);
+  check("a non-collision failure is not retried under another name", !opened.includes("acct_a/quota_probe_2") && opened.filter((o) => o === "acct_a/quota_probe").length === 1, opened);
+  const other = await call(b, "cotal_connect", { name: "claude" });
+  check("another account's names are its own", !other.isError && other.text.startsWith("Connected as claude."), other);
+  const idB = idOf(other);
+
+  // ---- no fallback ----
+  const missing = await a.callTool({ name: "cotal_roster", arguments: {} }).then(
+    (r) => ({ isError: (r as { isError?: boolean }).isError === true, text: JSON.stringify(r) }),
+    (e: unknown) => ({ isError: true, text: String(e) }),
+  );
+  check("a call without connection_id is refused", missing.isError && missing.text.includes("connection_id"), missing);
+  const unknown = await call(a, "cotal_send", { connection_id: "not-a-connection", text: "from-unknown", channel: "lobby" });
+  check("an unknown connection_id is refused", unknown.isError && unknown.text.startsWith("CONNECTION_REQUIRED"), unknown);
+  const foreign = await call(b, "cotal_send", { connection_id: id1, text: "from-foreign", channel: "lobby" });
+  check("another account's connection_id is refused", foreign.isError && foreign.text.startsWith("CONNECTION_REQUIRED"), foreign);
+  const extraKey = await call(a, "cotal_roster", { connection_id: id1, owner: "someone" }).catch((e: unknown) => ({ isError: true, text: String(e) }));
+  check("an unmodelled argument is still refused", extraKey.isError, extraKey);
+
+  // ---- independent identities ----
+  const sent = await call(a, "cotal_send", { connection_id: id1, text: "hello-from-claude", channel: "lobby" });
+  check("a connection sends under its own identity", !sent.isError, sent);
+  for (let i = 0; i < 30 && !heard.includes("hello-from-claude"); i++) await sleep(100);
+  check("the send reached the mesh", heard.includes("hello-from-claude"), heard);
+  check("refused sends reached nothing", !heard.includes("from-unknown") && !heard.includes("from-foreign"), heard);
+
+  for (let i = 0; i < 30; i++) {
+    const roster = await call(a, "cotal_roster", { connection_id: id1 });
+    if (roster.text.includes("claude_2")) break;
+    await sleep(200);
+  }
+  const dm = await call(a, "cotal_dm", { connection_id: id1, to: "claude_2", text: "dm-for-the-second" });
+  check("one connection can message another by name", !dm.isError, dm);
+  let inbox2: CallResult = { text: "", isError: true };
+  for (let i = 0; i < 30; i++) {
+    inbox2 = await call(a, "cotal_inbox", { connection_id: id2, peek: true });
+    if (inbox2.text.includes("dm-for-the-second")) break;
+    await sleep(100);
+  }
+  check("the second connection received it", inbox2.text.includes("dm-for-the-second") && inbox2.text.includes("claude"), inbox2);
+  const inbox1 = await call(a, "cotal_inbox", { connection_id: id1, peek: true });
+  check("the sender's own inbox did not receive it", !inbox1.text.includes("dm-for-the-second"), inbox1);
+
+  const card = await call(a, "cotal_orientation", { connection_id: id2 });
+  check("orientation names this connection", card.text.includes("claude_2"), card.text.slice(0, 400));
+  check("orientation lists only offered tools", card.text.includes("cotal_inbox") && !card.text.includes("cotal_spawn") && !card.text.includes("cotal_reconnect"), card.text);
+
+  // ---- disconnect ----
+  const wrongOwner = await call(b, "cotal_disconnect", { connection_id: id2 });
+  check("another account cannot disconnect a connection", wrongOwner.isError && wrongOwner.text.startsWith("CONNECTION_REQUIRED"), wrongOwner);
+  const bye = await call(a, "cotal_disconnect", { connection_id: id1 });
+  check("disconnect closes that connection", !bye.isError && bye.text.includes(id1), bye);
+  const after = await call(a, "cotal_roster", { connection_id: id1 });
+  check("a closed connection_id is refused afterwards", after.isError && after.text.startsWith("CONNECTION_REQUIRED"), after);
+  const still = await call(a, "cotal_connection_status", { connection_id: id2 });
+  check("the other conversation's connection keeps working", !still.isError && still.text.includes("ready"), still);
+  const stillB = await call(b, "cotal_connection_status", { connection_id: idB });
+  check("the other account's connection keeps working", !stillB.isError && stillB.text.includes("ready"), stillB);
+
+  await Promise.all([a.close(), b.close(), anon.close()]);
+  console.log(`\nGATEWAY TESTS PASSED ✅  (${pass} checks)`);
+} finally {
+  for (const { conn } of live.values()) await conn.agent.stop().catch(() => {});
+  await observer.stop().catch(() => {});
+  await new Promise<void>((resolve) => http.close(() => resolve()));
+  await killAndAwaitExit(srv);
+  releaseBroker();
+}

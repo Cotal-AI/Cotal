@@ -16,5 +16,6 @@ export * from "./tool-specs.js";
 export * from "./orientation.js";
 export * from "./docs.js";
 export * from "./tools.js";
+export * from "./gateway.js";
 export * from "./control.js";
 export * from "./relay.js";

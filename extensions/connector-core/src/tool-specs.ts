@@ -635,8 +635,15 @@ export function channelMeta(i: InboxItem): Record<string, string> {
 
 /** The full Cotal tool set for a given config. Renderers iterate this; `source` names the
  *  hosting connector and is stamped onto outgoing feedback. An explicit env restricts feedback's
- *  Git lookup to its global config; omitted preserves process inheritance and repository lookup. */
-export function cotalToolSpecs(config: AgentConfig, source = "connector", env?: NodeJS.ProcessEnv): CotalToolSpec[] {
+ *  Git lookup to its global config; omitted preserves process inheritance and repository lookup.
+ *  `offered` limits the set to those names for a host that serves only part of the surface, and the
+ *  orientation card then lists only those. */
+export function cotalToolSpecs(
+  config: AgentConfig,
+  source = "connector",
+  env?: NodeJS.ProcessEnv,
+  offered?: ReadonlySet<string>,
+): CotalToolSpec[] {
   // Manager-op tools (cotal_spawn / cotal_persona / cotal_personas) ride the `spawn` capability — publish to the
   // privileged control subject. The AUTH layer is the real boundary: on an authed mesh an agent
   // without the capability is denied at the wire (nats-server); open mode mints no identity, so
@@ -668,7 +675,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector", env?: 
       run(agent) {
         // Reflect the SAME gated tool list the connector exposes (cotalToolSpecs already filters
         // spawn/persona by capability), so the card can't claim a tool the agent can't call.
-        const visible: OrientationTool[] = cotalToolSpecs(config, source).map((s) => ({
+        const visible: OrientationTool[] = cotalToolSpecs(config, source, env, offered).map((s) => ({
           name: s.name,
           title: s.title,
         }));
@@ -1783,5 +1790,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector", env?: 
   return specs
     .filter((spec) => canSpawn || (spec.name !== "cotal_spawn" && spec.name !== "cotal_persona" && spec.name !== "cotal_personas"))
     .filter((spec) => canRun || spec.name !== "cotal_run")
+    .filter((spec) => !offered || offered.has(spec.name))
     .map((spec) => ({ ...spec, schema: z.strictObject(spec.schema ?? {}) }));
 }
