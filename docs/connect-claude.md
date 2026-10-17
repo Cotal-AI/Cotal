@@ -363,6 +363,10 @@ A hand-driven user-mode session may carry the same decision as `COTAL_EVENTS_REQ
 publish grant must cover `events.<owner>.<actor>` or the connector refuses before joining. An unmanaged
 session with no launch material and no required-policy fallback keeps the generic default behavior.
 
+The agent's card carries `meta["ai.cotal.events"]`: `on` when the session arms its event plane and
+`off` when it does not. Like every card meta key it is advisory, so a viewer can tell an agent that
+publishes no events from one that has not started a turn. An agent file cannot set it.
+
 If the event plane stops, the seat keeps running and its mesh connection, on every connector and
 on every space. The connector log records `AG-UI emitter stopped` with the reason and the delay
 before it re-establishes the plane: at once after a failure, then every second while the plane

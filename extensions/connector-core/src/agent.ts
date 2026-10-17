@@ -39,7 +39,7 @@ import {
   type CotalMessage,
   type GoalResultFact,
 } from "@cotal-ai/core";
-import type { AgentConfig } from "./config.js";
+import { eventPlaneArmed, type AgentConfig } from "./config.js";
 import { attributionSafe } from "./framing.js";
 import { invokeUserManager } from "./manager-call.js";
 
@@ -71,6 +71,10 @@ export function isLocalServer(servers: string): boolean {
     .every((s) => /^(?:[a-z]+:\/\/)?(?:[^@/]*@)?(?:localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:\/|$)/i.test(s.trim()));
 }
 
+/** The card key that says whether this session arms its event plane. Namespaced, because SPEC §11
+ *  reserves bare meta keys to the spec. */
+export const EVENTS_META_KEY = "ai.cotal.events";
+
 /** The display-only `AgentCard.meta` for a session. Agent-file metadata is preserved, then
  *  connector-owned fields are overlaid so files cannot spoof the hosting harness. */
 function buildMeta(config: AgentConfig): Record<string, string> | undefined {
@@ -84,6 +88,9 @@ function buildMeta(config: AgentConfig): Record<string, string> | undefined {
   // answer — and, like `connector`, it is overlaid LAST so an agent file cannot declare a host it
   // is not on. Advisory display metadata, never an authorization or routing input.
   meta.host = hostname();
+  // Whether the session arms its event plane, from the predicate the emitting connectors branch on.
+  // Overlaid with the other connector-owned keys, so an agent file cannot declare it. Advisory.
+  meta[EVENTS_META_KEY] = eventPlaneArmed(config) ? "on" : "off";
   return Object.keys(meta).length ? meta : undefined;
 }
 
