@@ -58,12 +58,13 @@ export async function whoami(args: ParsedArgs): Promise<void> {
     } catch (e) {
       throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", `the login for ${t.space} could not be read: ${(e as Error).message}`, { target });
     }
-    const signedIn = st.login !== undefined && st.owner !== undefined;
+    const signedIn = st.login !== undefined;
+    const owner = signedIn ? st.owner ?? null : null;
     const grant = !signedIn ? null : st.grant === "not-granted" ? "not-granted" : st.grant ? "granted" : "not-local";
     const identity = {
       kind: "user" as const,
-      principal: signedIn ? `${st.owner}.${CLI_USER_ACTOR}` : null,
-      owner: signedIn ? st.owner! : null,
+      principal: owner === null ? null : `${owner}.${CLI_USER_ACTOR}`,
+      owner,
       actor: signedIn ? CLI_USER_ACTOR : null,
       subject: st.login?.sub ?? null,
       loginExpiresAt: st.login ? new Date(st.login.expiresAt * 1000).toISOString() : null,
@@ -99,7 +100,7 @@ const KIND_TEXT: Record<WhoamiResult["identity"]["kind"], string> = {
   open: "none: the broker authenticates nothing",
   "space-signer": "this machine's space signer; each command mints its own short-lived credential",
   "no-credential": "none: this machine holds no signer for the space",
-  user: "signed-in user",
+  user: "cached user login",
 };
 
 function whoamiView(r: WhoamiResult): Report {
@@ -107,15 +108,15 @@ function whoamiView(r: WhoamiResult): Report {
   const rows: (readonly [string, Cell])[] = [
     ["space", { text: r.space, tone: "selected" }],
     ["server", r.server],
-    ["identity", KIND_TEXT[id.kind]],
+    ["identity", id.kind === "user" && !id.subject ? "not signed in" : KIND_TEXT[id.kind]],
   ];
   if (id.kind === "user") {
-    rows.push(["principal", id.principal ?? { text: "not signed in", tone: "waiting" }]);
-    if (id.subject) rows.push(["login", `${id.subject}, expires ${id.loginExpiresAt}`]);
+    rows.push(["principal", id.principal ?? { text: id.subject ? "not known on this machine" : "not signed in", tone: "waiting" }]);
+    if (id.subject) rows.push(["login", `${id.subject}, cached expiry ${id.loginExpiresAt}`]);
   }
   rows.push(["read", grantText(r.read, "no channels")], ["post", grantText(r.post, "no channels")], ["dm history", r.dms === null ? { text: "unknown", tone: "waiting" } : r.dms ? "yes" : "no"], ["capabilities", grantText(r.capabilities, "none")]);
   const hints: Cell[] = [];
-  if (id.kind === "user" && !id.principal) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
+  if (id.kind === "user" && !id.subject) hints.push({ text: "sign in with `cotal login`", tone: "hint" });
   else if (id.grant === "not-granted") hints.push({ text: "the space's operator grants this identity with `cotal actor grant cli`", tone: "hint" });
   if (id.kind === "no-credential") hints.push({ text: "commands against this space need `--creds <file>`", tone: "hint" });
   return { sections: [{ blocks: [{ kind: "fields", rows }, ...(hints.length ? [{ kind: "lines" as const, lines: hints }] : [])] }] };

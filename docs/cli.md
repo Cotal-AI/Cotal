@@ -1389,8 +1389,8 @@ cotal whoami [--json | --plain] [--space <s>] [--server <url>]
 
 Reports the identity this CLI acts under in the selected space and what it may read, post and do.
 It reads the mesh registry, the login cache and, when it is on this machine, the user-auth grant
-ledger. It connects to nothing: a one-shot command has no session, so there is no unread count or
-connection state to report.
+ledger. It does not refresh the remote space catalog or contact the IdP. A one-shot command has no
+session, so there is no unread count or connection state to report.
 
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
@@ -1402,8 +1402,11 @@ connection state to report.
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
 cannot be read here: `read`, `post` and `capabilities` are `null`, the run is `partial` (exit 4) and
-the `GRANT_NOT_LOCAL` warning says so. `dms` says whether the identity may read DM history, which
-only the space signer can.
+the `GRANT_NOT_LOCAL` warning says so. A remote registration can hold a cached login without the
+secret that derives its owner and principal. Those fields stay `null`; the report calls the
+principal unknown on this machine, rather than calling the user signed out. The cached expiry is
+advisory and the command does not verify the login with the IdP. `dms` says whether the identity
+may read DM history, which only the space signer can.
 
 ## Endpoint control
 
