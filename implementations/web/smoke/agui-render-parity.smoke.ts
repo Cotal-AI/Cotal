@@ -42,6 +42,12 @@
  * the served routes and the dispatch through `parts.ts`. Parity of the text is not
  * delivery of the pixels, and the two failures look nothing alike.
  *
+ * ── THE FOLD, A THIRD READER ─────────────────────────────────────────────────────────────────────
+ * `client/src/lib/session.ts` folds the same events into session steps rather than lines. Its output
+ * is not text, so it is held to the node renderer by projection: both sides are reduced to one list
+ * of facts (said, tool, turn, end, error, unknown, reasoning) and compared, over every corpus entry
+ * that is a frame carrying events. What the projection leaves out on purpose is printed on every run.
+ *
  * Run: pnpm smoke:agui-render-parity
  */
 import assert from "node:assert/strict";
@@ -55,6 +61,8 @@ import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
 import { aguiFramePartRenderer, LINE_START_SAFE } from "../../../extensions/connector-core/dist/agui-render.js";
 import { renderAguiFrame } from "../client/src/lib/aguiFrame.js";
 import { partsToText } from "../client/src/lib/parts.js";
+import { foldSession, framesOf, type SessionStep } from "../client/src/lib/session.js";
+import type { CotalMessage } from "../client/src/api/types.js";
 
 let cells = 0;
 const ok = (name: string, cond: boolean, detail?: unknown) => {
@@ -245,6 +253,91 @@ ok("CONTROL: the divergence detector finds a real difference at the right offset
 ok("CONTROL: the divergence report carries NO content from either string",
   !JSON.stringify(d).includes("abc") && !JSON.stringify(d).includes("abd"), Object.keys(d));
 
+// ── THE FOLD AGAINST THE NODE RENDERER, BY PROJECTION ────────────────────────────────────────────
+// `foldSession` draws steps, not lines, so both sides are projected to one fact list, written once
+// here. A tool fact is the name up to its first "(", from the name's first line, on both sides: the
+// renderer prints `name(args)` and continues a multi-line name under `  · `, so that is all of the
+// name its first line holds.
+const toolFact = (nameAndRest: string) => `tool ${nameAndRest.split("\n")[0].split("(")[0]}`;
+
+/** The node renderer's output as facts. A render that is one bracketed line is a whole-part marker
+ *  (it drew nothing for the frame's events) and projects to no facts. */
+function factsFromLines(rendered: string): string[] {
+  const lines = rendered.split("\n");
+  if (lines.length === 1 && lines[0].startsWith("[")) return [];
+  const facts: string[] = [];
+  for (const l of lines) {
+    if (l.startsWith("» ")) facts.push(`said ${l.slice(2)}`);
+    else if (l.startsWith("⚙ ")) facts.push(toolFact(l.slice(2)));
+    else if (l.startsWith("◂ ")) facts.push("end");
+    else if (l.startsWith("✗ ")) facts.push("error");
+    else if (l.startsWith("▸ ")) facts.push("turn");
+    else if (l.startsWith("• unrecognised event") || l.startsWith("• custom")) facts.push("unknown");
+    else if (l.startsWith("(thinking) ")) facts.push("reasoning");
+    // A result line is the deliberate difference; a `  · ` line continues the fact before it.
+    else if (l.startsWith("  ↳ ") || l.startsWith("  · ")) continue;
+    // A prefix the projection does not know fails the comparison rather than vanishing from it.
+    else facts.push("unprojected");
+  }
+  return facts;
+}
+
+/** The fold's steps as facts. Prompt and said are both `» ` text to the renderer, a line per fact,
+ *  and a cut stream carries the renderer's trailing " …". */
+function factsFromSteps(steps: SessionStep[]): string[] {
+  const facts: string[] = [];
+  for (const s of steps) {
+    switch (s.kind) {
+      case "prompt":
+      case "said":
+        for (const l of (s.text + (s.cut ? " …" : "")).split("\n")) facts.push(`said ${l}`);
+        break;
+      case "tools":
+        for (const c of s.calls) facts.push(toolFact(c.full));
+        break;
+      case "turn": facts.push("turn"); break;
+      case "turnEnd": facts.push("end"); break;
+      case "runError": facts.push("error"); break;
+      case "unknown": facts.push("unknown"); break;
+      case "reasoning": facts.push("reasoning"); break;
+      case "post": facts.push("post"); break;
+    }
+  }
+  return facts;
+}
+
+/** A corpus part as the one message that carries it, folded with no posts. */
+const fold = (part: unknown, i: number): SessionStep[] =>
+  foldSession(framesOf({ id: `p${i}`, ts: 0, space: "s", from: { id: "x", name: "x" }, parts: [part], channel: "events.local.x" } as unknown as CotalMessage, false), []);
+
+const carriesEvents = (part: unknown) => {
+  const p = part as { kind?: unknown; events?: unknown };
+  return p.kind === AGUI_FRAME_KIND && Array.isArray(p.events) && p.events.length > 0;
+};
+const folded = CORPUS.map((c, i) => ({ ...c, i })).filter((c) => carriesEvents(c.part));
+const foldMismatches = folded.flatMap(({ name, part, i }) => {
+  const a = factsFromLines(node(part));
+  const b = factsFromSteps(fold(part, i));
+  if (a.length === b.length && a.every((f, k) => f === b[k])) return [];
+  let k = 0;
+  while (k < a.length && k < b.length && a[k] === b[k]) k++;
+  // Digest and position only, as every other cell here reports.
+  return [{ corpusIndex: i, corpusName: name, firstDifferingFact: k, nodeFacts: a.length, foldFacts: b.length,
+    nodeDigest: digest(a.join("\n")), foldDigest: digest(b.join("\n")) }];
+});
+ok("fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events",
+  foldMismatches.length === 0, foldMismatches);
+
+const foldFacts = folded.flatMap(({ part, i }) => factsFromSteps(fold(part, i)));
+const kinds = ["said", "tool", "turn", "end", "error", "unknown", "reasoning"];
+ok("CONTROL: the fold cell compared most of the corpus, and every fact kind, cut text included",
+  folded.length >= CORPUS.length - 3 && kinds.every((k) => foldFacts.some((f) => f === k || f.startsWith(`${k} `))) &&
+    foldFacts.some((f) => f.startsWith("said ") && f.endsWith(" …")),
+  { folded: folded.length, corpus: CORPUS.length });
+ok("CONTROL: the projection sees a dropped trailing ellipsis",
+  factsFromSteps([{ kind: "said", key: "k", text: "x", cut: true, live: false }]).join() !==
+    factsFromSteps([{ kind: "said", key: "k", text: "x", cut: false, live: false }]).join());
+
 // ── The line-start invariant, on the BROWSER's output ─────────────────────────────────────────────
 // The predicate is IMPORTED from the node renderer rather than restated, so both surfaces are held
 // to one definition of "safe" and a change to it cannot pass here while failing there. This matters
@@ -293,6 +386,19 @@ ok("every event type the emitter defines is exercised by the parity corpus",
 // to know what this does not cover is the one glancing at a green summary, and that reader never
 // opens the file.
 console.log(`
+── what the fold cell leaves out, deliberately ─────────────────────────────────
+  · Tool results (\`  ↳ \` lines) and tool arguments, on both sides. The event
+    plane drops them, so the fold draws neither; if one arrives it is not drawn.
+  · Where a call lands. The fold places a call where it starts and draws it once;
+    the renderer prints it where it ends, prints an END with no START as "?()",
+    and adds " …" to a call with no END. No corpus frame has another event
+    between a call's start and its end.
+  · Which text is a prompt. Both are \`» \` lines to the renderer.
+  · Labels. A turn, an end, an error, an unknown marker and reasoning compare as
+    the fact alone: the fold carries no run id, outcome, error message or code.
+  · The three entries that are not a frame carrying events. The renderer answers
+    each with one whole-part marker; the fold names each as an unknown step.
+
 ── what this suite does NOT establish ──────────────────────────────────────────
   · It compares TEXT. It does not open a browser, does not assert rendered DOM,
     and does not prove aguiFrame.ts is bundled or loaded. The web package's own

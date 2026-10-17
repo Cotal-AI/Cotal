@@ -1,0 +1,49 @@
+{
+  "command": "pnpm smoke:web-session",
+  "suite": [
+    "implementations/web/smoke/session.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "S1 a text item no longer ends a tool group, so a call after a paragraph joins the calls before it and the paragraph reads as if it came after both",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "    group = undefined;\n    steps.push({ ...s.item, live: s.live });",
+      "replace": "    if (s.item.kind !== \"said\") group = undefined;\n    steps.push({ ...s.item, live: s.live });",
+      "expectRed": "grouping: a turn by a prompt, a prompt, a said paragraph, two calls, text, one call and a turn end give turn(prompt) prompt said tools(2) said tools(1) turnEnd",
+      "cell": "grouping: a turn by a prompt, a prompt, a said paragraph, two calls, text, one call and a turn end give turn(prompt) prompt said tools(2) said tools(1) turnEnd"
+    },
+    {
+      "name": "S2 the inbox rule drops its at-least-two test, so one inbox read with a Bash call reads \"Checked the inbox 1 times\" and hides the Bash name",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "if (inbox >= 2 && calls.every(",
+      "replace": "if (calls.every(",
+      "expectRed": "Bash, cotal_inbox is \"2 tool calls\" with \"Bash, cotal_inbox\"",
+      "cell": "Bash, cotal_inbox is \"2 tool calls\" with \"Bash, cotal_inbox\""
+    },
+    {
+      "name": "S3 the tool name falls back on falsiness, so an empty toolCallName reads ? and the fold disagrees with both renderers on absent versus empty",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "const full = str(e.toolCallName) ?? \"?\";",
+      "replace": "const full = str(e.toolCallName) || \"?\";",
+      "expectRed": "tool name: an empty toolCallName is \"\", kept apart from an absent one",
+      "cell": "tool name: an empty toolCallName is \"\", kept apart from an absent one"
+    },
+    {
+      "name": "S4 posts are appended at the end instead of merged by time, so a post the agent made mid-turn shows after everything it did later",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "    while (next < ordered.length && s.at !== undefined && (ordered[next].at as number) < s.at) merged.push(ordered[next++]);\n",
+      "replace": "",
+      "expectRed": "post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not",
+      "cell": "post placement: a post at 10:58 between cotal_send at 10:58 and text at 10:59 lands between them and splits nothing it should not"
+    },
+    {
+      "name": "S5 a turn started by a message from the mesh is attributed to a prompt, which the wire never said",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  [\"channel\", \"mesh\"],",
+      "replace": "  [\"channel\", \"prompt\"],",
+      "expectRed": "turn source: a channel turn has source mesh",
+      "cell": "turn source: a channel turn has source mesh"
+    }
+  ]
+}
