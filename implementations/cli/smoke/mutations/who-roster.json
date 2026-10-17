@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/who-roster.smoke.ts"
   ],
-  "guard": "who lists agents with their presence metadata, hides infrastructure endpoints unless --all, keeps condition rows under --waiting, reports managed only from a manager's answer and a census it could not read as partial, refuses a roster it may not read, and whoami reports each grant state with a ledger elsewhere as partial",
+  "guard": "who lists agents with their presence metadata, hides infrastructure endpoints unless --all, keeps condition rows under --waiting, reports managed only from a manager's answer, a census it could not read as partial and a scoped answer as a label, refuses a roster it may not read, and whoami reports each grant state with a ledger elsewhere as partial",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-roster.json",
@@ -50,7 +50,7 @@
     {
       "name": "a census that could not be read is not a warning",
       "file": "implementations/cli/src/commands/who.ts",
-      "find": "      warnings.push({ code: \"MANAGERS_UNREAD\", target, message: `could not ask the managers which seats they run: ${failure.message}` });\n",
+      "find": "        warnings.push({ code: \"MANAGERS_UNREAD\", target, message: `could not ask the managers which seats they run: ${failure.message}` });\n",
       "replace": "\n",
       "expectRed": "a manager that does not answer makes who partial with exit 4",
       "cell": "a manager that does not answer makes who partial with exit 4",
@@ -108,6 +108,15 @@
       "replace": "? { ...base, identity: { kind: \"open\", ...none },",
       "expectRed": "whoami on a signer's mesh is one complete envelope naming the signer",
       "cell": "whoami on a signer's mesh is one complete envelope naming the signer",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a scoped census answer is counted as a part left unread",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "    labels.push({ code: \"MANAGED_SCOPE\", target: census.target,",
+      "replace": "    census.warnings.push({ code: \"MANAGED_SCOPE\", target: census.target,",
+      "expectRed": "that answer is a label, not a part left unread",
+      "cell": "that answer is a label, not a part left unread",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

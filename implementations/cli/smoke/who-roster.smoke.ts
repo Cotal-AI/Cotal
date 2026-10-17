@@ -203,11 +203,12 @@ try {
   const { judgeSeats } = await import("../src/commands/who.js");
   const seat = (uid: string) => ({ lifecycleUid: uid });
   const every = judgeSeats({ items: [seat("u1")], target: { space: "s", scope: "all-managers" }, warnings: [] });
-  check("every manager answered: a listed seat is managed and an unlisted one is not", every.managers === "complete" && every.runs(seat("u1")) === true && every.runs(seat("u2")) === false && every.runs({}) === false && every.warnings.length === 0, every.managers);
+  check("every manager answered: a listed seat is managed and an unlisted one is not", every.managers === "complete" && every.runs(seat("u1")) === true && every.runs(seat("u2")) === false && every.runs({}) === false && every.warnings.length === 0 && every.labels.length === 0, every.managers);
   const some = judgeSeats({ items: [seat("u1")], target: { space: "s", scope: "all-managers" }, warnings: [{ code: "MANAGER_SILENT", target: {}, message: "m" }], partial: { message: "p", remedy: "r" } });
   check("an incomplete census can only say a listed seat is managed", some.managers === "partial" && some.runs(seat("u1")) === true && some.runs(seat("u2")) === null && some.warnings.length === 1, some.warnings);
   const one = judgeSeats({ items: [seat("u1")], target: { space: "s", scope: "manager", managerInstanceId: "i" }, warnings: [] });
-  check("one manager's answer leaves other seats unknown and says so", one.managers === "partial" && one.runs(seat("u2")) === null && one.warnings.some((w) => w.code === "MANAGED_SCOPE"), one.warnings);
+  check("one manager's answer leaves other seats unknown and says so", one.managers === "partial" && one.runs(seat("u2")) === null && [...one.warnings, ...one.labels].some((w) => w.code === "MANAGED_SCOPE"), one);
+  check("that answer is a label, not a part left unread", one.warnings.length === 0 && one.labels.length === 1, one);
 }
 
 // ── whoami for each user-auth grant state, through a stub provider ────────────────────────────────
