@@ -64,10 +64,34 @@
     {
       "name": "a feed that falls behind is never ended, so a slow browser watching a busy agent buffers in this process without limit",
       "file": "implementations/web/src/web.ts",
-      "find": "  if (res.writableLength > ceiling) {",
+      "find": "  if (kind === \"live\" && res.writableLength > ceiling) {",
       "replace": "  if (false) {",
-      "expectRed": "6.2 a feed whose buffer passes the ceiling gets one overflow event with its reason, and is ended",
-      "cell": "6.2 a feed whose buffer passes the ceiling gets one overflow event with its reason, and is ended"
+      "expectRed": "6.2 a live event over a backlog past the ceiling is not written: the feed gets one overflow event with its reason, and is ended",
+      "cell": "6.2 a live event over a backlog past the ceiling is not written: the feed gets one overflow event with its reason, and is ended"
+    },
+    {
+      "name": "the ceiling is measured after the write, so one event larger than the ceiling on its own, such as one long chat message, ends every feed it reaches",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (kind === \"live\" && res.writableLength > ceiling) {\n    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;\n    res.write(`event: overflow\\ndata: ${JSON.stringify({ reason })}\\n\\n`);\n    res.end();\n    return;\n  }\n  res.write(`event: ${event}\\ndata: ${JSON.stringify(data)}\\n\\n`);",
+      "replace": "  res.write(`event: ${event}\\ndata: ${JSON.stringify(data)}\\n\\n`);\n  if (kind === \"live\" && res.writableLength > ceiling) {\n    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;\n    res.write(`event: overflow\\ndata: ${JSON.stringify({ reason })}\\n\\n`);\n    res.end();\n    return;\n  }",
+      "expectRed": "6.4 one live event larger than the ceiling, over an empty backlog, is written and the feed stays open",
+      "cell": "6.4 one live event larger than the ceiling, over an empty backlog, is written and the feed stays open"
+    },
+    {
+      "name": "the connect snapshots are held to the ceiling, so a mesh whose roster is larger than it ends every new feed straight after connect, in a reconnect loop",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (kind === \"live\" && res.writableLength > ceiling) {",
+      "replace": "  if (res.writableLength > ceiling) {",
+      "expectRed": "6.5 the connect snapshots are never held to the ceiling: a roster larger than it, and the state after it, are written and the feed stays open",
+      "cell": "6.5 the connect snapshots are never held to the ceiling: a roster larger than it, and the state after it, are written and the feed stays open"
+    },
+    {
+      "name": "the /feed route writes its roster as a live event, so on a big mesh the roster alone counts toward the ceiling",
+      "file": "implementations/web/src/web.ts",
+      "find": "      send(res, \"roster\", rosterSnapshot(), \"snapshot\");",
+      "replace": "      send(res, \"roster\", rosterSnapshot());",
+      "expectRed": "6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots",
+      "cell": "6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots"
     }
   ]
 }

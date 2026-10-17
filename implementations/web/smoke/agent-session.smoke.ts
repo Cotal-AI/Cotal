@@ -13,6 +13,8 @@
  *
  * Run: pnpm smoke:web-agent-session
  */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { chatSubject, spacePrefix, type CotalMessage } from "@cotal-ai/core";
 import {
   AgentEventsLate,
@@ -268,17 +270,49 @@ console.log("6. writeFeed");
     };
   };
   const res = stalled();
-  writeFeed(res, "agent-frame", { id: "local.abc" }, 100);
+  writeFeed(res, "agent-frame", { id: "local.abc" }, "live", 100);
   ok("6.1 under the ceiling an event is written as one SSE frame and the feed stays open",
     JSON.stringify(res.out.chunks) === JSON.stringify(['event: agent-frame\ndata: {"id":"local.abc"}\n\n']) && !res.out.ended, res.out);
-  writeFeed(res, "agent-frame", { id: "local.abc", pad: "x".repeat(100) }, 100);
+  // The backlog is now under the ceiling, so this event is written and leaves the feed past it.
+  writeFeed(res, "agent-frame", { id: "local.abc", pad: "x".repeat(100) }, "live", 100);
+  const behind = res.out.chunks.length === 2 && !res.out.ended && res.writableLength > 100;
+  writeFeed(res, "agent-frame", { id: "local.abc", n: 3 }, "live", 100);
   const last = res.out.chunks[res.out.chunks.length - 1] ?? "";
-  ok("6.2 a feed whose buffer passes the ceiling gets one overflow event with its reason, and is ended",
-    res.out.ended && res.out.chunks.length === 3 && last.startsWith("event: overflow\ndata: ")
+  ok("6.2 a live event over a backlog past the ceiling is not written: the feed gets one overflow event with its reason, and is ended",
+    behind && res.out.ended && res.out.chunks.length === 3 && last.startsWith("event: overflow\ndata: ")
       && typeof (JSON.parse(last.slice("event: overflow\ndata: ".length)) as { reason?: unknown }).reason === "string",
     res.out);
-  writeFeed(res, "message", { n: 1 }, 100);
-  ok("6.3 an ended feed takes nothing more", res.out.chunks.length === 3, res.out.chunks.length);
+  writeFeed(res, "message", { n: 1 }, "live", 100);
+  writeFeed(res, "roster", [], "snapshot", 100);
+  ok("6.3 an ended feed takes nothing more, live or snapshot", res.out.chunks.length === 3, res.out.chunks.length);
+
+  // One event larger than the ceiling on its own, such as one long chat message, over an empty backlog.
+  const big = stalled();
+  writeFeed(big, "message", { pad: "x".repeat(500) }, "live", 100);
+  ok("6.4 one live event larger than the ceiling, over an empty backlog, is written and the feed stays open",
+    big.out.chunks.length === 1 && big.out.chunks[0].startsWith("event: message\ndata: ") && !big.out.ended, big.out);
+
+  // A big mesh's roster on connect: larger than the ceiling, then more opening state behind it.
+  const opening = stalled();
+  writeFeed(opening, "hello", { feed: "f1" }, "snapshot", 100);
+  writeFeed(opening, "roster", [{ pad: "x".repeat(500) }], "snapshot", 100);
+  writeFeed(opening, "presence-view", { pad: "y".repeat(500) }, "snapshot", 100);
+  ok("6.5 the connect snapshots are never held to the ceiling: a roster larger than it, and the state after it, are written and the feed stays open",
+    JSON.stringify(opening.out.chunks.map((c) => c.slice(0, c.indexOf("\n")))) === JSON.stringify(["event: hello", "event: roster", "event: presence-view"])
+      && !opening.out.ended,
+    opening.out.chunks.map((c) => c.slice(0, 40)));
+}
+{
+  // The /feed route writes its opening state as snapshots and nothing else does. Read from the
+  // shipped source, since the route closes over a live endpoint and cannot be called here.
+  const source = readFileSync(fileURLToPath(new URL("../src/web.ts", import.meta.url)), "utf8");
+  const route = source.slice(source.indexOf('if (path === "/feed") {'), source.indexOf("if (path === READINESS_PATH)"));
+  const snapshots = [...route.matchAll(/send\(res, ([^,]+),[^;]*?, "snapshot"\)/g)].map((m) => m[1]);
+  ok("6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots",
+    JSON.stringify(snapshots) === JSON.stringify(['"hello"', '"roster"', '"presence-view"', '"membership"', "MEMBERSHIP_READ_FAILED"]),
+    snapshots);
+  ok("6.7 and no live write anywhere else is marked a snapshot",
+    (source.match(/"snapshot"\)/g) ?? []).length === 5, (source.match(/"snapshot"\)/g) ?? []).length);
 }
 
 console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells - failed} failed=${failed}`);

@@ -735,22 +735,37 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
  *  the browser's own reconnect opens a fresh one, watches again and reads the gap from history. */
 export const MAX_FEED_BUFFER_BYTES = 1_048_576;
 
-/** Writes one SSE event to a feed, and ends a feed whose unsent bytes have passed `ceiling` after
- *  telling it so with one `overflow` event `{ reason }`. A feed that has ended takes nothing more.
- *  Every event on every feed goes through here, so no route can buffer past the ceiling. */
+/** What a feed write is. A `live` event is traffic the feed may fall behind on, so it is held to the
+ *  ceiling. A `snapshot` is the state a feed is opened with (its hello, the roster, the presence view
+ *  and the membership seed), written once on connect: a mesh whose roster alone is larger than the
+ *  ceiling must still open, or every new feed would end at once and reconnect into the same end. */
+export type FeedWrite = "live" | "snapshot";
+
+/** Writes one SSE event to a feed. A feed that has ended takes nothing more.
+ *
+ *  A live event is checked against the backlog the feed already holds, measured BEFORE the write:
+ *  when more than `ceiling` bytes are still unsent, the feed is told so with one `overflow` event
+ *  `{ reason }` and ended, and the event is not written. Measuring after the write would end a feed
+ *  for one event larger than the ceiling on its own, such as a single long chat message, which would
+ *  disconnect every dashboard at once. So one large event over an empty backlog is written, and the
+ *  feed ends only when it is in fact behind. The bound is the ceiling plus one event.
+ *
+ *  Every event on every feed goes through here. Only the connect snapshots skip the check. */
 export function writeFeed(
   res: { readonly writableEnded: boolean; readonly writableLength: number; write(chunk: string): unknown; end(): unknown },
   event: string,
   data: unknown,
+  kind: FeedWrite = "live",
   ceiling: number = MAX_FEED_BUFFER_BYTES,
 ): void {
   if (res.writableEnded) return;
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  if (res.writableLength > ceiling) {
+  if (kind === "live" && res.writableLength > ceiling) {
     const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;
     res.write(`event: overflow\ndata: ${JSON.stringify({ reason })}\n\n`);
     res.end();
+    return;
   }
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 
 /** The most agents one feed may watch at once. A watch is a row in a map this process holds for as
@@ -1307,8 +1322,8 @@ export async function web(args: ParsedArgs): Promise<void> {
   }));
 
   const clients = new Set<ServerResponse>();
-  const send = (res: ServerResponse, event: string, data: unknown) =>
-    writeFeed(res, event, data);
+  const send = (res: ServerResponse, event: string, data: unknown, kind?: FeedWrite) =>
+    writeFeed(res, event, data, kind);
   const broadcast = (event: string, data: unknown) => {
     for (const res of clients) if (!res.writableEnded) send(res, event, data);
   };
@@ -1416,17 +1431,19 @@ export async function web(args: ParsedArgs): Promise<void> {
         connection: "keep-alive",
       });
       clients.add(res);
-      // The feed's id comes first, so a browser can watch an agent before the roster arrives.
+      // The feed's id comes first, so a browser can watch an agent before the roster arrives. These
+      // are the feed's opening state, written as snapshots: a big mesh's roster may be larger than the
+      // ceiling on its own, and holding it to the ceiling would end every new feed at once.
       const feed = randomUUID();
       feeds.set(feed, res);
-      send(res, "hello", { feed });
-      send(res, "roster", rosterSnapshot());
-      send(res, "presence-view", ep.presenceView());
+      send(res, "hello", { feed }, "snapshot");
+      send(res, "roster", rosterSnapshot(), "snapshot");
+      send(res, "presence-view", ep.presenceView(), "snapshot");
       // Seed this client's graph with the current membership snapshot (the live tap only carries
       // post-connect traffic; membership is state, so a fresh client needs it explicitly).
       void ep.readMembership()
-        .then((m) => { if (!res.writableEnded) send(res, "membership", m); })
-        .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
+        .then((m) => { if (!res.writableEnded) send(res, "membership", m, "snapshot"); })
+        .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }, "snapshot"); });
       // Both ends, because either can end a feed: the browser going away closes the request, and
       // an overflow ends the response while the socket may stay open. Forgetting twice is harmless.
       const forget = () => {
