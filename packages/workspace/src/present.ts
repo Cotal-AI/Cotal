@@ -62,7 +62,8 @@ export interface Report {
   readonly sections: readonly Section[];
 }
 
-/** `rich` colors when color is on and draws marks; `plain` writes no ANSI and no marks. */
+/** `rich` colors when color is on and draws marks; `plain` writes no ANSI and no marks, and draws
+ *  the report's own punctuation in ASCII. */
 export type Style = "rich" | "plain";
 
 /** Which presentation a run asked for: `--json`, `--plain`, or neither. */
@@ -85,16 +86,56 @@ export function displayWidth(text: string): number {
   return stringWidth(text);
 }
 
-const textOf = (cell: Cell): string => oneLine(typeof cell === "string" ? cell : cell.text);
+/** Punctuation as plain writes it, wherever it appears, so a plain report is ASCII apart from
+ *  other characters of the content itself, such as the letters of a name. */
+const PLAIN_PUNCTUATION: Readonly<Record<string, string>> = { "·": "-", "…": "...", "→": "->", "↳": "->", "—": "-", "–": "-" };
+
+const textOf = (cell: Cell, style: Style): string => {
+  const text = oneLine(typeof cell === "string" ? cell : cell.text);
+  return style === "plain" ? text.replace(/[·…→↳—–]/g, (glyph) => PLAIN_PUNCTUATION[glyph]!).replace(/§ ?/g, "section ") : text;
+};
 
 /** One cell as `style` draws it. The width it occupies is that of its escaped text, plus the mark
  *  and a space in rich style. */
 function draw(cell: Cell, style: Style): { shown: string; width: number } {
-  const text = textOf(cell);
+  const text = textOf(cell, style);
   if (typeof cell !== "string" && cell.mark && !cell.text.trim()) throw new Error(`internal error: the mark ${cell.mark} names no state in words`);
   if (typeof cell === "string" || style === "plain") return { shown: text, width: displayWidth(text) };
   const marked = cell.mark ? `${oneLine(cell.mark)} ${text}` : text;
   return { shown: cell.tone ? tones[cell.tone](marked) : marked, width: displayWidth(marked) };
+}
+
+/** `text` in lines of at most `width` display columns, broken at spaces, or only between the given
+ *  words. A word wider than `width` keeps a line of its own, so an identity, path or command is never
+ *  split. Below 20 columns, and when the output is not a terminal, nothing is wrapped. */
+export function wrapWords(text: string | readonly string[], width: number): string[] {
+  const words = typeof text === "string" ? text.split(" ") : text;
+  if (!(width >= 20) || displayWidth(words.join(" ")) <= width) return [words.join(" ")];
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    const next = line ? `${line} ${word}` : word;
+    if (line && displayWidth(next) > width) {
+      lines.push(line);
+      line = word;
+    } else line = next;
+  }
+  lines.push(line);
+  return lines;
+}
+
+/** A cell drawn in lines that fit `width` columns, each line toned on its own. A continuation line
+ *  starts under the first line's text, past its leading spaces and the mark, plus `hang` columns. */
+function drawWrapped(cell: Cell, style: Style, width: number, hang = 0): string[] {
+  const text = textOf(cell, style);
+  const lead = /^ */.exec(text)![0];
+  const markWidth = typeof cell !== "string" && cell.mark && style === "rich" ? displayWidth(oneLine(cell.mark)) + 1 : 0;
+  const [first = "", ...rest] = wrapWords(text.slice(lead.length), width - lead.length - markWidth - hang);
+  const piece = (words: string): Cell => (typeof cell === "string" ? words : { text: words, ...(cell.tone ? { tone: cell.tone } : {}) });
+  return [
+    draw(typeof cell === "string" ? lead + first : { ...cell, text: lead + first }, style).shown,
+    ...rest.map((words) => " ".repeat(lead.length + markWidth + hang) + draw(piece(words), style).shown),
+  ];
 }
 
 function drawPadded(cell: Cell, style: Style, width: number): string {
@@ -115,17 +156,31 @@ function renderTable(table: Table, style: Style, width: number, indent: string):
       (indent + cells.map((cell, i) => (i === cells.length - 1 ? draw(cell, style).shown : drawPadded(cell, style, widths[i]!))).join("  ")).replace(/ +$/, "");
     return [line(table.columns.map(label)), ...table.rows.map((row) => line(table.columns.map((column) => cellOf(row, column))))];
   }
-  // Too narrow for the columns: one labeled record per row, so nothing is clipped.
-  const records = table.rows.map((row) => renderFields({ kind: "fields", rows: table.columns.map((column) => [column.label, cellOf(row, column)]) }, style, indent));
+  // Too narrow for the columns: one labeled record per row, so nothing is clipped. Its labels read
+  // as the other reports' fields do, and a field the row leaves empty is left out.
+  const records = table.rows.map((row) =>
+    renderFields(
+      { kind: "fields", rows: table.columns.filter((column) => textOf(cellOf(row, column), "plain") !== "").map((column) => [column.label.toLowerCase(), cellOf(row, column)]) },
+      style,
+      indent,
+      width,
+    ),
+  );
   return records.flatMap((record, i) => (i === 0 ? record : ["", ...record]));
 }
 
-function renderFields(fields: Fields, style: Style, indent: string): string[] {
-  const pad = Math.max(0, ...fields.rows.map(([name]) => displayWidth(oneLine(name)) + 1));
-  return fields.rows.map(([name, value]) => `${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${draw(value, style).shown}`);
+/** Each value starts after its padded label; a value too long for the line continues under itself. */
+function renderFields(fields: Fields, style: Style, indent: string, width: number): string[] {
+  const pad = Math.max(0, ...fields.rows.map(([name]) => displayWidth(textOf(name, style)) + 1));
+  const start = indent.length + pad + 1;
+  return fields.rows.flatMap(([name, value]) => {
+    const [first, ...rest] = drawWrapped(value, style, width - start);
+    return [`${indent}${drawPadded({ text: `${name}:`, tone: "label" }, style, pad)} ${first}`, ...rest.map((line) => " ".repeat(start) + line)];
+  });
 }
 
-/** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal). */
+/** A report as lines of text, fitted to `width` columns (unbounded when output is not a terminal):
+ *  tables fit or become records, and long values and lines wrap at spaces. */
 export function renderReport(report: Report, style: Style, width = Number.POSITIVE_INFINITY): string {
   const out: string[] = [];
   for (const section of report.sections) {
@@ -134,11 +189,16 @@ export function renderReport(report: Report, style: Style, width = Number.POSITI
     if (section.title !== undefined) out.push(draw({ text: section.title, tone: "title" }, style).shown);
     for (const block of section.blocks) {
       if (block.kind === "table") out.push(...renderTable(block, style, width, indent));
-      else if (block.kind === "fields") out.push(...renderFields(block, style, indent));
-      else out.push(...block.lines.map((line) => indent + draw(line, style).shown));
+      else if (block.kind === "fields") out.push(...renderFields(block, style, indent, width));
+      else out.push(...block.lines.flatMap((line) => drawWrapped(line, style, width - indent.length).map((shown) => indent + shown)));
     }
   }
   return out.join("\n");
+}
+
+/** The columns a stream can show: its terminal's width, or unbounded when it is not a terminal. */
+export function terminalWidth(stream: { readonly isTTY?: boolean; readonly columns?: number }): number {
+  return stream.isTTY && stream.columns ? stream.columns : Number.POSITIVE_INFINITY;
 }
 
 /** The presentation `--json` and `--plain` ask for. Both at once is a usage error. */
@@ -182,12 +242,13 @@ export function writeResult<R>(
       ...(out.partial ? { error: { code: "OPERATION_PARTIAL" as const, message: out.partial.message, ...(out.partial.remedy === undefined ? {} : { remedy: out.partial.remedy }) } } : {}),
     });
   } else {
-    const width = process.stdout.isTTY ? process.stdout.columns : Number.POSITIVE_INFINITY;
-    console.log(renderReport(view(out.result), presentation, width));
-    for (const warning of out.warnings ?? []) console.error(draw({ text: `! ${warning.message}`, tone: "waiting" }, presentation).shown);
+    console.log(renderReport(view(out.result), presentation, terminalWidth(process.stdout)));
+    const errWidth = terminalWidth(process.stderr);
+    const say = (cell: Styled, hang: number) => { for (const line of drawWrapped(cell, presentation, errWidth, hang)) console.error(line); };
+    for (const warning of out.warnings ?? []) say({ text: `! ${warning.message}`, tone: "waiting" }, 2);
     if (out.partial) {
-      console.error(draw({ text: `✗ ${out.partial.message}`, tone: "failed" }, presentation).shown);
-      if (out.partial.remedy) console.error(draw({ text: `  ↳ ${out.partial.remedy}`, tone: "hint" }, presentation).shown);
+      say({ text: `${presentation === "plain" ? "!" : "✗"} ${out.partial.message}`, tone: "failed" }, 2);
+      if (out.partial.remedy) say({ text: `  ↳ ${out.partial.remedy}`, tone: "hint" }, 2);
     }
   }
   process.exitCode = exitCode(outcome, code);
