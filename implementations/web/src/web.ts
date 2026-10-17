@@ -613,11 +613,15 @@ function canonicalChannel(name: string): string {
   }
 }
 
-/** The `limit` out of the query. The safe-integer refusal is reachable only through the digits-only
- *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
- *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
- *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
- *  morning.
+/** The most messages one read may ask for. A route reads up to `limit` messages and holds them all
+ *  before it answers, so a limit with no ceiling lets one request make the server read a stream's
+ *  whole retained history. The dashboard asks for at most 500. */
+export const MAX_HISTORY_LIMIT = 2000;
+
+/** The `limit` out of the query. The ceiling refusal is reachable only through the digits-only test
+ *  above it, so its value cannot carry anything the quoter would escape today. It quotes anyway:
+ *  the guarantee that a refusal renders its input unambiguously should hold because the quoting site
+ *  holds it, not because a regex two lines up stays exactly as narrow as it is this morning.
  *
  *  THE LIMIT, PARSED ONCE, because three routes each re-deriving
  *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
@@ -633,7 +637,8 @@ function canonicalChannel(name: string): string {
  *    ?limit=2.5       silently truncated to 2.
  *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
  *
- *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
+ *  So the accepted form is the narrow one: a plain run of digits no larger than
+ *  {@link MAX_HISTORY_LIMIT}. `0` keeps
  *  meaning zero, which is what it already did and what a caller expects; an absent or empty
  *  parameter keeps meaning the route's own default, the one shape the old parse got right.
  *
@@ -645,9 +650,11 @@ export function historyLimit(query: URLSearchParams, fallback: number): number {
   if (raw === null || raw === "") return fallback;
   if (!/^[0-9]+$/.test(raw))
     throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);
+  // The ceiling also covers a run of digits too long for a double to count exactly: every such
+  // number is far above it.
   const n = Number(raw);
-  if (!Number.isSafeInteger(n))
-    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);
+  if (n > MAX_HISTORY_LIMIT)
+    throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);
   return n;
 }
 

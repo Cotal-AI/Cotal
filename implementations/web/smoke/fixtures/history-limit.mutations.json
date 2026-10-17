@@ -4,7 +4,7 @@
     {
       "name": "H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it",
       "file": "implementations/web/src/web.ts",
-      "find": "  const raw = query.get(\"limit\");\n  if (raw === null || raw === \"\") return fallback;\n  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);\n  const n = Number(raw);\n  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);\n  return n;",
+      "find": "  const raw = query.get(\"limit\");\n  if (raw === null || raw === \"\") return fallback;\n  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);\n  // The ceiling also covers a run of digits too long for a double to count exactly: every such\n  // number is far above it.\n  const n = Number(raw);\n  if (n > MAX_HISTORY_LIMIT)\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);\n  return n;",
       "replace": "  const raw = query.get(\"limit\");\n  return raw ? Number(raw) : fallback;",
       "expectRed": "1.1 ?limit=\"abc\" is refused by ALL THREE routes, and every one of them ANSWERS",
       "cell": "1.1 ?limit=\"abc\" is refused by ALL THREE routes, and every one of them ANSWERS"
@@ -50,10 +50,10 @@
       "cell": "3.3 and the refusal NAMES the channel and the deadline it exceeded, not just a status"
     },
     {
-      "name": "H10 the safe-integer check is dropped, so a run of digits too large for a double to count exactly is accepted and silently becomes a different number than the caller wrote",
+      "name": "H10 the ceiling check is dropped, so a run of digits too large for a double to count exactly is accepted and silently becomes a different number than the caller wrote",
       "file": "implementations/web/src/web.ts",
-      "find": "  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);",
-      "replace": "  if (false)\n    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);",
+      "find": "  if (n > MAX_HISTORY_LIMIT)\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);",
+      "replace": "  if (false)\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);",
       "expectRed": "1.1 ?limit=\"99999999999999999999\" is refused by ALL THREE routes, and every one of them ANSWERS",
       "cell": "1.1 ?limit=\"99999999999999999999\" is refused by ALL THREE routes, and every one of them ANSWERS"
     },
@@ -64,10 +64,59 @@
       "replace": "  return canonicalChannel(decodeURIComponent(raw));",
       "expectRed": "1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500",
       "cell": "1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500"
+    },
+    {
+      "name": "H12 the ceiling slips one past the number it names, so a request for 2001 messages is read rather than refused",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (n > MAX_HISTORY_LIMIT)\n",
+      "replace": "  if (n > MAX_HISTORY_LIMIT + 1)\n",
+      "expectRed": "1.11 a limit one above the ceiling (2001) is refused by ALL THREE routes",
+      "cell": "1.11 a limit one above the ceiling (2001) is refused by ALL THREE routes"
+    },
+    {
+      "name": "H13 the ceiling refuses the number it names, so a caller who asks for exactly the most the server reads is told no",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (n > MAX_HISTORY_LIMIT)\n",
+      "replace": "  if (n >= MAX_HISTORY_LIMIT)\n",
+      "expectRed": "1.12 a limit AT the ceiling (2000) is still read by all three routes",
+      "cell": "1.12 a limit AT the ceiling (2000) is still read by all three routes"
+    },
+    {
+      "name": "H14 the ceiling refusal stops naming the ceiling, so a caller learns the limit was too large but not what it may ask for",
+      "file": "implementations/web/src/web.ts",
+      "find": "is above the most this server reads at once, ${MAX_HISTORY_LIMIT} messages`);",
+      "replace": "is too large`);",
+      "expectRed": "1.13 the refusal names the ceiling and the value it received, quoted",
+      "cell": "1.13 the refusal names the ceiling and the value it received, quoted"
+    },
+    {
+      "name": "H15 the ceiling refusal writes the received value raw, so a caller cannot tell where the value it sent begins and ends",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BadRequest(`limit ${quoteForOperator(raw)} is above the most",
+      "replace": "    throw new BadRequest(`limit ${raw} is above the most",
+      "expectRed": "1.13 the refusal names the ceiling and the value it received, quoted",
+      "cell": "1.13 the refusal names the ceiling and the value it received, quoted"
+    },
+    {
+      "name": "H16 the dashboard DM window grows past the server ceiling, so every DM read the page makes is refused",
+      "file": "implementations/web/client/src/lib/dms.ts",
+      "find": "export const DM_WINDOW = 500;",
+      "replace": "export const DM_WINDOW = 5000;",
+      "expectRed": "4.1 the activity, DM and channel reads each ask for a limit, and none above the ceiling",
+      "cell": "4.1 the activity, DM and channel reads each ask for a limit, and none above the ceiling"
+    },
+    {
+      "name": "H17 a channel open asks for more history than the server ceiling, so the open channel never loads",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "(await api.history(key, 200))",
+      "replace": "(await api.history(key, 2400))",
+      "expectRed": "4.1 the activity, DM and channel reads each ask for a limit, and none above the ceiling",
+      "cell": "4.1 the activity, DM and channel reads each ask for a limit, and none above the ceiling"
     }
   ],
   "progressPattern": "^[0-9]\\. ",
   "suite": [
-    "implementations/web/smoke/history-limit.smoke.ts"
+    "implementations/web/smoke/history-limit.smoke.ts",
+    "implementations/web/smoke/controller-harness.ts"
   ]
 }

@@ -31,6 +31,11 @@
  * THE CELLS RUN AGAINST A REAL BROKER AND THE REAL SERVER. A hand-built request object would prove
  * a helper returns what it returns; it would not prove the routes agree, which is the whole defect.
  *
+ * THE LIMIT HAS A CEILING. A route holds every message it read before it answers, so a whole
+ * number with no upper bound still let one request read a stream's whole retained history. Above
+ * `MAX_HISTORY_LIMIT` every route refuses, naming the ceiling and the value, and §4 pins that the
+ * dashboard itself never asks for more.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-history-limit
  */
 import { spawn } from "node:child_process";
@@ -41,7 +46,9 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, isReachable, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
 import { PortInUseError, SMOKE_BROKER_TOKEN, freePort, onFreePort, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { AGGREGATION_DEADLINE_MS } from "../src/web.js";
+import { AGGREGATION_DEADLINE_MS, MAX_HISTORY_LIMIT } from "../src/web.js";
+import type { CotalMessage } from "../client/src/api/types.js";
+import { bootReads, harness, page } from "./controller-harness.js";
 
 let cells = 0, failed = 0;
 const ok = (name: string, cond: boolean, detail?: unknown): void => {
@@ -188,6 +195,19 @@ try {
   ok("1.10 a well formed name for a channel with nothing in it still READS, it is not refused",
     absentChan?.status === 200, { status: absentChan?.status });
 
+  // THE CEILING. One above it is refused on every route, and the ceiling itself is still a read,
+  // so the bound is the number it names and not one off it.
+  const over = String(MAX_HISTORY_LIMIT + 1);
+  const above = await Promise.all(ROUTES.map((r) => get(`${F}${r}?limit=${over}`, CEILING_MS, fast.cookie)));
+  ok(`1.11 a limit one above the ceiling (${over}) is refused by ALL THREE routes`,
+    above.every((a) => a !== null && a.status === 400), above.map((a) => a?.status ?? "no answer"));
+  const atCeiling = await Promise.all(ROUTES.map((r) => get(`${F}${r}?limit=${MAX_HISTORY_LIMIT}`, CEILING_MS, fast.cookie)));
+  ok(`1.12 a limit AT the ceiling (${MAX_HISTORY_LIMIT}) is still read by all three routes`,
+    atCeiling.every((a) => a !== null && a.status === 200), atCeiling.map((a) => a?.status ?? "no answer"));
+  const errorOf = (a: Answer): string => { try { return String(JSON.parse(a?.body ?? "").error ?? ""); } catch { return ""; } };
+  ok("1.13 the refusal names the ceiling and the value it received, quoted",
+    above.every((a) => errorOf(a).includes(`limit "${over}"`) && errorOf(a).includes(`${MAX_HISTORY_LIMIT} messages`)), errorOf(above[0]));
+
   // The core guard that protects every OTHER caller is graded in `smoke:core-history-limit`.
   // It cannot be graded here: the routes above refuse a malformed limit before it can reach
   // core, and this package resolves core through `dist`, where a mutation of core's source has
@@ -226,6 +246,23 @@ try {
   const fastRead = await get(`${F}/api/channels/ch0/history?limit=${PER}`, CEILING_MS, fast.cookie);
   ok("3.4 control: the identical read with no link cost returns the full page, so 3.3 is the link",
     fastRead?.status === 200 && len(fastRead) === PER, { status: fastRead?.status, n: len(fastRead) });
+
+  // ── 4. THE DASHBOARD NEVER ASKS FOR MORE THAN THE CEILING ────────────────────────────────────
+  console.log("4. every read the dashboard makes asks for no more than the ceiling");
+  // The controller is driven over a fake Api that records each limit, through a bootstrap and a
+  // channel open, which between them make every read that takes one.
+  const asked: Record<string, number[]> = { activity: [], dms: [], history: [] };
+  const h = harness({
+    ...bootReads,
+    activity: async (n) => (asked.activity.push(n), page()),
+    dms: async (n) => (asked.dms.push(n), [] as CotalMessage[]),
+    history: async (_c, n) => (asked.history.push(n), [] as CotalMessage[]),
+  });
+  await h.ctl.refresh();
+  await h.ctl.open("ch0");
+  const limits = Object.values(asked).flat();
+  ok("4.1 the activity, DM and channel reads each ask for a limit, and none above the ceiling",
+    Object.values(asked).every((l) => l.length > 0) && limits.every((n) => Number.isInteger(n) && n > 0 && n <= MAX_HISTORY_LIMIT), { asked, ceiling: MAX_HISTORY_LIMIT });
 } finally {
   fastWeb?.kill("SIGKILL"); slowWeb?.kill("SIGKILL");
   link?.close(); release(); broker.kill("SIGKILL");
