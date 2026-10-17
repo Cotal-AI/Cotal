@@ -23,7 +23,7 @@ const CONFIRM_CALL = { timeoutMs: 1_000 };
 /**
  * Spawns each agent into its own new tmux window in a shared per-space session, so
  * spawned teammates get room rather than crowding the spawner. Opened unfocused so the
- * human stays in their current window; switch to `session:name` to watch the worker.
+ * human stays in their current window; select the seat's pane to watch the worker.
  * Like cmux, you watch natively, so `attach()` throws — but teardown is real: the window
  * target is kept so it can be driven and closed.
  */
@@ -121,10 +121,12 @@ export class TmuxRuntime implements Runtime {
       interrupt: () => {
         tmux.sendKey("C-c", windowId);
       },
+      // A pane id as a window target selects whichever window holds the pane now; the spawn window
+      // and its name go stale when the pane moves or the window is renamed.
       attach: () => {
         throw new Error(
           `tmux runtime: attach natively — \`tmux attach-session -t ${this.session}\`, then ` +
-            `\`tmux select-window -t ${windowId}\` (window "${name}")`,
+            `\`tmux select-window -t ${paneId}\``,
         );
       },
     };
