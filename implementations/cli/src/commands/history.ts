@@ -399,8 +399,16 @@ function where(item: HistoryItem): string {
   return item.channel !== null ? `#${item.channel}` : `DM to ${item.to ?? "?"}`;
 }
 
+/** A message's time as a person reads it: the local time of day, with the local date when it is not
+ *  today. The JSON document keeps the ISO time. */
+function shownTime(iso: string, now = new Date()): string {
+  const at = new Date(iso);
+  const time = at.toLocaleTimeString();
+  return at.toDateString() === now.toDateString() ? time : `${at.toLocaleDateString()} ${time}`;
+}
+
 function itemLine(item: HistoryItem): Cell {
-  return `${item.ts}  ${where(item)}  ${item.from.name}: ${item.text}`;
+  return `${shownTime(item.ts)}  ${where(item)}  ${item.from.name}: ${item.text}`;
 }
 
 function historyView(r: HistoryResult, space: string): Report {
@@ -428,7 +436,7 @@ function historyView(r: HistoryResult, space: string): Report {
             ? [{
                 kind: "table" as const,
                 columns: [{ key: "ts", label: "TIME" }, { key: "where", label: "WHERE" }, { key: "from", label: "FROM" }, { key: "text", label: "MESSAGE" }],
-                rows: r.items.map((item) => ({ ts: item.ts, where: where(item), from: item.from.name, text: item.text })),
+                rows: r.items.map((item) => ({ ts: shownTime(item.ts), where: where(item), from: item.from.name, text: item.text })),
               }]
             : []),
           { kind: "lines" as const, lines: notes },
