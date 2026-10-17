@@ -1,4 +1,15 @@
-export { MAX_SOCKET_PATH, PROTOCOL_VERSION, UNATTENDED_MS, assertSocketPathFits, unattendedMs, unsupportedTransport } from "./protocol.js";
+export {
+  DEFAULT_COLS,
+  DEFAULT_ROWS,
+  GRACE_MS,
+  MAX_SOCKET_PATH,
+  PROTOCOL_VERSION,
+  SCROLLBACK_ROWS,
+  UNATTENDED_MS,
+  assertSocketPathFits,
+  unattendedMs,
+  unsupportedTransport,
+} from "./protocol.js";
 export { launchSeat, loadSeat, RUN_MARKER_FLAG, runMarker, runMarkerOf, type LaunchSeatOpts, type SeatLaunchSpec } from "./launcher.js";
 export { adoptSeat, adoptSeatSync, type SeatHandle, type SeatAttachSession } from "./handle.js";
 export { assertSeatId, bootToken, processStartToken, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "./record.js";
