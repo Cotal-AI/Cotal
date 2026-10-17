@@ -1388,8 +1388,8 @@ cotal whoami [--json | --plain] [--space <s>] [--server <url>]
 
 Reports the identity this CLI acts under in the selected space and what it may read, post and do.
 It reads the mesh registry, the login cache and, when it is on this machine, the user-auth grant
-ledger. It connects to nothing: a one-shot command has no session, so there is no unread count or
-connection state to report.
+ledger. It does not refresh the remote space catalog or contact the IdP. A one-shot command has no
+session, so there is no unread count or connection state to report.
 
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|

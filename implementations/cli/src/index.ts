@@ -516,6 +516,7 @@ const baseCommands: Command[] = [
     summary: "the identity this CLI acts under in the selected space, and what it may read, post and do",
     usage: "cotal whoami [--json|--plain] [--space <s>] [--server <url>]",
     flags: whoamiFlags,
+    prepareMeshTarget: false,
     outputs: ["json", "plain"],
     examples: ["cotal whoami", "cotal whoami --json"],
     run: whoami,

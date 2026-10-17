@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   CotalEndpoint,
   createSpaceAuth,
@@ -260,7 +262,10 @@ try {
   mkdirSync(join(remoteRoot, ".cotal"), { recursive: true });
   const remoteEnv = { ...cleanEnv, HOME: remoteHome, USERPROFILE: remoteHome, TMPDIR: remoteHome, COTAL_HOME: join(remoteHome, ".cotal"), XDG_CONFIG_HOME: join(remoteHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
   const remoteSpace = "remote-whoami";
-  const idpUrl = "http://127.0.0.1:1/auth";
+  let idpRequests = 0;
+  const idp = createServer((_req, res) => { idpRequests++; res.writeHead(503); res.end("offline fixture"); });
+  await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
+  const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
   const priorHome = process.env.COTAL_HOME;
   process.env.COTAL_HOME = remoteEnv.COTAL_HOME;
   // Import after the stub cells above: this registers the native provider only in this parent;
@@ -281,9 +286,11 @@ try {
     const human = await read("--plain");
     check("a cached remote login with no locally derivable principal is not called signed out", human.code === 4 && /identity:\s+cached user login/.test(human.stdout) && /principal:\s+not known on this machine/.test(human.stdout) && !/not signed in|sign in with `cotal login`/.test(human.stdout), human);
     check("the remote reports never print the cached login token", ![signed.stdout, signed.stderr, human.stdout, human.stderr].some((text) => text.includes(fixtureToken)), {});
+    check("whoami stays offline with a cached login and an uncached catalog", idpRequests === 0, { idpRequests });
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
     else process.env.COTAL_HOME = priorHome;
+    await new Promise<void>((resolve) => idp.close(() => resolve()));
     release();
   }
 }

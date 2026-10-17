@@ -155,6 +155,15 @@
       "expectRed": "a cached remote login with no locally derivable principal is not called signed out",
       "cell": "a cached remote login with no locally derivable principal is not called signed out",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "whoami refreshes a remote catalog before its offline read",
+      "file": "implementations/cli/src/index.ts",
+      "find": "    flags: whoamiFlags,\n    prepareMeshTarget: false,\n",
+      "replace": "    flags: whoamiFlags,\n",
+      "expectRed": "whoami stays offline with a cached login and an uncached catalog",
+      "cell": "whoami stays offline with a cached login and an uncached catalog",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
