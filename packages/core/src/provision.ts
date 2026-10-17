@@ -1910,7 +1910,8 @@ function channelPurgerPermissions(space: string, pr: MintPrincipal): Record<stri
 /** TEARDOWN — `cotal down -f` space teardown. The SOLE cred that keeps `STREAM.DELETE` (the
  *  tamper verb). `down -f` is multi-step: `connectProbe` (presence-watch + channel-registry read)
  *  → invoke the manager's `ps` + any-mode `despawn` over the ep rails to politely stop the managed
- *  agents → `deleteChannels`
+ *  agents → `readMembership` (the membership-feed read that keeps an owned channel another member
+ *  still uses) → `deleteChannels`
  *  (channel-registry key delete + CHAT purge) → `deleteSpace` (STREAM.DELETE every owned stream/bucket).
  *  So it reads state, CALLS admin control, deletes channels, and deletes streams — but NEVER reads a
  *  DM/DLV body, posts chat, or forges. Isolated here so no standing operator/provisioner/supervisor cred
@@ -1923,6 +1924,7 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
   const ep = instrumentEpRows(space, pr, "admin");
   const CHAT = chatStream(space);
   const PKV = `KV_${presenceBucket(space)}`, CHKV = `KV_${channelBucket(space)}`;
+  const MSHIP = `KV_${membershipBucket(space)}`;
   // deleteSpace() deletes EVERY stream + KV bucket setup creates; each needs INFO (jsm existence)
   // + DELETE. This is the ONLY cred that
   // holds STREAM.DELETE. This list and deleteSpace()'s own array must agree:
@@ -1930,7 +1932,7 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
   const del = [
     CHAT, dmStream(space), taskStream(space), inboxStream(space), dlvStream(space),
     PKV, CHKV, `KV_${membersBucket(space)}`, `KV_${aclBucket(space)}`,
-    `KV_${membershipBucket(space)}`, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
+    MSHIP, `KV_${deliveryBucket(space)}`, `KV_${managerBucket(space)}`,
     ...endpointPlaneStreamNames(space),
     objectStoreStream(artifactBucket(space)),
     ...transferStreams.map((name) => {
@@ -1952,6 +1954,10 @@ function teardownPermissions(space: string, pr: MintPrincipal, transferStreams: 
         `$JS.API.DIRECT.GET.${CHKV}.>`,
         `$JS.API.CONSUMER.CREATE.${CHKV}.>`,
         `$JS.API.CONSUMER.INFO.${CHKV}.>`,
+        // readMembership's one-pass scan of the feed (its STREAM.INFO is in `del`). No `$KV` publish:
+        // only `membership-rw` writes the feed.
+        `$JS.API.CONSUMER.CREATE.${MSHIP}.>`,
+        `$JS.API.CONSUMER.INFO.${MSHIP}.>`,
         "$JS.FC.>", // ordered-consumer flow control
         // Stop the managed agents over the v0.4 ep rails only (ps + any-mode despawn) — the admin
         // instrument set. The manager `ctl` rail is deleted.

@@ -709,10 +709,12 @@ KV buckets are also streams and are pre-created:
 `durable` memberships (the members registry), each value `{ live: string[], durable: string[],
 observedAt }` with `live` keeping subscription patterns (wildcards) the consumer expands at read time.
 It exists so an observer can show silent readers and `live`-channel membership without a broker-admin
-credential in the dashboard tier; it is written by a scoped privileged daemon and read by the
-admin/observer profile only. It is **DISPLAY-ONLY and broker-derived**: it MUST NOT be an input to any
-delivery, ACL, or authorization decision (authority for those stays the broker's `sub.allow` and the
-members registry), and it is not part of the normative wire contract a client must implement.
+credential in the dashboard tier; it is written by a scoped privileged daemon and read only by the
+admin/observer profile and by the `deployer` and `teardown` operator credentials, which check a
+manifest's channels for other members. It is **DISPLAY-ONLY and broker-derived**: it MUST NOT be an
+input to any delivery, ACL, or authorization decision (authority for those stays the broker's
+`sub.allow` and the members registry), and it is not part of the normative wire contract a client
+must implement.
 
 ---
 
