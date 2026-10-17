@@ -12,12 +12,12 @@ import { createHash } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { marked } from 'marked';
-import { parse, postprocess, preprocess } from 'micromark';
 import { gfm } from 'micromark-extension-gfm';
 import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
+import { isRepoRelative, URL_ATTRS, SRCSET_CANDIDATE, urlInput, parseMarkdown } from './links.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -154,19 +154,6 @@ function rewriteTarget(target, rel) {
   return url.href;
 }
 
-// Absolute URLs, site-root paths and same-page anchors already resolve on the site.
-const isRepoRelative = (target) =>
-  !/^[a-z][a-z0-9+.-]*:/i.test(target) && !target.startsWith('/') && !target.startsWith('#');
-
-// The attributes through which an HTML or JSX tag names a URL. A srcset lists candidates, each a
-// URL (a run of non-whitespace, less the commas that end it) and descriptors up to the next comma.
-const URL_ATTRS = new Set(['href', 'src', 'srcset']);
-const SRCSET_CANDIDATE = /([\t\n\f\r ,]*)([^\t\n\f\r ]+)(?<!,)([^,]*)/g;
-
-// The URL parser's first steps: it drops leading and trailing C0 controls and spaces and every
-// tab and newline, so a value is classified by the URL the browser resolves.
-const urlInput = (value) => value.replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '').replace(/[\t\n\r]/g, '');
-
 function rewriteAttr(name, value, rel) {
   const rewrite = (url) => {
     const target = urlInput(url);
@@ -201,14 +188,8 @@ function* htmlEdits(node, offset, rel) {
 // are decoded and the result is percent-encoded as the renderer encodes it, so URL parsing
 // neither strips whitespace nor reads a backslash as a path separator. The rewritten one is
 // escaped so it parses back to the same address.
-function rewriteLinks(md, rel, extensions) {
-  // micromark skips one leading BOM and counts offsets from after it, so none may remain.
-  md = md.replace(/^\uFEFF+/, '');
-  const events = postprocess(parse({ extensions }).document().write(preprocess()(md, undefined, true)));
-  // A blockquote opens each line of the HTML in it with a `>` the browser never sees.
-  const html = md.split('');
-  for (const [kind, { type, start, end }] of events)
-    if (kind === 'enter' && type === 'blockQuotePrefix') html.fill(' ', start.offset, end.offset);
+function rewriteLinks(source, rel, extensions) {
+  const { md, events, html } = parseMarkdown(source, extensions);
   // Keyed by where each starts: parse5 rebuilds a misnested formatting element as a copy that
   // carries the same source attributes, and a source attribute is rewritten once.
   const edits = new Map();
@@ -221,7 +202,7 @@ function rewriteLinks(md, rel, extensions) {
       if (!isRepoRelative(target)) continue;
       edits.set(start.offset, [end.offset, rewriteTarget(target, rel).replace(/[&()]/g, '\\$&')]);
     } else if (type === 'htmlFlow' || type === 'htmlText') {
-      const fragment = parseFragment(html.slice(start.offset, end.offset).join(''), { sourceCodeLocationInfo: true });
+      const fragment = parseFragment(html.slice(start.offset, end.offset), { sourceCodeLocationInfo: true });
       for (const [from, to, text] of htmlEdits(fragment, start.offset, rel)) edits.set(from, [to, text]);
     } else if (type === 'mdxJsxFlowTagAttributeNamePrimary' || type === 'mdxJsxTextTagAttributeNamePrimary') {
       attr = context.sliceSerialize(token).toLowerCase();

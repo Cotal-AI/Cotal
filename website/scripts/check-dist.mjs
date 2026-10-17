@@ -1,13 +1,18 @@
 // Post-build sanity checks — fail the build when a generated artifact regresses.
 //  1. llms.txt must keep its task-router links (an unlinked llms.txt routes nothing).
-//  2. No published page, Markdown twin, or llms set may ship a repo-relative link
-//     that only resolves on GitHub (they render 404 on the site).
+//  2. No published page, Markdown twin, or llms set may ship a link relative to its
+//     own page: one naming a repo path only resolves on GitHub (it renders 404 on the site).
 //  3. The agent-readiness surface (robots.txt, the agent-skills index) must keep
 //     its directives, and every skill digest must match the artifact it points at.
 import { readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gfm } from 'micromark-extension-gfm';
+import { decodeString } from 'micromark-util-decode-string';
+import { normalizeUri } from 'micromark-util-sanitize-uri';
+import { parse, parseFragment } from 'parse5';
+import { isRepoRelative, URL_ATTRS, SRCSET_CANDIDATE, urlInput, parseMarkdown } from './links.mjs';
 
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', 'dist');
 const fail = (msg) => {
@@ -76,7 +81,37 @@ for (const cmd of ['npx cotal-ai setup --yes', 'npx cotal-ai up --detach']) {
   if (!setupSkill.includes(cmd)) fail(`cotal-setup skill lost its command: ${cmd}`);
 }
 
-const BAD = /(?:(?:href|src|srcset)="|\]\()(?:\.\.\/|docs\/|spec\/|packages\/|extensions\/|implementations\/|examples\/)/;
+// A link that resolves against its page's own path names a repo file and renders 404 on the site.
+// Targets are read from parsed links, never from text, so a code sample that shows a link passes:
+// each page as HTML, and the Markdown twins and llms sets as the sync parses Markdown.
+const relativeTarget = (name, value) =>
+  (name === 'srcset' ? [...value.matchAll(SRCSET_CANDIDATE)].map((c) => c[2]) : [value])
+    .map(urlInput)
+    .find(isRepoRelative);
+
+function* htmlTargets(node) {
+  for (const { name, value } of node.attrs ?? []) {
+    const target = URL_ATTRS.has(name) ? relativeTarget(name, value) : undefined;
+    if (target !== undefined) yield `${name}="${target}"`;
+  }
+  // A template holds its children in a separate content fragment, which the page ships too.
+  for (const child of (node.content ?? node).childNodes ?? []) yield* htmlTargets(child);
+}
+
+function* markdownTargets(text) {
+  const { events, html } = parseMarkdown(text, [gfm()]);
+  for (const [kind, token, context] of events) {
+    const { type, start, end } = token;
+    if (kind !== 'enter') continue;
+    if (type === 'resourceDestinationString' || type === 'definitionDestinationString') {
+      const target = normalizeUri(decodeString(context.sliceSerialize(token)));
+      if (isRepoRelative(target)) yield `](${target}`;
+    } else if (type === 'htmlFlow' || type === 'htmlText') {
+      yield* htmlTargets(parseFragment(html.slice(start.offset, end.offset)));
+    }
+  }
+}
+
 function scan(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, entry.name);
@@ -84,9 +119,11 @@ function scan(dir) {
       if (entry.name !== '_astro' && entry.name !== 'pagefind') scan(p);
       continue;
     }
-    if (!/\.(html|md|txt)$/.test(entry.name)) continue;
-    const hit = readFileSync(p, 'utf8').match(BAD);
-    if (hit) fail(`repo-relative link leaked into ${p}: ${hit[0]}`);
+    const ext = entry.name.match(/\.(html|md|txt)$/)?.[1];
+    if (!ext) continue;
+    const text = readFileSync(p, 'utf8');
+    const [hit] = ext === 'html' ? htmlTargets(parse(text)) : markdownTargets(text);
+    if (hit) fail(`repo-relative link leaked into ${p}: ${hit}`);
   }
 }
 scan(dist);
