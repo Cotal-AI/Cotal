@@ -77,7 +77,7 @@
       "name": "remove deletes without confirmation",
       "file": "implementations/cli/src/commands/persona.ts",
       "find": "    if (!values.yes) {",
-      "replace": "    if (false) {",
+      "replace": "    if (values.yes) {",
       "expectRed": "remove requires scoped confirmation before deletion",
       "cell": "remove requires scoped confirmation before deletion",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
@@ -86,7 +86,7 @@
       "name": "prepared offline root is unavailable",
       "file": "implementations/cli/src/lib/persona-files.ts",
       "find": "    if (error.code === \"not-started\" && !values.server && error.details.root && error.details.space)",
-      "replace": "    if (error.code === \"not-started\" && false && !values.server && error.details.root && error.details.space)",
+      "replace": "    if (error.code === \"not-started\" && values.server && error.details.root && error.details.space)",
       "expectRed": "prepared catalog is an offline complete empty read",
       "cell": "prepared catalog is an offline complete empty read",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
