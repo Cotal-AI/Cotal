@@ -2,4 +2,4 @@
 "@cotal-ai/manager": patch
 ---
 
-A clean `Manager.stop()` no longer leaves its liveness lease to expire when a read of the lease key times out, as one can while the connection reconnects. The stop asks again for up to one lease TTL, so the key is released once the broker answers and a same-root restart of the same instance starts at once instead of being refused until the key lapses.
+A clean `Manager.stop()` now asks again when a read of its liveness lease times out, as one can while the connection reconnects, and stops asking once one lease TTL has passed since the release began. Before, the first timed-out read ended the release without deleting the key, so a same-root restart of the same instance was refused until the key expired. Releasing the key is still best effort: the conditional delete is sent once, and if it does not reach the broker or the stop cannot confirm the key is gone, the key stays until its TTL and a same-root restart is refused until then.
