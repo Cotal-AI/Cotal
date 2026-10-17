@@ -187,6 +187,7 @@
     "smoke:persona-frontmatter": "tsx packages/core/smoke/persona-frontmatter.smoke.ts",
     "smoke:persona-templates": "tsx implementations/cli/smoke/persona-templates.smoke.ts",
     "smoke:setup-destination": "pnpm --filter cotal-ai... --filter @cotal-ai/tmux --filter @cotal-ai/herdr build && tsx implementations/cli/smoke/setup-destination.smoke.ts",
+    "smoke:persona-local": "tsx implementations/cli/smoke/persona-local.smoke.ts",
     "smoke:persona-root": "tsx implementations/cli/smoke/persona-root.smoke.ts",
     "smoke:control-auth": "tsx packages/core/smoke/control-auth.smoke.ts",
     "smoke:manager-split": "tsx packages/core/smoke/manager-split-auth.smoke.ts",

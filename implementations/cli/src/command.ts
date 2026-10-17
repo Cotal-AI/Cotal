@@ -132,6 +132,7 @@ function skipsSeed(name: string, sub: string | undefined, argv: readonly string[
   // the usage refusal, leaving an older live deployment on a store it no longer matches (#1620). The
   // planning surface reads what is installed; it never seeds to make the plan prettier.
   if (argv.includes("--dry-run")) return true;
+  if (name === "persona" || (name === "personas" && !argv.includes("--running"))) return true; // filesystem-only catalog operations
   if (name === "update") return true; // update owns one explicit reconcile; never auto-refresh then force-refresh
   // The seed is skipped for an INTERNAL CHILD re-exec — the `up`/`spawn` that spawns the delivery
   // daemon / manager / auth service sets COTAL_SKIP_CONNECTOR_SEED=1 in their env AFTER it reconciled,

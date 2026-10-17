@@ -193,7 +193,7 @@ const ansi = /\x1b\[/;
   check("EDITOR beats the saved editor", envEditor.status === 0 && readFileSync(mark, "utf8") === "env", shown(envEditor));
   run(["config", "unset", "editor"]);
   const none = run(["personas", "edit", "x"], {}, project);
-  check("with no editor anywhere, personas edit names both ways to set one", none.status === 1 && /export EDITOR .*cotal config set editor/.test(none.stderr), shown(none));
+  check("with no editor anywhere, personas edit names both ways to set one", none.status === 2 && /set VISUAL or EDITOR.*cotal config set editor/.test(none.stderr), shown(none));
 
   // The detach key is read by the attach client before it connects; drive that function in-process.
   process.env.XDG_CONFIG_HOME = xdg;

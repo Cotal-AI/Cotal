@@ -85,8 +85,8 @@
     },
     {
       "name": "personas edit reads only the environment",
-      "file": "implementations/cli/src/commands/personas.ts",
-      "find": "  const editor = resolvePreference(\"editor\", { preferences: cachedPreferences() }).value;",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "  const editor = resolvePreference(\"editor\", { preferences: cachedPreferences(), space: catalog.space }).value;",
       "replace": "  const editor = process.env.VISUAL || process.env.EDITOR;",
       "expectRed": "personas edit opens the saved editor when VISUAL and EDITOR are unset",
       "cell": "personas edit opens the saved editor when VISUAL and EDITOR are unset",

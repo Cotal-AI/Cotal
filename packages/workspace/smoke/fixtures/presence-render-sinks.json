@@ -736,16 +736,16 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/personas.ts",
+      "path": "implementations/cli/src/lib/persona-files.ts",
       "kind": "derived-output",
-      "anchor": "`editor exited ${res.signal ? `on ${res.signal}` : `with status ${res.status}`} - not saved`",
+      "anchor": "`editor ${result.signal ? `ended on ${result.signal}` : `exited with status ${result.status}`} - not saved`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/cli/src/commands/personas.ts",
+      "path": "implementations/cli/src/lib/persona-files.ts",
       "kind": "derived-output",
-      "anchor": "`with status ${res.status}`",
+      "anchor": "`exited with status ${result.status}`",
       "class": "non-render/control",
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },

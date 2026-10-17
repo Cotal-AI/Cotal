@@ -1,17 +1,14 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import {
   agentFilePath,
   assertValidName,
   loadAgentFile,
   personaDir,
-  saveAgentFile,
-  type AgentDef,
   type CompletionResult,
   type ParsedArgs,
 } from "@cotal-ai/core";
-import { cachedPreferences, inputDisabledByFlag, isWorkspaceTargetError, loadMeshes, renderWorkspaceError, resolveMeshTarget, resolvePreference, targetFlags } from "@cotal-ai/workspace";
+import { loadMeshes, targetFlags } from "@cotal-ai/workspace";
+import { commitPersona, editPersona, personaCatalog, personaPath, readPersonaSource, requirePersonaSource, serializePersona } from "../lib/persona-files.js";
 import { completedFlagValue, completingFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { listPersonas, listPersonaNames } from "../lib/personas.js";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
@@ -77,15 +74,7 @@ export async function personas(args: ParsedArgs): Promise<void> {
  * here; it stays what it always was, an input to the live `--running` overlay.
  */
 function targetRoot(values: { space?: string; server?: string }): string {
-  try {
-    return resolveMeshTarget(process.cwd(), { space: values.space, server: values.server }).root;
-  } catch (e) {
-    if (isWorkspaceTargetError(e)) {
-      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
-      process.exit(1);
-    }
-    throw e;
-  }
+  return personaCatalog(values).root;
 }
 
 /** Argument completion: subcommands, then persona names for `show`/`rm`. */
@@ -123,7 +112,7 @@ export function personasComplete(argv: string[]): CompletionResult {
     // Resolved offline (no probe), and FAIL CLOSED: with no single target, offer nothing rather
     // than throw into the operator's shell (the same posture as `spawnComplete`).
     try {
-      const root = resolveMeshTarget(process.cwd(), {
+      const root = personaCatalog({
         space: completedFlagValue(argv, flags, "space"),
         server: completedFlagValue(argv, flags, "server"),
       }).root;
@@ -197,40 +186,11 @@ function show(name: string | undefined, values: { space?: string; server?: strin
 }
 
 /** `cotal personas edit <name>` — open the card in the `editor` preference ($VISUAL, then $EDITOR,
- *  then the saved one), then re-validate on exit so a save that breaks the frontmatter fails loud
- *  instead of silently shipping a bad card. */
+ *  then the saved one), validate a private draft, then compare and commit through the shared local writer. */
 function edit(name: string | undefined, values: { space?: string; server?: string }): void {
   if (!name) return usage();
-  const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
-  if (inputDisabledByFlag()) {
-    console.error(c.red(`personas edit opens an editor, and --no-input forbids one - edit ${path} directly`));
-    process.exit(1);
-  }
-  const editor = resolvePreference("editor", { preferences: cachedPreferences() }).value;
-  if (!editor) {
-    console.error(c.red("no editor set - export EDITOR (or VISUAL), e.g. export EDITOR=vim, or save one with `cotal config set editor vim`"));
-    process.exit(1);
-  }
-  // Hand the terminal to the editor (inherit stdio so it draws). $EDITOR may carry flags
-  // (e.g. "code --wait"), so go through the shell.
-  const res = spawnSync(`${editor} "${path}"`, { stdio: "inherit", shell: true });
-  if (res.error) {
-    console.error(c.red(`couldn't launch editor "${editor}": ${res.error.message}`));
-    process.exit(1);
-  }
-  if (res.status !== 0) {
-    console.error(c.red(`editor exited ${res.signal ? `on ${res.signal}` : `with status ${res.status}`} - not saved`));
-    process.exit(1);
-  }
-  // Re-validate: a save that breaks the frontmatter must fail loud, not ship a broken card.
-  try {
-    loadAgentFile(path);
-  } catch (e) {
-    console.error(c.red(`⨯ "${name}" is now unparseable - fix it:`));
-    console.error(c.dim(`  ${(e as Error).message}`));
-    process.exit(1);
-  }
+  const catalog = personaCatalog(values);
+  editPersona(personaPath(catalog.root, name), name, catalog);
   console.log(c.green(`✓ saved "${name}"`));
 }
 
@@ -243,7 +203,8 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   assertValidName(name); // shared reserved-character guard (also rejects "/")
 
   const path = agentFilePath(targetRoot(v), name);
-  if (existsSync(path) && !v.force) {
+  const expected = readPersonaSource(path);
+  if (expected && !v.force) {
     console.error(c.red(`persona "${name}" already exists - pass --force to overwrite`));
     console.error(c.dim(path));
     process.exit(1);
@@ -273,8 +234,8 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
   }
   const subscribe = v.subscribe.split(",").map((s) => s.trim()).filter(Boolean);
 
-  const def: AgentDef = { name, role: v.role, model: v.model, persona, subscribe };
-  saveAtomic(path, def);
+  const bytes = serializePersona({ name, role: v.role, model: v.model, persona, subscribe });
+  commitPersona(path, expected, bytes);
   console.log(c.green(`✓ wrote persona "${name}"`));
   console.log(c.dim(`${path}\nspawn it:  cotal spawn ${name}${v.role ? ` --role ${v.role}` : ""}`));
 }
@@ -282,22 +243,14 @@ function create(name: string | undefined, v: { role?: string; model?: string; pr
 function remove(name: string | undefined, force: boolean, values: { space?: string; server?: string }): void {
   if (!name) return usage();
   const path = agentFilePath(targetRoot(values), name);
-  if (!existsSync(path)) return notFound(name, path);
+  const expected = requirePersonaSource(path);
   if (!force) {
     console.error(c.red(`refusing to delete "${name}" without --force`));
     console.error(c.dim(`cotal personas rm ${name} --force`));
     process.exit(1);
   }
-  rmSync(path);
+  commitPersona(path, expected, undefined);
   console.log(c.green(`✓ removed persona "${name}"`));
-}
-
-/** Write through a sibling temp file + rename so a concurrent reader never sees a half-written
- *  card (rename is atomic within the same directory). `saveAgentFile` creates the parent dir. */
-function saveAtomic(path: string, def: AgentDef): void {
-  const tmp = join(dirname(path), `.${def.name}.tmp-${process.pid}`);
-  saveAgentFile(tmp, def);
-  renameSync(tmp, path);
 }
 
 function firstLine(s?: string): string | undefined {

@@ -648,10 +648,13 @@ disaster-consent, and degraded-recovery details.
 
 ## Personas from the CLI
 
-`cotal personas` manages the local catalog offline: `list` (`--running` overlays live
-markers), `show <name>`, `edit <name>` (re-validates on save), `new <name>`, `rm <name>
---force`. The runtime write is `cotal_persona`; the runtime read is `cotal_personas`
-(list / show), both over the wire with the manager's ownership checks. Fields: [agent files](agent-files.md).
+`cotal persona` manages the selected local catalog offline: bare list, `show <name>`,
+`create <name> --file <persona.md>`, `edit <name>` and `remove <name> --yes`.
+Edits validate a private draft and refuse a changed source before promotion. Prepared spaces
+have a catalog before startup. `--json` and `--plain` are supported for finite reports.
+The legacy `personas` parser remains available during migration; its `--running` overlay is live.
+The runtime write is `cotal_persona`; the runtime read is `cotal_personas`, both over the wire
+with the manager's ownership checks. Fields: [agent files](agent-files.md).
 
 ## Gate recovery
 

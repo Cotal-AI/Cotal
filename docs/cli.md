@@ -173,7 +173,7 @@ failure.
 | Agents & personas | [`stop`](#managed-seats) | Ask the manager to stop a managed agent |
 | Agents & personas | [`attach`](#managed-seats) | Stream and drive a managed agent's terminal (pty runtime) |
 | Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
-| Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
+| Agents & personas | [`persona`](#persona) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`service`](#service) | Run the manager as a user service (survives logout and reboot) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
@@ -1874,31 +1874,46 @@ Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`
 `herdr`) attach to a process they do not own, so they have no input stream for it and the command
 refuses by name rather than dropping the keystroke.
 
-## personas
+## persona
 
 ```bash
-cotal personas list [-v] [--running]
-cotal personas show <name>
-cotal personas edit <name>
-cotal personas new <name> (--prompt <t> | --from <f>) [--role <r>] [--model <m>]
-cotal personas rm <name> --force
+cotal persona [--json|--plain]
+cotal persona show <name> [--json|--plain]
+cotal persona create <name> --file <persona.md>
+cotal persona create <name> --prompt <text> --subscribe <a,b>
+cotal persona edit <name>
+cotal persona remove <name> --yes
 ```
 
-| Flag | Default | Meaning |
-|---|---|---|
-| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which mesh's persona catalog |
-| `--role <r>` | none | `new`: the persona's role |
-| `--model <m>` | none | `new`: the persona's model |
-| `--prompt <t>` | none | `new`: the persona's prompt text |
-| `--from <f>` | none | `new`: seed the prompt from a file |
-| `--verbose`, `-v` | off | `list`: include role / model / description |
-| `--running` | off | `list`: mark personas live on the mesh |
-| `--force` | none | `rm`: required, delete without prompting |
+`p` aliases `persona`; `persona rm` aliases `persona remove`. These commands manage the
+selected space's local `.cotal/agents` catalog without connecting, refreshing a remote catalog
+or seeding connectors. `--space` and `--server` select the same root used by launch. A prepared
+space has an offline catalog before it is started. Failed target resolution never falls back
+to the current directory. Remote `--on` operations refuse as unsupported here.
 
-Personas are the local agent files under the resolved mesh root's `.cotal/agents/`, the same catalog
-`cotal spawn` launches from. `--space` and `--server` therefore move every list, read, write, delete
-and completion operation to the selected mesh. An unresolved target refuses rather than falling back
-to the current directory. See [Agent files](agent-files.md) for the file format.
+Creation accepts one of `--file/-f` (a complete [agent file](agent-files.md)), `--prompt`, or
+`--from` (body file, or `-` for explicit stdin). Complete files validate all supported fields,
+must name the requested persona and keep their original bytes. They cannot be combined with
+`--role`, `--model` or `--subscribe`. Body input requires an explicit `--subscribe` declaration,
+including `--subscribe ""` for no channels, and accepts `--role` and `--model`.
+Creation refuses an existing definition. Mutation receipts contain names and paths, not bodies.
+
+Editing opens a private draft using the editor preference (`VISUAL`, then `EDITOR`, then saved
+preferences). A successful editor exit and valid definition are required before saving. A changed
+or removed source refuses with `CONFLICT` (exit 2), leaving the current definition intact. Local
+CLI create, edit and remove share a per-persona lock during comparison and commit, not while an
+editor or confirmation is open. Manager and external writes do not participate in that lock.
+`--json` and `--no-input` refuse editing before an editor opens.
+
+List, show and mutation receipts support one-document `--json` and line-oriented `--plain`.
+Show explicitly returns the full definition and source. List does not return the body or launch
+options. A malformed entry produces a partial inventory (exit 4); an unreadable catalog refuses
+rather than reporting it empty. Remove asks with cancellation as the default in a terminal.
+Plain confirmation uses numbered choices. Scripts and JSON removal require `--yes/-y`.
+
+The legacy `personas` parser remains available during migration: `list [-v] [--running]`,
+`show`, `edit`, `new` and `rm --force`. Its local writes share the same draft validation and
+commit fence. Only its explicit `--running` overlay connects to the mesh.
 
 ## supervise
 

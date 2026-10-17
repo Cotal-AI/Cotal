@@ -68,7 +68,7 @@ The three channel verbs on one card, with the common recipes:
 
 - **By name.** A launcher resolves a bare name to `<target-root>/.cotal/agents/<name>.md`. The
   target root comes from the selected mesh, including `cotal use`, `--space`, and `--server`, so
-  launchers, `cotal personas`, setup, status, and agent-profile minting use one catalog. This is a
+  launchers, `cotal persona`, setup, status, and agent-profile minting use one catalog. This is a
   directory convention, not an HTTP well-known; mesh discovery stays NATS presence. The card built
   from the file is what gets broadcast.
 - **One ref.** The launcher sets `COTAL_AGENT_FILE=<abs path>` (the *who*) the way
@@ -124,8 +124,10 @@ deliberately consult is affected: `cotal_personas` lists and shows the catalog o
 wire (spawn-capability, same ownership as the write), `cotal personas list` reads the
 catalog within a workspace, and `cotal_spawn` on a name that does not exist fails loud.
 
-The operator-side counterpart is `cotal personas` (list / show / edit / new / rm); it reads and
-writes the selected mesh root's files directly, offline, with no broker connection ([CLI](cli.md)).
+The operator-side counterpart is `cotal persona` (bare list, show, create, edit and remove). It reads
+and writes the selected space root's files offline. Complete file input preserves every field and
+source byte. An editor draft validates before promotion and refuses concurrent local CLI changes
+([CLI](cli.md#persona)).
 
 On a user-auth mesh, spawning owned persona content requires its creator principal or a
 current admin grant. A hosted run uses its admitted caller for that decision. A foreign

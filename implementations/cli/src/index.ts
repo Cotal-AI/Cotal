@@ -17,6 +17,7 @@ import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions } from "./com
 import { attach, attachFlags, input, inputFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
+import { persona, personaComplete, personaFlags } from "./commands/persona.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete } from "./commands/completion.js";
 import { config, configFlags } from "./commands/config.js";
@@ -522,6 +523,27 @@ const baseCommands: Command[] = [
     flags: inputFlags,
     run: input,
     complete: managedAgentComplete,
+  },
+  {
+    kind: "command",
+    name: "persona",
+    aliases: ["p"],
+    group: "Agents",
+    summary: "list and manage the selected space's local persona files",
+    usage: "cotal persona [--json|--plain] | persona show <name> | persona create <name> (--file <persona.md>|--prompt <text>|--from <path>) | persona edit <name> | persona remove <name> [--yes]",
+    positionals: "[show <name> | create <name> | edit <name> | remove <name>]",
+    subcommands: [
+      { name: "show", summary: "read a complete local definition", reads: true, outputs: ["json", "plain"] },
+      { name: "create", summary: "create a validated local definition", outputs: ["json", "plain"] },
+      { name: "edit", summary: "validate a private editor draft before saving", outputs: ["json", "plain"] },
+      { name: "remove", aliases: ["rm"], summary: "remove a named local definition after confirmation", outputs: ["json", "plain"] },
+    ],
+    flags: personaFlags,
+    outputs: ["json", "plain"],
+    reads: true,
+    prepareMeshTarget: false,
+    run: persona,
+    complete: personaComplete,
   },
   {
     kind: "command",

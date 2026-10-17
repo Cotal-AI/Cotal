@@ -63,9 +63,9 @@
     },
     {
       "name": "personas edit opens the editor under --no-input",
-      "file": "implementations/cli/src/commands/personas.ts",
-      "find": "  if (inputDisabledByFlag()) {\n    console.error(c.red(`personas edit opens an editor",
-      "replace": "  if (false && inputDisabledByFlag()) {\n    console.error(c.red(`personas edit opens an editor",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "  if (json || inputDisabledByFlag())\n",
+      "replace": "  if (json)\n",
       "expectRed": "personas edit --no-input refuses to open an editor",
       "cell": "personas edit --no-input refuses to open an editor",
       "command": "pnpm --filter cotal-ai... build && pnpm exec tsx bin/smoke/cli-entry.smoke.ts",

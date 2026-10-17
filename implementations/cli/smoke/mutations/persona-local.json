@@ -1,0 +1,114 @@
+{
+  "suite": [
+    "implementations/cli/smoke/persona-local.smoke.ts"
+  ],
+  "guard": "Local persona CLI mutations validate private drafts and inputs, preserve exact complete definitions, refuse changed sources and share a machine-local commit lock. Explicit confirmation and offline prepared roots use the real CLI.",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/persona-local.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/persona-local.json",
+  "why": [
+    "Every assertion drives the built public CLI, with same-tree dependencies and genuine editor processes. The lock control holds the real cooperating lock in this suite process, then releases it for the waiting native command. Manager and noncooperating external writers are outside this fence."
+  ],
+  "mutations": [
+    {
+      "name": "invalid editor draft is promoted",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "    validatePersona(edited, name, path);",
+      "replace": "    // validation deliberately removed",
+      "expectRed": "invalid native editor preserves original bytes",
+      "cell": "invalid native editor preserves original bytes",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "nonzero editor result is promoted",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "    if (result.error || result.status !== 0)",
+      "replace": "    if (result.error)",
+      "expectRed": "nonzero native editor preserves original bytes",
+      "cell": "nonzero native editor preserves original bytes",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "captured source comparison is skipped",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "    if (!sameSource(expected, current))",
+      "replace": "    if (false)",
+      "expectRed": "two native editors refuse lost overwrite",
+      "cell": "two native editors refuse lost overwrite",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "local writer does not acquire shared lock",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "  const lock = acquireLock(lockPath, { label: \"local persona write\", onTimeout: () => new CommandFailure(\"refused\", \"CONFLICT\", \"another local persona write holds the catalog lock\") });",
+      "replace": "  const lock = { release() {} };",
+      "expectRed": "native commit waits for the shared per-persona lock",
+      "cell": "native commit waits for the shared per-persona lock",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "no-input edit opens editor",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "  if (json || inputDisabledByFlag())",
+      "replace": "  if (json)",
+      "expectRed": "no-input edit refuses before editor launch",
+      "cell": "no-input edit refuses before editor launch",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "JSON edit opens editor",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "  if (json || inputDisabledByFlag())",
+      "replace": "  if (!json && inputDisabledByFlag())",
+      "expectRed": "JSON edit refuses before editor launch",
+      "cell": "JSON edit refuses before editor launch",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "create overwrites an existing definition",
+      "file": "implementations/cli/src/commands/persona.ts",
+      "find": "    if (expected !== undefined) throw new CommandFailure",
+      "replace": "    if (false) throw new CommandFailure",
+      "expectRed": "create refuses to overwrite an existing definition",
+      "cell": "create refuses to overwrite an existing definition",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "remove deletes without confirmation",
+      "file": "implementations/cli/src/commands/persona.ts",
+      "find": "    if (!values.yes) {",
+      "replace": "    if (false) {",
+      "expectRed": "remove requires scoped confirmation before deletion",
+      "cell": "remove requires scoped confirmation before deletion",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "prepared offline root is unavailable",
+      "file": "implementations/cli/src/lib/persona-files.ts",
+      "find": "    if (error.code === \"not-started\" && !values.server && error.details.root && error.details.space)",
+      "replace": "    if (error.code === \"not-started\" && false && !values.server && error.details.root && error.details.space)",
+      "expectRed": "prepared catalog is an offline complete empty read",
+      "cell": "prepared catalog is an offline complete empty read",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build",
+      "command": "pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/persona-local.smoke.ts --prepared-only"
+    },
+    {
+      "name": "remote manager flag silently writes locally",
+      "file": "implementations/cli/src/commands/persona.ts",
+      "find": "  if (values.on !== undefined) throw new CommandFailure",
+      "replace": "  if (false) throw new CommandFailure",
+      "expectRed": "remote on refuses before a local write",
+      "cell": "remote on refuses before a local write",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "complete file is not validated",
+      "file": "implementations/cli/src/commands/persona.ts",
+      "find": "    validatePersona(bytes, name, path);",
+      "replace": "    // input validation deliberately removed",
+      "expectRed": "malformed file input refuses without leaking parser source",
+      "cell": "malformed file input refuses without leaking parser source",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}
