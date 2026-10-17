@@ -16,6 +16,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import {
   CotalEndpoint,
   createSpaceAuth,
@@ -30,7 +32,7 @@ import {
   setupSpaceStreams,
 } from "@cotal-ai/core";
 import { createSuite, killAndAwaitExit, SMOKE_BROKER_TOKEN, teardownOnSignal, teardownPathOnSignal } from "@cotal-ai/smoke-kit";
-import { authDir, recordMesh, saveSpaceAuth, setCurrent } from "@cotal-ai/workspace";
+import { authDir, recordMesh, saveSpaceAuth, setCurrent, userAuthStateDir } from "@cotal-ai/workspace";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
 const BIN = join(import.meta.dirname, "..", "..", "..", "bin", "dist", "cotal.js");
@@ -47,7 +49,7 @@ type Envelope = {
   completeness: string;
   command: string;
   target: { space: string; scope?: string };
-  result: { kind: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
+  result: { kind: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
   warnings: { code: string; message: string }[];
   error?: { code: string; message: string };
 };
@@ -249,6 +251,48 @@ try {
   const remote = await call();
   check("a grant ledger on another machine is a partial read, exit 4", remote.code === 4 && remote.env.outcome === "partial" && remote.env.warnings.some((w) => w.code === "GRANT_NOT_LOCAL") && remote.env.result?.read === null, remote.env);
   release();
+}
+
+
+// ── a remote registration through the real provider and binary, not a provider-shaped stub ────────
+{
+  const remoteHome = mkdtempSync(join(tmpdir(), "cotal-whoami-remote-"));
+  const release = teardownPathOnSignal(remoteHome);
+  const remoteRoot = join(remoteHome, "mesh");
+  mkdirSync(join(remoteRoot, ".cotal"), { recursive: true });
+  const remoteEnv = { ...cleanEnv, HOME: remoteHome, USERPROFILE: remoteHome, TMPDIR: remoteHome, COTAL_HOME: join(remoteHome, ".cotal"), XDG_CONFIG_HOME: join(remoteHome, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1" };
+  const remoteSpace = "remote-whoami";
+  let idpRequests = 0;
+  const idp = createServer((_req, res) => { idpRequests++; res.writeHead(503); res.end("offline fixture"); });
+  await new Promise<void>((resolve) => idp.listen(0, "127.0.0.1", resolve));
+  const idpUrl = `http://127.0.0.1:${(idp.address() as AddressInfo).port}/auth`;
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = remoteEnv.COTAL_HOME;
+  // Import after the stub cells above: this registers the native provider only in this parent;
+  // every CLI child starts with its own native provider and no stub.
+  const { saveIdpSession } = await import("@cotal-ai/auth");
+  const read = (format: "--json" | "--plain"): Promise<{ code: number; stdout: string; stderr: string; env?: Envelope }> =>
+    new Promise((resolve) => execFile(process.execPath, [BIN, "whoami", "--space", remoteSpace, format], { cwd: remoteRoot, env: remoteEnv, timeout: 30_000 }, (err, stdout, stderr) => {
+      resolve({ code: err && typeof err.code === "number" ? err.code : err ? 1 : 0, stdout, stderr, ...(format === "--json" && stdout.trim().startsWith("{") ? { env: JSON.parse(stdout) as Envelope } : {}) });
+    }));
+  try {
+    recordMesh({ space: remoteSpace, server: "nats://127.0.0.1:1", root: remoteRoot, mode: "user", origin: "manual", userAuth: { provider: "cotal", remote: true, idp: { url: idpUrl, issuer: idpUrl, audience: "cotal-mesh" }, endpoints: { url: `${idpUrl}/exchange` }, sentinelCredsPath: join(userAuthStateDir(remoteRoot, remoteSpace), "sentinel.creds") }, ts: new Date().toISOString() });
+    const unsigned = await read("--plain");
+    check("a remote registration without a cached login says not signed in", unsigned.code === 0 && /identity:\s+not signed in/.test(unsigned.stdout) && /sign in with `cotal login`/.test(unsigned.stdout), unsigned);
+    const fixtureToken = "offline-whoami-fixture-not-a-live-credential";
+    saveIdpSession(remoteEnv.COTAL_HOME, idpUrl, { token: fixtureToken, sub: "fixture-user", expiresAt: Math.floor(Date.now() / 1000) + 3600 });
+    const signed = await read("--json");
+    check("the native remote provider leaves a logged-in user's grant unknown, not empty", signed.code === 4 && signed.env?.outcome === "partial" && signed.env.completeness === "partial" && signed.env.result?.identity?.grant === "not-local" && signed.env.result.identity.principal === null && signed.env.result.identity.owner === null && signed.env.result.identity.actor === "cli" && signed.env.result.identity.subject === "fixture-user" && signed.env.result.read === null && signed.env.result.post === null && signed.env.result.capabilities === null && signed.env.warnings.some((w) => w.code === "GRANT_NOT_LOCAL"), signed);
+    const human = await read("--plain");
+    check("a cached remote login with no locally derivable principal is not called signed out", human.code === 4 && /identity:\s+cached user login/.test(human.stdout) && /principal:\s+not known on this machine/.test(human.stdout) && !/not signed in|sign in with `cotal login`/.test(human.stdout), human);
+    check("the remote reports never print the cached login token", ![signed.stdout, signed.stderr, human.stdout, human.stderr].some((text) => text.includes(fixtureToken)), {});
+    check("whoami stays offline with a cached login and an uncached catalog", idpRequests === 0, { idpRequests });
+  } finally {
+    if (priorHome === undefined) delete process.env.COTAL_HOME;
+    else process.env.COTAL_HOME = priorHome;
+    await new Promise<void>((resolve) => idp.close(() => resolve()));
+    release();
+  }
 }
 
 finish();
