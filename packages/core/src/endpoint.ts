@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { createConnection } from "node:net";
 import {
   connect,
@@ -58,6 +59,7 @@ import {
   AckPolicy,
   DeliverPolicy,
   JetStreamApiCodes,
+  JetStreamApiError,
   type JetStreamClient,
   type JetStreamManager,
   type Consumer,
@@ -3337,6 +3339,89 @@ export class CotalEndpoint extends EventEmitter {
     )).map((r) => r.msg);
   }
 
+  /** Read one concrete channel using this lifecycle's single-filter CHAT grant (SPEC §8/§9).
+   *  No observer authority, presence or delivery ACL mirror is required. Returns the newest page,
+   *  oldest-first, including this caller's own sends. `complete` says no older valid row remains.
+   *  Reads have a ten-second budget, shortened by `signal`. Concurrent connections sharing this
+   *  lifecycle wait for native consumer inactivity cleanup; they never delete another reader. */
+  async channelHistoryPage(
+    channel: string,
+    opts?: { limit?: number; signal?: AbortSignal },
+  ): Promise<HistoryPage> {
+    assertValidChannel(channel);
+    if (!isConcreteChannel(channel)) throw new Error("channelHistoryPage requires one concrete channel");
+    const limit = opts?.limit ?? 50;
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+      throw new Error("channelHistoryPage limit must be a whole number from 1 to 1000");
+    if (!this.nc || !this.js) throw new Error("endpoint not started");
+    const jsm = this.jsm ??= await jetstreamManager(this.nc);
+    const signal = AbortSignal.any([AbortSignal.timeout(10_000), ...(opts?.signal ? [opts.signal] : [])]);
+    signal.throwIfAborted();
+    const stream = chatStream(this.space);
+    const name = chatHistDurable(this.owner, this.actor, this.requireLifecycleUid("channelHistoryPage"));
+    const subject = chatSubject(this.space, "*", "*", channel);
+    const marker = randomUUID();
+    let created: ConsumerInfo;
+    for (;;) {
+      signal.throwIfAborted();
+      try {
+        // The pinned client's add is CREATE-only. A unique description makes even an otherwise
+        // identical occupied config conflict. Never bind/update it or pre-delete by shared name.
+        created = await jsm.consumers.add(stream, {
+          name, description: marker, filter_subject: subject,
+          ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.All,
+          mem_storage: true, inactive_threshold: nanos(250),
+        });
+        break;
+      } catch (e) {
+        if (!(e instanceof JetStreamApiError) || e.code !== 10148) throw e; // consumer already exists
+        await delay(50, undefined, { signal });
+      }
+    }
+    signal.throwIfAborted();
+    const owns = (info: ConsumerInfo) => info.created === created.created &&
+      info.config.description === marker && info.config.filter_subject === subject;
+    if (!owns(created)) throw new Error("channelHistoryPage: consumer ownership was not established");
+    const consumer = await this.js.consumers.get(stream, name);
+    const pending = created.num_pending;
+    const out: CotalMessage[] = [];
+    let delivered = 0;
+    if (pending > 0) {
+      const iter = await consumer.consume({ max_messages: Math.min(pending, 32) });
+      const stop = () => iter.stop(abortReason(signal));
+      signal.addEventListener("abort", stop, { once: true });
+      try {
+        signal.throwIfAborted();
+        for await (const m of iter) {
+          signal.throwIfAborted();
+          if (!subjectMatches(subject, m.subject))
+            throw new Error("channelHistoryPage: consumer delivered another channel; ownership was lost");
+          delivered++;
+          const msg = historyMessageFromDelivery(m);
+          if (msg) {
+            out.push(msg);
+            if (out.length > limit + 1) out.shift();
+          }
+          if (delivered >= pending) break;
+        }
+      } finally {
+        signal.removeEventListener("abort", stop);
+        iter.stop();
+      }
+      signal.throwIfAborted();
+      if (delivered !== pending)
+        throw new Error(`channelHistoryPage: read ${delivered} of ${pending} messages before the window was cut short`);
+    }
+    signal.throwIfAborted();
+    // A legacy join/recall reader can delete/recreate this fixed name. A final ownership check
+    // makes that interference loud. It is detection, not a fence against those legacy readers.
+    if (!owns(await consumer.info())) throw new Error("channelHistoryPage: consumer ownership was lost");
+    signal.throwIfAborted();
+    // No DELETE, even after abort: a delayed owner could otherwise delete its successor between
+    // INFO and DELETE. Native inactivity reaps this transient reader without that TOCTOU race.
+    return { items: out.slice(-limit), complete: out.length <= limit };
+  }
+
   /**
    * The newest `limit` chat messages across MANY channels at once, oldest-first within the page,
    * each tagged with the channel the BROKER delivered it on.
@@ -3443,10 +3528,10 @@ export class CotalEndpoint extends EventEmitter {
     });
   }
 
-  /** Read a channel's recent history THROUGH THE DELIVERY DAEMON instead of through a consumer this
-   *  connection creates itself — the mediated read of SPEC's "Mediated reads (normative)" rule (no raw
-   *  consumer / `DIRECT.GET` / `STREAM.MSG.GET` for an untrusted holder; the trusted reader serves it
-   *  onto the caller's own confined rail). `items` is shape-identical to what {@link channelHistory}
+  /** Read a channel's recent history through the delivery daemon, using a provisioned ACL mirror.
+   *  SPEC's ban on raw control-surface stream reads does not remove the single-channel CHAT grant.
+   *  Human callers without an ACL mirror use {@link channelHistoryPage}; this method adds fresh
+   *  mirror checks for provisioned readers. `items` is shape-identical to what {@link channelHistory}
    *  returns — the same `CotalMessage[]`, the same newest-N selection, the same oldest-first order
    *  within the page — so a caller migrates by reading `.items` and nothing else changes. The return
    *  is WRAPPED rather than bare precisely because of `complete`: a bare array cannot say whether
