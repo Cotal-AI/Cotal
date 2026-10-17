@@ -74,7 +74,7 @@ import { createController } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
 // `writeFeed` is what the lifted `send` calls, so it goes into the context as the module exports it.
-import { MEMBERSHIP_READ_FAILED, writeFeed } from "../src/web.js";
+import { MEMBERSHIP_READ_FAILED, writeFeed, writeOpening } from "../src/web.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -296,10 +296,7 @@ check("M7: a REJECTED boot fetch renders 'unreadable', not 'traffic-only' (no an
 }
 
 const ssePush = liftStmt(webTs, "void ep.readMembership()", ";", 0);
-const sseSeed = liftStmt(webTs, "void ep.readMembership()", ";", 1);
 check("the SSE push statement was lifted out of web.ts", Boolean(ssePush), { len: ssePush?.length });
-check("the SSE seed statement was lifted out of web.ts (a DIFFERENT one from the push)",
-  Boolean(sseSeed) && sseSeed !== ssePush);
 check("CONTROL: liftStmt on an absent anchor returns null (its miss is reachable)",
   liftStmt(webTs, 'fetch("/api/not-a-route")', ",") === null);
 
@@ -342,7 +339,15 @@ const sseWire = async (stmt: string, ctxOverrides: Record<string, unknown> = {})
 };
 
 const pushBytes = await sseWire(ssePush!);
-const seedBytes = await sseWire(sseSeed!);
+// The seed is written by `writeOpening`, which the `/feed` route calls, through the same encoder.
+// Its last frame is the seed; the frames before it are the hello, the roster and the presence view.
+const seedBytes = await (async () => {
+  let bytes = "";
+  const client = { writableEnded: false, writableLength: 0, write: (chunk: string) => { bytes += chunk; }, end: () => {} };
+  await writeOpening((event, data, kind) => writeFeed(client, event, data, kind),
+    { feed: "f1", roster: [], presenceView: {}, membership: async () => { throw new Error(REASON); } });
+  return bytes.split(/(?<=\n\n)/).at(-1) ?? "";
+})();
 
 // THE WHOLE FRAME, byte for byte — not a substring of it. `.includes("event: …")` was satisfied by
 // `xevent: membership-read-failed`, and that one character is the difference between a named event

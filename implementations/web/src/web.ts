@@ -741,6 +741,26 @@ export const MAX_FEED_BUFFER_BYTES = 1_048_576;
  *  ceiling must still open, or every new feed would end at once and reconnect into the same end. */
 export type FeedWrite = "live" | "snapshot";
 
+/** The parts of a feed's response that `writeFeed` uses. `once` is the stream's own, used to learn
+ *  when the opening state has drained; a response without it is warmed by the zero-backlog check. */
+export interface FeedResponse {
+  readonly writableEnded: boolean;
+  readonly writableLength: number;
+  write(chunk: string): unknown;
+  end(): unknown;
+  once?(event: "drain", listener: () => void): unknown;
+}
+
+/** Each cold feed and the unsent bytes its opening snapshots left behind. A feed is cold from a
+ *  snapshot write that leaves bytes unsent until its response emits `drain`, or a live write finds
+ *  nothing unsent, and is warm after. A feed that has gone is dropped with its response. */
+const coldFeeds = new WeakMap<object, number>();
+
+/** The feed's opening state has drained: from here on a live event is held to the ceiling alone. */
+function warmFeed(res: object): void {
+  coldFeeds.delete(res);
+}
+
 /** Writes one SSE event to a feed. A feed that has ended takes nothing more.
  *
  *  A live event is checked against the backlog the feed already holds, measured BEFORE the write:
@@ -748,24 +768,63 @@ export type FeedWrite = "live" | "snapshot";
  *  `{ reason }` and ended, and the event is not written. Measuring after the write would end a feed
  *  for one event larger than the ceiling on its own, such as a single long chat message, which would
  *  disconnect every dashboard at once. So one large event over an empty backlog is written, and the
- *  feed ends only when it is in fact behind. The bound is the ceiling plus one event.
+ *  feed ends only when it is in fact behind.
  *
- *  Every event on every feed goes through here. Only the connect snapshots skip the check. */
+ *  A snapshot is never checked. Its unsent bytes are not live traffic the feed fell behind on, so
+ *  while they drain (the feed is cold) a live event is allowed them on top of the ceiling: on a slow
+ *  link a roster over the ceiling would otherwise end the feed at its first live event, and every
+ *  reconnect would end the same way. The allowance goes when the opening state has drained, so a
+ *  cold feed still has a bound, its opening bytes plus the ceiling plus one event. */
 export function writeFeed(
-  res: { readonly writableEnded: boolean; readonly writableLength: number; write(chunk: string): unknown; end(): unknown },
+  res: FeedResponse,
   event: string,
   data: unknown,
   kind: FeedWrite = "live",
   ceiling: number = MAX_FEED_BUFFER_BYTES,
 ): void {
   if (res.writableEnded) return;
-  if (kind === "live" && res.writableLength > ceiling) {
+  const frame = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  if (kind === "snapshot") {
+    res.write(frame);
+    if (res.writableLength > 0) {
+      if (!coldFeeds.has(res)) res.once?.("drain", () => warmFeed(res));
+      coldFeeds.set(res, res.writableLength);
+    }
+    return;
+  }
+  if (res.writableLength === 0) warmFeed(res);
+  const allowance = coldFeeds.get(res) ?? 0;
+  if (res.writableLength > ceiling + allowance) {
     const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;
     res.write(`event: overflow\ndata: ${JSON.stringify({ reason })}\n\n`);
     res.end();
     return;
   }
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  res.write(frame);
+}
+
+/** The state a feed opens with, in the order a browser needs it. */
+export interface FeedOpening {
+  /** The feed's id, which every watch request names. */
+  feed: string;
+  roster: unknown;
+  presenceView: unknown;
+  /** Reads the current membership snapshot. The live tap carries only post-connect traffic, and
+   *  membership is state, so a fresh feed needs it read for it. */
+  membership(): Promise<unknown>;
+}
+
+/** Writes a new feed's opening state through `send`, every write a snapshot: `hello` first, so a
+ *  browser can watch an agent before the roster arrives, then the roster and the presence view, then
+ *  the membership seed once it is read, or its refusal when the read fails. Resolves when the seed
+ *  is written. */
+export function writeOpening(send: (event: string, data: unknown, kind: FeedWrite) => void, state: FeedOpening): Promise<void> {
+  send("hello", { feed: state.feed }, "snapshot");
+  send("roster", state.roster, "snapshot");
+  send("presence-view", state.presenceView, "snapshot");
+  return state.membership()
+    .then((m) => send("membership", m, "snapshot"))
+    .catch((e) => send(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }, "snapshot"));
 }
 
 /** The most agents one feed may watch at once. A watch is a row in a map this process holds for as
@@ -838,9 +897,10 @@ export class AgentEventsLate extends Error {}
  *  other failure rethrows.
  *
  *  SENDER-CHECKED LIKE THE LIVE FEED. The read names the agent as `publisher`, so it filters on the
- *  agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`, and a frame someone else
- *  published on the channel is never read. That is the check `classifyTap` makes on a live frame,
- *  so a session's history and its live frames hold the same frames.
+ *  agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`, and a frame whose subject
+ *  names another sender is never read. That is the check `classifyTap` makes on a live frame, so a
+ *  session's history and its live frames hold the same frames. Like that check, it is as strong as
+ *  the mesh's publish permissions: on an open mesh any raw NATS client can publish on this subject.
  *
  *  BOUNDED TWICE. The caller's `limit` is already capped at {@link MAX_HISTORY_LIMIT}, so one read
  *  holds at most one more message than that, and the read races the same deadline its siblings do,
@@ -1439,19 +1499,16 @@ export async function web(args: ParsedArgs): Promise<void> {
         connection: "keep-alive",
       });
       clients.add(res);
-      // The feed's id comes first, so a browser can watch an agent before the roster arrives. These
-      // are the feed's opening state, written as snapshots: a big mesh's roster may be larger than the
+      // The feed's opening state, written as snapshots: a big mesh's roster may be larger than the
       // ceiling on its own, and holding it to the ceiling would end every new feed at once.
       const feed = randomUUID();
       feeds.set(feed, res);
-      send(res, "hello", { feed }, "snapshot");
-      send(res, "roster", rosterSnapshot(), "snapshot");
-      send(res, "presence-view", ep.presenceView(), "snapshot");
-      // Seed this client's graph with the current membership snapshot (the live tap only carries
-      // post-connect traffic; membership is state, so a fresh client needs it explicitly).
-      void ep.readMembership()
-        .then((m) => { if (!res.writableEnded) send(res, "membership", m, "snapshot"); })
-        .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }, "snapshot"); });
+      void writeOpening((event, data, kind) => send(res, event, data, kind), {
+        feed,
+        roster: rosterSnapshot(),
+        presenceView: ep.presenceView(),
+        membership: () => ep.readMembership(),
+      });
       // Both ends, because either can end a feed: the browser going away closes the request, and
       // an overflow ends the response while the socket may stay open. Forgetting twice is harmless.
       const forget = () => {

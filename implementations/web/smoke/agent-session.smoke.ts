@@ -13,8 +13,6 @@
  *
  * Run: pnpm smoke:web-agent-session
  */
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { chatSubject, spacePrefix, type CotalMessage } from "@cotal-ai/core";
 import {
   AgentEventsLate,
@@ -25,6 +23,9 @@ import {
   classifyTap,
   eventsGrantFor,
   writeFeed,
+  writeOpening,
+  MEMBERSHIP_READ_FAILED,
+  type FeedWrite,
 } from "../src/web.js";
 
 let cells = 0;
@@ -261,15 +262,19 @@ console.log("5. eventsGrantFor");
 // ── 6. a feed that falls behind is ended, not buffered without limit ────────────────────────────
 console.log("6. writeFeed");
 {
-  /** A response whose unsent bytes are everything written to it, as on a link that takes nothing. */
+  /** A response on a link that takes nothing until `drain()`: every byte written stays unsent until
+   *  then, when the link takes it all and the response emits `drain`, as a Node stream does. */
   const stalled = () => {
-    const out = { chunks: [] as string[], ended: false };
+    const out = { chunks: [] as string[], ended: false, unsent: 0 };
+    const drains: (() => void)[] = [];
     return {
       out,
       get writableEnded() { return out.ended; },
-      get writableLength() { return out.chunks.join("").length; },
-      write(chunk: string) { out.chunks.push(chunk); return false; },
+      get writableLength() { return out.unsent; },
+      write(chunk: string) { out.chunks.push(chunk); out.unsent += chunk.length; return false; },
       end() { out.ended = true; },
+      once(_event: "drain", listener: () => void) { drains.push(listener); },
+      drain() { out.unsent = 0; for (const l of drains.splice(0)) l(); },
     };
   };
   const res = stalled();
@@ -304,18 +309,42 @@ console.log("6. writeFeed");
     JSON.stringify(opening.out.chunks.map((c) => c.slice(0, c.indexOf("\n")))) === JSON.stringify(["event: hello", "event: roster", "event: presence-view"])
       && !opening.out.ended,
     opening.out.chunks.map((c) => c.slice(0, 40)));
+
+  // A slow link opens a feed on a big mesh: its roster alone is far past the ceiling and none of it
+  // has gone out when the first live event comes.
+  const feed = stalled();
+  writeFeed(feed, "hello", { feed: "f1" }, "snapshot", 100);
+  writeFeed(feed, "roster", [{ pad: "x".repeat(600) }], "snapshot", 100);
+  writeFeed(feed, "agent-frame", { id: "local.abc" }, "live", 100);
+  ok("6.8 a feed whose opening snapshots are still unsent is not ended by its first live event, which is written",
+    !feed.out.ended && feed.out.chunks.length === 3 && feed.out.chunks[2].startsWith("event: agent-frame\n"),
+    feed.out.chunks.map((c) => c.slice(0, 30)));
+  // The opening state drains. From here a live backlog past the ceiling ends the feed as on any other.
+  feed.drain();
+  writeFeed(feed, "message", { pad: "y".repeat(150) }, "live", 100);
+  const afterDrain = !feed.out.ended && feed.writableLength > 100;
+  writeFeed(feed, "message", { n: 2 }, "live", 100);
+  const tail = feed.out.chunks[feed.out.chunks.length - 1] ?? "";
+  ok("6.9 once the opening state has drained, a live event over a new backlog past the ceiling overflows and ends the feed",
+    afterDrain && feed.out.ended && tail.startsWith("event: overflow\n"), { afterDrain, ended: feed.out.ended, tail: tail.slice(0, 30) });
 }
 {
-  // The /feed route writes its opening state as snapshots and nothing else does. Read from the
-  // shipped source, since the route closes over a live endpoint and cannot be called here.
-  const source = readFileSync(fileURLToPath(new URL("../src/web.ts", import.meta.url)), "utf8");
-  const route = source.slice(source.indexOf('if (path === "/feed") {'), source.indexOf("if (path === READINESS_PATH)"));
-  const snapshots = [...route.matchAll(/send\(res, ([^,]+),[^;]*?, "snapshot"\)/g)].map((m) => m[1]);
-  ok("6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots",
-    JSON.stringify(snapshots) === JSON.stringify(['"hello"', '"roster"', '"presence-view"', '"membership"', "MEMBERSHIP_READ_FAILED"]),
-    snapshots);
-  ok("6.7 and no live write anywhere else is marked a snapshot",
-    (source.match(/"snapshot"\)/g) ?? []).length === 5, (source.match(/"snapshot"\)/g) ?? []).length);
+  // The /feed route writes its opening state through writeOpening; what reaches `send` is recorded.
+  const record = () => {
+    const sent: [string, FeedWrite, unknown][] = [];
+    return { sent, send: (event: string, data: unknown, kind: FeedWrite) => void sent.push([event, kind, data]) };
+  };
+  const good = record();
+  await writeOpening(good.send, { feed: "f1", roster: [{ id: "a" }], presenceView: { v: 1 }, membership: async () => ({ members: [] }) });
+  ok("6.6 a feed opens with hello naming it, the roster, the presence view and the membership seed, in that order, each a snapshot",
+    JSON.stringify(good.sent) === JSON.stringify([
+      ["hello", "snapshot", { feed: "f1" }], ["roster", "snapshot", [{ id: "a" }]], ["presence-view", "snapshot", { v: 1 }], ["membership", "snapshot", { members: [] }],
+    ]), good.sent);
+  const refused = record();
+  await writeOpening(refused.send, { feed: "f2", roster: [], presenceView: {}, membership: async () => { throw new Error("membership stream not found"); } });
+  ok("6.7 when the membership read fails the seed is its refusal with the reason, still a snapshot",
+    JSON.stringify(refused.sent.at(-1)) === JSON.stringify([MEMBERSHIP_READ_FAILED, "snapshot", { reason: "membership stream not found" }]) && refused.sent.length === 4,
+    refused.sent);
 }
 
 console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells - failed} failed=${failed}`);

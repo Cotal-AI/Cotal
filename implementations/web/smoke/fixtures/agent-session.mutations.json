@@ -64,7 +64,7 @@
     {
       "name": "a feed that falls behind is never ended, so a slow browser watching a busy agent buffers in this process without limit",
       "file": "implementations/web/src/web.ts",
-      "find": "  if (kind === \"live\" && res.writableLength > ceiling) {",
+      "find": "  if (res.writableLength > ceiling + allowance) {",
       "replace": "  if (false) {",
       "expectRed": "6.2 a live event over a backlog past the ceiling is not written: the feed gets one overflow event with its reason, and is ended",
       "cell": "6.2 a live event over a backlog past the ceiling is not written: the feed gets one overflow event with its reason, and is ended"
@@ -72,26 +72,26 @@
     {
       "name": "the ceiling is measured after the write, so one event larger than the ceiling on its own, such as one long chat message, ends every feed it reaches",
       "file": "implementations/web/src/web.ts",
-      "find": "  if (kind === \"live\" && res.writableLength > ceiling) {\n    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;\n    res.write(`event: overflow\\ndata: ${JSON.stringify({ reason })}\\n\\n`);\n    res.end();\n    return;\n  }\n  res.write(`event: ${event}\\ndata: ${JSON.stringify(data)}\\n\\n`);",
-      "replace": "  res.write(`event: ${event}\\ndata: ${JSON.stringify(data)}\\n\\n`);\n  if (kind === \"live\" && res.writableLength > ceiling) {\n    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;\n    res.write(`event: overflow\\ndata: ${JSON.stringify({ reason })}\\n\\n`);\n    res.end();\n    return;\n  }",
+      "find": "  if (res.writableLength === 0) warmFeed(res);\n  const allowance = coldFeeds.get(res) ?? 0;\n  if (res.writableLength > ceiling + allowance) {\n    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;\n    res.write(`event: overflow\\ndata: ${JSON.stringify({ reason })}\\n\\n`);\n    res.end();\n    return;\n  }\n  res.write(frame);",
+      "replace": "  res.write(frame);\n  if (res.writableLength === 0) warmFeed(res);\n  const allowance = coldFeeds.get(res) ?? 0;\n  if (res.writableLength > ceiling + allowance) {\n    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;\n    res.write(`event: overflow\\ndata: ${JSON.stringify({ reason })}\\n\\n`);\n    res.end();\n    return;\n  }",
       "expectRed": "6.4 one live event larger than the ceiling, over an empty backlog, is written and the feed stays open",
       "cell": "6.4 one live event larger than the ceiling, over an empty backlog, is written and the feed stays open"
     },
     {
       "name": "the connect snapshots are held to the ceiling, so a mesh whose roster is larger than it ends every new feed straight after connect, in a reconnect loop",
       "file": "implementations/web/src/web.ts",
-      "find": "  if (kind === \"live\" && res.writableLength > ceiling) {",
-      "replace": "  if (res.writableLength > ceiling) {",
+      "find": "  if (kind === \"snapshot\") {",
+      "replace": "  if (false) {",
       "expectRed": "6.5 the connect snapshots are never held to the ceiling: a roster larger than it, and the state after it, are written and the feed stays open",
       "cell": "6.5 the connect snapshots are never held to the ceiling: a roster larger than it, and the state after it, are written and the feed stays open"
     },
     {
-      "name": "the /feed route writes its roster as a live event, so on a big mesh the roster alone counts toward the ceiling",
+      "name": "a feed's opening roster is written as a live event, so on a big mesh the roster alone counts toward the ceiling",
       "file": "implementations/web/src/web.ts",
-      "find": "      send(res, \"roster\", rosterSnapshot(), \"snapshot\");",
-      "replace": "      send(res, \"roster\", rosterSnapshot());",
-      "expectRed": "6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots",
-      "cell": "6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots"
+      "find": "  send(\"roster\", state.roster, \"snapshot\");",
+      "replace": "  send(\"roster\", state.roster, \"live\");",
+      "expectRed": "6.6 a feed opens with hello naming it, the roster, the presence view and the membership seed, in that order, each a snapshot",
+      "cell": "6.6 a feed opens with hello naming it, the roster, the presence view and the membership seed, in that order, each a snapshot"
     },
     {
       "name": "the history read names no publisher, so it reads the agent's event channel from any sender and a forged frame the broker stored shows in the session",
@@ -100,6 +100,30 @@
       "replace": "    const publisher = undefined;",
       "expectRed": "4.14 the read names the agent as its publisher, so only frames the agent itself published are read, as on the live feed",
       "cell": "4.14 the read names the agent as its publisher, so only frames the agent itself published are read, as on the live feed"
+    },
+    {
+      "name": "a failed membership seed is written as a live event, so a feed that opens while the membership read fails holds its refusal to the ceiling",
+      "file": "implementations/web/src/web.ts",
+      "find": "    .catch((e) => send(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }, \"snapshot\"));",
+      "replace": "    .catch((e) => send(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }, \"live\"));",
+      "expectRed": "6.7 when the membership read fails the seed is its refusal with the reason, still a snapshot",
+      "cell": "6.7 when the membership read fails the seed is its refusal with the reason, still a snapshot"
+    },
+    {
+      "name": "a cold feed's opening bytes count toward the ceiling, so on a slow link a roster past it ends the feed at its first live event, in a reconnect loop",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const allowance = coldFeeds.get(res) ?? 0;",
+      "replace": "  const allowance = 0;",
+      "expectRed": "6.8 a feed whose opening snapshots are still unsent is not ended by its first live event, which is written",
+      "cell": "6.8 a feed whose opening snapshots are still unsent is not ended by its first live event, which is written"
+    },
+    {
+      "name": "a feed never goes warm, so after its opening state drains it keeps the opening allowance and a live backlog past the ceiling is never ended",
+      "file": "implementations/web/src/web.ts",
+      "find": "function warmFeed(res: object): void {\n  coldFeeds.delete(res);\n}",
+      "replace": "function warmFeed(res: object): void {\n  void res;\n}",
+      "expectRed": "6.9 once the opening state has drained, a live event over a new backlog past the ceiling overflows and ends the feed",
+      "cell": "6.9 once the opening state has drained, a live event over a new backlog past the ceiling overflows and ends the feed"
     }
   ]
 }
