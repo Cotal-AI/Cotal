@@ -18,6 +18,7 @@ import { mdxjs } from 'micromark-extension-mdxjs';
 import { decodeString } from 'micromark-util-decode-string';
 import { normalizeUri } from 'micromark-util-sanitize-uri';
 import { parse as parseHtml, parseFragment } from 'parse5';
+import { PROMPT_FENCE } from '../src/prompt.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..');
@@ -32,11 +33,7 @@ const blobPath = new URL(`${GITHUB_BLOB}/`).pathname;
 // The Quickstart's paste-into-your-agent fence renders as the interactive
 // AgentPrompt card on the site (the page is emitted as MDX; the .md twin
 // endpoint restores the plain fence). The prompt's source of truth is
-// src/prompt.ts; the fence in docs/getting-started.md must match it exactly.
-const promptSource = readFileSync(join(here, '..', 'src', 'prompt.ts'), 'utf8');
-const promptMatch = promptSource.match(/AGENT_PROMPT =\s*\n?\s*'([^']+)'/);
-if (!promptMatch) throw new Error('AGENT_PROMPT not found in src/prompt.ts');
-const PROMPT_FENCE = '```text wrap\n' + promptMatch[1] + '\n```';
+// src/prompt.js; the fence in docs/getting-started.md must match it exactly.
 const QUICKSTART_SRC = 'docs/getting-started.md';
 
 // Map a source basename (no extension) to its Starlight slug. README is the docs
@@ -336,7 +333,7 @@ for (const group of groups) {
     let imports = '';
     if (rel === QUICKSTART_SRC) {
       if (!md.includes(PROMPT_FENCE))
-        throw new Error(`quickstart prompt fence not found: ${rel} drifted from src/prompt.ts`);
+        throw new Error(`quickstart prompt fence not found: ${rel} drifted from src/prompt.js`);
       md = md.replace(PROMPT_FENCE, '<AgentPrompt />');
       imports = "import AgentPrompt from '../../components/AgentPrompt.astro';\n\n";
       ext = 'mdx';

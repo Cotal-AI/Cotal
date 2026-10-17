@@ -3,13 +3,12 @@
 // canonical URL) is layered on at the edge in functions/_middleware.ts.
 import type { APIRoute, GetStaticPaths } from 'astro';
 import { getCollection } from 'astro:content';
-import { AGENT_PROMPT } from '../prompt';
+import { PROMPT_FENCE } from '../prompt';
 
 const isIndex = (id: string) => id === '' || id === 'index';
 
 // The Quickstart is synced as MDX so its prompt fence renders as the
 // interactive card; its twin must stay clean Markdown, so restore the fence.
-const PROMPT_FENCE = '```text wrap\n' + AGENT_PROMPT + '\n```';
 function restorePrompt(body: string): string {
   const restored = body
     .replace(/^import AgentPrompt from[^\n]*\n+/m, '')
