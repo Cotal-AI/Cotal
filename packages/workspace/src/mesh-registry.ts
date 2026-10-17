@@ -417,24 +417,45 @@ export function removeCatalogMeshes(ownerKey: string): string[] {
  *  produced. REFUSED, never skipped: a skipped record is invisible to `cotal meshes` AND to
  *  `cotal meshes rm`, so the operator could neither see it nor remove it by name — the only honest
  *  answer is the file's own name. */
+const MESH_REGISTRY_ERROR = "cotal:workspace:mesh-registry-error";
+
+/** A registry file that exists and could not be read or used. `file` names it, and `message` is the
+ *  sentence the CLI prints. */
+export class MeshRegistryError extends Error {
+  /** Brand for cross-package-safe detection, as {@link isMeshRegistryError} reads it. */
+  readonly brand = MESH_REGISTRY_ERROR;
+  readonly file: string;
+  constructor(file: string, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "MeshRegistryError";
+    this.file = file;
+  }
+}
+
+/** Detect a {@link MeshRegistryError} without `instanceof`, which two installed copies of this
+ *  package would break. */
+export function isMeshRegistryError(e: unknown): e is MeshRegistryError {
+  return typeof e === "object" && e !== null && (e as { brand?: unknown }).brand === MESH_REGISTRY_ERROR;
+}
+
 function assertMeshEntryShape(entry: MeshEntry, file: string): void {
   if (entry === null || typeof entry !== "object" || Array.isArray(entry))
-    throw new Error(`${file} is not a usable mesh record: the document is not an object - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: the document is not an object - restore the record or remove it`);
   const missing = (["space", "server", "root", "mode", "ts"] as const).filter(
     (k) => typeof (entry as unknown as Record<string, unknown>)[k] !== "string" || ((entry as unknown as Record<string, unknown>)[k] as string).length === 0,
   );
   if (missing.length > 0)
-    throw new Error(`${file} is not a usable mesh record: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: ${missing.join(", ")} ${missing.length === 1 ? "is" : "are"} missing - restore the record or remove it`);
   if (entry.mode !== "auth" && entry.mode !== "open" && entry.mode !== "user")
-    throw new Error(`${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: mode "${entry.mode}" is not one of auth, open, user - restore the record or remove it`);
   if (entry.origin !== undefined && entry.origin !== "up" && entry.origin !== "manual" && entry.origin !== "catalog")
-    throw new Error(`${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: origin "${entry.origin}" is not one of up, manual, catalog - restore the record or remove it`);
   if (entry.storeDir !== undefined && (typeof entry.storeDir !== "string" || entry.storeDir.length === 0 || !isAbsolute(entry.storeDir)))
-    throw new Error(`${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: storeDir "${entry.storeDir}" is not a non-empty absolute path - restore the record or remove it`);
   try {
     spaceSegment(entry.space);
   } catch (e) {
-    throw new Error(`${file} is not a usable mesh record: ${(e as Error).message}`);
+    throw new MeshRegistryError(file, `${file} is not a usable mesh record: ${(e as Error).message}`);
   }
 }
 
@@ -448,23 +469,40 @@ function assertMeshEntryShape(entry: MeshEntry, file: string): void {
  *  registry directory is an empty registry: one that exists but cannot be read throws, because
  *  callers act on "no meshes recorded" and an unread registry has not shown that. */
 export function loadMeshes(): MeshEntry[] {
+  const { entries, unusable } = readMeshRegistry();
+  if (unusable[0]) throw unusable[0];
+  return entries;
+}
+
+/** The registry as {@link loadMeshes} reads it, except that each record this build cannot use is
+ *  returned beside the usable ones instead of thrown, so a report can name it and still list the
+ *  rest. An unreadable registry directory still throws. */
+export function readMeshRegistry(): { entries: MeshEntry[]; unusable: MeshRegistryError[] } {
   let files: string[];
   try {
     files = readdirSync(meshesDir()).filter((f) => f.endsWith(".json"));
   } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return []; // no registry yet
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], unusable: [] }; // no registry yet
     throw e;
   }
   const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
+  const unusable: MeshRegistryError[] = [];
   for (const f of files.sort()) {
-    const entry = readMeshFile(join(meshesDir(), f));
+    let entry: MeshEntry;
+    try {
+      entry = readMeshFile(join(meshesDir(), f));
+    } catch (e) {
+      if (!isMeshRegistryError(e)) throw e;
+      unusable.push(e);
+      continue;
+    }
     // Safe unguarded: readMeshFile's shape check ran `space` through `spaceSegment`, which is the
     // only throw site of `meshFileName`.
     const canonical = f === meshFileName(entry.space);
     const prev = bySpace.get(entry.space);
     if (!prev || (canonical && !prev.canonical)) bySpace.set(entry.space, { entry, canonical });
   }
-  return [...bySpace.values()].map((v) => v.entry);
+  return { entries: [...bySpace.values()].map((v) => v.entry), unusable };
 }
 
 function readMeshFile(file: string): MeshEntry {
@@ -474,7 +512,7 @@ function readMeshFile(file: string): MeshEntry {
   } catch (e) {
     // No fallback: the writer is tmp-file + atomic rename, so an unparseable .json here is a
     // damaged or foreign document, and skipping it would hide it from `meshes rm` too.
-    throw new Error(`${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`);
+    throw new MeshRegistryError(file, `${file} does not parse as a mesh record (${e instanceof Error ? e.message : String(e)}) - restore it from backup or remove it`, { cause: e });
   }
   assertMeshEntryShape(entry, file);
   return entry;
@@ -499,9 +537,20 @@ export function readMesh(space: string): MeshEntry | undefined {
  *  "no current". */
 export function getCurrent(): string | undefined {
   try {
-    return readFileSync(currentFile(), "utf8").trim() || undefined;
+    return readCurrent();
   } catch {
     return undefined;
+  }
+}
+
+/** {@link getCurrent}, except that only an absent pointer is "unset": one that exists and cannot be
+ *  read throws a {@link MeshRegistryError} naming it, for a report that must not show it as unset. */
+export function readCurrent(): string | undefined {
+  try {
+    return readFileSync(currentFile(), "utf8").trim() || undefined;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
   }
 }
 
