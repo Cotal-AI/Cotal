@@ -48,8 +48,8 @@
     {
       "name": "the history read asks for limit rather than limit + 1, so it can never learn that an earlier page exists and Load earlier is never offered",
       "file": "implementations/web/src/web.ts",
-      "find": "{ limit: limit + 1, signal: clock.signal }",
-      "replace": "{ limit, signal: clock.signal }",
+      "find": "{ limit: limit + 1, signal: clock.signal, publisher }",
+      "replace": "{ limit, signal: clock.signal, publisher }",
       "expectRed": "4.2 more is true when limit + 1 came back",
       "cell": "4.2 more is true when limit + 1 came back"
     },
@@ -92,6 +92,14 @@
       "replace": "      send(res, \"roster\", rosterSnapshot());",
       "expectRed": "6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots",
       "cell": "6.6 the /feed route writes hello, the roster, the presence view and the membership seed (or its refusal) as snapshots"
+    },
+    {
+      "name": "the history read names no publisher, so it reads the agent's event channel from any sender and a forged frame the broker stored shows in the session",
+      "file": "implementations/web/src/web.ts",
+      "find": "    const publisher = { owner: agent.owner, actor: agent.actor };",
+      "replace": "    const publisher = undefined;",
+      "expectRed": "4.14 the read names the agent as its publisher, so only frames the agent itself published are read, as on the live feed",
+      "cell": "4.14 the read names the agent as its publisher, so only frames the agent itself published are read, as on the live feed"
     }
   ]
 }

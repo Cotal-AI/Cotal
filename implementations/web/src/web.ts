@@ -837,6 +837,11 @@ export class AgentEventsLate extends Error {}
  *  broker's own text and the grant command for this mesh. The deadline throws `AgentEventsLate`; any
  *  other failure rethrows.
  *
+ *  SENDER-CHECKED LIKE THE LIVE FEED. The read names the agent as `publisher`, so it filters on the
+ *  agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`, and a frame someone else
+ *  published on the channel is never read. That is the check `classifyTap` makes on a live frame,
+ *  so a session's history and its live frames hold the same frames.
+ *
  *  BOUNDED TWICE. The caller's `limit` is already capped at {@link MAX_HISTORY_LIMIT}, so one read
  *  holds at most one more message than that, and the read races the same deadline its siblings do,
  *  with the signal handed down so a late read stops its pull and drops its consumer.
@@ -844,7 +849,9 @@ export class AgentEventsLate extends Error {}
  *  `channelHistory`, not the mediated `readHistory`: the mediated read caps a page at 200 and has
  *  no cursor, and this is the same credential the channel history route already reads with. */
 export async function agentEventsPage(
-  source: { channelHistory(channel: string, opts: { limit: number; signal: AbortSignal }): Promise<CotalMessage[]> },
+  source: {
+    channelHistory(channel: string, opts: { limit: number; signal: AbortSignal; publisher: { owner: string; actor: string } }): Promise<CotalMessage[]>;
+  },
   agent: { owner: string; actor: string },
   limit: number,
   grantFor: (channel: string, owner: string) => string | undefined,
@@ -853,7 +860,8 @@ export async function agentEventsPage(
   const channel = eventChannel(agent);
   const clock = deadline(deadlineMs);
   try {
-    const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal }), clock.until);
+    const publisher = { owner: agent.owner, actor: agent.actor };
+    const page = await within(source.channelHistory(channel, { limit: limit + 1, signal: clock.signal, publisher }), clock.until);
     if (page === LATE) throw new AgentEventsLate(`${channel}: the read did not finish within ${deadlineMs}ms`);
     const more = page.length > limit;
     // Not `slice(-limit)`: at a limit of 0 that is `slice(-0)`, the whole page.

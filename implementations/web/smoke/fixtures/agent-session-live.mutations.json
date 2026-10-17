@@ -20,6 +20,14 @@
       "replace": "        else void feed;",
       "expectRed": "6.2 after unwatch, the next frame reaches no feed",
       "cell": "6.2 after unwatch, the next frame reaches no feed"
+    },
+    {
+      "name": "the events route reads the agent's event channel from any sender, so a frame another principal published there shows in the agent's session history",
+      "file": "implementations/web/src/web.ts",
+      "find": "    const publisher = { owner: agent.owner, actor: agent.actor };",
+      "replace": "    const publisher = undefined;",
+      "expectRed": "8.2 the events route reads only the frames the agent published: the forged one is absent and the agent's own are all there",
+      "cell": "8.2 the events route reads only the frames the agent published: the forged one is absent and the agent's own are all there"
     }
   ]
 }

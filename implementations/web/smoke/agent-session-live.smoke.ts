@@ -6,8 +6,8 @@
  * message on `events.<owner>.<actor>` whose one part is an `ag-ui.frame`. Two browser feeds are
  * open. Only the feed that watches the agent receives its frames, as `agent-frame`, and neither ever
  * receives them as `message`. After `unwatch` the next frame reaches nobody. Ordinary chat still
- * reaches both feeds. The events route reads the newest page of the agent's channel, and a broker
- * refusal of that read is an answer rather than an error.
+ * reaches both feeds. The events route reads the newest page of the agent's channel, only what the
+ * agent itself published there, and a broker refusal of that read is an answer rather than an error.
  *
  * ORDER IS THE BARRIER, NOT TIME. "Received nothing" cannot be proved by waiting. Every negative
  * cell publishes a chat marker from the same connection after the frame in question and waits for
@@ -98,6 +98,7 @@ const release = teardownOnSignal(broker, store);
 const webs: ReturnType<typeof spawn>[] = [];
 const feedsOpen: { close(): void }[] = [];
 let agent: CotalEndpoint | undefined;
+let mallory: CotalEndpoint | undefined;
 try {
   let up = false;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -255,8 +256,29 @@ try {
   const control = await call(`${refusing.base}/api/channels/team/history`, refusing.cookie);
   ok("7.2 control: the same server still reads an ordinary channel, so 7.1 is the refusal and not a broken server",
     control?.status === 200, control);
+
+  // ── 8. history is sender-checked ──────────────────────────────────────────────────────────────
+  console.log("8. a frame another principal published on the agent's channel is not in its history");
+  // On this open mesh anyone may publish on the agent's event channel. The live feed drops such a
+  // frame (see the pure suite's 1.10); the history read must not hand it back either.
+  mallory = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [], consume: false, registerPresence: false,
+    card: { id: newIdentity().id, name: "mallory", kind: "agent" } });
+  mallory.on("error", () => {});
+  await mallory.start();
+  const forged = await mallory.multicast("", { channel: EVENTS, parts: [{ kind: "ag-ui.frame", events: [{ type: "RUN_STARTED" }] } as unknown as Part] });
+  await barrier([A, B]);
+  const stored = parsed(await call(`${W}/api/channels/${encodeURIComponent(EVENTS)}/history?limit=200`, web.cookie)) as unknown;
+  const storedIds = Array.isArray(stored) ? (stored as CotalMessage[]).map((m) => m.id) : [];
+  ok("8.1 control: the broker stored the forged frame on the agent's event channel, so its absence below is the check",
+    storedIds.includes(forged.id), storedIds);
+  const history = parsed(await call(`${W}/api/agents/${AGENT_PATH}/events?limit=200`, web.cookie));
+  const historyIds = ((history.frames as CotalMessage[] | undefined) ?? []).map((m) => m.id);
+  ok("8.2 the events route reads only the frames the agent published: the forged one is absent and the agent's own are all there",
+    !historyIds.includes(forged.id) && JSON.stringify(historyIds) === JSON.stringify([...frameIds, after.id]),
+    { historyIds, forged: forged.id });
 } finally {
   for (const f of feedsOpen) f.close();
+  await mallory?.stop().catch(() => {});
   await agent?.stop().catch(() => {});
   for (const w of webs) w.kill("SIGKILL");
   release(); broker.kill("SIGKILL");

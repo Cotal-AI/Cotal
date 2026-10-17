@@ -172,11 +172,12 @@ console.log("3. agentIdFromPath");
 // ── 4. the history read ─────────────────────────────────────────────────────────────────────────
 console.log("4. agentEventsPage");
 /** A source that records every read it was asked for and answers with `answer`. */
-const source = (answer: (opts: { limit: number; signal: AbortSignal }) => Promise<CotalMessage[]>) => {
-  const asked: { channel: string; limit: number; signal: AbortSignal }[] = [];
+type Read = { limit: number; signal: AbortSignal; publisher: { owner: string; actor: string } };
+const source = (answer: (opts: Read) => Promise<CotalMessage[]>) => {
+  const asked: ({ channel: string } & Read)[] = [];
   return {
     asked,
-    channelHistory(channel: string, opts: { limit: number; signal: AbortSignal }) {
+    channelHistory(channel: string, opts: Read) {
       asked.push({ channel, ...opts });
       return answer(opts);
     },
@@ -193,6 +194,8 @@ const newest = (all: CotalMessage[]) => (opts: { limit: number }) => Promise.res
   const page = await agentEventsPage(src, AGENT, 2, noGrant);
   ok("4.1 it asks for limit + 1 on events.<owner>.<actor>, and on no other channel",
     src.asked.length === 1 && src.asked[0].channel === "events.local.abc" && src.asked[0].limit === 3, src.asked);
+  ok("4.14 the read names the agent as its publisher, so only frames the agent itself published are read, as on the live feed",
+    JSON.stringify(src.asked[0]?.publisher) === JSON.stringify({ owner: "local", actor: "abc" }), src.asked[0]?.publisher);
   ok("4.2 more is true when limit + 1 came back", "more" in page && page.more === true, page);
   ok("4.3 the frames are the newest limit, oldest first",
     "frames" in page && JSON.stringify(page.frames.map((m) => m.id)) === JSON.stringify(all.slice(3).map((m) => m.id)),

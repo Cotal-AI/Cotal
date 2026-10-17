@@ -17,7 +17,7 @@ if (process.env.COTAL_WEB_SMOKE_REFUSE_EVENTS === "1") {
   const channelHistory = CotalEndpoint.prototype.channelHistory;
   CotalEndpoint.prototype.channelHistory = function (channel, opts) {
     return channel.startsWith("events.")
-      ? Promise.reject(new Error(`Permissions Violation for Subscription to "${spacePrefix(this.space)}.chat.*.*.${channel}"`))
+      ? Promise.reject(new Error(`Permissions Violation for Subscription to "${spacePrefix(this.space)}.chat.${opts?.publisher ? `${opts.publisher.owner}.${opts.publisher.actor}` : "*.*"}.${channel}"`))
       : channelHistory.call(this, channel, opts);
   };
 }

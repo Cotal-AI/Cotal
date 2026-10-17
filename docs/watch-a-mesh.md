@@ -243,12 +243,15 @@ The card tells the view whether to expect events: `meta["ai.cotal.events"]` is `
   refusal and, where a grant would help, gives the mesh owner the command to copy.
 - `<name>'s session didn't load`: the read failed another way. Try again reads it again.
 
-Some limits are known. A frame read from history cannot be checked against its sender, because
-history rows carry no verified sender. The live feed drops a frame on `events.<owner>.<actor>`
-unless that agent published it, but on a mesh where someone else may publish there, such as an
-open mesh, a forged frame the broker stored can appear in a session's history. The dashboard's
-observer still hears every agent's frames through its existing chat tap, since event channels sit
-under `cotal.<space>.chat.>` and a wildcard cannot leave them out. It drops a frame at once unless
+A session shows only frames the agent published. The live feed drops a frame on
+`events.<owner>.<actor>` unless that agent published it, and the history read takes the channel from
+the agent's own subject, `chat.<owner>.<actor>.events.<owner>.<actor>`, so a frame someone else
+published there is never read. Both checks rest on the subject's sender, which the broker's publish
+permissions police.
+
+Some limits are known. The dashboard's observer still hears every agent's frames through its
+existing chat tap, since event channels sit under `cotal.<space>.chat.>` and a wildcard cannot
+leave them out. It drops a frame at once unless
 a browser watches that agent, so a browser receives frames only for the agents it watches. The
 card's value is advisory: a Hermes seat launched under a registration that requires events may say
 `on` and publish nothing, because Hermes has no event emitter. Tool inputs, tool results and
