@@ -1791,11 +1791,16 @@ export class CotalEndpoint extends EventEmitter {
     if (oldNc) this.disableLibraryReconnect(oldNc);
     this.reconnecting = true;
     try {
+      const watches = [this.presenceWatchIter, this.channelWatchIter];
       this.clearConnectionScoped();
       // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
-      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
+      // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup,
+      // and the KV watch consumers that closed with it are left to the broker's inactive threshold.
       if (oldNc && !oldNc.isClosed())
-        await Promise.all([...this.membershipFeedWatches].map((watch) => watch.arm));
+        await Promise.all([
+          ...[...this.membershipFeedWatches].map((watch) => watch.arm),
+          ...watches.map((iter) => iter && this.retireKvWatch(iter)),
+        ]);
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -1956,19 +1961,11 @@ export class CotalEndpoint extends EventEmitter {
         /* already closed */
       }
     }
-    try {
-      this.presenceWatchIter?.stop();
-    } catch {
-      /* already closed */
-    }
+    const watches = [this.presenceWatchIter, this.channelWatchIter];
     this.presenceWatchIter = undefined;
-    try {
-      this.channelWatchIter?.stop();
-    } catch {
-      /* already closed */
-    }
     this.channelWatchIter = undefined;
     this.stopDeliveryLeaseWatch();
+    await Promise.all(watches.map((iter) => iter && this.retireKvWatch(iter)));
     try {
       if (this.doRegister) {
         this.status = "offline";
@@ -3206,14 +3203,25 @@ export class CotalEndpoint extends EventEmitter {
     return /^\d+$/.test(subject.slice(cut)) && this.ownWatchDeletePrefixes.has(subject.slice(0, cut));
   }
 
-  /** Delete a history reader's own ephemeral consumer. A refused delete is the designed outcome for
-   *  the elevated profile, which holds no stream-wide CONSUMER.DELETE (#691): the broker reaps the
-   *  consumer at its inactive threshold. */
-  private async deleteReaderConsumer(consumer: Consumer): Promise<void> {
+  /** Delete one of this connection's own ephemeral consumers, a history reader's or a KV watch's. A
+   *  refused delete is the designed outcome for a profile without a stream-wide CONSUMER.DELETE
+   *  (#691): the broker reaps the consumer at its inactive threshold. */
+  private async deleteOwnConsumer(consumer: Consumer | PushConsumer): Promise<void> {
     try { await consumer.delete(); }
     catch (e) {
       if (!isJetStreamMissing(e, JetStreamApiCodes.ConsumerNotFound) && !isPublishPermissionDenied(e)) throw e;
     }
+  }
+
+  /** Stop a presence or channel-registry watch and delete its ordered consumer, which the stop alone
+   *  leaves on the broker until its inactive threshold (#3914). A delete that fails is a warning:
+   *  the broker still reaps that consumer, and a rejected {@link stop} would read as unproved
+   *  consumer custody. */
+  private async retireKvWatch(iter: Awaited<ReturnType<KV["watch"]>>): Promise<void> {
+    iter.stop();
+    await this.deleteOwnConsumer(kvWatchConsumer(iter)).catch((e: Error) => this.emitRecoverable(
+      new Error(`a retired KV watch consumer was not deleted (${e.message}); the broker reaps it at its inactive threshold`),
+    ));
   }
 
   /** Delete one membership-watch consumer, swallowing ONLY already-gone and a refused delete. */
@@ -3628,7 +3636,7 @@ export class CotalEndpoint extends EventEmitter {
       }
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteReaderConsumer(consumer);
+      await this.deleteOwnConsumer(consumer);
     }
   }
 
@@ -3670,7 +3678,7 @@ export class CotalEndpoint extends EventEmitter {
       // exists to stop.
       throw new Error(`history: the broker reported messages on ${subjectLabel(subjects)} but delivered none - the read was cut short, not empty`);
     } finally {
-      await this.deleteReaderConsumer(consumer);
+      await this.deleteOwnConsumer(consumer);
     }
   }
 
@@ -3748,7 +3756,7 @@ export class CotalEndpoint extends EventEmitter {
       // resulting resource exhaustion would land in streamHistory's catch and read as empty history.
       // The observer and admin profiles may not delete (#691), so the dashboard's readers do live out
       // that threshold; only a profile holding the delete row reclaims them here.
-      await this.deleteReaderConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
+      await this.deleteOwnConsumer(consumer).finally(() => { this.ownWatchDeletePrefixes.delete(readerPrefix); });
     }
   }
 
@@ -6429,7 +6437,7 @@ export class CotalEndpoint extends EventEmitter {
         // released and the old watch was torn down by whoever moved the epoch. Nothing to
         // retire, nothing to report.
         if (!info) return;
-        if (old && old !== this.presenceWatchIter) { try { old.stop(); } catch { /* already closed with its consumer */ } }
+        if (old && old !== this.presenceWatchIter) await this.retireKvWatch(old);
         // A bucket with no keys replays nothing, so the new watch cannot refresh
         // `lastPresenceWatchAt` by delivering. It IS current knowledge: nobody is present. The
         // bind's consumer info carries the initial pending count for that one fact; nats.js's KV

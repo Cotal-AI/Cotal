@@ -71,6 +71,12 @@ An abort before the result is returned raises the abort reason, even when deleti
 The scan does not turn that cancellation into an empty answer. A scan that ends without its
 terminal delivery raises an incomplete-scan error.
 
+The reference client's presence and channel-registry watches delete their ordered consumer when
+the endpoint stops, when a silent presence watch is rebound, and when a manual reconnect retires a
+live connection. A profile without the delete grant has that delete refused, and the broker removes
+the consumer at its inactive threshold. The watches of a connection that closed on its own are left
+to that threshold too.
+
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
 native message schedules (durable timers) and per-message TTLs, with no degraded fallback
 ([SPEC §13.12](../SPEC.md#1312-nats--jetstream-binding)).
