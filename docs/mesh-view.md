@@ -148,6 +148,7 @@ one feed is not.
 | harness, model, variant | `agents[].card.meta` | ✓ roster tag + detail |  | ✓ badges + graph |
 | host (which machine it runs on) | `agents[].card.meta.host` |  |  | ✓ agent detail |
 | channel policy (replay, delivery class) | `/api/channels` (web) |  |  | ✓ sidebar + header chips |
+| agent session (turns, text, tool names, own posts) | the agent's event plane and `agents[].card.meta["ai.cotal.events"]` (web only, read while a session is open) |  |  | ✓ Agent tab + `#/agent/<id>` |
 
 Each interactive surface renders the fields its column above marks; `rates.activity` is the
 console's alone. The console adds the signals as an always-on
