@@ -127,8 +127,10 @@ const http = createServer(async (req, res) => {
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
 
+const clients: Client[] = [];
 const clientFor = async (token?: string): Promise<Client> => {
   const client = new Client({ name: "gateway-smoke-client", version: "0.0.0" });
+  clients.push(client);
   const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
   await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }));
   return client;
@@ -148,6 +150,7 @@ observer.on("message", (m: CotalMessage, d: Delivery) => {
   d.ack();
 });
 
+let failure: unknown;
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
   await observer.start();
@@ -242,12 +245,22 @@ try {
   const stillB = await call(b, "cotal_connection_status", { connection_id: idB });
   check("the other account's connection keeps working", !stillB.isError && stillB.text.includes("ready"), stillB);
 
-  await Promise.all([a.close(), b.close(), anon.close()]);
   console.log(`\nGATEWAY TESTS PASSED ✅  (${pass} checks)`);
+} catch (e) {
+  failure = e;
 } finally {
+  // A failed cell must still exit promptly: open client connections would otherwise hold the HTTP
+  // server open and the suite would hang instead of going red.
+  await Promise.allSettled(clients.map((c) => c.close()));
+  http.closeAllConnections();
+  await new Promise<void>((resolve) => http.close(() => resolve()));
   for (const { conn } of live.values()) await conn.agent.stop().catch(() => {});
   await observer.stop().catch(() => {});
-  await new Promise<void>((resolve) => http.close(() => resolve()));
   await killAndAwaitExit(srv);
   releaseBroker();
 }
+if (failure !== undefined) {
+  console.error(failure);
+  process.exit(1);
+}
+process.exit(0);
