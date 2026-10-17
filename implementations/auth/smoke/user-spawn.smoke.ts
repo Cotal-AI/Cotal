@@ -954,6 +954,14 @@ try {
   const deniedAdmin = await cliResult(["invoke", "manager", "purge", "--args", "{}", "--space", SPACE, "--timeout", "1000"]);
   check("the shipped CLI leaves manager.admin denied to a spawn-scoped user bearer",
     !deniedAdmin.timedOut && deniedAdmin.status !== 0 && /permission-denied: .*REFUSED BY THE BROKER/.test(deniedAdmin.plain), deniedAdmin);
+  // `who` asks the same denied manager.read for the managed column. The roster is still this bearer's
+  // to read, so the denial labels that column rather than failing or partialling the run.
+  const deniedWho = await cliResult(["who", "--json", "--space", SPACE]);
+  const deniedWhoEnvelope = (() => { try { return JSON.parse(deniedWho.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string; items: { name: string; managed: boolean | null }[] } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
+  check("who labels the census this bearer may not ask as denied, with every agent's managed unknown",
+    deniedWhoEnvelope?.result?.managers === "denied" && deniedWhoEnvelope.warnings.some((w) => w.code === "MANAGERS_DENIED") && deniedWhoEnvelope.result.items.some((row) => row.name === "alpha") && deniedWhoEnvelope.result.items.every((row) => row.managed === null), deniedWho);
+  check("that label is not a part left unread: who exits 0, ok and complete",
+    !deniedWho.timedOut && deniedWho.status === 0 && deniedWhoEnvelope?.outcome === "ok" && deniedWhoEnvelope.completeness === "complete", deniedWho);
 
   // The mutation proof runs this same fixture with only the native endpoint setup and B1g. It is
   // not a substitute: the full smoke still runs every section below. It keeps the old-guard red
@@ -1883,7 +1891,8 @@ try {
   // (the old 40 was already one short in focus mode; inferred from that run, not run at the base).
   // 42/125 -> 50/133: B1g's eight #2312 cells (precondition, two controls, five refusals).
   // 50/133 -> 57/140: seven owner-equal event-plane admission and grant cells.
-  const EXPECTED = endpointCliFocus ? 57 : 140;
+  // 57/140 -> 59/142: B1g's two `cotal who` cells for the census this bearer may not ask.
+  const EXPECTED = endpointCliFocus ? 59 : 142;
   check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
   console.log(`\n${endpointCliFocus ? "USER-ENDPOINT CLI SMOKE" : "USER-SPAWN SMOKE"} ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
