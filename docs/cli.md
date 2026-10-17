@@ -1070,11 +1070,13 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
-extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, the mesh
+connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
 channels. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
 named too. A registry directory or record that cannot be read also leaves the selected mesh
-unresolved, because resolution refuses it, and the readable records are still listed. The manager
+unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
+unreadable extensions manifest is refused while loading the command surface, before this report
+can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`.
