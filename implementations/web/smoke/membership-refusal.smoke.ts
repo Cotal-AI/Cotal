@@ -415,7 +415,7 @@ check("CONTROL: a watch that never closes writes nothing",
   };
   const failures: string[] = [];
   const noop = () => {};
-  const handlers: FeedHandlers = { open: noop, error: noop, closed: noop, roster: noop, presenceView: noop, membership: noop, message: noop, membershipFailed: (r) => { failures.push(r); } };
+  const handlers: FeedHandlers = { open: noop, error: noop, closed: noop, roster: noop, presenceView: noop, membership: noop, message: noop, hello: noop, agentFrame: noop, membershipFailed: (r) => { failures.push(r); } };
   openFeed(handlers, () => source);
   check("the feed registers a listener for the refusal event", listeners.has(MEMBERSHIP_READ_FAILED), [...listeners.keys()]);
   check("the listener's event name IS the server's exported constant (a restated literal can drift)",

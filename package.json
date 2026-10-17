@@ -796,6 +796,7 @@
     "smoke:sparse-history-walk": "tsx packages/core/smoke/sparse-history-walk.smoke.ts",
     "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts",
     "smoke:web-http-api": "tsx implementations/web/smoke/http-api.smoke.ts",
+    "smoke:web-session-store": "tsx implementations/web/smoke/session-store.smoke.ts",
     "smoke:web-client-boundary": "tsx implementations/web/smoke/client-boundary.smoke.ts",
     "smoke:expiry-renewal:auth": "tsx implementations/auth/smoke/expiry-renewal.smoke.ts",
     "smoke:manager-log-guidance": "tsx bin/smoke/manager-log-guidance.smoke.ts",

@@ -153,6 +153,54 @@
       "replace": "es.onerror = () => handlers.closed();",
       "expectRed": "6.7 an error while the source is still connecting is a drop the browser retries: error, not closed",
       "cell": "6.7 an error while the source is still connecting is a drop the browser retries: error, not closed"
+    },
+    {
+      "name": "G-S1 the feed no longer listens for hello, so the page never learns its feed id and no session is watched",
+      "file": "implementations/web/client/src/api/feed.ts",
+      "find": "  on<{ feed: string }>(\"hello\", (d) => handlers.hello(d.feed));\n",
+      "replace": "",
+      "expectRed": "9.1 the feed's hello reaches the controller: a session opened after it is watched on that feed",
+      "cell": "9.1 the feed's hello reaches the controller: a session opened after it is watched on that feed"
+    },
+    {
+      "name": "G-S2 the feed no longer listens for agent-frame, so a watched agent's live frames never reach its session",
+      "file": "implementations/web/client/src/api/feed.ts",
+      "find": "  on<AgentFrame>(\"agent-frame\", (d) => handlers.agentFrame(d));\n",
+      "replace": "",
+      "expectRed": "9.2 an agent-frame event reaches the open session as a live frame",
+      "cell": "9.2 an agent-frame event reaches the open session as a live frame"
+    },
+    {
+      "name": "G-S3 the boot drops hello on the floor instead of handing it to the controller",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    hello: controller.onHello,",
+      "replace": "    hello: () => undefined,",
+      "expectRed": "9.1 the feed's hello reaches the controller: a session opened after it is watched on that feed",
+      "cell": "9.1 the feed's hello reaches the controller: a session opened after it is watched on that feed"
+    },
+    {
+      "name": "G-S4 the boot drops agent frames instead of handing them to the controller",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    agentFrame: controller.onAgentFrame,",
+      "replace": "    agentFrame: () => undefined,",
+      "expectRed": "9.2 an agent-frame event reaches the open session as a live frame",
+      "cell": "9.2 an agent-frame event reaches the open session as a live frame"
+    },
+    {
+      "name": "G-S5 a dropped feed keeps its id, so a session opened while it reconnects is watched on a connection the server forgot",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    controller.onFeedLost();\n    error();",
+      "replace": "    error();",
+      "expectRed": "9.3 after the feed drops, a session opened before the next hello is not watched on the dropped id",
+      "cell": "9.3 after the feed drops, a session opened before the next hello is not watched on the dropped id"
+    },
+    {
+      "name": "G-S6 a closed feed keeps its id",
+      "file": "implementations/web/client/src/state/boot.ts",
+      "find": "    controller.onFeedLost();\n    closed();",
+      "replace": "    closed();",
+      "expectRed": "9.4 after the browser closes the feed for good, a new session is not watched on its id either",
+      "cell": "9.4 after the browser closes the feed for good, a new session is not watched on its id either"
     }
   ],
   "suite": [
