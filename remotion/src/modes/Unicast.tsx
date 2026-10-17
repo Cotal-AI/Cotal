@@ -25,24 +25,15 @@ import {
   type Pt,
 } from "./scene";
 
-// bob is the addressee, picked by name so reordering the shared cast cannot move
-// the delivery to another peer; the others are present but unaddressed. The inbox
-// sits on the alice -> bob route.
-const BOB = MODE_PEERS.find((p) => p.name === "bob");
-if (!BOB) throw new Error("the unicast card's addressee bob is not in MODE_PEERS");
+// The inbox sits on the alice -> bob route.
 const INBOX: Pt = { x: 400, y: 325 };
 
 const SEG1: [Pt, Pt] = [
   { x: MODE_ALICE.at.x + 50, y: MODE_ALICE.at.y - 13 },
   { x: INBOX.x - 38, y: INBOX.y + 9 },
 ];
-const SEG2: [Pt, Pt] = [
-  { x: INBOX.x + 38, y: INBOX.y - 9 },
-  { x: BOB.at.x - 48, y: BOB.at.y + 12 },
-];
 
 const PATH1 = wirePath(SEG1[0], lerp(...SEG1, 0.4), lerp(...SEG1, 0.6), SEG1[1]);
-const PATH2 = wirePath(SEG2[0], lerp(...SEG2, 0.4), lerp(...SEG2, 0.6), SEG2[1]);
 
 const T = {
   sendStart: 14,
@@ -58,6 +49,17 @@ export const UNICAST_DURATION = 168;
 
 export const ModeUnicast: React.FC = () => {
   const frame = useCurrentFrame();
+  // bob is the addressee, picked by name so reordering the shared cast cannot move
+  // the delivery to another peer; the others are present but unaddressed. Checked
+  // here, not at import: Root imports every card, so a module-scope throw would
+  // also refuse the cards that never address bob.
+  const bob = MODE_PEERS.find((p) => p.name === "bob");
+  if (!bob) throw new Error("the unicast card's addressee bob is not in MODE_PEERS");
+  const seg2: [Pt, Pt] = [
+    { x: INBOX.x + 38, y: INBOX.y - 9 },
+    { x: bob.at.x - 48, y: bob.at.y + 12 },
+  ];
+  const path2 = wirePath(seg2[0], lerp(...seg2, 0.4), lerp(...seg2, 0.6), seg2[1]);
 
   const t1 = prog(frame, T.sendStart, T.sendEnd);
   const t2 = prog(frame, T.deliverStart, T.deliverEnd);
@@ -81,11 +83,11 @@ export const ModeUnicast: React.FC = () => {
 
   return (
     <Card>
-      <Wires paths={[PATH1, PATH2]} glow={[glow1, glow2]} />
+      <Wires paths={[PATH1, path2]} glow={[glow1, glow2]} />
 
       <AgentNode {...MODE_ALICE} flash={emit} type={CARD_TYPE} />
-      <AgentNode {...BOB} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
-      {MODE_PEERS.filter((p) => p !== BOB).map((p) => (
+      <AgentNode {...bob} status={bobStatus} flash={Math.max(deliverFlash, freeFlash)} type={CARD_TYPE} />
+      {MODE_PEERS.filter((p) => p !== bob).map((p) => (
         <AgentNode key={p.name} {...p} type={CARD_TYPE} />
       ))}
 
@@ -125,11 +127,11 @@ export const ModeUnicast: React.FC = () => {
       ) : (
         <>
           <Beam d={PATH1} pos={(t) => lerp(...SEG1, t)} t={t1} visible={t1 > 0 && t1 < 1} />
-          <Beam d={PATH2} pos={(t) => lerp(...SEG2, t)} t={t2} visible={t2 > 0 && t2 < 1} />
+          <Beam d={path2} pos={(t) => lerp(...seg2, t)} t={t2} visible={t2 > 0 && t2 < 1} />
         </>
       )}
 
-      <Labels mode="unicast" caption="deliver to one, durably" subject={`cotal.demo.inst.${BOB.name}`} type={CARD_TYPE} />
+      <Labels mode="unicast" caption="deliver to one, durably" subject={`cotal.demo.inst.${bob.name}`} type={CARD_TYPE} />
     </Card>
   );
 };
