@@ -25,6 +25,7 @@ export * from "./mesh-registry.js";
 export * from "./join-target.js";
 export * from "./registration-policy.js";
 export * from "./broker-policy.js";
+export * from "./broker-display.js";
 export * from "./mesh-target.js";
 export * from "./preflight.js";
 export * from "./render.js";

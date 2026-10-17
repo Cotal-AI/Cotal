@@ -1,3 +1,4 @@
+import { brokerAddressForDisplay } from "./broker-display.js";
 import type { MeshTarget, MeshTargetError } from "./mesh-target.js";
 import type { PreflightFailure } from "./preflight.js";
 import { PREFLIGHT_CONFIRM_TIMEOUT_MS } from "./preflight.js";
@@ -41,7 +42,7 @@ function renderTargetError(err: MeshTargetError): string {
     case "ambiguous-target":
       return `✗ multiple meshes running - ${(d.available ?? []).join(", ")}. Pick one with \`--space <name>\` or set a default with \`cotal use <name>\`.`;
     case "default-occupied":
-      return `✗ another mesh ("${d.space}") is running at ${d.server} - run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`;
+      return `✗ another mesh ("${d.space}") is running at ${brokerAddressForDisplay(d.server ?? "") ?? "an invalid broker address"} - run \`cotal up\` here to start yours, or \`--space ${d.space}\` to join it`;
     case "stale-auth-root":
       // An operator-registered entry is KEPT (only `cotal meshes rm` drops it), so the recovery
       // there is to point it at the right root — never a claim that it was removed for you.
@@ -60,42 +61,43 @@ function renderTargetError(err: MeshTargetError): string {
 
 /** "Is it live" failures on a registry-resolved target — the classified preflight sentence. */
 function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: boolean): string {
+  const server = brokerAddressForDisplay(t.server) ?? "an invalid broker address";
   switch (kind) {
     case "unreachable":
       // An operator-registered mesh usually runs on ANOTHER machine, so `cotal up` is the wrong
       // remedy here — this machine can only wait for it or stop pointing at it.
       if (t.origin === "manual" || t.origin === "catalog")
-        return `✗ no broker answered at ${t.server} - "${t.space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`;
+        return `✗ no broker answered at ${server} - "${t.space}" is registered here but its mesh is not up; start it where it runs, or \`cotal meshes rm ${t.space}\` to unregister it`;
       // An `up` / pre-origin record is KEPT on a liveness miss. Keep `no mesh running at`
       // so existing attach/mint cells still recognise the classified refusal, and name
       // the recorded root so the operator restarts THAT mesh, not a new one from cwd.
-      return `✗ no mesh running at ${t.server} - mesh "${t.space}" is recorded at ${t.root} but not running; run \`cotal up\` there to restart`;
+      return `✗ no mesh running at ${server} - mesh "${t.space}" is recorded at ${t.root} but not running; run \`cotal up\` there to restart`;
     // The registry-mismatch pair, like `unreachable`, must not prescribe `cotal up` for a mesh this
     // machine only registered: the repair there is the credentials under `--root`, or re-registering
     // the entry — `cotal up` would start a DIFFERENT, local mesh under that name.
     case "registry-creds-rejected":
       return t.origin === "manual" || t.origin === "catalog"
-        ? `✗ mesh "${t.space}" at ${t.server} rejected the credentials under ${t.root} - re-mint them where that mesh runs, or re-register it with \`cotal meshes add ${t.space} --server <url> --root <dir> --force\``
-        : `✗ mesh "${t.space}" at ${t.server} no longer matches its registry entry (credentials rejected - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
+        ? `✗ mesh "${t.space}" at ${server} rejected the credentials under ${t.root} - re-mint them where that mesh runs, or re-register it with \`cotal meshes add ${t.space} --server <url> --root <dir> --force\``
+        : `✗ mesh "${t.space}" at ${server} no longer matches its registry entry (credentials rejected - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
     case "registry-open-now-auth":
       return t.origin === "manual" || t.origin === "catalog"
-        ? `✗ "${t.space}" is registered as an open mesh, but the broker at ${t.server} requires auth - copy that mesh's account + creds under ${t.root} and re-register with \`cotal meshes add ${t.space} --server ${t.server} --mode auth --force\``
-        : `✗ open mesh "${t.space}" at ${t.server} no longer matches its registry entry (broker now requires auth - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
+        ? `✗ "${t.space}" is registered as an open mesh, but the broker at ${server} requires auth - copy that mesh's account + creds under ${t.root} and re-register with \`cotal meshes add ${t.space} --server ${server} --mode auth --force\``
+        : `✗ open mesh "${t.space}" at ${server} no longer matches its registry entry (broker now requires auth - port reused?) - re-run \`cotal up\` from ${t.root}, or \`cotal meshes\` to see what's live`;
     case "creds-rejected":
-      return `✗ credentials for "${t.space}" were rejected at ${t.server} - a different mesh may be running there. Run \`cotal meshes\` to check, or \`cotal up\` here to start yours`;
+      return `✗ credentials for "${t.space}" were rejected at ${server} - a different mesh may be running there. Run \`cotal meshes\` to check, or \`cotal up\` here to start yours`;
     case "open-wants-auth":
-      return `✗ broker at ${t.server} requires auth, but this mesh is open (no trust material) - use \`--space <name>\` for an auth mesh, or run \`cotal up\` here without \`--open\``;
+      return `✗ broker at ${server} requires auth, but this mesh is open (no trust material) - use \`--space <name>\` for an auth mesh, or run \`cotal up\` here without \`--open\``;
     case "stale-auth":
       return `✗ credentials for "${t.space}" have EXPIRED - this mesh enforces bounded credential lifetimes; run \`cotal doctor auth\` in ${t.root} for the diagnosis + exact repair (the mesh itself is up)`;
     case "tls-trust":
       // INFO advertised tls_required (shape evidence only — unauthenticated). Never claims removal
       // or peer identity; conservatively keep the record and point at the trust-store repair.
-      return `✗ mesh "${t.space}" at ${t.server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, or fix the trust store; a TLS-required NATS listener still greets there (INFO is unauthenticated — not mesh identity) so the registry entry was conservatively kept`;
+      return `✗ mesh "${t.space}" at ${server} requires TLS but this client could not complete the handshake (untrusted or missing CA?) - set \`NODE_EXTRA_CA_CERTS\` to the issuing CA for a private CA, or fix the trust store; a TLS-required NATS listener still greets there (INFO is unauthenticated — not mesh identity) so the registry entry was conservatively kept`;
     case "slow-link":
       // No CA guidance here: the confirm probe never reached a conclusive answer, so there is no
       // trust evidence to diagnose. The broker answered TCP; only the credentialed connect ran out
       // of its budget.
-      return `✗ mesh "${t.space}" at ${t.server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - the registry entry was kept; retry, or raise the connect budget if this link is consistently slow`;
+      return `✗ mesh "${t.space}" at ${server} answered TCP but the credentialed connect did not complete within ${PREFLIGHT_CONFIRM_TIMEOUT_MS / 1000}s - the registry entry was kept; retry, or raise the connect budget if this link is consistently slow`;
   }
 }
 
@@ -103,9 +105,10 @@ function renderPreflightFailure(kind: PreflightFailure, t: MeshTarget, pruned: b
  *  escape hatch, which never touches the registry (no prune, no stale-entry wording). */
 function renderReachable(
   reason: "auth-required" | "stale-auth" | "unreachable" | "timeout",
-  server: string,
+  rawServer: string,
   hasAuth: boolean,
 ): string {
+  const server = brokerAddressForDisplay(rawServer) ?? "an invalid broker address";
   if (reason === "stale-auth")
     return `✗ credential EXPIRED at ${server} - bounded lifetime reached (credential death); run \`cotal doctor auth\` where the mesh runs, or re-mint the credential`;
   if (reason === "unreachable") return `✗ can't reach a broker at ${server} - is it running? (\`cotal up\`)`;

@@ -3,12 +3,13 @@
     "implementations/auth/smoke/user-spawn.smoke.ts"
   ],
   "guard": "who labels a manager census the broker refuses to a spawn-scoped user bearer as denied, and still exits 0, ok and complete",
-  "command": "COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm --filter cotal-ai... build && COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm smoke:user-spawn:live",
+  "command": "COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm --filter @cotal-ai/cli build && COTAL_USER_ENDPOINT_CLI_ONLY=1 pnpm smoke:user-spawn:live",
   "completionMarker": "USER-ENDPOINT CLI SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/who-denied-census.json",
   "why": [
     "The smoke signs an ordinary spawn-scoped user in against a live broker, auth service and manager, where manager.read is refused by the broker. The CLI child runs the built dist, so each mutation rebuilds it and the restore rebuilds it back.",
-    "The focused mode runs the same native setup and these assertions, then tears down; the full suite remains the CI-registered coverage."
+    "The focused mode runs the same native setup and these assertions, then tears down; the full suite remains the CI-registered coverage.",
+    "Build the complete exact-source dependency closure first. All mutations in this config change only the CLI package; each mutant and restore rebuild that package instead of unchanged connectors and documentation."
   ],
   "mutations": [
     {
@@ -18,7 +19,7 @@
       "replace": "      if (false) {\n",
       "expectRed": "who labels the census this bearer may not ask as denied, with every agent's managed unknown",
       "cell": "who labels the census this bearer may not ask as denied, with every agent's managed unknown",
-      "afterRestore": "pnpm --filter cotal-ai... build"
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "who writes no scope labels",
@@ -27,7 +28,7 @@
       "replace": "      warnings,\n",
       "expectRed": "who labels the census this bearer may not ask as denied, with every agent's managed unknown",
       "cell": "who labels the census this bearer may not ask as denied, with every agent's managed unknown",
-      "afterRestore": "pnpm --filter cotal-ai... build"
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
       "name": "a denied census is counted as a part left unread",
@@ -36,7 +37,7 @@
       "replace": "        warnings.push({ code: \"MANAGERS_DENIED\", target,",
       "expectRed": "that label is not a part left unread: who exits 0, ok and complete",
       "cell": "that label is not a part left unread: who exits 0, ok and complete",
-      "afterRestore": "pnpm --filter cotal-ai... build"
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

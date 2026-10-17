@@ -1,0 +1,97 @@
+{
+  "suite": [
+    "implementations/cli/smoke/who-roster.smoke.ts",
+    "implementations/cli/smoke/fixtures/who-watch-fault.mjs"
+  ],
+  "guard": "identity and classified offline refusal reports never print URL user information, query tokens or fragments, and never fall back to an unparseable raw address",
+  "command": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build && pnpm exec tsx implementations/cli/smoke/who-roster.smoke.ts",
+  "completionMarker": "COTAL_SMOKE_SENTINEL",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/who-url-privacy.json",
+  "why": [
+    "A complete exact-source dependency build precedes the proof. Each mutation rebuilds both changed operator packages; restoration rebuilds them too.",
+    "Saved-registry cases run the real built CLI in JSON, plain and default layouts, with bare/multiple addresses, user/password, token, query, fragment and invalid input. A real offline who refusal exercises the shared renderer. Diagnostics replace every synthetic marker before logging. The original native baseline is 41 passed and 23 named privacy failures."
+  ],
+  "mutations": [
+    {
+      "name": "identity report reuses the raw server URL",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "space: t.space, server, mode: t.mode",
+      "replace": "space: t.space, server: t.server, mode: t.mode",
+      "expectRed": "whoami --json redacts broker URL secrets for password",
+      "cell": "whoami --json redacts broker URL secrets for password",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "broker display keeps URL username",
+      "file": "packages/workspace/src/broker-display.ts",
+      "find": "      url.username = \"\";\n",
+      "replace": "",
+      "expectRed": "whoami --json redacts broker URL secrets for token",
+      "cell": "whoami --json redacts broker URL secrets for token",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "broker display keeps URL password",
+      "file": "packages/workspace/src/broker-display.ts",
+      "find": "      url.password = \"\";\n",
+      "replace": "",
+      "expectRed": "whoami --json redacts broker URL secrets for password",
+      "cell": "whoami --json redacts broker URL secrets for password",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "broker display keeps URL search",
+      "file": "packages/workspace/src/broker-display.ts",
+      "find": "      url.search = \"\";\n",
+      "replace": "",
+      "expectRed": "whoami --json redacts broker URL secrets for query",
+      "cell": "whoami --json redacts broker URL secrets for query",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "broker display keeps URL hash",
+      "file": "packages/workspace/src/broker-display.ts",
+      "find": "      url.hash = \"\";\n",
+      "replace": "",
+      "expectRed": "whoami --json redacts broker URL secrets for fragment",
+      "cell": "whoami --json redacts broker URL secrets for fragment",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "unparsed broker display falls back to the raw value",
+      "file": "packages/workspace/src/broker-display.ts",
+      "find": "  } catch {\n    return undefined;\n  }",
+      "replace": "  } catch {\n    return servers;\n  }",
+      "expectRed": "whoami --json redacts broker URL secrets for invalid address",
+      "cell": "whoami --json redacts broker URL secrets for invalid address",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "offline target refusal repeats the raw server URL",
+      "file": "packages/workspace/src/render.ts",
+      "find": "  const server = brokerAddressForDisplay(t.server) ?? \"an invalid broker address\";",
+      "replace": "  const server = t.server;",
+      "expectRed": "who --json redacts broker URL secrets from an offline refusal",
+      "cell": "who --json redacts broker URL secrets from an offline refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "raw connection refusal repeats the raw server URL",
+      "file": "packages/workspace/src/render.ts",
+      "find": "  const server = brokerAddressForDisplay(rawServer) ?? \"an invalid broker address\";",
+      "replace": "  const server = rawServer;",
+      "expectRed": "who --json redacts broker URL secrets from a raw refusal",
+      "cell": "who --json redacts broker URL secrets from a raw refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "invalid server flag is misclassified as stored configuration",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "v.server === undefined ? \"SCHEMA_INVALID\" : \"USAGE_INVALID\"",
+      "replace": "\"SCHEMA_INVALID\"",
+      "expectRed": "whoami --json treats an unparseable --server as safe usage refusal",
+      "cell": "whoami --json treats an unparseable --server as safe usage refusal",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

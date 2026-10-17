@@ -1,5 +1,5 @@
 import { resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { CLI_USER_ACTOR, CommandFailure, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, CLI_USER_ACTOR, CommandFailure, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
 
 export const whoamiFlags = [spaceFlag, serverFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
@@ -42,7 +42,9 @@ export async function whoami(args: ParsedArgs): Promise<void> {
   const t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space });
   const target = { space: t.space };
   const warnings: OutputWarning[] = [];
-  const base = { kind: "identity" as const, space: t.space, server: t.server, mode: t.mode };
+  const server = brokerAddressForDisplay(t.server);
+  if (server === undefined) throw new CommandFailure("refused", v.server === undefined ? "SCHEMA_INVALID" : "USAGE_INVALID", "the server address cannot be parsed safely; the raw value was not printed", { target });
+  const base = { kind: "identity" as const, space: t.space, server, mode: t.mode };
   const none = { principal: null, owner: null, actor: null, subject: null, loginExpiresAt: null, grant: null };
   let result: WhoamiResult;
   if (t.mode === "open") {

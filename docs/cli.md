@@ -1406,8 +1406,10 @@ secret that derives its owner and principal. Those fields stay `null`; the repor
 principal unknown on this machine, rather than calling the user signed out. The cached expiry is
 advisory and the command does not verify the login with the IdP. `dms` says whether the identity
 may read DM history: on an open mesh, or with the space signer's audit credential on an authenticated mesh. The report
-reads local configuration. For an unregistered `--space` with `--server`, it assumes a raw open
-target. It does not contact the broker to check its authentication requirements.
+reads local configuration and does not contact the broker to check its authentication requirements.
+An unregistered `--space` is refused even with `--server`. Server addresses in the identity report
+and connection refusals omit URL user information, query strings and fragments. An address that
+cannot be parsed safely makes `whoami` refuse rather than print the raw value.
 
 ## Endpoint control
 

@@ -49,13 +49,27 @@ type Envelope = {
   completeness: string;
   command: string;
   target: { space: string; scope?: string };
-  result: { kind: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
+  result: { kind: string; server?: string; view?: string; managers?: string; hidden?: number; items?: Row[]; identity?: { kind: string; principal: string | null; owner?: string | null; actor?: string | null; subject?: string | null; grant: string | null }; read?: unknown; post?: unknown; dms?: boolean | null; capabilities?: unknown } | null;
   warnings: { code: string; message: string }[];
   error?: { code: string; message: string };
 };
 
 const space = `whosmoke-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
+const urlUser = `synthetic-user-${randomUUID()}`;
+const urlPassword = `synthetic-password-${randomUUID()}`;
+const urlToken = `synthetic-token-${randomUUID()}`;
+const urlCases = [
+  { label: "password", space: "url-password", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:1`, shown: "nats://127.0.0.1:1" },
+  { label: "token", space: "url-token", server: `nats://${urlToken}@127.0.0.1:1`, shown: "nats://127.0.0.1:1" },
+  { label: "bare address", space: "url-bare", server: `${urlUser}:${urlPassword}@127.0.0.1:1`, shown: "127.0.0.1:1" },
+  { label: "multiple addresses", space: "url-multiple", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:1,nats://${urlToken}@127.0.0.1:2`, shown: "nats://127.0.0.1:1,nats://127.0.0.1:2" },
+  { label: "query", space: "url-query", server: `wss://127.0.0.1:1/mesh?access_token=${urlToken}`, shown: "wss://127.0.0.1:1/mesh" },
+  { label: "fragment", space: "url-fragment", server: `nats://127.0.0.1:1#${urlToken}`, shown: "nats://127.0.0.1:1" },
+  { label: "invalid address", space: "url-invalid", server: `nats://${urlUser}:${urlPassword}@[invalid`, shown: null },
+];
+const redactUrlMarkers = (text: string): string => [urlUser, urlPassword, urlToken].reduce((value, marker) => value.replaceAll(marker, "<redacted-synthetic-marker>"), text);
+
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
 const storeDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -108,6 +122,8 @@ try {
   try {
     recordMesh({ space, server: servers, root: meshRoot, mode: "auth", origin: "manual", ts: new Date().toISOString() });
     recordMesh({ space: "openmesh", server: `nats://127.0.0.1:${await pickFreePort()}`, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
+    for (const entry of urlCases)
+      recordMesh({ space: entry.space, server: entry.server, root: openRoot, mode: "open", origin: "manual", ts: new Date().toISOString() });
     setCurrent(space);
   } finally {
     if (priorHome === undefined) delete process.env.COTAL_HOME;
@@ -202,6 +218,35 @@ try {
   const open = await run(["whoami", "--space", "openmesh", "--json"]);
   check("whoami on an open mesh says nothing is authenticated", open.status === 0 && open.envelope?.result?.identity?.kind === "open", shown(open));
   check("whoami on an open mesh reports DM history as readable without a credential", open.status === 0 && open.envelope?.result?.dms === true, shown(open));
+  for (const entry of urlCases) {
+    for (const format of ["--json", "--plain", undefined] as const) {
+      const read = await run(["whoami", "--space", entry.space, ...(format ? [format] : [])]);
+      const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
+      const safe = entry.shown === null
+        ? read.status === 1 && (format !== "--json" || read.envelope?.error?.code === "SCHEMA_INVALID")
+        : read.status === 0 && (format === "--json" ? read.envelope?.result?.server === entry.shown : read.stdout.includes(entry.shown));
+      const detail = shown(read);
+      check(`whoami ${format ?? "human"} redacts broker URL secrets for ${entry.label}`, hidden && safe, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+    }
+  }
+  for (const format of ["--json", "--plain"] as const) {
+    const read = await run(["who", "--space", "url-password", format]);
+    const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
+    const detail = shown(read);
+    check(`who ${format} redacts broker URL secrets from an offline refusal`, read.status === 2 && hidden, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+  }
+  for (const format of ["--json", "--plain"] as const) {
+    const read = await run(["who", "--space", "not-registered-raw", "--server", urlCases[0]!.server, format]);
+    const hidden = [urlUser, urlPassword, urlToken].every((marker) => !read.stdout.includes(marker) && !read.stderr.includes(marker));
+    const detail = shown(read);
+    check(`who ${format} redacts broker URL secrets from a raw refusal`, read.status === 2 && hidden, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+    const invalid = await run(["whoami", "--space", "openmesh", "--server", urlCases.find((entry) => entry.shown === null)!.server, format]);
+    const safe = [urlUser, urlPassword, urlToken].every((marker) => !invalid.stdout.includes(marker) && !invalid.stderr.includes(marker));
+    const shownInvalid = shown(invalid);
+    check(`whoami ${format} treats an unparseable --server as safe usage refusal`, invalid.status === 1 && safe && (format !== "--json" || invalid.envelope?.error?.code === "USAGE_INVALID"), { status: shownInvalid.status, stdout: redactUrlMarkers(shownInvalid.stdout), stderr: redactUrlMarkers(shownInvalid.stderr) });
+  }
+  const unknown = await run(["whoami", "--space", "not-registered-whoami", "--server", "nats://127.0.0.1:1", "--json"]);
+  check("whoami refuses an unregistered --space even with --server", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
   const noCreds = await run(["whoami", "--creds", probe, "--json"]);
   check("whoami takes no --creds: it is a usage error", noCreds.status === 1 && noCreds.envelope?.error?.code === "USAGE_INVALID", shown(noCreds));
   const both = await run(["who", "--json", "--plain"]);
