@@ -115,9 +115,17 @@ document. Bare `cotal ext` and `cotal ext list` do. `ext add`, `ext remove`, `ex
 failure.
 
 A command whose `structured output` line also names `plain` takes `--plain`, which writes the same
-report as plain lines: no color, no marks, ASCII labels. Pass one of `--json` and `--plain`; both is a
-`USAGE_INVALID` refusal. A table that does not fit the terminal is written as one labeled record per
-row, so no value is cut off.
+report as plain lines: no color, no marks, ASCII labels. Plain writes these punctuation marks in
+ASCII wherever they appear: `·` and long dashes as `-`, `…` as `...`, `→` and `↳` as `->`, and `§`
+as `section`. Other characters, such as the letters of a name or a message, are written as they are.
+Pass one of `--json` and `--plain`; both is a `USAGE_INVALID` refusal. A table that does not fit the
+terminal is written as one labeled record per row, so no value is cut off.
+
+On a terminal, a long value, line, warning or failure wraps at spaces, and each continuation line
+starts under the text it continues. A word wider than the line, such as a path, keeps a line of its
+own and is never split. Help wraps the same way: a usage line breaks only between options, and when
+the flag names leave their descriptions fewer than 30 columns, each description goes on the lines
+under its flag. Output to a pipe or a file is never wrapped.
 
 A read that could not read part of what it was asked for is `partial`: `result` holds what it read,
 `completeness` is `partial`, each part it could not read is a warning, and it exits 4. A list is
@@ -1136,16 +1144,19 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 | `kind` | `infrastructure` |
 | `machine` | `version`, `install` (`kind` and `root`), `nats` (`path`, `bundled` or `missing`), `integrations` (each `{name, state, text}` a connector's setup reports), `connectors` (each `{name, requires, missing}`), `skills` (`state`: `current`, `not-installed`, `behind` or `unreadable`), and `web` (`installed`, `url` and the error of each when it could not be read) |
 | `extensions` | `root` and `items`, each `{package, label, version}` |
-| `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid` or `missing`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`) and `storedState` |
-| `meshes` | `current`, `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
-| `selected` | `{resolved: false, code, message}` when no mesh resolves; otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
+| `folder` | `root`, `auth` (`state`: `space`, `spaces`, `none` or `unreadable`), `personas` (`root`, `default`: `valid`, `invalid`, `missing` or `unreadable`, `demo` and `error`), `launches` (whether a bare spawn launches from this folder's catalog; `null` when no mesh resolves), `processes` (each `{name, state, pid, detail}`, `state` one of `running`, `stopped`, `not-serving`, `unknown` or `unreadable`) and `storedState` |
+| `meshes` | `current`, `unreadable` (each registry file or current-mesh pointer that could not be read, as `{file, error}`), `items` (each with `space`, `server`, `mode`, `root`, `origin`, `tlsRequired`, `eventsRequired`, `current` and `check`: `reachable`, `unreachable` or `not-checked`) and `catalogs` (each `{idp, state, error}`) |
+| `selected` | `{resolved: false, code, message}` when no mesh resolves (`code` is `registry-unreadable` when a registry record could not be read); otherwise the target's fields, `connection` (`ok` or the reason it failed; on a user-auth mesh `reachable` or `unreachable`), `login`, `deliveryResponder` (`bound`, `unbound`, `stale` or `unknown`), `snapshot`, `channels` and `membershipFeed` |
 | `hints` | The hints, in the order the report prints them |
 
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
-extensions manifest, the connectors, the skills bundle, the web records, a user-auth login, or the
-selected mesh's channels. The manager row asks the service endpoint once: a live process that does
+extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, a mesh
+registry record, the current-mesh pointer, a user-auth login, or the selected mesh's channels. Only
+an absent catalog, registry or pointer reads as empty or unset. A registry record that cannot be
+read also leaves the selected mesh unresolved, because resolution refuses that record, and the
+readable records are still listed. The manager row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`.
 A process row whose PID record exists but cannot be read, or exists under both its current and a
@@ -1185,7 +1196,8 @@ no `--json`, `--plain` or `--all`. It reads **each
 component's own control surface**, rather than treating a PID, a lease, or a successful probe of a
 sibling as proof that the component serves. It prints one of `serving`, `absent`, `not-serving`, or
 `refused` for each component and exits `0`, `1`, `2`, or `3` respectively (the highest observed
-state wins):
+state wins). That exit replaces the report's own, so a partial report followed by a clean pass exits
+0:
 
 - **manager**: local PID record, its liveness-lease holder and PID, then the manager's own typed
   `status` service reachability from this host. Manager builds that do not report static
@@ -2324,6 +2336,8 @@ channel the identity may read. `--limit` bounds the read, and `--since`, `--from
 filter that window on this machine. They do not search the whole stream. `result.window` says how
 many messages were read, whether older retained messages exist that the window did not reach, and
 whether the window goes back to `--since`.
+The report shows each message's local time, with its date when it is not today; `result.items[].ts`
+is the ISO time.
 
 Retained history is not every message sent. The chat stream keeps a fixed number of messages per
 sender on each channel, so a busy sender's oldest messages are discarded while other senders'

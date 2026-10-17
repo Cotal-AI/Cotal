@@ -2,7 +2,7 @@
   "suite": [
     "implementations/cli/smoke/history-read.smoke.ts"
   ],
-  "guard": "history reads the newest retained window with --limit, --since, --from and --grep applied to it, adds DMs only with --dms, names each sender at the chat stream's per-sender limit as a gap and each channel's replay policy from the registry, refuses an identity that may not read, names a user's denied channels, and follows as stream records ending with an end record",
+  "guard": "history reads the newest retained window with --limit, --since, --from and --grep applied to it, adds DMs only with --dms, names each sender at the chat stream's per-sender limit as a gap and each channel's replay policy from the registry, refuses an identity that may not read, names a user's denied channels, shows a person each message's local time and wraps a followed line to the terminal, and follows as stream records ending with an end record",
   "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/history-read.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/history-read.json",
@@ -135,6 +135,33 @@
       "replace": "if (presentation === \"json\") void 0;",
       "expectRed": "an interrupted follow ends with an end record and exit 0",
       "cell": "an interrupted follow ends with an end record and exit 0",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the plain report prints the ISO time",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "rows: r.items.map((item) => ({ ts: shownTime(item.ts),",
+      "replace": "rows: r.items.map((item) => ({ ts: item.ts,",
+      "expectRed": "the plain report shows each message's local time, not the ISO time JSON carries",
+      "cell": "the plain report shows each message's local time, not the ISO time JSON carries",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a followed line prints the ISO time",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "return `${shownTime(item.ts)}  ${where(item)}",
+      "replace": "return `${item.ts}  ${where(item)}",
+      "expectRed": "a followed line shows the local time, not the ISO time",
+      "cell": "a followed line shows the local time, not the ISO time",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a followed line ignores the terminal width",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "presentation === \"rich\" ? \"rich\" : \"plain\", terminalWidth(process.stdout))}",
+      "replace": "presentation === \"rich\" ? \"rich\" : \"plain\")}",
+      "expectRed": "a followed line wraps at word boundaries in a 60-column terminal",
+      "cell": "a followed line wraps at word boundaries in a 60-column terminal",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]

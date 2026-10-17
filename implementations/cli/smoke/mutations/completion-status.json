@@ -87,7 +87,7 @@
       "afterRestore": "pnpm --filter cotal-ai... build",
       "name": "a usage refusal prints the help on stdout",
       "file": "implementations/cli/src/command.ts",
-      "find": "  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line));\n",
+      "find": "  if (cmd) printCommandHelp(cmd, undefined, (line) => console.error(line), terminalWidth(process.stderr));\n",
       "replace": "  if (cmd) printCommandHelp(cmd);\n",
       "expectRed": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr",
       "cell": "completion tcsh exits 1, writes nothing on stdout, and puts the help on stderr"
@@ -126,6 +126,24 @@
       "replace": "rc: join(process.env.ZDOTDIR || homedir(), \".zshrc\") };",
       "expectRed": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
       "cell": "the status reads a relative ZDOTDIR from its working directory and names the absolute file",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a shell with no wiring has a blank cell",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "              wired: s.wiredIn ?? { text: s.state === \"current\" || s.state === \"differs\" ? \"no install line\" : \"not wired in\", tone: \"hint\" },\n",
+      "replace": "              wired: s.wiredIn ?? (s.state === \"current\" || s.state === \"differs\" ? { text: \"no install line\", tone: \"hint\" } : \"\"),\n",
+      "expectRed": "a shell with no wiring says not wired in, and PowerShell's file says none",
+      "cell": "a shell with no wiring says not wired in, and PowerShell's file says none",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a shell with no file has a blank cell",
+      "file": "implementations/cli/src/commands/completion.ts",
+      "find": "              stub: s.stub ?? { text: \"none\", tone: \"hint\" },\n",
+      "replace": "              stub: s.stub ?? \"\",\n",
+      "expectRed": "a shell with no wiring says not wired in, and PowerShell's file says none",
+      "cell": "a shell with no wiring says not wired in, and PowerShell's file says none",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
