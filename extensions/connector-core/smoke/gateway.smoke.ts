@@ -1,6 +1,6 @@
 /**
- * Remote gateway surface (registerCotalGatewayTools), driven end to end: its OWN nats-server, a
- * real Streamable HTTP MCP server with bearer auth, and the real SDK client. Every call shares one
+ * Remote gateway surface (registerCotalGatewayTools), driven end to end: its OWN nats-server, the
+ * package's own HTTP handler (handleGatewayRequest) behind bearer auth, and the real SDK client. Every call shares one
  * bearer per account, as a hosted MCP client does across conversations, so only the explicit
  * connection_id can tell two conversations apart.
  *
@@ -13,7 +13,8 @@
  *   - each call runs on its connection's own channels, and the advertised send default names none;
  *   - two connections of one account are independent mesh identities;
  *   - disconnect closes one connection and leaves the other working;
- *   - only the remote subset is offered, and the orientation card says so.
+ *   - only the remote subset is offered, and the orientation card says so;
+ *   - the handler answers POST with JSON and the default instructions, and every other method 405.
  *
  * Run: pnpm smoke:gateway
  */
@@ -25,14 +26,12 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid, type CotalMessage, type Delivery } from "@cotal-ai/core";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
-import { NameTaken, registerCotalGatewayTools, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
+import { GATEWAY_INSTRUCTIONS, NameTaken, handleGatewayRequest, type GatewayConnection, type GatewayHost } from "../src/gateway.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, awaitBrokerReady, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -125,21 +124,13 @@ const readBody = (req: IncomingMessage): Promise<unknown> =>
     req.on("error", reject);
   });
 
-// Stateless Streamable HTTP: a fresh server per request, so nothing survives between calls except
-// what the host stores. The bearer decides the account and nothing else.
+// The embedder's part: the bearer decides the account and nothing else. The body is parsed first,
+// as a web framework would, and the handler serves the rest.
 const http = createServer(async (req, res) => {
   const token = /^Bearer (.+)$/.exec(req.headers.authorization ?? "")?.[1];
   const account = token ? BEARERS[token] : undefined;
-  if (account) (req as IncomingMessage & { auth?: AuthInfo }).auth = { token: token!, clientId: "smoke", scopes: [], extra: { account } };
-  const server = new McpServer({ name: "cotal-gateway-smoke", version: "0.0.0" });
-  registerCotalGatewayTools(server, host);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  res.on("close", () => {
-    void transport.close();
-    void server.close();
-  });
-  await server.connect(transport);
-  await transport.handleRequest(req, res, await readBody(req));
+  const auth: AuthInfo | undefined = account ? { token: token!, clientId: "smoke", scopes: [], extra: { account } } : undefined;
+  await handleGatewayRequest(host, { req, res, body: req.method === "POST" ? await readBody(req) : undefined, ...(auth ? { auth } : {}) });
 });
 const httpPort = await new Promise<number>((resolve) => http.listen(0, "127.0.0.1", () => resolve((http.address() as { port: number }).port)));
 const url = new URL(`http://127.0.0.1:${httpPort}/mcp`);
@@ -178,6 +169,23 @@ try {
   const a = await clientFor("tok-a");
   const b = await clientFor("tok-b");
   const anon = await clientFor();
+
+  // ---- the handler ----
+  check("the handler sends the default instructions", a.getInstructions() === GATEWAY_INSTRUCTIONS, a.getInstructions());
+  for (const method of ["GET", "DELETE"]) {
+    const r = await fetch(url, { method, headers: { authorization: "Bearer tok-a", accept: "text/event-stream, application/json" } });
+    const allow = r.headers.get("allow");
+    await r.body?.cancel();
+    check(`${method} answers 405 with no stream to open`, r.status === 405 && allow === "POST", { status: r.status, allow });
+  }
+  const ping = await fetch(url, {
+    method: "POST",
+    headers: { authorization: "Bearer tok-a", "content-type": "application/json", accept: "application/json, text/event-stream" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  const pingType = ping.headers.get("content-type") ?? "";
+  const pingBody = (await ping.json().catch(() => null)) as { result?: { tools?: unknown[] } } | null;
+  check("a POST is answered as one JSON response", ping.status === 200 && pingType.startsWith("application/json") && Array.isArray(pingBody?.result?.tools), { status: ping.status, pingType });
 
   // ---- the offered surface ----
   const tools = (await a.listTools()).tools;

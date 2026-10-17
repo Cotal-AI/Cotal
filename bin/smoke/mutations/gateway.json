@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/gateway.smoke.ts"
   ],
-  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset",
+  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method",
   "command": "pnpm smoke:gateway",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
   "why": [
@@ -93,6 +93,42 @@
       "expectRed": "orientation names this connection",
       "cell": "orientation names this connection",
       "note": "The connection's own configuration carries its name into the orientation card. The default-channel cell stays green under this mutation because the MeshAgent resolves an omitted channel from its own subscription, not from the spec's configuration."
+    },
+    {
+      "name": "the handler serves every method",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "if (r.req.method !== \"POST\") {",
+      "replace": "if (false) {",
+      "expectRed": "GET answers 405 with no stream to open",
+      "cell": "GET answers 405 with no stream to open",
+      "note": "A stateless GET would then open an event stream that never carries a message and stays open until the client leaves."
+    },
+    {
+      "name": "the handler drops the caller's authentication",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": ".auth = r.auth;",
+      "replace": ".auth = undefined;",
+      "expectRed": "the requested name is used when free",
+      "cell": "the requested name is used when free",
+      "note": "Every tool would then see no authentication and refuse, so no conversation could connect."
+    },
+    {
+      "name": "the handler answers POST as an event stream",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "sessionIdGenerator: undefined, enableJsonResponse: true",
+      "replace": "sessionIdGenerator: undefined, enableJsonResponse: false",
+      "expectRed": "a POST is answered as one JSON response",
+      "cell": "a POST is answered as one JSON response",
+      "note": "A buffering proxy in front of the endpoint could then hold a response it cannot tell is complete."
+    },
+    {
+      "name": "the handler sends no default instructions",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "instructions: r.instructions ?? GATEWAY_INSTRUCTIONS",
+      "replace": "instructions: r.instructions",
+      "expectRed": "the handler sends the default instructions",
+      "cell": "the handler sends the default instructions",
+      "note": "A client would then get no instruction to connect once per conversation and keep its connection_id."
     }
   ]
 }

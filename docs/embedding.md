@@ -269,8 +269,16 @@ The host implements `GatewayHost`:
 names the mesh tools the gateway offers. Spawn, despawn, persona, run, yield and reconnect belong
 to a supervised local seat and are left out. One tool list serves every connection, so no
 advertised text names one connection's channels. Each call runs against that connection's own
-configuration. Authentication, credential issuance and revocation, the HTTP transport and durable
-connection records stay with the host.
+configuration. Authentication, credential issuance and revocation and durable connection records
+stay with the host.
+
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions? })` serves one HTTP
+request to the endpoint with the package's own MCP server, so the embedding service never imports an
+MCP SDK or a zod version of its own. The service authenticates the request, answers 401 itself when
+that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
+as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
+other method answers 405. `GATEWAY_INSTRUCTIONS` is the server instructions text sent when
+`instructions` is omitted.
 
 ### Remote manager client composition
 

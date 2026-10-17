@@ -10,10 +10,13 @@
  * recent connection, because that would put one conversation's words under another's identity.
  *
  * The embedder owns everything account-shaped through {@link GatewayHost}: authentication,
- * credential issuance and revocation, and durable records. This module owns the surface and the
- * name rule.
+ * credential issuance and revocation, and durable records. This module owns the surface, the name
+ * rule and, through {@link handleGatewayRequest}, the MCP server itself, so an embedder never needs
+ * an MCP SDK of its own.
  */
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import { z } from "zod";
 import { assertValidName } from "@cotal-ai/core";
@@ -224,4 +227,55 @@ export function registerCotalGatewayTools(server: McpServer, host: GatewayHost, 
       },
     );
   }
+}
+
+/** The server instructions {@link handleGatewayRequest} sends when the embedder gives none. */
+export const GATEWAY_INSTRUCTIONS =
+  "Cotal connects this conversation to the person's Cotal space. Call cotal_connect once with a short name " +
+  "for this conversation, then pass the returned connection_id on every other cotal tool call. Each " +
+  "conversation needs its own connection. Never reuse another conversation's connection_id.";
+
+/** One HTTP request to a gateway endpoint. */
+export interface GatewayRequest {
+  req: IncomingMessage;
+  res: ServerResponse;
+  /** The parsed JSON body, for a framework that already read the request stream. Omit it and the
+   *  body is read from `req`. */
+  body?: unknown;
+  /** What the embedder authenticated this request as, handed to {@link GatewayHost.account}.
+   *  Without it every tool refuses and runs nothing. */
+  auth?: AuthInfo;
+  /** The source tag on messages this endpoint sends. */
+  source?: string;
+  instructions?: string;
+}
+
+/**
+ * Serve one HTTP request to a gateway endpoint with this package's own MCP server and Streamable
+ * HTTP transport. The embedder authenticates and routes. It never builds an MCP server, so its own
+ * SDK or zod version cannot disagree with the one these tools were written against.
+ *
+ * The endpoint is stateless. Each POST gets a fresh server and transport and a JSON response, so
+ * nothing survives between requests except what the host stores. There is no server-initiated
+ * stream and no session to end, so every other method answers 405, as the Streamable HTTP
+ * transport allows.
+ */
+export async function handleGatewayRequest(host: GatewayHost, r: GatewayRequest): Promise<void> {
+  if (r.req.method !== "POST") {
+    r.res
+      .writeHead(405, { allow: "POST", "content-type": "application/json" })
+      .end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed." }, id: null }));
+    return;
+  }
+  const server = new McpServer({ name: "cotal", version: "0.0.0" }, { instructions: r.instructions ?? GATEWAY_INSTRUCTIONS });
+  registerCotalGatewayTools(server, host, r.source);
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+  r.res.on("close", () => {
+    void transport.close();
+    void server.close();
+  });
+  // The transport hands `req.auth` to each tool as `extra.authInfo`.
+  (r.req as IncomingMessage & { auth?: AuthInfo }).auth = r.auth;
+  await server.connect(transport);
+  await transport.handleRequest(r.req, r.res, r.body);
 }
