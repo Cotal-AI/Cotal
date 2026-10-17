@@ -1,0 +1,88 @@
+{
+  "suite": [
+    "packages/core/smoke/read-acl-auth.smoke.ts"
+  ],
+  "guard": "one-shot channel history stays inside the authenticated single-filter lifecycle grant and never takes over or deletes another process reader",
+  "command": "pnpm smoke:read-acl:auth",
+  "completionMarker": "READ-ACL SMOKE",
+  "progressPattern": "^  [\u2713\u2717] ",
+  "minTicks": 13,
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/channel-history-page.json",
+  "why": [
+    "The public production page API reads a real JWT-auth broker without any provisioned ACL mirror. Named cells exercise real create-only occupancy, same- and different-channel contention, cancellation, delayed old-owner completion, a native iterator stop and malformed stored rows. A mutation must fail its named cell, not an earlier broker error or timeout."
+  ],
+  "mutations": [
+    {
+      "name": "page returns oldest rather than newest rows",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    return { items: out.slice(-limit), complete: out.length <= limit };",
+      "replace": "    return { items: out.slice(0, limit), complete: out.length <= limit };",
+      "expectRed": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first",
+      "cell": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first"
+    },
+    {
+      "name": "page hides older retained rows",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    return { items: out.slice(-limit), complete: out.length <= limit };",
+      "replace": "    return { items: out.slice(-limit), complete: true };",
+      "expectRed": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first",
+      "cell": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first"
+    },
+    {
+      "name": "page uses an observer-shaped plural filter",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          name, description: marker, filter_subject: subject,",
+      "replace": "          name, description: marker, filter_subjects: [subject],",
+      "expectRed": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first",
+      "cell": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first"
+    },
+    {
+      "name": "page occupancy marker is shared across connections",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    const marker = randomUUID();\n    let created: ConsumerInfo;",
+      "replace": "    const marker = \"shared-history-reader\";\n    let created: ConsumerInfo;",
+      "expectRed": "J9: simultaneous same-channel connections each receive a whole independent page",
+      "cell": "J9: simultaneous same-channel connections each receive a whole independent page"
+    },
+    {
+      "name": "page pre-deletes an occupied fixed-name reader",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    let created: ConsumerInfo;\n    for (;;) {",
+      "replace": "    let created: ConsumerInfo;\n    await this.deleteConsumerIfPresent(stream, name);\n    for (;;) {",
+      "expectRed": "J4: occupied read and cancellation never change or delete the other owner's consumer",
+      "cell": "J4: occupied read and cancellation never change or delete the other owner's consumer"
+    },
+    {
+      "name": "page skips the completed snapshot ownership check",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!owns(await consumer.info())) throw new Error(\"channelHistoryPage: consumer ownership was lost\");\n",
+      "replace": "",
+      "expectRed": "J5: a delayed old reader detects replacement and leaves the successor intact",
+      "cell": "J5: a delayed old reader detects replacement and leaves the successor intact"
+    },
+    {
+      "name": "page accepts a short clean iterator as a full window",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "      if (delivered !== pending)\n        throw new Error(`channelHistoryPage: read ${delivered} of ${pending} messages before the window was cut short`);\n",
+      "replace": "",
+      "expectRed": "J7: a pull ending before its captured pending count is a cut-short error, never a page",
+      "cell": "J7: a pull ending before its captured pending count is a cut-short error, never a page"
+    },
+    {
+      "name": "page trusts stored JSON without envelope and sender verification",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          delivered++;\n          const msg = historyMessageFromDelivery(m);\n          if (msg) {",
+      "replace": "          delivered++;\n          let msg: CotalMessage | undefined;\n          try { msg = m.json<CotalMessage>(); } catch {}\n          if (msg) {",
+      "expectRed": "J10: malformed and sender-forged stored rows do not enter the page or completeness probe",
+      "cell": "J10: malformed and sender-forged stored rows do not enter the page or completeness probe"
+    },
+    {
+      "name": "page drops this callers own messages",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          delivered++;\n          const msg = historyMessageFromDelivery(m);\n          if (msg) {",
+      "replace": "          delivered++;\n          const msg = historyMessageFromDelivery(m);\n          if (msg && msg.from.id !== this.card.id) {",
+      "expectRed": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first",
+      "cell": "J1: public channel page reaches the scoped consumer and keeps the newest own sends oldest first"
+    }
+  ]
+}

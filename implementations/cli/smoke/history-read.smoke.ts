@@ -4,8 +4,8 @@
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
  * `--grep`, `--dms`, the usage refusals, a credential that may not read history, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
- * per-sender limit). The user-auth read path, which goes through the delivery daemon, is driven in process
- * against a stand-in endpoint.
+ * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint.
+ * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
  * inherited COTAL_* is stripped.
@@ -218,6 +218,12 @@ try {
     check(`history ${args.join(" ")} is one USAGE_INVALID envelope, exit 1`, r.status === 1 && r.envelope?.error?.code === "USAGE_INVALID", shown(r));
   }
 
+  const unavailable = `nats://127.0.0.1:${await pickFreePort()}`;
+  const tooOld = await run(["history", "--since", "999999999999999999999999999999999999999999999999d", "--server", unavailable, "--json"]);
+  check("an unrepresentable --since age is a usage error before connecting", tooOld.status === 1 && tooOld.envelope?.error?.code === "USAGE_INVALID", shown(tooOld));
+  const unsafeSequence = await run(["history", "--since", "9007199254740993", "--server", unavailable, "--json"]);
+  check("an inexact --since sequence is a usage error before connecting", unsafeSequence.status === 1 && unsafeSequence.envelope?.error?.code === "USAGE_INVALID", shown(unsafeSequence));
+
   // ── a credential that may not read history ──────────────────────────────────────────────────────
   const probe = join(home, "probe.creds");
   writeFileSync(probe, await mintCreds(auth, newIdentity(), "probe"), { mode: 0o600 });
@@ -300,7 +306,7 @@ try {
   releaseHome();
 }
 
-// ── a user-auth identity reads through the delivery daemon ─────────────────────────────────────────
+// ── a user-auth identity renders channel-scoped pages ─────────────────────────────────────────
 {
   const { readWindow } = await import("../src/commands/history.js");
   const msg = (id: string, ts: number, channel: string, text: string) => ({ id, ts, space: "s", channel, from: { id: "u_o.a", name: "ann" }, parts: [{ kind: "text", text }] });
@@ -311,7 +317,7 @@ try {
   };
   const ep = {
     listChannels: async () => [{ channel: "general", messages: 1 }, { channel: "secret", messages: 4 }, { channel: "ops", messages: 9 }],
-    readHistory: async (ch: string) => {
+    channelHistoryPage: async (ch: string) => {
       const page = pages[ch]!;
       if (page instanceof Error) throw page;
       return page;
