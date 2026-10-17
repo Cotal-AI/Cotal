@@ -1401,8 +1401,11 @@ connection state to report.
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
 cannot be read here: `read`, `post` and `capabilities` are `null`, the run is `partial` (exit 4) and
-the `GRANT_NOT_LOCAL` warning says so. `dms` says whether the identity may read DM history, which
-only the space signer can.
+the `GRANT_NOT_LOCAL` warning says so. A remote registration can hold a cached login without the
+secret that derives its owner and principal. Those fields stay `null`; the report calls the
+principal unknown on this machine, rather than calling the user signed out. The cached expiry is
+advisory and the command does not verify the login with the IdP. `dms` says whether the identity
+may read DM history, which only the space signer can.
 
 ## Endpoint control
 
