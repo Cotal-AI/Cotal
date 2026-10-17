@@ -34,6 +34,7 @@
  * Run: pnpm smoke:web-graph-boot
  */
 import { openFeed, type FeedHandlers, type FeedSource } from "../client/src/api/feed.js";
+import type { CotalMessage } from "../client/src/api/types.js";
 import type { Api } from "../client/src/state/controller.js";
 import { pillState } from "../client/src/lib/membership.js";
 import { startDashboard } from "../client/src/state/boot.js";
@@ -360,6 +361,58 @@ async function main() {
       console.error = realError;
       process.off("unhandledRejection", onUnhandled);
     }
+  }
+
+  // The session events ride the same `EventSource`. Fired here through the shipped `openFeed` and
+  // the shipped boot, and read back from what the controller asked the server and wrote to the store.
+  console.log("9. the feed's hello and agent frames reach the controller, and a lost feed's id is dropped");
+  {
+    const listeners = new Map<string, (e: MessageEvent) => void>();
+    const src = {
+      readyState: 1,
+      addEventListener: (type: string, fn: (e: MessageEvent) => void) => void listeners.set(type, fn),
+      onopen: null as (() => void) | null,
+      onerror: null as (() => void) | null,
+      close: () => undefined,
+    };
+    const fire = (type: string, data: unknown) => listeners.get(type)?.({ data: JSON.stringify(data) } as MessageEvent);
+    const calls: string[] = [];
+    const api: Api = {
+      ...unusedApi,
+      ...bootReads,
+      agentEvents: async (id, limit) => (calls.push(`read ${id} ${limit}`), { frames: [], more: false }),
+      watch: async (id, feed) => void calls.push(`watch ${id} ${feed}`),
+      unwatch: async (id, feed) => void calls.push(`unwatch ${id} ${feed}`),
+    };
+    const store = createStore<DashboardState>(structuredClone(initialState));
+    const dash = startDashboard({ store, api, openFeed: (h) => openFeed(h, () => src) });
+    const settle = async () => { for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r)); };
+    const frame = (id: string, ts: number) =>
+      ({ id, ts, space: "main", from: { id: "local.abc" }, parts: [{ kind: "ag-ui.frame", protocol: "ag-ui/1", threadId: "t", runId: "r", epoch: 1, seq: 1, events: [{ type: "RUN_STARTED", runId: "r" }] }] }) as unknown as CotalMessage;
+    src.onopen?.();
+    fire("hello", { feed: "feed-9" });
+    dash.controller.openSession("local.abc");
+    await settle();
+    ok("9.1 the feed's hello reaches the controller: a session opened after it is watched on that feed",
+      calls[0] === "watch local.abc feed-9" && calls[1] === "read local.abc 200", calls);
+    fire("agent-frame", { id: "local.abc", msg: frame("f1", 5) });
+    const frames = store.get().sessions["local.abc"]?.frames ?? [];
+    ok("9.2 an agent-frame event reaches the open session as a live frame", frames.length === 1 && frames[0]?.live === true && frames[0]?.ts === 5, frames);
+    src.readyState = 0;
+    src.onerror?.();
+    dash.controller.openSession("local.def");
+    await settle();
+    ok("9.3 after the feed drops, a session opened before the next hello is not watched on the dropped id",
+      !calls.includes("watch local.def feed-9") && calls.includes("read local.def 200"), calls);
+    fire("hello", { feed: "feed-10" });
+    await settle();
+    src.readyState = 2;
+    src.onerror?.();
+    dash.controller.openSession("local.ghi");
+    await settle();
+    ok("9.4 after the browser closes the feed for good, a new session is not watched on its id either",
+      store.get().connection === "closed" && !calls.includes("watch local.ghi feed-10") && calls.includes("read local.ghi 200"), calls);
+    dash.stop();
   }
 }
 

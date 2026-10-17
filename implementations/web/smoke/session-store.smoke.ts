@@ -276,6 +276,18 @@ function sessionApi(read: (id: string, limit: number) => Promise<AgentEventsPage
     { events: eventCount(s.frames), first: s.frames[0]?.ts, more: s.more });
 }
 
+{
+  const big = Array.from({ length: 2500 }, () => ({ type: "TEXT_MESSAGE_CONTENT", messageId: "m", delta: "x" }));
+  const { api } = sessionApi(() => ({ frames: [frameMsg("small", 0), frameMsg("big", 1, big)], more: false }));
+  const h = harness(api);
+  h.ctl.openSession(A);
+  await flush();
+  const s = h.store.get().sessions[A]!;
+  ok("7.3 a frame larger than the cap is never dropped: the newest frame stays, and only older frames go",
+    s.frames.length === 1 && s.frames[0]?.ts === 1 && eventCount(s.frames) === 2500 && s.more === true,
+    { frames: s.frames.length, events: eventCount(s.frames), more: s.more });
+}
+
 // ── 8. A REFUSAL AND A FAILURE KEEP THE LAST GOOD DATA ───────────────────────────────────────────
 {
   let read: () => AgentEventsPage = () => ({ frames: [frameMsg("a", 10)], more: false });
@@ -354,6 +366,110 @@ function sessionApi(read: (id: string, limit: number) => Promise<AgentEventsPage
   ok("10.1 rosterRows reads on and off from the card's ai.cotal.events", by("local.on")?.events === "on" && by("local.off")?.events === "off", rows);
   ok("10.2 and leaves events absent for true, \"yes\", or no key",
     ["local.bool", "local.yes", "local.none", "local.nometa"].every((id) => by(id) !== undefined && !("events" in by(id)!)), rows);
+}
+
+// ── 11. A LOST FEED'S ID IS NOT USED AGAIN ───────────────────────────────────────────────────────
+{
+  const { calls, api } = sessionApi();
+  const h = harness(api);
+  h.ctl.onHello("feed-1");
+  h.ctl.onFeedLost();
+  h.ctl.openSession(A);
+  await flush();
+  ok("11.1 after the feed is lost, a session opened before the next hello is read without a watch on the old id",
+    JSON.stringify(calls) === JSON.stringify([`read ${A} 200`]), calls);
+  h.ctl.onHello("feed-2");
+  await flush();
+  ok("11.2 and the next hello watches it on the new id", calls.includes(`watch ${A} feed-2`), calls);
+}
+{
+  const { calls, api } = sessionApi();
+  const h = harness(api);
+  h.ctl.onHello("feed-1");
+  h.ctl.openSession(A);
+  await flush();
+  h.ctl.onFeedLost();
+  h.ctl.closeSession(A);
+  await flush();
+  ok("11.3 a session closed while the feed is lost sends no unwatch for the forgotten id", !calls.some((c) => c.startsWith("unwatch")), calls);
+}
+
+// ── 12. LOAD EARLIER WAITS FOR A WATCH IN FLIGHT ─────────────────────────────────────────────────
+{
+  const held = gate<void>();
+  let watches = 0;
+  const { calls, api } = sessionApi(() => ({ frames: [frameMsg("a", 10)], more: true }));
+  const h = harness({
+    ...api,
+    watch: async (id, feed) => {
+      calls.push(`watch ${id} ${feed}`);
+      if (++watches > 1) await held.promise;
+    },
+  });
+  h.ctl.onHello("feed-1");
+  h.ctl.openSession(A);
+  await flush();
+  calls.length = 0;
+  h.ctl.onHello("feed-2");
+  const earlier = h.ctl.loadEarlier(A);
+  await flush();
+  const whileWatching = calls.slice();
+  held.resolve();
+  await earlier;
+  await flush();
+  ok("12.1 Load earlier during a reconnect's watch reads only after that watch is answered",
+    JSON.stringify(whileWatching) === JSON.stringify([`watch ${A} feed-2`])
+      && JSON.stringify(calls) === JSON.stringify([`watch ${A} feed-2`, `read ${A} 400`]),
+    { whileWatching, calls });
+}
+
+// ── 13. A READ FOR A SESSION THAT CLOSED APPLIES NOTHING ─────────────────────────────────────────
+{
+  const reads: ReturnType<typeof gate<AgentEventsPage>>[] = [];
+  const { api } = sessionApi(() => {
+    const g = gate<AgentEventsPage>();
+    reads.push(g);
+    return g.promise;
+  });
+  const h = harness(api);
+  h.ctl.openSession(A);
+  await flush();
+  h.ctl.closeSession(A);
+  h.ctl.openSession(A);
+  await flush();
+  reads[1]?.resolve({ frames: [frameMsg("new", 20)], more: false });
+  await flush();
+  reads[0]?.resolve({ frames: [frameMsg("old", 10)], more: true });
+  await flush();
+  const s = h.store.get().sessions[A]!;
+  ok("13.1 a read that lands after its session closed and reopened applies nothing to the new session",
+    reads.length === 2 && s.frames.map((f) => f.ts).join() === "20" && s.more === false, { reads: reads.length, frames: s.frames.map((f) => f.ts), more: s.more });
+}
+
+// ── 14. THE SESSION FOLLOWS THE CARD ─────────────────────────────────────────────────────────────
+{
+  const { calls, api } = sessionApi(() => ({ frames: [frameMsg("a", 10)], more: true }));
+  const h = harness(api);
+  h.ctl.onRoster([card(A, { "ai.cotal.events": "off" })]);
+  h.ctl.onHello("feed-1");
+  h.ctl.openSession(A);
+  await flush();
+  const before = calls.slice();
+  h.ctl.onRoster([card(A, { "ai.cotal.events": "on" })]);
+  await flush();
+  const on = h.store.get().sessions[A]!;
+  ok("14.1 a card that changes from off to on while the session is open watches the agent and reads it",
+    before.length === 0 && JSON.stringify(calls) === JSON.stringify([`watch ${A} feed-1`, `read ${A} 200`]) && on.load === "ok" && on.frames.length === 1,
+    { before, calls, on });
+  h.ctl.onRoster([card(A, { "ai.cotal.events": "off" })]);
+  await flush();
+  const off = h.store.get().sessions[A]!;
+  ok("14.2 and back to off unwatches it, keeps what was read and offers nothing earlier",
+    calls.at(-1) === `unwatch ${A} feed-1` && off.load === "ok" && off.frames.length === 1 && off.more === false, { calls, off });
+  calls.length = 0;
+  await h.ctl.loadEarlier(A);
+  await h.ctl.reloadSession(A);
+  ok("14.3 an agent whose card went off is not read again", calls.length === 0, calls);
 }
 
 console.log(failed === 0 ? `web session store: ${cells} cells OK` : `web session store: ${failed}/${cells} FAILED`);

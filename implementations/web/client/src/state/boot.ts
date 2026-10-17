@@ -84,6 +84,18 @@ export function startDashboard(deps: {
     // A frame is not a message: it is not counted toward the message rate.
     agentFrame: controller.onAgentFrame,
   };
+  // A feed's id names one connection. Once it drops or closes, the server has forgotten it and every
+  // watch it held, so the controller watches on no id until the next `hello`. Wrapped here so each
+  // handler above keeps saying only what the pill does.
+  const { error, closed } = handlers;
+  handlers.error = () => {
+    controller.onFeedLost();
+    error();
+  };
+  handlers.closed = () => {
+    controller.onFeedLost();
+    closed();
+  };
   // One retry pending at most, and pending exactly while the store holds a retryable refusal, by
   // whichever read left it there (a refresh or a channel's history). It fires one refresh, which
   // reopens the open channel too. A read that lands clears the mark, and with it the pending retry,

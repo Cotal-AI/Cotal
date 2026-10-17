@@ -8,8 +8,8 @@
     {
       "name": "S1 the session reads before it watches, so a frame published between the read and the watch reaches neither",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));\n      if (!current()) return;\n      const page = await api.agentEvents(id, limit);",
-      "replace": "      const page = await api.agentEvents(id, limit);\n      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));\n      if (!current()) return;",
+      "find": "      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));\n      else await watchChain.get(id);\n      if (!current()) return;\n      const page = await api.agentEvents(id, limit);",
+      "replace": "      const page = await api.agentEvents(id, limit);\n      if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));\n      else await watchChain.get(id);\n      if (!current()) return;",
       "expectRed": "2.1 the watch is issued before the read, and the read waits for the watch to be answered",
       "cell": "2.1 the watch is issued before the read, and the read waits for the watch to be answered"
     },
@@ -24,8 +24,8 @@
     {
       "name": "S3 the cap check is removed, so a session holds every event it is sent and the browser's memory grows without bound",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "  while (n > SESSION_EVENT_CAP && drop < frames.length) n -= frames[drop++].events.length;",
-      "replace": "  while (false && drop < frames.length) n -= frames[drop++].events.length;",
+      "find": "  while (n > SESSION_EVENT_CAP && drop < frames.length - 1) n -= frames[drop++].events.length;",
+      "replace": "  while (false && drop < frames.length - 1) n -= frames[drop++].events.length;",
       "expectRed": "7.1 2,001 events drop the oldest frame and set more",
       "cell": "7.1 2,001 events drop the oldest frame and set more"
     },
@@ -40,8 +40,8 @@
     {
       "name": "S5 the card's off is ignored, so an agent that publishes no events is still watched and read",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      const off = entry !== undefined && rosterRows([entry], { includeOffline: true })[0]?.events === \"off\";",
-      "replace": "      const off = entry !== undefined && false;",
+      "find": "    return entry !== undefined && rosterRows([entry], { includeOffline: true })[0]?.events === \"off\";",
+      "replace": "    return entry !== undefined && false;",
       "expectRed": "3.1 an agent whose row says off is neither watched nor read and ends ok",
       "cell": "3.1 an agent whose row says off is neither watched nor read and ends ok"
     },
@@ -64,8 +64,8 @@
     {
       "name": "S8 Load earlier ignores the read ceiling, so it asks the server for more than its history limit accepts",
       "file": "implementations/web/client/src/state/controller.ts",
-      "find": "      if (!s || !life || !s.more || s.limit >= SESSION_LIMIT_MAX || eventCount(s.frames) >= SESSION_EVENT_CAP) return;\n      await syncSession(id, life, Math.min(s.limit + SESSION_PAGE, SESSION_LIMIT_MAX), false);",
-      "replace": "      if (!s || !life || !s.more || eventCount(s.frames) >= SESSION_EVENT_CAP) return;\n      await syncSession(id, life, s.limit + SESSION_PAGE, false);",
+      "find": "      if (!s || !life?.plane || !s.more || s.limit >= SESSION_LIMIT_MAX || eventCount(s.frames) >= SESSION_EVENT_CAP) return;\n      await syncSession(id, life, Math.min(s.limit + SESSION_PAGE, SESSION_LIMIT_MAX), false);",
+      "replace": "      if (!s || !life?.plane || !s.more || eventCount(s.frames) >= SESSION_EVENT_CAP) return;\n      await syncSession(id, life, s.limit + SESSION_PAGE, false);",
       "expectRed": "6.2 loadEarlier steps by 200 and never reads above 2000",
       "cell": "6.2 loadEarlier steps by 200 and never reads above 2000"
     },
@@ -84,6 +84,46 @@
       "replace": "  return v !== undefined ? { events: v as \"on\" | \"off\" } : {};",
       "expectRed": "10.2 and leaves events absent for true, \"yes\", or no key",
       "cell": "10.2 and leaves events absent for true, \"yes\", or no key"
+    },
+    {
+      "name": "S11 the newest frame may be dropped too, so one frame larger than the cap empties the session",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "  while (n > SESSION_EVENT_CAP && drop < frames.length - 1) n -= frames[drop++].events.length;",
+      "replace": "  while (n > SESSION_EVENT_CAP && drop < frames.length) n -= frames[drop++].events.length;",
+      "expectRed": "7.3 a frame larger than the cap is never dropped: the newest frame stays, and only older frames go",
+      "cell": "7.3 a frame larger than the cap is never dropped: the newest frame stays, and only older frames go"
+    },
+    {
+      "name": "S12 a lost feed keeps its id, so a session opened before the next hello asks the server to watch on a connection it has forgotten",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    onFeedLost() {\n      feedId = null;\n    },",
+      "replace": "    onFeedLost() {},",
+      "expectRed": "11.1 after the feed is lost, a session opened before the next hello is read without a watch on the old id",
+      "cell": "11.1 after the feed is lost, a session opened before the next hello is read without a watch on the old id"
+    },
+    {
+      "name": "S13 Load earlier reads without waiting for a watch in flight",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      else await watchChain.get(id);\n",
+      "replace": "",
+      "expectRed": "12.1 Load earlier during a reconnect's watch reads only after that watch is answered",
+      "cell": "12.1 Load earlier during a reconnect's watch reads only after that watch is answered"
+    },
+    {
+      "name": "S14 a read applies to whatever session holds the id, so a read from a closed session lands in the one that reopened",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "    const current = () => lives.get(id) === life && life.reads === n;",
+      "replace": "    const current = () => life.reads === n;",
+      "expectRed": "13.1 a read that lands after its session closed and reopened applies nothing to the new session",
+      "cell": "13.1 a read that lands after its session closed and reopened applies nothing to the new session"
+    },
+    {
+      "name": "S15 the plane is decided only at open, so a card that turns on while the session is open is never watched",
+      "file": "implementations/web/client/src/state/controller.ts",
+      "find": "      learnOperator();\n      followCards();\n",
+      "replace": "      learnOperator();\n",
+      "expectRed": "14.1 a card that changes from off to on while the session is open watches the agent and reads it",
+      "cell": "14.1 a card that changes from off to on while the session is open watches the agent and reads it"
     }
   ],
   "suite": [

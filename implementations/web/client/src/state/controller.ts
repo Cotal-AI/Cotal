@@ -77,6 +77,9 @@ export interface Controller {
   reloadSession(id: string): Promise<void>;
   /** The feed's id for this connection. Every open session is watched on it and read again. */
   onHello(feed: string): void;
+  /** The feed dropped or closed. Its id names a connection the server has forgotten, so nothing is
+   *  watched on it again; the next `hello` brings the new one. */
+  onFeedLost(): void;
   /** A live frame from a watched agent. */
   onAgentFrame(f: AgentFrame): void;
 }
@@ -142,11 +145,12 @@ function addFrames(held: SessionFrame[], msgs: readonly CotalMessage[], live: bo
 }
 
 /** `frames` without its oldest frames while the events they hold exceed `SESSION_EVENT_CAP`, and
- *  whether any went. */
+ *  whether any went. The newest frame is never dropped, so a single frame larger than the cap is
+ *  still shown: the bound is the cap plus one frame. */
 function capFrames(frames: SessionFrame[]): { frames: SessionFrame[]; dropped: boolean } {
   let n = eventCount(frames);
   let drop = 0;
-  while (n > SESSION_EVENT_CAP && drop < frames.length) n -= frames[drop++].events.length;
+  while (n > SESSION_EVENT_CAP && drop < frames.length - 1) n -= frames[drop++].events.length;
   return { frames: drop ? frames.slice(drop) : frames, dropped: drop > 0 };
 }
 
@@ -168,8 +172,8 @@ function postsOf(s: DashboardState, id: string): StoredMessage[] {
 
 /** A held session's life. A new one starts with each first view, so a read that lands after its
  *  session closed, or closed and opened again, finds another life and applies nothing. `reads`
- *  numbers its reads so only the latest applies; `plane` is false when the card says the agent
- *  publishes no events, and then nothing is watched or read. */
+ *  numbers its reads so only the latest applies; `plane` is false while the card says the agent
+ *  publishes no events, and then nothing is watched or read. It follows the card. */
 interface Life {
   reads: number;
   plane: boolean;
@@ -322,7 +326,9 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     putSession(id, (s) => ({ ...s, limit }));
     try {
       const feed = feedId;
+      // A read that does not watch still waits for a watch in flight, so it cannot land before it.
       if (watch && feed !== null) await inOrder(id, () => api.watch(id, feed));
+      else await watchChain.get(id);
       if (!current()) return;
       const page = await api.agentEvents(id, limit);
       if (!current()) return;
@@ -344,6 +350,31 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       putSession(id, ({ grant: _grant, ...s }) => ({ ...s, load: "failed", reason }));
     }
   }
+
+  /** Whether `id`'s card says it publishes no events. No card yet, or a card that says nothing, is not off. */
+  const cardSaysOff = (id: string): boolean => {
+    const entry = store.get().roster.find((p) => p.card.id === id);
+    return entry !== undefined && rosterRows([entry], { includeOffline: true })[0]?.events === "off";
+  };
+  /** Each open session follows its agent's card. A plane that comes on is watched and read; one that
+   *  goes off is unwatched, a read in flight for it is no longer applied, and the frames already read
+   *  stay. Run after every roster the page takes. */
+  const followCards = () => {
+    for (const [id, life] of lives) {
+      const plane = !cardSaysOff(id);
+      if (plane === life.plane) continue;
+      life.plane = plane;
+      if (plane) {
+        putSession(id, (s) => ({ ...s, load: "loading" }));
+        void syncSession(id, life, store.get().sessions[id]?.limit ?? SESSION_PAGE, true);
+        continue;
+      }
+      life.reads++;
+      putSession(id, (s) => settledOk({ ...s, more: false }));
+      const feed = feedId;
+      if (feed !== null) void inOrder(id, () => api.unwatch(id, feed)).catch(() => undefined);
+    }
+  };
 
   /** The agent's own verified post, kept for its session: newest last, once, the newest `SESSION_POSTS_CAP`. */
   const putPost = (id: string, post: StoredMessage) =>
@@ -470,6 +501,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
           : [{ name: "membership", read: () => api.membership(), apply: supersededByFeed("membership", (m: MembershipSnapshot) => store.set({ membership: { snapshot: m } })) }]),
       ];
       const refused: StaleMark[] = await refreshAll(sources);
+      followCards();
       const landedAt = now();
       const landed = new Set(sources.map((s) => s.name).filter((name) => !refused.some((r) => r.name === name)));
       for (const name of landed) lastGood.set(name, landedAt);
@@ -607,6 +639,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       store.set({ roster });
       answered(true, false);
       learnOperator();
+      followCards();
     },
     onPresenceView(view) {
       // The observer's own watch, not a peer. A stale view keeps the last-known rows and names the
@@ -667,8 +700,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     },
     openSession(id) {
       if (store.get().sessions[id]) return putSession(id, (s) => ({ ...s, views: s.views + 1 }));
-      const entry = store.get().roster.find((p) => p.card.id === id);
-      const off = entry !== undefined && rosterRows([entry], { includeOffline: true })[0]?.events === "off";
+      const off = cardSaysOff(id);
       const life: Life = { reads: 0, plane: !off };
       lives.set(id, life);
       // An agent that publishes no events has no session to read: what it posted is all there is.
@@ -692,7 +724,7 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
     async loadEarlier(id) {
       const s = store.get().sessions[id];
       const life = lives.get(id);
-      if (!s || !life || !s.more || s.limit >= SESSION_LIMIT_MAX || eventCount(s.frames) >= SESSION_EVENT_CAP) return;
+      if (!s || !life?.plane || !s.more || s.limit >= SESSION_LIMIT_MAX || eventCount(s.frames) >= SESSION_EVENT_CAP) return;
       await syncSession(id, life, Math.min(s.limit + SESSION_PAGE, SESSION_LIMIT_MAX), false);
     },
     async reloadSession(id) {
@@ -708,6 +740,9 @@ export function createController(store: Store<DashboardState>, api: Api, opts: C
       // forwarded, so every open session is watched on it and read again at its limit.
       feedId = feed;
       for (const [id, life] of lives) if (life.plane) void syncSession(id, life, store.get().sessions[id]?.limit ?? SESSION_PAGE, true);
+    },
+    onFeedLost() {
+      feedId = null;
     },
     onAgentFrame(f) {
       store.set((st) => {
