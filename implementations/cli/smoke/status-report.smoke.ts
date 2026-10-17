@@ -72,6 +72,7 @@ const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const titles = (text: string) => text.split("\n").filter((line) => /^[A-Z][A-Za-z ]+$/.test(line));
 
 const brokerDisplayOnly = process.argv.includes("--broker-display-only");
+let brokerDisplayCases = 0;
 if (!brokerDisplayOnly) {
 // ── a fresh machine: one envelope, one report, the agreed order ──────────────────────────────────
 {
@@ -210,7 +211,6 @@ if (!brokerDisplayOnly) {
   check("the report names the record under the recorded meshes", plain.status === 4 && /unreadable: .*space\.dead\.json does not parse/.test(plain.stdout.split("\nRecorded Meshes\n")[1]?.split("\nSelected Mesh\n")[0] ?? ""), shown(plain));
 }
 
-if (!brokerDisplayOnly) {
 // ── usage ────────────────────────────────────────────────────────────────────────────────────────
 {
   const { run } = sandbox();
@@ -244,6 +244,7 @@ if (!brokerDisplayOnly) {
       { name: "invalid", server: `https://user:${marker}@127.0.0.1:${port}`, display: null },
     ];
     for (const item of cases) {
+      brokerDisplayCases++;
       const space = `status-display-${item.name}`;
       recordMesh({ space, server: item.server, root: home, mode: "open", origin: "manual", ts: new Date().toISOString() });
       const json = run(["status", "--space", space, "--json"]);
@@ -270,6 +271,6 @@ if (!brokerDisplayOnly) {
     if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
   }
 }
-}
 
+if (brokerDisplayOnly) check("broker display profile reaches all five fixtures", brokerDisplayCases === 5);
 finish();
