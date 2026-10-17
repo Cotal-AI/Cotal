@@ -24,10 +24,11 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalLocalProcessPath } from "../src/local-process.js";
+import { canonicalLocalProcessPath, DELIVERY_PIDFILE, MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE } from "../src/local-process.js";
 import {
   commandIsCotalDelivery, commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
 } from "../src/pid.js";
+import { resolveRuntimeSpace } from "../src/space.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -111,8 +112,12 @@ try {
   const { managerUp, managerLiveness } = await import("../../../implementations/cli/src/lib/manager-proc.js");
   const { deliveryUp } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
 
-  const mgrPid = join(root, ".cotal", "manager.pid");
-  const delPid = join(root, ".cotal", "delivery.pid");
+  // Written where a current start writes them: a pre-upgrade name would reach the readers only through
+  // the legacy read admission, and these cells would stop finding their records if it narrowed.
+  const ctx = { root, space: resolveRuntimeSpace(root) };
+  const mgrPid = canonicalLocalProcessPath(MANAGER_PIDFILE, ctx);
+  const delPid = canonicalLocalProcessPath(DELIVERY_PIDFILE, ctx);
+  const marker = canonicalLocalProcessPath(MANAGER_DELIVERY_AWARE_MARKER, ctx);
 
   // A REAL live process that reads as a manager: `supervise` is in its argv, exactly as every route
   // to a running manager puts it there. It is a real process, not a stand-in, because the point of
@@ -231,7 +236,7 @@ try {
   // minted, written and started, and only THEN did ensureManager throw. A guard that runs after the
   // work is not a guard, so the preflight refuses first and this pins the position, not just the rule.
   const { stopOldHostingManagerIfPresent } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
-  rmSync(join(root, ".cotal", "manager.delivery-aware"), { force: true }); // no marker: the old shape
+  rmSync(marker, { force: true }); // no marker: the old shape
   let preflightRefused: string | undefined;
   try {
     await stopOldHostingManagerIfPresent(stuck);
@@ -256,7 +261,7 @@ try {
   // a pre-protocol husk with nothing behind it; a garbled one may front a live process nobody can
   // identify, and clearing it orphans that process under a clean-stop report.
   writeFileSync(mgrPid, "not-a-pid\n");
-  writeFileSync(join(root, ".cotal", "manager.delivery-aware"), "not-a-pid\n");
+  writeFileSync(marker, "not-a-pid\n");
   let malformed: string | undefined;
   try {
     await stopManager();
@@ -265,7 +270,7 @@ try {
   }
   check("stopManager REFUSES a malformed pidfile instead of clearing it", malformed !== undefined);
   check("the malformed pidfile SURVIVES", existsSync(mgrPid));
-  check("and so does the marker beside it", existsSync(join(root, ".cotal", "manager.delivery-aware")));
+  check("and so does the marker beside it", existsSync(marker));
   writeFileSync(mgrPid, "");
   check("an EMPTY pidfile IS cleared (a husk, not a claim)", (await stopManager()) && !existsSync(mgrPid));
 
