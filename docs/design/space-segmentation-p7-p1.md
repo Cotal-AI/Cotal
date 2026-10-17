@@ -112,8 +112,8 @@ to whichever tenant booted first, which is P7's inheritance defect and is record
 would either hand tenant A's live observer to tenant B or strand it.
 
 So the migration is only sound while the root holds ONE space, and that is enforceable at the source
-rather than left as a hazard. `up` cannot create the second tenant (`ensureRootForSpace` refuses at
-`up.ts:2233`), so the only door is `space add`. The rule:
+rather than left as a hazard. `up` cannot create the second tenant (`ensureRootForSpace` in the
+CLI's `up` command refuses), so the only door is `space add`. The rule:
 
 > `space add` refuses on a root that still holds unmigrated legacy material for any segmented kind,
 > and names the remedy: run `cotal up` for the sole tenant once, which migrates it, then add.
@@ -322,8 +322,8 @@ fresh-space branch (`up.ts:2903`, called once at `up.ts:2692`), because the `$SY
 exists only there. `healMembershipDataCreds` (`up.ts:2881`) repairs the DATA half only, by
 construction and by its own comment. So a root whose first tenant was provisioned before the
 membership feature, or whose `$SYS` pair was swept by `clean`, has no minting path: the first tenant
-is not fresh so the provisioner never runs, the second tenant is refused by `up.ts:2233` before it
-could be fresh, and the documented repair `up --rotate-sys` is `assertSingleSpaceBroker`-guarded
+is not fresh so the provisioner never runs, the second tenant is refused by `ensureRootForSpace`
+before it could be fresh, and the documented repair `up --rotate-sys` is `assertSingleSpaceBroker`-guarded
 (`system-rotation.ts:96`) and refuses on a multi-tenant root, which is P8. The predicted state was
 BOTH tenants with no observer and no reachable repair.
 
