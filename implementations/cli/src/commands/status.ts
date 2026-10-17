@@ -18,6 +18,7 @@ import {
   resolveAuthProvider,
   peerLabel,
   personaDir,
+  presenceText,
   type FlagValues,
   type ParsedArgs,
   type SpaceAuth,
@@ -584,7 +585,7 @@ async function renderSnapshot(ep: CotalEndpoint, watchBrokerState: boolean): Pro
     for (const p of roster.slice(0, 8)) {
       const label = peerLabel(p.card);
       const condition = presenceDetail(p);
-      console.log(`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}${activityAge(p)}`) : ""}`);
+      console.log(`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${presenceText(p.activity)}${activityAge(p)}`) : ""}`);
     }
     if (roster.length > 8) console.log(c.dim(`    +${roster.length - 8} more`));
     row("channels", channels.length ? channels.map((ch) => `${ch.channel}(${ch.messages})`).join(", ") : "none");

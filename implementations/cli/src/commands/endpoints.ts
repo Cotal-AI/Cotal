@@ -1,4 +1,4 @@
-import { peerLabel, type ParsedArgs, type Presence } from "@cotal-ai/core";
+import { peerLabel, presenceText, type ParsedArgs, type Presence } from "@cotal-ai/core";
 import { openTransient, type ConnectValues } from "../lib/transient.js";
 import { activityAge, c, presenceDetail, statusBadge } from "../ui.js";
 
@@ -37,7 +37,7 @@ export function printEndpoints(roster: Presence[], space: string): void {
   const labelWidth = Math.max(...rows.map((row) => row.label.length));
   const kindWidth = Math.max(...rows.map((row) => row.kind.length));
   for (const row of rows) {
-    const activity = row.presence.activity ? `  ${c.dim(row.presence.activity + activityAge(row.presence))}` : "";
+    const activity = row.presence.activity ? `  ${c.dim(presenceText(row.presence.activity) + activityAge(row.presence))}` : "";
     const condition = presenceDetail(row.presence);
     console.log(`${c.bold(row.label.padEnd(labelWidth))}  ${c.dim(row.kind.padEnd(kindWidth))}  ${statusBadge(row.presence.status)}${condition}${activity}`);
   }

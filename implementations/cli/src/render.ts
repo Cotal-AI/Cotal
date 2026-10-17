@@ -1,4 +1,4 @@
-import { peerLabel, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
+import { peerLabel, presenceText, type CotalEndpoint, type PresenceEvent } from "@cotal-ai/core";
 import { MeshView, type FeedEntry } from "./view/mesh-view.js";
 import { activityAge, c, color256, presenceDetail, statusBadge } from "./ui.js";
 
@@ -46,7 +46,7 @@ function presenceLine(ev: PresenceEvent): string {
       : ev.type === "offline"
         ? c.dim("offline")
         : c.dim("update ");
-  const activity = ev.presence.activity ? c.dim(" - " + ev.presence.activity + activityAge(ev.presence)) : "";
+  const activity = ev.presence.activity ? c.dim(" - " + presenceText(ev.presence.activity) + activityAge(ev.presence)) : "";
   return `${ts(Date.now())} ${label} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${activity}`;
 }
 

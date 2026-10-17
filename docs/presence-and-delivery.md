@@ -48,8 +48,9 @@ because an observer that derives `offline` from a stale heartbeat does not know 
 The optional `activitySince` is when the current activity was set. A status change does not move it,
 so an activity left behind while hooks flip the status every turn still shows its age after the
 activity on the same surfaces, such as `(set 9h ago)`. A stamp that is not a finite number shows no
-age. A peer writes its own condition code and activity, so `cotal_roster` prints each on one line,
-shows a control character or line separator in it as a `\uXXXX` escape, and cuts it at 200 characters.
+age. A peer writes its own condition code and activity, so every surface above prints each on one
+line, shows a control character or line separator in it as a `\uXXXX` escape, and cuts it at 200
+characters.
 The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, whose
 `card.name` or `status` is missing or has the wrong type, or whose `ts` is not a finite number, and

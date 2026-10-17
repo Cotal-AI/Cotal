@@ -1,6 +1,6 @@
 import { Fragment } from "react";
 import { Box, Text } from "ink";
-import { peerLabel, type Presence } from "@cotal-ai/core";
+import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import type { FeedEntry } from "../mesh.js";
 import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago, fmtTime, wrapText } from "./theme.js";
@@ -106,7 +106,7 @@ function AgentDetail({ agent, feed, width, managed }: { agent: Presence; feed: F
       </Field>
       {activity ? (
         <Field label="activity">
-          <Text>{activity}</Text>
+          <Text>{presenceText(activity)}</Text>
           <Text dimColor>{activityAge(agent)}</Text>
         </Field>
       ) : null}
