@@ -2260,8 +2260,12 @@ partial read. `result.replay` gives each channel's replay policy for new members
 channel registry. DM gaps are not reported.
 
 A channel the identity may not read is refused with `PERMISSION_DENIED` (exit 2), never shown as
-empty. On a user-auth mesh history is read through the delivery daemon, which checks the read grant
-on every call. Reading every channel there leaves out the channels the grant does not cover and names
+empty. On a user-auth mesh each channel read uses the connection's broker-enforced channel grant.
+Revocation follows the effective credential and connection retirement, as it does for live channel
+reads. Concurrent commands sharing one identity wait for the broker to release its transient history
+reader; no command deletes another reader. Each channel has a ten-second read budget, with a
+thirty-second budget for the whole channel walk. A busy or cut-short read fails with `OPERATION_FAILED` (exit 5) rather than showing
+an empty conversation. Reading every channel leaves out channels the grant does not cover and names
 them in a `CHANNELS_DENIED` warning. DM history and `--since` by sequence are not available to a
 user-auth identity. A part that could not be read is a warning and a `partial` run (exit 4): the
 retention, a replay policy, the channel list when a channel is named, or one channel of several.

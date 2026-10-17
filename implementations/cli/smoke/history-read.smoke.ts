@@ -4,8 +4,8 @@
  * Covers one channel and every channel, `--limit`, `--since` by sequence and by time, `--from` and
  * `--grep`, `--dms`, the usage refusals, a credential that may not read history, `--follow` as NDJSON
  * and as lines, and a retention gap (on an open broker, one sender posts past the chat stream's
- * per-sender limit). The user-auth read path, which goes through the delivery daemon, is driven in process
- * against a stand-in endpoint.
+ * per-sender limit). The user-auth result rendering is driven against a stand-in endpoint.
+ * smoke:ps-user-mode and smoke:user-spawn:live exercise the native user-auth history path.
  *
  * Isolation: every CLI child gets a sandboxed HOME / XDG_CONFIG_HOME / TMPDIR / COTAL_HOME, and
  * inherited COTAL_* is stripped.
@@ -293,7 +293,7 @@ try {
   releaseHome();
 }
 
-// ── a user-auth identity reads through the delivery daemon ─────────────────────────────────────────
+// ── a user-auth identity renders channel-scoped pages ─────────────────────────────────────────
 {
   const { readWindow } = await import("../src/commands/history.js");
   const msg = (id: string, ts: number, channel: string, text: string) => ({ id, ts, space: "s", channel, from: { id: "u_o.a", name: "ann" }, parts: [{ kind: "text", text }] });
@@ -304,7 +304,7 @@ try {
   };
   const ep = {
     listChannels: async () => [{ channel: "general", messages: 1 }, { channel: "secret", messages: 4 }, { channel: "ops", messages: 9 }],
-    readHistory: async (ch: string) => {
+    channelHistoryPage: async (ch: string) => {
       const page = pages[ch]!;
       if (page instanceof Error) throw page;
       return page;
