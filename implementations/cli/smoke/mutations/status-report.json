@@ -112,8 +112,8 @@
     {
       "name": "a selection the registry refused is not reported",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "    if (isMeshRegistryError(e)) {\n      gaps.add(",
-      "replace": "    if (isMeshRegistryError(e) && false) {\n      gaps.add(",
+      "find": "    if (isMeshRegistryError(e)) {\n      gaps.add(\"MESH_REGISTRY_UNREADABLE\", e.message, { file: e.file });\n      hints.push(e.message);\n      return { resolved: false, code: \"registry-unreadable\", message: e.message };\n    }\n",
+      "replace": "",
       "expectRed": "the selection is unresolved by the unreadable record",
       "cell": "the selection is unresolved by the unreadable record",
       "afterRestore": "pnpm --filter cotal-ai... build"
