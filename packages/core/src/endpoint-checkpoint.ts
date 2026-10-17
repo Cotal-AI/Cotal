@@ -717,6 +717,9 @@ export async function startTimerWriter(
         throw e;
       }
       inFlight = batch;
+      // A stop() that landed while this fetch was being issued found nothing to close.
+      // Not awaited: close() queues its stop on the iterator and settles when the loop below reaches it.
+      if (stopped) void batch.close().catch(() => undefined);
       for await (const m of batch) {
         try {
           await armCheckpointTimer(ctx, { subject: m.subject, ...(m.headers !== undefined ? { headers: m.headers } : {}), data: m.data });
