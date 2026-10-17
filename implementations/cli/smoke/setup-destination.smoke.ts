@@ -529,7 +529,7 @@ if (process.platform !== "win32") {
       && /the herdr runtime is set up but does not answer here/.test(herdr.env.error?.message ?? "") && installed("@cotal-ai/herdr")?.version === VERSION, shown(herdr));
   check("a runtime left unnamed stays set up", row(herdr, "tmux")?.state === "set-up" && row(herdr, "tmux")?.selected === false && installed("@cotal-ai/tmux") !== undefined, rows(herdr));
   const plain = await run([...FULL("rt", dir), "--runtime", "herdr", "--plain"], home, withMore);
-  check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr · already set up · does not answer/.test(plain.stdout), shown(plain));
+  check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
   const none = await json(FULL("rt", dir));
   check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
 }
