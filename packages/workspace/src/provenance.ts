@@ -1,4 +1,4 @@
-import { oneLine } from "./one-line.js";
+import { oneLine } from "@cotal-ai/core";
 
 /**
  * One consistent voice for CLI provenance, on stderr: which on-disk source a command RESOLVED
