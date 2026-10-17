@@ -58,8 +58,14 @@ class Note {
  *  channel with no frame part yields one `unknown` step labelled from `partsToText`.
  *
  *  The first frame's id is the message id, so the common message (one frame part) keeps its id as
- *  is; a further frame part in the same message is `<message id>#<n>`, n counting frame parts from 1. */
+ *  is; a further frame part in the same message is `<message id>#<n>`, n counting frame parts from 1.
+ *
+ *  A message whose id is not a string gives no frames at all, not even an unknown step. Every frame
+ *  and every step is keyed by that id, and a number, null or absent id would turn into the same key
+ *  as another message's (`7` and `"7"`, or every `undefined`), so the store would take one for a
+ *  copy of the other and a step's key would stop naming one step. */
 export function framesOf(msg: CotalMessage, live: boolean): SessionFrame[] {
+  if (typeof (msg as { id?: unknown }).id !== "string") return [];
   const parts: unknown[] = Array.isArray(msg.parts) ? msg.parts : [];
   const frames: SessionFrame[] = [];
   for (const p of parts) {

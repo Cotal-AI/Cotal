@@ -52,6 +52,14 @@
       "replace": "",
       "expectRed": "a stream open when its turn ends is drawn cut inside the turn",
       "cell": "a stream open when its turn ends is drawn cut inside the turn"
+    },
+    {
+      "name": "S7 a message whose id is not a string is keyed by it anyway, so 7 and \"7\", or two messages with no id, share one key and the store drops one as a copy of the other",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "  if (typeof (msg as { id?: unknown }).id !== \"string\") return [];\n",
+      "replace": "",
+      "expectRed": "a message whose id is not a string gives no frames, so it can never share a key with another message",
+      "cell": "a message whose id is not a string gives no frames, so it can never share a key with another message"
     }
   ]
 }

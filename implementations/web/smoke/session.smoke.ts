@@ -304,6 +304,14 @@ const message = (parts: unknown[], id = "m1"): CotalMessage =>
   ok("a message's frames fold in part order", shape(foldSession(frames, [])) === "turn(prompt) turnEnd");
 }
 {
+  const framed = [{ kind: "ag-ui.frame", events: [started("human")] }];
+  const ids: unknown[] = [7, null, undefined, { toString: () => "m1" }];
+  const got = ids.map((id) => framesOf({ ...message(framed), id } as unknown as CotalMessage, true).length);
+  const control = framesOf(message(framed, "7"), true).map((f) => f.id);
+  ok("a message whose id is not a string gives no frames, so it can never share a key with another message",
+    JSON.stringify(got) === JSON.stringify([0, 0, 0, 0]) && JSON.stringify(control) === JSON.stringify(["7"]), { got, control });
+}
+{
   const steps = foldSession(framesOf(message([{ kind: "ag-ui.frame", events: [] }, { kind: "ag-ui.frame", events: "nope" }]), false), []);
   ok("a frame part with no events is named, never dropped",
     steps.length === 2 && steps.every((s) => s.kind === "unknown" && s.label === "A frame with no events"), steps);
