@@ -22,7 +22,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, getCurrent, hasUserAuthState, isWorkspaceTargetError, jsonFlag, loadMeshes, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, meshesDir, preflightTarget, presentationOf, probeLiveness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -31,7 +31,7 @@ import { connectorHarnesses, connectorStatusRows, machineStatus, recordedWebUrl,
 import { deliveryResponderFromLease, deliveryResponderState, deliveryRowSuffix, RESPONDER_UNBOUND_CONSEQUENCE, type DeliveryResponderState } from "../lib/delivery-responder.js";
 import { pidfileState, type PidfileState } from "./down.js";
 import { displayCmd } from "../lib/self-exec.js";
-import { listPersonas } from "../lib/personas.js";
+import { readPersonas, type PersonaEntry } from "../lib/personas.js";
 import { c } from "../ui.js";
 import { preparedCatalogDiagnostics } from "./sync.js";
 
@@ -76,11 +76,13 @@ function resolveSelected(cwd: string, values: FlagValues<typeof statusFlags>): S
 }
 
 /** What a persona catalog holds: whether its `default` passes the loader spawn uses, and how many of
- *  the demo team's personas do. */
+ *  the demo team's personas do. A catalog directory that exists and cannot be read is `unreadable`,
+ *  with no demo count and the error. */
 interface PersonaCatalog {
   root: string;
-  default: "valid" | "invalid" | "missing";
-  demo: number;
+  default: "valid" | "invalid" | "missing" | "unreadable";
+  demo: number | null;
+  error: string | null;
 }
 
 /** One local process row: the state word, the pid it recorded, and what else the row knows. */
@@ -117,6 +119,7 @@ export interface StatusResult {
   meshes: {
     current: string | null;
     currentRecorded: boolean;
+    unreadable: { file: string; error: string }[];
     items: {
       space: string;
       server: string;
@@ -161,7 +164,10 @@ type SelectedResult =
  *  reported partial rather than complete. */
 class Gaps {
   readonly warnings: OutputWarning[] = [];
+  /** Two readers that hit the same part, such as one catalog read as the folder's and the selected
+   *  mesh's, name it once. */
   add(code: string, message: string, target: unknown = null): void {
+    if (this.warnings.some((w) => w.code === code && w.message === message)) return;
     this.warnings.push({ code, target, message });
   }
 }
@@ -186,7 +192,7 @@ export async function status(args: ParsedArgs): Promise<void> {
   // the delivery process row, and a live pid means nothing without it.
   const responder = await readResponderAxis(selected);
   const folder = await readFolder(root, selected, values, responder, gaps, hints);
-  const meshes = await readMeshes(selected, Boolean(values.all));
+  const meshes = await readMeshes(selected, Boolean(values.all), gaps);
   const target = await readSelected(selected, responder, gaps, hints);
   const result: StatusResult = { kind: "infrastructure", machine, extensions, folder, meshes, selected: target, hints };
   const parts = gaps.warnings.length;
@@ -377,7 +383,7 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
   const folder = (auth: StatusResult["folder"]["auth"], processes: ProcessRow[] | null = null, storedState = false): StatusResult["folder"] => ({
     root,
     auth,
-    ...folderPersonas(root, selected, values, hints),
+    ...folderPersonas(root, selected, values, gaps, hints),
     processes,
     storedState,
   });
@@ -480,8 +486,8 @@ async function readFolder(root: string, selected: Selected, values: FlagValues<t
  *  So: always name the root each summary describes, and say whether the folder's catalog is the one
  *  a bare spawn launches from (`launches`): true when the two roots are one directory, false when the
  *  selected mesh's root differs, null when no mesh resolves and nothing is launchable here. */
-function folderPersonas(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, hints: string[]): Pick<StatusResult["folder"], "personas" | "launches"> {
-  const personas = personaCatalog(root);
+function folderPersonas(root: string, selected: Selected, values: FlagValues<typeof statusFlags>, gaps: Gaps, hints: string[]): Pick<StatusResult["folder"], "personas" | "launches"> {
+  const personas = personaCatalog(root, gaps);
   if (!selected.ok) return { personas, launches: null };
   if (sameDir(personaDir(root), selected.target.personaRoot)) return { personas, launches: true };
   hints.push(
@@ -491,14 +497,24 @@ function folderPersonas(root: string, selected: Selected, values: FlagValues<typ
 }
 
 /** Summarize the catalog through the shipped loader. A file is launchable only when
- *  {@link listPersonas} parsed it with the same {@code loadAgentFile} path spawn uses. */
-function personaCatalog(root: string): PersonaCatalog {
-  const byName = new Map(listPersonas(root).map((persona) => [persona.name, persona]));
+ *  {@link readPersonas} parsed it with the same {@code loadAgentFile} path spawn uses. Only an absent
+ *  directory is an empty catalog: one that cannot be read is a gap, not `missing`. */
+function personaCatalog(root: string, gaps: Gaps): PersonaCatalog {
+  let personas: PersonaEntry[];
+  try {
+    personas = readPersonas(root);
+  } catch (e) {
+    const error = (e as Error).message;
+    gaps.add("PERSONAS_UNREADABLE", `the persona catalog ${personaDir(root)} could not be read: ${error}`, { root: personaDir(root) });
+    return { root: personaDir(root), default: "unreadable", demo: null, error };
+  }
+  const byName = new Map(personas.map((persona) => [persona.name, persona]));
   const def = byName.get("default");
   return {
     root: personaDir(root),
     default: def?.def ? "valid" : def?.error ? "invalid" : "missing",
     demo: ["david", "sven", "me"].filter((name) => byName.get(name)?.def !== undefined).length,
+    error: null,
   };
 }
 
@@ -577,9 +593,29 @@ function deliveryDetail(live: boolean, responder: DeliveryResponderState): strin
  *  probe would green-light a plaintext broker that has substituted for a TLS-required mesh — the
  *  FAIL1 attack — so a list that only asks "is anything listening" cannot report on the one property
  *  the record claims. */
-async function readMeshes(selected: Selected, all: boolean): Promise<StatusResult["meshes"]> {
-  const entries = loadMeshes();
-  const current = getCurrent() ?? null;
+async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise<StatusResult["meshes"]> {
+  // A registry file that cannot be read is named, and the readable records are still listed and
+  // checked. Only an absent directory or pointer is an empty registry or no current mesh.
+  const unreadable: StatusResult["meshes"]["unreadable"] = [];
+  const unread = (file: string, error: string) => {
+    unreadable.push({ file, error });
+    gaps.add("MESH_REGISTRY_UNREADABLE", error, { file });
+  };
+  let entries: MeshEntry[] = [];
+  try {
+    const registry = readMeshRegistry();
+    entries = registry.entries;
+    for (const e of registry.unusable) unread(e.file, e.message);
+  } catch (e) {
+    unread(meshesDir(), `the mesh registry ${meshesDir()} could not be read: ${(e as Error).message}`);
+  }
+  let current: string | null = null;
+  try {
+    current = readCurrent() ?? null;
+  } catch (e) {
+    if (!isMeshRegistryError(e)) throw e;
+    unread(e.file, e.message);
+  }
   const chosen = selected.ok ? selected.target.space : undefined;
   const items = await Promise.all(
     entries.map(async (m) => ({
@@ -598,6 +634,7 @@ async function readMeshes(selected: Selected, all: boolean): Promise<StatusResul
   return {
     current,
     currentRecorded: current === null || entries.some((m) => m.space === current),
+    unreadable,
     items,
     catalogs: preparedCatalogDiagnostics().map((r) => ({ idp: r.account.idpUrl, state: r.state, error: r.state === "failed" ? (r.error ?? "refresh failed") : null })),
   };
@@ -607,6 +644,13 @@ async function readSelected(selected: Selected, responder: DeliveryResponderStat
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
+    // Resolution reads the whole registry and refuses a record it cannot use. The meshes reader has
+    // already named that record, so this is the same gap, and the selection is unresolved.
+    if (isMeshRegistryError(e)) {
+      gaps.add("MESH_REGISTRY_UNREADABLE", e.message, { file: e.file });
+      hints.push(e.message);
+      return { resolved: false, code: "registry-unreadable", message: e.message };
+    }
     if (!isWorkspaceTargetError(e)) throw e;
     // The canonical renderer names the ACTUAL repair per code (`cotal meshes rm`, `--space
     // <name>`, `cotal up --user-auth`, …). A fixed `up --detach` hint would be right for at most one
@@ -626,7 +670,7 @@ async function readSelected(selected: Selected, responder: DeliveryResponderStat
     tlsRequired: Boolean(target.tlsRequired),
     eventsRequired: target.policy?.events === "required",
     idp: target.userAuth?.idp.url ?? null,
-    personas: personaCatalog(target.root),
+    personas: personaCatalog(target.root, gaps),
     staleRecord: false,
     login: null,
     deliveryResponder: null,
@@ -760,15 +804,20 @@ async function readSnapshot(
 const cell = (text: string, tone?: Tone): Cell => (tone ? { text, tone } : text);
 
 function personaText(p: PersonaCatalog): string {
+  if (p.default === "unreadable") return `unreadable: ${p.error}`;
   const parts = [p.default === "valid" ? "default" : p.default === "invalid" ? "invalid default" : "no default"];
   if (p.demo) parts.push(`demo team ${p.demo}/3`);
   return parts.join(" · ");
 }
 
+function personaTone(p: PersonaCatalog): Tone {
+  return p.default === "valid" ? "ok" : p.default === "invalid" || p.default === "unreadable" ? "failed" : "hint";
+}
+
 /** A catalog's summary and root. Green only for a `default` that loads, and never for a catalog
  *  `dim` marks as not the one spawn launches from. */
 function personaCell(p: PersonaCatalog, dim = false): Cell {
-  const tone: Tone = dim ? "hint" : p.default === "valid" ? "ok" : p.default === "invalid" ? "failed" : "hint";
+  const tone: Tone = dim ? "hint" : personaTone(p);
   return cell(`${personaText(p)} · ${p.root}`, tone);
 }
 
@@ -831,7 +880,7 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
     rows.push(["personas", personaCell(f.personas, true)]);
     if (selected.resolved) {
       rows.push(["spawn root", cell(`differs · ${selected.personas.root}`, "waiting")]);
-      rows.push(["→ launches", cell(`${personaText(selected.personas)} · space ${selected.space} · via ${selected.source}`, selected.personas.default === "valid" ? "ok" : selected.personas.default === "invalid" ? "failed" : "hint")]);
+      rows.push(["→ launches", cell(`${personaText(selected.personas)} · space ${selected.space} · via ${selected.source}`, personaTone(selected.personas))]);
     }
   }
   if (auth.state === "spaces") rows.push(["processes", cell("not reported per space on a multi-space root", "hint")]);
@@ -843,7 +892,7 @@ function folderSection(f: StatusResult["folder"], selected: SelectedResult): Sec
 function meshesSections(m: StatusResult["meshes"]): Section[] {
   const check = { reachable: cell("reachable", "ok"), unreachable: cell("down", "failed"), "not-checked": cell("not checked", "hint") } as const;
   const blocks: Section["blocks"][number][] = [];
-  if (!m.items.length) blocks.push({ kind: "lines", lines: [cell("none", "hint")] });
+  if (!m.items.length && !m.unreadable.length) blocks.push({ kind: "lines", lines: [cell("none", "hint")] });
   else
     blocks.push({
       kind: "table",
@@ -873,6 +922,7 @@ function meshesSections(m: StatusResult["meshes"]): Section[] {
       })),
     });
   if (!m.currentRecorded) blocks.push({ kind: "lines", lines: [cell(`note: current mesh "${m.current}" is not recorded`, "hint")] });
+  if (m.unreadable.length) blocks.push({ kind: "lines", lines: m.unreadable.map((u) => cell(`unreadable: ${u.error}`, "failed")) });
   const sections: Section[] = [{ title: "Recorded Meshes", blocks }];
   if (m.catalogs.length)
     sections.push({ title: "Space Catalog Accounts", blocks: [{ kind: "lines", lines: m.catalogs.map((r) => `${r.idp}  ${r.state}${r.error ? `: ${r.error}` : ""}`) }] });
