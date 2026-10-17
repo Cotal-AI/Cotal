@@ -10,6 +10,7 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { ChannelRow, DashboardState, StoredMessage } from "../../state/types.js";
 import { Avatar } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
 import { MembershipPill } from "../MembershipPill.tsx";
 import { StatusWord } from "../Status.tsx";
 import { DeleteChannelDialog } from "./DeleteChannelDialog.tsx";
@@ -61,6 +62,7 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
     const rank = (id: string) => order.get(id) ?? everyone.length;
     return channelMembers(channel, membership, channels.map((c) => c.channel), messages).sort((a, b) => rank(a.id) - rank(b.id));
   }, [channel, membership, channels, messages, everyone]);
+  const badgeOf = useBadgeOf();
   const peers = useMemo(() => new Map(everyone.map((r) => [r.id, r])), [everyone]);
   const info = channels.find((c) => c.channel === channel);
   const delivery = deliveryText(info);
@@ -83,7 +85,7 @@ export function MembersTab({ store, controller, channel, now, onPick }: {
         const r = peers.get(m.id);
         return (
           <button key={m.id} type="button" className="v3-mrow" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>
-            <Avatar vendor={r?.harness} status={r?.status ?? "offline"} size={28} dot={r !== undefined} />
+            <Avatar vendor={r?.harness} status={r?.status ?? "offline"} size={28} dot={r !== undefined} badge={r ? badgeOf(m.id) : undefined} />
             <span className="v3-mname">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>
             {r && <StatusWord row={r} />}
           </button>

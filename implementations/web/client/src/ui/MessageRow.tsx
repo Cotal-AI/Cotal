@@ -6,6 +6,7 @@ import { displayNameOf, type NameIndex } from "../lib/names.js";
 import { partsToText } from "../lib/parts.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
+import { useBadgeOf } from "./identity.js";
 import { AgentPicker } from "./panel/picker.js";
 
 /** Bodies longer than this many characters of source text clamp, with Show more. */
@@ -40,6 +41,7 @@ export const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0
  *  - `place`, when given (even as null), takes the role's place in the header and drops the harness.
  *  - Inside the shell (`AgentPicker`), a verified sender's avatar and name open its Agent tab. A
  *    history row's sender is not verified, so it opens nothing.
+ *  - A verified sender on the roster carries its initial badge (`BadgeOf`); a history row's does not.
  *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
  *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
  *    a history row ignores `compact` and always draws its header, so its unverified mark is never
@@ -61,6 +63,7 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
 }) {
   const [opened, setOpened] = useState(false);
   const pick = useContext(AgentPicker);
+  const badgeOf = useBadgeOf();
   const who = senderId ?? msg.from?.id;
   const peer = who === undefined ? undefined : peers.get(who);
   const text = partsToText(msg.parts);
@@ -70,7 +73,9 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
   const at = Number.isFinite(msg.ts) ? new Date(msg.ts) : undefined;
   const cont = compact && senderId !== undefined;
   const name = displayNameOf(senderId ?? msg.from, idx);
-  const avatar = <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} />;
+  // Only a verified sender on the roster gets a badge: a history row's sender is unverified.
+  const badge = senderId !== undefined && peers.has(senderId) ? badgeOf(senderId) : undefined;
+  const avatar = <Avatar vendor={peer?.harness} status={peer?.status ?? "offline"} size={34} dot={false} badge={badge} />;
   const className = ["ui-msg", cont && "ui-msg-cont", mentioned && "ui-msg-mention"].filter(Boolean).join(" ");
   return (
     <div className={className}>

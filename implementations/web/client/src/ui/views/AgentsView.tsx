@@ -9,6 +9,7 @@ import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { AttentionMark } from "../Attention.tsx";
 import { Avatar } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
 import { clock as clockTime, harnessName } from "../MessageRow.tsx";
 import { needsDetail } from "../NeedsCard.tsx";
 import { STATUS_ICON, StatusWord, word } from "../Status.tsx";
@@ -100,6 +101,7 @@ function activityText(row: RosterRow, grouping: Grouping): string {
 function AgentRow({ row, grouping, selected, onPick }: { row: RosterRow; grouping: Grouping; selected: boolean; onPick?: (id: string) => void }) {
   const attention = row.attention === "dnd" || row.attention === "focus" ? row.attention : undefined;
   const waiting = row.status === "waiting" && grouping === "status";
+  const badgeOf = useBadgeOf();
   return (
     <button
       type="button"
@@ -108,7 +110,7 @@ function AgentRow({ row, grouping, selected, onPick }: { row: RosterRow; groupin
       aria-current={selected ? "true" : undefined}
       onClick={() => onPick?.(row.id)}
     >
-      <Avatar vendor={row.harness} status={row.status} size={36} />
+      <Avatar vendor={row.harness} status={row.status} size={36} badge={badgeOf(row.id)} />
       <span>
         <span className="v3-aname"><b>{row.name}</b><span>{roleLine(row)}</span></span>
         <span className="v3-aact" style={waiting ? { color: "var(--gold-ink)" } : undefined}>{activityText(row, grouping)}</span>

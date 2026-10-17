@@ -11,6 +11,7 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { ChannelRow, DashboardState, StoredMessage } from "../../state/types.js";
 import { Avatar } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
 import { Composer, OutgoingRows } from "../Composer.tsx";
 import { MessageRow } from "../MessageRow.tsx";
 import { NeedsCard, needsKey, useDismissed } from "../NeedsCard.tsx";
@@ -167,6 +168,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const everyone = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const peers = useMemo(() => new Map(everyone.map((r) => [r.id, r])), [everyone]);
+  const badgeOf = useBadgeOf();
   const info = channels.find((c) => c.channel === channel);
   const members = useMemo(
     () => channelMembers(channel, membership, channels.map((c) => c.channel), messages),
@@ -199,7 +201,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
           <span className="ui-stack">
             {members.slice(0, STACK).map((m) => {
               const r = peers.get(m.id);
-              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} size={22} dot={false} />;
+              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? "offline"} badge={r ? badgeOf(m.id) : undefined} size={22} dot={false} />;
             })}
           </span>
           {count}
@@ -216,7 +218,7 @@ export function ChannelView({ store, channel, onMembers, onViewAgent, panelOpen 
           <OutgoingRows store={store} target={target} shown={shown} />
           {working && (
             <div className="ui-typing">
-              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} />
+              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} badge={badgeOf(working.id)} />
               <b>{working.name}</b>
               {` is ${statusLabel(working)} `}
               {working.progress?.kind !== "unknown" && <span className="ui-dots"><i /><i /><i /></span>}

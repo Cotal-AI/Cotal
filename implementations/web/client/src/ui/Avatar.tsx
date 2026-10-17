@@ -1,6 +1,8 @@
 import type { CSSProperties } from "react";
 import { body } from "../art/index.ts";
+import type { Badge } from "../lib/identity.js";
 import type { Status } from "../lib/roster.js";
+import { IdentityBadge } from "./IdentityBadge.tsx";
 import { StatusDot } from "./Status.tsx";
 
 /** The character each connector draws as. A connector not listed here, or none, draws the guest. */
@@ -34,11 +36,13 @@ export function characterMarkup(vendor: string | undefined, status: Status): str
 
 /** An agent's character, drawn from the brand's art through the art seam, with its status dot in
  *  the corner unless `dot` is false (the message rows draw none). Offline is greyscale at half
- *  opacity (`ui-av-off`). */
-export function Avatar({ vendor, status, size, dot = true }: { vendor?: string; status: Status; size: number; dot?: boolean }) {
+ *  opacity (`ui-av-off`). `badge`, given only for a roster row, adds the initial badge bottom left,
+ *  between the character and the dot. */
+export function Avatar({ vendor, status, size, badge, dot = true }: { vendor?: string; status: Status; size: number; dot?: boolean; badge?: Badge }) {
   return (
     <span className={status === "offline" ? "ui-av ui-av-off" : "ui-av"} style={{ "--s": `${size}px` } as CSSProperties}>
       <svg viewBox="-2 -4 112 112" aria-hidden="true" dangerouslySetInnerHTML={{ __html: characterMarkup(vendor, status) }} />
+      {badge && <IdentityBadge letter={badge.letter} slot={badge.slot} size={size} offline={status === "offline"} />}
       {dot && <StatusDot status={status} />}
     </span>
   );

@@ -3,6 +3,7 @@ import { select } from "d3-selection";
 import { zoom, zoomIdentity, type D3ZoomEvent, type ZoomTransform } from "d3-zoom";
 import type { TopoModel, TopoNode } from "../../lib/topology.js";
 import { characterMarkup } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
 import { ForceLayout, pillWidth } from "./layout.js";
 
 /** The two browser calls the frame loop makes, read from `globalThis` when called. Only an effect
@@ -20,26 +21,43 @@ function linkClass(kind: TopoModel["links"][number]["kind"], hot: boolean, sourc
 }
 
 /** One agent: its character, its roster name, and for a reader of every channel the "all channels"
- *  badge in place of a link to each channel. An offline agent is greyscale at half opacity. */
+ *  badge in place of a link to each channel. An offline agent is greyscale at half opacity, which
+ *  `ui-ta-off` gives the art group (`ui-ta-art`) only.
+ *
+ *  A roster agent also gets its initial badge (`BadgeOf`, by `node.id`) bottom left of the character,
+ *  as the avatars draw it: inside the node's group and outside the greyscale one, so an offline
+ *  badge's fill is grey (`--id-off`) and its letter keeps full strength. */
 function AgentNode({ node, x, y, size }: { node: TopoNode; x: number; y: number; size: number }) {
   const status = node.status ?? "idle";
   const badge = 8 + "all channels".length * 5.2;
+  const id = useBadgeOf()(node.id);
+  const r = size * 0.23;
+  const bx = -size / 2 + r - 3;
+  const by = size / 2 - r + 2;
   return (
     <g className={status === "offline" ? "ui-ta ui-ta-off" : "ui-ta"} data-node={node.id} transform={`translate(${x} ${y})`}>
-      <svg
-        x={-size / 2}
-        y={-size / 2}
-        width={size}
-        height={size}
-        viewBox="-2 -4 112 112"
-        overflow="visible"
-        dangerouslySetInnerHTML={{ __html: characterMarkup(node.vendor, status) }}
-      />
-      <text y={size / 2 + 13} textAnchor="middle" className="ui-ta-name">{node.label}</text>
-      {node.wide && (
-        <g className="ui-wide" transform={`translate(0 ${size / 2 + 26})`}>
-          <rect x={-badge / 2} y={-8} width={badge} height={16} rx={6} />
-          <text y={3.5} textAnchor="middle">all channels</text>
+      <g className="ui-ta-art">
+        <svg
+          x={-size / 2}
+          y={-size / 2}
+          width={size}
+          height={size}
+          viewBox="-2 -4 112 112"
+          overflow="visible"
+          dangerouslySetInnerHTML={{ __html: characterMarkup(node.vendor, status) }}
+        />
+        <text y={size / 2 + 13} textAnchor="middle" className="ui-ta-name">{node.label}</text>
+        {node.wide && (
+          <g className="ui-wide" transform={`translate(0 ${size / 2 + 26})`}>
+            <rect x={-badge / 2} y={-8} width={badge} height={16} rx={6} />
+            <text y={3.5} textAnchor="middle">all channels</text>
+          </g>
+        )}
+      </g>
+      {id && (
+        <g className="ui-tidb" aria-hidden="true">
+          <circle cx={bx} cy={by} r={r} style={{ fill: `var(--id-${status === "offline" ? "off" : id.slot})` }} />
+          <text x={bx} y={by + r * 0.42} textAnchor="middle" fontSize={[...id.letter].length > 1 ? r * 0.95 : r * 1.2}>{id.letter}</text>
         </g>
       )}
     </g>

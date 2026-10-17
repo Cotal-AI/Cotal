@@ -87,6 +87,23 @@ pre code { background: none; padding: 0; }
 .ui-stack { display: flex; }
 .ui-stack .ui-av { margin-left: -6px; }
 .ui-stack .ui-av:first-child { margin-left: 0; }
+/* The initial badge (mock B2), bottom left of the avatar; the status dot keeps bottom right. Under
+   26px it is a colour dot with no letter (`ui-idb-dot`). Offline greys the fill and keeps the letter.
+   Its ring takes the colour behind it, as the status dot's does. */
+.ui-idb { position: absolute; left: -3px; bottom: -2px; width: max(12px, calc(var(--s) * .46)); height: max(12px, calc(var(--s) * .46)); border-radius: 50%;
+  background: var(--bf); color: var(--id-ink); display: grid; place-items: center; font: 700 max(8px, calc(var(--s) * .28))/1 var(--body);
+  font-feature-settings: "tnum"; box-shadow: 0 0 0 2px var(--ring-bg, var(--bg)), inset 0 0 0 1px color-mix(in srgb, var(--id-ink) 20%, transparent); font-style: normal; letter-spacing: 0; }
+.ui-idb-2 { font-size: max(7px, calc(var(--s) * .22)); }
+.ui-idb-dot { font-size: 0; }
+.ui-idb-off { background: var(--id-off); }
+.ui-side .ui-idb { --ring-bg: var(--side); }
+.ui-sline .ui-idb { --ring-bg: var(--soft); }
+.v3-arow[aria-current="true"] .ui-idb { --ring-bg: var(--soft); }
+.ui-msg:hover .ui-idb { --ring-bg: var(--hover); }
+.ui-msg-mention .ui-idb, .ui-msg-mention:hover .ui-idb { --ring-bg: var(--mention); }
+/* The same badge on a Topology node, outside the greyscale of an offline node. */
+.ui-tidb circle { stroke: var(--bg); stroke-width: 2; }
+.ui-tidb text { fill: var(--id-ink); font-family: var(--body); font-weight: 700; }
 /* ---------- centre ---------- */
 .ui-center { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
 .ui-bar { height: 52px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 12px 0 22px; border-bottom: 1px solid var(--line); min-width: 0; }
@@ -280,7 +297,7 @@ pre code { background: none; padding: 0; }
 .ui-tn rect { fill: var(--card); stroke: var(--card-line); stroke-width: 1.4; }
 .ui-tn-hot rect { stroke: var(--multi); }
 .ui-tn text { fill: var(--ink); font: 400 11px var(--body); }
-.ui-ta-off { opacity: .5; filter: grayscale(1); }
+.ui-ta-off .ui-ta-art { opacity: .5; filter: grayscale(1); }
 .ui-ta-name { fill: var(--ink); font: 600 11.5px var(--body); }
 .ui-wide rect { fill: var(--soft); stroke: var(--card-line); }
 .ui-wide text { fill: var(--dim); font: 500 10px var(--body); }

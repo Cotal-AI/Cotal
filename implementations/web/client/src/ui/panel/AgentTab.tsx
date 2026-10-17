@@ -12,6 +12,7 @@ import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { AttentionMark } from "../Attention.tsx";
 import { Avatar } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
 import { focusComposer } from "../Composer.tsx";
 import { CopyCommand } from "../CopyCommand.tsx";
 import { clock as hhmm, harnessName, UNVERIFIED } from "../MessageRow.tsx";
@@ -60,6 +61,7 @@ export function AgentTab({ store, id, channel, clock }: {
     return () => clearInterval(t);
   }, []);
   const entry = roster.find((p) => p.card.id === id);
+  const badgeOf = useBadgeOf();
   const mine = useMemo(
     () => (entry ? agentChannels(id, membership, channels.map((c) => c.channel), activity, entry.channelModes) : { channels: [], wide: false }),
     [entry, id, membership, channels, activity],
@@ -76,7 +78,7 @@ export function AgentTab({ store, id, channel, clock }: {
   return (
     <>
       <div className="ui-profile">
-        <div className="ui-big"><Avatar vendor={row.harness} status={row.status} size={72} dot={false} /></div>
+        <div className="ui-big"><Avatar vendor={row.harness} status={row.status} size={72} dot={false} badge={badgeOf(row.id)} /></div>
         <h4>{row.name}</h4>
         {sub && <div className="ui-sub">{sub}</div>}
         <div className="ui-sline">
