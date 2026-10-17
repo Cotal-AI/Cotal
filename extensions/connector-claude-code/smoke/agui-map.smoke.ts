@@ -82,7 +82,7 @@
  *   M2  [A] skip thinking blocks that carry a signature
  *       -> KILLED `real:a-signed-thinking-block-still-EMITS-its-reasoning-minus-the-signature`
  *   M3  [A] force the read offset to 0 -> **WRONG-RED**, not a kill: the seal is verified at the
- *       cursor offset (`durable-source.ts:206`), so it threw before reaching the cell it named.
+ *       cursor offset (`JsonlFileSource.read`), so it threw before reaching the cell it named.
  *       Red is not proof, and the tool refusing to score it is the only reason that is known.
  *   M3b [A] make each record's cursor point at its own START instead of its end
  *       -> KILLED `source:resuming-from-record-k-yields-exactly-the-records-after-k`
@@ -331,7 +331,7 @@ const mint = (): string => `run-${(minted += 1)}`;
 //
 // **ADOPT-THEN-APPEND, because a fresh adopt is not a read of the file.** An earlier revision of
 // this suite called `source.read(undefined)` and asserted it returned every record. It returns
-// ZERO — `undefined` is a fresh adopt, defined at `durable-source.ts:179` to start at the last
+// ZERO — `undefined` is a fresh adopt, defined in `JsonlFileSource.read` to start at the last
 // complete record boundary rather than replay history, which is what an emitter attaching to a
 // live session must do. Against a real 30-record session that read 0 and took eleven downstream
 // cells with it. The suite was wrong, not the source.
@@ -361,8 +361,8 @@ c("source:reads-every-complete-record", read.records.length === rawLines, {
   viaSource: read.records.length,
   completeLines: rawLines,
 });
-// A cursor is OPAQUE (`durable-source.ts:14`), so the thing to assert is the property the contract
-// actually promises — RESUMABILITY — not an ordering of the token's bytes.
+// A cursor is OPAQUE (the `durable-source.ts` module doc), so the thing to assert is the property
+// the contract actually promises — RESUMABILITY — not an ordering of the token's bytes.
 //
 // The cell that used to sit here compared cursors with `>`, i.e. lexicographically. It failed on a
 // real session at record 3, where the offset goes 902 -> 2767: strictly increasing as a number,
