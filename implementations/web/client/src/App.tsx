@@ -53,13 +53,13 @@ export function App({ host = window, start = startLive, clock = Date.now }: { ho
   useEffect(() => watchRoute(host, setRoute), [host]);
   const [theme, setTheme] = useTheme();
   const phone = usePhone();
-  // The details panel has nothing to show until its tabs exist, so it opens only beside a channel.
+  // The details panel opens beside a channel and beside an agent's session, on that agent's tab.
   return (
     <Shell
       store={store}
       controller={controller}
       route={route}
-      paneOpen={route.view === "channel"}
+      paneOpen={route.view === "channel" || route.view === "agent"}
       msgPerSecond={() => rate.perSecond(clock())}
       phone={phone}
       theme={theme}

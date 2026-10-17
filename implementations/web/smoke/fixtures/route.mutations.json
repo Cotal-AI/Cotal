@@ -84,6 +84,14 @@
       "replace": "r.with",
       "expectRed": "formatRoute encodes both dm ids with encodeURIComponent",
       "cell": "formatRoute encodes both dm ids with encodeURIComponent"
+    },
+    {
+      "name": "an event channel hash stops opening the agent's session",
+      "file": "implementations/web/client/src/lib/route.ts",
+      "find": "return agent ? { view: \"agent\", id: agent } : { view: \"channel\", channel };",
+      "replace": "return { view: \"channel\", channel };",
+      "expectRed": "an event channel hash opens that agent's session",
+      "cell": "an event channel hash opens that agent's session"
     }
   ]
 }

@@ -3,6 +3,7 @@ import { Icon } from "../../icons/Icon.tsx";
 import { statusLabel, type RosterRow } from "../../lib/roster.js";
 import { STATUS_ICON } from "../Status.tsx";
 import { hhmm } from "./Time.tsx";
+import { useXfade } from "./xfade.js";
 
 /** The live footer under a session (mock S and C, `ui-sess-foot`), from presence and nothing else:
  *  the status shape, "<name> is <status>", and
@@ -10,10 +11,12 @@ import { hhmm } from "./Time.tsx";
  *    activity;
  *  - waiting: what the agent reported and when, in the gold ink, never who or what it waits for;
  *  - offline: when its last heartbeat came.
- *  The panel (`compact`) drops the activity. */
+ *  The panel (`compact`) drops the activity. When presence changes the status the footer cross-fades,
+ *  keyed by the status. */
 export function SessionFoot({ row, compact = false }: { row: RosterRow; compact?: boolean }) {
   const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
   const status = statusLabel(row);
+  const fade = useXfade(row.status);
   const activity = compact ? undefined : row.activity || undefined;
   let tail: ReactNode;
   if (row.status === "working") {
@@ -35,7 +38,7 @@ export function SessionFoot({ row, compact = false }: { row: RosterRow; compact?
     tail = ` is ${status}`;
   }
   return (
-    <div className="ui-sess-foot">
+    <div key={row.status} className={fade ? `ui-sess-foot ${fade}` : "ui-sess-foot"}>
       <span className={`v3-spill v3-s-${row.status}`}>{icon && <Icon icon={icon} size={16} className="ui-ic" />}</span>
       <b>{row.name}</b>
       {tail}

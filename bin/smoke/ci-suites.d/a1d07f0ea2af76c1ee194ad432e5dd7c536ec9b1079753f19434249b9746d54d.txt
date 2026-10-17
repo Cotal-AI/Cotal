@@ -1,0 +1,2 @@
+# The session view at #/agent/<id> pairs its open and close, draws every session state, follows live steps and goes back where the reader came from.
+smoke:web-session-view

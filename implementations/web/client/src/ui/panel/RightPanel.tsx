@@ -56,8 +56,9 @@ export interface Panel {
   toggle(): void;
 }
 
-/** The tab a route opens on: Members beside a channel, otherwise Topology, the one tab that needs nothing picked. */
-const tabFor = (route: Route): PanelTab => (route.view === "channel" ? "members" : "topology");
+/** The tab a route opens on: the Agent tab beside an agent's session, Members beside a channel,
+ *  otherwise Topology, the one tab that needs nothing picked. */
+const tabFor = (route: Route): PanelTab => (route.view === "agent" ? "agent" : (route.view === "channel" ? "members" : "topology"));
 
 /** The panel's state for the shell.
  *
@@ -65,7 +66,8 @@ const tabFor = (route: Route): PanelTab => (route.view === "channel" ? "members"
  *    before the first paint, so a server render never touches storage, and blocked storage reads as
  *    open. Picking an agent or the member stack opens the panel, and that is saved too.
  *  - A new route resets the tab: Members on a channel route, with the picked agent kept so its tab
- *    stays one click away; any other route drops the pick.
+ *    stays one click away; the Agent tab on an agent's session, with that agent picked; any other
+ *    route drops the pick.
  *  - On a phone (`phone`) the panel covers the whole page, so it starts closed, opens only when the
  *    reader asks (the member stack, the panel button, picking an agent), closes again on a new route,
  *    and none of that touches the saved choice, which is the wide layout's. */
@@ -79,11 +81,12 @@ export function usePanel(route: Route, phone = false): Panel {
     const saved = readOpen();
     if (saved !== undefined) setOpen(saved);
   }, []);
-  const [at, setAt] = useState<{ key: string; tab: PanelTab; agent: string | null }>(() => ({ key, tab: tabFor(route), agent: null }));
+  const [at, setAt] = useState<{ key: string; tab: PanelTab; agent: string | null }>(() => ({ key, tab: tabFor(route), agent: route.view === "agent" ? route.id : null }));
   let cur = at;
   if (at.key !== key) {
     // Reset during render, not in an effect, so the new route never draws a frame with the old tab.
     cur = { key, tab: tabFor(route), agent: route.view === "channel" ? at.agent : null };
+    if (route.view === "agent") cur = { ...cur, agent: route.id };
     setAt(cur);
     setPhoneOpen(false);
   }

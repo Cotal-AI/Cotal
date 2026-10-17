@@ -1,5 +1,6 @@
 /** The dashboard's hash routes: a hash (and the page path) parses to one view, formatRoute writes the
- *  same route back, a channel name survives encoding, and nothing a user can type throws. */
+ *  same route back, a channel name survives encoding, and nothing a user can type throws. An agent's
+ *  session has its own route, and an agent's event channel opens that session. */
 import { strict as assert } from "node:assert";
 import { DEFAULT_ROUTE, formatRoute, parseRoute, type Route } from "../client/src/lib/route.js";
 
@@ -38,6 +39,13 @@ same("a dm hash with three ids gives the default route", parseRoute("#/dm/a/b/c"
 same("an undecodable channel name gives the default route", bad.value, DEFAULT_ROUTE);
 same("an undecodable dm peer gives the default route", parseRoute("#/dm/%E0%A4%A", "/"), DEFAULT_ROUTE);
 
+same("an agent hash gives the agent's session with no message", parseRoute("#/agent/local.abc", "/"), { view: "agent", id: "local.abc" });
+same("an agent hash with a message id gives that message as at", parseRoute("#/agent/local.abc/m-1", "/"), { view: "agent", id: "local.abc", at: "m-1" });
+same("an undecodable agent id gives the default route", parseRoute("#/agent/%E0%A4%A", "/"), DEFAULT_ROUTE);
+same("an event channel hash opens that agent's session", parseRoute("#/channel/events.local.abc", "/"), { view: "agent", id: "local.abc" });
+same("a channel named events.standup stays a channel", parseRoute("#/channel/events.standup", "/"), { view: "channel", channel: "events.standup" });
+ok("formatRoute encodes the agent id and the message id", formatRoute({ view: "agent", id: "a/b", at: "m 1#" }) === "#/agent/a%2Fb/m%201%23", formatRoute({ view: "agent", id: "a/b", at: "m 1#" }));
+
 ok("formatRoute writes a channel as #/channel/<name>", formatRoute({ view: "channel", channel: "review" }) === "#/channel/review");
 ok("formatRoute encodes the channel name with encodeURIComponent", formatRoute({ view: "channel", channel: "a b/c" }) === "#/channel/a%20b%2Fc");
 ok("formatRoute encodes both dm ids with encodeURIComponent", formatRoute({ view: "dm", peer: "a/b%c", with: "x y?#" }) === "#/dm/a%2Fb%25c/x%20y%3F%23", formatRoute({ view: "dm", peer: "a/b%c", with: "x y?#" }));
@@ -53,9 +61,12 @@ const valid: Route[] = [
   { view: "agents", group: "host" },
   { view: "topology" },
   { view: "needs" },
+  { view: "agent", id: "local.abc" },
+  { view: "agent", id: "local.abc", at: "m-1" },
+  { view: "agent", id: "a/b%c", at: "x y?#" },
 ];
 for (const r of valid) same(`parseRoute reads back formatRoute for ${JSON.stringify(r)}`, parseRoute(formatRoute(r), "/"), r);
-for (const hash of ["#/channel/team.backend", "#/dm/local.ab/local.cd", "#/agents", "#/agents/host", "#/activity", "#/topology", "#/needs"]) {
+for (const hash of ["#/channel/team.backend", "#/dm/local.ab/local.cd", "#/agents", "#/agents/host", "#/activity", "#/topology", "#/needs", "#/agent/local.abc", "#/agent/local.abc/m-1"]) {
   ok(`formatRoute(parseRoute(${hash})) is ${hash}`, formatRoute(parseRoute(hash, "/")) === hash);
 }
 console.log(`route: ${n} checks passed`);

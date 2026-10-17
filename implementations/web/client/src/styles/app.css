@@ -579,3 +579,15 @@ textarea.ui-input::placeholder { color: var(--faint); opacity: 1; }
 .ui-lt .ui-sess-foot { padding: 6px 0 2px; font-size: 12px; }
 .ui-lt-more { color: var(--dim); font-size: 12px; margin: 0 0 4px; }
 .ui-lt .ui-plane { font-size: 12px; }
+/* Session motion (agents mock G). Only what arrives after the view is on screen moves: a history read,
+   Load earlier and the first paint never carry ui-in, and a cross-fade waits for its text to change. */
+.ui-in { animation: ui-rise 180ms ease-out both; }
+@keyframes ui-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.ui-xfade { animation: ui-fade 160ms ease-out both; }
+.ui-jump { animation: ui-fade 120ms ease-out both; }
+@keyframes ui-fade { from { opacity: 0; } to { opacity: 1; } }
+.ui-post-hl { animation: ui-hl 2s ease-out forwards; }
+@keyframes ui-hl { from { background: color-mix(in srgb, var(--multi) 9%, transparent); } to { background: transparent; } }
+@media (prefers-reduced-motion: reduce) {
+  .ui-in, .ui-xfade, .ui-jump, .ui-post-hl { animation: none; }
+}

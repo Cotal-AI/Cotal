@@ -1,0 +1,77 @@
+{
+  "command": "pnpm smoke:web-session-view",
+  "guard": "the session view opens and closes its session in pairs, says every state in the mock's words, shows the plane note only when the card says the plane is on, animates only steps that arrive live after mount, and shows Live only for an agent that is online",
+  "why": [
+    "This suite runs `tsx` directly over `client/src`, with no build step and no compiled second copy, so no `afterRestore` is needed on any mutation here."
+  ],
+  "suite": [
+    "implementations/web/smoke/session-view.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "SV1 the view never closes its session on unmount, so the store's count of views leaks",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "    return () => controller.closeSession(id);\n",
+      "replace": "    return () => undefined;\n",
+      "expectRed": "1.1 mounting calls openSession once and unmounting calls closeSession once",
+      "cell": "1.1 mounting calls openSession once and unmounting calls closeSession once"
+    },
+    {
+      "name": "SV2 the plane note shows whenever the card does not say off, so an agent whose card is silent is said to publish",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "{plane === \"on\" && (",
+      "replace": "{plane !== \"off\" && (",
+      "expectRed": "3.1 the plane note shows for on and not for unknown",
+      "cell": "3.1 the plane note shows for on and not for unknown"
+    },
+    {
+      "name": "SV3 every step new to the list rises in, history included",
+      "file": "implementations/web/client/src/ui/session/SessionList.tsx",
+      "find": "return (step) => now !== undefined && (now.rising.has(step.key) || (step.live && !now.known.has(step.key)));",
+      "replace": "return (step) => now !== undefined && (now.rising.has(step.key) || !now.known.has(step.key));",
+      "expectRed": "8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint",
+      "cell": "8.1 steps a history read adds after mount carry no ui-in, nor do the steps of the first paint"
+    },
+    {
+      "name": "SV4 Live shows for an offline agent",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "const live = load === \"ok\" && plane !== \"off\" && known !== undefined && known.status !== \"offline\";",
+      "replace": "const live = load === \"ok\" && plane !== \"off\" && known !== undefined;",
+      "expectRed": "6.1 Live is absent for an offline agent, and shown for a working one",
+      "cell": "6.1 Live is absent for an offline agent, and shown for a working one"
+    },
+    {
+      "name": "SV5 Load earlier stays at the cap",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "{more && !atCap && (",
+      "replace": "{more && (",
+      "expectRed": "4.2 at 2,000 events the cap line replaces Load earlier",
+      "cell": "4.2 at 2,000 events the cap line replaces Load earlier"
+    },
+    {
+      "name": "SV6 a reload that holds frames draws skeleton rows over them",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "if (load === \"loading\" && steps.length === 0) {",
+      "replace": "if (load === \"loading\") {",
+      "expectRed": "2.8 a reload that holds frames keeps them on screen with a quiet loading line, not skeleton rows",
+      "cell": "2.8 a reload that holds frames keeps them on screen with a quiet loading line, not skeleton rows"
+    },
+    {
+      "name": "SV7 the broker's reason is set as HTML",
+      "file": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "find": "<p>{`The broker refused it: ${session?.reason ?? \"\"}.`}</p>",
+      "replace": "<p dangerouslySetInnerHTML={{ __html: `The broker refused it: ${session?.reason ?? \"\"}.` }} />",
+      "expectRed": "2.2 refused names the session, quotes the broker's reason as text and offers the grant to copy",
+      "cell": "2.2 refused names the session, quotes the broker's reason as text and offers the grant to copy"
+    },
+    {
+      "name": "SV8 the crumb ignores the channel the reader came from",
+      "file": "implementations/web/client/src/Shell.tsx",
+      "find": "const back = places.visited !== null",
+      "replace": "const back = false",
+      "expectRed": "9.1 the crumb links back to the channel the reader came from",
+      "cell": "9.1 the crumb links back to the channel the reader came from"
+    }
+  ]
+}

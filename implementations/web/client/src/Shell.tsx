@@ -16,6 +16,7 @@ import { ActivityView } from "./ui/views/ActivityView.tsx";
 import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
 import { AgentsView } from "./ui/views/AgentsView.tsx";
+import { SessionView } from "./ui/views/SessionView.tsx";
 import { AgentPicker } from "./ui/panel/picker.js";
 import { BadgeOf, badgeLookup } from "./ui/identity.js";
 import { SheetMenu } from "./ui/sheet.js";
@@ -41,13 +42,16 @@ function StatusLines({ store }: { store: Store<DashboardState> }) {
  *  against. `panel` is how a view opens the right panel: the member stack opens Members, View agent
  *  and an Agents view row pick the agent. It is the panel as the views see it: its `agent` is the one
  *  the panel is showing on its Agent tab, and null while the panel is closed or on another tab, so
- *  the Agents view marks a row only while that agent is on screen. */
+ *  the Agents view marks a row only while that agent is on screen. An agent's route draws its session,
+ *  keyed by the agent so each agent's view starts afresh, with `session`'s controller, layout and
+ *  the place its back link returns to; on a phone its Agent details opens the panel on that agent. */
 function centreView(
   store: Store<DashboardState>,
   route: Route,
   clock: () => number,
   panel: Panel,
   panelOpen: boolean,
+  session: { controller: Controller | null; phone: boolean; back: { label: string; route: Route }; panelOpen: boolean; toggle: () => void; details: (id: string) => void },
 ): ReactNode {
   switch (route.view) {
     case "channel":
@@ -62,6 +66,23 @@ function centreView(
       return <AgentsView store={store} group={route.group === "host" ? "host" : undefined} selected={panel.agent} onPick={panel.selectAgent} clock={clock} />;
     case "needs":
       return <AgentsView store={store} group="status" focusWaiting selected={panel.agent} onPick={panel.selectAgent} clock={clock} />;
+    case "agent": {
+      const id = route.id;
+      return (
+        <SessionView
+          key={id}
+          store={store}
+          controller={session.controller}
+          id={id}
+          at={route.at}
+          back={session.back}
+          phone={session.phone}
+          onDetails={() => session.details(id)}
+          panelOpen={session.panelOpen}
+          onTogglePanel={session.toggle}
+        />
+      );
+    }
   }
 }
 
@@ -111,7 +132,12 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
-  const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown);
+  // An agent's session goes back to the channel the reader last had open, else to the Agents view.
+  const back = places.visited !== null
+    ? { label: `#${places.visited}`, route: { view: "channel", channel: places.visited } satisfies Route }
+    : { label: "Agents", route: { view: "agents", group: "status" } satisfies Route };
+  const session = { controller, phone, back, panelOpen: shown, toggle: panel.toggle, details: panel.selectAgent };
+  const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, session);
   const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} panel={panel} clock={clock} />;
   // The sheet remembers the route it was opened on, so any new route closes it, during render and
   // with no effect to run, and coming back to that route does not reopen it.
@@ -158,8 +184,11 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
  *
  *  A conversation is named by both parties, so the link opens the conversation it stands for. A
  *  visit from a Message button names only the agent: the operator is the other party, and until
- *  `self`, the operator's id, is known that visit is no place to land. */
-function usePlaces(route: Route, channels: DashboardState["channels"], dms: DashboardState["dms"], roster: DashboardState["roster"], self: string | null): Places {
+ *  `self`, the operator's id, is known that visit is no place to land.
+ *
+ *  `visited` is the channel the reader last had open, or null before any: where an agent's session
+ *  goes back to. */
+function usePlaces(route: Route, channels: DashboardState["channels"], dms: DashboardState["dms"], roster: DashboardState["roster"], self: string | null): Places & { visited: string | null } {
   const [last, setLast] = useState<{ channel: string | null; dm: { peer: string; with?: string } | null }>({ channel: null, dm: null });
   let seen = last;
   if (route.view === "channel" && last.channel !== route.channel) seen = { ...last, channel: route.channel };
@@ -170,5 +199,5 @@ function usePlaces(route: Route, channels: DashboardState["channels"], dms: Dash
   const other = seen.dm === null ? null : (seen.dm.with ?? self);
   const newest = peers[0]?.conversations[0];
   const dm = seen.dm !== null && other !== null && peers.some((p) => p.id === seen.dm?.peer) ? { peer: seen.dm.peer, with: other } : peers[0] && newest ? { peer: peers[0].id, with: newest.with } : null;
-  return { channel, dm };
+  return { channel, dm, visited: seen.channel };
 }

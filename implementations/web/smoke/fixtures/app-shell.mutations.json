@@ -24,7 +24,7 @@
     {
       "name": "A4 the active item is always Activity, whatever the route says",
       "file": "implementations/web/client/src/ui/Rail.tsx",
-      "find": "        const here = route.view === view;",
+      "find": "        const here = route.view === view || (view === \"agents\" && route.view === \"agent\");",
       "replace": "        const here = view === \"activity\";",
       "expectRed": "2.2 a channel route marks Channels",
       "cell": "2.2 a channel route marks Channels"
