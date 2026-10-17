@@ -25,6 +25,14 @@
       "expectRed": "parity: reasoning, which uses a different continuation prefix from text",
       "cell": "parity: reasoning, which uses a different continuation prefix from text",
       "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
+    },
+    {
+      "name": "P4 the fold stops marking a stream that never saw its END as cut, so the session view drops the trailing … both renderers print and a truncated paragraph reads as finished",
+      "file": "implementations/web/client/src/lib/session.ts",
+      "find": "    for (const id of [...text.keys()]) flush(text, id, \"said\", true);",
+      "replace": "    for (const id of [...text.keys()]) flush(text, id, \"said\", false);",
+      "expectRed": "fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events",
+      "cell": "fold parity: foldSession's steps project to the node renderer's facts on every frame in the corpus that carries events"
     }
   ],
   "suite": [
