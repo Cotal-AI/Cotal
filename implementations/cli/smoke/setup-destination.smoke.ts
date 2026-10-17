@@ -162,10 +162,12 @@ if (seeded.status !== 0) {
 }
 
 // A stand-in npm registry serving the official tmux and herdr runtimes, packed from this checkout,
-// at this cotal's version. Every other package is not found. Set after the seed, so only the
-// runtime installs read it.
+// at this cotal's version, beside a newer `latest` that has no tarball, so an install that resolves
+// to the newest fails. Every other package is not found. Set after the seed, so only the runtime
+// installs read it.
 const REPO = join(import.meta.dirname, "..", "..", "..");
 const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
+const NEWER = "99.0.0";
 const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
 const served = new Map<string, { manifest: Record<string, unknown>; file: string; integrity: string; shasum: string }>();
 for (const name of ["tmux", "herdr"]) {
@@ -195,8 +197,11 @@ const registryServer = createServer((req, res) => {
   res.end(JSON.stringify({
     _id: path,
     name: path,
-    "dist-tags": { latest: VERSION },
-    versions: { [VERSION]: { ...pkg.manifest, _id: `${path}@${VERSION}`, dist: { tarball: `${registry}/tarballs/${pkg.file}`, integrity: pkg.integrity, shasum: pkg.shasum } } },
+    "dist-tags": { latest: NEWER },
+    versions: {
+      [VERSION]: { ...pkg.manifest, _id: `${path}@${VERSION}`, dist: { tarball: `${registry}/tarballs/${pkg.file}`, integrity: pkg.integrity, shasum: pkg.shasum } },
+      [NEWER]: { ...pkg.manifest, version: NEWER, _id: `${path}@${NEWER}`, dist: { tarball: `${registry}/tarballs/missing-${NEWER}.tgz`, integrity: pkg.integrity, shasum: pkg.shasum } },
+    },
   }));
 });
 const registry = `http://127.0.0.1:${await listenOn(registryServer, await freePort())}`;
@@ -356,6 +361,9 @@ const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find(
   check("cotal runtimes reports it installed and reachable", listed.env?.result?.items?.some((x: { name: string; state: string; reachable: boolean }) => x.name === "tmux" && x.state === "installed" && x.reachable === true), shown(listed));
   const again = await json([...FULL("rt", dir), "--runtime", "tmux"]);
   check("naming it again is a no-op that finds it set up", again.status === 0 && again.env?.outcome === "no-op" && row(again, "tmux")?.state === "set-up" && row(again, "tmux")?.reachable === true, shown(again));
+  const bare = await run(["ext", "add", "@cotal-ai/tmux"]);
+  check("ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
+    bare.status === 0 && installed("@cotal-ai/tmux")?.version === VERSION && installed("@cotal-ai/tmux")?.spec === `@cotal-ai/tmux@${VERSION}`, { run: shown(bare), installed: installed("@cotal-ai/tmux") });
 
   const orca = await json([...FULL("rt", dir), "--runtime", "orca"], home, withMore);
   check("a runtime that does not install is left out, the result is partial, and the others stay",

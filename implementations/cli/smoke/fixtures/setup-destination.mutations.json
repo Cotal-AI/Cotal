@@ -297,6 +297,15 @@
       "expectRed": "the variable a driver reads for its tool counts as the tool",
       "cell": "the variable a driver reads for its tool counts as the tool",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "ext add installs the registry's newest first-party release",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "  return /^@cotal-ai\\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;",
+      "replace": "  return spec;",
+      "expectRed": "ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
+      "cell": "ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }

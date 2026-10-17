@@ -79,7 +79,8 @@ Commands come from the surfaces the binary composes: the base mesh CLI, the mana
 (`supervise`), and the delivery daemon (`deliver`), plus any operator-installed extensions.
 `cotal ext add <npm-package>` installs any registry providers a package contributes: commands,
 runtimes, and local process lifecycle descriptors. The `web` dashboard and optional manager
-runtimes ship this way.
+runtimes ship this way. A `@cotal-ai/*` package named without a version installs this cotal's
+version, as `setup` and `update` do; a version or tag you name is installed as given.
 
 ## Structured output
 
