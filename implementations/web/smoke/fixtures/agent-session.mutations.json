@@ -14,6 +14,14 @@
       "cell": "1.1 a chat message on events.local.abc is an agent-frame for local.abc, not a message"
     },
     {
+      "name": "the tap forwards a frame on an agent's event channel whoever published it, so another principal can write into that agent's session",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (senderId !== id) return null;",
+      "replace": "    void senderId;",
+      "expectRed": "1.10 a frame on events.local.abc published by local.mallory comes back null: not the agent's frame, and never a message",
+      "cell": "1.10 a frame on events.local.abc published by local.mallory comes back null: not the agent's frame, and never a message"
+    },
+    {
       "name": "a repeated watch from one feed is counted twice, so that feed receives each frame twice and one unwatch no longer matches one watch",
       "file": "implementations/web/src/web.ts",
       "find": "    if (!feeds.includes(feed)) feeds.push(feed);",
@@ -52,6 +60,14 @@
       "replace": "    if (false) {",
       "expectRed": "4.7 a denial answers { refused } with the error's text unchanged and the grant grantFor gave",
       "cell": "4.7 a denial answers { refused } with the error's text unchanged and the grant grantFor gave"
+    },
+    {
+      "name": "a feed that falls behind is never ended, so a slow browser watching a busy agent buffers in this process without limit",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (res.writableLength > ceiling) {",
+      "replace": "  if (false) {",
+      "expectRed": "6.2 a feed whose buffer passes the ceiling gets one overflow event with its reason, and is ended",
+      "cell": "6.2 a feed whose buffer passes the ceiling gets one overflow event with its reason, and is ended"
     }
   ]
 }

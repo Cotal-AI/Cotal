@@ -39,7 +39,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CotalMessage } from "@cotal-ai/core";
-import { chatSubject } from "@cotal-ai/core";
+import { chatSubject, eventChannelPrincipal } from "@cotal-ai/core";
 import { activityBackfill, chatOnly, classifyTap, type ActivitySource } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -182,9 +182,13 @@ console.log("web-events-filter smoke");
   ok("5.2 SOURCE-SHAPE: the by-name history route applies no filter", !routeBody.includes("chatOnly"), routeBody.slice(0, 200));
   ok("5.3 SOURCE-SHAPE: it still serves whatever channel is named", routeBody.includes("channelHistory"));
 
-  // Every channel in the fixture, as the live tap would receive it on the chat plane.
-  const tapped = Object.fromEntries(CHANNELS.map(({ channel }) =>
-    [channel, classifyTap(chatSubject("filter-test", "local", "alice", channel), msg(channel, 1))?.event]));
+  // Every channel in the fixture, as the live tap would receive it on the chat plane. An event
+  // channel is published by its own principal, since the tap drops a frame from anyone else; a
+  // near-miss name has no principal, and alice publishes it.
+  const tapped = Object.fromEntries(CHANNELS.map(({ channel }) => {
+    const by = eventChannelPrincipal(channel) ?? { owner: "local", actor: "alice" };
+    return [channel, classifyTap(chatSubject("filter-test", by.owner, by.actor, channel), msg(channel, 1))?.event];
+  }));
   ok("5.4 the live tap sends a frame on a principal-shaped channel as no `message`, and the near-miss names as `message`",
     EVENT_CHANNELS.every((c) => tapped[c] === "agent-frame") && KEPT.every((c) => tapped[c] === "message"), tapped);
 }

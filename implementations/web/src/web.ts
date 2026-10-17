@@ -695,7 +695,13 @@ export function agentIdFromPath(raw: string): { id: string; owner: string; actor
  *
  *  The agent is the event channel's principal, the same derivation `chatOnly` filters on, so a
  *  near-miss name such as `events.standup` stays an ordinary `message`. The channel is the one the
- *  broker policed, taken from the subject, never the payload's own claim. */
+ *  broker policed, taken from the subject, never the payload's own claim.
+ *
+ *  A FRAME FROM ANYONE BUT THE AGENT IS DROPPED, and dropped rather than sent on as a `message`. The
+ *  subject's sender is the verified publisher, and a frame is that agent's only when the agent
+ *  published it. On a mesh where another principal may write the channel (an open mesh, or a grant
+ *  wider than the agent's own), a forged frame would otherwise read as the agent's session, and
+ *  falling through to `message` would hand it to every browser instead. */
 export function classifyTap(subject: string, msg: CotalMessage | undefined):
   | { event: "message"; data: { mode: DeliveryMode; senderId?: string; channel?: string; msg: CotalMessage } }
   | { event: "agent-frame"; agent: string; data: { id: string; msg: CotalMessage } }
@@ -717,9 +723,34 @@ export function classifyTap(subject: string, msg: CotalMessage | undefined):
   const agent = channel === undefined ? null : eventChannelPrincipal(channel);
   if (agent !== null) {
     const id = principalKey(agent.owner, agent.actor).key;
+    if (senderId !== id) return null;
     return { event: "agent-frame", agent: id, data: { id, msg } };
   }
   return { event: "message", data: { mode, senderId, channel, msg } };
+}
+
+/** The most bytes a feed may have waiting to be sent before the server gives up on it. A browser on
+ *  a slow link, watching a busy agent, cannot take frames as fast as the tap produces them, and
+ *  every byte it has not taken waits in this process. Past this the feed is told why and ended, and
+ *  the browser's own reconnect opens a fresh one, watches again and reads the gap from history. */
+export const MAX_FEED_BUFFER_BYTES = 1_048_576;
+
+/** Writes one SSE event to a feed, and ends a feed whose unsent bytes have passed `ceiling` after
+ *  telling it so with one `overflow` event `{ reason }`. A feed that has ended takes nothing more.
+ *  Every event on every feed goes through here, so no route can buffer past the ceiling. */
+export function writeFeed(
+  res: { readonly writableEnded: boolean; readonly writableLength: number; write(chunk: string): unknown; end(): unknown },
+  event: string,
+  data: unknown,
+  ceiling: number = MAX_FEED_BUFFER_BYTES,
+): void {
+  if (res.writableEnded) return;
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  if (res.writableLength > ceiling) {
+    const reason = `this feed fell more than ${ceiling} bytes behind, so the server closed it; reconnect to resume`;
+    res.write(`event: overflow\ndata: ${JSON.stringify({ reason })}\n\n`);
+    res.end();
+  }
 }
 
 /** The most agents one feed may watch at once. A watch is a row in a map this process holds for as
@@ -1277,7 +1308,7 @@ export async function web(args: ParsedArgs): Promise<void> {
 
   const clients = new Set<ServerResponse>();
   const send = (res: ServerResponse, event: string, data: unknown) =>
-    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    writeFeed(res, event, data);
   const broadcast = (event: string, data: unknown) => {
     for (const res of clients) if (!res.writableEnded) send(res, event, data);
   };
@@ -1396,11 +1427,15 @@ export async function web(args: ParsedArgs): Promise<void> {
       void ep.readMembership()
         .then((m) => { if (!res.writableEnded) send(res, "membership", m); })
         .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
-      req.on("close", () => {
+      // Both ends, because either can end a feed: the browser going away closes the request, and
+      // an overflow ends the response while the socket may stay open. Forgetting twice is harmless.
+      const forget = () => {
         clients.delete(res);
         feeds.delete(feed);
         watchers.drop(res);
-      });
+      };
+      req.on("close", forget);
+      res.on("close", forget);
       return;
     }
     if (path === READINESS_PATH) {

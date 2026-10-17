@@ -22,6 +22,7 @@ import {
   agentIdFromPath,
   classifyTap,
   eventsGrantFor,
+  writeFeed,
 } from "../src/web.js";
 
 let cells = 0;
@@ -95,6 +96,10 @@ console.log("1. classifyTap");
   ok("1.8 a subject with no message gives null",
     classifyTap(chatSubject(SPACE, "local", "abc", "events.local.abc"), undefined) === null);
   ok("1.9 a subject that is no delivery plane gives null", classifyTap(`${spacePrefix(SPACE)}.ctl.manager.local.abc`, msg()) === null);
+
+  const forged = classifyTap(chatSubject(SPACE, "local", "mallory", "events.local.abc"), msg("events.local.abc"));
+  ok("1.10 a frame on events.local.abc published by local.mallory comes back null: not the agent's frame, and never a message",
+    forged === null, forged);
 }
 
 // ── 2. the watch map: once per feed, per agent, and gone with its last watcher ──────────────────
@@ -246,6 +251,34 @@ console.log("5. eventsGrantFor");
     eventsGrantFor("static")("events.acme.bot", "acme")
       === "cotal mint watcher --profile agent --allow-subscribe 'events.acme.bot' --provision");
   ok("5.3 an open mesh has no grant to give", eventsGrantFor("open")("events.acme.bot", "acme") === undefined);
+}
+
+// ── 6. a feed that falls behind is ended, not buffered without limit ────────────────────────────
+console.log("6. writeFeed");
+{
+  /** A response whose unsent bytes are everything written to it, as on a link that takes nothing. */
+  const stalled = () => {
+    const out = { chunks: [] as string[], ended: false };
+    return {
+      out,
+      get writableEnded() { return out.ended; },
+      get writableLength() { return out.chunks.join("").length; },
+      write(chunk: string) { out.chunks.push(chunk); return false; },
+      end() { out.ended = true; },
+    };
+  };
+  const res = stalled();
+  writeFeed(res, "agent-frame", { id: "local.abc" }, 100);
+  ok("6.1 under the ceiling an event is written as one SSE frame and the feed stays open",
+    JSON.stringify(res.out.chunks) === JSON.stringify(['event: agent-frame\ndata: {"id":"local.abc"}\n\n']) && !res.out.ended, res.out);
+  writeFeed(res, "agent-frame", { id: "local.abc", pad: "x".repeat(100) }, 100);
+  const last = res.out.chunks[res.out.chunks.length - 1] ?? "";
+  ok("6.2 a feed whose buffer passes the ceiling gets one overflow event with its reason, and is ended",
+    res.out.ended && res.out.chunks.length === 3 && last.startsWith("event: overflow\ndata: ")
+      && typeof (JSON.parse(last.slice("event: overflow\ndata: ".length)) as { reason?: unknown }).reason === "string",
+    res.out);
+  writeFeed(res, "message", { n: 1 }, 100);
+  ok("6.3 an ended feed takes nothing more", res.out.chunks.length === 3, res.out.chunks.length);
 }
 
 console.log(`COTAL_SMOKE_SENTINEL cells=${cells} passed=${cells - failed} failed=${failed}`);

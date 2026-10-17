@@ -73,7 +73,8 @@ import { feedAuthoritative, pillState, type Pill } from "../client/src/lib/membe
 import { createController } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
 import { initialState, type DashboardState } from "../client/src/state/types.js";
-import { MEMBERSHIP_READ_FAILED } from "../src/web.js";
+// `writeFeed` is what the lifted `send` calls, so it goes into the context as the module exports it.
+import { MEMBERSHIP_READ_FAILED, writeFeed } from "../src/web.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -317,7 +318,7 @@ check("the SSE broadcaster was lifted out of web.ts", Boolean(sseBroadcast), { l
 const REASON = "membership stream not found";
 const sseWire = async (stmt: string, ctxOverrides: Record<string, unknown> = {}): Promise<string> => {
   let bytes = "";
-  const client = { writableEnded: false, write: (chunk: string) => { bytes += chunk; } };
+  const client = { writableEnded: false, writableLength: 0, write: (chunk: string) => { bytes += chunk; }, end: () => {} };
   const source = ts.transpileModule(
     `${sseSend};\n${sseBroadcast}\nlet membershipWatch;\nglobalThis.__run = async () => { ${stmt}; };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } },
@@ -327,6 +328,7 @@ const sseWire = async (stmt: string, ctxOverrides: Record<string, unknown> = {})
     clients: new Set([client]),
     res: client,
     MEMBERSHIP_READ_FAILED,
+    writeFeed,
     globalThis: undefined,
     console,
     ...ctxOverrides,
@@ -361,14 +363,14 @@ check("M5: the frame carries the thrown reason, so the operator sees WHY rather 
 // cells above for a reason that has nothing to do with the code under test.
 const okBytes = await (async () => {
   let bytes = "";
-  const client = { writableEnded: false, write: (chunk: string) => { bytes += chunk; } };
+  const client = { writableEnded: false, writableLength: 0, write: (chunk: string) => { bytes += chunk; }, end: () => {} };
   const src = ts.transpileModule(
     `${sseSend};\n${sseBroadcast}\nglobalThis.__run = async () => { ${ssePush}; };`,
     { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
   const c: Record<string, unknown> = {
     ep: { readMembership: async () => ({ members: [] }) },
     clients: new Set([client]), res: client,
-    MEMBERSHIP_READ_FAILED, globalThis: undefined, console,
+    MEMBERSHIP_READ_FAILED, writeFeed, globalThis: undefined, console,
   };
   c.globalThis = c;
   runInContext(src, createContext(c), { filename: "web.ts (sse control)" });
