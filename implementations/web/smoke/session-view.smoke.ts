@@ -4,7 +4,8 @@
  *  Section 1 pairs `openSession` with `closeSession`. Section 2 renders every state's words. Section 3
  *  is the plane note, section 4 Load earlier and the cap, section 5 the composer, section 6 the Live
  *  chip, section 7 the arrival at a message, and section 8 which steps rise or fade in. Section 9
- *  mounts `App` with a fake address to read where the crumb goes back to.
+ *  mounts `App` with a fake address to read where the crumb goes back to. Section 10 mounts `Shell`
+ *  to hold that the Agent tab keeps a session open only while an open panel shows it.
  *
  *  The DOM is jsdom, installed first: the prose renders through `lib/md.ts`, whose sanitizer needs a
  *  window, and React's client reads `window` when it loads. */
@@ -18,6 +19,7 @@ import type { RouteHost } from "../client/src/routeWatch.js";
 import type { Controller } from "../client/src/state/controller.js";
 import { createStore, type Store } from "../client/src/state/store.js";
 import { initialState, type DashboardState, type SessionState, type StoredMessage } from "../client/src/state/types.js";
+import { Shell } from "../client/src/Shell.tsx";
 import { Compose } from "../client/src/ui/Composer.tsx";
 import { SessionView } from "../client/src/ui/views/SessionView.tsx";
 import { mount } from "./mount.js";
@@ -399,6 +401,40 @@ const putSession = (store: Store<DashboardState>, edit: (s: SessionState) => Ses
   same("9.4 the crumb goes back to the last place that was not a session, with its label, not to the last channel",
     crumb(m3.container), { href: "#/activity", title: "Back to Activity", label: "Activity" });
   await m3.unmount();
+}
+
+// ── 10. The Agent tab holds a session only while it shows ───────────────────────────────────────
+{
+  // The shipped shell on #team, wide, with the panel open: engine's verified post gives the reader
+  // its name to pick. Picking opens the Agent tab, and the tab holds engine's session while it shows.
+  localStorage.clear();
+  const f = fake();
+  const store = seed({
+    connection: "connected",
+    roster: [entry("working", "on")],
+    channels: [{ channel: "team", messages: 1 }],
+    open: { channel: "team", messages: [posted("m-1", "app/chess.js is ready")] },
+  } as Partial<DashboardState>);
+  const m = await mount(createElement(Shell, { store, controller: f.ctl, route: { view: "channel", channel: "team" }, paneOpen: true, msgPerSecond: () => 0, clock: () => T }));
+  const sessionCalls = () => f.calls.filter((c) => /^(open|close)Session\(/.test(c));
+  const before = sessionCalls();
+  await m.run(() => click(all(m.container, "main .ui-msg .ui-mh button.ui-who").find((b) => text(b) === "engine")));
+  const picked = sessionCalls();
+  await m.run(() => click(m.container.querySelector("section.ui-pane button[aria-label='Close panel']")));
+  same("10.1 picking an agent opens its session once with the Agent tab, and closing the panel closes it, so a closed panel holds no session",
+    { before, picked, closed: sessionCalls(), pane: m.container.querySelector("section.ui-pane") === null },
+    { before: [], picked: [`openSession("${ENGINE}")`], closed: [`openSession("${ENGINE}")`, `closeSession("${ENGINE}")`], pane: true });
+  await m.run(() => click(m.container.querySelector("header button[title='Toggle panel']")));
+  const reopened = sessionCalls();
+  await m.run(() => click(all(m.container, "section.ui-pane [role=tab]").find((t) => text(t) === "Members")));
+  same("10.2 the panel opened again on the Agent tab reads the session again, and moving to another tab closes it",
+    { reopened, members: sessionCalls() },
+    {
+      reopened: [`openSession("${ENGINE}")`, `closeSession("${ENGINE}")`, `openSession("${ENGINE}")`],
+      members: [`openSession("${ENGINE}")`, `closeSession("${ENGINE}")`, `openSession("${ENGINE}")`, `closeSession("${ENGINE}")`],
+    });
+  await m.unmount();
+  localStorage.clear();
 }
 
 console.log(`session-view: ${n} checks passed`);

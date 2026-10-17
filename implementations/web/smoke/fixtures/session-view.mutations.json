@@ -112,6 +112,22 @@
       "replace": "  const live = load === \"ok\" && plane !== \"off\"",
       "expectRed": "6.2 Live is absent while the feed is down, though the read went through and the agent is working",
       "cell": "6.2 Live is absent while the feed is down, though the read went through and the agent is working"
+    },
+    {
+      "name": "SV14 a closed panel stays mounted, hidden, so the Agent tab keeps its agent's session watched and read while nobody can see it",
+      "file": "implementations/web/client/src/ui/AppShell.tsx",
+      "find": "      {paneOpen && <section className=\"ui-pane\" aria-label=\"Details\">{props.panel}</section>}",
+      "replace": "      <section className=\"ui-pane\" aria-label=\"Details\" hidden={!paneOpen}>{props.panel}</section>",
+      "expectRed": "10.1 picking an agent opens its session once with the Agent tab, and closing the panel closes it, so a closed panel holds no session",
+      "cell": "10.1 picking an agent opens its session once with the Agent tab, and closing the panel closes it, so a closed panel holds no session"
+    },
+    {
+      "name": "SV15 the Agent tab stays mounted, hidden, behind another tab, so it keeps its agent's session watched and read while the panel shows Members or Topology",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "        {tab === \"agent\" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} channel={channel} route={route} clock={clock} />}",
+      "replace": "        {panel.agent !== null && <div hidden={tab !== \"agent\"}><AgentTab store={store} controller={controller} id={panel.agent} channel={channel} route={route} clock={clock} /></div>}",
+      "expectRed": "10.2 the panel opened again on the Agent tab reads the session again, and moving to another tab closes it",
+      "cell": "10.2 the panel opened again on the Agent tab reads the session again, and moving to another tab closes it"
     }
   ]
 }

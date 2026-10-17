@@ -224,7 +224,9 @@ presence reports one. A turn started by another agent's message shows no text, b
 stays in the channel where it was sent.
 
 The dashboard reads an agent's events only while its session is open, in the panel or in the full
-view. It reads the newest 200 messages on the agent's event channel first. Load earlier reads 200
+view. The first read happens when an open panel shows the agent's Agent tab, or when its session view
+opens; a closed panel, or one on another tab, holds no session and reads nothing. It reads the
+newest 200 messages on the agent's event channel first. Load earlier reads 200
 more each time, up to 2,000. The browser keeps at most 2,000 events per agent and then says
 `Showing the newest 2,000 events`. While the session is open, the server sends that agent's new
 events to the browser as they arrive, and the view shows a Live chip. Closing the session stops
