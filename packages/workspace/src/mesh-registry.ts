@@ -476,14 +476,14 @@ export function loadMeshes(): MeshEntry[] {
 
 /** The registry as {@link loadMeshes} reads it, except that each record this build cannot use is
  *  returned beside the usable ones instead of thrown, so a report can name it and still list the
- *  rest. An unreadable registry directory still throws. */
+ *  rest. A registry directory that exists and cannot be read throws a {@link MeshRegistryError}. */
 export function readMeshRegistry(): { entries: MeshEntry[]; unusable: MeshRegistryError[] } {
   let files: string[];
   try {
     files = readdirSync(meshesDir()).filter((f) => f.endsWith(".json"));
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return { entries: [], unusable: [] }; // no registry yet
-    throw e;
+    throw new MeshRegistryError(meshesDir(), `the mesh registry ${meshesDir()} could not be read: ${(e as Error).message}`, { cause: e });
   }
   const bySpace = new Map<string, { entry: MeshEntry; canonical: boolean }>();
   const unusable: MeshRegistryError[] = [];
@@ -544,14 +544,19 @@ export function getCurrent(): string | undefined {
 }
 
 /** {@link getCurrent}, except that only an absent pointer is "unset": one that exists and cannot be
- *  read throws a {@link MeshRegistryError} naming it, for a report that must not show it as unset. */
+ *  read, or is empty, throws a {@link MeshRegistryError} naming it, for a report that must not show it
+ *  as unset. {@link setCurrent} writes a name and {@link clearCurrent} removes the file, so an empty
+ *  pointer is damage, not a cleared selection. */
 export function readCurrent(): string | undefined {
+  let space: string;
   try {
-    return readFileSync(currentFile(), "utf8").trim() || undefined;
+    space = readFileSync(currentFile(), "utf8").trim();
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw new MeshRegistryError(currentFile(), `${currentFile()} could not be read: ${(e as Error).message}`, { cause: e });
   }
+  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \`cotal use <space>\` or remove the file`);
+  return space;
 }
 
 export function setCurrent(space: string): void {
