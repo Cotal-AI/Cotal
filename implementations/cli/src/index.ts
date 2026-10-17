@@ -56,7 +56,7 @@ const baseCommands: Command[] = [
     name: "setup",
     group: "Setup",
     summary: "prepare a space for your agents: destination, application, runtimes, project and space; starts nothing",
-    usage: "cotal setup [--destination local|self-hosted] [-H|--harness <connector>] [--runtime <name>]... [--project <dir>] [--space <name>] [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain] | setup --skills",
+    usage: "cotal setup [--destination <local|self-hosted>] [-H|--harness <connector>] [--runtime <name>]... [--project <dir>] [--space <name>] [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain] | setup --skills",
     flags: setupFlags,
     outputs: ["json", "plain"],
     examples: ["cotal setup", "cotal setup --destination local --harness claude --runtime tmux --project ~/research --space research --no-input", "cotal setup --destination self-hosted --harness claude --project ~/team --space team --connection-file team.json --json", "cotal setup --skills"],

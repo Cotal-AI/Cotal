@@ -77,8 +77,8 @@
     {
       "name": "an unresolvable target from a structured command is reported unknown",
       "file": "implementations/cli/src/command.ts",
-      "find": "      if (isWorkspaceTargetError(e))\n        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code),",
-      "replace": "      if (e === \"\\u0000never\")\n        failureExit(cmd, new CommandFailure(\"refused\", targetErrorCode(e.code),",
+      "find": "      if (isWorkspaceTargetError(e)) {\n        const { message, remedy } = workspaceErrorParts({ kind: \"target\", error: e });",
+      "replace": "      if (isWorkspaceTargetError(e) && String(e.code) === \"\\u0000never\") {\n        const { message, remedy } = workspaceErrorParts({ kind: \"target\", error: e });",
       "expectRed": "an unresolvable target exits 2",
       "cell": "an unresolvable target exits 2"
     },
