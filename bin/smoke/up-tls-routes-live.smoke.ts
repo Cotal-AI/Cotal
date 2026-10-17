@@ -588,7 +588,7 @@ async function main(): Promise<void> {
           // A fix that reds only the selected line while the list still prints green `reachable`
           // via a bare TCP/INFO probe is the FAIL1 residual that greened a substitute in one
           // section while redding another — operators read the list first.
-          assert.match(result.out, /connection\s+.*unreachable/,
+          assert.match(result.out, /connection:\s+.*unreachable/,
             `GATE FAILED (status): did not report the substituted plaintext broker unreachable:\n${result.out}`);
           assert.match(result.out, /\bdown\b/,
             `GATE FAILED (status Recorded Meshes): list did not mark the TLS-required mesh down ` +
@@ -1020,7 +1020,7 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 400));
     try {
       const st = cotal(["status"], home, cwd, { NODE_EXTRA_CA_CERTS: "" });
-      assert.match(st.out, /connection\s+.*unreachable/,
+      assert.match(st.out, /connection:\s+.*unreachable/,
         `GATE FAILED (S10 mirror): plaintext-on-port must be unreachable, not tls-trust:\n${st.out}`);
       assert.doesNotMatch(st.out, /tls-trust/,
         `GATE FAILED (S10 mirror): plaintext substitute classified tls-trust:\n${st.out}`);

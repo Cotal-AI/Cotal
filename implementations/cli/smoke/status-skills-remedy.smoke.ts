@@ -125,7 +125,7 @@ try {
   const first = freshEnv();
   const status = await run(["status"], first.env, first.cwd);
   assert.equal(status.code, 0, `status exits 0: ${status.stderr}`);
-  assert.match(status.stdout, /^cotal status$/m, "status header/control was reached");
+  assert.match(status.stdout, /^Machine$/m, "status report/control was reached");
 
   const claudeRow = skillRow(status.stdout, "Claude skills");
   const agentsRow = skillRow(status.stdout, "Skills (.agents)");

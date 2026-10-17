@@ -34,6 +34,32 @@ What this page does not promise is a rolling upgrade. Nothing in the current lin
 authority versions, so where broker and manager run separately there is a window in which the mesh
 is down. The sections below give that window's shape so it can be scheduled rather than endured.
 
+## Status output after 0.82.0 (unreleased)
+
+`cotal status` writes one structured document with `--json`, takes `--plain` and `--all`, and exits by
+the structured outcome table. Nothing on a running mesh changes, and there is no outage window.
+Upgrading the `cotal` binary is the whole operation.
+
+### What stops working
+
+- `cotal status` exits 4 when it could not read part of what it reports, such as a PID record, the
+  folder's trust material, a persona catalog, the mesh registry or one of its records, or a user-auth login. It exited
+  0. An unreachable broker, a stopped process
+  or an unbound responder still exits 0.
+- The recorded meshes list checks only the selected mesh and reads `not checked` for the others. Pass
+  `--all` to check every one.
+- The report no longer lists the roster or prints a `cotal status` title line, and its standalone
+  hints moved to a `Hints` section at the end. Rows are labeled `name: value`. Human output is not a
+  parsing target; use `--json`.
+- `--components` is refused with `--json`, `--plain` or `--all`. Its exit, `0` to `3` by component
+  health, replaces the report's, so it does not exit 4 for a partial report.
+
+### Before the upgrade
+
+Search scripts and monitors for `cotal status`. A check that treats any nonzero exit of bare
+`status` as an outage should treat 4 as a report with unreadable parts. A script that read the
+roster from `status` should use `cotal ps` for managed seats.
+
 ## Read command output after 0.82.0 (unreleased)
 
 `cotal ps --json` now writes one JSON document instead of one JSON line per seat, and `ps`, `models`

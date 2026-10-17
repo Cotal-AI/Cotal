@@ -243,8 +243,11 @@ const baseCommands: Command[] = [
     name: "status",
     aliases: ["s"],
     group: "Mesh",
-    summary: "detailed read-only status for setup, local processes, recorded meshes, and the selected live mesh",
+    summary: "read-only status of this machine, its processes, the recorded meshes and the selected mesh",
+    usage: "cotal status [--json|--plain] [--all] [--space <s>] [--server <url>] | cotal status --components",
     flags: statusFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal status", "cotal status --all", "cotal status --json", "cotal status --components"],
     run: status,
   },
   {

@@ -113,13 +113,14 @@ try {
   setCurrent("macfleet"); // `cotal use macfleet` — spawn resolves here from ANY cwd
 
   // ── DIVERGENT ────────────────────────────────────────────────────────────────────────────────
-  const divergent = thisFolder(await runStatus(folderRoot));
+  const divergentOut = await runStatus(folderRoot);
+  const divergent = thisFolder(divergentOut);
   const plain = strip(divergent);
 
   check("divergent: the folder's own persona catalog is still reported (not deleted)", /personas/.test(plain), plain);
   check("divergent: the folder row NAMES the root it describes", plain.includes(join(folderRoot, ".cotal", "agents")), plain);
   check("divergent: the spawn root is named too", plain.includes(join(meshRoot, ".cotal", "agents")), plain);
-  check("divergent: the split is called out", /spawn root\s+differs/.test(plain), plain);
+  check("divergent: the split is called out", /spawn root:\s+differs/.test(plain), plain);
   check("divergent: the resolved mesh is named", /space macfleet/.test(plain), plain);
   // The heart of it: the folder HAS default.md, and status must not paint it as launchable.
   check(
@@ -129,7 +130,8 @@ try {
   );
   // …and the truth about what WOULD launch: the mesh root has no default.md.
   check("divergent: reports what the spawn root actually offers", /→ launches[\s\S]*no default/.test(plain), plain);
-  check("divergent: hint points at the real repair", /will not launch/.test(plain), plain);
+  const hints = strip(divergentOut).split("\nHints\n")[1] ?? "";
+  check("divergent: the hints point at the real repair", /will not launch/.test(hints), strip(divergentOut));
 
   // ── AGREEING ─────────────────────────────────────────────────────────────────────────────────
   // Make them agree: stand in the mesh's OWN root. One root, one catalog — the divergence rows
@@ -170,7 +172,7 @@ try {
   // no `current` is `ambiguous-target`, one of the ordinary states the resolver refuses on.
   clearCurrent();
   const unresolved = thisFolder(await runStatus(mkdtempSync(join(tmpdir(), "cotal-neutral-"))));
-  check("unresolved target: does not throw, and refuses to imply launchability", /spawn root\s+unresolved/.test(strip(unresolved)), strip(unresolved));
+  check("unresolved target: does not throw, and refuses to imply launchability", /spawn root:\s+unresolved/.test(strip(unresolved)), strip(unresolved));
 
   // Two SPELLINGS of one directory are one directory. `sameDir` compares through `canonicalRoot`
   // so a symlinked root is not read as a divergence; a raw `===` would FABRICATE a split and send

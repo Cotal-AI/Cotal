@@ -82,7 +82,7 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // `--json` (2026-10, #2386): bare `meshes` / `meshes list` print one JSON object per mesh; add/rm refuse it.
   meshes: { flags: ["allow-unencrypted-overlay:boolean", "force:boolean", "from:string", "json:boolean", "mode:string", "root:string", "server:string", "tls:boolean", "user-auth-file:string"], positionals: true },
   // `--components` (2026-08): explicit fail-loud health across manager, delivery, web, and broker; bare status remains the recovery-oriented inventory.
-  status: { flags: ["components:boolean", "server:string", "space:string"], positionals: false },
+  status: { flags: ["all:boolean", "components:boolean", "json:boolean:j", "plain:boolean", "server:string", "space:string"], positionals: false },
   // `sync` (2026-09): refresh the signed-in space catalogs; `--idp` narrows the refresh to one account.
   sync: { flags: ["idp:string"], positionals: false },
   doctor: { flags: ["fix:boolean", "space:string"], positionals: true },
