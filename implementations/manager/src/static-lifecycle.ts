@@ -5,7 +5,7 @@
  * slot mapping (F3 outer spawn intent + the F5-bind alias -> (owner, actor, uid) join), the
  * static credential-ledger rows, and the F1 terminal sequence.
  *
- * Three-way split (the Unit B design note, panel-locked): the key/value GRAMMAR lives in core
+ * Three-way split: the key/value GRAMMAR lives in core
  * `lifecycle-state.ts`; the CAS SEQUENCING is the shared core saga this module DELEGATES to
  * (never a hand-ordered local copy); the barrier ORCHESTRATION here is the static executor's
  * own (revoke from the slot's recorded credentialIds, fail-closed broker connection eviction of the
@@ -477,7 +477,7 @@ async function cleanupStaticSlotOnce(
  *  footprint teardown; on a normal stop the manager separately proves runtime exit) -> gate
  *  `frozen -> retired` -> head `retiring -> retired` LAST -> slot `retired` (the alias frees).
  *  Every gate/head step DELEGATES to the shared core saga; recovery recognizes a SAME-OP
- *  terminal gate and finishes the head (the lost-ack alias wedge the panel closed).
+ *  terminal gate and finishes the head (a lost ack otherwise wedges the alias).
  *
  *  Total over partial durable state: an alias whose activation never reached the saga (slot
  *  `provisioning`, no gate) terminalizes by slot alone; a crashed activation frozen by its own
