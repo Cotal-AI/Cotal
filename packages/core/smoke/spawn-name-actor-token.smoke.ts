@@ -114,24 +114,36 @@ for (const bad of ["../escape", "a/b", "a\\b", "with space", "dot.name", ""]) {
 // correct today is behaviourally identical today — that is precisely what makes the drift silent,
 // and why every cell above stays green when the call is replaced by an equivalent regex. The only
 // moment the two disagree is after someone changes the token grammar, which is exactly the moment
-// nobody is looking at this door. So the cell reads the shipped source.
-//
-// Comments are STRIPPED first: the docstring above `spawnNameError` names `assertValidOwnerToken`
-// twice, and a cell that counted its own documentation would pass with the call deleted.
-const SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "agent-file.ts"), "utf8")
-  .replace(/\/\*[\s\S]*?\*\//g, "")
-  .replace(/\/\/[^\n]*/g, "");
-const body = SRC.slice(SRC.indexOf("export function spawnNameError"));
-const fnBody = body.slice(0, body.indexOf("\n}") + 2);
+// nobody is looking at this door. So the cell parses the shipped source: the docstring above
+// `spawnNameError` names `assertValidOwnerToken` twice, and a string can spell the call too.
+const DOOR_AST = ts.createSourceFile(
+  "agent-file.ts",
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "src", "agent-file.ts"), "utf8"),
+  ts.ScriptTarget.Latest,
+);
+const DOOR = DOOR_AST.statements.find(
+  (s): s is ts.FunctionDeclaration => ts.isFunctionDeclaration(s) && s.name?.text === "spawnNameError",
+);
+const TRAVERSAL_GUARD = "/^[A-Za-z0-9_-]+$/";
+let validatorCalls = 0;
+const doorRegexes: string[] = [];
+const walkDoor = (node: ts.Node): void => {
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "assertValidOwnerToken")
+    validatorCalls++;
+  if (ts.isRegularExpressionLiteral(node)) doorRegexes.push(node.text);
+  ts.forEachChild(node, walkDoor);
+};
+if (DOOR?.body) walkDoor(DOOR.body);
 
-check("instrument control: the predicate's source was located, comments stripped",
-  fnBody.includes("export function spawnNameError") && fnBody.length > 100 && !fnBody.includes("DELEGATES"),
-  { len: fnBody.length });
+check("instrument control: the predicate was parsed and its regex literals are visible (the traversal guard)",
+  DOOR?.body !== undefined && doorRegexes.includes(TRAVERSAL_GUARD),
+  { doorRegexes });
 check("the narrow half CALLS the shipped validator (delegation, not a restatement)",
-  fnBody.includes("assertValidOwnerToken("));
+  validatorCalls >= 1,
+  { validatorCalls });
 check("…and carries no second copy of the token alphabet",
-  !/\[A-Za-z0-9_\]\+/.test(fnBody),
-  { fnBody: fnBody.slice(0, 400) });
+  doorRegexes.every((r) => r === TRAVERSAL_GUARD),
+  { doorRegexes });
 
 // A good name is accepted in both modes — so the guard above is not just always-refusing.
 check("a plain name is accepted in BOTH modes",

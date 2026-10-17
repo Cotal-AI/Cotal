@@ -84,7 +84,7 @@
       "replace": "  try {\n    if (!/^[A-Za-z0-9_]+$/.test(name)) throw new Error(\"bad\");\n  } catch {",
       "expectRed": "the narrow half CALLS the shipped validator",
       "cell": "the narrow half CALLS the shipped validator (delegation, not a restatement)",
-      "note": "CORRECT TODAY — it reproduces the validator's current alphabet exactly, so every BEHAVIOURAL cell stays green. It first ran as a SURVIVOR, with the harness's positive control confirming the file was loaded, which made it a real coverage gap rather than an unreachable mutant. That is the finding: a restatement that is right today is indistinguishable from delegation today, and diverges only after someone changes the token grammar — the one moment nobody is reading this door. It is now killed by structural cells over the shipped source (comments stripped, since the docstring names the validator)."
+      "note": "CORRECT TODAY — it reproduces the validator's current alphabet exactly, so every BEHAVIOURAL cell stays green. It first ran as a SURVIVOR, with the harness's positive control confirming the file was loaded, which made it a real coverage gap rather than an unreachable mutant. That is the finding: a restatement that is right today is indistinguishable from delegation today, and diverges only after someone changes the token grammar — the one moment nobody is reading this door. It is now killed by structural cells over the parsed source, which a comment or a string naming the validator cannot satisfy."
     },
     {
       "name": "M7 the CLI's client-side preflight is removed",
