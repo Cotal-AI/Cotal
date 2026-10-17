@@ -182,12 +182,14 @@ console.log("web-events-filter smoke");
   // A filter on the live feed lands either around the handler at registration or inside the
   // handler, so both are pinned. The handler body is located by its declaration and 5.5 requires it
   // to be found, so a moved or renamed handler goes red instead of 5.6 passing over an empty string.
+  // 5.6 refuses the name rather than `chatOnly(`, because a call may put spacing, a line break or
+  // type arguments before its parenthesis.
   ok("5.4 SOURCE-SHAPE: the tap registers the handler itself, unwrapped", src.includes("ep.tap(onTap, {"));
   const tapFrom = src.indexOf("const onTap = (");
   const tapTo = src.indexOf("\n  };\n", tapFrom);
   const onTap = tapFrom < 0 || tapTo < 0 ? "" : src.slice(tapFrom, tapTo);
   ok("5.5 SOURCE-SHAPE: the tap handler is located and forwards every frame", onTap.includes('broadcast("message"'), onTap.slice(0, 120));
-  ok("5.6 SOURCE-SHAPE: the live tap is not filtered, so frames stay visible", !onTap.includes("chatOnly("), onTap.slice(0, 120));
+  ok("5.6 SOURCE-SHAPE: the live tap is not filtered, so frames stay visible", !onTap.includes("chatOnly"), onTap.slice(0, 120));
 }
 
 console.log(`web-events-filter smoke: ${cells - failed} passed, ${failed} failed`);
