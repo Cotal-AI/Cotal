@@ -13,3 +13,5 @@ For a remote user-auth registration, a cached login remains a login even when th
 Broker addresses in identity reports and shared connection-failure messages omit URL user information, query strings and fragments. Stored connection values and connection behavior are unchanged. An unparseable address is refused by `whoami` without printing it.
 
 Use a URL placeholder in auth-mismatch recovery instructions rather than a display address with connection data removed.
+
+Validate display addresses as broker addresses before returning an unchanged value, and escape terminal controls. Preserve bare hosts, IPv6, TLS and WebSocket routes without changing stored or dialed values.

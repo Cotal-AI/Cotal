@@ -59,6 +59,8 @@ const auth = await createSpaceAuth(space);
 const urlUser = `synthetic-user-${randomUUID()}`;
 const urlPassword = `synthetic-password-${randomUUID()}`;
 const urlToken = `synthetic-token-${randomUUID()}`;
+const controlServer = "wss://127.0.0.1:1/route\u001b]0;cotal-fixture-title\u0007\u202e";
+const controlDisplay = "wss://127.0.0.1:1/route\\u001b]0;cotal-fixture-title\\u0007\\u202e";
 const urlCases = [
   { label: "password", space: "url-password", server: `nats://${urlUser}:${urlPassword}@127.0.0.1:1`, shown: "nats://127.0.0.1:1" },
   { label: "token", space: "url-token", server: `nats://${urlToken}@127.0.0.1:1`, shown: "nats://127.0.0.1:1" },
@@ -67,8 +69,22 @@ const urlCases = [
   { label: "query", space: "url-query", server: `wss://127.0.0.1:1/mesh?access_token=${urlToken}`, shown: "wss://127.0.0.1:1/mesh" },
   { label: "fragment", space: "url-fragment", server: `nats://127.0.0.1:1#${urlToken}`, shown: "nats://127.0.0.1:1" },
   { label: "invalid address", space: "url-invalid", server: `nats://${urlUser}:${urlPassword}@[invalid`, shown: null },
+  { label: "protocol-relative address", space: "url-relative", server: `//${urlUser}:${urlPassword}@127.0.0.1:1`, shown: null },
+  { label: "empty-host path", space: "url-empty-host", server: `nats:////${urlUser}:${urlPassword}@127.0.0.1:1`, shown: null },
+  { label: "bare path", space: "url-bare-path", server: `/${urlUser}:${urlPassword}@127.0.0.1:1`, shown: null },
+  { label: "TCP path", space: "url-tcp-path", server: `nats://127.0.0.1:1/${urlUser}:${urlPassword}@host`, shown: null },
+  { label: "TLS path", space: "url-tls-path", server: `tls://127.0.0.1:1/${urlUser}:${urlPassword}@host`, shown: null },
+  { label: "missing scheme slashes", space: "url-scheme-slashes", server: `nats:/${urlUser}:${urlPassword}@127.0.0.1:1`, shown: null },
+  { label: "unsupported scheme", space: "url-http", server: `http://${urlUser}:${urlPassword}@127.0.0.1:1/`, shown: null },
+  { label: "missing host", space: "url-missing-host", server: `nats://?auth=${urlToken}`, shown: null },
+  { label: "TLS address", space: "url-tls", server: "tls://127.0.0.1:1", shown: "tls://127.0.0.1:1" },
+  { label: "WebSocket route", space: "url-ws-route", server: "ws://127.0.0.1:1/mesh", shown: "ws://127.0.0.1:1/mesh" },
+  { label: "bare IPv6 address", space: "url-ipv6", server: "[::1]:1", shown: "[::1]:1" },
+  { label: "WebSocket route controls", space: "url-ws-controls", server: controlServer, shown: controlDisplay },
 ];
-const redactUrlMarkers = (text: string): string => [urlUser, urlPassword, urlToken].reduce((value, marker) => value.replaceAll(marker, "<redacted-synthetic-marker>"), text);
+const redactUrlMarkers = (text: string): string => [urlUser, urlPassword, urlToken]
+  .reduce((value, marker) => value.replaceAll(marker, "<redacted-synthetic-marker>"), text)
+  .replace(/[\p{Cc}\p{Zl}\p{Zp}\p{Bidi_Control}]/gu, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
 
 const port = await pickFreePort();
 const servers = `nats://127.0.0.1:${port}`;
@@ -252,6 +268,18 @@ try {
     const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
     const detail = shown(read);
     check(`who ${format ?? "human"} keeps a placeholder for a private broker URL in auth recovery`, read.status === 2 && hidden && message?.includes("--server <url> --mode auth --force") === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+  }
+  for (const target of ["raw", "registered"] as const) {
+    for (const format of ["--json", "--plain"] as const) {
+      const args = target === "raw"
+        ? ["--space", "not-registered-controls", "--server", controlServer]
+        : ["--space", "url-ws-controls"];
+      const read = await run(["who", ...args, format]);
+      const message = format === "--json" ? read.envelope?.error?.message : read.stderr;
+      const safe = !/[\u001b\u0007\u202e]/u.test(read.stdout + read.stderr + (message ?? ""));
+      const detail = shown(read);
+      check(`who ${format} escapes broker route controls in a ${target} refusal`, read.status === 2 && safe && message?.includes(controlDisplay) === true, { status: detail.status, stdout: redactUrlMarkers(detail.stdout), stderr: redactUrlMarkers(detail.stderr) });
+    }
   }
   const unknown = await run(["whoami", "--space", "not-registered-whoami", "--server", "nats://127.0.0.1:1", "--json"]);
   check("whoami refuses an unregistered --space even with --server", unknown.status === 2 && unknown.envelope?.error?.code === "TARGET_NOT_FOUND", shown(unknown));
