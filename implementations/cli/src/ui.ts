@@ -1,4 +1,4 @@
-import { formatAge, presenceAges, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
+import { formatAge, presenceAges, presenceText, type PresenceStamps, type PresenceStatus } from "@cotal-ai/core";
 import { c } from "@cotal-ai/workspace";
 
 // The ANSI helpers moved into `@cotal-ai/workspace` (stage 4), shared with @cotal-ai/web.
@@ -28,7 +28,7 @@ type DatedRow = PresenceStamps & { condition?: { code: string } };
  *  reset inside the text would end a highlighted row's styling. */
 export function presenceFacts(p: DatedRow, now = Date.now()): { condition: string; ages: string } {
   const age = presenceAges(p, now);
-  const condition = p.condition ? ` (${p.condition.code}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "";
+  const condition = p.condition ? ` (${presenceText(p.condition.code)}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "";
   const unchanged = age.statusSince === undefined ? "" : ` · unchanged for ${formatAge(age.statusSince)}`;
   const active = age.activeAt === undefined ? "" : ` · active ${formatAge(age.activeAt)} ago`;
   return { condition, ages: unchanged + active };

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import { peerLabel, type Presence } from "@cotal-ai/core";
+import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import { activityAge } from "../../ui.js";
 import { factRow, statusLine } from "./Roster.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts } from "./theme.js";
@@ -94,7 +94,7 @@ export function NeedsYou({
                 </Text>
               ))}
               <Text dimColor wrap="truncate-end">
-                {"  " + (p.activity ?? "waiting for input") + activityAge(p)}
+                {"  " + presenceText(p.activity ?? "waiting for input") + activityAge(p)}
               </Text>
             </Box>
           );

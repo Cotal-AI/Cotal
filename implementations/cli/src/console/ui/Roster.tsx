@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Box, Text, useFocus, useInput } from "ink";
-import { peerLabel, type Presence } from "@cotal-ai/core";
+import { peerLabel, presenceText, type Presence } from "@cotal-ai/core";
 import { progressSignal } from "@cotal-ai/workspace";
 import { activityAge, presenceFacts } from "../../ui.js";
 import { agentColor, STATUS, ago, windowAround, wrapFacts, type FactRow } from "./theme.js";
@@ -39,7 +39,7 @@ function RosterRow({ p, selected, facts, tag }: { p: Presence; selected: boolean
   const isAgent = p.card.kind === "agent";
   const s = STATUS[p.status];
   const age = progressText(p);
-  const act = p.activity ? "  " + p.activity + activityAge(p) : "";
+  const act = p.activity ? "  " + presenceText(p.activity) + activityAge(p) : "";
   let head: ReactNode, tail: ReactNode;
   // Selected: one uniform cyan bar (like the tabs); unselected: the normal colored row.
   if (selected) {

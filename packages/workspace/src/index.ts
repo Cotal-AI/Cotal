@@ -18,7 +18,9 @@ export * from "./web-session.js";
 export * from "./maintenance.js";
 export * from "./manager-shutdown.js";
 export * from "./flags.js";
-export * from "./one-line.js";
+// Lifted to @cotal-ai/core so the connector roster escapes presence text by the same rule;
+// re-exported here so the package surface is unchanged.
+export { oneLine } from "@cotal-ai/core";
 export * from "./provenance.js";
 export * from "./mesh-registry.js";
 export * from "./join-target.js";

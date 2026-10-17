@@ -9,7 +9,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
-import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
+import { isConcreteChannel, channelInAllow, AmbiguousPeerError, peerLabel, assertLifecycleToken, isPermissionDenied, renderLifecycleBlocked, EpEnvelopeError, LANG_PROBLEM_DETAIL_KIND, formatAge, presenceAges, presenceText, type ControlReply, type PresenceStatus } from "@cotal-ai/core";
 import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 // The neutralization and the per-item rendering live in `framing.ts`, one convention shared with
 // the auto-injected block, and are used here rather than restated. See that file for the rule.
@@ -874,9 +874,9 @@ export function cotalToolSpecs(
           const age = presenceAges(p, Date.now());
           const unchanged = age.statusSince === undefined ? "" : ` · unchanged for ${formatAge(age.statusSince)}`;
           const active = age.activeAt === undefined ? "" : ` · active ${formatAge(age.activeAt)} ago`;
-          const condition = (p.condition ? ` (${p.condition.code}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "") + unchanged + active;
+          const condition = (p.condition ? ` (${presenceText(p.condition.code)}${age.conditionSince === undefined ? "" : ` for ${formatAge(age.conditionSince)}`})` : "") + unchanged + active;
           const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;
-          const activity = p.activity ? `: ${p.activity}${age.activitySince === undefined ? "" : ` (set ${formatAge(age.activitySince)} ago)`}` : "";
+          const activity = p.activity ? `: ${presenceText(p.activity)}${age.activitySince === undefined ? "" : ` (set ${formatAge(age.activitySince)} ago)`}` : "";
           return `${statusGlyph(p.status)} ${who} — ${progress}${activity}${attn}${me}${mutedHint}${id}`;
         });
         return ok(`${preface}Present in "${config.space}" (${roster.length}):\n${lines.join("\n")}`);

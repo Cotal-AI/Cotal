@@ -510,7 +510,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(\" - \" + ev.presence.activity + activityAge(ev.presence)) : \"\"}`",
+      "anchor": "`${c.dim(\"•\")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(\" - \" + presenceText(ev.presence.activity) + activityAge(ev.presence)) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -579,7 +579,7 @@
     {
       "path": "implementations/cli/src/commands/join.ts",
       "kind": "derived-output",
-      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              presenceDetail(p) +\n              (p.activity ? c.dim(\" - \" + p.activity + activityAge(p)) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
+      "anchor": "\"  \" +\n              who(p.card) +\n              \" \" +\n              statusBadge(p.status) +\n              presenceDetail(p) +\n              (p.activity ? c.dim(\" - \" + presenceText(p.activity) + activityAge(p)) : \"\") +\n              (p.card.id === me ? c.dim(\" (you)\") : \"\")",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {
@@ -1161,7 +1161,7 @@
     {
       "path": "implementations/cli/src/commands/status.ts",
       "kind": "derived-output",
-      "anchor": "`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${p.activity}${activityAge(p)}`) : \"\"}`",
+      "anchor": "`    ${statusBadge(p.status)}${condition}  ${label}${p.activity ? c.dim(` - ${presenceText(p.activity)}${activityAge(p)}`) : \"\"}`",
       "class": "honest-text",
       "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
       "proof": {

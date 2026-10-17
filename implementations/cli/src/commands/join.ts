@@ -14,6 +14,7 @@ import {
   provisionAgent,
   partsToText,
   peerLabel,
+  presenceText,
   type Delivery,
   type EndpointKind,
   type PresenceStatus,
@@ -278,7 +279,7 @@ export async function join(args: ParsedArgs): Promise<void> {
       print(c.dim(`← ${who(ev.presence.card)} went offline`));
     else
       print(
-        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(" - " + ev.presence.activity + activityAge(ev.presence)) : ""}`,
+        `${c.dim("•")} ${who(ev.presence.card)} ${statusBadge(ev.presence.status)}${presenceDetail(ev.presence)}${ev.presence.activity ? c.dim(" - " + presenceText(ev.presence.activity) + activityAge(ev.presence)) : ""}`,
       );
   });
 
@@ -353,7 +354,7 @@ export async function join(args: ParsedArgs): Promise<void> {
               " " +
               statusBadge(p.status) +
               presenceDetail(p) +
-              (p.activity ? c.dim(" - " + p.activity + activityAge(p)) : "") +
+              (p.activity ? c.dim(" - " + presenceText(p.activity) + activityAge(p)) : "") +
               (p.card.id === me ? c.dim(" (you)") : ""),
           );
       } else if (line === "/idle") await setStatus("idle");
