@@ -17,6 +17,10 @@ readers and none of the NATS client, zod or yaml. Siblings: [OpenCode](connect-o
 
 ## Set up
 
+> **Team and Enterprise accounts:** [Enable Claude Code channels](#enable-channels-for-your-organization)
+> before running unattended agents. Channels are blocked by default, so incoming messages cannot
+> wake an idle session until an organization Owner enables them.
+
 ```bash
 cotal setup      # one-time: installs the plugin, seeds one agent; launches nothing
 cotal up         # brings up the mesh + delivery daemon + a detached manager
@@ -52,6 +56,32 @@ coordinating agent teams (today `team-topology`), from one canonical source, on 
 Cotal also generates an [Agent Skills discovery index](https://cotal.ai/.well-known/agent-skills/index.json)
 on cotal.ai, but that RFC is still a draft with no harness consuming it yet, so it is a forward bet,
 not a channel to rely on today.
+
+## Enable channels for your organization
+
+For claude.ai Team and Enterprise organizations, channels are blocked by default. An organization
+Owner must enable them in [Organization settings > Claude Code > Channels](https://claude.ai/admin-settings/claude-code),
+or set this organization-managed setting:
+
+```json
+{
+  "channelsEnabled": true
+}
+```
+
+Users cannot override this setting through local or project settings. Cotal's
+`--dangerously-load-development-channels` launch flag cannot override it either. Enable channels
+before launching the sessions that need them.
+
+When channels are blocked, Cotal's MCP tools and hook-based inbox delivery still work when the agent
+takes a turn. An incoming message cannot wake an idle Claude Code session. A successful spawn or a
+connected MCP server does not prove idle wake is available; check Claude's startup notice before
+leaving agents unattended.
+
+Personal Pro and Max accounts without an organization do not need this admin opt-in. Sessions still
+need to opt into their channel, which Cotal's managed launch does for its own server. See
+[Anthropic's channel controls](https://code.claude.com/docs/en/channels#enterprise-controls) for
+organization policy and other authentication modes.
 
 ## Spawn a session
 
