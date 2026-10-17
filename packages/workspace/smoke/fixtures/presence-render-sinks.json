@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 510,
+    "total": 516,
     "honest-text": 35,
     "presence-only-glyph/count": 57,
     "command-ack": 12,
-    "non-render/control": 406
+    "non-render/control": 412
   },
   "renderers": [
     {
@@ -3708,6 +3708,48 @@
       "anchor": "ion}${rec.authority === \"offline\" ? c.dim(\" · offline\") :",
       "class": "non-render/control",
       "rationale": "Doctor renewal record: renders how the LAST RENEWAL PASS was authorised, not any agent's presence; the token matches only because the authority is spelled offline."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "of date`} · ${remedy}`, \"waiting\");\n}\n\nfunction machineSe",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "one = { ok: \"ok\", warn: \"waiting\", error: \"failed\", off: ",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "na here is launchable\", \"waiting\")]);\n  } else if (f.laun",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "lected.personas.root}`, \"waiting\")]);\n      rows.push([\"→",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": " login --idp ${l.idp}`, \"waiting\")]);\n    if (l?.subject)",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
+    },
+    {
+      "path": "implementations/cli/src/commands/status.ts",
+      "kind": "status-token",
+      "anchor": "b ${l.subject} --full`, \"waiting\")]);\n      else if (l.ac",
+      "class": "non-render/control",
+      "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     }
   ]
 }
