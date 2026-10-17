@@ -1,4 +1,4 @@
-import { ComputerTerminal01Icon, Message01Icon, StopCircleIcon } from "@hugeicons/core-free-icons";
+import { ArrowUpRight01Icon, ComputerTerminal01Icon, Message01Icon, StopCircleIcon } from "@hugeicons/core-free-icons";
 import { useEffect, useMemo, useReducer } from "react";
 import { Icon } from "../../icons/Icon.tsx";
 import { ageText } from "../../lib/age.js";
@@ -6,7 +6,8 @@ import { messageRoute, shellArg } from "../../lib/compose.js";
 import { agentChannels } from "../../lib/members.js";
 import { partsToText } from "../../lib/parts.js";
 import { rosterRows } from "../../lib/roster.js";
-import { formatRoute } from "../../lib/route.js";
+import { formatRoute, type Route } from "../../lib/route.js";
+import type { Controller } from "../../state/controller.js";
 import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
@@ -17,6 +18,7 @@ import { focusComposer } from "../Composer.tsx";
 import { CopyCommand } from "../CopyCommand.tsx";
 import { clock as hhmm, harnessName, UNVERIFIED } from "../MessageRow.tsx";
 import { StatusWord } from "../Status.tsx";
+import { SessionPreview } from "./SessionPreview.tsx";
 
 /** How many of the agent's own messages in the open channel the tab lists, newest first. */
 const RECENT = 3;
@@ -33,20 +35,27 @@ const BEAT_MS = 1000;
  *  - The status line: the status word (through `statusLabel`), the activity or "No current
  *    activity", and "Reported <hh:mm>" from when the status began. With no `statusSince` no time
  *    is given.
- *  - Message opens the operator's conversation with the agent, with its composer focused. The
- *    attach and stop commands are for the reader to copy, with the name quoted for a shell when it
- *    needs it.
+ *  - Message opens the operator's conversation with the agent, with its composer focused. Open
+ *    session goes to the agent's session at `#/agent/<id>`. The attach and stop commands are for the
+ *    reader to copy, with the name quoted for a shell when it needs it. Tab reaches them in that
+ *    order, then the session's tool groups.
+ *  - Under the profile, the Session section (agents mock S3): the last few steps, live. It is left
+ *    out while the centre shows this agent's session (`route`), which already has them.
  *  - Model reads "not reported" when the card has none. Attention shows only Do not disturb or
  *    Focus. The heartbeat is labelled as a heartbeat and reads its age from `now`, redrawn every second.
  *  - Channels are the agent's, decided as the Members tab decides them, with its quiet or muted
  *    modes. Skills are the card's. Recent lists its own messages in the open channel; one read from
  *    history carries the unverified mark, since history does not record who sent it.
  *  - An id the roster does not hold reads "Not on the roster". */
-export function AgentTab({ store, id, channel, clock }: {
+export function AgentTab({ store, controller = null, id, channel, route, clock }: {
   store: Store<DashboardState>;
+  /** Opens and closes the session the Session section shows. Null before the dashboard has started. */
+  controller?: Controller | null;
   id: string;
   /** The channel the route has open, whose messages Recent lists. */
   channel: string | null;
+  /** The centre's route. On this agent's own session the Session section is left out. */
+  route?: Route;
   clock: () => number;
 }) {
   const roster = useStore(store, (s) => s.roster);
@@ -91,10 +100,15 @@ export function AgentTab({ store, id, channel, clock }: {
             <Icon icon={Message01Icon} size={16} className="ui-ic ui-ic16" />
             Message
           </a>
+          <a className="ui-btn" href={formatRoute({ view: "agent", id: row.id })}>
+            <Icon icon={ArrowUpRight01Icon} size={16} className="ui-ic ui-ic16" />
+            Open session
+          </a>
           <CopyCommand icon={ComputerTerminal01Icon} command={`cotal attach --name ${shellArg(row.name)}`} />
           <CopyCommand icon={StopCircleIcon} command={`cotal stop --name ${shellArg(row.name)}`} />
         </div>
       </div>
+      {!(route?.view === "agent" && route.id === id) && <SessionPreview store={store} controller={controller} id={id} />}
       <dl className="ui-kv">
         {row.harness && <><dt>Harness</dt><dd>{harnessName(row.harness)}</dd></>}
         <dt>Model</dt>

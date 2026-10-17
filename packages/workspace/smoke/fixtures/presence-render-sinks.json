@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 559,
-    "honest-text": 33,
-    "presence-only-glyph/count": 97,
+    "total": 612,
+    "honest-text": 53,
+    "presence-only-glyph/count": 109,
     "command-ack": 12,
-    "non-render/control": 417
+    "non-render/control": 438
   },
   "renderers": [
     {
@@ -4065,6 +4065,457 @@
       "anchor": "\"offline\"",
       "class": "presence-only-glyph/count",
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/api/http.ts",
+      "kind": "derived-output",
+      "anchor": "`${what} refused with HTTP ${res.status}`",
+      "class": "non-render/control",
+      "rationale": "HTTP state: the response's status code in a request error the client builds; it is not presence and makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/MessageActions.tsx",
+      "kind": "derived-output",
+      "anchor": "status={peer.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/MessageActions.tsx",
+      "kind": "derived-output",
+      "anchor": "{peer.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Routing: Live shows only while the agent is online; it renders nothing itself and names no status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "kind": "derived-output",
+      "anchor": "{live && <LiveChip name={row.name} />}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The panel's Live chip, shown only while the agent is online: a chip that names no status and makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "Object.hasOwn(STATUS_ICON, row.status)",
+      "class": "non-render/control",
+      "rationale": "Lookup guard: checks the status is a key of the table before reading it; it renders nothing."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "indexed-map",
+      "anchor": "STATUS_ICON[row.status]",
+      "class": "presence-only-glyph/count",
+      "rationale": "The session footer's status icon, each status's own shape so it never rests on colour alone: a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "useXfade(row.status)",
+      "class": "non-render/control",
+      "rationale": "Animation: the footer is keyed by status so a status change cross-fades it in; the key and the fade class name no status and render nothing."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "status-token",
+      "anchor": "\"working\"",
+      "class": "non-render/control",
+      "rationale": "Routing: picks the session footer's branch for this status (activity and dots, the reported time, or the last heartbeat); the words themselves are statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "il = (\n      <>\n        {` is ${status} `}\n        {row.progress?.",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "l = (\n      <>\n        {` is ${status} `}\n        {row.progress?",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "status-token",
+      "anchor": "\"waiting\"",
+      "class": "non-render/control",
+      "rationale": "Routing: picks the session footer's branch for this status (activity and dots, the reported time, or the last heartbeat); the words themselves are statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "join(\" \");\n    tail = <>{` is ${status} `}{said && <span style={{ ",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.10 the section's footer says a waiting agent is waiting and when it reported\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "oin(\" \");\n    tail = <>{` is ${status} `}{said && <span style={{",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.10 the section's footer says a waiting agent is waiting and when it reported\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "status-token",
+      "anchor": "\"offline\"",
+      "class": "non-render/control",
+      "rationale": "Routing: picks the session footer's branch for this status (activity and dots, the reported time, or the last heartbeat); the words themselves are statusLabel's."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "` is ${status}. Last heartbeat ${beat}.`",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "` is ${status}.`",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "` is ${status}`",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "key={row.status}",
+      "class": "non-render/control",
+      "rationale": "Animation: the footer is keyed by status so a status change cross-fades it in; the key and the fade class name no status and render nothing."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "  return (\n    <div key={row.status} className={fade ? `ui-s",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "className={fade ? `ui-sess-foot ${fade}` : \"ui-sess-foot\"}",
+      "class": "non-render/control",
+      "rationale": "Styling: the footer's class, with the cross-fade class while a status change fades in; it names no status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "{fade ? `ui-sess-foot ${fade}` : \"ui-sess-foot\"}",
+      "class": "non-render/control",
+      "rationale": "Styling: the footer's class, with the cross-fade class while a status change fades in; it names no status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "`ui-sess-foot ${fade}`",
+      "class": "non-render/control",
+      "rationale": "Styling: the footer's class, with the cross-fade class while a status change fades in; it names no status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "className={`v3-spill v3-s-${row.status}`}",
+      "class": "non-render/control",
+      "rationale": "Styling: the footer pill's colour class. The footer's words come from statusLabel and its icon is the shape."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "{`v3-spill v3-s-${row.status}`}",
+      "class": "non-render/control",
+      "rationale": "Styling: the footer pill's colour class. The footer's words come from statusLabel and its icon is the shape."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "`v3-spill v3-s-${row.status}`",
+      "class": "non-render/control",
+      "rationale": "Styling: the footer pill's colour class. The footer's words come from statusLabel and its icon is the shape."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "{icon && <Icon icon={icon} size={16} className=\"ui-ic\" />}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The session footer's status icon, each status's own shape so it never rests on colour alone: a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "icon={icon}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The session footer's status icon, each status's own shape so it never rests on colour alone: a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "{icon}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The session footer's status icon, each status's own shape so it never rests on colour alone: a glyph with no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/SessionFoot.tsx",
+      "kind": "derived-output",
+      "anchor": "{tail}",
+      "class": "honest-text",
+      "rationale": "The session footer's words, <name> is <statusLabel>: the status presence reports and nothing more. Moving dots show only when progress is reported, and the cited assertion reads the words with progress unknown.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/TurnLine.tsx",
+      "kind": "derived-output",
+      "anchor": "title={mesh ? MESH_TITLE : undefined}",
+      "class": "non-render/control",
+      "rationale": "Not presence: `mesh` here is the turn's source, a turn a message from the mesh started. The line names what started a turn and makes no status or progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/TurnLine.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh ? MESH_TITLE : undefined}",
+      "class": "non-render/control",
+      "rationale": "Not presence: `mesh` here is the turn's source, a turn a message from the mesh started. The line names what started a turn and makes no status or progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/TurnLine.tsx",
+      "kind": "derived-output",
+      "anchor": "{source !== undefined && Object.hasOwn(BY, source) && <span>{mesh ? `${BY.mesh}. Its text stays where it was sent.` : BY[source]}</span>}",
+      "class": "non-render/control",
+      "rationale": "Not presence: `mesh` here is the turn's source, a turn a message from the mesh started. The line names what started a turn and makes no status or progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/TurnLine.tsx",
+      "kind": "derived-output",
+      "anchor": "{mesh ? `${BY.mesh}. Its text stays where it was sent.` : BY[source]}",
+      "class": "non-render/control",
+      "rationale": "Not presence: `mesh` here is the turn's source, a turn a message from the mesh started. The line names what started a turn and makes no status or progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/session/TurnLine.tsx",
+      "kind": "derived-output",
+      "anchor": "`${BY.mesh}. Its text stays where it was sent.`",
+      "class": "non-render/control",
+      "rationale": "Not presence: `mesh` here is the turn's source, a turn a message from the mesh started. The line names what started a turn and makes no status or progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "status-token",
+      "anchor": " ?? { id, name, status: \"offline\", ts: Number.NaN };\n  co",
+      "class": "non-render/control",
+      "rationale": "Data shaping: the row drawn for an id the roster does not hold, offline with no heartbeat to report; the words drawn from it are statusLabel's in the footer."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "status-token",
+      "anchor": "ned && known.status !== \"offline\";\n  const events = event",
+      "class": "non-render/control",
+      "rationale": "Routing: Live shows only while the agent is online; it renders nothing itself and names no status."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "Loading</div>}\n      <SessionList steps={steps} row={row} condition={condition} highlight={at} />\n    </>",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "ing</div>}\n      <SessionList steps={steps} row={row} condition={condition} highlight={at} />\n    </>",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{steps.length > 0 && <SessionList steps={steps} row={row} condition={condition} highlight={at} />}",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{steps.length > 0 && <SessionList steps={steps} row={row} condition={condition} highlight={at} />}\n      ",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "ps.length > 0 && <SessionList steps={steps} row={row} condition={condition} highlight={at} />}\n      ",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "ry}</PlaneNote>\n        {list}\n      </div>\n    );\n  }",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "</PlaneNote>\n        <SessionList steps={steps} row={row} condition={condition} highlight={at} />\n      <",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "aneNote>\n        <SessionList steps={steps} row={row} condition={condition} highlight={at} />\n      <",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "<div className=\"ui-col\">{list}</div>;\n  }\n\n  return (\n",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "status={row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{row.status}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{!phone && known && <StatusWord row={known} />}",
+      "class": "honest-text",
+      "rationale": "The session header's status pill, StatusWord: its word is statusLabel's, so a working agent reads Working with no progress claim.",
+      "proof": {
+        "path": "implementations/web/smoke/components.smoke.ts",
+        "anchor": "ok(\"2.5 a working row whose progress is unknown reads Working, with no progress claim\""
+      }
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{fresh > 0 ? <JumpButton count={fresh} onJump={jump} /> : live && <LiveChip name={name} />}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The header's Live chip or the count of new steps: a chip and a count that make no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "count={fresh}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The count of new steps on the jump button: an aggregate count that makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{fresh}",
+      "class": "presence-only-glyph/count",
+      "rationale": "The count of new steps on the jump button: an aggregate count that makes no progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/SessionView.tsx",
+      "kind": "derived-output",
+      "anchor": "{body}",
+      "class": "honest-text",
+      "rationale": "The session list and its footer, handed the roster row. The footer's words are statusLabel's, the status presence reports, with moving dots only when progress is reported; the cited assertion reads the full footer.",
+      "proof": {
+        "path": "implementations/web/smoke/panel.smoke.ts",
+        "anchor": "ok(\"8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity\""
+      }
     }
   ]
 }

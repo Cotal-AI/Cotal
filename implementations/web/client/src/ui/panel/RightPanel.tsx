@@ -136,11 +136,13 @@ export const panelShown = (panel: Panel, routeHasPanel: boolean): boolean => pan
  *  and Right (wrapping), Home and End move between the enabled tabs and select them. When the
  *  selected tab is disabled, the first enabled tab is the Tab stop instead, so the list is never
  *  skipped by the keyboard. */
-export function RightPanel({ store, controller, channel, panel, clock }: {
+export function RightPanel({ store, controller, channel, route, panel, clock }: {
   store: Store<DashboardState>;
   controller: Controller | null;
   /** The channel the route has open, or null off a channel route. */
   channel: string | null;
+  /** The centre's route, which the Agent tab reads to leave out a session the centre already shows. */
+  route: Route;
   panel: Panel;
   clock: () => number;
 }) {
@@ -188,7 +190,7 @@ export function RightPanel({ store, controller, channel, panel, clock }: {
       </div>
       <div className="ui-pane-body" role="tabpanel" id="pane-body" aria-labelledby={`pane-tab-${tab}`} data-tab={tab}>
         {tab === "members" && channel !== null && <MembersTab store={store} controller={controller} channel={channel} now={clock()} onPick={panel.selectAgent} />}
-        {tab === "agent" && panel.agent !== null && <AgentTab store={store} id={panel.agent} channel={channel} clock={clock} />}
+        {tab === "agent" && panel.agent !== null && <AgentTab store={store} controller={controller} id={panel.agent} channel={channel} route={route} clock={clock} />}
         {tab === "topology" && <TopologyTab store={store} clock={clock} />}
       </div>
     </>

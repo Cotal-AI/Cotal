@@ -9,7 +9,9 @@
  *  dismissal lasts until that agent's status changes and survives blocked storage; and a reopen keeps
  *  the rows and the scroll position while its history loads. A reload from history keeps the copy of
  *  a message the page saw verified live, in a channel, the DMs and Activity. The DMs are a window of
- *  the newest 500, and once it may not reach back to a conversation's start the DM view says so. */
+ *  the newest 500, and once it may not reach back to a conversation's start the DM view says so. A
+ *  live row from a roster agent carries the Session action, and on touch a long press opens its
+ *  sheet; a history row and a sender the roster does not hold get neither. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement } from "react";
@@ -639,6 +641,69 @@ const dmRead = (n: number, prefix = "r") =>
   ok("12.7 while the window holds all the server had, no conversation says so",
     [{ view: "dm", peer: "local.rev", with: "local.pln" }, { view: "dm", peer: "local.dav", with: "local.rv2" }].every((r) => first(false, r as Route)[0] !== "ui-cutoff")
       && textOf(centre(shellDom({ space: "main", roster, dms: window, dmsCut: false }, { view: "dm", peer: "local.dav", with: "local.rv2" }))).includes("Starts later."));
+}
+
+// ── 13. The Session action on a message ─────────────────────────────────────────────────────────
+/** #review with one more live row, from an id the roster does not hold. */
+const strangerRow: StoredMessage = { msg: msg("z1", "local.zzz", "From a stranger.", at(10, 47)), senderId: "local.zzz" };
+const actionSeed = () => channelSeed({ open: { channel: "review", messages: [...reviewMessages, strangerRow] } });
+/** The row whose body reads `body`. */
+const rowWith = (root: Element, body: string) => all(root, ".ui-msg").find((r) => textOf(r.querySelector(".ui-tx")) === body);
+{
+  const c = centre(shellDom(actionSeed(), channelRoute));
+  const link = rowWith(c, "This fails on empty input.")?.querySelector(".ui-msg-acts a") as HTMLAnchorElement | null | undefined;
+  same("13.1 a live row from a roster agent has the Session action, linking to its session at that message, titled with the name and time",
+    [textOf(link), link?.getAttribute("href"), link?.title], ["Session", formatRoute({ view: "agent", id: "local.rev", at: "m3" }), "Open reviewer's session at 10:44"]);
+  same("13.2 a row read from history has no Session action",
+    ["Read from history.", "Also from history."].map((b) => [rowWith(c, b) !== undefined, rowWith(c, b)?.querySelector(".ui-msg-acts") ?? null]), [[true, null], [true, null]]);
+  const stranger = rowWith(c, "From a stranger.");
+  ok("13.3 a live row from an id the roster does not hold has no Session action", stranger !== undefined && stranger.querySelector(".ui-msg-acts") === null);
+}
+{
+  const PointerEventOf = dom.window.PointerEvent as typeof PointerEvent;
+  const KeyboardEventOf = dom.window.KeyboardEvent as typeof KeyboardEvent;
+  const store = createStore<DashboardState>({ ...initialState, ...actionSeed() });
+  const m = await mount(createElement(Shell, { store, controller: null, route: channelRoute, paneOpen: true, msgPerSecond: () => 0 }));
+  const sleep = (ms: number) => new Promise<void>((res) => setTimeout(res, ms));
+  const body = () => rowWith(m.container, "This fails on empty input.")?.querySelector(".ui-tx") ?? null;
+  const pointer = (type: string, el: Element | null, x: number, y: number, pointerType = "touch") =>
+    el?.dispatchEvent(new PointerEventOf(type, { bubbles: true, cancelable: true, pointerType, pointerId: 7, clientX: x, clientY: y }));
+  /** Hold a pointer on reviewer's row past the long press, moving it `dx` first, then lift it. */
+  const hold = async (pointerType = "touch", dx = 0) => {
+    await m.run(() => { pointer("pointerdown", body(), 40, 40, pointerType); });
+    if (dx !== 0) await m.run(() => { pointer("pointermove", body(), 40 + dx, 40, pointerType); });
+    await m.run(() => sleep(560));
+    await m.run(() => { pointer("pointerup", body(), 40 + dx, 40, pointerType); });
+  };
+  const sheet = () => document.querySelector(".ui-msg-sheet");
+  const choices = () => all(sheet() ?? none(), ".ui-row").map(textOf);
+  const selected = () => textOf(m.container.querySelector("section.ui-pane [role=tab][aria-selected=true]"));
+
+  await hold();
+  same("13.4 a touch held past 500ms on the row opens the sheet: the sender, when it was sent, and three choices, focus on the first",
+    [sheet()?.getAttribute("role"), textOf(sheet()?.querySelector(".ui-msg-sheet-h b")), textOf(sheet()?.querySelector(".ui-msg-sheet-sub")), choices(), sheet()?.querySelector("a.ui-row")?.getAttribute("href"), document.activeElement === sheet()?.querySelector("a.ui-row")],
+    ["dialog", "reviewer", "Message at 10:44", ["Open reviewer's session here", "View agent", "Copy text"], formatRoute({ view: "agent", id: "local.rev", at: "m3" }), true]);
+  await m.run(() => { document.dispatchEvent(new KeyboardEventOf("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  ok("13.5 Escape closes the sheet", sheet() === null);
+
+  await hold();
+  const scrim = document.querySelector(".ui-msg-scrim");
+  await m.run(() => {
+    pointer("pointerdown", scrim, 5, 5);
+    (scrim as HTMLElement | null)?.click();
+  });
+  ok("13.6 a tap on the scrim closes it", scrim !== null && sheet() === null);
+
+  await hold();
+  await m.run(() => (all(sheet() ?? none(), ".ui-row").find((b) => textOf(b) === "View agent") as HTMLElement | undefined)?.click());
+  ok("13.7 View agent closes the sheet and opens the sender's Agent tab",
+    sheet() === null && selected() === "Agent" && textOf(m.container.querySelector("section.ui-pane .ui-profile h4")) === "reviewer", selected());
+
+  await hold("touch", 20);
+  ok("13.8 a touch that moves 20px before 500ms is a scroll and opens nothing", sheet() === null);
+  await hold("mouse");
+  ok("13.9 a mouse held past 500ms opens nothing: the long press is for touch", sheet() === null);
+  await m.unmount();
 }
 
 await closeDom();

@@ -7,18 +7,22 @@
  *  What is pinned, beyond the markup: Model says "not reported" when the card has none; only Do not
  *  disturb and Focus show; the heartbeat is labelled as a heartbeat ("Heartbeat 2s ago"); the delete
  *  button waits for the exact name and a refusal stays in the dialog; the panel's open state survives
- *  a reload and blocked storage; and a graph honours a new size on the same mount. */
+ *  a reload and blocked storage; and a graph honours a new size on the same mount. The Agent tab's
+ *  Session section shows the last six steps of the agent's session and opens that session while it
+ *  is drawn, except when the card says the event plane is off, and it is left out beside that
+ *  agent's own session in the centre. */
 import { closeDom, dom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement, useState } from "react";
 import { renderToString } from "react-dom/server";
 import type { ChannelInfo, CotalMessage, MembershipSnapshot, RosterEntry } from "../client/src/api/types.js";
 import { formatRoute, type Route } from "../client/src/lib/route.js";
+import type { SessionFrame } from "../client/src/lib/session.js";
 import { topologyModel, type TopoModel } from "../client/src/lib/topology.js";
 import { Shell } from "../client/src/Shell.tsx";
 import type { Controller } from "../client/src/state/controller.js";
 import { createStore } from "../client/src/state/store.js";
-import { initialState, type DashboardState, type StoredMessage } from "../client/src/state/types.js";
+import { initialState, type DashboardState, type SessionState, type StoredMessage } from "../client/src/state/types.js";
 import { ForceLayout } from "../client/src/ui/graph/layout.js";
 import { TopologyGraph } from "../client/src/ui/graph/TopologyGraph.tsx";
 import { AgentTab } from "../client/src/ui/panel/AgentTab.tsx";
@@ -474,6 +478,102 @@ const idle = async () => { for (let i = 0; i < 500 && frames.size > 0; i++) awai
   ok("7.3 a graph given a new size on the same mount moves its nodes to the new middle",
     g.container.querySelector("svg")?.getAttribute("viewBox") === "0 0 1080 420" && Math.abs(narrow - 180) < 60 && Math.abs(wide - 540) < 60, { narrow, wide });
   await g.unmount();
+}
+
+// ── 8. The Agent tab's Session section and Open session ──────────────────────────────────────────
+/** reviewer's card saying its event plane is `events`, with the rest of its entry as above. */
+const withPlane = (events: "on" | "off", over: Partial<RosterEntry> = {}): RosterEntry => {
+  const rev = roster.find((p) => p.card.id === "local.rev")!;
+  return { ...rev, ...over, card: { ...rev.card, meta: { ...rev.card.meta, "ai.cotal.events": events } } } as RosterEntry;
+};
+const othersAnd = (rev: RosterEntry) => roster.map((p) => (p.card.id === "local.rev" ? rev : p));
+const sessionOf = (over: Partial<SessionState> = {}): SessionState => ({ views: 1, frames: [], posts: [], load: "ok", more: false, limit: 200, ...over });
+/** reviewer's own verified post on #review at 10:<minute>. */
+const postAt = (minute: number): StoredMessage => ({ msg: msg(`p${minute}`, "local.rev", `post at ${minute}`, at(10, minute)), senderId: "local.rev" });
+/** One frame holding two tool calls with no text between, which fold into one group. */
+const twoCalls = (): SessionFrame => {
+  const ts = at(10, 30);
+  return {
+    id: "f-tools", ts, live: false,
+    events: [
+      { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "Bash", timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: "c1", timestamp: ts },
+      { type: "TOOL_CALL_START", toolCallId: "c2", toolCallName: "Read", timestamp: ts }, { type: "TOOL_CALL_END", toolCallId: "c2", timestamp: ts },
+    ],
+  };
+};
+/** A controller that records the session calls and does nothing else. */
+const sessionController = () => {
+  const calls: string[] = [];
+  const controller = {
+    open: async () => undefined,
+    openSession: (id: string) => void calls.push(`open ${id}`),
+    closeSession: (id: string) => void calls.push(`close ${id}`),
+  } as unknown as Controller;
+  return { controller, calls };
+};
+const tabWith = (rev: RosterEntry, patch: Partial<DashboardState> = {}, route?: Route) =>
+  parse(renderToString(createElement(AgentTab, { store: storeOf({ roster: othersAnd(rev), ...patch }), id: "local.rev", channel: "review", route, clock: () => NOW })));
+const footOf = (tab: HTMLElement) => textOf(tab.querySelector(".ui-lt .ui-sess-foot"));
+{
+  const rev = agentTab("local.rev");
+  same("8.1 the Agent tab has Open session after Message, linking to the agent's session",
+    all(rev, ".ui-actions > a").map((a) => [textOf(a), a.getAttribute("href")]),
+    [["Message", formatRoute({ view: "dm", peer: "local.rev" })], ["Open session", "#/agent/local.rev"]]);
+
+  const on = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
+  const chip = on.querySelector(".ui-lt-head .ui-livechip") as HTMLElement | null;
+  ok("8.2 with the plane on and the read through, the Session section is headed Session with Live, and follows the profile",
+    textOf(on.querySelector(".ui-lt-head h5")) === "Session" && textOf(chip) === "Live" && chip?.title === "New steps appear as reviewer publishes them"
+      && on.querySelector(".ui-profile")?.nextElementSibling?.className === "ui-lt-head" && textOf(on.querySelector(".ui-lt .ui-post .ui-tx")) === "post at 40",
+    on.innerHTML.slice(0, 400));
+
+  const many = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ posts: [40, 41, 42, 43, 44, 45, 46, 47, 48].map(postAt) }) } });
+  same("8.3 the section draws at most six steps, the newest, then the footer",
+    [all(many, ".ui-lt .ui-post .ui-tx").map(textOf), many.querySelector(".ui-lt")?.lastElementChild?.className],
+    [["post at 43", "post at 44", "post at 45", "post at 46", "post at 47", "post at 48"], "ui-sess-foot"]);
+
+  const off = tabWith(withPlane("off"), { sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } });
+  same("8.4 with the plane off the section holds only the panel's plane note, with no Live and no steps",
+    [textOf(off.querySelector(".ui-lt-head")), all(off, ".ui-lt").map((l) => [...l.children].map((c) => c.className)), textOf(off.querySelector(".ui-lt .ui-plane"))],
+    ["Session", [["ui-plane"]], "reviewer publishes no session events. Open session shows its posts only."]);
+
+  const offSpy = sessionController();
+  const offTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("off")) }), controller: offSpy.controller, id: "local.rev", channel: "review", clock: () => NOW }));
+  await offTab.unmount();
+  same("8.5 with the plane off the section opens no session", offSpy.calls, []);
+
+  const onSpy = sessionController();
+  const onTab = await mount(createElement(AgentTab, { store: storeOf({ roster: othersAnd(withPlane("on")) }), controller: onSpy.controller, id: "local.rev", channel: "review", clock: () => NOW }));
+  const whileOpen = [...onSpy.calls];
+  await onTab.unmount();
+  same("8.6 with the plane on the section opens the agent's session on mount and closes it on unmount, once each",
+    [whileOpen, onSpy.calls], [["open local.rev"], ["open local.rev", "close local.rev"]]);
+
+  const beside = parse(renderShell(seed({ roster: othersAnd(withPlane("on")), sessions: { "local.rev": sessionOf({ posts: [postAt(40)] }) } }), { view: "agent", id: "local.rev" }, true));
+  const ownSession = pane(beside);
+  const elsewhere = tabWith(withPlane("on"), {}, { view: "agent", id: "local.dav" });
+  ok("8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
+    textOf(ownSession.querySelector(".ui-profile h4")) === "reviewer" && ownSession.querySelector(".ui-lt-head") === null && ownSession.querySelector(".ui-lt") === null
+      && textOf(elsewhere.querySelector(".ui-lt-head h5")) === "Session",
+    textOf(ownSession).slice(0, 200));
+  const fullFoot = textOf(beside.querySelector("main .ui-sess > .ui-sess-foot"));
+
+  const offline = tabWith(withPlane("on", { status: "offline", ts: at(10, 52) }), { sessions: { "local.rev": sessionOf() } });
+  ok("8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live",
+    footOf(offline) === "reviewer is offline. Last heartbeat 10:52." && offline.querySelector(".ui-livechip") === null, footOf(offline));
+  const unknown = tabWith(withPlane("on", { progress: { kind: "unknown" } } as Partial<RosterEntry>), { sessions: { "local.rev": sessionOf() } });
+  ok("8.9 the section's footer says a working agent is working, with no moving dots while its progress is unknown and no activity at panel size",
+    footOf(unknown) === "reviewer is working" && unknown.querySelector(".ui-lt .ui-sess-foot .ui-dots") === null, footOf(unknown));
+  const waiting = tabWith(withPlane("on", { status: "waiting", statusSince: at(10, 49) }), { sessions: { "local.rev": sessionOf() } });
+  ok("8.10 the section's footer says a waiting agent is waiting and when it reported",
+    footOf(waiting) === "reviewer is waiting Reported 10:49.", footOf(waiting));
+
+  const tools = tabWith(withPlane("on"), { sessions: { "local.rev": sessionOf({ frames: [twoCalls()] }) } });
+  const stops = all(tools, "a[href], button").map((el) => (el.hasAttribute("aria-expanded") ? `group ${textOf(el)}` : textOf(el)));
+  same("8.11 Tab goes Message, Open session, the two commands, then the session's tool group",
+    stops, ["Message", "Open session", "Copy", "Copy", "group 2 tool calls"]);
+  ok("8.12 beside the agent's own session, the centre ends the session with the full footer: the status presence reports, with its activity",
+    fullFoot === "reviewer is working Reviewing the presence TTL diff", fullFoot);
 }
 
 await closeDom();

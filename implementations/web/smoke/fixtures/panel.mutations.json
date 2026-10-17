@@ -916,6 +916,54 @@
       "replace": "",
       "expectRed": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon",
       "cell": "3.5 attach and stop are commands to copy, by the agent's name, each led by its icon"
+    },
+    {
+      "name": "PS1 the Session section stays beside the agent's own session in the centre",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "{!(route?.view === \"agent\" && route.id === id) && <SessionPreview",
+      "replace": "{true && <SessionPreview",
+      "expectRed": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
+      "cell": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does"
+    },
+    {
+      "name": "PS2 a plane the card says is off still opens a session",
+      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "find": "useSession(off ? null : controller, id);",
+      "replace": "useSession(controller, id);",
+      "expectRed": "8.5 with the plane off the section opens no session",
+      "cell": "8.5 with the plane off the section opens no session"
+    },
+    {
+      "name": "PS3 the section draws every step, not the newest six",
+      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "find": ".slice(-PREVIEW_STEPS)",
+      "replace": "",
+      "expectRed": "8.3 the section draws at most six steps, the newest, then the footer",
+      "cell": "8.3 the section draws at most six steps, the newest, then the footer"
+    },
+    {
+      "name": "PS4 the section shows Live for an offline agent",
+      "file": "implementations/web/client/src/ui/panel/SessionPreview.tsx",
+      "find": " && row.status !== \"offline\"",
+      "replace": "",
+      "expectRed": "8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live",
+      "cell": "8.8 the section's footer says an offline agent is offline and when its last heartbeat came, and shows no Live"
+    },
+    {
+      "name": "PS5 Open session leads to the Agents view, not the agent's session",
+      "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
+      "find": "href={formatRoute({ view: \"agent\", id: row.id })}",
+      "replace": "href={formatRoute({ view: \"agents\", group: \"status\" })}",
+      "expectRed": "8.1 the Agent tab has Open session after Message, linking to the agent's session",
+      "cell": "8.1 the Agent tab has Open session after Message, linking to the agent's session"
+    },
+    {
+      "name": "PS6 the panel does not hand the Agent tab the centre's route",
+      "file": "implementations/web/client/src/ui/panel/RightPanel.tsx",
+      "find": "channel={channel} route={route} clock={clock}",
+      "replace": "channel={channel} clock={clock}",
+      "expectRed": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does",
+      "cell": "8.7 beside that agent's own session the Agent tab has no Session section, and beside another agent's it does"
     }
   ]
 }

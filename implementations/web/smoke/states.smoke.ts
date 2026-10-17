@@ -357,7 +357,7 @@ const dmMsg = (id: string, from: string, to: string, ts: number) =>
   const noop = () => undefined;
   const panel = (p: Partial<Panel>): Panel => ({ open: true, tab: "members", agent: null, setTab: noop, selectAgent: noop, showMembers: noop, close: noop, toggle: noop, ...p });
   const stops = (p: Panel, channel: string | null) =>
-    Array.from(parse(renderToString(createElement(RightPanel, { store: createStore<DashboardState>(structuredClone(initialState)), controller: null, channel, panel: p, clock: () => 0 }))).querySelectorAll("[role=tab]"))
+    Array.from(parse(renderToString(createElement(RightPanel, { store: createStore<DashboardState>(structuredClone(initialState)), controller: null, channel, route: channel === null ? { view: "activity" } : { view: "channel", channel }, panel: p, clock: () => 0 }))).querySelectorAll("[role=tab]"))
       .map((t) => [textOf(t), t.getAttribute("tabindex")]);
   same("6.1 when the selected tab is disabled the first enabled tab is the list's Tab stop, so the keyboard does not skip the list",
     stops(panel({ tab: "agent", agent: null }), "review"), [["Members", "0"], ["Agent", "-1"], ["Topology", "-1"]]);

@@ -7,6 +7,7 @@ import { partsToText } from "../lib/parts.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
 import { useBadgeOf } from "./identity.js";
+import { MessageActions } from "./MessageActions.tsx";
 import { AgentPicker } from "./panel/picker.js";
 
 /** Bodies longer than this many characters of source text clamp, with Show more. */
@@ -42,6 +43,8 @@ export const clock = (d: Date): string => `${String(d.getHours()).padStart(2, "0
  *  - Inside the shell (`AgentPicker`), a verified sender's avatar and name open its Agent tab. A
  *    history row's sender is not verified, so it opens nothing.
  *  - A verified sender on the roster carries its initial badge (`BadgeOf`); a history row's does not.
+ *  - A verified sender on the roster also gets the Session action (`MessageActions`): on hover, and
+ *    on a phone a long press, to open its session at this message. A history row gets none.
  *  - `compact` draws a continuation of the row above: no avatar and no header. A caller that groups
  *    consecutive rows must break the run at a row with no `senderId`, and this component enforces it:
  *    a history row ignores `compact` and always draws its header, so its unverified mark is never
@@ -112,6 +115,12 @@ export function MessageRow({ msg, senderId, mode, idx, peers, compact = false, m
           </div>
         )}
       </div>
+      {senderId !== undefined && peer !== undefined && peers.has(senderId) && (
+        <MessageActions msg={msg} senderId={senderId} name={name} peer={peer} onViewAgent={pick ?? ignore} />
+      )}
     </div>
   );
 }
+
+/** Outside the shell picking an agent opens nothing, as a row's name opens nothing there. */
+const ignore = (): void => undefined;

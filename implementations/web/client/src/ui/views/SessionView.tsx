@@ -50,7 +50,7 @@ export function useSession(controller: Controller | null, id: string): void {
 }
 
 /** Presence's condition for the agent, taken only when its code is text: it is quoted on the page. */
-function conditionOf(entry: DashboardState["roster"][number] | undefined): RunErrorCondition | undefined {
+export function conditionOf(entry: DashboardState["roster"][number] | undefined): RunErrorCondition | undefined {
   const c = (entry as { condition?: { code?: unknown; since?: unknown } } | undefined)?.condition;
   if (typeof c !== "object" || c === null || typeof c.code !== "string") return undefined;
   return typeof c.since === "number" ? { code: c.code, since: c.since } : { code: c.code };

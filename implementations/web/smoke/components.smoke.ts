@@ -113,7 +113,7 @@ const UNVERIFIED = "History does not record who sent this message. The sender sh
   ok("3.8 the time carries its instant", startTags(live, "time")[0]?.dateTime === new Date(1790377570541).toISOString(), startTags(live, "time"));
   const cont = row({ msg: msg({}), senderId: "local.dav", compact: true });
   ok("3.9 a continuation row draws no header and no avatar",
-    startTags(cont, "div")[0]?.class === "ui-msg ui-msg-cont" && !cont.includes("ui-mh") && !cont.includes("<svg"), cont);
+    startTags(cont, "div")[0]?.class === "ui-msg ui-msg-cont" && !cont.includes("ui-mh") && !cont.includes('<svg viewBox="-2 -4 112 112"'), cont);
   const contHistory = row({ msg: msg({}), compact: true });
   ok("3.9b a history row asked to continue the run still draws its header, so its unverified mark is never hidden",
     startTags(contHistory, "div")[0]?.class === "ui-msg" && startTags(contHistory, "span").some((sp) => sp.class === "ui-unverified"), contHistory);

@@ -135,7 +135,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const back = useBack(route);
   const session = { controller, phone, back, panelOpen: shown, toggle: panel.toggle, details: panel.selectAgent };
   const view = loading.roster || loading.channels ? <SkeletonView /> : centreView(store, route, clock, seen, shown, session);
-  const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} panel={panel} clock={clock} />;
+  const panelBody = <RightPanel store={store} controller={controller} channel={route.view === "channel" ? route.channel : null} route={route} panel={panel} clock={clock} />;
   // The sheet remembers the route it was opened on, so any new route closes it, during render and
   // with no effect to run, and coming back to that route does not reopen it.
   const [sheetAt, setSheetAt] = useState<string | null>(null);

@@ -844,6 +844,70 @@
       "replace": "",
       "expectRed": "12.8 the window forgets an id it dropped: that DM delivered again is held again, as the newest",
       "cell": "12.8 the window forgets an id it dropped: that DM delivered again is held again, as the newest"
+    },
+    {
+      "name": "MA1 a history row gets the Session action for the id its payload names",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{senderId !== undefined && peer !== undefined && peers.has(senderId) && (\n        <MessageActions msg={msg} senderId={senderId}",
+      "replace": "{who !== undefined && peer !== undefined && (\n        <MessageActions msg={msg} senderId={who}",
+      "expectRed": "13.2 a row read from history has no Session action",
+      "cell": "13.2 a row read from history has no Session action"
+    },
+    {
+      "name": "MA2 the long press fires on a mouse too",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "      if (e.pointerType !== \"touch\") return;\n",
+      "replace": "",
+      "expectRed": "13.9 a mouse held past 500ms opens nothing: the long press is for touch",
+      "cell": "13.9 a mouse held past 500ms opens nothing: the long press is for touch"
+    },
+    {
+      "name": "MA3 the Session action drops the message, so the session opens at its end",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "formatRoute({ view: \"agent\", id: senderId, at: msg.id })",
+      "replace": "formatRoute({ view: \"agent\", id: senderId })",
+      "expectRed": "13.1 a live row from a roster agent has the Session action, linking to its session at that message, titled with the name and time",
+      "cell": "13.1 a live row from a roster agent has the Session action, linking to its session at that message, titled with the name and time"
+    },
+    {
+      "name": "MA4 a sender the roster does not hold gets the Session action",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "{senderId !== undefined && peer !== undefined && peers.has(senderId) && (",
+      "replace": "{senderId !== undefined && (",
+      "expectRed": "13.3 a live row from an id the roster does not hold has no Session action",
+      "cell": "13.3 a live row from an id the roster does not hold has no Session action"
+    },
+    {
+      "name": "MA5 a touch that moves is still a press",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "      if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > PRESS_SLOP_PX) cancel();\n",
+      "replace": "",
+      "expectRed": "13.8 a touch that moves 20px before 500ms is a scroll and opens nothing",
+      "cell": "13.8 a touch that moves 20px before 500ms is a scroll and opens nothing"
+    },
+    {
+      "name": "MA6 Escape leaves the sheet open",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "<FocusTrap onEscape={onClose}>",
+      "replace": "<FocusTrap onEscape={() => undefined}>",
+      "expectRed": "13.5 Escape closes the sheet",
+      "cell": "13.5 Escape closes the sheet"
+    },
+    {
+      "name": "MA7 a tap on the scrim leaves the sheet open",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "          if (e.target === e.currentTarget && onScrim.current) onClose();\n",
+      "replace": "",
+      "expectRed": "13.6 a tap on the scrim closes it",
+      "cell": "13.6 a tap on the scrim closes it"
+    },
+    {
+      "name": "MA8 View agent closes the sheet and opens nothing",
+      "file": "implementations/web/client/src/ui/MessageActions.tsx",
+      "find": "onClick={() => { onClose(); onViewAgent(senderId); }}",
+      "replace": "onClick={onClose}",
+      "expectRed": "13.7 View agent closes the sheet and opens the sender's Agent tab",
+      "cell": "13.7 View agent closes the sheet and opens the sender's Agent tab"
     }
   ]
 }
