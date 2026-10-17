@@ -32,11 +32,11 @@ export interface WhoRow {
 }
 
 /** What `cotal who` read. `managers` says how `managed` was decided: no manager on the roster, every
- *  manager answered, only some did, or the census could not be read. */
+ *  manager answered, only some did, this identity may not ask them, or the census could not be read. */
 export interface WhoResult {
   readonly kind: "roster";
   readonly view: "current" | "stale" | "unpopulated";
-  readonly managers: "none-present" | "complete" | "partial" | "unread";
+  readonly managers: "none-present" | "complete" | "partial" | "denied" | "unread";
   readonly hidden: number;
   readonly items: WhoRow[];
 }
@@ -51,21 +51,24 @@ const isManager = (p: Presence): boolean => p.card.kind === "endpoint" && p.card
 /** What one manager census says about each seat, matched on the seat's incarnation. A seat a manager
  *  listed is managed. Only a census where every registered instance answered can say a seat is not:
  *  one manager (user mode, which answers for the caller's own seats) or an incomplete census leaves
- *  every other seat unknown, and says so. */
+ *  every other seat unknown, and says so. `warnings` are the parts the census could not read;
+ *  `labels` say how far the identity's grant reached, which is not a part left unread. */
 export function judgeSeats(census: Pick<SeatCensus, "items" | "target" | "partial" | "warnings">): {
   managers: "complete" | "partial";
   runs: (p: Pick<Presence, "lifecycleUid">) => boolean | null;
   warnings: OutputWarning[];
+  labels: OutputWarning[];
 } {
   const uids = new Set(census.items.map((row) => (row as { lifecycleUid?: unknown }).lifecycleUid).filter((uid): uid is string => typeof uid === "string"));
   const everyManager = census.target.scope === "all-managers" && !census.partial;
-  const warnings = [...census.warnings];
+  const labels: OutputWarning[] = [];
   if (!everyManager && !census.partial)
-    warnings.push({ code: "MANAGED_SCOPE", target: census.target, message: "the manager answered for this identity's own seats only, so other seats show managed as unknown" });
+    labels.push({ code: "MANAGED_SCOPE", target: census.target, message: "the manager answered for this identity's own seats only, so other seats show managed as unknown" });
   return {
     managers: everyManager ? "complete" : "partial",
     runs: (p) => (p.lifecycleUid !== undefined && uids.has(p.lifecycleUid) ? true : everyManager ? false : null),
-    warnings,
+    warnings: [...census.warnings],
+    labels,
   };
 }
 
@@ -75,6 +78,9 @@ export async function who(args: ParsedArgs): Promise<void> {
   const presentation = presentationOf(v);
   const scope = v.all ? "all" : v.waiting ? "waiting" : "agents";
   const warnings: OutputWarning[] = [];
+  // How far this identity's grant reaches. The roster is still read in full, so these are reported
+  // with the warnings but do not make the run partial.
+  const labels: OutputWarning[] = [];
   const errors: string[] = [];
   const { ep, space } = await openTransient(v, "who", {
     throwOnRefusal: true,
@@ -113,12 +119,18 @@ export async function who(args: ParsedArgs): Promise<void> {
       managers = judged.managers;
       runs = judged.runs;
       warnings.push(...judged.warnings);
+      labels.push(...judged.labels);
     } catch (e) {
       if (!isCommandFailure(e) && !isConnectRefusal(e)) throw e;
       const failure = isConnectRefusal(e) ? e.failure() : e;
-      managers = "unread";
       runs = () => null;
-      warnings.push({ code: "MANAGERS_UNREAD", target, message: `could not ask the managers which seats they run: ${failure.message}` });
+      if (failure.code === "PERMISSION_DENIED") {
+        managers = "denied";
+        labels.push({ code: "MANAGERS_DENIED", target, message: "this identity may not ask the managers which seats they run, so every seat shows managed as unknown" });
+      } else {
+        managers = "unread";
+        warnings.push({ code: "MANAGERS_UNREAD", target, message: `could not ask the managers which seats they run: ${failure.message}` });
+      }
     }
   }
 
@@ -154,7 +166,7 @@ export async function who(args: ParsedArgs): Promise<void> {
       target,
       result,
       completeness: unread ? "partial" : "complete",
-      warnings,
+      warnings: [...warnings, ...labels],
       ...(unread ? { partial: { message: `who could not read ${unread === 1 ? "one part" : `${unread} parts`} of what it reports; the warnings name ${unread === 1 ? "it" : "each"}` } } : {}),
     },
     (r) => whoView(r, space, Boolean(v.all), (name) => (counts.get(name.toLowerCase()) ?? 0) > 1, roster),
