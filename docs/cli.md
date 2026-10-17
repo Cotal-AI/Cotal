@@ -1369,7 +1369,10 @@ endpoints are hidden unless `--all` asks for them; the report says how many it h
 `managed` says whether a manager runs the seat. With no manager on the roster it is `false` for
 every row and no manager is asked. Otherwise every registered manager is asked for its seats, and a
 seat is matched on its lifecycle UID. In a user-auth space the manager answers only for the
-caller's own seats, so other seats show `managed: null` with a `MANAGED_SCOPE` warning. A manager
+caller's own seats, so other seats show `managed: null` with a `MANAGED_SCOPE` warning. An
+identity the broker does not let ask the managers, such as a user whose grant has no `admin`, sees
+every seat `null` with a `MANAGERS_DENIED` warning. These two warnings say how far the identity's
+grant reaches; the roster itself was read in full, so they do not make the run partial. A manager
 that does not answer leaves every unmatched seat `null` with a warning.
 
 A part `who` could not read makes the run `partial` (exit 4): a roster snapshot that did not finish
