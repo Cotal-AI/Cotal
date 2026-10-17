@@ -1,5 +1,6 @@
 import { resolveAuthProvider, type FlagSpec, type FlagValues, type ParsedArgs, type UserAuthStatus } from "@cotal-ai/core";
-import { brokerAddressForDisplay, CLI_USER_ACTOR, CommandFailure, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { brokerAddressForDisplay, CLI_USER_ACTOR, CommandFailure, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, workspaceSecretStore, writeResult, type Cell, type OutputWarning, type Report } from "@cotal-ai/workspace";
+import { registryFailure } from "../lib/registry-errors.js";
 
 export const whoamiFlags = [spaceFlag, serverFlag, jsonFlag, plainFlag] as const satisfies readonly FlagSpec[];
 
@@ -39,7 +40,12 @@ export interface WhoamiResult {
 export async function whoami(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof whoamiFlags>;
   const presentation = presentationOf(v);
-  const t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space });
+  let t: ReturnType<typeof resolveMeshTarget>;
+  try { t = resolveMeshTarget(process.cwd(), { server: v.server, space: v.space }); }
+  catch (error) {
+    if (isMeshRegistryError(error)) throw registryFailure(error);
+    throw error;
+  }
   const target = { space: t.space };
   const warnings: OutputWarning[] = [];
   const server = brokerAddressForDisplay(t.server);

@@ -1,6 +1,7 @@
 import { peerLabel, type FlagSpec, type FlagValues, type ParsedArgs, type Presence, type PresenceCondition } from "@cotal-ai/core";
-import { CommandFailure, isCommandFailure, isConnectRefusal, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
+import { CommandFailure, isCommandFailure, isConnectRefusal, isMeshRegistryError, jsonFlag, plainFlag, presentationOf, targetFlags, writeResult, type Cell, type Column, type OutputWarning, type Report, type Styled } from "@cotal-ai/workspace";
 import { openTransient } from "../lib/transient.js";
+import { registryFailure } from "../lib/registry-errors.js";
 import { activityAge, c, presenceFacts } from "../ui.js";
 import { readSeats, type SeatCensus } from "./agents.js";
 
@@ -86,6 +87,7 @@ export async function who(args: ParsedArgs): Promise<void> {
     throwOnRefusal: true,
     report: (level, e) => (level === "error" ? errors.push(e.message) : console.error(c.yellow(`! ${e.message}`))),
   }).catch((e: unknown) => {
+    if (isMeshRegistryError(e)) throw registryFailure(e);
     if (isConnectRefusal(e) || isCommandFailure(e)) throw e;
     const message = e instanceof Error ? e.message : String(e);
     if (/permission/i.test(message))

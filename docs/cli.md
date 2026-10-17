@@ -1414,6 +1414,9 @@ WebSocket routes and bare host addresses remain supported. Invalid addresses mak
 rather than print the raw value. Recovery instructions use a `<url>` placeholder rather than a
 secret-stripped connection address.
 
+Both reads refuse an unusable local mesh registry with `SCHEMA_INVALID` (exit 1) before
+connecting. The diagnostic names the file without repeating its stored field values.
+
 ## Endpoint control
 
 ```bash

@@ -15,3 +15,5 @@ Broker addresses in identity reports and shared connection-failure messages omit
 Use a URL placeholder in auth-mismatch recovery instructions rather than a display address with connection data removed.
 
 Validate display addresses as broker addresses before returning an unchanged value, and escape terminal controls. Preserve bare hosts, IPv6, TLS and WebSocket routes without changing stored or dialed values.
+
+Classify malformed local registry data as `SCHEMA_INVALID` before any read request, without printing its stored field values. Include the roster suite in the Linux, macOS and Windows platform matrix.

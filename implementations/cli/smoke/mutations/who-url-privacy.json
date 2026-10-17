@@ -139,6 +139,33 @@
       "expectRed": "who --json escapes broker route controls in a raw refusal",
       "cell": "who --json escapes broker route controls in a raw refusal",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "identity ignores a known registry refusal",
+      "file": "implementations/cli/src/commands/whoami.ts",
+      "find": "if (isMeshRegistryError(error)) throw registryFailure(error);",
+      "replace": "if (isMeshRegistryError(error)) throw error;",
+      "expectRed": "whoami --json classifies a malformed registry for empty",
+      "cell": "whoami --json classifies a malformed registry for empty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "roster ignores a known registry refusal",
+      "file": "implementations/cli/src/commands/who.ts",
+      "find": "if (isMeshRegistryError(e)) throw registryFailure(e);",
+      "replace": "if (isMeshRegistryError(e)) throw e;",
+      "expectRed": "who --json classifies a malformed registry for empty",
+      "cell": "who --json classifies a malformed registry for empty",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "registry diagnostics repeat malformed record data",
+      "file": "implementations/cli/src/lib/registry-errors.ts",
+      "find": "`mesh registry file ${oneLine(error.file)} cannot be read as a valid record`",
+      "replace": "error.message",
+      "expectRed": "whoami --json hides malformed registry data for mode",
+      "cell": "whoami --json hides malformed registry data for mode",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

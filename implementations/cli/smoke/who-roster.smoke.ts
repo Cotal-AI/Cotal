@@ -390,4 +390,44 @@ try {
   }
 }
 
+
+// Malformed local registry data is known input failure, not an unknown or failed roster read.
+{
+  const brokenHome = mkdtempSync(join(tmpdir(), "cotal-who-bad-registry-"));
+  const release = teardownPathOnSignal(brokenHome);
+  const brokenSpace = "broken-registry";
+  mkdirSync(join(brokenHome, ".cotal"), { recursive: true });
+  const brokenEnv = { ...isolatedEnv, HOME: brokenHome, USERPROFILE: brokenHome, COTAL_HOME: join(brokenHome, "registry"), XDG_CONFIG_HOME: join(brokenHome, "config"), XDG_DATA_HOME: join(brokenHome, "data"), TMPDIR: brokenHome, TMP: brokenHome, TEMP: brokenHome };
+  const previousHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = brokenEnv.COTAL_HOME;
+  const record = { space: brokenSpace, server: servers, root: brokenHome, mode: "open" as const, origin: "manual" as const, ts: new Date().toISOString() };
+  const read = (command: string, format: string | undefined) => new Promise<{ status: number | null; stdout: string; stderr: string; envelope?: Envelope }>(resolve => {
+    execFile(process.execPath, [BIN, command, "--space", brokenSpace, ...(format ? [format] : [])], { cwd: brokenHome, env: brokenEnv, timeout: 30_000 }, (error, stdout, stderr) => {
+      let envelope: Envelope | undefined;
+      if (format === "--json") try { envelope = JSON.parse(stdout) as Envelope; } catch { /* The assertion below reports missing structured output. */ }
+      resolve({ status: error && typeof error.code === "number" ? error.code : error ? null : 0, stdout, stderr, envelope });
+    });
+  });
+  try {
+    recordMesh(record);
+    const ordinary = await read("whoami", "--json");
+    check("control: the registry fixture selects its own valid offline identity", ordinary.status === 0 && ordinary.envelope?.target.space === brokenSpace, { status: ordinary.status });
+    for (const field of ["empty", "mode"] as const) {
+      if (field === "empty") recordMesh({ ...record, server: "" });
+      else {
+        // @ts-expect-error Deliberately persist an invalid mode to exercise the registry reader.
+        recordMesh({ ...record, mode: urlPassword });
+      }
+      for (const command of ["whoami", "who"]) for (const format of ["--json", "--plain", undefined]) {
+        const result = await read(command, format);
+        check(`${command} ${format ?? "human"} classifies a malformed registry for ${field}`, result.status === 1 && (format !== "--json" || result.envelope?.outcome === "refused" && result.envelope.error?.code === "SCHEMA_INVALID"), { status: result.status, code: result.envelope?.error?.code });
+        check(`${command} ${format ?? "human"} hides malformed registry data for ${field}`, !result.stdout.includes(urlPassword) && !result.stderr.includes(urlPassword), { status: result.status, stdout: redactUrlMarkers(result.stdout), stderr: redactUrlMarkers(result.stderr) });
+      }
+    }
+  } finally {
+    if (previousHome === undefined) delete process.env.COTAL_HOME; else process.env.COTAL_HOME = previousHome;
+    release();
+  }
+}
+
 finish();
