@@ -1206,11 +1206,13 @@ space or `null` and `scope` is `selected` or `all`. Its `result` is the report t
 An unreachable broker, a stopped process or an unbound responder is a state the report names, and
 `status` exits 0. A part it cannot read is named on its row and as a warning, and the run is
 `partial` with exit 4: a PID record, the folder's trust material, the delivery-aware marker, the
-extensions manifest, the connectors, the skills bundle, the web records, a persona catalog, the mesh
+connectors, the skills bundle, the web records, a persona catalog, the mesh
 registry or one of its records, the current-mesh pointer, a user-auth login, or the selected mesh's
 channels. Only an absent catalog, registry or pointer reads as empty or unset; an empty pointer is
 named too. A registry directory or record that cannot be read also leaves the selected mesh
-unresolved, because resolution refuses it, and the readable records are still listed. The manager
+unresolved, because resolution refuses it, and the readable records are still listed. A corrupt or
+unreadable extensions manifest is refused while loading the command surface, before this report
+can run. The manager
 row asks the service endpoint once: a live process that does
 not answer is `not serving`, and a probe that could not be made leaves the row
 `running · service unchecked`.
@@ -1538,8 +1540,8 @@ cotal whoami [--json | --plain] [--space <s>] [--server <url>]
 
 Reports the identity this CLI acts under in the selected space and what it may read, post and do.
 It reads the mesh registry, the login cache and, when it is on this machine, the user-auth grant
-ledger. It connects to nothing: a one-shot command has no session, so there is no unread count or
-connection state to report.
+ledger. It does not refresh the remote space catalog or contact the IdP. A one-shot command has no
+session, so there is no unread count or connection state to report.
 
 | Mesh | `identity.kind` | What it may do |
 |---|---|---|
@@ -1551,8 +1553,11 @@ connection state to report.
 A user who is not signed in has no principal. A signed-in user with no ledger row (`grant:
 "not-granted"`) may read and post nothing. When the grant ledger is on another machine the grant
 cannot be read here: `read`, `post` and `capabilities` are `null`, the run is `partial` (exit 4) and
-the `GRANT_NOT_LOCAL` warning says so. `dms` says whether the identity may read DM history, which
-only the space signer can.
+the `GRANT_NOT_LOCAL` warning says so. A remote registration can hold a cached login without the
+secret that derives its owner and principal. Those fields stay `null`; the report calls the
+principal unknown on this machine, rather than calling the user signed out. The cached expiry is
+advisory and the command does not verify the login with the IdP. `dms` says whether the identity
+may read DM history, which only the space signer can.
 
 ## Endpoint control
 
