@@ -22,7 +22,7 @@ import {
   type SpaceAuth,
   type UserAuthStatus,
 } from "@cotal-ai/core";
-import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, meshesDir, preflightTarget, presentationOf, probeLiveness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
+import { accountInventory, authDir, canonicalRoot, CLI_USER_ACTOR, CommandFailure, deliveryCredsKey, DELIVERY_PIDFILE, extensionsDir, findCotalRoot, hasUserAuthState, isMeshRegistryError, isWorkspaceTargetError, jsonFlag, loadSoleSpaceAuth, localProcessPath, localProcessVisible, MANAGER_PIDFILE, oneLine, parsePid, plainFlag, preflightTarget, presentationOf, probeLiveness, readCurrent, readMeshRegistry, readRenewalRecord, renderWorkspaceError, resolveMeshTarget, serverFlag, spaceFlag, userAuthStateDir, WEB_PIDFILE, WEB_READINESS_HEADER, WEB_SESSION_FILE, workspaceSecretStore, writeResult, type Cell, type LocalProcess, type LocalProcessContext, type MeshEntry, type MeshTarget, type OutputWarning, type Report, type Section, type Tone } from "@cotal-ai/workspace";
 import { localProcessSurface } from "../ext-loader.js";
 import { cliVersion, cliProvenance, readExtensionVersions, type CliProvenance } from "../lib/version.js";
 import { agentSkillsSkew } from "../lib/agent-skills.js";
@@ -607,7 +607,8 @@ async function readMeshes(selected: Selected, all: boolean, gaps: Gaps): Promise
     entries = registry.entries;
     for (const e of registry.unusable) unread(e.file, e.message);
   } catch (e) {
-    unread(meshesDir(), `the mesh registry ${meshesDir()} could not be read: ${(e as Error).message}`);
+    if (!isMeshRegistryError(e)) throw e;
+    unread(e.file, e.message);
   }
   let current: string | null = null;
   try {
@@ -644,8 +645,8 @@ async function readSelected(selected: Selected, responder: DeliveryResponderStat
   const cmd = displayCmd();
   if (!selected.ok) {
     const e = selected.error;
-    // Resolution reads the whole registry and refuses a record it cannot use. The meshes reader has
-    // already named that record, so this is the same gap, and the selection is unresolved.
+    // Resolution reads the whole registry and refuses a directory or record it cannot use. The meshes
+    // reader has already named it, so this is the same gap, and the selection is unresolved.
     if (isMeshRegistryError(e)) {
       gaps.add("MESH_REGISTRY_UNREADABLE", e.message, { file: e.file });
       hints.push(e.message);
