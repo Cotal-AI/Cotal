@@ -135,6 +135,24 @@
       "expectRed": "the selection is unresolved by the unreadable record",
       "cell": "the selection is unresolved by the unreadable record",
       "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unreadable registry directory throws its raw error",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "    throw new MeshRegistryError(meshesDir(), `the mesh registry ${meshesDir()} could not be read: ${(e as Error).message}`, { cause: e });\n",
+      "replace": "    throw e;\n",
+      "expectRed": "an unreadable registry directory is partial with exit 4, not unknown",
+      "cell": "an unreadable registry directory is partial with exit 4, not unknown",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an empty current-mesh pointer reads as unset",
+      "file": "packages/workspace/src/mesh-registry.ts",
+      "find": "  if (!space) throw new MeshRegistryError(currentFile(), `${currentFile()} is empty - select a mesh with \\`cotal use <space>\\` or remove the file`);\n",
+      "replace": "  if (!space) return undefined;\n",
+      "expectRed": "an empty current-mesh pointer is named, and the run is partial",
+      "cell": "an empty current-mesh pointer is named, and the run is partial",
+      "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
 }
