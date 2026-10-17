@@ -21,7 +21,6 @@
  * Run: pnpm smoke:runtime-mesh-wait   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,6 +28,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  digestIdToken,
   isReachable,
   createEndpointStreams,
   createSpaceStreams,
@@ -414,7 +414,7 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 // always claimed both; the two expiry paths did not.
 {
   const id = tok("both");
-  const outerTok = createHash("sha256").update(`${id}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+  const outerTok = digestIdToken(`${id}:wait-timeout`);
   const { ctx: k } = ctx(id);
   const awaited = handler.wait({ event: { event: "idle", channel: CHANNEL, duration: "2s" }, timeout: "1h" }, k);
   await wait(400);
@@ -832,7 +832,7 @@ log("released", r.index);
 {
   console.log("• 13 — a cancellation the broker refuses is reported, and the answer still stands");
   const id = tok("loudcancel");
-  const outerTok = createHash("sha256").update(`${id}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+  const outerTok = digestIdToken(`${id}:wait-timeout`);
   // ONLY the OUTER pause's settle fact. The arm path publishes on the timer rail (`ept…`) and the
   // idle window settles under its own token, so a blanket fault would prove this notices SOMETHING
   // rather than notices the sibling claim.

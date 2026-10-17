@@ -17,7 +17,7 @@
  *
  * Run: pnpm smoke:manager-reconcile-startup   (needs nats-server + node on PATH)
  */
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,6 +45,7 @@ import {
   actionContext,
   bindGoal,
   createGoal,
+  digestIdToken,
   recordGoalIndex,
   readGoalResult,
   clearGoalIndex,
@@ -424,9 +425,9 @@ try {
     const runner: EpCaller = { owner: "local", actor: "runner", uid: mintLifecycleUid() };
     // The manager keys a relay, and derives its hold, by the caller triple plus the goal id.
     const relayKey = (id: string) => `${runner.owner}.${runner.actor}.${runner.uid}.${id}`;
-    // The hold token is the manager's own derivation (a module-private function), spelled here the
-    // same way so the fixture's hold is the one the yield path claims.
-    const holdTokenOf = (id: string) => createHash("sha256").update(`${relayKey(id)}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+    // The hold token is the manager's own derivation (a module-private function), built here from
+    // the same input so the fixture's hold is the one the yield path claims.
+    const holdTokenOf = (id: string) => digestIdToken(`${relayKey(id)}:turn-deadline`);
     const goalId = "g".repeat(43);
     const ref: GoalRef = { endpoint: MANAGER_ENDPOINT, caller: runner, goalId };
     const ACCEPTED_AT = Date.now() - 90_000;

@@ -17,7 +17,6 @@
  * Run: pnpm smoke:runtime-mesh-checkpoint   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +24,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  digestIdToken,
   isReachable,
   createEndpointStreams,
   openRecordsBucket,
@@ -422,7 +422,7 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
       open.includes(waitTok), open.join(","));
     // The IDLE wait's second deadline. It is derived rather than recorded, so the repair has to
     // derive it too — a wait that had to remember it would carry state its own key determines.
-    const derived = createHash("sha256").update(`${waitTok}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+    const derived = digestIdToken(`${waitTok}:wait-timeout`);
     c("...including the outer timeout an idle wait arms, re-derived rather than remembered",
       open.includes(derived), open.join(","));
     // NARROWNESS, both directions. Emitting a derived token for a wait that never armed an outer

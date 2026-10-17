@@ -19,10 +19,9 @@
  * advanced the run. Two drivers racing to apply one migration both find no status and both write;
  * the store decides and the loser gets a conflict rather than a second belief.
  */
-import { createHash } from "node:crypto";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { assertIdToken } from "./endpoint-subjects.js";
+import { assertIdToken, digestIdToken } from "./endpoint-subjects.js";
 import {
   RECORD_KINDS,
   createRecordEntry,
@@ -82,11 +81,6 @@ function qualifiers(endpoint: string, runId: string, migrationId: string): strin
   return [endpoint, runId, migrationId];
 }
 
-/** base64url of the sha256, truncated to 43 — an `<id-token>` by construction, as elsewhere. */
-function digestId(canonical: string): string {
-  return createHash("sha256").update(canonical, "utf8").digest("base64url").slice(0, 43);
-}
-
 /**
  * The id one migration is filed under: a digest of the report itself.
  *
@@ -95,7 +89,7 @@ function digestId(canonical: string): string {
  * or what was overridden and it is a different migration, which is exactly right — it is.
  */
 export function runMigrationId(value: Omit<RunMigrationSpecValue, "at">): string {
-  return digestId(canonicalJson(value));
+  return digestIdToken(canonicalJson(value));
 }
 
 function parseSpec(raw: unknown, key: string): RunMigrationSpecValue {

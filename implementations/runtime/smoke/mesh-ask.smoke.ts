@@ -17,7 +17,6 @@
  *
  * Run: pnpm smoke:runtime-mesh-ask   (needs nats-server on PATH)
  */
-import { createHash } from "node:crypto";
 import { spawn as spawnProc } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +25,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import {
+  digestIdToken,
   isReachable,
   createEndpointStreams,
   createSpaceStreams,
@@ -693,7 +693,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
   const T3 = token("d3");
   const h5 = mk("ak-6c");
   const a6c = await spawnSeat(h5, "6c");
-  const attempt2 = createHash("sha256").update(`${T3}:ask-attempt-2`, "utf8").digest("base64url").slice(0, 43);
+  const attempt2 = digestIdToken(`${T3}:ask-attempt-2`);
   const s5 = stepCtx(T3, {
     attempt: 2, askToken: attempt2, deadlineAt: Date.now() + 600_000,
     refused: 'the reply\'s "estimate" wants number',
@@ -750,7 +750,7 @@ const relayOf = (tok: unknown): { invoke?: (typeof turnInvokes)[number]; ask?: R
 {
   console.log("• 8 — outstandingPauseTokens reads the current attempt off the entry");
   const bare = { kind: "ask", requestId: token("f"), state: "pending" } as unknown as JournalEntry;
-  const attempt2 = createHash("sha256").update(`${token("f")}:ask-attempt-2`, "utf8").digest("base64url").slice(0, 43);
+  const attempt2 = digestIdToken(`${token("f")}:ask-attempt-2`);
   const bound = {
     kind: "ask", requestId: token("f"), state: "pending",
     external: { attempt: 2, askToken: attempt2, deadlineAt: 1 },

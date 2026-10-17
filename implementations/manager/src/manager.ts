@@ -74,6 +74,7 @@ import {
   eventChannelPrincipal,
   resolveService,
   invokeCommand,
+  digestIdToken,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
@@ -1132,10 +1133,10 @@ function goalKey(ref: GoalRef): string {
   return `${ref.caller.owner}.${ref.caller.actor}.${ref.caller.uid}.${ref.goalId}`;
 }
 
-/** A turn hold's token, DERIVED (same recipe as the runtime's pause tokens) from the relay key, so
- *  two callers' turns under one goal id never share a hold. */
+/** A turn hold's token, DERIVED from the relay key, so two callers' turns under one goal id never
+ *  share a hold. */
 function turnHoldToken(key: string): string {
-  return createHash("sha256").update(`${key}:turn-deadline`, "utf8").digest("base64url").slice(0, 43);
+  return digestIdToken(`${key}:turn-deadline`);
 }
 
 /**

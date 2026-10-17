@@ -27,10 +27,10 @@
  * acted on the accepted answer and that stays true. It exists so a participant who changes their
  * position records the change where the original sits, and a reader of the run sees both.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { KV } from "@nats-io/kv";
 import { EpEnvelopeError } from "./endpoint-envelope.js";
-import { assertIdToken, endpointToken } from "./endpoint-subjects.js";
+import { assertIdToken, digestIdToken, endpointToken } from "./endpoint-subjects.js";
 import { RECORD_KINDS, createRecordEntry, recordAtomicKey } from "./endpoint-records.js";
 import { canonicalJson } from "./canonical.js";
 import { walkKvEntries } from "./kv-scan.js";
@@ -100,9 +100,7 @@ export function checkpointAnswerId(a: { token: string; by: string; value?: unkno
     value: a.value ?? null,
     artifact: a.artifact ?? null,
   });
-  // base64url of the sha256, truncated to 43 chars — the same shape and alphabet the run's own
-  // request ids use, so an answer id is a `<token>` by construction rather than by hope.
-  return createHash("sha256").update(canonical, "utf8").digest("base64url").slice(0, 43);
+  return digestIdToken(canonical);
 }
 
 /**

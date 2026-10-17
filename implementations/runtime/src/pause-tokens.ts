@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
+import { digestIdToken } from "@cotal-ai/core";
 import { holdRequestId, type JournalEntry } from "@cotal-ai/lang";
 
-/** A second deadline for one step, derived so a resume re-derives it instead of remembering it.
- *  Same shape and alphabet as a request id, so it is a valid `<token>` by construction. */
+/** A second deadline for one step, derived so a resume re-derives it instead of remembering it. */
 function derivedToken(requestId: string, purpose: string): string {
-  return createHash("sha256").update(`${requestId}:${purpose}`, "utf8").digest("base64url").slice(0, 43);
+  return digestIdToken(`${requestId}:${purpose}`);
 }
 
 /** An ask attempt's pause token: attempt 1 IS the step's request id; a re-ask derives its own. */
