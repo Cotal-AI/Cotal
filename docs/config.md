@@ -342,7 +342,7 @@ residue from a stopped one. Two spaces running under one root is reported rather
 This is what lets `cotal status` and `cotal down` work in a folder whose mesh runs with
 `broker: { auth: false }`, where there is no `auth/account.<key>.json` to name the space.
 A record, or a `.cotal` listing, that exists but cannot be read is reported as that read error
-rather than read as absent.
+rather than read as absent. A process record's read error names the record's path.
 
 ### Machine files
 

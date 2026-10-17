@@ -35,13 +35,14 @@ export function parsePid(raw: string): number | undefined {
 
 /** A pidfile's trimmed content, or undefined when there is no pidfile. Read once, never behind an
  *  existence check: the owner removes its record on exit, so a file that existed a moment ago can be
- *  gone at the read. Only ENOENT means absent; any other read error throws. */
+ *  gone at the read. Only ENOENT means absent; any other read error throws, naming the path because
+ *  an error raised at the read rather than the open (EISDIR) carries none. */
 export function readPidfile(path: string): string | undefined {
   try {
     return readFileSync(path, "utf8").trim();
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw e;
+    throw new Error(`cannot read ${path}: ${(e as Error).message}`, { cause: e });
   }
 }
 
