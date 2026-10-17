@@ -26,6 +26,7 @@ import {
   localProcessPath,
   parsePid,
   probeLiveness,
+  probeWebReadiness,
   progressSignal,
   readWebSession,
   removePidPair,
@@ -33,12 +34,14 @@ import {
   userViewAuthOrExit,
   WEB_PIDFILE,
   WEB_READINESS_HEADER,
+  WEB_READINESS_PATH,
   WEB_SESSION_FILE,
   writeIdentityPin,
   type ConnectFlags,
   type Connection,
   type LocalProcess,
   type UserViewAuth,
+  type WebMeta,
   type WebSession,
 } from "@cotal-ai/workspace";
 
@@ -64,9 +67,6 @@ export const CROSS_ORIGIN = "cross-origin";
  *  keeps it off cross-site requests; the origin check carries what is left. Stated here rather than
  *  discovered in review. */
 const SESSION_COOKIE = "cotal_web_session";
-/** The ONLY path the readiness nonce opens. Shared with the route below so the gate and the route
- *  cannot drift into disagreeing about which path that is. */
-const READINESS_PATH = "/api/meta";
 /** The request path, without the query. This DUPLICATES the handler's own parse, deliberately: the
  *  statements ahead of the gate are pinned to an exact literal parse, because an initializer there is
  *  code that runs before the gate is consulted. So the gate derives the path itself rather than being
@@ -180,7 +180,7 @@ export function makeAuthGate(port: number, host: string = WEB_HOST) {
       // as the process, so accepting it on every path would leave `web.session` holding a standing
       // full-surface credential beside a link this command calls single-use.
       const readiness = req.headers[WEB_READINESS_HEADER];
-      if (pathOf(req) === READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
+      if (pathOf(req) === WEB_READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
         return undefined;
 
       const session = cookieValue(req.headers.cookie, SESSION_COOKIE);
@@ -957,7 +957,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       req.on("close", () => clients.delete(res));
       return;
     }
-    if (path === READINESS_PATH) return json(res, { space, pid: process.pid });
+    if (path === WEB_READINESS_PATH) return json(res, { space, pid: process.pid });
     if (path === "/api/roster") return json(res, rosterSnapshot());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
@@ -1372,18 +1372,15 @@ export async function waitForDetachedWeb(
       // before this surface required authentication. The probe is otherwise unchanged: a squatter on
       // the port still answers with its own space/pid and still fails the match below.
       const session = readWebSession(opts.sessionPath);
-      const probeUrl = `${opts.url}api/meta`;
-      let meta: { space?: unknown; pid?: unknown } | undefined;
+      const probeUrl = new URL(WEB_READINESS_PATH, opts.url).href;
+      let meta: WebMeta | undefined;
       try {
-        const res = await fetch(probeUrl, {
-          signal: AbortSignal.timeout(500),
-          headers: session ? { [WEB_READINESS_HEADER]: session.readiness } : {},
-        });
-        if (res.ok) {
-          meta = await res.json() as { space?: unknown; pid?: unknown };
+        const answer = await probeWebReadiness(opts.url, session?.readiness);
+        meta = answer.meta;
+        if (meta !== undefined) {
           lastProbe = `${probeUrl}: answered space ${summarizeProbeField(meta?.space, 40)}, pid ${summarizeProbeField(meta?.pid, 20)}`;
         } else {
-          lastProbe = `${probeUrl}: HTTP ${res.status}`;
+          lastProbe = `${probeUrl}: HTTP ${answer.status}`;
         }
       } catch (e) {
         const cause = e instanceof Error ? (e.cause as { code?: unknown } | undefined)?.code : undefined;

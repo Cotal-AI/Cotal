@@ -1039,7 +1039,8 @@ state wins):
 - **web**: local PID record, then the `/api/meta` response at the address the dashboard recorded in
   `web.session` once it was listening, which must name the same PID. The probe presents the
   readiness nonce recorded beside that address, the one credential the dashboard accepts on
-  `/api/meta`. A live PID with no recorded address (the dashboard is still writing it, or an
+  `/api/meta`. An answer with a status outside 2xx is `not-serving`, and the row names that status,
+  such as `HTTP 401`. A live PID with no recorded address (the dashboard is still writing it, or an
   earlier build started it), or an unrecognizable process record, is `refused`, not a green
   default-port guess. A `web.session` that exists but cannot be read is also `refused`, and the row
   names the read error.

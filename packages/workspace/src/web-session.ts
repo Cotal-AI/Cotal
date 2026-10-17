@@ -16,6 +16,30 @@ export const WEB_PIDFILE = "web.pid";
  *  working check. */
 export const WEB_READINESS_HEADER = "x-cotal-readiness";
 
+/** The only path {@link WEB_READINESS_HEADER} opens. The dashboard's gate and route and
+ *  {@link probeWebReadiness} share it so they cannot disagree about which path that is. */
+export const WEB_READINESS_PATH = "/api/meta";
+
+/** What the dashboard answers on {@link WEB_READINESS_PATH}. Whatever owns the port writes it, so
+ *  neither field is trusted to be present or typed. */
+export interface WebMeta {
+  readonly space?: unknown;
+  readonly pid?: unknown;
+}
+
+/** One readiness request to the dashboard whose base address is `url`, presenting `readiness` when
+ *  there is one. `cotal web --detach` polls it and `cotal status` sends it once, so both send the
+ *  same request and read its answer the same way. Resolves to the HTTP status, plus the parsed body
+ *  only when the answer is OK, because no other answer has a defined body. A transport error, the
+ *  timeout, or an OK body that is not JSON rejects. */
+export async function probeWebReadiness(url: string, readiness: string | undefined): Promise<{ status: number; meta?: WebMeta }> {
+  const res = await fetch(new URL(WEB_READINESS_PATH, url), {
+    signal: AbortSignal.timeout(500),
+    headers: readiness === undefined ? {} : { [WEB_READINESS_HEADER]: readiness },
+  });
+  return res.ok ? { status: res.status, meta: await res.json() as WebMeta } : { status: res.status };
+}
+
 export interface WebSession {
   /** The single-use link that opens one browser session. */
   readonly launchUrl: string;
