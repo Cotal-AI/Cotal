@@ -7,6 +7,7 @@ import { useStore } from "../../state/hooks.js";
 import type { Store } from "../../state/store.js";
 import type { DashboardState } from "../../state/types.js";
 import { Avatar } from "../Avatar.tsx";
+import { useBadgeOf } from "../identity.js";
 import { BetweenAgents, Composer, OutgoingRows } from "../Composer.tsx";
 import { harnessName, UNVERIFIED } from "../MessageRow.tsx";
 import { MessageList, usePinnedScroll } from "./ChannelView.tsx";
@@ -50,6 +51,7 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
     return dmPairs(dms).find((c) => c.key === key);
   }, [dms, peer, withWhom]);
   const me = peers.get(peer);
+  const badgeOf = useBadgeOf();
   const name = displayNameOf(peer, idx, self);
   const sub = [me?.role, me?.harness && harnessName(me.harness)].filter(Boolean).join(" · ");
   const target = useMemo(() => composeTarget({ view: "dm", peer, with: other }, self), [peer, other, self]);
@@ -61,7 +63,7 @@ export function DmView({ store, peer, with: other }: { store: Store<DashboardSta
   return (
     <>
       <header className="ui-bar">
-        <Avatar vendor={me?.harness} status={me?.status ?? "offline"} size={22} />
+        <Avatar vendor={me?.harness} status={me?.status ?? "offline"} size={22} badge={me ? badgeOf(peer) : undefined} />
         <h1>{name}</h1>
         {sub && <span className="ui-topic">{sub}</span>}
         {conv && withWhom !== undefined && <span className="ui-topic">{`with ${displayNameOf(withWhom, idx, self)}`}</span>}

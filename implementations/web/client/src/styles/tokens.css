@@ -20,6 +20,11 @@
   --danger-solid: #B23A32; --danger-solid-ink: #FFFFFF;
   --mark: #202B43;
   --sheet-shadow: 8px 0 30px rgba(20, 24, 33, .18);
+  /* The initial badge's fills, one per slot, and its letter. They are the same in Night; only the
+     offline fill changes. */
+  --id-1: #F6B3C4; --id-2: #CDE6A3; --id-3: #C9B6F6; --id-4: #F7C59A;
+  --id-5: #8FDCCB; --id-6: #E6D29C; --id-7: #B8C3D9; --id-8: #EBB1E8;
+  --id-ink: #202B43; --id-off: #D2D2CF;
 }
 
 :root[data-theme="light"] { color-scheme: light; }
@@ -36,6 +41,7 @@
   --shimmer: rgba(255, 255, 255, .06);
   --mark: #FFFCEE;
   --sheet-shadow: 8px 0 30px rgba(0, 0, 0, .45);
+  --id-off: #8E939C;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -50,5 +56,6 @@
     --shimmer: rgba(255, 255, 255, .06);
     --mark: #FFFCEE;
     --sheet-shadow: 8px 0 30px rgba(0, 0, 0, .45);
+    --id-off: #8E939C;
   }
 }

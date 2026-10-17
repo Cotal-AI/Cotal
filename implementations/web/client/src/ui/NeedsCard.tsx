@@ -6,6 +6,7 @@ import { messageRoute, sendCommand } from "../lib/compose.js";
 import { formatRoute } from "../lib/route.js";
 import type { RosterRow } from "../lib/roster.js";
 import { Avatar } from "./Avatar.tsx";
+import { useBadgeOf } from "./identity.js";
 import { focusComposer } from "./Composer.tsx";
 import { copy } from "./CopyCommand.tsx";
 import { clock } from "./MessageRow.tsx";
@@ -84,9 +85,10 @@ export function NeedsCard({ row, onViewAgent, onDismiss, post = null, selfId = n
   post?: PostCapability | null;
   selfId?: string | null;
 }) {
+  const badgeOf = useBadgeOf();
   return (
     <div className="ui-card ui-needs">
-      <Avatar vendor={row.harness} status={row.status} size={34} />
+      <Avatar vendor={row.harness} status={row.status} size={34} badge={badgeOf(row.id)} />
       <div style={{ minWidth: 0 }}>
         <b>{`${row.name} is waiting`}</b>
         <span className="ui-nd">{needsDetail(row)}</span>

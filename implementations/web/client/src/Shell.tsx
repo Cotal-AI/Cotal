@@ -17,6 +17,7 @@ import { ChannelView } from "./ui/views/ChannelView.tsx";
 import { DmView } from "./ui/views/DmView.tsx";
 import { AgentsView } from "./ui/views/AgentsView.tsx";
 import { AgentPicker } from "./ui/panel/picker.js";
+import { BadgeOf, badgeLookup } from "./ui/identity.js";
 import { SheetMenu } from "./ui/sheet.js";
 import { panelShown, RightPanel, usePanel, type Panel } from "./ui/panel/RightPanel.tsx";
 import { SkeletonView } from "./ui/Skeleton.tsx";
@@ -84,7 +85,8 @@ function centreView(
  *  menu button (through `SheetMenu`) and closes on Escape, on the scrim or on any new route.
  *  `theme` and `onTheme` are the Settings menu's; without `onTheme` Settings is disabled.
  *
- *  The composers the views draw reach the controller's `send` and `draft` through `Compose`. */
+ *  The composers the views draw reach the controller's `send` and `draft` through `Compose`, and
+ *  every avatar of a roster row finds its initial badge through `BadgeOf`. */
 export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock = Date.now, phone = false, theme, onTheme }: {
   store: Store<DashboardState>;
   controller: Controller | null;
@@ -103,7 +105,9 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const loading = useStore(store, (s) => s.loading);
   const self = useStore(store, (s) => s.operatorId);
   const places = usePlaces(route, channels, dms, roster, self);
-  const needing = useMemo(() => waiting(rosterRows(roster, { includeOffline: true })).length, [roster]);
+  const everyone = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
+  const needing = useMemo(() => waiting(everyone).length, [everyone]);
+  const badgeOf = useMemo(() => badgeLookup(everyone), [everyone]);
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
@@ -119,6 +123,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   return (
     <Compose.Provider value={controller}>
     <AgentPicker.Provider value={panel.selectAgent}>
+    <BadgeOf.Provider value={badgeOf}>
       <SheetMenu.Provider value={menu}>
         <AppShell
           route={route}
@@ -140,6 +145,7 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
           <section className="ui-view" data-view={route.view}>{view}</section>
         </AppShell>
       </SheetMenu.Provider>
+    </BadgeOf.Provider>
     </AgentPicker.Provider>
     </Compose.Provider>
   );

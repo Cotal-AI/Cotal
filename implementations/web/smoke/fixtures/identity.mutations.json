@@ -1,0 +1,57 @@
+{
+  "command": "pnpm smoke:web-identity",
+  "suite": [
+    "implementations/web/smoke/identity.smoke.ts"
+  ],
+  "progressPattern": "^  ok ",
+  "mutations": [
+    {
+      "name": "I1 the letter drops the digits of a trailing _<n>, so reviewer_2 reads R",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "return first.toUpperCase() + (n ? n[1] : \"\");",
+      "replace": "return first.toUpperCase();",
+      "expectRed": "1.2 reviewer_2 gives R2",
+      "cell": "1.2 reviewer_2 gives R2"
+    },
+    {
+      "name": "I2 a clash no longer probes for the next free slot, so lead and ui share one colour",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "if (taken.size < SLOTS) while (taken.has(slot)) slot = (slot % SLOTS) + 1;",
+      "replace": "",
+      "expectRed": "3.1 two live agents whose names share a slot get different slots, and the later in name order moves",
+      "cell": "3.1 two live agents whose names share a slot get different slots, and the later in name order moves"
+    },
+    {
+      "name": "I3 live rows are probed in the order they came in rather than by name",
+      "file": "implementations/web/client/src/lib/identity.ts",
+      "find": "const live = rows.filter((r) => r.status !== \"offline\").sort(byName);",
+      "replace": "const live = rows.filter((r) => r.status !== \"offline\");",
+      "expectRed": "3.4 the same rows in another order get the same slots",
+      "cell": "3.4 the same rows in another order get the same slots"
+    },
+    {
+      "name": "I4 a history row's unverified sender gets a badge from the payload's id",
+      "file": "implementations/web/client/src/ui/MessageRow.tsx",
+      "find": "const badge = senderId !== undefined && peers.has(senderId) ? badgeOf(senderId) : undefined;",
+      "replace": "const badge = who !== undefined && peers.has(who) ? badgeOf(who) : undefined;",
+      "expectRed": "5.3 a live row with a verified sender has a badge and a history row has none",
+      "cell": "5.3 a live row with a verified sender has a badge and a history row has none"
+    },
+    {
+      "name": "I5 the badge draws its letter under 26px too",
+      "file": "implementations/web/client/src/ui/IdentityBadge.tsx",
+      "find": "{dot ? null : letter}",
+      "replace": "{letter}",
+      "expectRed": "4.2 under 26px the badge is a colour dot with no letter",
+      "cell": "4.2 under 26px the badge is a colour dot with no letter"
+    },
+    {
+      "name": "I6 the topology badge moves inside the art group, so an offline node greys and dims it",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "      </g>\n      {mark}",
+      "replace": "        {mark}\n      </g>",
+      "expectRed": "6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group",
+      "cell": "6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group"
+    }
+  ]
+}

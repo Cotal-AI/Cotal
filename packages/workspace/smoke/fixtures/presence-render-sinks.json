@@ -1,10 +1,10 @@
 {
   "expected": {
-    "total": 546,
+    "total": 559,
     "honest-text": 33,
     "presence-only-glyph/count": 97,
     "command-ack": 12,
-    "non-render/control": 404
+    "non-render/control": 417
   },
   "renderers": [
     {
@@ -3411,13 +3411,6 @@
     {
       "path": "implementations/web/client/src/ui/panel/MembersTab.tsx",
       "kind": "derived-output",
-      "anchor": "{members.map((m) => {\n        const r = peers.get(m.id);\n        return (\n          <button key={m.id} type=\"button\" className=\"v3-mrow\" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>\n            <Avatar vendor={r?.harness} status={r?.status ?? \"offline\"} size={28} dot={r !== undefined} />\n            <span className=\"v3-mname\">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>\n            {r && <StatusWord row={r} />}\n          </button>\n        );\n      })}",
-      "class": "presence-only-glyph/count",
-      "rationale": "The member row's status pill, whose word comes from statusLabel: the status presence reports, a presence word that makes no progress claim. The dashboard shows no progress suffix: no surface can observe progress yet."
-    },
-    {
-      "path": "implementations/web/client/src/ui/panel/MembersTab.tsx",
-      "kind": "derived-output",
       "anchor": "status={r?.status ?? \"offline\"}",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
@@ -3435,6 +3428,13 @@
       "anchor": "\"offline\"",
       "class": "presence-only-glyph/count",
       "rationale": "Narrow presence glyph, color, or aggregate count; it makes no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/panel/MembersTab.tsx",
+      "kind": "derived-output",
+      "anchor": "{members.map((m) => {\n        const r = peers.get(m.id);\n        return (\n          <button key={m.id} type=\"button\" className=\"v3-mrow\" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>\n            <Avatar vendor={r?.harness} status={r?.status ?? \"offline\"} size={28} dot={r !== undefined} badge={r ? badgeOf(m.id) : undefined} />\n            <span className=\"v3-mname\">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>\n            {r && <StatusWord row={r} />}\n          </button>\n        );\n      })}",
+      "class": "presence-only-glyph/count",
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/lib/topology.ts",
@@ -3500,6 +3500,20 @@
       "rationale": "The composer's refusal sentence: status is the HTTP status of the refused POST /api/send, which picks the broker wording or is said as HTTP <n>; no agent presence is rendered."
     },
     {
+      "path": "implementations/web/client/src/lib/identity.ts",
+      "kind": "status-token",
+      "anchor": "ter((r) => r.status !== \"offline\").sort(byName);\n  for (c",
+      "class": "non-render/control",
+      "rationale": "Data shaping: only live rows probe for a free badge colour slot, offline rows keep their hashed slot; nothing is rendered from the status."
+    },
+    {
+      "path": "implementations/web/client/src/lib/identity.ts",
+      "kind": "status-token",
+      "anchor": " rows) if (r.status === \"offline\") out.set(r.id, slotOf(r",
+      "class": "non-render/control",
+      "rationale": "Data shaping: only live rows probe for a free badge colour slot, offline rows keep their hashed slot; nothing is rendered from the status."
+    },
+    {
       "path": "implementations/web/client/src/ui/Avatar.tsx",
       "kind": "derived-output",
       "anchor": "Object.hasOwn(MOOD, status)",
@@ -3531,13 +3545,6 @@
       "path": "implementations/web/client/src/ui/Avatar.tsx",
       "kind": "derived-output",
       "anchor": "{status === \"offline\" ? \"ui-av ui-av-off\" : \"ui-av\"}",
-      "class": "non-render/control",
-      "rationale": "Styling: the class that dims an offline avatar; the status shows through the face and the dot, not this class."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Avatar.tsx",
-      "kind": "status-token",
-      "anchor": "\"offline\"",
       "class": "non-render/control",
       "rationale": "Styling: the class that dims an offline avatar; the status shows through the face and the dot, not this class."
     },
@@ -3584,6 +3591,41 @@
       "rationale": "The avatar's status dot: its class draws the status's own shape, a presence glyph that makes no textual progress claim."
     },
     {
+      "path": "implementations/web/client/src/ui/Avatar.tsx",
+      "kind": "status-token",
+      "anchor": "n className={status === \"offline\" ? \"ui-av ui-av-off\" : \"",
+      "class": "non-render/control",
+      "rationale": "Styling: the class that dims an offline avatar; the status shows through the face and the dot, not in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Avatar.tsx",
+      "kind": "derived-output",
+      "anchor": "{badge && <IdentityBadge letter={badge.letter} slot={badge.slot} size={size} offline={status === \"offline\"} />}",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Avatar.tsx",
+      "kind": "derived-output",
+      "anchor": "offline={status === \"offline\"}",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Avatar.tsx",
+      "kind": "derived-output",
+      "anchor": "{status === \"offline\"}",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Avatar.tsx",
+      "kind": "status-token",
+      "anchor": "ze} offline={status === \"offline\"} />}\n      {dot && <Sta",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
       "path": "implementations/web/client/src/ui/MessageRow.tsx",
       "kind": "derived-output",
       "anchor": "status={peer?.status ?? \"offline\"}",
@@ -3621,27 +3663,6 @@
     {
       "path": "implementations/web/client/src/ui/Sidebar.tsx",
       "kind": "derived-output",
-      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {conversations.map(({ pair: [a, b], verified }) => (\n          <Row\n            key={`${a}\\u0001${b}`}\n            to={{ view: \"dm\", peer: a, with: b }}\n            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}\n          >\n            <span className=\"ui-stack\">\n              {[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}\n            </span>\n            <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n            {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n          </Row>\n        ))}\n      </nav>}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Sidebar.tsx",
-      "kind": "derived-output",
-      "anchor": "{conversations.map(({ pair: [a, b], verified }) => (\n          <Row\n            key={`${a}\\u0001${b}`}\n            to={{ view: \"dm\", peer: a, with: b }}\n            here={open !== null && ((open.peer === a && open.with === b) || (open.peer === b && open.with === a))}\n          >\n            <span className=\"ui-stack\">\n              {[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}\n            </span>\n            <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n            {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n          </Row>\n        ))}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Sidebar.tsx",
-      "kind": "derived-output",
-      "anchor": "{[a, b].map((id) => (\n                <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} />\n              ))}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/Sidebar.tsx",
-      "kind": "derived-output",
       "anchor": "status={byId.get(id)?.status ?? \"offline\"}",
       "class": "presence-only-glyph/count",
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
@@ -3659,6 +3680,27 @@
       "anchor": "\"offline\"",
       "class": "presence-only-glyph/count",
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Sidebar.tsx",
+      "kind": "derived-output",
+      "anchor": "{loading.roster || loading.channels ? <SkeletonPlaces /> : <nav className=\"ui-side-scroll\" aria-label=\"Places\">\n        <Row to={{ view: \"needs\" }} here={route.view === \"needs\"}>\n          <RailIcon name=\"inbox\" />\n          <span className=\"ui-row-lbl\">Needs you</span>\n          {needing > 0 && <span className=\"ui-badge-gold\" title={`${needing} agent${needing === 1 ? \"\" : \"s\"} waiting`}>{needing}</span>}\n        </Row>\n        <Row to={{ view: \"activity\" }} here={route.view === \"activity\"}>\n          <RailIcon name=\"activity\" />\n          <span className=\"ui-row-lbl\">Activity</span>\n          <span className=\"ui-row-n\">{rateText(msgPerSecond())}</span>\n        </Row>\n        <div className=\"ui-sec\">Channels</div>\n        {channels.length === 0 && <div className=\"ui-beat ui-beat-empty\">No channels yet. One appears with its first message.</div>}\n        {channels.map((c) => {\n          const count = unread[c.channel] ?? 0;\n          const event = isEventChannel(c.channel);\n          return (\n            <Row\n              key={c.channel}\n              to={{ view: \"channel\", channel: c.channel }}\n              here={route.view === \"channel\" && route.channel === c.channel}\n              bold={count > 0}\n              title={event ? `Events from run ${c.channel.slice(\"run.\".length)}` : undefined}\n            >\n              {event ? <Icon icon={Plug01Icon} size={18} className=\"ui-ic\" /> : <RailIcon name=\"hash\" />}\n              <span className=\"ui-row-lbl\">{c.channel}</span>\n              {count > 0 && <span className=\"ui-badge-blue\">{count}</span>}\n            </Row>\n          );\n        })}\n        <div className=\"ui-sec\">Direct messages</div>\n        {listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}\n        {conversations.length > DM_ROWS && (\n          <button type=\"button\" className=\"ui-row ui-row-more\" aria-expanded={allDms} onClick={() => setAllDms((v) => !v)}>\n            <span className=\"ui-row-lbl\">{allDms ? \"Show fewer\" : `Show all ${conversations.length}`}</span>\n          </button>\n        )}\n      </nav>}",
+      "class": "presence-only-glyph/count",
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Sidebar.tsx",
+      "kind": "derived-output",
+      "anchor": "{listed.map(({ key, parts, opener: a, verified }) => {\n          const b = parts[0] === a ? parts[1] : parts[0];\n          return (\n            <Row key={key} to={{ view: \"dm\", peer: a, with: b }} here={key === openKey}>\n              <span className=\"ui-stack\">\n                {[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}\n              </span>\n              <span className=\"ui-row-lbl\">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>\n              {!verified && <span className=\"ui-unverified\" title={UNVERIFIED}>unverified</span>}\n            </Row>\n          );\n        })}",
+      "class": "presence-only-glyph/count",
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/Sidebar.tsx",
+      "kind": "derived-output",
+      "anchor": "{[a, b].map((id) => (\n                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? \"offline\"} size={18} dot={false} badge={byId.has(id) ? badgeOf(id) : undefined} />\n                ))}",
+      "class": "presence-only-glyph/count",
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
@@ -3836,18 +3878,46 @@
       "rationale": "Styling: link classes in the topology graph, dimmed where the source agent is offline; no text is rendered from the status."
     },
     {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "derived-output",
+      "anchor": "style={{ fill: `var(--id-${status === \"offline\" ? \"off\" : badge.slot})` }}",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "derived-output",
+      "anchor": "{{ fill: `var(--id-${status === \"offline\" ? \"off\" : badge.slot})` }}",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "derived-output",
+      "anchor": "`var(--id-${status === \"offline\" ? \"off\" : badge.slot})`",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "status-token",
+      "anchor": " `var(--id-${status === \"offline\" ? \"off\" : badge.slot})`",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "derived-output",
+      "anchor": "{mark}",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "status-token",
       "anchor": "\"working\"",
       "class": "non-render/control",
       "rationale": "Routing: picks the first channel member whose status is working for the working line; it renders nothing itself."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
-      "anchor": "{members.slice(0, STACK).map((m) => {\n              const r = peers.get(m.id);\n              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? \"offline\"} size={22} dot={false} />;\n            })}",
-      "class": "presence-only-glyph/count",
-      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws: no textual progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -3869,13 +3939,6 @@
       "anchor": "\"offline\"",
       "class": "presence-only-glyph/count",
       "rationale": "The status handed to Avatar, which draws a character face and, where shown, a status dot: no textual progress claim."
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "kind": "derived-output",
-      "anchor": "{working && (\n            <div className=\"ui-typing\">\n              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} />\n              <b>{working.name}</b>\n              {` is ${statusLabel(working)} `}\n              {working.progress?.kind !== \"unknown\" && <span className=\"ui-dots\"><i /><i /><i /></span>}\n              {working.activity && <span>{working.activity}</span>}\n            </div>\n          )}",
-      "class": "presence-only-glyph/count",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -3953,6 +4016,34 @@
       "anchor": "{working.activity}",
       "class": "presence-only-glyph/count",
       "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{members.slice(0, STACK).map((m) => {\n              const r = peers.get(m.id);\n              return <Avatar key={m.id} vendor={r?.harness} status={r?.status ?? \"offline\"} badge={r ? badgeOf(m.id) : undefined} size={22} dot={false} />;\n            })}",
+      "class": "presence-only-glyph/count",
+      "rationale": "A block of avatars whose only status use is the face and dot each Avatar draws, and the initial badge, which is chosen by id and greys its fill offline: no textual progress claim."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{working && (\n            <div className=\"ui-typing\">\n              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} badge={badgeOf(working.id)} />\n              <b>{working.name}</b>\n              {` is ${statusLabel(working)} `}\n              {working.progress?.kind !== \"unknown\" && <span className=\"ui-dots\"><i /><i /><i /></span>}\n              {working.activity && <span>{working.activity}</span>}\n            </div>\n          )}",
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is statusLabel's, the status presence reports, with no progress claim; the avatar carries the agent's initial badge."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "badge={badgeOf(working.id)}",
+      "class": "non-render/control",
+      "rationale": "Lookup: the working agent's initial badge, found by its roster id; the status plays no part in it and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
+      "kind": "derived-output",
+      "anchor": "{badgeOf(working.id)}",
+      "class": "non-render/control",
+      "rationale": "Lookup: the working agent's initial badge, found by its roster id; the status plays no part in it and nothing is said in text."
     },
     {
       "path": "implementations/web/client/src/ui/views/DmView.tsx",

@@ -240,8 +240,8 @@
     {
       "name": "N5 the card's character loses its waiting dot",
       "file": "implementations/web/client/src/ui/NeedsCard.tsx",
-      "find": "<Avatar vendor={row.harness} status={row.status} size={34} />",
-      "replace": "<Avatar vendor={row.harness} status={row.status} size={34} dot={false} />",
+      "find": "<Avatar vendor={row.harness} status={row.status} size={34} badge={badgeOf(row.id)} />",
+      "replace": "<Avatar vendor={row.harness} status={row.status} size={34} badge={badgeOf(row.id)} dot={false} />",
       "expectRed": "4.4 the card draws the agent's character with its waiting dot",
       "cell": "4.4 the card draws the agent's character with its waiting dot"
     },

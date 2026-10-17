@@ -1,0 +1,2 @@
+# The initial badge: the letter, the slot from the name, slots on a clash, the badge drawn, and badges in the shell's message rows, Members rows and Topology tab.
+smoke:web-identity

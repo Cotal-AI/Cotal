@@ -12,6 +12,7 @@ import { useStore } from "../state/hooks.js";
 import type { Store } from "../state/store.js";
 import type { Connection, DashboardState } from "../state/types.js";
 import { Avatar } from "./Avatar.tsx";
+import { useBadgeOf } from "./identity.js";
 import { UNVERIFIED } from "./MessageRow.tsx";
 import { SkeletonPlaces } from "./Skeleton.tsx";
 import { StaleMarker } from "./StaleMarker.tsx";
@@ -87,6 +88,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
   const rows = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
   const idx = useMemo(() => nameIndex(roster), [roster]);
   const byId = useMemo(() => new Map(rows.map((r) => [r.id, r])), [rows]);
+  const badgeOf = useBadgeOf();
   const needing = waiting(rows).length;
   const line = footerLine(post, self !== null && roster.some((p) => p.card.id === self));
   const conversations = useMemo(() => dmPairs(dms), [dms]);
@@ -139,7 +141,7 @@ export function Sidebar({ store, route, msgPerSecond }: { store: Store<Dashboard
             <Row key={key} to={{ view: "dm", peer: a, with: b }} here={key === openKey}>
               <span className="ui-stack">
                 {[a, b].map((id) => (
-                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={false} />
+                  <Avatar key={id} vendor={byId.get(id)?.harness} status={byId.get(id)?.status ?? "offline"} size={18} dot={false} badge={byId.has(id) ? badgeOf(id) : undefined} />
                 ))}
               </span>
               <span className="ui-row-lbl">{`${displayNameOf(a, idx, self)}, ${displayNameOf(b, idx, self)}`}</span>
