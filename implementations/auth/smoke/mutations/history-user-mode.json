@@ -1,0 +1,58 @@
+{
+  "suite": [
+    "implementations/auth/smoke/ps-user-mode.smoke.ts"
+  ],
+  "guard": "the real user-auth history CLI uses its lifecycle-pinned channel grant without a human delivery ACL mirror and keeps DM and sequence refusals",
+  "command": "pnpm --filter cotal-ai... build && pnpm smoke:ps-user-mode",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/history-user-mode.json",
+  "why": [
+    "A real IdP, exchange, user-auth broker, auth service, delivery daemon and manager create the human cli bearer. The real CLI sends and reads its own message without a delivery ACL row. An old mediator route is a named native red. Commands build all compiled dependencies and rebuild after restoration. No history page or provider response is stubbed."
+  ],
+  "mutations": [
+    {
+      "name": "a native human is sent back to the absent delivery ACL mirror",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "await ep.channelHistoryPage(ch, { limit: req.limit, signal })",
+      "replace": "await ep.readHistory(ch, { limit: req.limit })",
+      "expectRed": "native user-auth history reads the sent channel message with no stream sequence",
+      "cell": "native user-auth history reads the sent channel message with no stream sequence",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "native history drops the authenticated lifecycle coordinate",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "    ...(conn.mode === \"user\" ? { lifecycleUid: conn.epCaller?.uid } : {}),\n",
+      "replace": "",
+      "expectRed": "native user-auth history reads the sent channel message with no stream sequence",
+      "cell": "native user-auth history reads the sent channel message with no stream sequence",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "native user-auth DM history is not refused",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "  if (user && req.dms)\n    throw new CommandFailure(\"refused\", \"PERMISSION_DENIED\", \"DM history is readable only with the space signer's audit credential; a user-auth identity holds no DM read grant\", { target: req.target });\n",
+      "replace": "",
+      "expectRed": "native user-auth history refuses DMs without an audit credential",
+      "cell": "native user-auth history refuses DMs without an audit credential",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "native user-auth sequence history is not refused",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": "  if (user && req.since?.kind === \"seq\")\n    throw new CommandFailure(\"refused\", \"UNSUPPORTED\", \"stream-sequence cursors are not supported for user-auth history; give --since a time\", { target: req.target });\n",
+      "replace": "",
+      "expectRed": "native user-auth history refuses a stream-sequence read as unsupported",
+      "cell": "native user-auth history refuses a stream-sequence read as unsupported",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a connected history read failure loses its known outcome and target",
+      "file": "implementations/cli/src/commands/history.ts",
+      "find": ".catch((e: unknown) => {\n      if (e instanceof CommandFailure) throw e;\n      throw new CommandFailure(\"failed\", \"OPERATION_FAILED\", `history could not be read: ${e instanceof Error ? e.message : String(e)}`, { target });\n    })",
+      "replace": "",
+      "expectRed": "a busy native history read reports a known failed read, not an unknown operation",
+      "cell": "a busy native history read reports a known failed read, not an unknown operation",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    }
+  ]
+}
