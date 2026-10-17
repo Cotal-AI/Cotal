@@ -104,6 +104,17 @@ const codeOf = (stdout: string): unknown => {
   check("--json with --plain is a USAGE_INVALID refusal", both.status === 1 && codeOf(both.stdout) === "USAGE_INVALID", shown(both));
 }
 
+// ── A machine with no completion installed: every cell says something ──────────────────────────────
+{
+  const fresh = sandbox().run(["completion", "--plain"]);
+  const row = (shell: string) => fresh.stdout.split("\n").find((line) => line.trimStart().startsWith(`${shell} `)) ?? "";
+  check(
+    "a shell with no wiring says not wired in, and PowerShell's file says none",
+    fresh.status === 0 && ["bash", "zsh", "fish"].every((shell) => /not installed +not wired in +\S/.test(row(shell))) && /not installed by cotal +not wired in +none$/.test(row("powershell")),
+    { status: fresh.status, stdout: fresh.stdout },
+  );
+}
+
 // ── What counts as the install line ─────────────────────────────────────────────────────────────────
 {
   const s = sandbox();
