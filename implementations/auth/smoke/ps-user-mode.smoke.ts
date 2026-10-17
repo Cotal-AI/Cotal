@@ -317,6 +317,14 @@ try {
     psJson.out.slice(-600));
   check("user-mode ps --json carries no bearer, sentinel or nkey seed", !leaksCredential(psJson.out), psJson.out.slice(-600));
 
+  console.log("3a) cotal who under the same bearer: the one manager answers for this user's own seats");
+  const whoJson = await cotal(["who", "--json", "--space", SPACE], 20_000);
+  const whoEnvelope = (() => { try { return JSON.parse(whoJson.out.split("\n").find((line) => line.startsWith('{"schemaVersion"')) ?? "") as { outcome: string; completeness: string; result: { managers: string } | null; warnings: { code: string }[] }; } catch { return undefined; } })();
+  check("user-mode who labels the manager's answer as covering this user's own seats",
+    whoEnvelope?.result?.managers === "partial" && whoEnvelope.warnings.some((w) => w.code === "MANAGED_SCOPE"), whoJson.out.slice(-600));
+  check("that label is not a part left unread: user-mode who exits 0, ok and complete",
+    whoJson.status === 0 && whoEnvelope?.outcome === "ok" && whoEnvelope.completeness === "complete", whoJson.out.slice(-600));
+
   console.log("3b) empty registry discovers the user-mode space, then ps/status resolve it");
   const { prepareCatalogTargets, validateCatalogSnapshot } = await import("../../cli/src/commands/sync.js");
   const { findMesh, removeMesh, targetFromEntry, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
