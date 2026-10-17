@@ -73,8 +73,9 @@ terminal delivery raises an incomplete-scan error.
 
 The reference client's presence and channel-registry watches delete their ordered consumer when
 the endpoint stops, when a silent presence watch is rebound, and when a manual reconnect retires a
-live connection. A profile without the delete grant has that delete refused, and the broker removes
-the consumer at its inactive threshold. The watches of a connection that closed on its own are left
+live connection. A watch whose bind is still in flight at that point deletes its consumer when the
+bind completes, and the connection closes only after that delete. A profile without the delete
+grant has that delete refused, and the broker removes the consumer at its inactive threshold. The watches of a connection that closed on its own are left
 to that threshold too.
 
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
