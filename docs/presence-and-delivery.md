@@ -53,9 +53,12 @@ line, shows a control character or line separator in it as a `\uXXXX` escape, an
 characters.
 The optional `environment` is an opaque provider reference. Core publishes
 it and never interprets it. Readers reject a row whose `card.id` does not match its KV key, whose
-`card.name` or `status` is missing or has the wrong type, or whose `ts` is not a finite number, and
-report that rejection through the recoverable warning path. A kept row whose `ts` is missing or text
-such as `"nope"` would never read as stale, so it would stay live after its key expired.
+`card.name` or `status` is missing or has the wrong type, whose `ts` is not a finite number, or whose
+`card.role`, `activity`, `attention` or `condition.code` is present and not a string, and report that
+rejection through the recoverable warning path. A kept row whose `ts` is missing or text such as
+`"nope"` would never read as stale, so it would stay live after its key expired. A kept object such as
+`{"toString":null,"valueOf":null}` in a printed field would throw when converted and fail every
+reader's roster.
 Details: [SPEC §6](../SPEC.md#6-presence-and-discovery). The dashboard surfaces a stale view
 on the same header mark it uses for a refused poll ([watch a mesh](watch-a-mesh.md)).
 
