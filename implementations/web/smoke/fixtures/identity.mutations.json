@@ -44,6 +44,14 @@
       "replace": "{letter}",
       "expectRed": "4.2 under 26px the badge is a colour dot with no letter",
       "cell": "4.2 under 26px the badge is a colour dot with no letter"
+    },
+    {
+      "name": "I6 the topology badge moves inside the art group, so an offline node greys and dims it",
+      "file": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "find": "      </g>\n      {mark}",
+      "replace": "        {mark}\n      </g>",
+      "expectRed": "6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group",
+      "cell": "6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group"
     }
   ]
 }

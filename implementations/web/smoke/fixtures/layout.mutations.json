@@ -176,7 +176,7 @@
     {
       "name": "LY27 the shell counts nobody waiting",
       "file": "implementations/web/client/src/Shell.tsx",
-      "find": "const needing = useMemo(() => waiting(rosterRows(roster, { includeOffline: true })).length, [roster]);",
+      "find": "const needing = useMemo(() => waiting(everyone).length, [everyone]);",
       "replace": "const needing = 0;",
       "expectRed": "2.3 the tab bar holds Channels, DMs, Agents and Activity, Agents carrying the gold count of agents waiting, and the open channel's tab is current",
       "cell": "2.3 the tab bar holds Channels, DMs, Agents and Activity, Agents carrying the gold count of agents waiting, and the open channel's tab is current"

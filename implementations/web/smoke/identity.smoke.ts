@@ -3,8 +3,8 @@
  *  of roster rows gets when names clash. Section 4 renders the badge and an avatar that carries one.
  *  Section 5 renders the real shell over a seeded store with two Claude agents and reads the badges
  *  its message rows and Members rows draw, including that a history row (no verified sender) draws
- *  none. Section 6 renders the Topology tab under the lookup the shell provides and reads the badge
- *  circle on each agent node. */
+ *  none. Section 6 renders the Topology tab, and the topology view with Hide offline off, under the
+ *  lookup the shell provides and reads the badge on each agent node, an offline one included. */
 import { closeDom } from "./dom-globals.js";
 import { strict as assert } from "node:assert";
 import { createElement } from "react";
@@ -19,6 +19,7 @@ import { Avatar } from "../client/src/ui/Avatar.tsx";
 import { IdentityBadge } from "../client/src/ui/IdentityBadge.tsx";
 import { BadgeOf, badgeLookup } from "../client/src/ui/identity.js";
 import { TopologyTab } from "../client/src/ui/panel/TopologyTab.tsx";
+import { TopologyView } from "../client/src/ui/views/TopologyView.tsx";
 import { renderShell } from "./render-shell.js";
 
 let n = 0;
@@ -133,13 +134,25 @@ const teamRoute: Route = { view: "channel", channel: "team" };
 
 // ── 6. The Topology tab ──────────────────────────────────────────────────────────────────────────
 {
-  const store = createStore<DashboardState>({ ...initialState, ...seed });
-  const lookup = badgeLookup(rosterRows(ROSTER, { includeOffline: true }));
-  const tab = parse(renderToString(createElement(BadgeOf.Provider, { value: lookup }, createElement(TopologyTab, { store, clock: () => now }))));
-  same("6.1 the Topology tab draws a badge circle with its letter on each agent node",
-    all(tab, "g.ui-ta").map((g) => [g.dataset.node, g.querySelector(".ui-tidb circle")?.getAttribute("style") ?? null, g.querySelector(".ui-tidb text")?.textContent ?? null])
-      .sort(([a], [b]) => String(a).localeCompare(String(b))),
-    [["local.lead", "fill:var(--id-4)", "L"], ["local.ui", "fill:var(--id-5)", "U"]]);
+  // perf is offline and in #team. The tab hides offline agents, so it draws lead and ui; the view with
+  // Hide offline off draws perf too, whose badge sits outside the greyscale art group, filled grey.
+  const roster = [...ROSTER, entry("local.perf", "perf", "offline")];
+  const members = { ...teamMembers, members: [...teamMembers.members, { id: "local.perf", live: ["team"], durable: [], observedAt: 1 }] } as MembershipSnapshot;
+  const store = createStore<DashboardState>({ ...initialState, ...seed, roster, membership: { snapshot: members } });
+  const lookup = badgeLookup(rosterRows(roster, { includeOffline: true }));
+  const under = (el: ReturnType<typeof createElement>) => parse(renderToString(createElement(BadgeOf.Provider, { value: lookup }, el)));
+  /** Each agent node: its id, whether its badge sits inside the art group, the circle's style and the letter. */
+  const nodes = (root: HTMLElement) => all(root, "g.ui-ta")
+    .map((g) => [g.dataset.node, g.querySelector(".ui-ta-art .ui-tidb") !== null, g.querySelector(".ui-tidb circle")?.getAttribute("style") ?? null, g.querySelector(".ui-tidb text")?.textContent ?? null])
+    .sort(([a], [b]) => String(a).localeCompare(String(b)));
+  const tab = under(createElement(TopologyTab, { store, clock: () => now }));
+  const view = under(createElement(TopologyView, { store, clock: () => now, initialHideOffline: false }));
+  same("6.1 the Topology tab draws a badge circle with its letter on each agent node, and an offline node's badge is grey and outside the greyscale group",
+    [nodes(tab), nodes(view)],
+    [
+      [["local.lead", false, "fill:var(--id-4)", "L"], ["local.ui", false, "fill:var(--id-5)", "U"]],
+      [["local.lead", false, "fill:var(--id-4)", "L"], ["local.perf", false, "fill:var(--id-off)", "P"], ["local.ui", false, "fill:var(--id-5)", "U"]],
+    ]);
 }
 
 await closeDom();

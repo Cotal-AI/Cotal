@@ -3880,35 +3880,35 @@
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "derived-output",
-      "anchor": "{id && (\n        <g className=\"ui-tidb\" aria-hidden=\"true\">\n          <circle cx={bx} cy={by} r={r} style={{ fill: `var(--id-${status === \"offline\" ? \"off\" : id.slot})` }} />\n          <text x={bx} y={by + r * 0.42} textAnchor=\"middle\" fontSize={[...id.letter].length > 1 ? r * 0.95 : r * 1.2}>{id.letter}</text>\n        </g>\n      )}",
+      "anchor": "style={{ fill: `var(--id-${status === \"offline\" ? \"off\" : badge.slot})` }}",
       "class": "non-render/control",
       "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
     },
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "derived-output",
-      "anchor": "style={{ fill: `var(--id-${status === \"offline\" ? \"off\" : id.slot})` }}",
+      "anchor": "{{ fill: `var(--id-${status === \"offline\" ? \"off\" : badge.slot})` }}",
       "class": "non-render/control",
       "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
     },
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "derived-output",
-      "anchor": "{{ fill: `var(--id-${status === \"offline\" ? \"off\" : id.slot})` }}",
-      "class": "non-render/control",
-      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
-    },
-    {
-      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
-      "kind": "derived-output",
-      "anchor": "`var(--id-${status === \"offline\" ? \"off\" : id.slot})`",
+      "anchor": "`var(--id-${status === \"offline\" ? \"off\" : badge.slot})`",
       "class": "non-render/control",
       "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
     },
     {
       "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
       "kind": "status-token",
-      "anchor": " `var(--id-${status === \"offline\" ? \"off\" : id.slot})` }}",
+      "anchor": " `var(--id-${status === \"offline\" ? \"off\" : badge.slot})`",
+      "class": "non-render/control",
+      "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
+    },
+    {
+      "path": "implementations/web/client/src/ui/graph/TopologyGraph.tsx",
+      "kind": "derived-output",
+      "anchor": "{mark}",
       "class": "non-render/control",
       "rationale": "Styling: the initial badge's fill greys for an offline agent while its letter stays; the badge is aria-hidden and nothing is said in text."
     },

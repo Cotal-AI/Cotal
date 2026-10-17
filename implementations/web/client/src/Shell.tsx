@@ -105,8 +105,9 @@ export function Shell({ store, controller, route, paneOpen, msgPerSecond, clock 
   const loading = useStore(store, (s) => s.loading);
   const self = useStore(store, (s) => s.operatorId);
   const places = usePlaces(route, channels, dms, roster, self);
-  const needing = useMemo(() => waiting(rosterRows(roster, { includeOffline: true })).length, [roster]);
-  const badgeOf = useMemo(() => badgeLookup(rosterRows(roster, { includeOffline: true })), [roster]);
+  const everyone = useMemo(() => rosterRows(roster, { includeOffline: true }), [roster]);
+  const needing = useMemo(() => waiting(everyone).length, [everyone]);
+  const badgeOf = useMemo(() => badgeLookup(everyone), [everyone]);
   const panel = usePanel(route, phone);
   const shown = panelShown(panel, paneOpen);
   const seen: Panel = { ...panel, agent: shown && panel.tab === "agent" ? panel.agent : null };
