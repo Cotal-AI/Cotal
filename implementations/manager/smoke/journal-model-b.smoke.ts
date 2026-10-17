@@ -83,7 +83,7 @@ const sweepBody = sweepStart < 0 ? "" : src.slice(sweepStart, src.indexOf("\n  p
 c("the sweep body was located and is non-trivial (so the cell below reads something)",
   sweepBody.length > 500, { bytes: sweepBody.length });
 c("the boot sweep EXISTS and enumerates goalidx through a bounded local provisioner or authenticated host-owned remote scan — "
-  + "SPEC:2391 REQUIRES this mechanism; J2 replaces its IMPLEMENTATION and never the mechanism itself. "
+  + "SPEC 13.7 (the `goalidx` record kind) REQUIRES this mechanism; J2 replaces its IMPLEMENTATION and never the mechanism itself. "
   + "IF THIS CELL IS FAILING BECAUSE YOU DELETED THE SWEEP, THAT IS THE BUG, NOT THIS CELL. "
   + "A crash after goalidx and before the bind produces no decision message ever, so the effects "
   + "durable cannot see it and the row leaks forever with no sweep.",

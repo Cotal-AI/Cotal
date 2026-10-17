@@ -378,7 +378,7 @@ const COMMIT_ROWS = [
   "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
   "$JS.API.INFO",
 ];
-c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the SIX record-key prefixes §13.9 `Claim / action / checkpoint commits` (SPEC:2912) enumerates + the two leader-served fencing reads), never dec/quar",
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the SIX record-key prefixes §13.9 `Claim / action / checkpoint commits` enumerates + the two leader-served fencing reads), never dec/quar",
   (() => {
     const g = commitPrincipalGrants(SPACE, "manager", CONN);
     return JSON.stringify(g.publish) === JSON.stringify(COMMIT_ROWS)
@@ -391,7 +391,7 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
 // list above still holds the CLOSURE (nothing extra), which per-row membership cannot.
 for (const kind of ["goaleff", "epname", "epmig"] as const) {
   const row = kind === "epmig" ? "$KV.cotal_records_epbind.epmig.manager" : `$KV.cotal_records_epbind.${kind}.manager.>`;
-  c(`the commit principal holds the \`${kind}\` key EXACTLY as §13.9 \`Claim / action / checkpoint commits\` (SPEC:2912) spells it (\`epmig\` is ONE key, never a subtree)`,
+  c(`the commit principal holds the \`${kind}\` key EXACTLY as §13.9 \`Claim / action / checkpoint commits\` spells it (\`epmig\` is ONE key, never a subtree)`,
     commitPrincipalGrants(SPACE, "manager", CONN).publish.includes(row), row);
 }
 // ── the three journal-action coordination kinds ────────────────────────────────────────────
@@ -665,7 +665,7 @@ try {
   // is a fact about the option surface, and it stops being true the first time someone adds an
   // option. Asserted here against the config the broker actually holds, so it is a fact about the
   // stream — and it reddens on the widening rather than on the incident.
-  c("EPF has NO non-age removal cause: unlimited count/bytes/per-subject, no message TTL, no rollup, Limits retention (SPEC:3189-3195)",
+  c("EPF has NO non-age removal cause: unlimited count/bytes/per-subject, no message TTL, no rollup, Limits retention (SPEC 13.12)",
     epf.max_msgs === -1 && epf.max_bytes === -1 && epf.max_msgs_per_subject === -1
     && !epf.allow_msg_ttl && !epf.allow_rollup_hdrs && epf.retention === "limits",
     { max_msgs: epf.max_msgs, max_bytes: epf.max_bytes, max_msgs_per_subject: epf.max_msgs_per_subject,
@@ -675,7 +675,7 @@ try {
   const ept = await cfg(eptStreamName(SPACE));
   c("EPT has message schedules ENABLED", ept.allow_msg_schedules === true);
   const epw = await cfg(epwStreamName(SPACE));
-  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC:2931, §13.9 `Work-pool reconciliation probe`)",
+  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, §13.9 `Work-pool reconciliation probe`)",
     epw.retention === "workqueue" && epw.allow_direct === false);
   const epc = await cfg(epcStreamName(SPACE));
   c("EPC has no age eviction (artifacts are permanent)", epc.allow_direct === true && epc.max_age === 0);

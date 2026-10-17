@@ -577,10 +577,11 @@ try {
   //
   // My first attempt hand-rolled this cred with `pub: { deny: [">"] }`, which would have rejected at
   // THE WRONG SITE and still printed a passing-looking cell. Measured on the AST rather than assumed:
-  // TWO steps sit between the conn B record (:223) and the arm (:320), the feed KV open (:227) and
-  // the members registry open (:228), and a KV open is a JetStream API REQUEST, so a deny-all publish
-  // grant fails there FIRST. The cell would then have graded a KV failure while its name claimed the
-  // renewal arm, and the drain assertion under it would have passed for a reason the cell misnames.
+  // TWO steps in membership-feed.ts sit between the conn B record and the renewal arm, the feed KV
+  // open (`kvm.open(membershipBucket(space))`) and the members registry open (`openMembersRegistry`),
+  // and a KV open is a JetStream API REQUEST, so a deny-all publish grant fails there FIRST. The cell
+  // would then have graded a KV failure while its name claimed the renewal arm, and the drain
+  // assertion under it would have passed for a reason the cell misnames.
   //
   // So the cred is minted by the SAME `mintCreds(..., "membership-rw")` path as the live one above,
   // and its `exp` is stripped, re-signed on the same nkey. That makes the renewal-window

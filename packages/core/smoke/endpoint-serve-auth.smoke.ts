@@ -265,8 +265,9 @@ try {
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, serveIssuance: gate.seam }));
   c("the endpoint-serve profile without the issuance gate refuses (the release fence is mandatory)",
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: serveGrant }));
-  // SERVING-PRINCIPAL BINDING (§13.1:1056-1069): a SIBLING ACTOR under the registered owner passes
-  // authorizeServeGrant's owner check but must NOT win the real gate (whose principal is u_op.mgr).
+  // SERVING-PRINCIPAL BINDING (§13.1, the endpoint issuance gate): a SIBLING ACTOR under the
+  // registered owner passes authorizeServeGrant's owner check but must NOT win the real gate (whose
+  // principal is u_op.mgr).
   // The mint refuses before staging, so no active epcred row is written and no JWT releases.
   c("a SIBLING ACTOR under the registered owner cannot win the gate (mint binds to epgate.principal, not just the owner), and writes NO row",
     await mintThrows({ principal: { owner: "u_op", actor: "evil" }, endpointServe: serveGrant, serveIssuance: gate.seam }) && gate.active() === 0);
@@ -295,7 +296,7 @@ try {
       return gate.rows.size === before && conflicted;
     })());
 
-  // ---- D14: the §13.9:2473 bind rows ride the minted credential (journal class + owned pools) ----
+  // ---- D14: the §13.9 bind rows ride the minted credential (journal class + owned pools) ----
   const decodeJwtRows = (creds: string): { pub: string[]; sub: string[] } => {
     const jwt = /BEGIN NATS USER JWT-+\s+(\S+)/.exec(creds)![1];
     const payload = jwt.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
@@ -789,7 +790,7 @@ try {
     c("re-registration verified-evicts the distinct principals of the FULL family, including an ALREADY-revoked row's principal (a partial-barrier leftover)",
       g.evicted.includes("u_op.mgr") && g.evicted.includes("u_op.old"));
   }
-  // SOURCE-CHAIN grammar (§13.2:1248 id bound {1,64}): the exported finalizeServeIssuance refuses a
+  // SOURCE-CHAIN grammar (§13.2 id bound {1,64}): the exported finalizeServeIssuance refuses a
   // malformed §13.1 issuance lineage BEFORE observe/stage, so a bad chain never enters the ledger.
   {
     const freshGate = () => makeGate({ endpoint: "manager", lifecycleUid: IID, generation: 1, processEpoch: EPOCH, registrationRevision: reg.registrationRevision, nameAuthorityRevision: NAR });

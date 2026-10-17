@@ -85,7 +85,7 @@ const NOW = 1_000_000;
 // ── broker-free: the subject shape ──
 // The signature takes NO epoch. A second argument would not type-check, which is the structural
 // half of the fix: there is no way to address a per-epoch result subject any more.
-c("a goal's terminal subject is the ONE flat SPEC:1433 (§13.2 reserved subjects) form, with no epoch token",
+c("a goal's terminal subject is the ONE flat §13.2 reserved-subject form, with no epoch token",
   goalResultSubject(SPACE, ref("g1")).endsWith(".g1.result")
   && !/\.result\.\d+$/.test(goalResultSubject(SPACE, ref("g1"))));
 
