@@ -93,6 +93,8 @@ together through the normal update path; a separate broker or manager can stay r
 - Replace a script's `cotal history --force` with `cotal history clear --force`. The former is
   refused rather than clearing anything. Add `--dms` to the explicit clear command only when the
   purge should include direct messages and the identity holds that authority.
+- `history clear` accepts no channel argument, read filters or `--follow`. It purges every channel
+  in the selected space; these inputs are refused rather than treated as a selective purge.
 - Bare `history` reads channels within the caller's read grant. It never clears stored messages.
   Use `--json` and `result.items` for scripts; the human report is not a parsing target.
 - A user-auth history read uses the connection's channel grant. DM audit history and stream-sequence
