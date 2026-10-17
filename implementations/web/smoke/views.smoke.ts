@@ -204,8 +204,8 @@ const all = (el: Element, sel: string) => [...el.querySelectorAll(sel)] as HTMLE
     line({ membership: { snapshot: { asOf: Date.now(), members: [{ id: "local.rv2", live: ["review"], durable: [], observedAt: 1 }] } as unknown as MembershipSnapshot } }) === null);
   const unknown = roster.map((p) => (p.card.id === "local.rev" ? { ...p, progress: { kind: "unknown" as const } } : p));
   const u = line({ roster: unknown });
-  ok("3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots",
-    textOf(u).startsWith("reviewer is working · progress unknown") && u?.querySelector(".ui-dots") === null, textOf(u));
+  ok("3.3 a member whose connector reports no progress reads working with its activity, with no moving dots",
+    textOf(u) === "reviewer is working Reviewing the presence TTL diff" && u?.querySelector(".ui-dots") === null, textOf(u));
   ok("3.4 the line sits in the list, after the last message", (() => {
     const c = centre(shellDom(channelSeed(), channelRoute));
     const col = c.querySelector(".ui-scroll .ui-col") ?? none();

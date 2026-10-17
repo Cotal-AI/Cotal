@@ -131,13 +131,13 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
   same("2.6 an offline agent says when its last heartbeat was", activity(rowByName(d, "scout")), "Last heartbeat 09:12");
   same("2.7 a row with no waiting status draws no waiting ink", rowByName(d, "david").querySelector(".v3-aact")?.getAttribute("style"), null);
   const quiet = view({ roster: [entry("local.q", "quill", "working", { connector: "codex" }), entry("local.p", "pell", "working", { connector: "codex", progress: { kind: "unknown" } }), entry("local.w", "wade", "waiting", { connector: "codex" })] });
-  same("2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity",
-    [activity(rowByName(quiet, "quill")), activity(rowByName(quiet, "pell"))], ["Working", "Working · progress unknown"]);
+  same("2.8 a working agent with no activity says its status, Working, never No current activity",
+    [activity(rowByName(quiet, "quill")), activity(rowByName(quiet, "pell"))], ["Working", "Working"]);
   ok("2.9 a waiting agent that reported nothing says so too, never an invented reason", activity(rowByName(quiet, "wade")) === "No current activity", activity(rowByName(quiet, "wade")));
 
   const unsure = view({ roster: [entry("local.u", "ursa", "working", { connector: "codex", activity: "Reviewing the diff", progress: { kind: "unknown" } }), entry("local.k", "kit", "working", { connector: "codex", activity: "Editing the spec" })] });
-  same("2.17 a working agent with activity and no progress to report says so after the activity, and one that reports progress does not",
-    [activity(rowByName(unsure, "ursa")), activity(rowByName(unsure, "kit"))], ["Reviewing the diff · progress unknown", "Editing the spec"]);
+  same("2.17 a working agent with activity says the activity alone, with no progress suffix",
+    [activity(rowByName(unsure, "ursa")), activity(rowByName(unsure, "kit"))], ["Reviewing the diff", "Editing the spec"]);
 
   const dnd = rowByName(d, "reviewer_2").querySelector(".v3-meta[title]");
   const focus = rowByName(d, "planner").querySelector(".v3-meta[title]");
@@ -206,7 +206,7 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
   ]);
   same("4.5 the pill's icon is the status's own", Array.from(d.querySelectorAll(".v3-spill")).map((p) => svgOf(p)).slice(0, 2), [Loading03Icon, UnavailableIcon].map(iconMarkup));
   const unknown = view({ roster: [entry("local.p", "pell", "working", { host: "h1", progress: { kind: "unknown" } })] }, HOST_ROUTE);
-  same("4.6 a working agent's pill says progress unknown when that is all it knows", textOf(unknown.querySelector(".v3-spill")), "Working · progress unknown");
+  same("4.6 a working agent's pill says Working when no progress is reported", textOf(unknown.querySelector(".v3-spill")), "Working");
   same("4.7 a waiting agent's text carries no Reported time here, as in the mock", activity(rowByName(d, "reviewer_2")), "Needs approval to run pnpm smoke:ci");
   ok("4.8 the attention badges stay in this grouping", textOf(rowByName(d, "planner").querySelector(".v3-meta[title]")) === "Focus" && textOf(rowByName(d, "reviewer_2").querySelector(".v3-meta[title]")) === "Do not disturb");
   ok("4.9 the heartbeat line belongs to the status grouping, and the endpoints stay last here too", d.querySelector(".v3-eprow[style]") === null
@@ -219,8 +219,8 @@ const activity = (row: Element) => textOf(row.querySelector(".v3-aact"));
 
 {
   const unsure = view({ roster: [entry("local.u", "ursa", "working", { connector: "codex", host: "h1", activity: "Reviewing the diff", progress: { kind: "unknown" } })] }, HOST_ROUTE);
-  same("4.13 the host grouping leaves the activity as the agent wrote it, since its status word already says progress unknown",
-    [activity(rowByName(unsure, "ursa")), textOf(unsure.querySelector(".v3-spill"))], ["Reviewing the diff", "Working · progress unknown"]);
+  same("4.13 the host grouping leaves the activity as the agent wrote it, beside the Working pill",
+    [activity(rowByName(unsure, "ursa")), textOf(unsure.querySelector(".v3-spill"))], ["Reviewing the diff", "Working"]);
 }
 
 // 5. The Needs route

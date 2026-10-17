@@ -199,9 +199,9 @@ const agentTab = (id: string, patch: Partial<DashboardState> = {}, channel: stri
   same("3.11 open attention, an unknown mode and none show no Attention row", [attention("open"), attention("away"), attention(undefined)],
     [["Model", "Heartbeat"], ["Model", "Heartbeat"], ["Model", "Heartbeat"]]);
   const unknown = agentTab("local.dav", { roster: [entry("local.dav", "david", "working", { progress: { kind: "unknown" } })] });
-  same("3.12 working with no reported progress says so, and no activity or time reads as none",
+  same("3.12 working with no reported progress reads Working, and no activity or time reads as none",
     [textOf(unknown.querySelector(".ui-sline .v3-spill")), textOf(unknown.querySelector(".ui-sline > span:not(.v3-spill)")), unknown.querySelector(".ui-sline small")],
-    ["Working · progress unknown", "No current activity", null]);
+    ["Working", "No current activity", null]);
   const channelRows = (el: HTMLElement) => all(el, ".ui-chrow").map((r) => [...r.children].map(textOf));
   same("3.13 Channels are the agent's from membership, sorted, with its quiet or muted mode and no other", channelRows(rev), [["#general", "quiet"], ["#review", ""]]);
   const wide = agentTab("local.rev", { membership: { snapshot: snapshot([{ id: "local.rev", live: [">"] }]) } });

@@ -88,8 +88,8 @@ const svgOf = (key: string, mood: { look?: string; mood?: string } = {}) => `<sv
   ok("2.3 each status carries its own icon, so it is a shape and not a colour alone", paths.every(Boolean) && new Set(paths).size === 4, paths.map((p) => p.length));
   ok("2.4 the word sits in the status pill with the status class",
     startTags(word({ status: "waiting" }), "span")[0]?.class === "v3-spill v3-s-waiting", startTags(word({ status: "waiting" }), "span"));
-  ok("2.5 a working row whose progress is unknown says so, through statusLabel",
-    text(word({ status: "working", progress: { kind: "unknown" } })) === "Working · progress unknown", text(word({ status: "working", progress: { kind: "unknown" } })));
+  ok("2.5 a working row whose progress is unknown reads Working, with no progress claim",
+    text(word({ status: "working", progress: { kind: "unknown" } })) === "Working", text(word({ status: "working", progress: { kind: "unknown" } })));
 }
 
 // ── 3. MessageRow: who sent it ───────────────────────────────────────────────────────────────────

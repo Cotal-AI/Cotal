@@ -1,8 +1,8 @@
 {
   "expected": {
-    "total": 549,
-    "honest-text": 45,
-    "presence-only-glyph/count": 88,
+    "total": 546,
+    "honest-text": 33,
+    "presence-only-glyph/count": 97,
     "command-ack": 12,
     "non-render/control": 404
   },
@@ -3066,17 +3066,6 @@
       "rationale": "AST candidate is status routing, process/HTTP state, lookup definition, styling, or data shaping rather than a human progress claim."
     },
     {
-      "path": "implementations/web/client/src/lib/roster.ts",
-      "kind": "status-token",
-      "anchor": " string => p.status === \"working\" && p.progress?.kind ===",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/web/client/src/lib/roster.ts",
-        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
-      }
-    },
-    {
       "path": "implementations/web/client/src/lib/snapshot.ts",
       "kind": "derived-output",
       "anchor": "`${what} refused with HTTP ${res.status}${detail}`",
@@ -3095,7 +3084,7 @@
       "kind": "derived-output",
       "anchor": "word(status)",
       "class": "presence-only-glyph/count",
-      "rationale": "Group header word beside the group's count: it names the status and claims no progress. Progress is said by each row, through activityText and statusLabel, not by the header."
+      "rationale": "Group header word beside the group's count: it names the status and claims no progress."
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -3114,35 +3103,9 @@
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "kind": "status-token",
-      "anchor": ") return row.status === \"working\" && grouping === \"status",
-      "class": "honest-text",
-      "rationale": "Under the status grouping a working agent's activity line ends with statusLabel's words, so progress that is unknown is said on the row.",
-      "proof": {
-        "path": "implementations/web/client/src/lib/roster.ts",
-        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "kind": "derived-output",
-      "anchor": "`${activity}${statusLabel(row).slice(row.status.length)}`",
-      "class": "honest-text",
-      "rationale": "The activity line is the agent's text followed by statusLabel's own suffix, so working with unknown progress reads · progress unknown.",
-      "proof": {
-        "path": "implementations/web/client/src/lib/roster.ts",
-        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
-      }
-    },
-    {
-      "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "kind": "status-token",
-      "anchor": "  return row.status === \"working\" ? word(statusLabel(row)",
-      "class": "honest-text",
-      "rationale": "A working agent with no activity text says its status through statusLabel, so progress that is unknown reads Working · progress unknown and never No current activity.",
-      "proof": {
-        "path": "implementations/web/client/src/lib/roster.ts",
-        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
-      }
+      "anchor": "\"working\"",
+      "class": "presence-only-glyph/count",
+      "rationale": "A working agent with no activity text says its status word through statusLabel, Working, never No current activity: a presence word that makes no progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/views/AgentsView.tsx",
@@ -3449,12 +3412,8 @@
       "path": "implementations/web/client/src/ui/panel/MembersTab.tsx",
       "kind": "derived-output",
       "anchor": "{members.map((m) => {\n        const r = peers.get(m.id);\n        return (\n          <button key={m.id} type=\"button\" className=\"v3-mrow\" data-member={m.id} data-source={m.source} onClick={() => onPick(m.id)}>\n            <Avatar vendor={r?.harness} status={r?.status ?? \"offline\"} size={28} dot={r !== undefined} />\n            <span className=\"v3-mname\">{r?.name ?? displayNameOf(m.id, idx)}{r?.role && <span>{r.role}</span>}</span>\n            {r && <StatusWord row={r} />}\n          </button>\n        );\n      })}",
-      "class": "honest-text",
-      "rationale": "Textual presence status; the cited output assertion or checked renderer makes working progress uncertainty explicit.",
-      "proof": {
-        "path": "implementations/web/client/src/lib/roster.ts",
-        "anchor": "export const statusLabel = (p: Pick<RosterRow, \"status\" | \"progress\">): string => p.status === \"working\" && p.progress?.kind === \"unknown\" ? \"working · progress unknown\" : p.status;"
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "The member row's status pill, whose word comes from statusLabel: the status presence reports, a presence word that makes no progress claim. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/panel/MembersTab.tsx",
@@ -3727,21 +3686,21 @@
       "kind": "derived-output",
       "anchor": "aria-label={word(status)}",
       "class": "presence-only-glyph/count",
-      "rationale": "The status dot's accessible name, the text alternative of the glyph. It names the status only; progress is said by the row's own status text through statusLabel."
+      "rationale": "The status dot's accessible name, the text alternative of the glyph. It names the status only and makes no progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
       "anchor": "{word(status)}",
       "class": "presence-only-glyph/count",
-      "rationale": "The status dot's accessible name, the text alternative of the glyph. It names the status only; progress is said by the row's own status text through statusLabel."
+      "rationale": "The status dot's accessible name, the text alternative of the glyph. It names the status only and makes no progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
       "kind": "derived-output",
       "anchor": "word(status)",
       "class": "presence-only-glyph/count",
-      "rationale": "The status dot's accessible name, the text alternative of the glyph. It names the status only; progress is said by the row's own status text through statusLabel."
+      "rationale": "The status dot's accessible name, the text alternative of the glyph. It names the status only and makes no progress claim."
     },
     {
       "path": "implementations/web/client/src/ui/Status.tsx",
@@ -3915,12 +3874,8 @@
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{working && (\n            <div className=\"ui-typing\">\n              <Avatar vendor={working.harness} status={working.status} size={18} dot={false} />\n              <b>{working.name}</b>\n              {` is ${statusLabel(working)} `}\n              {working.progress?.kind !== \"unknown\" && <span className=\"ui-dots\"><i /><i /><i /></span>}\n              {working.activity && <span>{working.activity}</span>}\n            </div>\n          )}",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -3954,45 +3909,29 @@
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{working.name}",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{` is ${statusLabel(working)} `}",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "` is ${statusLabel(working)} `",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "statusLabel(working)",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
@@ -4005,23 +3944,15 @@
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{working.activity && <span>{working.activity}</span>}",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "kind": "derived-output",
       "anchor": "{working.activity}",
-      "class": "honest-text",
-      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status words come from statusLabel, so unknown progress reads working · progress unknown.",
-      "proof": {
-        "path": "implementations/web/smoke/views.smoke.ts",
-        "anchor": "ok(\"3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots\","
-      }
+      "class": "presence-only-glyph/count",
+      "rationale": "Part of the channel's working line, <name> is <statusLabel> <activity>. Its status word is the one presence reports and it makes no progress claim; unknown progress draws no moving dots. The dashboard shows no progress suffix: no surface can observe progress yet."
     },
     {
       "path": "implementations/web/client/src/ui/views/DmView.tsx",

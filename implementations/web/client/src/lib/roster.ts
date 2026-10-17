@@ -1,5 +1,5 @@
-// The roster as the dashboard shows it: rows, ordering, counts, and the one place that writes the
-// honest progress text.
+// The roster as the dashboard shows it: rows, ordering, counts, and the one place that writes a
+// row's status text.
 import type { PresenceView, RosterEntry } from "../api/types.js";
 import type { StaleMark } from "./snapshot.js";
 
@@ -75,7 +75,9 @@ export function oldestLiveBeat(rows: RosterRow[]): number | undefined {
   return beats.length ? Math.min(...beats) : undefined;
 }
 
-export const statusLabel = (p: Pick<RosterRow, "status" | "progress">): string => p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;
+/** A row's status text: the status presence reports, with no progress claim, since no surface can
+ *  observe progress yet. */
+export const statusLabel = (p: Pick<RosterRow, "status">): string => p.status;
 
 /** The observer's own presence watch, not a peer. A stall past TTL is "the window went blind", not
  *  "everyone left": the page keeps last-known online rows and names the roster source stale. */

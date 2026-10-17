@@ -29,9 +29,9 @@ const BEAT_MS = 1000;
  *  the agent is, what it says it is doing, and the commands to reach its seat.
  *
  *  - The character at 72px, the name, and role · harness.
- *  - The status line: the status word (through `statusLabel`, so unknown progress says so), the
- *    activity or "No current activity", and "Reported <hh:mm>" from when the status began. With no
- *    `statusSince` no time is given.
+ *  - The status line: the status word (through `statusLabel`), the activity or "No current
+ *    activity", and "Reported <hh:mm>" from when the status began. With no `statusSince` no time
+ *    is given.
  *  - Message opens the operator's conversation with the agent, with its composer focused. The
  *    attach and stop commands are for the reader to copy, with the name quoted for a shell when it
  *    needs it.

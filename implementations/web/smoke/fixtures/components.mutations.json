@@ -78,14 +78,6 @@
       "cell": "2.3 each status carries its own icon, so it is a shape and not a colour alone"
     },
     {
-      "name": "C10 the word bypasses statusLabel, so a working agent with no progress reported reads as plainly working",
-      "file": "implementations/web/client/src/ui/Status.tsx",
-      "find": "{word(statusLabel(row))}",
-      "replace": "{word(row.status)}",
-      "expectRed": "2.5 a working row whose progress is unknown says so, through statusLabel",
-      "cell": "2.5 a working row whose progress is unknown says so, through statusLabel"
-    },
-    {
       "name": "C11 the row names its sender by the payload's own name, so any peer can sign as another",
       "file": "implementations/web/client/src/ui/MessageRow.tsx",
       "find": "const name = displayNameOf(senderId ?? msg.from, idx);",

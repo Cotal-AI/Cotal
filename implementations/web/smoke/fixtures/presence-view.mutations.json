@@ -46,12 +46,12 @@
       "cell": "2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one"
     },
     {
-      "name": "statusLabel drops the unknown-progress wording, so a working peer reads as plainly working",
+      "name": "statusLabel adds a progress claim back to a working peer, which no surface can observe",
       "file": "implementations/web/client/src/lib/roster.ts",
-      "find": "? \"working · progress unknown\" : p.status;",
-      "replace": "? \"working\" : p.status;",
-      "expectRed": "2.14 statusLabel writes honest progress text only for working with unknown progress",
-      "cell": "2.14 statusLabel writes honest progress text only for working with unknown progress"
+      "find": "export const statusLabel = (p: Pick<RosterRow, \"status\">): string => p.status;",
+      "replace": "export const statusLabel = (p: Pick<RosterRow, \"status\">): string => p.status === \"working\" ? \"working · progress unknown\" : p.status;",
+      "expectRed": "2.14 statusLabel writes the presence status with no progress claim",
+      "cell": "2.14 statusLabel writes the presence status with no progress claim"
     },
     {
       "name": "an unknown principal's actor is cut to 8 characters, so the short form no longer matches the 6 character rule",

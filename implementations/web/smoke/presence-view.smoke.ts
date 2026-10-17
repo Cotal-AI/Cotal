@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { dmPeers } from "../client/src/lib/dms.js";
 import { displayNameOf, nameIndex } from "../client/src/lib/names.js";
-import { oldestLiveBeat, presenceViewMark, rosterRows, STATUS_ORDER, statusCounts, statusLabel, waiting } from "../client/src/lib/roster.js";
+import { oldestLiveBeat, presenceViewMark, rosterRows, STATUS_ORDER, statusCounts, statusLabel, waiting, type RosterRow } from "../client/src/lib/roster.js";
 import type { CotalMessage, PresenceView, RosterEntry } from "../client/src/api/types.js";
 import type { StoredMessage } from "../client/src/state/types.js";
 import { bootReads, harness } from "./controller-harness.js";
@@ -124,10 +124,11 @@ const entry = (id: string, name: string, status: RosterEntry["status"], extra: P
   ok("2.13 oldestLiveBeat is the stalest heartbeat among live rows, never an offline one",
     oldestLiveBeat(all) === 1 && oldestLiveBeat(rosterRows([entry("local.o", "o", "offline")], { includeOffline: true })) === undefined,
     oldestLiveBeat(all));
-  ok("2.14 statusLabel writes honest progress text only for working with unknown progress",
-    statusLabel({ status: "working", progress: { kind: "unknown" } }) === "working · progress unknown"
+  const unknownProgress = (status: RosterRow["status"]): Pick<RosterRow, "status" | "progress"> => ({ status, progress: { kind: "unknown" } });
+  ok("2.14 statusLabel writes the presence status with no progress claim",
+    statusLabel(unknownProgress("working")) === "working"
       && statusLabel({ status: "working" }) === "working"
-      && statusLabel({ status: "idle", progress: { kind: "unknown" } }) === "idle");
+      && statusLabel(unknownProgress("idle")) === "idle");
 }
 
 // 3.x identity cells (#1399): a DM/activity sender's payload name and role are display text, not

@@ -66,16 +66,8 @@
       "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
       "find": "return row.status === \"working\" ? word(statusLabel(row)) : \"No current activity\";",
       "replace": "return \"No current activity\";",
-      "expectRed": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity",
-      "cell": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity"
-    },
-    {
-      "name": "A9 a working agent's status text skips statusLabel",
-      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "word(statusLabel(row))",
-      "replace": "word(row.status)",
-      "expectRed": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity",
-      "cell": "2.8 a working agent with no activity says its status, and says progress unknown when that is all it knows, never No current activity"
+      "expectRed": "2.8 a working agent with no activity says its status, Working, never No current activity",
+      "cell": "2.8 a working agent with no activity says its status, Working, never No current activity"
     },
     {
       "name": "A10 an open agent shows a badge",
@@ -412,22 +404,6 @@
       "replace": "waiting: Moon02Icon,",
       "expectRed": "1.2 each header draws its own status icon: hourglass, loading spokes, moon, struck circle",
       "cell": "1.2 each header draws its own status icon: hourglass, loading spokes, moon, struck circle"
-    },
-    {
-      "name": "A52 a working agent with unknown progress says nothing of it after its activity",
-      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "`${activity}${statusLabel(row).slice(row.status.length)}`",
-      "replace": "activity",
-      "expectRed": "2.17 a working agent with activity and no progress to report says so after the activity, and one that reports progress does not",
-      "cell": "2.17 a working agent with activity and no progress to report says so after the activity, and one that reports progress does not"
-    },
-    {
-      "name": "A53 the host grouping repeats progress unknown on the activity line",
-      "file": "implementations/web/client/src/ui/views/AgentsView.tsx",
-      "find": "row.status === \"working\" && grouping === \"status\" ?",
-      "replace": "row.status === \"working\" ?",
-      "expectRed": "4.13 the host grouping leaves the activity as the agent wrote it, since its status word already says progress unknown",
-      "cell": "4.13 the host grouping leaves the activity as the agent wrote it, since its status word already says progress unknown"
     },
     {
       "name": "A54 the Needs route refocuses every time an agent starts to wait",

@@ -17,8 +17,9 @@ Presence is a per-space directory keyed by instance id: each peer's identity car
   process-alive claim, not a progress claim. A frozen seat can stay `working` while
   its heartbeat stays fresh. Surfaces that have no outside observation of last
   assistant-message age render `progress unknown` rather than treating heartbeat
-  age as work age. A stale observation overlays `stalled Xm` on the still-fresh
-  presence. The observation classifier is workstation/operator data, not part of
+  age as work age. The web dashboard shows `Working` alone: no surface can observe
+  progress yet, so it adds no progress text. A stale observation overlays `stalled Xm`
+  on the still-fresh presence. The observation classifier is workstation/operator data, not part of
   the wire protocol; human wording stays in each CLI, connector, or web renderer.
   Compact maps and DM pickers use the presence glyph only and make no progress
   claim. See issue #876.

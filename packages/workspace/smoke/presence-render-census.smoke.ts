@@ -330,14 +330,12 @@ const connectorHonestStatusAnchor = 'status === "working" ? "working · progress
 const connectorRosterProgressAnchor = 'const progress = p.status === "working" ? `working${condition} · progress unknown` : `${p.status}${condition}`;';
 const inkDetailStatusAnchor = '<Text color={s.color}>{s.dot + " " + s.word + (status === "working" ? " · progress unknown" : "")}</Text>';
 const inkRosterProgressAnchor = 'return progressSignal(undefined, Date.now()).kind === "unknown" ? "progress unknown" : "progress observed";';
-const webStatusLabelAnchor = 'export const statusLabel = (p: Pick<RosterRow, "status" | "progress">): string => p.status === "working" && p.progress?.kind === "unknown" ? "working · progress unknown" : p.status;';
 const proofAnchors = new Map<string, string>([
   ["extensions/connector-core/src/orientation.ts", connectorHonestStatusAnchor],
   ["extensions/connector-core/src/tool-specs.ts", connectorRosterProgressAnchor],
   ["implementations/cli/src/ui.ts", sharedStatusBadgeAnchor],
   ["implementations/cli/src/console/ui/Detail.tsx", inkDetailStatusAnchor],
   ["implementations/cli/src/console/ui/Roster.tsx", inkRosterProgressAnchor],
-  ["implementations/web/client/src/lib/roster.ts", webStatusLabelAnchor],
 ]);
 
 const entryKeys = new Set<string>();

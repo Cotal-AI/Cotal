@@ -22,8 +22,7 @@ export function StatusDot({ status }: { status: Status }) {
 }
 
 /** A status as icon and word, in the status pill. The word is `statusLabel`'s, so a working agent
- *  whose connector reports no progress reads "Working · progress unknown". A status outside the
- *  four has no icon to draw and shows its word alone. */
+ *  reads "Working". A status outside the four has no icon to draw and shows its word alone. */
 export function StatusWord({ row }: { row: RosterRow }) {
   const icon = Object.hasOwn(STATUS_ICON, row.status) ? STATUS_ICON[row.status] : undefined;
   return (

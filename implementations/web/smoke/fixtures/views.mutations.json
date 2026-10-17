@@ -182,20 +182,12 @@
       "cell": "3.1 the working line names the first working member of #review in the broker's order, with its activity"
     },
     {
-      "name": "V23 the working line ignores unknown progress",
-      "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
-      "find": "{` is ${statusLabel(working)} `}",
-      "replace": "{\" is working \"}",
-      "expectRed": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots",
-      "cell": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots"
-    },
-    {
       "name": "V24 unknown progress still draws moving dots",
       "file": "implementations/web/client/src/ui/views/ChannelView.tsx",
       "find": "working.progress?.kind !== \"unknown\" && ",
       "replace": "",
-      "expectRed": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots",
-      "cell": "3.3 a member whose connector reports no progress reads working · progress unknown, with no moving dots"
+      "expectRed": "3.3 a member whose connector reports no progress reads working with its activity, with no moving dots",
+      "cell": "3.3 a member whose connector reports no progress reads working with its activity, with no moving dots"
     },
     {
       "name": "V25 the dock holds a card for an agent that is not waiting",

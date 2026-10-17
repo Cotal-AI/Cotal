@@ -110,9 +110,13 @@ check(
   "Ink roster and agent detail name unknown progress, with heartbeat labelled separately",
   /progress unknown/.test(cliRoster) && /progress unknown/.test(cliDetail) && /heartbeat/.test(cliDetail),
 );
+// The web dashboard is exempt by the owner's decision: "Working" is the state presence reports, and
+// no surface can observe progress yet (the server sends progress unknown for every working agent),
+// so the suffix carried no information. The dashboard shows the status word with no progress claim
+// until a real progress signal exists. The CLI and connector cells above still require the suffix.
 check(
-  "web statusLabel is the one place the dashboard names unknown progress",
-  webRoster.split(/working · progress unknown/).length - 1 === 1,
+  "web dashboard is exempt: statusLabel shows the presence status with no progress claim",
+  !/progress unknown/.test(webRoster) && /statusLabel = \(p: Pick<RosterRow, "status">\): string => p\.status;/.test(webRoster),
 );
 
 const EXPECTED = 22;

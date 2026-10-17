@@ -602,8 +602,8 @@
       "file": "implementations/web/client/src/ui/panel/AgentTab.tsx",
       "find": "{row.activity || \"No current activity\"}",
       "replace": "{row.activity}",
-      "expectRed": "3.12 working with no reported progress says so, and no activity or time reads as none",
-      "cell": "3.12 working with no reported progress says so, and no activity or time reads as none"
+      "expectRed": "3.12 working with no reported progress reads Working, and no activity or time reads as none",
+      "cell": "3.12 working with no reported progress reads Working, and no activity or time reads as none"
     },
     {
       "name": "A6 Message opens a DM with the name, not the id",

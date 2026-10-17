@@ -83,16 +83,14 @@ const roleLine = (row: RosterRow): string => [row.role, row.harness === undefine
 
 /** What a row says under the name. An offline agent says when its last heartbeat was. A waiting one
  *  in the status grouping says what it reported and when, as its Needs card does (and so names no
- *  one it waits for and no duration). Anyone else says its own activity text, and under the status
- *  grouping a working agent whose progress is unknown says that after it, in `statusLabel`'s words
- *  (the host grouping's status word says it already). An agent with no
- *  activity says so, except a working one, which says its status through `statusLabel`, so
- *  progress that is unknown is never read as "no activity". */
+ *  one it waits for and no duration). Anyone else says its own activity text. An agent with no
+ *  activity says so, except a working one, which says its status through `statusLabel`, so a
+ *  working agent is never read as "no activity". */
 function activityText(row: RosterRow, grouping: Grouping): string {
   if (row.status === "offline") return `Last heartbeat ${clockTime(new Date(row.ts))}`;
   if (row.status === "waiting" && grouping === "status") return needsDetail(row) || "No current activity";
   const activity = row.activity?.trim();
-  if (activity) return row.status === "working" && grouping === "status" ? `${activity}${statusLabel(row).slice(row.status.length)}` : activity;
+  if (activity) return activity;
   return row.status === "working" ? word(statusLabel(row)) : "No current activity";
 }
 

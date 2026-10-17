@@ -5,7 +5,7 @@ import type { CotalMessage, Presence, MembershipSnapshot } from "@cotal-ai/core"
 export type { CotalMessage, Presence, MembershipSnapshot };
 
 /** A presence row as `/api/roster` serves it. `progress` is the web server's marker that a working
- *  peer's connector reports no work progress, so the page says so instead of implying motion. */
+ *  peer's connector reports no work progress, so the working line draws no moving dots. */
 export type RosterEntry = Presence & { progress?: { kind: "unknown" } };
 
 /** The observer's own presence watch: current, still loading, or silent since `staleSince`. */
