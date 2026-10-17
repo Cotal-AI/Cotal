@@ -44,6 +44,8 @@ import {
   activateRun,
   presenceBucket,
   compileContract,
+  TURN_INPUT_SCHEMA,
+  TURN_OUTPUT_SCHEMA,
   contractDigest,
   contractStoreContext,
   publishContractArtifact,
@@ -162,26 +164,6 @@ const SPAWN_OUTPUT = {
     },
   },
 } as const;
-const TURN_INPUT = {
-  type: "object", additionalProperties: false, required: ["payload", "deadlineAt"],
-  properties: {
-    payload: { type: "string", minLength: 1, maxLength: 65536 },
-    deadlineAt: { type: "integer", minimum: 1 },
-    handoffFrom: { type: "string", minLength: 1, maxLength: 200 },
-  },
-} as const;
-const TURN_OUTPUT = {
-  type: "object", additionalProperties: false,
-  required: ["name", "owner", "actor", "uid", "goalId", "fingerprint", "deadlineAt", "executor"],
-  properties: {
-    name: { type: "string" }, owner: { type: "string" }, actor: { type: "string" }, uid: { type: "string" },
-    goalId: { type: "string" }, fingerprint: { type: "string" }, deadlineAt: { type: "integer", minimum: 1 },
-    executor: {
-      type: "object", additionalProperties: false, required: ["lifecycleUid", "epoch"],
-      properties: { lifecycleUid: { type: "string" }, epoch: { type: "integer", minimum: 0 } },
-    },
-  },
-} as const;
 
 const cc = (root: unknown) => compileContract({ root: root as Record<string, unknown> });
 // A completed run despawns the seats it spawned, so the stand-in serves the manager's despawn too.
@@ -192,7 +174,7 @@ const DESPAWN_OUTPUT = {
 } as const;
 const COMPILED = {
   spawn: { input: cc(SPAWN_INPUT), output: cc(SPAWN_OUTPUT) },
-  turn: { input: cc(TURN_INPUT), output: cc(TURN_OUTPUT) },
+  turn: { input: cc(TURN_INPUT_SCHEMA), output: cc(TURN_OUTPUT_SCHEMA) },
   despawn: { input: cc(DESPAWN_INPUT), output: cc(DESPAWN_OUTPUT) },
 };
 const DOCUMENT = {
@@ -210,7 +192,7 @@ const store = await contractStoreContext(nc, SPACE);
 const artifactIndex = new Map<string, unknown>();
 {
   const values: unknown[] = [];
-  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT, TURN_OUTPUT, DESPAWN_INPUT, DESPAWN_OUTPUT])
+  for (const source of [SPAWN_INPUT, SPAWN_OUTPUT, TURN_INPUT_SCHEMA, TURN_OUTPUT_SCHEMA, DESPAWN_INPUT, DESPAWN_OUTPUT])
     values.push(source, { v: 1, root: contractDigest(source), members: [] });
   values.push(DOCUMENT, MANIFEST);
   for (const v of values) {
