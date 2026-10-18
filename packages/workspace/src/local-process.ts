@@ -1,7 +1,7 @@
 import { readdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, normalize, dirname, basename } from "node:path";
 import type { Extension } from "@cotal-ai/core";
-import { spaceKey } from "./auth-paths.js";
+import { spaceFromKey, spaceKey } from "./auth-paths.js";
 import { parsePid, probeLiveness, readPidfile } from "./pid.js";
 
 /** Context supplied to local process providers by workstation commands such as `down` and `status`. */
@@ -257,17 +257,14 @@ export function recordedRuntimeSpaces(root: string): RecordedRuntimeSpace[] {
 
 /** The space a canonical record filename encodes, or undefined when the name is not one
  *  {@link canonicalLocalProcessPath} wrote for this template (wrong fixed parts, non-hex body, or a
- *  body that does not round-trip back to the same name). Same predicate as the account-file and
- *  path-segment decoders: enumeration must never read a stray as a tenant. */
+ *  body that does not round-trip back to the same name). The body goes through {@link spaceFromKey},
+ *  the decoder the account-file and path-segment readers share: enumeration must never read a stray as a tenant. */
 function spaceFromRecordName(template: string, name: string): string | undefined {
   const at = template.indexOf("{space}");
   if (at < 0) return undefined;
   const prefix = template.slice(0, at), suffix = template.slice(at + "{space}".length);
   if (!name.startsWith(prefix) || !name.endsWith(suffix) || name.length <= prefix.length + suffix.length) return undefined;
-  const key = name.slice(prefix.length, name.length - suffix.length);
-  if (key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
-  const space = Buffer.from(key, "hex").toString("utf8");
-  return space.length > 0 && spaceKey(space) === key ? space : undefined;
+  return spaceFromKey(name.slice(prefix.length, name.length - suffix.length));
 }
 
 /** Whether a record file might still front a process. See {@link RecordedRuntimeSpace.mayBeRunning}

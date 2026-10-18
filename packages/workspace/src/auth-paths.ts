@@ -62,6 +62,17 @@ export function spaceKey(space: string): string {
   return Buffer.from(space, "utf8").toString("hex");
 }
 
+/** The space whose {@link spaceKey} is `key`, or undefined when `key` is not one `spaceKey` produces
+ *  (empty, odd-length or non-lowercase-hex, a body that does not round-trip, or one that decodes to a
+ *  name `spaceKey` refuses). The one decoder every `<prefix><key><suffix>` reader strips down to, so a
+ *  stray name a writer here cannot produce answers undefined instead of throwing. */
+export function spaceFromKey(key: string): string | undefined {
+  if (key.length === 0 || key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
+  const space = Buffer.from(key, "hex").toString("utf8");
+  if (space === "" || space === "." || space === "..") return undefined;
+  return spaceKey(space) === key ? space : undefined;
+}
+
 /** Whether every UTF-16 code unit is either a BMP scalar or part of a valid surrogate PAIR — i.e.
  *  the string has no LONE surrogate. `String.prototype.isWellFormed` is ES2024 (past this build's
  *  lib target), so scan the units directly. Paired surrogates (emoji/supplementary) pass; a stray
@@ -107,10 +118,7 @@ const SPACE_SEGMENT_PREFIX = "space.";
  *  legacy-layout shim both need this to tell the canonical namespace from strays. */
 export function spaceFromSegment(name: string): string | undefined {
   if (!name.startsWith(SPACE_SEGMENT_PREFIX)) return undefined;
-  const key = name.slice(SPACE_SEGMENT_PREFIX.length);
-  if (key.length === 0 || key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
-  const space = Buffer.from(key, "hex").toString("utf8");
-  return space.length > 0 && spaceKey(space) === key ? space : undefined;
+  return spaceFromKey(name.slice(SPACE_SEGMENT_PREFIX.length));
 }
 
 /** The SPACE-SCOPED user-auth state dir (`<root>/.cotal/auth/space.<hex>`) — the one layout fact
@@ -786,10 +794,7 @@ export function claimIdentityRecord<T>(path: string, what: string, parse: (raw: 
  *  filename). Enumeration treats an undefined result as a corrupt/foreign record, never as a tenant. */
 function spaceFromAccountFile(name: string): string | undefined {
   if (!name.startsWith(SPACE_ACCOUNT_PREFIX) || !name.endsWith(SPACE_ACCOUNT_SUFFIX)) return undefined;
-  const key = name.slice(SPACE_ACCOUNT_PREFIX.length, name.length - SPACE_ACCOUNT_SUFFIX.length);
-  if (key.length === 0 || key.length % 2 !== 0 || !/^[0-9a-f]+$/.test(key)) return undefined;
-  const space = Buffer.from(key, "hex").toString("utf8");
-  return space.length > 0 && spaceKey(space) === key ? space : undefined;
+  return spaceFromKey(name.slice(SPACE_ACCOUNT_PREFIX.length, name.length - SPACE_ACCOUNT_SUFFIX.length));
 }
 
 /** Whether `v` carries the {@link SpaceAccountAuth} account material a reader will dereference. A
