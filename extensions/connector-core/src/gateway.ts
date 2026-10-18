@@ -181,21 +181,19 @@ function waitForWake(agent: MeshAgent, ms: number, signal: AbortSignal): Promise
       if (wakeCount(agent) > 0) finish(true);
     };
     const mentioned = () => finish(true);
-    const stopped = () => {
-      if (agent.stopping) finish(false);
-    };
+    const stopped = () => finish(false);
     const abort = () => finish(false);
     const timer = setTimeout(() => finish(false), ms);
     function finish(woke: boolean) {
       clearTimeout(timer);
       agent.off("incoming", check);
       agent.off("mention-wake", mentioned);
-      agent.off("transport", stopped);
+      agent.off("stopping", stopped);
       resolve(woke);
     }
     agent.on("incoming", check);
     agent.on("mention-wake", mentioned);
-    agent.on("transport", stopped);
+    agent.on("stopping", stopped);
     signal.addEventListener("abort", abort, { once: true });
   });
 }

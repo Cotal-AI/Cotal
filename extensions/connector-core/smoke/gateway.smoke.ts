@@ -49,6 +49,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(srv, dir);
+// A second broker for the "down" connection alone, so one cell can take its transport away.
+const DOWN_PORT = await pickFreePort();
+const downServers = `nats://127.0.0.1:${DOWN_PORT}`;
+const downDir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const downSrv = spawn("nats-server", ["-js", "-p", String(DOWN_PORT), "-sd", join(downDir, "js")], { stdio: "ignore" });
+const releaseDownBroker = teardownOnSignal(downSrv, downDir);
 // The bound this embedder sets for cotal_wait, short enough for a suite and long enough for a DM.
 const WAIT = 20;
 
@@ -66,7 +72,7 @@ const configFor = (name: string): AgentConfig => {
   return {
   space,
   name,
-  servers,
+  servers: name.startsWith("down") ? downServers : servers,
   subscribe: [channel],
   allowSubscribe: [channel],
   allowPublish: [channel],
@@ -172,6 +178,7 @@ observer.on("message", (m: CotalMessage, d: Delivery) => {
 let failure: unknown;
 try {
   await awaitBrokerReady(() => isReachable(servers), { servers, attempts: 50, delayMs: 200 });
+  await awaitBrokerReady(() => isReachable(downServers), { servers: downServers, attempts: 50, delayMs: 200 });
   await observer.start();
 
   const a = await clientFor("tok-a");
@@ -328,7 +335,7 @@ try {
   const quietMs = Date.now() - started;
   check("a wait with nothing to read returns after its bound", !quiet.isError && quiet.text.startsWith("No new messages in 1 second.") && quietMs >= 900 && quietMs < 4000, { quiet, quietMs });
   // Taken after the first wait, which starts the gateway's one lasting focus @mention listener.
-  const baseListeners = ["incoming", "mention-wake", "transport"].map((e) => listenerAgent.listenerCount(e)).join(",");
+  const baseListeners = ["incoming", "mention-wake", "stopping"].map((e) => listenerAgent.listenerCount(e)).join(",");
 
   const listening = call(a, "cotal_wait", { connection_id: listener });
   await sleep(500);
@@ -382,8 +389,8 @@ try {
   await call(a, "cotal_status", { connection_id: listener, attention: "open" });
 
   // A client that gives up on a wait closes its request, as Claude Code does at its 60 s timer. The
-  // transport listener is the wait's own, so its count shows whether the wait still holds.
-  const beforeDrop = listenerAgent.listenerCount("transport");
+  // `stopping` listener is the wait's own, so its count shows whether the wait still holds.
+  const beforeDrop = listenerAgent.listenerCount("stopping");
   const dropping = new AbortController();
   const dropped = fetch(url, {
     method: "POST",
@@ -395,7 +402,7 @@ try {
   dropping.abort();
   await dropped;
   await sleep(300);
-  check("a wait its client dropped stops listening", listenerAgent.listenerCount("transport") === beforeDrop);
+  check("a wait its client dropped stops listening", listenerAgent.listenerCount("stopping") === beforeDrop);
   await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-a-dropped-wait" });
   check("a wait its client dropped does not take the next message", await peekFor("after-a-dropped-wait"));
   await call(a, "cotal_inbox", { connection_id: listener });
@@ -426,7 +433,7 @@ try {
   await call(a, "cotal_inbox", { connection_id: listener });
 
   // A client that leaves before the wait begins, while the host is still looking the connection up.
-  const beforeEarly = listenerAgent.listenerCount("transport");
+  const beforeEarly = listenerAgent.listenerCount("stopping");
   const early = new AbortController();
   const find = host.find;
   host.find = async (...args) => {
@@ -442,7 +449,7 @@ try {
   }).catch(() => undefined);
   await sleep(600);
   host.find = find;
-  check("a wait whose client left before it began does not start", listenerAgent.listenerCount("transport") === beforeEarly);
+  check("a wait whose client left before it began does not start", listenerAgent.listenerCount("stopping") === beforeEarly);
   await call(a, "cotal_dm", { connection_id: talker, to: "listener", text: "after-an-early-drop" });
   check("a wait whose client left before it began does not take the next message", await peekFor("after-an-early-drop"));
   await call(a, "cotal_inbox", { connection_id: listener });
@@ -505,6 +512,25 @@ try {
     closed,
   );
 
+  // A connection whose transport is already down when it closes still ends a wait held on it: its
+  // agent's stop then has no transport left to report going down.
+  const downSeat = idOf(await call(a, "cotal_connect", { name: "down_seat" }));
+  const downAgent = live.get(downSeat)!.conn.agent;
+  await killAndAwaitExit(downSrv);
+  for (let i = 0; i < 50 && downAgent.transportConnected; i++) await sleep(100);
+  check("the stopped broker takes that connection's transport down", !downAgent.transportConnected);
+  const downWait = call(a, "cotal_wait", { connection_id: downSeat });
+  await sleep(500);
+  const downAt = Date.now();
+  const downClose = call(a, "cotal_disconnect", { connection_id: downSeat });
+  const downEnded = await downWait;
+  check(
+    "disconnecting a connection whose transport is down ends its held wait",
+    downEnded.isError && downEnded.text.startsWith("CONNECTION_REQUIRED") && Date.now() - downAt < 3000,
+    { ...downEnded, ms: Date.now() - downAt },
+  );
+  await downClose;
+
   // A run turn the gateway has no way to surface. Set by hand: a gateway connection cannot take one
   // through any tool it offers, so this is the only way to hold one open here.
   const turns = (listenerAgent as unknown as { activeTurns: Map<string, unknown> }).activeTurns;
@@ -518,7 +544,7 @@ try {
   turns.delete("smoke-turn");
   check(
     "a finished wait leaves no listener on the agent",
-    ["incoming", "mention-wake", "transport"].map((e) => listenerAgent.listenerCount(e)).join(",") === baseListeners,
+    ["incoming", "mention-wake", "stopping"].map((e) => listenerAgent.listenerCount(e)).join(",") === baseListeners,
     baseListeners,
   );
 
@@ -547,6 +573,8 @@ try {
   await observer.stop().catch(() => {});
   await killAndAwaitExit(srv);
   releaseBroker();
+  await killAndAwaitExit(downSrv);
+  releaseDownBroker();
 }
 if (failure !== undefined) {
   console.error(failure);

@@ -269,10 +269,18 @@
     {
       "name": "stopping the agent does not end a held wait",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "    agent.on(\"transport\", stopped);\n",
+      "find": "    agent.on(\"stopping\", stopped);\n",
       "replace": "",
       "expectRed": "disconnecting ends a held wait as a closed connection",
       "cell": "disconnecting ends a held wait as a closed connection"
+    },
+    {
+      "name": "an agent whose transport is down stops without saying so",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    this.emit(\"stopping\");\n",
+      "replace": "    if (this._transportConnected) this.emit(\"stopping\");\n",
+      "expectRed": "disconnecting a connection whose transport is down ends its held wait",
+      "cell": "disconnecting a connection whose transport is down ends its held wait"
     },
     {
       "name": "a wait on a stopped connection reads as quiet",

@@ -282,7 +282,8 @@ sent until the wait ends: Claude Code gives a remote server 60 seconds to the fi
 ends an origin response after about 100 seconds and claude.ai ends a tool call after 240. A wait
 whose client closes the request stops listening, and a read whose client is gone by the time it
 would clear messages clears nothing, so neither takes a message it cannot deliver. A wait ends
-when its connection closes. In `focus` an @mention is not buffered, so the gateway counts the ones
+when its connection closes, also while the broker is unreachable; it listens for `MeshAgent`'s
+`stopping` event. In `focus` an @mention is not buffered, so the gateway counts the ones
 since the last read, and a wait that starts after one returns it at once. Every other routed tool
 except `cotal_inbox` adds a line to its result when wake-worthy messages are waiting.
 

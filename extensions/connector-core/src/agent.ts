@@ -367,7 +367,8 @@ function renderEscalation(p: { run?: unknown; step?: unknown; checkpoint?: unkno
  * (InboxItem) when a `focus`-mode agent is @-mentioned on a channel — the body was
  * acked-and-dropped (not buffered), so this
  * only asks the push layer to *wake* the agent to pull it; `"wake"` (no payload) to ask that
- * layer to wake the session now (the Stop→idle flush of held messages); `"error"` (Error) for
+ * layer to wake the session now (the Stop→idle flush of held messages); `"stopping"` (no payload)
+ * once, when {@link MeshAgent.stop} begins, whatever the transport's state; `"error"` (Error) for
  * endpoint faults.
  */
 export class MeshAgent extends EventEmitter {
@@ -911,6 +912,7 @@ export class MeshAgent extends EventEmitter {
 
   private async stopOnce(): Promise<void> {
     this._stopping = true;
+    this.emit("stopping");
     for (const key of [...this.renewals.keys()]) this.stopRenewal(key);
     if (this.turnPollTimer !== undefined) {
       clearInterval(this.turnPollTimer);
