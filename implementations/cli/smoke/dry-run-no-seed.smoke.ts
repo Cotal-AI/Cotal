@@ -17,6 +17,8 @@
  * seat execs on EVERY bearer refresh (read one 0600 token file, exchange, print, exit), so a
  * newer-generation stamp must not refuse it (#1857) and a matching one must not make a credential
  * exchange seed the operator-global store.
+ * `app-identity`, the plumbing the Claude connector's local server execs per connection, passes the
+ * gate the same way: it must not seed the store under a running connector.
  *
  * Exits non-zero the moment a dry run writes, so the defect cannot ride green through CI.
  * Every `down` call is anchored to a throwaway sandbox root/COTAL_HOME/XDG_CONFIG_HOME and passed
@@ -177,6 +179,18 @@ function cotal(args: string[]): { status: number; stdout: string; stderr: string
     "a credential exchange reaches the helper body (past the gate)",
     /agent-bearer: the pinned exchange did not answer/.test(out),
     { status: r.status, out: out.slice(0, 400) },
+  );
+}
+
+// ── 4b. `app-identity` on a pristine home writes NOTHING (no seed under a running connector) ──────
+// The Claude connector's local server execs it on every connection. A named mesh that is not
+// registered makes it answer its own refusal before it dials anything.
+{
+  const r = cotal(["app-identity", "provision", "--name", "a", "--space", "absent"]);
+  check(
+    "`app-identity` reaches its own body (past the gate)",
+    r.stdout.trim().split("\n").length === 1 && /"ok":false/.test(r.stdout) && /absent/.test(r.stdout),
+    { status: r.status, stdout: r.stdout.slice(0, 400) },
   );
 }
 

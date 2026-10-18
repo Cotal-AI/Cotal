@@ -2718,3 +2718,15 @@ That mode still prints only the raw token and does not update `--health-file`. A
 preflight. When it fails there without printing a sentence of its own, the refusal names the cause: the 30 second
 timeout, the signal that killed it, or its exit code. (`cotal start` is a removed tombstone: it
 errors and points you to `cotal spawn --detach`.)
+
+`cotal app-identity` is plumbing for a Claude app conversation on a local mesh, and you never run it
+directly either. The Claude connector's local server runs `cotal app-identity provision --name <name>`
+when a conversation connects. It picks the mesh as `cotal spawn` does (`--space` selects one), and
+answers `{"ok":false,"taken":true}` when a peer with that name is live, so the server tries another
+name. Otherwise it prints one JSON line: the launch env the connector reads and the reference that
+`retire` takes. The channels and role come from the mesh's default persona. On a mesh with static
+credentials it provisions the identity's own delivery durables and writes its credential to a 0600
+file in a new temporary directory; the credential never appears on stdout. `cotal app-identity
+retire --space <space> --id <id> --lifecycle-uid <uid> --dir <dir>` removes that file and directory
+and the identity's broker footprint. A mesh that uses per-user sign-in is refused. Like
+`agent-bearer`, it skips the connector-seed boot gate.

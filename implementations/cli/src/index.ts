@@ -13,6 +13,7 @@ import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions } from "./commands/spawn.js";
+import { appIdentity, appIdentityFlags } from "./commands/app-identity.js";
 import { attach, attachFlags, input, inputFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
@@ -357,6 +358,17 @@ const baseCommands: Command[] = [
     flags: modelsFlags,
     run: models,
     complete: modelsComplete,
+  },
+  {
+    kind: "command",
+    name: "app-identity",
+    group: "Agents",
+    // Machine-facing: the Claude connector's local server runs it; nobody types it.
+    hidden: true,
+    summary: "open or retire one Claude app conversation's identity on a local mesh (plumbing)",
+    positionals: "<provision|retire>",
+    flags: appIdentityFlags,
+    run: appIdentity,
   },
   {
     kind: "command",

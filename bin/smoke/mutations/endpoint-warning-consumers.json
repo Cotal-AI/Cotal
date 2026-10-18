@@ -98,12 +98,22 @@
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
-      "name": "spawn naming probe loses its explicit warning disposition",
-      "file": "implementations/cli/src/commands/spawn.ts",
+      "name": "mesh naming probe loses its explicit warning disposition",
+      "file": "implementations/cli/src/lib/live-names.ts",
       "find": "  ep.on(\"warning\", ignoreNameProbeWarning);",
       "replace": "  void ignoreNameProbeWarning;",
-      "cell": "spawn naming probe deliberately ignores recoverable advisory warnings",
-      "expectRed": "spawn naming probe deliberately ignores recoverable advisory warnings",
+      "cell": "mesh naming probe deliberately ignores recoverable advisory warnings",
+      "expectRed": "mesh naming probe deliberately ignores recoverable advisory warnings",
+      "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "app identity provisioner loses its explicit warning disposition",
+      "file": "implementations/cli/src/commands/app-identity.ts",
+      "find": "  prov.on(\"warning\", ignoreProvisionerWarning);",
+      "replace": "  void ignoreProvisionerWarning;",
+      "cell": "app identity provisioner deliberately ignores recoverable side-channel warnings",
+      "expectRed": "app identity provisioner deliberately ignores recoverable side-channel warnings",
       "command": "pnpm --filter @cotal-ai/cli --filter @cotal-ai/manager --filter @cotal-ai/web --filter @cotal-ai/delivery build && pnpm exec tsx bin/smoke/endpoint-warning-consumers.smoke.ts",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
