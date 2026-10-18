@@ -331,6 +331,7 @@ provisioner credential, or generic storage authority. Remote registration publis
 status at the registered revision and current process epoch, so manager-caller selection can find it.
 Every manager-authority request carries the participant's fresh login proof and refuses a redirect,
 so a 3xx answer from the pinned endpoint fails the request rather than sending the proof on.
+An answer whose body is not JSON also fails the request, naming the endpoint and the HTTP status.
 
 Stock participant supervision asks its host to enroll a detached agent and to prepare its terminal
 retirement, over the same manager-authority transport. The stock auth service answers both when it
