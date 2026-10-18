@@ -80,6 +80,10 @@ export type LaunchMaterial = {
      *  and every consent is refused. */
     consentAnchors?: string;
   };
+  /** User-mode tool-results serving: the absolute path of the 0600 serving file the launcher
+   *  maintains (core `ToolResultServingFile`: renewable creds, grant, the host's public consent
+   *  anchors, `notAfter`). The session re-reads it on every connect and verification. */
+  toolResultsServing?: { file: string };
 };
 
 /**
@@ -205,6 +209,12 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
     if (t.consentAnchors !== undefined && (typeof t.consentAnchors !== "string" || !isAbsolute(t.consentAnchors)))
       throw new Error(`launch material: ${path} has a toolResults.consentAnchors that is not an absolute path`);
     material.toolResults = { creds: t.creds, grant: g as unknown as EpServeGrant, ...(t.consentAnchors !== undefined ? { consentAnchors: t.consentAnchors as string } : {}) };
+  }
+  if (raw.toolResultsServing !== undefined) {
+    const t = raw.toolResultsServing as Record<string, unknown> | null;
+    if (typeof t !== "object" || t === null || Array.isArray(t) || typeof t.file !== "string" || !isAbsolute(t.file))
+      throw new Error(`launch material: ${path} has a toolResultsServing that does not name an absolute serving file`);
+    material.toolResultsServing = { file: t.file };
   }
   if (Object.keys(material).length === 0)
     throw new Error(

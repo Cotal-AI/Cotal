@@ -359,11 +359,14 @@ async function startSession(
   if (opts.input.readableEnded || opts.input.destroyed)
     throw new Error("hosted MCP input ended before startup completed");
   agent.start(); // custody is claimed before background broker connect, after control bind
-  if (config.toolResults) {
+  // Static launches carry the material itself; user-mode launches carry the path of the serving
+  // file their manager renews. Either way nothing is served without it.
+  const servingMaterial = config.toolResults ?? config.toolResultsServing;
+  if (servingMaterial) {
     const lifecycleUid = config.lifecycleUid;
     if (!lifecycleUid) throw new Error("tool-results serving material arrived without this incarnation's lifecycle UID");
     void serveLaunchedToolResults({
-      material: config.toolResults,
+      material: servingMaterial,
       space: config.space,
       servers: config.servers,
       tls: config.tls,

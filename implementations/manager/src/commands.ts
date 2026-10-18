@@ -375,6 +375,12 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
               },
             }
           : {}),
+        ...(provider.issueRemoteToolResultServe
+          ? {
+              issueToolResultServe: (request) =>
+                provider.issueRemoteToolResultServe!({ ...providerCall, registrationProof: retainedRegistrationProof, request }),
+            }
+          : {}),
         prepareAgentRetirement: async ({ target: retirementTarget, opId }) => {
           if (!provider.prepareRemoteManagedAgentRetirement)
             throw new Error(`the registered auth provider "${provider.name}" does not implement host-owned managed agent retirement preparation, so remote participant supervision cannot terminally retire a hosted managed agent`);

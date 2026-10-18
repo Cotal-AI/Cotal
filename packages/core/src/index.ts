@@ -37,6 +37,7 @@ export * from "./tool-result-consent.js";
 export * from "./tool-result-contract.js";
 export * from "./tool-result-service.js";
 export * from "./tool-result-anchors.js";
+export * from "./tool-result-serve-authority.js";
 export * from "./signing-key-rotation.js";
 export * from "./endpoint-traits.js";
 export * from "./safe-pattern.js";

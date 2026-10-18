@@ -40,7 +40,10 @@ import {
   standaloneConnectOpts,
   toolResultConsentAnchorFileResolver,
   consentSignerStillCurrent,
+  readToolResultServingFile,
+  toolResultServingFileResolver,
 } from "@cotal-ai/core";
+import { credsAuthenticator } from "@nats-io/transport-node";
 import type { ToolResultJournal } from "./tool-result-journal.js";
 
 export {
@@ -182,7 +185,10 @@ const NO_REGISTERED_CONSENT_ANCHORS: AnchorResolver = () => undefined;
  * discarded. `stop()` does the same deliberately.
  */
 export async function serveLaunchedToolResults(args: {
-  material: { creds: string; grant: EpServeGrant; consentAnchors?: string };
+  /** Static launch: creds, grant and the operator's anchor-file path. User-mode launch: the
+   *  launcher-maintained serving file, re-read for creds on every (re)connect and for the host's
+   *  anchors on every verification. */
+  material: { creds: string; grant: EpServeGrant; consentAnchors?: string } | { file: string };
   space: string;
   servers: string;
   tls: boolean;
@@ -190,11 +196,23 @@ export async function serveLaunchedToolResults(args: {
   self: ToolResultTarget;
 }): Promise<{ stop(): Promise<void> }> {
   const { material, space, journal, self } = args;
-  const g = material.grant;
+  const file = "file" in material ? material.file : undefined;
+  const initial = file !== undefined ? readToolResultServingFile(file) : (material as { creds: string; grant: EpServeGrant });
+  const g = initial.grant;
   if (g.space !== space || g.endpoint !== TOOL_RESULT_ENDPOINT || g.instanceId !== self.lifecycleUid)
     throw new EpEnvelopeError("failed-precondition", "the launch's tool-results grant does not name this space, endpoint and incarnation");
-  const resolveAnchor = material.consentAnchors !== undefined ? toolResultConsentAnchorFileResolver(material.consentAnchors) : NO_REGISTERED_CONSENT_ANCHORS;
-  const nc = await dialerFor(args.servers)({ servers: args.servers, ...standaloneConnectOpts({ creds: material.creds, tls: args.tls }), name: `tool-results-${self.lifecycleUid}` });
+  const resolveAnchor = file !== undefined
+    ? toolResultServingFileResolver(file)
+    : "consentAnchors" in material && material.consentAnchors !== undefined ? toolResultConsentAnchorFileResolver(material.consentAnchors) : NO_REGISTERED_CONSENT_ANCHORS;
+  const enc = new TextEncoder();
+  const nc = await dialerFor(args.servers)({
+    servers: args.servers,
+    ...standaloneConnectOpts({ creds: initial.creds, tls: args.tls }),
+    // A user-mode serving file is renewed in place: every (re)connect presents its current creds,
+    // and a removed or unreadable file fails the connect instead of reusing the old credential.
+    ...(file !== undefined ? { authenticator: credsAuthenticator(() => enc.encode(readToolResultServingFile(file).creds)) } : {}),
+    name: `tool-results-${self.lifecycleUid}`,
+  });
   let handle: EpServeHandle;
   try {
     handle = serveToolResults(nc, space, g, journal, self, resolveAnchor);
@@ -202,21 +220,32 @@ export async function serveLaunchedToolResults(args: {
     await nc.close().catch(() => {});
     throw e;
   }
-  const recheck = setInterval(() => void journal.recheckSigners((c) => consentSignerStillCurrent(resolveAnchor, c)), TOOL_RESULT_ANCHOR_RECHECK_MS);
+  const stop = async (): Promise<void> => {
+    clearInterval(recheck);
+    try {
+      await handle.stop();
+    } finally {
+      journal.retire();
+      await nc.drain().catch(() => nc.close());
+    }
+  };
+  // A user-mode serving file the launcher removed (a failed or unknown renewal) or let lapse ends
+  // serving and capture at the next tick; the broker already ends the connection at the JWT's expiry.
+  const servingFileCurrent = (): boolean => {
+    try {
+      return readToolResultServingFile(file!).notAfter > Date.now();
+    } catch {
+      return false;
+    }
+  };
+  const recheck = setInterval(() => {
+    if (file !== undefined && !servingFileCurrent()) return void stop().catch(() => {});
+    void journal.recheckSigners((c) => consentSignerStillCurrent(resolveAnchor, c));
+  }, TOOL_RESULT_ANCHOR_RECHECK_MS);
   recheck.unref?.();
   void nc.closed().then(() => {
     clearInterval(recheck);
     journal.retire();
   });
-  return {
-    stop: async () => {
-      clearInterval(recheck);
-      try {
-        await handle.stop();
-      } finally {
-        journal.retire();
-        await nc.drain().catch(() => nc.close());
-      }
-    },
-  };
+  return { stop };
 }
