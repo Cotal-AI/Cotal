@@ -3,3 +3,4 @@
 # keeps its usual home: an offline suite in its package's `test`, a broker-backed one in `smoke:ci`.
 smoke:who-roster
 smoke:cli-pty
+smoke:history-read

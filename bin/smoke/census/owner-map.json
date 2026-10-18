@@ -178,13 +178,35 @@
   "cli:feedback-intake--store": "pending:service start feedback-intake",
   "cli:help": "current:help",
   "cli:help--all": "current:help --all",
-  "cli:history": "pending:history clear",
+  "cli:history": [
+   "current:history",
+   "pending:history clear"
+  ],
   "cli:history clear": "pending:history clear",
-  "cli:history--creds": "pending:history clear",
-  "cli:history--dms": "pending:history clear --dms",
+  "cli:history--creds": [
+   "current:history",
+   "pending:history clear"
+  ],
+  "cli:history--dms": [
+   "current:history --dms",
+   "pending:history clear --dms"
+  ],
+  "cli:history--follow": "current:history --follow",
   "cli:history--force": "pending:history clear",
-  "cli:history--server": "pending:history clear",
-  "cli:history--space": "pending:history clear",
+  "cli:history--from": "current:history --from",
+  "cli:history--grep": "current:history --grep",
+  "cli:history--json": "current:history --json",
+  "cli:history--limit": "current:history --limit",
+  "cli:history--plain": "current:history --plain",
+  "cli:history--server": [
+   "current:history",
+   "pending:history clear"
+  ],
+  "cli:history--since": "current:history --since",
+  "cli:history--space": [
+   "current:history",
+   "pending:history clear"
+  ],
   "cli:input": "pending:input",
   "cli:input--creds": "pending:input",
   "cli:input--name": "pending:input",

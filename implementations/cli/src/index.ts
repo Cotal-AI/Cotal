@@ -20,7 +20,7 @@ import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete } from "./commands/completion.js";
 import { mint } from "./commands/mint.js";
 import { channels } from "./commands/channels.js";
-import { history } from "./commands/history.js";
+import { history, historyFlags } from "./commands/history.js";
 import { clean, cleanComplete } from "./commands/clean.js";
 import { feedback } from "./commands/feedback.js";
 import { send, sendComplete } from "./commands/send.js";
@@ -355,14 +355,13 @@ const baseCommands: Command[] = [
     name: "history",
     aliases: ["h"],
     group: "Messaging",
-    summary: "clear retained message history (alias of `clean history`)",
-    usage: "history clear --force [--dms] [--space <s>]",
-    positionals: "<clear>",
-    flags: [
-      ...targetFlags,
-      { name: "dms", type: "boolean", description: "also clear DM history" },
-      { name: "force", type: "boolean", description: "required - clear without prompting" },
-    ],
+    summary: "read the newest retained messages within this identity's read grant, or clear history (`history clear`)",
+    usage:
+      "cotal history [<channel>] [--dms] [--since <time|seq>] [--limit <n>] [--from <name>] [--grep <text>] [--follow] [--json|--plain] | cotal history clear --force [--dms]",
+    positionals: "[<channel> | clear]",
+    flags: historyFlags,
+    outputs: ["json", "ndjson", "plain"],
+    examples: ["cotal history general", "cotal history --since 2h --grep deploy", "cotal history general --follow --json", "cotal history clear --force"],
     run: history,
   },
   {
