@@ -29,8 +29,8 @@ spawned agent (see [Environment variables](#environment-variables) below), and a
 `modelPolicy` that limits which models a role may launch on (see [Model policy](#model-policy)).
 
 The sharing half: the Claude connector launches with `--strict-mcp-config`, dropping every ambient
-MCP server, so a spawned agent gets only the servers this file lists, and none with no list. On its
-first run `cotal setup` writes the `claude` list from your own Claude Code user-scope servers, leaving
+MCP server, so a spawned agent gets only the servers this file lists, and none with no list.
+`cotal setup` with Claude as the application writes the `claude` list from your own Claude Code user-scope servers, leaving
 out a malformed entry and any with an `env` or `headers` value that is anything but `${VAR}`
 references, and keeps a list the file already declares.
 Every shared server boots once per spawn, so remove the heavy ones for a lighter seat.
@@ -396,7 +396,7 @@ project paths on the live machine.
 |---|---|
 | `meshes/space.<key>.json` | Registry of running meshes: one file per broker `cotal up` started (server URL, root path, mode, TLS-required client intent when recorded, attach bind host and live-session ceiling when the operator set them); `<key>` is the same case-safe hex encoding of the space name, and the record's own `space` field is authoritative |
 | `current-mesh` | Default space a bare `cotal spawn` joins (set by `cotal use`) |
-| `onboarded.json` | First-run marker (with `ONBOARD_VERSION`) that flips setup between first-run and status-card |
+| `onboarded.json` | Marker (with `ONBOARD_VERSION`) that `cotal setup` writes once; setup shows its splash until then |
 | the Claude plugin marketplace | The installed `cotal-mesh` plugin assets |
 
 ### Configuration files

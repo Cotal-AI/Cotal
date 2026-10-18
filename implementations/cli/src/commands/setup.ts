@@ -1,70 +1,163 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type ConnectorStatusRow, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
+import { registry, type Connector, type ConnectorAssist, type ConnectorSetupAction, type ConnectorSetupProvider, type ConnectorShareSetupInput, type ConnectorSkillsSetupInput, type FlagSpec, type FlagValues, type ParsedArgs } from "@cotal-ai/core";
 import {
-  findCotalRoot,
+  CommandFailure,
+  canonicalRoot,
+  checkUserBundle,
+  findMesh,
   homeCotalDir,
   inputDisabledByFlag,
-  isWorkspaceTargetError,
+  jsonFlag,
+  loadMeshes,
   manifestExtensionNames,
+  meshFile,
   personaDir,
+  plainFlag,
+  preferenceSpaceProblem,
+  preferencesPath,
+  preparedSpaceAt,
+  presentationOf,
   provenance,
-  resolveMeshTarget,
+  readPreferences,
   resolveOnPath,
   seedConnectorServers,
-  type MeshTarget,
+  writePreference,
+  writeResult,
+  type Cell,
+  type OutputWarning,
+  type Presentation,
+  type Report,
 } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
-import { agentSkillsHome, canonicalSkillNames, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
+import { agentSkillsHome, agentSkillsSkew, canonicalSkillsDir, installAgentSkills, type AgentSkillsResult } from "../lib/agent-skills.js";
 import { cliVersion } from "../lib/version.js";
-import { brand, brandBold, dim, ok, note, splash } from "../lib/theme.js";
+import { brand, brandBold, dim, note, splash } from "../lib/theme.js";
 import { runSteps, type Step } from "../lib/steps.js";
 import { abortIfCancel } from "../lib/cancel.js";
-import { openSetupLog } from "../lib/setup-log.js";
+import { openSetupLog, type SetupLog } from "../lib/setup-log.js";
 import { resolveNatsServer } from "../lib/nats-bin.js";
 import { isOnboarded, markOnboarded } from "../lib/onboard.js";
-import { connectorHarnesses, connectorStatusRows, machineStatus, meshStatus, recordedWebUrl, webInstalled, type MeshStatus } from "../lib/status.js";
-import { managerUp } from "../lib/manager-proc.js";
-import { cotalOnPath, displayCmd, isNpx, selfArgv } from "../lib/self-exec.js";
+import { cotalOnPath, displayCmd, isNpx } from "../lib/self-exec.js";
+import { canPrompt } from "./meshes-wizard.js";
+import { addFromBundle, checkLocalSpace, checkSelfHostedSpace, recordLocalSpace, type LocalSpaceState, type SelfHostedSpace } from "./space-registration.js";
 
 const ONBOARD_VERSION = "2";
-const README_URL = "https://github.com/Cotal-AI/Cotal/blob/main/README.md";
-const NATS_RELEASES_URL = "https://github.com/nats-io/nats-server/releases";
 
-/** `cotal setup`'s grammar — configure-only knobs. The old `--auth`/`--open` flags configured the
- *  MESH MODE at setup-launch time; setup no longer launches anything, so both are gone here —
- *  mesh mode is `cotal up [--open]`'s concern (where `--open` already lived; `--auth` simply died
- *  with the launch behavior). An unknown-option error rejects them, nothing silently. */
+/** `cotal setup`'s grammar. Setup configures and starts nothing: launching is `cotal up`, `cotal
+ *  spawn` and `cotal web`. With a terminal it asks for each input no flag gave; without one, or with
+ *  `--yes`, `--no-input` or `--json`, every input is a flag. */
 export const setupFlags = [
-  { name: "full", type: "boolean", description: "redo the full guided flow (implies --demo)" },
+  { name: "destination", type: "string", value: "<local|self-hosted>", description: "where the space runs: local (this machine starts it) or self-hosted (a space registered here); Cloud is in development" },
+  { name: "harness", short: "H", type: "string", value: "<connector>", description: "the application your agents run in: its own setup runs, and `cotal spawn` in the space launches it" },
+  { name: "project", type: "string", value: "<dir>", description: "the project folder: the space's root, whose .cotal/agents holds its personas" },
+  { name: "space", type: "string", value: "<name>", description: "the space to prepare (local) or the registered space to use (self-hosted)" },
+  { name: "connection-file", type: "string", value: "<bundle.json>", description: "self-hosted: register the space from a connection bundle exported where it runs" },
+  { name: "configure-only", type: "boolean", description: "write the preparation and start nothing (the default)" },
+  { name: "full", type: "boolean", description: "the guided flow with the guided expert team (implies --demo)" },
   { name: "demo", type: "boolean", description: "also seed the guided expert team (david, sven, me)" },
-  { name: "yes", type: "boolean", short: "y", description: "non-interactive accept-all (agents/CI)" },
+  { name: "yes", short: "y", type: "boolean", description: "ask nothing: every input comes from the flags" },
   { name: "skills", type: "boolean", description: "reconcile Cotal skills through installed connector providers and ~/.agents/skills; no personas or onboard writes" },
+  jsonFlag,
+  plainFlag,
 ] as const satisfies readonly FlagSpec[];
 
+type SetupValues = FlagValues<typeof setupFlags>;
+type Destination = "local" | "self-hosted";
+
+/** The inputs a script names as flags. */
+const REQUIRED = ["destination", "harness", "project", "space"] as const;
+const INPUTS = [...REQUIRED, "connection-file", "configure-only", "json", "plain"] as const;
+
+interface SetupInputs {
+  readonly destination: Destination;
+  readonly harness: string;
+  /** Absolute. */
+  readonly project: string;
+  /** The folder does not exist yet, and the operator agreed on a terminal to create it. */
+  readonly createProject: boolean;
+  readonly space: string;
+  readonly connectionFile?: string;
+}
+
+/** A connector-owned setup action that finished, and what it said. */
+interface ActionRun {
+  readonly connector: string;
+  readonly action: string;
+  readonly title: string;
+  readonly detail: string | null;
+}
+
+interface ActionFailure {
+  readonly connector: string;
+  readonly action: string;
+  readonly title: string;
+  readonly message: string;
+}
+
+interface Written {
+  readonly what: string;
+  readonly path: string;
+}
+
+interface SetupResult {
+  readonly kind: "setup";
+  readonly destination: Destination;
+  readonly space: string;
+  /** The project folder: the space's root, whose `.cotal/agents` holds its personas. */
+  readonly project: string;
+  /** How setup found the space: prepared or registered by this run, or already in place. */
+  readonly spaceState: LocalSpaceState | "added" | "registered";
+  readonly harness: {
+    readonly name: string;
+    /** Host tools the harness needs that are not on PATH; its own setup did not run. */
+    readonly missing: readonly string[];
+    readonly failed: ActionFailure | null;
+  };
+  /** Every connector-owned setup action that ran, in order. */
+  readonly actions: readonly ActionRun[];
+  /** Every file or folder setup wrote, in order. Empty when a rerun changed nothing. */
+  readonly written: readonly Written[];
+  /** The command that comes next, and the folder to run it in when that matters. */
+  readonly next: { readonly command: string; readonly cwd: string | null };
+}
+
+interface SetupCancelled {
+  readonly kind: "setup-cancelled";
+}
+
+const usage = (message: string, remedy?: string): CommandFailure => new CommandFailure("refused", "USAGE_INVALID", message, remedy ? { remedy } : {});
+const SCRIPTED_FORM = "cotal setup --destination local --harness <connector> --project <dir> --space <name>";
+
 /**
- * `cotal setup`: guided setup — CONFIGURE-ONLY, state-independent. It checks prerequisites,
- * installs the Claude Code plugin, and seeds persona files; it NEVER launches anything (no mesh,
- * no web, no manager, no delivery daemon, no cmux/tmux session — launching is `cotal up` /
- * `cotal web` / `cotal supervise`). Every file it writes is announced (`→ wrote …`). First run
- * (no onboarded stamp) gets the full narrated flow; later runs get a status card. `--full`
- * forces the full flow. By default it seeds ONE agent (the `default` persona a bare `cotal spawn`
- * launches); the guided expert team (david/sven/me) is opt-in via `--demo` (and `--full`). Each
- * failed step offers the debug handoff of each present connector that declares one
- * (COTAL_SKIP_ASSIST=1 disables).
+ * `cotal setup` prepares a space for your agents and starts nothing. It takes four inputs: the
+ * destination (a local space this machine starts, or a self-hosted one registered here), the
+ * application (the connector your agents run in), the project folder (the space's root) and the
+ * space name. On a terminal it asks for each one no flag gave and shows the answers before it
+ * writes; in a script every one is a flag, and a missing one is refused before anything is
+ * written. It then prepares or registers the space, seeds the default persona into the project's
+ * `.cotal/agents`, records the application as the space's `harness` preference, runs the
+ * application's own setup actions, and reconciles Cotal's skills. A rerun with the same answers
+ * changes nothing. `--skills` only reconciles skills.
  */
 export async function setup(args: ParsedArgs): Promise<void> {
-  const values = args.values as FlagValues<typeof setupFlags>;
+  const values = args.values as SetupValues;
   if (values.skills) {
     if (values.full || values.demo) throw new Error("--skills cannot be combined with --full or --demo");
+    const other = INPUTS.find((flag) => values[flag] !== undefined);
+    if (other) throw usage(`--skills reconciles skills only, so it takes no --${other}`);
     await runSkillsOnly();
     return;
   }
-  const demo = Boolean(values.demo) || Boolean(values.full); // --full is the whole guided flow ⇒ team
-  if (!isOnboarded() || values.full || values.yes) await runFirstRun(Boolean(values.yes), demo);
-  else await runEnsure(demo);
+  const presentation = presentationOf(values);
+  if (values.destination !== undefined) destinationOf(values.destination);
+  const interactive = presentation === "rich" && !values.yes && canPrompt();
+  const inputs = interactive ? await askInputs(values) : scriptedInputs(values);
+  if (inputs === undefined) return cancelled(presentation, values.space);
+  const plan = await planSetup(inputs);
+  await prepare(plan, { demo: Boolean(values.demo) || Boolean(values.full), interactive, presentation });
 }
 
 /** Skills-only write for the status card: let installed connectors reconcile their own harness,
@@ -75,144 +168,397 @@ async function runSkillsOnly(): Promise<void> {
   seedAgentSkills();
 }
 
-/** The full, narrated first-run experience. `yes` = non-interactive accept-all; `demo` also seeds
- *  the guided expert team. Configure-only: prerequisites are CHECKED (never started); the finale
- *  tells the user what to run. */
-async function runFirstRun(yes: boolean, demo: boolean): Promise<void> {
-  splash();
-  p.intro(brandBold("Welcome to Cotal"));
-  note(
-    "Cotal is the open web for agents: they join a shared space, see who's around, and coordinate as peers instead of in silos. Build whole agent societies, even across different machines, on one open web. Let's set yours up.",
-    "Give your agents a place to work together",
+/** A destination this cut can prepare. Cloud is in development, so it is refused before anything is
+ *  written or any endpoint is contacted. */
+function destinationOf(value: string): Destination {
+  if (value === "local" || value === "self-hosted") return value;
+  if (value === "cloud")
+    throw new CommandFailure("refused", "UNSUPPORTED", "Cotal Cloud is in development, so setup cannot prepare a Cloud space yet", { remedy: "pass --destination local or --destination self-hosted" });
+  throw usage(`--destination ${value} is not a destination: pass local or self-hosted`);
+}
+
+/** The inputs of a run that asks nothing: every one is a flag, and the project folder exists. */
+function scriptedInputs(v: SetupValues): SetupInputs {
+  const missing = REQUIRED.filter((flag) => v[flag] === undefined);
+  if (missing.length > 0) throw usage(`setup asks nothing here, so every input is a flag: pass ${missing.map((flag) => `--${flag}`).join(", ")}`, SCRIPTED_FORM);
+  const project = resolve(v.project!);
+  if (!isDir(project)) throw usage(`--project ${project} is not a directory`, "create the folder first, or pass an existing one");
+  return { destination: destinationOf(v.destination!), harness: v.harness!, project, createProject: false, space: v.space!, ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }) };
+}
+
+/**
+ * Asks for each input no flag gave: destination, application, then the project and space. The
+ * answers are shown before anything is written. Change asks every question again with the answers
+ * so far, and Cancel saves nothing.
+ */
+async function askInputs(v: SetupValues): Promise<SetupInputs | undefined> {
+  if (!isOnboarded()) splash();
+  p.intro(brandBold("Set up Cotal"));
+  const candidates = await harnessCandidates();
+  let given: Partial<SetupInputs> = {
+    ...(v.destination === undefined ? {} : { destination: destinationOf(v.destination) }),
+    ...(v.harness === undefined ? {} : { harness: v.harness }),
+    ...(v.project === undefined ? {} : { project: resolve(v.project) }),
+    ...(v.space === undefined ? {} : { space: v.space }),
+    ...(v["connection-file"] === undefined ? {} : { connectionFile: v["connection-file"] }),
+  };
+  let again = false;
+  for (;;) {
+    const ask = <K extends keyof SetupInputs>(key: K): boolean => again || given[key] === undefined;
+    const destination = ask("destination") ? await askDestination(given.destination) : given.destination!;
+    const harness = ask("harness") ? await askHarness(candidates, given.harness) : given.harness!;
+    const place = destination === "local" ? await askLocal(given, ask) : await askSelfHosted(given, ask);
+    const inputs: SetupInputs = { destination, harness, ...place };
+    note(
+      [
+        `destination  ${destination === "local" ? "Local" : "Self-hosted"}`,
+        `application  ${harness}`,
+        `project      ${inputs.project}${inputs.createProject ? " (created on save)" : ""}`,
+        `space        ${inputs.space}`,
+        ...(inputs.connectionFile === undefined ? [] : [`registered    from ${inputs.connectionFile}`]),
+      ].join("\n"),
+      "Your setup",
+    );
+    const choice = abortIfCancel(
+      await p.select({
+        message: "Save it?",
+        options: [
+          { value: "save", label: "Save" },
+          { value: "change", label: "Change an answer" },
+          { value: "cancel", label: "Cancel", hint: "nothing is saved" },
+        ],
+        initialValue: "save",
+      }),
+    );
+    if (choice === "save") return inputs;
+    if (choice === "cancel") return undefined;
+    given = inputs;
+    again = true;
+  }
+}
+
+async function askDestination(initial: Destination | undefined): Promise<Destination> {
+  return abortIfCancel(
+    await p.select<Destination | "cloud">({
+      message: "Where does your space run?",
+      options: [
+        { value: "local", label: "Local", hint: "this machine starts it" },
+        { value: "self-hosted", label: "Self-hosted", hint: "it runs on a server and is registered here" },
+        { value: "cloud", label: "Cloud", hint: "in development", disabled: true },
+      ],
+      initialValue: initial ?? "local",
+    }),
+  ) as Destination;
+}
+
+async function askHarness(candidates: readonly SetupConnectorCandidate[], initial: string | undefined): Promise<string> {
+  return abortIfCancel(
+    await p.select({
+      message: "Which application do your agents run in?",
+      options: candidates.map((c) => ({ value: c.value, label: c.label, hint: c.hint })),
+      initialValue: initial ?? candidates.find((c) => c.missing.length === 0)?.value ?? candidates[0]!.value,
+    }),
   );
+}
 
-  const log = openSetupLog();
+/** A local space: the project folder, which a terminal may create, and the space's name. */
+async function askLocal(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness">> {
+  let project = given.project;
+  let createProject = given.createProject ?? false;
+  if (ask("project") || project === undefined) {
+    for (;;) {
+      project = resolve(abortIfCancel(await p.text({ message: "Project folder (the space's root)", initialValue: project ?? process.cwd(), validate: (s) => (s?.trim() ? undefined : "name a folder") })).trim());
+      if (isDir(project)) {
+        createProject = false;
+        break;
+      }
+      if (existsSync(project)) {
+        p.log.warn(`${project} is not a folder`);
+        continue;
+      }
+      if (abortIfCancel(await p.confirm({ message: `${project} does not exist. Create it?`, initialValue: true }))) {
+        createProject = true;
+        break;
+      }
+    }
+  }
+  const root = project;
+  const space = ask("space") || given.space === undefined
+    ? abortIfCancel(await p.text({ message: "Space name", initialValue: given.space ?? localSpaceAt(root), validate: (s) => preferenceSpaceProblem(s ?? "") })).trim()
+    : given.space;
+  return { project: root, createProject, space };
+}
 
-  // Prerequisites — CHECKS only, no side effects, no prompts.
-  const core: Step[] = [
-    {
-      name: "node-version",
-      title: "Check Node.js",
-      explain: "Cotal needs Node 22 or newer.",
-      context: [README_URL],
-      async run() {
-        const major = Number(process.versions.node.split(".")[0]);
-        if (major < 22) throw new Error(`Node ${process.versions.node} is too old; Cotal needs Node >= 22`);
-        return `Node ${process.versions.node}`;
-      },
-    },
-    {
-      name: "nats-binary",
-      title: "Locate the NATS server",
-      explain: "Cotal runs on NATS + JetStream, the wire your agents speak over. (Located only - `cotal up` starts it.)",
-      context: [NATS_RELEASES_URL, README_URL],
-      async run() {
-        const r = await resolveNatsServer();
-        return r.source === "path" ? "nats-server from PATH" : "bundled binary";
-      },
-    },
-  ];
-  if (!(await runSteps(core, log, { yes, assists: connectorAssists }))) return abort();
+/** The space a project folder already holds, else one named after the folder. */
+function localSpaceAt(root: string): string {
+  const here = preparedSpaceAt(root)?.space ?? loadMeshes().find((m) => m.origin === "up" && canonicalRoot(m.root) === canonicalRoot(root))?.space;
+  if (here) return here;
+  const named = basename(root).replace(/[^A-Za-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "");
+  return named || "main";
+}
 
-  // Connectors: which agents should be able to join. MEMBERSHIP is the live registry plus the
-  // installed extension manifest — every connector that declares itself is a choice — and each
-  // candidate's hints come from that connector's own declarations (`requires`, `setup`,
-  // `pluginRoot`). No connector name is privileged here: the install itself is whatever the
-  // connector's own setup provider declares.
+const FROM_FILE = "\0file";
+
+/** A self-hosted space: one registered here, whose root is the project, or one to register from a
+ *  connection file into a project folder that exists. */
+async function askSelfHosted(given: Partial<SetupInputs>, ask: (key: keyof SetupInputs) => boolean): Promise<Omit<SetupInputs, "destination" | "harness">> {
+  const registered = loadMeshes().filter((m) => m.origin === "manual" || m.origin === "catalog");
+  let space = given.space;
+  if (ask("space") || space === undefined) {
+    const picked = registered.length === 0
+      ? FROM_FILE
+      : abortIfCancel(
+          await p.select({
+            message: "Which space?",
+            options: [...registered.map((m) => ({ value: m.space, label: m.space, hint: `${m.server} · ${m.root}` })), { value: FROM_FILE, label: "Register one from a connection file" }],
+            initialValue: space !== undefined && registered.some((m) => m.space === space) ? space : registered[0]!.space,
+          }),
+        );
+    space = picked === FROM_FILE ? undefined : picked;
+  }
+  const entry = space === undefined ? undefined : findMesh(space);
+  if (entry) return { project: given.project ?? entry.root, createProject: false, space: entry.space };
+  const connectionFile = ask("connectionFile") || given.connectionFile === undefined
+    ? resolve(abortIfCancel(await p.text({ message: "Connection file (exported where the space runs)", initialValue: given.connectionFile ?? "", validate: bundleProblem })).trim())
+    : given.connectionFile;
+  const project = ask("project") || given.project === undefined
+    ? resolve(abortIfCancel(await p.text({ message: "Project folder (the space's root)", initialValue: given.project ?? process.cwd(), validate: (s) => (isDir(resolve(s?.trim() ?? "")) ? undefined : "name a folder that exists") })).trim())
+    : given.project;
+  return { project, createProject: false, space: space ?? bundleSpace(connectionFile), connectionFile };
+}
+
+function bundleProblem(file: string | undefined): string | undefined {
+  try {
+    const check = checkUserBundle(readFileSync(resolve(file?.trim() ?? ""), "utf8"));
+    return check.ok ? undefined : check.message.replace(/^✗ /, "");
+  } catch (e) {
+    return `cannot read it (${(e as NodeJS.ErrnoException).code ?? (e as Error).message})`;
+  }
+}
+
+function bundleSpace(file: string): string {
+  const check = checkUserBundle(readFileSync(file, "utf8"));
+  if (!check.ok) throw usage(check.message.replace(/^✗ /, ""));
+  return check.value.space;
+}
+
+/** The applications setup can set up: every installed connector. */
+async function harnessCandidates(): Promise<SetupConnectorCandidate[]> {
   const candidates = setupConnectorCandidates(await setupConnectorSurface());
-  const selected = await pickConnectors(candidates, yes);
-  for (const candidate of candidates) {
-    if (!selected.has(candidate.value)) continue;
-    if (candidate.missing.length) {
-      p.log.warn(`${candidate.value} needs ${candidate.missing.join(", ")} on PATH. Install it, then re-run ${displayCmd()} setup.`);
-      continue;
+  if (candidates.length === 0) throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", "no connector is installed, so there is no application to set up", { remedy: "run `cotal ext seed`" });
+  return candidates;
+}
+
+interface SetupPlan {
+  readonly inputs: SetupInputs;
+  readonly candidate: SetupConnectorCandidate;
+  readonly space: { readonly kind: "local"; readonly state: LocalSpaceState } | SelfHostedSpace;
+}
+
+/** Every check setup makes before it writes: the space name, the application, the space at the
+ *  destination, and for a local space the NATS server `cotal up` will run. */
+async function planSetup(inputs: SetupInputs): Promise<SetupPlan> {
+  const target = { space: inputs.space };
+  const problem = preferenceSpaceProblem(inputs.space);
+  if (problem) throw usage(problem);
+  const candidates = await harnessCandidates();
+  const candidate = candidates.find((c) => c.value === inputs.harness);
+  if (!candidate) throw usage(`no harness "${inputs.harness}"; known harnesses: ${candidates.map((c) => c.value).join(", ")}`);
+  if (inputs.destination === "self-hosted") return { inputs, candidate, space: checkSelfHostedSpace(inputs.space, inputs.project, inputs.connectionFile) };
+  if (inputs.connectionFile !== undefined) throw usage("--connection-file registers a self-hosted space", "pass --destination self-hosted, or drop --connection-file");
+  const state = checkLocalSpace(inputs.space, inputs.project, "--project", true);
+  try {
+    await resolveNatsServer();
+  } catch (e) {
+    throw new CommandFailure("refused", "DEPENDENCY_UNAVAILABLE", (e as Error).message.split("\n")[0]!, { target, remedy: "install nats-server and put it on PATH, or reinstall cotal-ai under Node 22 or newer" });
+  }
+  return { inputs, candidate, space: { kind: "local", state } };
+}
+
+/**
+ * Writes what the plan checked: the space, the personas, the `harness` preference, the
+ * application's own setup actions and Cotal's skills. A harness whose host tool is missing, or an
+ * action that does not finish, leaves the rest saved and the result partial.
+ */
+async function prepare(plan: SetupPlan, opts: { demo: boolean; interactive: boolean; presentation: Presentation }): Promise<void> {
+  const { inputs, candidate } = plan;
+  const target = { space: inputs.space };
+  const written: Written[] = [];
+  const wrote = (what: string, path: string): void => {
+    written.push({ what, path });
+    provenance.wrote(what, path);
+  };
+  const warnings: OutputWarning[] = [];
+
+  let spaceState: SetupResult["spaceState"];
+  if (plan.space.kind === "add") {
+    const added = await addFromBundle(inputs.space, { file: plan.space.file, root: inputs.project, yes: !opts.interactive }, opts.interactive);
+    if (added === undefined) return cancelled(opts.presentation, inputs.space);
+    warnings.push(...added.warnings);
+    written.push({ what: "space registration", path: meshFile(inputs.space) });
+    spaceState = "added";
+  } else if (plan.space.kind === "registered") {
+    spaceState = "registered";
+  } else {
+    if (inputs.createProject) {
+      mkdirSync(inputs.project, { recursive: true });
+      wrote("project folder", inputs.project);
     }
+    if (plan.space.state === "created") wrote("prepared space", recordLocalSpace(inputs.space, inputs.project).file);
+    spaceState = plan.space.state;
+  }
+
+  const agents = personaDir(inputs.project);
+  const defaultPersona = join(agents, "default.md");
+  const seeded = reconcileDefaultAgent(defaultPersona);
+  if (seeded !== "unchanged") wrote(seeded === "seeded" ? "default persona" : "updated default persona permissions", defaultPersona);
+  if (opts.demo) {
+    for (const [name, body] of Object.entries(DEMO_AGENTS)) writeDemoAgent(join(agents, `${name}.md`), body, wrote);
+  }
+  if (writePreference({ space: inputs.space }, "harness", inputs.harness, readPreferences().revision).changed) wrote(`harness preference of ${inputs.space}`, preferencesPath());
+
+  const narrate = opts.presentation === "rich";
+  const log = openSetupLog(join(inputs.project, ".cotal", "setup.log"));
+  const actions = actionRunner(narrate, opts.interactive, log);
+  if (candidate.missing.length === 0) {
     const provider = await availableSetupProvider(candidate.connector);
-    if (provider?.connector) {
-      if (!(await runSteps([actionStep(provider.connector, undefined)], log, { yes, assists: connectorAssists }))) return abort();
-    } else {
-      p.log.success(`${candidate.value} ready (auto-wired when you spawn it)`);
-      log.line(`connector ${candidate.value}: ready (no install)`);
-    }
+    if (provider?.connector) await actions.run(candidate.value, actionStep(provider.connector, undefined));
     // Resolved again because the connector action can change what is on PATH, and a provider whose
     // executables are gone must not write.
     const share = (await availableSetupProvider(candidate.connector))?.mcpServers;
-    if (share && !(await runSteps([actionStep(share, connectorShareInput(candidate.connector))], log, { yes, assists: connectorAssists }))) return abort();
+    if (share) await actions.run(candidate.value, actionStep(share, connectorShareInput(candidate.connector)));
   }
-  // A connector's skills action is independent of the mesh connector selection: it runs for every
-  // connector whose harness is present, so someone using that harness gets Cotal's authored skills
-  // even without joining the mesh through it (Claude Code, for one, does not read `.agents/skills`).
-  for (const candidate of candidates) {
-    if (candidate.missing.length) continue;
-    const provider = await availableSetupProvider(candidate.connector);
-    if (provider?.skills && !(await runSteps([actionStep(provider.skills, connectorSkillsInput())], log, { yes, assists: connectorAssists }))) return abort();
+  // A connector's skills action runs for every connector whose harness is present, so someone using
+  // that harness gets Cotal's skills even without joining the mesh through it.
+  for (const other of setupConnectorCandidates(await setupConnectorSurface())) {
+    if (other.missing.length > 0) continue;
+    const skills = (await availableSetupProvider(other.connector))?.skills;
+    if (skills) await actions.run(other.value, actionStep(skills, connectorSkillsInput()));
   }
+  if (agentSkillsSkew().some((s) => s.state !== "current")) {
+    const skills = seedAgentSkills(log);
+    written.push({ what: "cross-vendor skills", path: agentSkillsHome() });
+    if (narrate) p.log.success(`Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`);
+    for (const b of skills.backedUp) warnings.push({ code: "SKILL_BACKED_UP", target, message: `your edited ${b.name} skill was backed up to ${b.path} before it was refreshed` });
+  }
+  if (!isOnboarded()) {
+    markOnboarded(ONBOARD_VERSION);
+    wrote("onboarded stamp", join(homeCotalDir(), "onboarded.json"));
+  }
+  if (narrate) await offerGlobalInstall(!opts.interactive);
 
-  // Your agent: the generic `default` persona a bare `cotal spawn` launches — one agent, yours to
-  // shape. This is the whole first-run default; the guided expert team is opt-in right below.
-  //
-  // The destination is resolved ONCE, the way `spawn` resolves it, and announced BEFORE the write:
-  // the persona has to land in the catalog spawn reads, and when that is not this folder the user
-  // has to be told so by the output rather than discover it from a refusal an hour later.
-  const dest = seedDefaultForSetup(process.cwd());
-  p.log.success(`Seeded your agent (${join(dest.dir, "default.md")}) - spawn it with \`${displayCmd()} spawn\` once your mesh is up`);
-  log.line(`default-agent: wrote ${join(dest.dir, "default.md")} (${dest.source === "mesh" ? `mesh ${dest.target!.space}` : "cwd fallback"})`);
-  // The guided expert team (david the engineer + sven the guide + me, your session) is opt-in:
-  // `cotal setup --demo` (or `--full`). Keeps the default first run to one agent, not a crowd.
-  if (demo) seedDemoTeam(dest, log);
+  const failed = actions.failed ?? null;
+  const local = inputs.destination === "local" && spaceState !== "started";
+  const result: SetupResult = {
+    kind: "setup",
+    destination: inputs.destination,
+    space: inputs.space,
+    project: inputs.project,
+    spaceState,
+    harness: { name: candidate.value, missing: candidate.missing, failed },
+    actions: actions.ran,
+    written,
+    next: local ? { command: `${displayCmd()} up`, cwd: inputs.project } : { command: `${displayCmd()} spawn --space ${inputs.space}`, cwd: null },
+  };
+  const partial = candidate.missing.length > 0
+    ? { message: `${candidate.value} needs ${candidate.missing.join(", ")} on PATH, so its own setup did not run; the rest is saved`, remedy: `install ${candidate.missing.join(", ")}, then run the same setup again` }
+    : failed
+      ? { message: `${failed.title} did not finish (${failed.message}); the rest is saved`, remedy: "fix it, then run the same setup again" }
+      : undefined;
+  if (opts.interactive) p.outro(brand(partial ? "Saved, with a step left to finish." : "Saved."));
+  writeResult(opts.presentation, { command: "setup", target, result, warnings, ...(partial ? { partial } : { noOp: written.length === 0 && actions.ran.length === 0 }) }, setupView);
+}
 
-  // Cotal's own skills, for the non-Claude harnesses, via the cross-vendor `.agents/skills` convention.
-  const skills = seedAgentSkills(log);
-  p.log.success(
-    `Installed ${skills.installed.length} cross-vendor skill${skills.installed.length !== 1 ? "s" : ""} (${skills.installed.join(", ")}) to ~/.agents/skills; read by Codex, Cursor, OpenCode, Gemini CLI, and Windsurf`,
-  );
-  if (skills.backedUp.length)
-    p.log.warn(`Backed up your edited copy before refreshing: ${skills.backedUp.map((b) => `${b.name} -> ${b.path}`).join(", ")} (Cotal manages only its own skills under ~/.agents/skills).`);
+/** Runs connector-owned setup actions in order and stops at the first that does not finish. The rich
+ *  presentation narrates each one, with the recovery menu on a terminal; the others run quietly. */
+function actionRunner(narrate: boolean, interactive: boolean, log: SetupLog) {
+  const ran: ActionRun[] = [];
+  let failed: ActionFailure | undefined;
+  return {
+    ran,
+    get failed() {
+      return failed;
+    },
+    async run(connector: string, step: Step): Promise<void> {
+      if (failed) return;
+      let error: string | undefined;
+      let detail: string | null = null;
+      const tracked: Step = {
+        ...step,
+        async run() {
+          try {
+            const d = await step.run();
+            detail = d ?? null;
+            error = undefined;
+            return d;
+          } catch (e) {
+            error = (e as Error).message;
+            throw e;
+          }
+        },
+      };
+      let finished: boolean;
+      if (narrate) finished = await runSteps([tracked], log, { yes: !interactive, assists: connectorAssists });
+      else {
+        try {
+          await tracked.run();
+          log.line(`${step.name}: ok${detail ? ` · ${detail}` : ""}`);
+          finished = true;
+        } catch {
+          log.line(`${step.name}: FAILED · ${error}`);
+          finished = false;
+        }
+      }
+      if (finished) ran.push({ connector, action: step.name, title: step.title, detail });
+      else failed = { connector, action: step.name, title: step.title, message: error ?? "stopped before it finished" };
+    },
+  };
+}
 
-  await offerGlobalInstall(yes);
+function cancelled(presentation: Presentation, space: string | undefined): void {
+  const target = space === undefined ? null : { space };
+  const result: SetupCancelled = { kind: "setup-cancelled" };
+  writeResult(presentation, { command: "setup", target, result, noOp: true, warnings: [{ code: "USER_CANCELLED", target, message: "nothing was saved" }] }, () => ({
+    sections: [{ blocks: [{ kind: "lines", lines: [{ text: "nothing was saved", tone: "hint" }] }] }],
+  }));
+}
 
-  markOnboarded(ONBOARD_VERSION);
-  provenance.wrote("onboarded stamp", join(homeCotalDir(), "onboarded.json"));
-  const cmd = displayCmd();
-  // The finale is the whole loop, minimal by default: start the mesh, talk to your one agent, watch
-  // it in the browser, stop. The browser dashboard is the first experience; the terminal console is
-  // the tail alternative. With --demo it names the team; without, it points at --demo.
-  const driveLines = demo
-    ? [
-        `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
-        `${ok("✓")} drive a session     ${dim(`${cmd} spawn me`)}`,
-        `${ok("✓")} ask the experts     ${dim(`${cmd} spawn david · ${cmd} spawn sven`)}`,
-        `${ok("✓")} watch the mesh      ${dim(`${cmd} web`)}`,
-        `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
-      ]
-    : [
-        `${ok("✓")} start the mesh      ${dim(`${cmd} up --detach`)}`,
-        `${ok("✓")} talk to your agent  ${dim(`${cmd} spawn`)}`,
-        `${ok("✓")} watch the mesh      ${dim(`${cmd} web`)}`,
-        `${ok("✓")} stop everything     ${dim(`${cmd} down`)}`,
-      ];
-  const tail = demo
-    ? [dim(`Terminal instead of a browser? ${cmd} console`)]
-    : [
-        dim(`Terminal instead of a browser? ${cmd} console`),
-        dim(`Want a guided team (david the engineer, sven the guide)? ${cmd} setup --demo`),
-      ];
-  note(
-    [
-      "Everything is configured - nothing has been started. Bring your mesh up when you're ready:",
-      "",
-      ...driveLines,
-      "",
-      ...tail,
-      dim(`Cotal not working? Tell your agent to send feedback (built-in cotal_feedback), or run ${cmd} feedback "<msg>".`),
-    ].join("\n"),
-    "You're set",
-  );
-  p.outro(brand(yes ? "Cotal is configured." : "Happy meshing."));
+const SPACE_STATE: Record<SetupResult["spaceState"], string> = {
+  created: "prepared by this setup",
+  prepared: "already prepared",
+  started: "already started here",
+  added: "registered by this setup",
+  registered: "already registered",
+};
 
-  function abort() {
-    p.outro(brand(`Setup paused. Fix the step above and run \`${displayCmd()} setup\` again.`));
-    process.exitCode = 1;
+function setupView(r: SetupResult): Report {
+  const head: Cell = r.harness.missing.length > 0 || r.harness.failed
+    ? { text: `saved ${r.space}; ${r.harness.name} is not set up yet`, tone: "waiting", mark: "!" }
+    : r.written.length > 0 || r.actions.length > 0
+      ? { text: `set up ${r.space} for ${r.harness.name}`, tone: "ok", mark: "✓" }
+      : { text: `${r.space} is already set up for ${r.harness.name}`, tone: "ok", mark: "✓" };
+  const application: Cell = r.harness.missing.length > 0
+    ? { text: `${r.harness.name} · ${r.harness.missing.join(", ")} not on PATH`, tone: "failed" }
+    : r.harness.failed
+      ? { text: `${r.harness.name} · ${r.harness.failed.title} did not finish`, tone: "failed" }
+      : r.harness.name;
+  const fields: [string, Cell][] = [
+    ["destination", r.destination],
+    ["project", r.project],
+    ["space", `${r.space} · ${SPACE_STATE[r.spaceState]}`],
+    ["application", application],
+    ...r.actions.map((a): [string, Cell] => ["ran", `${a.title}${a.detail ? ` · ${a.detail}` : ""}`]),
+    ...r.written.map((w): [string, Cell] => ["wrote", `${w.what}: ${w.path}`]),
+  ];
+  const next: Cell = { text: r.next.cwd === null ? `next: ${r.next.command}` : `next: ${r.next.command}   (in ${r.next.cwd})`, tone: "hint" };
+  return { sections: [{ blocks: [{ kind: "lines", lines: [head] }, { kind: "fields", rows: fields }, { kind: "lines", lines: [next] }] }] };
+}
+
+function isDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
   }
 }
 
@@ -306,52 +652,6 @@ export async function setupConnectorSurface(): Promise<Connector[]> {
   ));
 }
 
-async function pickConnectors(candidates: readonly SetupConnectorCandidate[], yes: boolean): Promise<Set<string>> {
-  const all = candidates.filter((candidate) => candidate.missing.length === 0).map((candidate) => candidate.value);
-  if (yes || !process.stdin.isTTY || inputDisabledByFlag()) return new Set(all);
-
-  // Common case: show what was detected and offer a visible Continue button (clack's multiselect
-  // has no native one). Only "Customize" (or nothing detected) drops into the toggle list.
-  if (all.length) {
-    note(all.join(", "), "Agents found");
-    const go = abortIfCancel(
-      await p.confirm({ message: "Set these up?", active: "Continue", inactive: "Customize", initialValue: true }),
-    );
-    if (go) return new Set(all);
-  }
-
-  const picked = abortIfCancel(
-    await p.multiselect({
-      message: "Pick the agents to set up (space toggles, enter continues)",
-      options: [...candidates],
-      initialValues: all,
-      required: false,
-    }),
-  );
-  return new Set(picked as string[]);
-}
-
-/** The compact repeat-run: a one-glance status card, plus re-seeding the default persona if it's
- *  missing (announced). Nothing is launched — the card tells you what's down and how to start it.
- *  `--demo` here adds the guided team to an already-configured machine (no need to re-narrate). */
-async function runEnsure(demo: boolean): Promise<void> {
-  // Same destination question as the first run, same disclosure: a repeat `cotal setup` is exactly
-  // what the old refusal told the user to run, so it above all must seed where `spawn` reads.
-  const dest = seedDefaultForSetup(process.cwd()); // ensure `cotal spawn` (no name) always has a default to launch
-  p.log.success(`Your agent: ${join(dest.dir, "default.md")}`);
-  if (demo) seedDemoTeam(dest); // `cotal setup --demo` on a configured machine: add the team, then card
-  await reconcileConnectorSkills();
-  seedAgentSkills(); // reconcile the cross-vendor `.agents/skills` drop so an upgrade + re-run isn't stale
-  // A repeat `npx cotal-ai setup` on an onboarded machine that still lacks a durable `cotal` must
-  // ALSO get the global-install offer — the first-run stamp is written once, so without this any
-  // second setup (declined/failed install the first time, or a machine onboarded before the offer
-  // existed) never installs `cotal`. The offer no-ops for a dev clone (`!isNpx()`) or an already
-  // installed `cotal` (`cotalOnPath()`), so only the npx-without-cotal case is affected. Before the
-  // card so its hints render `cotal` rather than `npx cotal-ai`.
-  await offerGlobalInstall(false);
-  await readyCard(process.cwd());
-}
-
 /** Resolve a connector's declared setup provider from the CONNECTOR the surface produced, never
  * from a name this file knows. A connector that declares none simply owns no setup; a DECLARED
  * provider that is missing or broken fails loud, because the base CLI never substitutes a built-in
@@ -418,94 +718,12 @@ export function setupProviderAvailable(provider: Pick<ConnectorSetupProvider, "r
   return !(provider.requires?.some((command) => !resolveOnPath(command)) ?? false);
 }
 
-// The web dashboard is a first-party seeded extension now (@cotal-ai/web, in SEEDED_EXTENSIONS): the
-// boot reconcile installs and version-refreshes it from the umbrella's bundled payload, exactly like
-// the connectors. So setup no longer fetches it — by the time these steps run, the reconcile has
-// already seeded web at the binary's version.
-
-/** The `cotal · status` one-glance card: machine + mesh + web + manager status (read-only
- *  probes — displaying state is not depending on it), plus the key commands. */
-export async function readyCard(cwd: string): Promise<void> {
-  const mesh = await meshStatus(cwd);
-  const m = await machineStatus();
-  const connectorRows = await cardConnectorRows();
-  const mgr = managerUp();
-  const cmd = displayCmd();
-  const web = cardWebRow(mesh, cmd);
-  // Read the demo marker out of the catalog the card's own `spawn` hints will resolve — the same
-  // seed destination, not a second cwd-derived guess. Hinting `cotal spawn me` off a `david.md` in
-  // a directory spawn never opens is the identical defect, one line further down the output.
-  const personas = seedDestination();
-  const hasDemo = existsSync(join(personas.dir, "david.md")); // the guided team is present ⇒ richer hint
-  const line = (on: boolean, text: string) => `${on ? ok("✓") : dim("○")} ${text}`;
-  const remote = mesh.origin === "catalog" || mesh.origin === "manual";
-  const meshLine = mesh.reachable === undefined
-    ? `${mesh.server} · space ${mesh.space} · selected (not probed)`
-    : mesh.reachable
-      ? `${mesh.server} · space ${mesh.space}`
-      : remote
-        ? `${mesh.server} · space ${mesh.space} · unreachable`
-        : `down · start: ${cmd} up --detach`;
-  note(
-    [
-      line(m.nats !== "missing", `NATS     ${dim(m.nats === "missing" ? "missing" : m.nats)}`),
-      ...connectorRows.map((r) => line(r.state === "ok", `${r.label.padEnd(8)} ${dim(r.text)}`)),
-      line(mesh.reachable !== false, `mesh     ${dim(meshLine)}`),
-      line(web.up, `web      ${dim(web.text)}`),
-      line(mgr, `manager  ${dim(mgr ? "running" : `not running · start: ${cmd} up, or: ${cmd} supervise`)}`),
-      "",
-      ...(remote ? [] : [`start the mesh:  ${dim(`${cmd} up --detach`)}`]),
-      // Match the hint to what's actually on disk: the guided team (with --demo) vs the one default agent.
-      hasDemo
-        ? `drive it:        ${dim(`${cmd} spawn me`)}   ${dim("(or david / sven)")}`
-        : `drive it:        ${dim(`${cmd} spawn`)}   ${dim("(talk to your agent · guided team: " + cmd + " setup --demo)")}`,
-      `watch it:        ${dim(`${cmd} web`)}   ${dim("(browser dashboard)")}`,
-      `more:            ${dim(`${cmd} console · ${cmd} down · ${cmd} feedback "<msg>" · ${cmd} --help`)}`,
-    ].join("\n"),
-    brandBold("cotal · status"),
-  );
-}
-
-/** The card's web row from the mesh's dashboard records. An unreadable `web.pid`, `web.session` or
- *  extension record is named on the row, like the status Machine section, so the rest of the card
- *  still prints. The dashboard records and the extension record are both read before either decides
- *  the row, since status names each on its own row and a listening dashboard does not make its
- *  package record readable. */
-function cardWebRow(mesh: MeshStatus, cmd: string): { up: boolean; text: string } {
-  let url: string | undefined;
-  let installed: boolean | undefined;
-  const unreadable: string[] = [];
-  try {
-    url = recordedWebUrl({ root: mesh.root, space: mesh.space });
-  } catch (e) {
-    unreadable.push((e as Error).message);
-  }
-  try {
-    installed = webInstalled();
-  } catch (e) {
-    unreadable.push((e as Error).message);
-  }
-  if (unreadable.length > 0) return { up: false, text: (url ? [url, ...unreadable] : unreadable).join(" · ") };
-  if (url) return { up: true, text: url };
-  return { up: false, text: installed ? `down · start: ${cmd} web` : `not installed · retry: ${cmd} setup` };
-}
-
-/** The card's connector-reported rows. A manifest that cannot list connectors becomes one row naming
- *  why, like the status Machine section. */
-async function cardConnectorRows(): Promise<ConnectorStatusRow[]> {
-  try {
-    return await connectorStatusRows(connectorHarnesses());
-  } catch (e) {
-    return [{ label: "connectors", state: "error", text: (e as Error).message }];
-  }
-}
-
 /** Reconcile Cotal's authored skills into the cross-vendor `~/.agents/skills` directory that Codex,
  *  Cursor, OpenCode, Gemini CLI, and Windsurf/Devin all read. Unlike the Claude Code plugin, these
  *  harnesses have no remote install/update path, so `cotal setup` reconciles the files (install/refresh,
  *  back up a user's edited copy, remove a retired Cotal skill) and `cotal status` reports skew. Idempotent;
  *  a re-run after an upgrade brings a deployed install current. */
-function seedAgentSkills(log?: ReturnType<typeof openSetupLog>): AgentSkillsResult {
+function seedAgentSkills(log?: SetupLog): AgentSkillsResult {
   const r = installAgentSkills();
   provenance.wrote("cross-vendor skills", agentSkillsHome());
   log?.line(
@@ -522,19 +740,20 @@ const MANAGED_MARKER = "# managed by cotal-setup";
 
 /** Write a setup-managed demo persona, refreshing it when its DEMO_AGENTS body changes — but never
  *  silently clobber a file the user has taken ownership of (one without the marker): back it up to
- *  `<name>.md.bak` first. Missing or marker-carrying files are written in place; every write is
- *  announced. */
-function writeDemoAgent(path: string, body: string): void {
+ *  `<name>.md.bak` first. Missing or marker-carrying files are written in place; every write goes
+ *  through `wrote`. */
+function writeDemoAgent(path: string, body: string, wrote: (what: string, path: string) => void): void {
   if (existsSync(path)) {
     const cur = readFileSync(path, "utf8");
     if (cur === body) return; // already current
     if (!cur.includes(MANAGED_MARKER)) {
       writeFileSync(`${path}.bak`, cur); // preserve a user/pre-marker edit
-      provenance.wrote("backup of your edited persona", `${path}.bak`);
+      wrote("backup of your edited persona", `${path}.bak`);
     }
   }
+  mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, body);
-  provenance.wrote("persona", path);
+  wrote("persona", path);
 }
 
 /** The default persona `cotal spawn` (no name) launches: a generic mesh agent, seeded once and
@@ -601,160 +820,8 @@ export function reconcileDefaultAgent(path: string): "seeded" | "migrated" | "un
   return "seeded";
 }
 
-/**
- * WHERE a seeded persona has to land: the catalog `cotal spawn` will actually READ.
- *
- * Setup used to derive this from the cwd (`cotalPath("agents", …)`, a `findCotalRoot` walk up from
- * `process.cwd()`), while `spawn` reads the RESOLVED MESH's root (`resolveMeshTarget(...).root`,
- * see spawn.ts's `agentFilePath(target.root, ref)`). On any machine where those two disagree —
- * a cwd outside every project, so the walk lands on `~`, plus a mesh registered against some
- * other root — setup dutifully wrote a file spawn would never open, and `cotal spawn` went on
- * saying "no default persona yet - run `cotal setup` to seed one" after you ran exactly that.
- * The remedy the error named did not fix the error.
- *
- * So resolve the destination the way spawn does, and report which question it answered:
- *
- *  - `mesh`   — a mesh resolved; `dir` is ITS `.cotal/agents`, the catalog spawn reads.
- *  - `cwd`    — no mesh resolved at all (a fresh machine, before the first `cotal up`, which is
- *               the ordinary first-run case). Setup must still work there, so it falls back to
- *               the cwd walk — the OLD behavior, now reached deliberately and named in the
- *               output rather than taken silently.
- *
- * `reason` carries the resolver's own sentence for the cwd case, so the fallback can say WHY it
- * had no mesh to seed into instead of asserting one.
- */
-interface SeedDestination {
-  /** The `.cotal/agents` directory to write into — absolute. */
-  dir: string;
-  source: "mesh" | "cwd";
-  /** The resolved mesh, when one resolved. */
-  target?: MeshTarget;
-  /** Why no mesh resolved, for `source: "cwd"`. */
-  reason?: string;
-}
-
-/**
- * Resolve the persona catalog to seed into, offline. `cwd` is a parameter so the smoke can drive
- * this without chdir'ing a shared process; production always passes `process.cwd()`.
- *
- * Deliberately NOT `resolveTargetOrExit`: that prunes the registry and exits the process on an
- * unresolved mesh. Setup is the command you run BEFORE a mesh exists, and on a fresh machine it
- * must still seed a persona rather than refuse.
- *
- * The fallback is narrow ON PURPOSE — `no-meshes` and nothing else. "No mesh is running" has one
- * honest answer (this folder), so seeding there and saying so is right. But `ambiguous-target`
- * (several meshes up, none selected) is a case where the OPERATOR has a real choice, and quietly
- * seeding the cwd would be this very defect wearing a different hat: a root chosen for them,
- * without being asked, that the spawn they run next may not read. Every other resolution failure
- * — unreadable trust, a stale auth root, an unrecorded user-auth space — is a fault to repair, not
- * a licence to guess a directory. Those RETHROW, and `command.ts` renders them with their own
- * recovery copy.
- */
-export function seedDestinationFor(cwd: string): SeedDestination {
-  try {
-    const target = resolveMeshTarget(cwd, {});
-    // `personaRoot` is the target's own `<root>/.cotal/agents` — the exact string spawn resolves
-    // its persona file under. Taken from the target rather than recomputed, so the two cannot drift.
-    return { dir: target.personaRoot, source: "mesh", target };
-  } catch (e) {
-    // ONLY "there is no mesh at all" falls back. Anything else is a decision that is not setup's
-    // to make, or a fault that wants fixing; either way the cwd is not the answer.
-    if (isWorkspaceTargetError(e) && e.code === "no-meshes")
-      return { dir: personaDir(findCotalRoot(cwd)), source: "cwd", reason: e.message };
-    throw e;
-  }
-}
-
-function seedDestination(): SeedDestination {
-  return seedDestinationFor(process.cwd());
-}
-
-/**
- * Say where the personas are going, ABSOLUTE, before anything is written.
- *
- * The rule is NOT "never use the cwd" — it is "never use a root SILENTLY". The whole defect was a
- * cwd-derived root substituted for the mesh's without the output disclosing it, so the user read
- * `Seeded your agent (.cotal/agents/default.md)` and reasonably assumed the folder they were
- * standing in. Every path through this function therefore names the destination in full:
- *
- *  - mesh root == cwd root : the ordinary single-project case. Still printed, just without the
- *                            comparison, because there is no divergence to explain.
- *  - mesh root != cwd root : the case that bit. Prints BOTH roots, so the difference is visible
- *                            in the output rather than discoverable only from a later refusal.
- *  - no mesh at all        : the fresh-machine fallback, where the cwd IS the honest answer. Says
- *                            it fell back, why, and where it is writing.
- */
-function announceSeedDestination(dest: SeedDestination): void {
-  if (dest.source === "cwd") {
-    p.log.info(
-      `No mesh resolved yet (${dest.reason}) - seeding into this folder's catalog:\n` +
-        `  ${dest.dir}\n` +
-        `Once a mesh is running, \`${displayCmd()} setup\` seeds into THAT mesh's root instead.`,
-    );
-    return;
-  }
-  const t = dest.target!;
-  // The cwd's own answer, for comparison only — never to choose with.
-  const cwdRoot = findCotalRoot();
-  if (resolve(cwdRoot) === resolve(t.root)) {
-    p.log.info(`Seeding personas for mesh "${t.space}" into:\n  ${dest.dir}`);
-    return;
-  }
-  p.log.info(
-    `Seeding into mesh "${t.space}"'s personas, not this folder's:\n` +
-      `  writing to                   ${dest.dir}\n` +
-      `  mesh "${t.space}" (${t.server}) root  ${t.root}\n` +
-      `  this folder would have used  ${cwdRoot}\n` +
-      `\`${displayCmd()} spawn\` reads the mesh's catalog, so that is where the persona has to live.`,
-  );
-}
-
-/** Seed the default persona if it's missing, or migrate the byte-exact legacy template, in the
- *  catalog `cotal spawn` actually reads. Called from both first-run and repeat-run paths so new
- *  installs and untouched upgrades get the current grant while edited personas are never
- *  overwritten. Returns the destination so the caller can report the ABSOLUTE path it wrote. */
-function seedDefaultAgent(dest: SeedDestination = seedDestination()): SeedDestination {
-  seedDefaultAgentInto(dest.dir);
-  return dest;
-}
-
-/** Resolve, disclose and write through setup's shipped destination wiring. The smoke disables only
- *  the presentation step while keeping the production resolver-to-writer path intact. */
-export function seedDefaultForSetup(cwd: string, announce = true): SeedDestination {
-  const dest = seedDestinationFor(cwd);
-  if (announce) announceSeedDestination(dest);
-  return seedDefaultAgent(dest);
-}
-
-/** The write itself, seam-exported for the smoke: reconcile into an explicit catalog directory. */
-export function seedDefaultAgentInto(dir: string): void {
-  const path = join(dir, "default.md");
-  const result = reconcileDefaultAgent(path);
-  if (result === "migrated") {
-    provenance.wrote("updated default persona permissions", path);
-    return;
-  }
-  if (result === "seeded") provenance.wrote("default persona", path);
-}
-
-/** Seed the guided expert team — david (the engineer), sven (the guide), me (your session) — the
- *  opt-in richer first experience (`cotal setup --demo` / `--full`). These are setup-managed, unlike
- *  the seed-once default: refreshed when a DEMO_AGENTS body changes so persona edits actually land,
- *  but a file you've taken ownership of is backed up first, never silently lost (see writeDemoAgent).
- *  Every write is announced; `log` (present only in the narrated first run) also records it.
- *
- *  Takes the SAME destination the default persona used, so the team can never land in a different
- *  catalog than the default — one `cotal spawn david` reading a root that `cotal spawn` does not is
- *  the same defect wearing a different name. */
-function seedDemoTeam(dest: SeedDestination, log?: { line(msg: string): void }): void {
-  mkdirSync(dest.dir, { recursive: true });
-  for (const [name, body] of Object.entries(DEMO_AGENTS)) {
-    writeDemoAgent(join(dest.dir, `${name}.md`), body);
-  }
-  p.log.success(`Added the guided team - david (the engineer), sven (the guide), and your session (me) in ${dest.dir}; spawn them when your mesh is up`);
-  log?.line(`demo-agents: wrote david + sven + me into ${dest.dir}`);
-}
-
+/** The guided expert team `--demo` seeds: david (the engineer), sven (the guide) and me (your
+ *  session). Setup-managed, unlike the seed-once default: see {@link writeDemoAgent}. */
 const DEMO_AGENTS: Record<string, string> = {
   david: `---
 ${MANAGED_MARKER} - edit DEMO_AGENTS in the cotal CLI; delete this line to keep local changes

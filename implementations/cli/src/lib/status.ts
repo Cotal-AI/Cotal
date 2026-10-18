@@ -1,5 +1,5 @@
-import { DEFAULT_SERVER, DEFAULT_SPACE, isReachable, registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
-import { authDir, extensionConnectors, findCotalRoot, installedExtensionVersion, loadExtensionsManifest, loadSoleSpaceAuth, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveMeshTarget, resolveOnPath, WEB_PIDFILE, WEB_SESSION_FILE, type LocalProcessContext, type MeshEntry } from "@cotal-ai/workspace";
+import { registry, type Connector, type ConnectorSetupProvider, type ConnectorStatusRow, type ExtensionRef } from "@cotal-ai/core";
+import { extensionConnectors, installedExtensionVersion, loadExtensionsManifest, loadSpaceAuth, localProcessPath, parsePid, probeLiveness, readPidfile, readWebSession, resolveOnPath, WEB_PIDFILE, WEB_SESSION_FILE, type LocalProcessContext } from "@cotal-ai/workspace";
 import { materializeExtension } from "../ext-loader.js";
 import { resolveNatsServer } from "./nats-bin.js";
 import { displayCmd } from "./self-exec.js";
@@ -7,15 +7,6 @@ import { cliVersion } from "./version.js";
 
 // Moved into `@cotal-ai/workspace` (stage 4); re-exported for the CLI's many importers.
 export { resolveRuntimeSpace, resolveSpace } from "@cotal-ai/workspace";
-
-export interface MeshStatus {
-  reachable?: boolean;
-  server: string;
-  space: string;
-  root: string;
-  auth: boolean;
-  origin?: MeshEntry["origin"];
-}
 
 /** The address the dashboard recorded in `web.session` once `listen()` succeeded, with the readiness
  * nonce recorded beside it, or `undefined` while there is no whole record. A record that exists and
@@ -52,34 +43,6 @@ export function recordedWebUrl(context: LocalProcessContext): string | undefined
  * other reader. */
 export function webInstalled(): boolean {
   return loadExtensionsManifest().extensions.some((e) => e.commands.some((cmd) => cmd.name === "web") && installedExtensionVersion(e.pkg) !== undefined);
-}
-
-/** Cheap snapshot of the mesh setup and spawn resolve for this folder. Discovered catalog brokers
- * are never probed: their registry record is the selected state this card reports. */
-export async function meshStatus(cwd: string): Promise<MeshStatus> {
-  try {
-    const target = resolveMeshTarget(cwd, {});
-    return {
-      reachable: target.origin === "catalog" ? undefined : await isReachable(target.server, target.tlsRequired ? { tls: true } : {}),
-      server: target.server,
-      space: target.space,
-      root: target.root,
-      auth: target.mode !== "open",
-      ...(target.origin ? { origin: target.origin } : {}),
-    };
-  } catch {
-    // With no resolvable mesh, retain the configure-only card's local default state.
-  }
-  const server = DEFAULT_SERVER;
-  const root = findCotalRoot(cwd);
-  const auth = loadSoleSpaceAuth(authDir(root));
-  return {
-    reachable: await isReachable(server),
-    server,
-    space: auth?.space ?? DEFAULT_SPACE,
-    root,
-    auth: Boolean(auth),
-  };
 }
 
 export interface MachineStatus {

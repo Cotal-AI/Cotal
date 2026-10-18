@@ -55,8 +55,11 @@ const baseCommands: Command[] = [
     kind: "command",
     name: "setup",
     group: "Setup",
-    summary: "guided setup (configure-only: installs + seeds, launches nothing) - --yes non-interactive, --full to redo, --skills for skills only",
+    summary: "prepare a space for your agents: destination, application, project and space; starts nothing",
+    usage: "cotal setup [--destination <local|self-hosted>] [-H|--harness <connector>] [--project <dir>] [--space <name>] [--connection-file <bundle.json>] [--configure-only] [--demo|--full] [-y|--yes] [--json|--plain] | setup --skills",
     flags: setupFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal setup", "cotal setup --destination local --harness claude --project ~/research --space research --no-input", "cotal setup --destination self-hosted --harness claude --project ~/team --space team --connection-file team.json --json", "cotal setup --skills"],
     run: setup,
   },
   {

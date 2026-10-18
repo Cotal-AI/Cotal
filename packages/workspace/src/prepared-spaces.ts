@@ -61,13 +61,14 @@ export function preparedSpaceAt(root: string): PreparedSpace | undefined {
   return loadPreparedSpaces().find((p) => canonicalRoot(p.root) === key);
 }
 
-/** Write a prepared space: atomic, 0600, in a directory only this user can list. */
-export function recordPreparedSpace(p: PreparedSpace): void {
+/** Write a prepared space: atomic, 0600, in a directory only this user can list. Returns the file. */
+export function recordPreparedSpace(p: PreparedSpace): string {
   mkSecretDir(preparedSpacesDir());
   const file = preparedFile(p.space);
   const tmp = `${file}.${process.pid}.tmp`;
   writeSecretFile(tmp, JSON.stringify(p, null, 2));
   renameSync(tmp, file);
+  return file;
 }
 
 /** Drop a prepared space. Absent is a no-op. */

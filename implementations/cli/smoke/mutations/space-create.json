@@ -13,8 +13,8 @@
     {
       "name": "create does not refuse a registered name",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  if (registered) throw refuse(",
-      "replace": "  if (registered && name === \"\") throw refuse(",
+      "find": "  if (registered) {\n",
+      "replace": "  if (registered && name === \"\") {\n",
       "expectRed": "a registered name is CONFLICT",
       "cell": "a registered name is CONFLICT",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -22,8 +22,8 @@
     {
       "name": "create does not refuse a prepared name",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "  if (prepared) throw refuse(",
-      "replace": "  if (prepared && name === \"\") throw refuse(",
+      "find": "  if (prepared) {\n",
+      "replace": "  if (prepared && name === \"\") {\n",
       "expectRed": "a prepared name is CONFLICT, exit 2, naming its root",
       "cell": "a prepared name is CONFLICT, exit 2, naming its root",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -40,7 +40,7 @@
     {
       "name": "create does not read the registrations rooted there",
       "file": "implementations/cli/src/commands/space-registration.ts",
-      "find": "...loadMeshes().filter((m) => canonicalRoot(m.root) === canonicalRoot(root)).map((m) => m.space), ",
+      "find": "...loadMeshes().filter((m) => here(m.root)).map((m) => m.space), ",
       "replace": "",
       "expectRed": "a folder a registration names as its root is CONFLICT",
       "cell": "a folder a registration names as its root is CONFLICT",
