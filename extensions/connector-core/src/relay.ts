@@ -99,13 +99,16 @@ function done(out: string, confirm?: (then: () => void) => void): void {
 }
 
 /** Answers one hook event inside the hook process, before the control socket is resolved. A reply
- *  is printed as the hook's output and the event is not relayed; `undefined` relays it as usual. */
-export type LocalHookAnswer = (event: unknown) => Record<string, unknown> | undefined;
+ *  is printed as the hook's output and the event is not relayed; `undefined` relays it as usual.
+ *  It runs in every session. `managed` says whether the session carries a mesh identity, which is
+ *  the only kind the relay forwards. */
+export type LocalHookAnswer = (event: unknown, session: { managed: boolean }) => Record<string, unknown> | undefined;
 
 /** Relay one hook event from stdin to the connector's control socket and print the reply. `answer`
  *  runs first, so a decision that needs no connector state holds even when the socket is down. */
 export async function runHookRelay(answer?: LocalHookAnswer): Promise<void> {
-  if (!hasIdentity()) return done(""); // plain session, not a managed one — no-op
+  const managed = hasIdentity();
+  if (!managed && !answer) return done(""); // plain session with nothing to answer — no-op
   const raw = (await readStdin()).trim() || "{}";
   let event: unknown = {};
   try {
@@ -115,11 +118,12 @@ export async function runHookRelay(answer?: LocalHookAnswer): Promise<void> {
   }
   let local: Record<string, unknown> | undefined;
   try {
-    local = answer?.(event);
+    local = answer?.(event, { managed });
   } catch {
     /* an answer that throws must not block the session; relay the event instead */
   }
   if (local) return done(JSON.stringify(local));
+  if (!managed) return done(""); // plain session, not a managed one — no connector to relay to
   // The socket path comes from the launch env; the token comes from the launch-material file that
   // env points at (the same file the in-agent server reads), never recomputed from public identity.
   // A malformed or missing material file THROWS from controlFromEnv, and a hook that throws is a

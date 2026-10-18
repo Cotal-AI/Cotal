@@ -685,6 +685,14 @@ the local one in a session Cotal launched, with the reason in the refusal. It de
 process, so the refusal holds when the control socket is down. A Claude Code session that Cotal did
 not launch has no local path and keeps the hosted connector.
 
+In such a session the plugin also keeps each hosted connection with the session that opened it. A
+`PostToolUse` hook on the hosted `cotal_connect` records the returned `connection_id` under the
+plugin's data directory (`CLAUDE_PLUGIN_DATA`), and `cotal_disconnect` releases it. A fork made with
+`--fork-session` inherits that id in its transcript but has a new session id, so its calls with the
+id are refused and it is told to call `cotal_connect`. A resumed session and its subagents keep the
+session id and pass. An id the plugin never saw opened goes to the hosted connector, which checks
+the account.
+
 ## Host sessions in one process
 
 A host serving many managed seats can run their MCP servers in one process with the subpath

@@ -8,13 +8,13 @@
   "why": [
     "Claude Code loads connected-account connectors in a launched session by default, so a hosted Cotal connector beside the local plugin let one session join twice. Reproduced live: a launched seat joined its local mesh as probe and the hosted gateway as hosted_probe.",
     "The suite runs dist/hook.cjs, the file hooks.json runs, so every mutation rebuilds before the run and after the restore.",
-    "O1 and O2 cut the two wires (the relay ignoring the answer, the hook not passing it). O3 inverts the server test. O4 is the liveness arm: refusing the local server too. O5 opens the identity gate, so a plain session would lose the hosted connector. O6 and O7 pin the tool-name test at both ends of its tool part."
+    "O1 and O2 cut the two wires (the relay ignoring the answer, the hook not passing it). O3 inverts the server test. O4 is the liveness arm: refusing the local server too. O5 drops the answer's managed check, so a plain session would lose the hosted connector. O6 and O7 pin the tool-name test at both ends of its tool part."
   ],
   "mutations": [
     {
       "name": "O1 the relay never applies the local answer",
       "file": "extensions/connector-core/src/relay.ts",
-      "find": "    local = answer?.(event);",
+      "find": "    local = answer?.(event, { managed });",
       "replace": "    local = undefined;",
       "expectRed": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_connect",
       "cell": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_connect",
@@ -24,18 +24,18 @@
     {
       "name": "O2 the hook runs the relay without the one-path answer",
       "file": "extensions/connector-claude-code/src/hook.ts",
-      "find": "void runHookRelay(otherCotalPath)",
-      "replace": "void runHookRelay()",
+      "find": "otherCotalPath(event, session) ?? owner(event, session)",
+      "replace": "owner(event, session)",
       "expectRed": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_connect",
       "cell": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_connect",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
-      "note": "The shipped hook.ts before this change."
+      "note": "The hook passes only the connection-owner answer, as before this change."
     },
     {
       "name": "O3 the server test is inverted",
       "file": "extensions/connector-claude-code/src/one-path.ts",
-      "find": "if (server === undefined || LOCAL_SERVERS.has(server)) return undefined;",
-      "replace": "if (server === undefined || !LOCAL_SERVERS.has(server)) return undefined;",
+      "find": "  return m && !LOCAL_SERVERS.has(m[1]!) ? m[2] : undefined;",
+      "replace": "  return m && LOCAL_SERVERS.has(m[1]!) ? m[2] : undefined;",
       "expectRed": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_connect",
       "cell": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_connect",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
@@ -44,28 +44,28 @@
     {
       "name": "O4 the local server is refused too",
       "file": "extensions/connector-claude-code/src/one-path.ts",
-      "find": "if (server === undefined || LOCAL_SERVERS.has(server)) return undefined;",
-      "replace": "if (server === undefined) return undefined;",
+      "find": "  return m && !LOCAL_SERVERS.has(m[1]!) ? m[2] : undefined;",
+      "replace": "  return m ? m[2] : undefined;",
       "expectRed": "a launched session passes mcp__cotal__cotal_send through",
       "cell": "a launched session passes mcp__cotal__cotal_send through",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
       "note": "Liveness: every refusal cell stays green, so only the pass-through cell can catch an answer that refuses all Cotal tools."
     },
     {
-      "name": "O5 the identity gate no longer protects a plain session",
-      "file": "extensions/connector-core/src/relay.ts",
-      "find": "  if (!hasIdentity()) return done(\"\"); // plain session, not a managed one — no-op",
-      "replace": "  if (!hasIdentity() && !answer) return done(\"\"); // plain session, not a managed one — no-op",
+      "name": "O5 the one-path answer no longer checks for a launched session",
+      "file": "extensions/connector-claude-code/src/one-path.ts",
+      "find": "  if (!session.managed) return undefined;\n",
+      "replace": "",
       "expectRed": "a session Cotal did not launch keeps the hosted connector",
       "cell": "a session Cotal did not launch keeps the hosted connector",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
-      "note": "The answer itself does not read the environment; the relay's identity gate is what keeps a plain session's hosted connector working."
+      "note": "The relay runs the answer in every session, so the answer's own managed check is what keeps a plain session's hosted connector working."
     },
     {
       "name": "O6 the tool match loses its end anchor",
       "file": "extensions/connector-claude-code/src/one-path.ts",
-      "find": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*$/;",
-      "replace": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*/;",
+      "find": "const COTAL_TOOL = /^mcp__(.+)__(cotal_[a-z0-9]+(?:_[a-z0-9]+)*)$/;",
+      "replace": "const COTAL_TOOL = /^mcp__(.+)__(cotal_[a-z0-9]+(?:_[a-z0-9]+)*)/;",
       "expectRed": "a launched session passes mcp__company__cotal_proxy__status through",
       "cell": "a launched session passes mcp__company__cotal_proxy__status through",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
@@ -74,8 +74,8 @@
     {
       "name": "O7 the tool part admits no underscore",
       "file": "extensions/connector-claude-code/src/one-path.ts",
-      "find": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*$/;",
-      "replace": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+$/;",
+      "find": "const COTAL_TOOL = /^mcp__(.+)__(cotal_[a-z0-9]+(?:_[a-z0-9]+)*)$/;",
+      "replace": "const COTAL_TOOL = /^mcp__(.+)__(cotal_[a-z0-9]+)$/;",
       "expectRed": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_channel_info",
       "cell": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_channel_info",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
