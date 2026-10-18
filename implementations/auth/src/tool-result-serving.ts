@@ -10,8 +10,9 @@
  *   actor, instance, lifecycle and public identities ({@link assertCurrentManagerRegistration},
  *   the same check enrollment and retirement preparation run);
  * - the target is this owner's live host-enrolled managed row at exactly that lifecycle, whose
- *   ledger parent is that authorizing actor, and whose lifecycle head is `active`. A revoked,
- *   retiring, tombstoned, successor or foreign target refuses before any effect.
+ *   ledger parent is that authorizing actor, and whose lifecycle head, once activated, is `active`
+ *   at that lifecycle. A revoked, retiring, tombstoned, successor or foreign target refuses before
+ *   any effect.
  *
  * THE EFFECT. `issue` registers the incarnation's instance for its owner (gate, barrier,
  * registration, grant, ready status) and signs a short `endpoint-serve` JWT for the participant's
@@ -73,9 +74,13 @@ export async function authorizeToolResultServe(args: AuthorizeToolResultServeArg
     throw new EpEnvelopeError("expired", `no live managed grant for ${args.owner}/${r.target.actor} at lifecycle ${r.target.lifecycleUid}`);
   if (row.parent !== principalKey(args.owner, r.actor).key)
     throw new EpEnvelopeError("permission-denied", `managed agent ${r.target.actor} is not enrolled under the authorizing actor ${r.actor}`);
+  // The head activates at the child's first connect-credential mint, which comes AFTER this issue
+  // (the Manager writes the serving file before it launches the session). So an absent head is a
+  // fresh enrollment not yet activated, authorized by the live row above; any head that exists
+  // must be this lifecycle and active. A retiring or retired head, or a successor's, refuses.
   const head = await args.readHead(args.owner, r.target.actor);
-  if (head === undefined || head.lifecycleUid !== r.target.lifecycleUid || head.state !== "active")
-    throw new EpEnvelopeError("expired", `managed agent ${r.target.actor} lifecycle ${r.target.lifecycleUid} is not the active head`);
+  if (head !== undefined && (head.lifecycleUid !== r.target.lifecycleUid || head.state !== "active"))
+    throw new EpEnvelopeError("expired", `managed agent ${r.target.actor} lifecycle ${r.target.lifecycleUid} is not the active head (${head.state} at ${head.lifecycleUid})`);
   return r;
 }
 

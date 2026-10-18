@@ -9,7 +9,8 @@
  * stock dispatchManagerAuthorityRequest's routing. One POSITIVE control and one refusal per fence:
  * another space, no `supervise`, no or frozen manager gate, a neighbour owner's gate, a stale serve
  * epoch, a forged proof, an absent row, a successor or stale lifecycle, a child of another actor,
- * a retiring head, a malformed request. The effect (registration, mint, renew at the same epoch,
+ * a retiring or successor head (an absent, not-yet-activated head is the positive fresh-spawn
+ * case), a malformed request. The effect (registration, mint, renew at the same epoch,
  * deregistration) needs a live broker and is NOT exercised here.
  */
 import assert from "node:assert/strict";
@@ -69,6 +70,8 @@ try {
   assert.equal(ok.target.lifecycleUid, childUid); assert.equal(ok.actor, "cli"); checks += 2;
   const renew = await authorizeToolResultServe(args({ request: request({ operation: "renew", epoch: 2 }) }));
   assert.equal(renew.epoch, 2); checks++;
+  const fresh = await authorizeToolResultServe(args({ readHead: async () => undefined }));
+  assert.equal(fresh.target.lifecycleUid, childUid, "a fresh enrollment whose head activates at first connect is authorized by its live row"); checks++;
 
   await refused("another space", args({ space: "neighbour" }), "permission-denied");
   await refused("an authorizing actor without supervise", args({ scope: ["spawn", "admin"] }), "permission-denied");
