@@ -125,6 +125,11 @@ export async function registerToolResultServeInstance<T>(opts: ServingTarget & {
   /** The serving connection's principal key; the issuance gate opens for it alone. */
   principal: string;
   mint: (fence: EpIssuanceGate, grant: EpServeGrant) => Promise<T>;
+  /** RE-register the SAME lifecycle's existing instance (a resumed session) instead of a first
+   *  registration: the gate must already carry a committed registration, the registration commits
+   *  the next process epoch (SPEC 13.7), and the barrier revokes the predecessor's serve family and
+   *  must VERIFY its holders evicted through `evict`, or the gate stays frozen and this refuses. */
+  reregister?: { evict: (holderPrincipals: readonly string[]) => Promise<boolean[]> };
 }): Promise<{ grant: EpServeGrant; minted: T }> {
   const { space, owner, lifecycleUid: instanceId } = opts;
   const endpoint = TOOL_RESULT_ENDPOINT;
@@ -143,9 +148,16 @@ export async function registerToolResultServeInstance<T>(opts: ServingTarget & {
     const storeCtx = await contractStoreContext(nc, space);
     for (const value of [...toolResultContractArtifactValues(), artifacts.document, artifacts.manifest])
       await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-    await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: opts.principal });
-    // A fresh incarnation has an empty credential family, so the barrier has nothing to evict.
-    const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId });
+    if (opts.reregister) {
+      const prior = await fenceOf(authKv).observe();
+      if (prior === null || prior.registrationRevision === 0)
+        throw new Error(`${endpoint}/${instanceId} was never registered, so there is no serving to resume; a resume never registers a fresh instance`);
+    } else {
+      await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: opts.principal });
+    }
+    // A fresh incarnation has an empty credential family, so the barrier has nothing to evict. A
+    // re-registration revokes the predecessor's family and must verify its holders gone.
+    const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId, ...(opts.reregister ? { evict: opts.reregister.evict } : {}) });
     const spec = { endpoint, owner, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
     const { registrationRevision } = await registerServiceInstance(recordsKv, {
       space, spec, instanceId, registrant: { owner }, authority, barrier, readClusterArtifact,
@@ -176,6 +188,17 @@ export async function registerToolResultServeInstance<T>(opts: ServingTarget & {
       throw new Error(`${why}; the tool-results record for ${instanceId} was removed again`);
     }
   });
+}
+
+/** Static renewal: re-sign the agent's own `endpoint-serve` credential on the SAME registration at
+ *  the SAME epoch through {@link renewToolResultServeGrant}. */
+export async function renewToolResultServing(opts: ServingTarget & { identity: Identity; epoch: number; expiresAt: number }): Promise<ToolResultServing> {
+  const { grant, minted } = await renewToolResultServeGrant({
+    ...opts,
+    owner: DEV_OWNER,
+    mint: (fence, grant) => mintCreds(opts.auth, opts.identity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant, expiresAt: opts.expiresAt }),
+  });
+  return { grant, creds: minted };
 }
 
 /** Re-authorize the SAME registration at the SAME serve epoch and hand the fence and grant to

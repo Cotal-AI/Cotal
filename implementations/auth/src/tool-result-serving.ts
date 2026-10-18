@@ -28,6 +28,7 @@ import {
   principalKey,
   registerToolResultServeInstance,
   renewToolResultServeGrant,
+  TOOL_RESULT_SERVE_TTL_SEC,
   deregisterToolResultServing,
   type AnchorResolver,
   type ServiceDeregistration,
@@ -39,10 +40,6 @@ import {
 import { findManagedActor } from "./ledger.js";
 import { assertCurrentManagerRegistration, type ObserveManagerGate } from "./managed-agent-enrollment.js";
 
-/** The server cap on one serving credential. The managed row carries no expiry of its own, and
- *  the anchors the answer carries are only as current as the latest renewal, so the cap is short:
- *  a withdrawn anchor, a revoked row or a moved gate stops serving within one renewal. */
-export const TOOL_RESULT_SERVE_TTL_SEC = 600;
 
 export interface AuthorizeToolResultServeArgs {
   request: unknown;
@@ -104,9 +101,15 @@ export interface ToolResultServeEffect {
   auth: SpaceAuth;
   servers: string;
   consentAnchors?: ToolResultConsentAnchorRecord[];
+  /** The deployment's verified evictor (the plane's `$SYS` CONNZ+KICK machinery), consulted only
+   *  by `resume`'s re-registration for the predecessor's holders. */
+  evict: (holderPrincipals: readonly string[]) => Promise<boolean[]>;
 }
 
-/** The effect for an already-authorized request: register-and-mint or renew-and-mint. */
+/** The effect for an already-authorized request: `issue` registers and mints; `renew` re-signs at
+ *  the same epoch; `resume` re-registers the same lifecycle's existing instance at the next epoch,
+ *  fencing and evicting its predecessor, and mints. A resume of an instance never registered is a
+ *  named refusal, never a fresh registration. */
 export async function issueToolResultServe(r: ToolResultServeAuthorityRequest, e: ToolResultServeEffect): Promise<ToolResultServeAuthorityMaterial> {
   const { owner } = e;
   const target = { auth: e.auth, servers: e.servers, space: e.space, tls: false, lifecycleUid: r.target.lifecycleUid, owner };
@@ -118,9 +121,12 @@ export async function issueToolResultServe(r: ToolResultServeAuthorityRequest, e
       endpointServe: grant,
       serveIssuance: fence,
     });
+  const principal = principalKey(owner, r.target.actor).key;
   const { grant, minted } = r.operation === "issue"
-    ? await registerToolResultServeInstance({ ...target, principal: principalKey(owner, r.target.actor).key, mint })
-    : await renewToolResultServeGrant({ ...target, epoch: r.epoch!, mint });
+    ? await registerToolResultServeInstance({ ...target, principal, mint })
+    : r.operation === "resume"
+      ? await registerToolResultServeInstance({ ...target, principal, mint, reregister: { evict: e.evict } })
+      : await renewToolResultServeGrant({ ...target, epoch: r.epoch!, mint });
   return {
     v: 1,
     kind: "tool-result-serve-authority",

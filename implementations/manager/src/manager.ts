@@ -76,6 +76,9 @@ import {
   invokeCommand,
   digestIdToken,
   registerToolResultServing,
+  renewToolResultServing,
+  TOOL_RESULT_SERVE_TTL_SEC,
+  type ToolResultServingFile,
   deregisterToolResultServing,
   readToolResultConsentAnchorFile,
   toolResultServingFromMaterial,
@@ -4136,38 +4139,30 @@ export class Manager {
    *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
    *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
    *  rolled back. */
-  /** USER MODE (SPEC 13.9): obtain this incarnation's tool-results serve credential and grant from
-   *  the host's serve issuance, write them at 0600 beside the agent's own secret family, and keep
-   *  them renewed at three quarters of each credential's life. The session reads the file for its
-   *  creds on every (re)connect and for the host's consent anchors on every verification. A renewal
-   *  that fails, or whose outcome is unknown, removes the file, which ends serving and capture; the
-   *  broker already ends the serving connection at the credential's own expiry. Returns the path. */
-  private async startUserToolResultServing(owner: string, actor: string, lifecycleUid: string): Promise<string> {
-    const issue = this.remoteAuthority?.issueToolResultServe;
-    if (!issue) throw new Error("tool-results serving is enabled, but this user-mode mesh has no host issuer for an agent's serve grant");
+  /** The incarnation's 0600 serving file, beside its own secret family and keyed by its lifecycle,
+   *  so a resumed launch of the same lifecycle finds the same path and no successor shares it. */
+  private toolResultServingFilePath(actor: string, lifecycleUid: string): string {
+    return join(agentCredsDir(this.workspaceRoot, this.space), `${actor}.${lifecycleUid}.tool-results.json`);
+  }
+
+  /** Write the first serving material and keep it renewed at three quarters of each credential's
+   *  life through `renew`. Every renewal repeats its authority's fences. A renewal that fails, or
+   *  whose outcome is unknown, removes the file and is NOT retried: the session then stops serving
+   *  and discards its results, and only a fresh spawn or a resume (which re-registers at the next
+   *  epoch, fencing any credential an ambiguous renewal may have minted) serves again. */
+  private async runToolResultServing(
+    actor: string,
+    lifecycleUid: string,
+    first: () => Promise<ToolResultServingFile>,
+    renew: (epoch: number) => Promise<ToolResultServingFile>,
+  ): Promise<string> {
     if (this.toolResultServes.has(lifecycleUid)) throw new Error(`tool-results serving for ${lifecycleUid} is already running`);
-    const identity = newIdentity();
-    const file = join(agentCredsDir(this.workspaceRoot, this.space), `${actor}.${lifecycleUid}.tool-results.json`);
-    const request = (operation: "issue" | "renew", epoch?: number): ToolResultServeIntent => ({
-      v: 1,
-      kind: "tool-result-serve-authority",
-      operation,
-      space: this.space,
-      target: { actor, lifecycleUid },
-      serve: { id: identity.id },
-      ...(epoch !== undefined ? { epoch } : {}),
-      requestId: `toolresult${mintLifecycleUid()}`,
-    });
-    const obtain = async (req: ToolResultServeIntent) => {
-      const serving = toolResultServingFromMaterial(await issue(req), req, identity);
-      if (serving.grant.owner !== owner) throw new Error(`the host's tool-results serve grant names owner ${serving.grant.owner}, not ${owner}`);
-      return serving;
-    };
+    const file = this.toolResultServingFilePath(actor, lifecycleUid);
     const entry: { file: string; timer?: ReturnType<typeof setTimeout> } = { file };
     this.toolResultServes.set(lifecycleUid, entry);
     const schedule = (notAfter: number, epoch: number): void => {
       entry.timer = setTimeout(() => {
-        void obtain(request("renew", epoch)).then(
+        void renew(epoch).then(
           (renewed) => {
             if (this.toolResultServes.get(lifecycleUid) !== entry) return;
             writeToolResultServingFile(file, renewed);
@@ -4184,9 +4179,9 @@ export class Manager {
       entry.timer.unref?.();
     };
     try {
-      const first = await obtain(request("issue"));
-      writeToolResultServingFile(file, first);
-      schedule(first.notAfter, first.grant.epoch);
+      const material = await first();
+      writeToolResultServingFile(file, material);
+      schedule(material.notAfter, material.grant.epoch);
     } catch (e) {
       this.toolResultServes.delete(lifecycleUid);
       rmSync(file, { force: true });
@@ -4195,8 +4190,64 @@ export class Manager {
     return file;
   }
 
-  /** Stop renewing this incarnation's user-mode tool-results serve and remove its serving file. The
-   *  host's retirement revokes the grant itself; this ends the participant's half. */
+  /** USER MODE (SPEC 13.9): obtain this incarnation's tool-results serve credential and grant from
+   *  the host's serve issuance (`issue` for a fresh spawn, `resume` for a resumed session of the
+   *  SAME lifecycle, which the host re-registers at the next epoch) and keep them renewed (`renew`
+   *  at the same epoch). The serving key is fresh for each run of the session; only its public id
+   *  leaves the manager. Returns the serving file's path. */
+  private async startUserToolResultServing(owner: string, actor: string, lifecycleUid: string, initial: "issue" | "resume" = "issue"): Promise<string> {
+    const issue = this.remoteAuthority?.issueToolResultServe;
+    if (!issue) throw new Error("tool-results serving is enabled, but this user-mode mesh has no host issuer for an agent's serve grant");
+    const identity = newIdentity();
+    const request = (operation: "issue" | "renew" | "resume", epoch?: number): ToolResultServeIntent => ({
+      v: 1,
+      kind: "tool-result-serve-authority",
+      operation,
+      space: this.space,
+      target: { actor, lifecycleUid },
+      serve: { id: identity.id },
+      ...(epoch !== undefined ? { epoch } : {}),
+      requestId: `toolresult${mintLifecycleUid()}`,
+    });
+    const obtain = async (req: ToolResultServeIntent): Promise<ToolResultServingFile> => {
+      const serving = toolResultServingFromMaterial(await issue(req), req, identity);
+      if (serving.grant.owner !== owner) throw new Error(`the host's tool-results serve grant names owner ${serving.grant.owner}, not ${owner}`);
+      return serving;
+    };
+    return this.runToolResultServing(actor, lifecycleUid, () => obtain(request(initial)), (epoch) => obtain(request("renew", epoch)));
+  }
+
+  /** STATIC MODE (SPEC 13.6): register this incarnation's own `tool-results` instance and keep its
+   *  `endpoint-serve` credential (for its own identity) renewed on the same registration and epoch.
+   *  Each credential is capped at {@link TOOL_RESULT_SERVE_TTL_SEC}. A renewal first requires the
+   *  incarnation to still be this manager's live slot at that lifecycle and the operator's anchor
+   *  file to still read; otherwise serving stops. The session re-reads that anchor file on every
+   *  verification. Returns the serving file's path. */
+  private async startStaticToolResultServing(actor: string, lifecycleUid: string, identity: Identity): Promise<string> {
+    const anchorFile = this.toolResultConsentAnchors;
+    const target = { auth: this.auth!, servers: this.servers ?? DEFAULT_SERVER, space: this.space, tls: false, lifecycleUid };
+    const toFile = (serving: { creds: string; grant: EpServeGrant }, expiresAt: number): ToolResultServingFile =>
+      ({ creds: serving.creds, grant: serving.grant, notAfter: expiresAt * 1000, ...(anchorFile !== undefined ? { consentAnchorFile: anchorFile } : {}) });
+    const expiry = (): number => Math.floor(Date.now() / 1000) + TOOL_RESULT_SERVE_TTL_SEC;
+    return this.runToolResultServing(
+      actor,
+      lifecycleUid,
+      async () => {
+        const expiresAt = expiry();
+        return toFile(await registerToolResultServing({ ...target, identity, expiresAt }), expiresAt);
+      },
+      async (epoch) => {
+        if (this.agents.get(actor)?.lifecycleUid !== lifecycleUid) throw new Error(`${actor} is no longer this manager's live incarnation ${lifecycleUid}`);
+        if (anchorFile !== undefined) readToolResultConsentAnchorFile(anchorFile);
+        const expiresAt = expiry();
+        return toFile(await renewToolResultServing({ ...target, identity, epoch, expiresAt }), expiresAt);
+      },
+    );
+  }
+
+  /** Stop renewing this incarnation's tool-results serve and remove its serving file. Retirement
+   *  takes the registration down (the host's, or the static deregistration); this ends the
+   *  manager's half. */
   private async stopToolResultServing(unshredded: string[], lifecycleUid: string): Promise<void> {
     const entry = this.toolResultServes.get(lifecycleUid);
     if (!entry) return;
@@ -4683,6 +4734,7 @@ export class Manager {
     // Every removal is attempted, and a failed one is thrown only after the broker teardown below,
     // so a file fault cannot strand the agent's durables and ACL row on the broker.
     const unshredded: string[] = [];
+    await this.stopToolResultServing(unshredded, a.lifecycleUid);
     if (files.creds) {
       const creds = files.creds;
       await attemptCleanup(unshredded, `secret ${creds}`, () => secrets.delete(agentSecretKeyForFile(creds, this.space)));
@@ -4693,7 +4745,6 @@ export class Manager {
       // the agent's standing mint authority, so delete it (next exchange refused, next connect
       // denied) and shred the secret/sentinel/health files. A copied actor token dies here; a
       // still-LIVE connection ends at its bearer-bound JWT expiry (≤ the agent TTL).
-      await this.stopToolResultServing(unshredded, a.lifecycleUid);
       await this.shredUserSecrets(unshredded, files);
       // The ledger row IS the agent's STANDING mint authority (a different store from the auth-plane
       // cred ledger the rail retirement covers): while it lives, a copied actor token can still mint a
@@ -6242,7 +6293,6 @@ export class Manager {
       let userLaunch: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] } | undefined;
       let userOwner: string | undefined;
       let enrolled: { material: ManagedEnrollment; actorToken: string } | undefined;
-      let toolResultMaterial: LaunchOpts["toolResults"];
       let toolResultServingFile: string | undefined;
       // SPEC 13.6: an incarnation's tool-results serving material comes from the static-auth arm's
       // own issuer or, in user mode, from the host's serve issuance. A mesh with neither has no
@@ -6360,16 +6410,7 @@ export class Manager {
           // The registered anchors must still read before anything is registered: an operator file
           // that broke since startup refuses the spawn rather than launching on a stale snapshot.
           if (this.toolResultConsentAnchors !== undefined) readToolResultConsentAnchorFile(this.toolResultConsentAnchors);
-          const serving = await registerToolResultServing({
-            auth: this.auth!,
-            servers: this.servers ?? DEFAULT_SERVER,
-            space: this.space,
-            tls: false, // the manager's executor dials are not yet wired to a recorded transport
-            identity,
-            lifecycleUid,
-            expiresAt: exp,
-          });
-          toolResultMaterial = { creds: serving.creds, grant: serving.grant, ...(this.toolResultConsentAnchors !== undefined ? { consentAnchors: this.toolResultConsentAnchors } : {}) };
+          toolResultServingFile = await this.startStaticToolResultServing(name, lifecycleUid, identity);
         }
       }
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
@@ -6392,7 +6433,6 @@ export class Manager {
         id: userLaunch ? undefined : identity.id,
         creds: credsPath,
         userAuth: userLaunch,
-        ...(toolResultMaterial ? { toolResults: toolResultMaterial } : {}),
         ...(toolResultServingFile ? { toolResultsServing: { file: toolResultServingFile } } : {}),
         // The incarnation's lifecycle UID: the agent endpoint binds its lifecycle-keyed dm/dlv/
         // chathist durables by this exact value (its creds pin the same names, so a mismatch fails
@@ -7073,10 +7113,13 @@ export class Manager {
       if (unsupported) return { ok: false, error: unsupported };
       const eventsRefused = this.eventsRefusal(connector, entry.launch.events);
       if (eventsRefused) return { ok: false, error: eventsRefused };
-      // A resumed incarnation is not yet re-issued its tool-results serve material, so with serving
-      // on it refuses rather than relaunching a session that silently serves nothing.
-      if (this.toolResultServing && connector.toolResults === true)
-        return { ok: false, error: `resume does not re-issue tool-results serving for ${entry.name}; retire and spawn a fresh incarnation to serve tool results` };
+      // A resumed user-mode incarnation re-acquires serving through the host's `resume`, which
+      // re-registers the SAME lifecycle's instance at the next epoch and fences its predecessor. A
+      // static manager holds no verified evictor for that re-registration, so a static resume with
+      // serving on refuses rather than relaunching a session that serves nothing.
+      const resumeServing = this.toolResultServing && connector.toolResults === true;
+      if (resumeServing && entry.identity.mode !== "user")
+        return { ok: false, error: `resume re-acquires tool-results serving only for a user-mode incarnation; retire ${entry.name} and spawn a fresh incarnation to serve tool results` };
 
       let authority: Pick<PreparedResume, "id" | "creds" | "userAuth">;
       try {
@@ -7099,6 +7142,9 @@ export class Manager {
           // with no COTAL_LIFECYCLE_UID: static/user fail the connector auth gate and open self-mints a
           // fresh uid that orphans the preserved durables and never matches the readiness fence.
           lifecycleUid: entry.identity.lifecycleUid,
+          ...(resumeServing && entry.identity.mode === "user"
+            ? { toolResultsServing: { file: this.toolResultServingFilePath(entry.identity.actor, entry.identity.lifecycleUid) } }
+            : {}),
           backfillFloor: entry.backfillFloor,
           acceptedToken: entry.identity.mode === "static" ? entry.identity.issued?.acceptedToken : undefined,
           configPath: entry.launch.source.configPath,
@@ -7151,6 +7197,10 @@ export class Manager {
       if (!Number.isSafeInteger(readinessTimeoutMs) || readinessTimeoutMs <= 0)
         return { ok: false, error: `connector ${connector.name} declares invalid readinessTimeoutMs ${JSON.stringify(connector.readinessTimeoutMs)}; expected a positive safe integer` };
       const resumeId = entry.identity.mode === "user" ? principalKey(entry.identity.owner, entry.identity.actor).key : entry.identity.id;
+      // The serving file the prepared launch names is written only now, by the host's `resume`, so a
+      // preflight that never launches leaves no registration or renewal behind.
+      if (prepared.launchOpts.toolResultsServing && entry.identity.mode === "user")
+        await this.startUserToolResultServing(entry.identity.owner, entry.identity.actor, entry.identity.lifecycleUid, "resume");
       const custody = this.reserveCustody();
       if (custody) await this.recordSlotCustody({ name: entry.name, id: resumeId, lifecycleUid: entry.identity.lifecycleUid }, custody);
       prepared.spawned = true;
@@ -7246,6 +7296,8 @@ export class Manager {
         data: { name: managed.name, role: managed.role, agent: managed.agent, id: managed.id, mode: handle.kind, resumed: true },
       };
     } catch (e) {
+      // A resume that threw before its slot went live stops the serving it started.
+      if (this.agents.get(entry.name)?.lifecycleUid !== entry.identity.lifecycleUid) await this.stopToolResultServing([], entry.identity.lifecycleUid);
       return { ok: false, error: rejectionText(e) };
     } finally {
       if (!batchReserved) {

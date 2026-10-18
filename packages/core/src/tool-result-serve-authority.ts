@@ -23,7 +23,12 @@ import type { EpServeGrant } from "./endpoint-service.js";
 import { credsFromJwt, isUserNkey, type Identity } from "./identity.js";
 import { writeSecretFile } from "./secret-fs.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
-import { parseToolResultConsentAnchors, type ToolResultConsentAnchorRecord } from "./tool-result-anchors.js";
+import { parseToolResultConsentAnchors, readToolResultConsentAnchorFile, type ToolResultConsentAnchorRecord } from "./tool-result-anchors.js";
+
+/** The cap on one tool-results serving credential, static or user mode. Serving is renewed well
+ *  before it, so a withdrawn anchor, a revoked row, a retired lifecycle or a failed renewal ends
+ *  serving within one cap; nothing serves on a long-lived credential. */
+export const TOOL_RESULT_SERVE_TTL_SEC = 600;
 import { TOOL_RESULT_ENDPOINT } from "./tool-result-contract.js";
 import { parseManagedAgentAuthorityEnvelope, type RemoteManagerEnvelope } from "./remote-manager-authority.js";
 
@@ -48,7 +53,10 @@ export interface ToolResultServeAuthorityRequest extends ToolResultServeIntent {
 export interface ToolResultServeIntent {
   v: 1;
   kind: "tool-result-serve-authority";
-  operation: "issue" | "renew";
+  /** `issue` registers a fresh incarnation's instance; `renew` re-signs on the same registration
+   *  at the same epoch; `resume` re-registers the SAME lifecycle's existing instance at the next
+   *  epoch (fencing every credential of its predecessor) for a resumed session. */
+  operation: "issue" | "renew" | "resume";
   space: string;
   /** The managed incarnation whose `tool-results` instance this serves. */
   target: { actor: string; lifecycleUid: string };
@@ -86,7 +94,7 @@ export function parseToolResultServeAuthorityRequest(raw: unknown): ToolResultSe
   if (!isRec(raw)) throw new Error(`${what}: not an object`);
   closed(raw, ["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "target", "serve", "epoch"], what);
   const envelope = parseManagedAgentAuthorityEnvelope(raw, what, "tool-result-serve-authority");
-  if (raw.operation !== "issue" && raw.operation !== "renew") throw new Error(`${what}: operation must be issue or renew`);
+  if (raw.operation !== "issue" && raw.operation !== "renew" && raw.operation !== "resume") throw new Error(`${what}: operation must be issue, renew or resume`);
   if (!isRec(raw.target)) throw new Error(`${what}: target is not an object`);
   closed(raw.target, ["actor", "lifecycleUid"], `${what} target`);
   if (typeof raw.target.actor !== "string" || typeof raw.target.lifecycleUid !== "string") throw new Error(`${what}: target needs actor and lifecycleUid`);
@@ -100,7 +108,7 @@ export function parseToolResultServeAuthorityRequest(raw: unknown): ToolResultSe
   if (raw.operation === "renew") {
     if (typeof raw.epoch !== "number" || !Number.isSafeInteger(raw.epoch) || raw.epoch < 0) throw new Error(`${what}: renew needs the current serve epoch`);
     epoch = raw.epoch;
-  } else if (raw.epoch !== undefined) throw new Error(`${what}: issue must not carry an epoch`);
+  } else if (raw.epoch !== undefined) throw new Error(`${what}: ${raw.operation} must not carry an epoch`);
   if (!REQUEST_ID.test(envelope.requestId)) throw new Error(`${what}: requestId is not a bounded token`);
   return {
     v: 1,
@@ -118,7 +126,11 @@ export function parseToolResultServeAuthorityRequest(raw: unknown): ToolResultSe
 export interface ToolResultServingFile {
   creds: string;
   grant: EpServeGrant;
+  /** User mode: the host's public anchors as of the latest issue or renewal. */
   consentAnchors?: ToolResultConsentAnchorRecord[];
+  /** Static mode: the operator's anchor file, re-read on every verification. Never with
+   *  `consentAnchors`. */
+  consentAnchorFile?: string;
   notAfter: number;
 }
 
@@ -159,6 +171,8 @@ export function readToolResultServingFile(path: string): ToolResultServingFile {
   const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
   if (!isRec(raw) || typeof raw.creds !== "string" || !isRec(raw.grant) || typeof raw.notAfter !== "number") throw new Error(`tool-result serving file ${path} is malformed`);
   if (raw.consentAnchors !== undefined) parseToolResultConsentAnchors(raw.consentAnchors, `tool-result serving file ${path}`);
+  if (raw.consentAnchorFile !== undefined && (typeof raw.consentAnchorFile !== "string" || !isAbsolute(raw.consentAnchorFile) || raw.consentAnchors !== undefined))
+    throw new Error(`tool-result serving file ${path} names an anchor file that is not absolute, or names it beside host anchors`);
   return raw as unknown as ToolResultServingFile;
 }
 
@@ -168,7 +182,9 @@ export function toolResultServingFileResolver(path: string, now: () => number = 
   return (keyId): SignerAnchor | undefined => {
     try {
       const f = readToolResultServingFile(path);
-      if (now() > f.notAfter || f.consentAnchors === undefined) return undefined;
+      if (now() > f.notAfter) return undefined;
+      if (f.consentAnchorFile !== undefined) return readToolResultConsentAnchorFile(f.consentAnchorFile).find((a) => a.keyId === keyId);
+      if (f.consentAnchors === undefined) return undefined;
       return parseToolResultConsentAnchors(f.consentAnchors).find((a) => a.keyId === keyId);
     } catch {
       return undefined;

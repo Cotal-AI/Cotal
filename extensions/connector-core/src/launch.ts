@@ -258,8 +258,8 @@ export function materialEnv(opts: {
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
   if (opts.toolResults && !opts.creds)
     throw new Error("launch: tool-results serving material rides only a static-auth launch; no other source issues it");
-  if (opts.toolResultsServing && !opts.userAuth)
-    throw new Error("launch: a tool-results serving file rides only a user-mode launch, whose host issued it");
+  if (opts.toolResultsServing && !opts.userAuth && !opts.creds)
+    throw new Error("launch: a tool-results serving file rides only a static-auth or user-mode launch, whose launcher maintains it");
   const material: LaunchMaterial = {};
   if (opts.creds) material.creds = opts.creds;
   if (opts.servers) material.servers = opts.servers;

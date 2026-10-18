@@ -70,6 +70,9 @@ try {
   assert.equal(ok.target.lifecycleUid, childUid); assert.equal(ok.actor, "cli"); checks += 2;
   const renew = await authorizeToolResultServe(args({ request: request({ operation: "renew", epoch: 2 }) }));
   assert.equal(renew.epoch, 2); checks++;
+  const resumed = await authorizeToolResultServe(args({ request: request({ operation: "resume" }) }));
+  assert.equal(resumed.operation, "resume", "a resume passes the same fences; its re-registration needs a broker and is not run here"); checks++;
+  await refused("a resume naming an old epoch", args({ request: { ...request({ operation: "resume" }), epoch: 1 } }), "contract-invalid");
   const fresh = await authorizeToolResultServe(args({ readHead: async () => undefined }));
   assert.equal(fresh.target.lifecycleUid, childUid, "a fresh enrollment whose head activates at first connect is authorized by its live row"); checks++;
 

@@ -11,7 +11,7 @@
  * mint) is not in this module and is not exercised here.
  */
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUser } from "@nats-io/nkeys";
@@ -58,6 +58,9 @@ ok(parseToolResultServeAuthorityRequest(request()).operation === "issue", "a wel
 ok(parseToolResultServeAuthorityRequest(request({ operation: "renew", epoch: 3 })).epoch === 3, "a renew names the current epoch");
 throws(() => parseToolResultServeAuthorityRequest(request({ operation: "renew" })), "a renew without an epoch is refused");
 throws(() => parseToolResultServeAuthorityRequest(request({ epoch: 3 })), "an issue carrying an epoch is refused");
+ok(parseToolResultServeAuthorityRequest(request({ operation: "resume" })).operation === "resume", "a resume names no epoch: the host re-registers at the next one");
+throws(() => parseToolResultServeAuthorityRequest(request({ operation: "resume", epoch: 3 })), "a resume carrying an epoch (an old-epoch accept) is refused");
+throws(() => parseToolResultServeAuthorityRequest(request({ operation: "reissue" as never })), "an unknown operation is refused");
 throws(() => parseToolResultServeAuthorityRequest({ ...request(), registry: "*" }), "an extra field (a registry-wide read) is refused");
 throws(() => parseToolResultServeAuthorityRequest(request({ requestId: "short" })), "a short request id is refused");
 throws(() => parseToolResultServeAuthorityRequest(request({ serve: { id: "A".repeat(56) } })), "a serve key that is not a user nkey is refused");
@@ -102,6 +105,15 @@ try {
   const { consentAnchors: _anchors, ...bare } = issued;
   writeToolResultServingFile(file, bare);
   ok(resolve("host-1") === undefined, "a serve without host anchors resolves nothing");
+  // Static mode: the file names the operator's anchor file, re-read on every verification.
+  const anchorFile = join(dir, "anchors.json");
+  writeFileSync(anchorFile, JSON.stringify([anchor]));
+  writeToolResultServingFile(file, { ...bare, consentAnchorFile: anchorFile });
+  ok((await resolve("host-1"))?.publicKey === host.getPublicKey(), "a static serving file resolves through the operator's anchor file");
+  writeFileSync(anchorFile, JSON.stringify([{ ...anchor, revoked: true }]));
+  ok((await resolve("host-1"))?.revoked === true, "a withdrawal in the operator's file is seen at the next verification");
+  writeToolResultServingFile(file, { ...issued, consentAnchorFile: anchorFile });
+  throws(() => readToolResultServingFile(file), "host anchors beside an anchor file are refused");
   rmSync(file);
   ok(resolve("host-1") === undefined, "a removed file (failed renewal) resolves nothing");
   throws(() => writeToolResultServingFile("relative.json", issued), "a relative serving-file path is refused");

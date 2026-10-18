@@ -1466,7 +1466,11 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           ? { keyId: opts.toolResultConsentSignerKeyId, resolveAnchor: opts.toolResultConsentAnchors }
           : undefined;
         const consentAnchors = await currentToolResultConsentAnchors(signer, Date.now());
-        return issueToolResultServe(r, { owner, space, auth: issuerAuth(), servers: server, ...(consentAnchors ? { consentAnchors } : {}) });
+        return issueToolResultServe(r, {
+          owner, space, auth: issuerAuth(), servers: server,
+          ...(consentAnchors ? { consentAnchors } : {}),
+          evict: async (holders) => Promise.all(holders.map(async (p) => (await evictPrincipal(p)).verifiedGone)),
+        });
       });
     },
     prepareManagedAgentRetirement: async ({ owner, scope, request }) => {

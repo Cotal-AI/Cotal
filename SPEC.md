@@ -3021,13 +3021,23 @@ the connection it opens expire no later than the consent; the callout repeats th
 mint and grants exactly the handle-mode request rows for the three commands on that incarnation plus
 the holder's own reply rail. An agent-secret exchange cannot request the view. The human proof time is
 the IdP token's own signed OIDC `auth_time` claim; a token without it is refused and the time is never
-synthesized, so a host that signs consents needs an IdP that issues `auth_time`. On a static-auth
-mesh a launcher MAY register one `tool-results` instance per managed incarnation (instance id = its
-lifecycle UID, the three commands `handle`-only, owner = the operator) and hand the agent its serve
-grant and its own `endpoint-serve` credential, bounded like its agent credential, through the 0600
-launch material only; retiring the incarnation deregisters the instance. A mesh with no issuer for
-that material (user-mode, open) refuses such a spawn rather than launching one that serves nothing.
-The launcher registers the host's consent anchors from an operator file of PUBLIC records
+synthesized, so a host that signs consents needs an IdP that issues `auth_time`. A launcher MAY register one
+`tool-results` instance per managed incarnation (instance id = its lifecycle UID, the three commands
+`handle`-only) and hand the session a 0600 serving file holding the serve grant, an
+`endpoint-serve` credential of at most 600 s and the consent anchors; only the file's path rides the
+launch material. The launcher renews the credential before it expires on the same registration and
+epoch; a renewal that fails or whose outcome is unknown removes the file, and the session then stops
+serving and retires its journal. Retiring the incarnation deregisters the instance. On a static-auth
+mesh the launcher registers with the operator as owner and mints for the agent's own identity, and
+renews only while the incarnation is its live slot and the anchor file still reads. On a user-mode
+mesh it asks its host with a closed `tool-result-serve-authority` request (`issue`, `renew` at the
+same epoch, or `resume`) carrying its manager registration envelope; the host checks the authorizing
+actor's `supervise` scope, the current registration proof and serve epoch, and the target's live
+managed row at that lifecycle under that actor, registers for the target's owner, mints for the
+launcher's public serving key, and returns only its current public consent anchors. `resume`
+re-registers the same lifecycle's instance at the next epoch with verified eviction of the
+predecessor and refuses an instance that never registered. An open mesh refuses such a spawn.
+On a static-auth mesh the launcher registers the host's consent anchors from an operator file of PUBLIC records
 `{ keyId, publicKey, owner, validFrom, validTo, revoked? }`; each is registered as exactly
 `roles: ["consents"]`, `scope: { consents: ["tool-results"] }`, so the file cannot grant any other
 role, and a malformed, partial or duplicate file refuses. The serving session receives only the
@@ -3036,8 +3046,7 @@ predecessor's window closed) and withdrawal (`revoked: true` or removal) apply t
 verification; it rechecks the signer of every applied consent at least once a minute and withdraws
 any whose anchor is withdrawn or unreadable, discarding held results when none is left. When the
 serve connection closes for good (credential expiry, eviction, retirement) the journal retires.
-Without an anchor file every presented consent is refused and the journal stays off. User-mode serve
-issuance is hosting-authority work not defined here.
+Without anchors every presented consent is refused and the journal stays off.
 
 ### 13.7 Contracts and discovery
 

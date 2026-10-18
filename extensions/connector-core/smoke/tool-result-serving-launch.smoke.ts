@@ -3,8 +3,8 @@
  *   pnpm --dir extensions/connector-core exec tsx smoke/tool-result-serving-launch.smoke.ts
  *
  * Drives the shipped materialEnv and core readLaunchMaterial: the serving-file path rides only a
- * user-mode launch (never a static or open one), only as an absolute path inside the 0600 launch
- * material, and never in argv or env. The session half (serveLaunchedToolResults re-reading the
+ * static-auth or user-mode launch (never an open one), only as an absolute path inside the 0600
+ * launch material, and never in argv or env. The session half (serveLaunchedToolResults re-reading the
  * file, stopping when it is removed or lapses) needs a live mesh and is NOT exercised here.
  */
 import assert from "node:assert/strict";
@@ -19,7 +19,8 @@ const userAuth = { owner: "u_" + "a".repeat(26), actor: "seat", sentinelCredsPat
 const file = "/tmp/seat.tool-results.json";
 
 throws(() => materialEnv({ toolResultsServing: { file } }), "an open launch cannot carry a serving file");
-throws(() => materialEnv({ creds: "creds", toolResultsServing: { file } }), "a static launch cannot carry a serving file");
+const staticEnv = materialEnv({ creds: "creds", toolResultsServing: { file } });
+ok(readLaunchMaterial(staticEnv[LAUNCH_MATERIAL_ENV]!).toolResultsServing?.file === file, "a static launch carries the serving file its manager renews");
 const env = materialEnv({ userAuth, toolResultsServing: { file } });
 ok(Object.keys(env).length === 1 && typeof env[LAUNCH_MATERIAL_ENV] === "string", "only the material path reaches the env");
 ok(!Object.values(env).some((v) => v.includes(file)), "the serving-file path is not in the env itself");

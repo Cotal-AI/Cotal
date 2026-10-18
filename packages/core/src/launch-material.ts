@@ -80,9 +80,10 @@ export type LaunchMaterial = {
      *  and every consent is refused. */
     consentAnchors?: string;
   };
-  /** User-mode tool-results serving: the absolute path of the 0600 serving file the launcher
-   *  maintains (core `ToolResultServingFile`: renewable creds, grant, the host's public consent
-   *  anchors, `notAfter`). The session re-reads it on every connect and verification. */
+  /** Tool-results serving (static or user mode): the absolute path of the 0600 serving file the
+   *  launcher maintains and renews (core `ToolResultServingFile`: creds, grant, the host's public
+   *  consent anchors or the operator's anchor-file path, `notAfter`). The session re-reads it on
+   *  every connect and verification. */
   toolResultsServing?: { file: string };
 };
 
