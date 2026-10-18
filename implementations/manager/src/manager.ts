@@ -112,7 +112,6 @@ import {
   readUserSlot,
   writeUserSlot,
   type ManagerSlotRecord,
-  type UserReconcileMarkers,
 } from "./user-slot-custody.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
@@ -1536,14 +1535,9 @@ export class Manager {
   private userReconcileSweepsInFlight = 0;
   private userReconcileLastSweep?: ManagerUserReconciliationSweep;
   private readonly userReconcileFailures = new Map<string, ManagerUserReconciliationFailure>();
-  private readonly releasedSeatWatches = new Map<string, ManagerSlotRecord>();
+  private readonly releasedSeatWatches = new Map<string, { row: ManagerSlotRecord; unknownProbes: number; nextProbeAt: number }>();
   private releasedSeatWatchTimer?: ReturnType<typeof setInterval>;
-  private readonly userReconcileMarkers: UserReconcileMarkers = {
-    adoptedReleasedCount: 0,
-    deferredForResumeCount: 0,
-    adoptedResumeSkipCount: 0,
-    heldDelegatedSlotCount: 0,
-  };
+  private releasedSeatPollInFlight = false;
 
   status(): ManagerStatus {
     return this.managerStatusData();
@@ -2658,9 +2652,9 @@ export class Manager {
 
   /** A cleanup spawned by accepted active-mode work is part of that work for maintenance draining,
    * even where the ordinary control reply remains fire-and-forget. */
-  private trackDeprovision(a: TeardownTarget, context = ""): void {
+  private trackDeprovision(a: TeardownTarget, context = ""): Promise<void> {
     this.lifecycleInFlight++;
-    void this.deprovision(a)
+    return this.deprovision(a)
       .catch((e) => console.error(`deprovision${context ? ` ${context}` : ""} ${a.name} (${a.id}): ${rejectionText(e)}`))
       .finally(() => this.releaseLifecycle());
   }
@@ -4228,7 +4222,7 @@ export class Manager {
         }),
       );
       if (this.hasUserSlotStore()) {
-        await this.withUserSlotKv((kv) =>
+        await this.withUserSlotKv(owner, (kv) =>
           this.upsertUserSlotRecord(kv, {
             managerOwner: owner,
             targetOwner: owner,
@@ -4338,7 +4332,7 @@ export class Manager {
     };
     try {
       if (managerOwner && preTargetOwner && preTargetOwner.startsWith("u_") && this.hasUserSlotStore()) {
-        await this.withUserSlotKv(async (kv) => {
+        await this.withUserSlotKv(managerOwner, async (kv) => {
           const existing = await readUserSlot(kv, this.space, managerOwner, preTargetOwner, name);
           if (existing !== undefined && existing.row.phase !== "retired") {
             if (ownedBySibling(existing.row, this.managerInstanceId)) {
@@ -4411,7 +4405,7 @@ export class Manager {
           delegatedIntentId: opts.delegatedIntentId,
           runtime: opts.runtime,
         });
-        await this.withUserSlotKv(async (kv) => {
+        await this.withUserSlotKv(managerOwner, async (kv) => {
           slotRevision = await writeUserSlot(kv, this.workspaceRoot, this.space, provisioningRow, slotRevision);
         });
       }
@@ -4667,7 +4661,6 @@ export class Manager {
 
   /** The actual footprint teardown (wrapped by {@link deprovision}'s single-flight). */
   private async driveDeprovision(a: TeardownTarget): Promise<void> {
-    if (this.remoteAuthority) {
       const held = this.retiring.get(a.name);
       if (a.delegated) {
         // The agent is its user's: only that user's retirement intent retires it, so the name stays
@@ -4720,7 +4713,9 @@ export class Manager {
           }
         }
         a.reapRequired = false;
+        a.released = false;
       }
+    if (this.remoteAuthority) {
       // A hosted composition owns grant revocation and resumable footprint release. It calls this
       // prerequisite before the terminal rail. The callback must preserve this UID and its pending
       // state until the host decides terminal retirement, never map deprovisioning to suspension.
@@ -6596,7 +6591,12 @@ export class Manager {
         });
       }
       if (this.userMode && userOwner) {
-        await this.recordActiveUserSlot(managed, custody);
+        try {
+          await this.recordActiveUserSlot(managed, custody);
+        } catch (error) {
+          this.stopHandle(managed, false);
+          throw error;
+        }
       }
       this.agents.set(name, managed);
       this.reservedLive.add(name);
@@ -7832,7 +7832,6 @@ export class Manager {
       state,
       ready: this.userReconcileReady,
       ...(this.userReconcileLastSweep ? { lastSweep: { ...this.userReconcileLastSweep } } : {}),
-      markers: { ...this.userReconcileMarkers },
       failures,
     };
   }
@@ -10218,7 +10217,7 @@ export class Manager {
     }
   }
 
-  private async withUserSlotKv<T>(fn: (kv: KV) => Promise<T>): Promise<T> {
+  private async withUserSlotKv<T>(managerOwner: string, fn: (kv: KV) => Promise<T>): Promise<T> {
     let creds: string | undefined;
     if (this.remoteAuthority) {
       if (
@@ -10231,7 +10230,11 @@ export class Manager {
       if (!creds) throw new Error("withUserSlotKv: no remote supervisor credential");
     } else {
       if (!this.auth) throw new Error("withUserSlotKv: no space auth or remoteAuthority");
-      creds = await mintCreds(this.auth, newIdentity(), "provisioner");
+      const supervisorActor = `manager_${this.managerInstanceId}`;
+      creds = await mintCreds(this.auth, newIdentity(), "remote-manager", {
+        principal: { owner: managerOwner, actor: supervisorActor },
+        remoteManager: { instanceId: this.managerInstanceId, owner: managerOwner, actor: supervisorActor },
+      });
     }
     const nc = await this.dial({ ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
     try {
@@ -10328,7 +10331,7 @@ export class Manager {
     if (!this.hasUserSlotStore() || !a.userOwner) return;
     const managerOwner = this.remoteAuthority?.owner ?? a.userOwner;
     const proc = captureProcessIdentity(a.handle.pid, this.seatRecordOf(a.handle));
-    await this.withUserSlotKv(async (kv) => {
+    await this.withUserSlotKv(managerOwner, async (kv) => {
       await this.upsertUserSlotRecord(kv, {
         managerOwner,
         targetOwner: a.userOwner!,
@@ -10346,46 +10349,62 @@ export class Manager {
   private async recordReleasedUserSlots(agents: ManagedAgent[]): Promise<void> {
     const userAgents = agents.filter((a) => this.hasUserSlotStore() && a.userOwner !== undefined);
     if (userAgents.length === 0) return;
-    await this.withUserSlotKv(async (kv) => {
-      for (const a of userAgents) {
-        const managerOwner = this.remoteAuthority?.owner ?? a.userOwner!;
-        const proc = captureProcessIdentity(a.handle.pid, this.seatRecordOf(a.handle));
-        await this.upsertUserSlotRecord(kv, {
-          managerOwner,
-          targetOwner: a.userOwner!,
-          actor: a.name,
-          lifecycleUid: a.lifecycleUid,
-          phase: "active",
-          released: true,
-          delegated: a.delegated,
-          runtime: a.handle.reference,
-          process: proc,
-        });
-      }
-    });
+    const byOwner = new Map<string, ManagedAgent[]>();
+    for (const a of userAgents) {
+      const managerOwner = this.remoteAuthority?.owner ?? a.userOwner!;
+      const group = byOwner.get(managerOwner) ?? [];
+      group.push(a);
+      byOwner.set(managerOwner, group);
+    }
+    for (const [managerOwner, group] of byOwner) {
+      await this.withUserSlotKv(managerOwner, async (kv) => {
+        for (const a of group) {
+          const proc = captureProcessIdentity(a.handle.pid, this.seatRecordOf(a.handle));
+          await this.upsertUserSlotRecord(kv, {
+            managerOwner,
+            targetOwner: a.userOwner!,
+            actor: a.name,
+            lifecycleUid: a.lifecycleUid,
+            phase: "active",
+            released: true,
+            delegated: a.delegated,
+            runtime: a.handle.reference,
+            process: proc,
+          });
+        }
+      });
+    }
   }
 
   private async recordPreservedUserSlots(agents: ManagedAgent[], attemptId: string): Promise<void> {
     const userAgents = agents.filter((a) => this.hasUserSlotStore() && a.userOwner !== undefined);
     if (userAgents.length === 0) return;
-    await this.withUserSlotKv(async (kv) => {
-      for (const a of userAgents) {
-        const managerOwner = this.remoteAuthority?.owner ?? a.userOwner!;
-        const proc = captureProcessIdentity(a.handle.pid, this.seatRecordOf(a.handle));
-        await this.upsertUserSlotRecord(kv, {
-          managerOwner,
-          targetOwner: a.userOwner!,
-          actor: a.name,
-          lifecycleUid: a.lifecycleUid,
-          phase: "preserved",
-          preserveAttemptId: attemptId,
-          released: false,
-          delegated: a.delegated,
-          runtime: a.handle.reference,
-          process: proc,
-        });
-      }
-    });
+    const byOwner = new Map<string, ManagedAgent[]>();
+    for (const a of userAgents) {
+      const managerOwner = this.remoteAuthority?.owner ?? a.userOwner!;
+      const group = byOwner.get(managerOwner) ?? [];
+      group.push(a);
+      byOwner.set(managerOwner, group);
+    }
+    for (const [managerOwner, group] of byOwner) {
+      await this.withUserSlotKv(managerOwner, async (kv) => {
+        for (const a of group) {
+          const proc = captureProcessIdentity(a.handle.pid, this.seatRecordOf(a.handle));
+          await this.upsertUserSlotRecord(kv, {
+            managerOwner,
+            targetOwner: a.userOwner!,
+            actor: a.name,
+            lifecycleUid: a.lifecycleUid,
+            phase: "preserved",
+            preserveAttemptId: attemptId,
+            released: false,
+            delegated: a.delegated,
+            runtime: a.handle.reference,
+            process: proc,
+          });
+        }
+      });
+    }
   }
 
   private async markUserSlotReleasing(
@@ -10396,7 +10415,7 @@ export class Manager {
   ): Promise<void> {
     if (!this.hasUserSlotStore() || !targetOwner.startsWith("u_")) return;
     const managerOwner = this.remoteAuthority?.owner ?? targetOwner;
-    await this.withUserSlotKv(async (kv) => {
+    await this.withUserSlotKv(managerOwner, async (kv) => {
       await this.upsertUserSlotRecord(
         kv,
         {
@@ -10417,7 +10436,7 @@ export class Manager {
   private async markUserSlotRetired(targetOwner: string, actor: string, lifecycleUid: string): Promise<void> {
     if (!this.hasUserSlotStore() || !targetOwner.startsWith("u_")) return;
     const managerOwner = this.remoteAuthority?.owner ?? targetOwner;
-    await this.withUserSlotKv(async (kv) => {
+    await this.withUserSlotKv(managerOwner, async (kv) => {
       await this.upsertUserSlotRecord(
         kv,
         {
@@ -10480,7 +10499,7 @@ export class Manager {
   }
 
   private watchReleasedUserSeat(row: ManagerSlotRecord): void {
-    this.releasedSeatWatches.set(row.actor, row);
+    this.releasedSeatWatches.set(row.actor, { row, unknownProbes: 0, nextProbeAt: 0 });
     if (this.releasedSeatWatchTimer || this.staticReconcileStopping) return;
     this.releasedSeatWatchTimer = setInterval(() => {
       void this.pollReleasedUserSeats();
@@ -10489,26 +10508,74 @@ export class Manager {
   }
 
   private async pollReleasedUserSeats(): Promise<void> {
-    if (this.staticReconcileStopping || this.releasedSeatWatches.size === 0) return;
-    for (const [actor, row] of [...this.releasedSeatWatches.entries()]) {
-      if (this.staticReconcileStopping) return;
-      const probe = probeRecordedProcess(row.process);
-      if (probe.state !== "proved-dead") continue;
-      this.releasedSeatWatches.delete(actor);
-      const uid = row.lifecycleUid;
-      if (!uid) continue;
-      const target = this.holdUserSlotTarget(row, {
-        lifecycleUid: uid,
-        reapRequired: true,
-        includeSecrets: true,
-      });
-      await this.deprovision(target).catch((e) => {
-        console.error(`! released user seat retirement ${actor}: ${rejectionText(e)}`);
-      });
-    }
-    if (this.releasedSeatWatches.size === 0 && this.releasedSeatWatchTimer) {
-      clearInterval(this.releasedSeatWatchTimer);
-      this.releasedSeatWatchTimer = undefined;
+    if (this.releasedSeatPollInFlight || this.staticReconcileStopping || this.releasedSeatWatches.size === 0) return;
+    this.releasedSeatPollInFlight = true;
+    try {
+      const now = Date.now();
+      for (const [actor, entry] of [...this.releasedSeatWatches.entries()]) {
+        if (this.staticReconcileStopping) return;
+        if (now < entry.nextProbeAt) continue;
+        const { row } = entry;
+        const probe = probeRecordedProcess(row.process);
+        if (probe.state === "live") {
+          entry.unknownProbes = 0;
+          continue;
+        }
+        if (probe.state === "unknown") {
+          entry.unknownProbes++;
+          if (entry.unknownProbes >= 4) {
+            this.releasedSeatWatches.delete(actor);
+            const reason = `seat liveness is unknown (${probe.reason}); keeping custody`;
+            if (row.lifecycleUid) {
+              this.holdUserSlotTarget(row, {
+                lifecycleUid: row.lifecycleUid,
+                keepCustody: true,
+                includeSecrets: true,
+                lastError: reason,
+              });
+            }
+            this.userReconcileFailures.set(actor, {
+              actor,
+              targetOwner: row.targetOwner,
+              ...(row.lifecycleUid ? { lifecycleUid: row.lifecycleUid } : {}),
+              phase: row.phase,
+              disposition: "held",
+              lastError: reason,
+            });
+          } else {
+            entry.nextProbeAt = Date.now() + 250;
+          }
+          continue;
+        }
+        const uid = row.lifecycleUid;
+        if (!uid) {
+          this.releasedSeatWatches.delete(actor);
+          continue;
+        }
+        const existingHold = this.retiring.get(actor);
+        const target =
+          existingHold?.target.lifecycleUid === uid && !existingHold.keepCustody
+            ? existingHold.target
+            : this.holdUserSlotTarget(row, {
+                lifecycleUid: uid,
+                reapRequired: true,
+                includeSecrets: true,
+              });
+        await this.trackDeprovision(target, "(released user seat)");
+        const afterHold = this.retiring.get(actor);
+        if (!afterHold || afterHold.keepCustody) {
+          this.releasedSeatWatches.delete(actor);
+          if (!afterHold) this.userReconcileFailures.delete(actor);
+        } else {
+          entry.nextProbeAt = Date.now() + 250;
+        }
+      }
+      if (this.releasedSeatWatches.size === 0 && this.releasedSeatWatchTimer) {
+        clearInterval(this.releasedSeatWatchTimer);
+        this.releasedSeatWatchTimer = undefined;
+      }
+    } finally {
+      this.releasedSeatPollInFlight = false;
     }
   }
 
@@ -10531,24 +10598,35 @@ export class Manager {
     try {
       const slotRows: ManagerSlotRecord[] = [];
       try {
-        await this.withUserSlotKv(async (kv) => {
-          if (this.remoteAuthority) {
-            const managerOwner = this.remoteAuthority.owner;
+        if (this.remoteAuthority) {
+          const managerOwner = this.remoteAuthority.owner;
+          await this.withUserSlotKv(managerOwner, async (kv) => {
             const suffixes = await listUserSlotSuffixes(kv, this.workspaceRoot, this.space, managerOwner);
             for (const suffix of suffixes) {
               const { targetOwner, actor } = parseUserSlotSuffix(suffix);
               const got = await readUserSlot(kv, this.space, managerOwner, targetOwner, actor);
               if (got) slotRows.push(got.row);
             }
-          } else {
-            const suffixes = readLocalSlotSuffixes(this.workspaceRoot, this.space);
-            for (const suffix of suffixes) {
-              const { targetOwner, actor } = parseUserSlotSuffix(suffix);
-              const got = await readUserSlot(kv, this.space, targetOwner, targetOwner, actor);
-              if (got) slotRows.push(got.row);
-            }
+          });
+        } else {
+          const suffixes = readLocalSlotSuffixes(this.workspaceRoot, this.space);
+          const byOwner = new Map<string, string[]>();
+          for (const suffix of suffixes) {
+            const { targetOwner } = parseUserSlotSuffix(suffix);
+            const list = byOwner.get(targetOwner) ?? [];
+            list.push(suffix);
+            byOwner.set(targetOwner, list);
           }
-        });
+          for (const [targetOwner, ownerSuffixes] of byOwner) {
+            await this.withUserSlotKv(targetOwner, async (kv) => {
+              for (const suffix of ownerSuffixes) {
+                const { actor } = parseUserSlotSuffix(suffix);
+                const got = await readUserSlot(kv, this.space, targetOwner, targetOwner, actor);
+                if (got) slotRows.push(got.row);
+              }
+            });
+          }
+        }
       } catch (error) {
         sweep.completedAt = new Date().toISOString();
         sweep.error = rejectionText(error);
@@ -10566,17 +10644,14 @@ export class Manager {
         const live = this.agents.get(row.actor);
         const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
         if (adopted) {
-          this.userReconcileMarkers.adoptedResumeSkipCount++;
           continue;
         }
         if (!postAdoption && (row.phase === "active" || row.phase === "preserved") && !adopted && this.resumeRequired) {
-          this.userReconcileMarkers.deferredForResumeCount++;
           continue;
         }
         if (row.delegated) {
           const delegatedUid = row.lifecycleUid ?? row.provisionalUid;
           if (delegatedUid) {
-            this.userReconcileMarkers.heldDelegatedSlotCount++;
             this.holdUserSlotTarget(row, {
               lifecycleUid: delegatedUid,
               keepCustody: true,
@@ -10612,7 +10687,6 @@ export class Manager {
               });
               this.watchReleasedUserSeat(row);
             }
-            this.userReconcileMarkers.adoptedReleasedCount++;
             continue;
           }
           if (probe.state === "unknown") {
@@ -10651,12 +10725,13 @@ export class Manager {
               const reason = `enrolling slot "${row.actor}" cannot be converged (missing ${!row.tokenHash ? "tokenHash" : !row.enrollSpec ? "enrollSpec" : "remote enrollManagedAgent"}); keeping alias held`;
               const fallbackUid = row.lifecycleUid ?? row.provisionalUid;
               if (fallbackUid) {
-                this.holdUserSlotTarget(row, {
+                const target = this.holdUserSlotTarget(row, {
                   lifecycleUid: fallbackUid,
                   keepCustody: true,
                   includeSecrets: true,
                   lastError: reason,
                 });
+                await this.deprovision(target);
               }
               this.userReconcileFailures.set(row.actor, {
                 actor: row.actor,
@@ -10680,15 +10755,8 @@ export class Manager {
               });
               row.lifecycleUid = material.lifecycleUid;
             } catch (enrollErr) {
-              const msg = rejectionText(enrollErr);
               const isHostRefusal =
-                (enrollErr instanceof EpEnvelopeError &&
-                  (enrollErr.code === "conflict" ||
-                    enrollErr.code === "permission-denied" ||
-                    enrollErr.code === "bad-request" ||
-                    enrollErr.code === "unauthenticated" ||
-                    enrollErr.code === "failed-precondition")) ||
-                /enrolled at lifecycle|permission-denied|forbidden|invalid|unauthenticated|unauthorized|refused/i.test(msg);
+                enrollErr instanceof EpEnvelopeError && enrollErr.code === "conflict";
               if (isHostRefusal && row.provisionalUid) {
                 const unshredded: string[] = [];
                 const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, row.actor, row.provisionalUid);

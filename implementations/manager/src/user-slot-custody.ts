@@ -88,13 +88,6 @@ export interface ManagerSlotIndexRecord {
   suffixes: string[];
 }
 
-export interface UserReconcileMarkers {
-  adoptedReleasedCount: number;
-  deferredForResumeCount: number;
-  adoptedResumeSkipCount: number;
-  heldDelegatedSlotCount: number;
-}
-
 /** Validate `targetOwner` (`u_…`, no `-`) and `actor` (`[A-Za-z0-9_]+`, no `-`) and return the
  *  single-token suffix `<targetOwner>-<actor>` where `-` is the sole separator. */
 export function userSlotSuffix(targetOwner: string, actor: string): string {
@@ -291,12 +284,10 @@ export async function writeUserSlot(
     throw new Error(`writeUserSlot requires a non-negative integer expectedRevision (got ${String(expectedRevision)})`);
   const suffix = userSlotSuffix(row.targetOwner, row.actor);
   parseManagerSlotRecord(enc.encode(JSON.stringify(row)), space, row.managerOwner, suffix);
-  recordLocalSlotSuffix(workspaceRoot, space, suffix);
   await ensureKvSlotSuffix(kv, space, row.managerOwner, suffix);
   const key = userSlotKey(row.managerOwner, row.targetOwner, row.actor);
   const payload = enc.encode(JSON.stringify(row));
-  if (expectedRevision === 0) {
-    return await kv.create(key, payload);
-  }
-  return await kv.update(key, payload, expectedRevision);
+  const rev = expectedRevision === 0 ? await kv.create(key, payload) : await kv.update(key, payload, expectedRevision);
+  recordLocalSlotSuffix(workspaceRoot, space, suffix);
+  return rev;
 }

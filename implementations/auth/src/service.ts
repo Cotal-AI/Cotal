@@ -2996,7 +2996,10 @@ export async function handleManagerServiceAuthority(req: IncomingMessage, res: S
     console.error(`auth-service: refused manager-service authority: ${reason}`);
     if (peerThrottled)
       return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
-    return send(res, 403, { error: reason });
+    return send(res, 403, {
+      error: reason,
+      ...(e instanceof EpEnvelopeError ? { code: e.code } : {}),
+    });
   }
 }
 

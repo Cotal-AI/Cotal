@@ -17,7 +17,7 @@ import { isLoopbackLiteral, registry, type AuthPrepareInput, type AuthPrepared, 
 import { assertUserAuthInfo, findMesh, homeCotalDir, probeLiveness, spaceSegment, type UserAuthInfo } from "@cotal-ai/workspace";
 import { readFileSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
-import { acquireLock, AgentGrantConflictError } from "@cotal-ai/core";
+import { acquireLock, AgentGrantConflictError, EpEnvelopeError, type EpErrorCode } from "@cotal-ai/core";
 import { deleteIdpSpaceCatalog, fetchIdpJwt, hasIdpSessions, hasIdpSpaceCatalog, loadIdpSession, prepareIdpSpaceCatalogs, probeIdpJwks, requireIdpSession } from "./login.js";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import { findActorUnified, findInteractiveActor, grantManagedActor, hashActorToken, newActorToken, revokeManagedActor, revokeManagedActorAt } from "./ledger.js";
@@ -611,11 +611,16 @@ const COTAL_VERSION = (JSON.parse(readFileSync(new URL("../package.json", import
  *  and which side has to move. The field is never dropped to fit the older host. */
 function managerAuthorityRefusal(what: string, request: unknown, body: unknown, status: number): Error {
   const reason = (body as { error?: string }).error ?? `HTTP ${status}`;
+  const code = (body as { code?: unknown }).code;
   const field = /unknown field "?([A-Za-z_$][\w$]*)"?/.exec(reason)?.[1];
   const skew = field !== undefined && carriesField(request, field)
     ? ` - version skew: this manager runs Cotal ${COTAL_VERSION} and the host's auth service predates the field "${field}" it sends; it needs a host at Cotal ${COTAL_VERSION} or later`
     : "";
-  return new Error(`signed in, but ${what} was refused: ${reason}${skew}`);
+  const message = `signed in, but ${what} was refused: ${reason}${skew}`;
+  if (typeof code === "string") {
+    return new EpEnvelopeError(code as EpErrorCode, message);
+  }
+  return new Error(message);
 }
 
 function carriesField(value: unknown, field: string): boolean {

@@ -144,7 +144,7 @@ const STATUS_OUTPUT_SCHEMA = {
     userReconciliation: {
       type: "object",
       additionalProperties: false,
-      required: ["state", "ready", "markers", "failures"],
+      required: ["state", "ready", "failures"],
       properties: {
         state: { enum: ["idle", "running", "failed"] },
         ready: { type: "boolean" },
@@ -162,22 +162,6 @@ const STATUS_OUTPUT_SCHEMA = {
             succeeded: { type: "integer", minimum: 0 },
             failed: { type: "integer", minimum: 0 },
             error: { type: "string" },
-          },
-        },
-        markers: {
-          type: "object",
-          additionalProperties: false,
-          required: [
-            "adoptedReleasedCount",
-            "deferredForResumeCount",
-            "adoptedResumeSkipCount",
-            "heldDelegatedSlotCount",
-          ],
-          properties: {
-            adoptedReleasedCount: { type: "integer", minimum: 0 },
-            deferredForResumeCount: { type: "integer", minimum: 0 },
-            adoptedResumeSkipCount: { type: "integer", minimum: 0 },
-            heldDelegatedSlotCount: { type: "integer", minimum: 0 },
           },
         },
         failures: {
@@ -217,13 +201,6 @@ export interface ManagerStatus {
   userReconciliation?: ManagerUserReconciliationStatus;
 }
 
-export interface ManagerUserReconciliationMarkers {
-  adoptedReleasedCount: number;
-  deferredForResumeCount: number;
-  adoptedResumeSkipCount: number;
-  heldDelegatedSlotCount: number;
-}
-
 export interface ManagerUserReconciliationSweep {
   kind: "startup" | "post-adoption";
   startedAt: string;
@@ -249,7 +226,6 @@ export interface ManagerUserReconciliationStatus {
   state: "idle" | "running" | "failed";
   ready: boolean;
   lastSweep?: ManagerUserReconciliationSweep;
-  markers: ManagerUserReconciliationMarkers;
   failures: ManagerUserReconciliationFailure[];
 }
 
