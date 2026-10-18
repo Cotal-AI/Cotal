@@ -164,6 +164,7 @@
     "smoke:members": "tsx packages/core/smoke/members.smoke.ts",
     "smoke:browser-caller": "tsx packages/core/smoke/browser-caller.smoke.ts",
     "smoke:browser-contracts": "tsx packages/core/smoke/browser-contracts.smoke.ts",
+    "smoke:browser-tool-result-caller": "tsx packages/core/smoke/browser-tool-result-caller.smoke.ts",
     "smoke:plane3:auth": "tsx packages/core/smoke/plane3-auth.smoke.ts",
     "smoke:plane3-gate:auth": "tsx packages/core/smoke/plane3-gate-auth.smoke.ts",
     "smoke:plane3-activation:auth": "tsx packages/core/smoke/plane3-activation-auth.smoke.ts",

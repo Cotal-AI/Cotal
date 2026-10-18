@@ -11,7 +11,9 @@
  *
  * `openBrowserManagerCaller` (browser-caller.ts) composes these contracts with the stock describe and
  * invoke path over the signed-in person's own connection (docs/embedding.md, "Manager command
- * contracts in a browser").
+ * contracts in a browser"). `openBrowserToolResultCaller` (browser-tool-result-caller.ts) does the
+ * same for the packaged `tool-results` cluster (SPEC 13.6, "Private tool results"), which no Manager
+ * surface ever includes.
  */
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { PACKAGED_CLUSTERS, PACKAGED_VALIDATORS } from "./browser-contracts.generated.js";
@@ -79,11 +81,39 @@ export function packagedValidatorFor(closureDigest: string): GeneratedValidator 
   return validators[closureDigest]!;
 }
 
+/** The Manager cluster URN. A packaged cluster at any other URN is served by another endpoint and is
+ *  never part of a Manager surface. */
+const MANAGER_CLUSTER_URN = "ai.cotal.manager";
+const TOOL_RESULT_CLUSTER_URN = "urn:cotal:tool-results";
+const managerClusters: Readonly<Record<string, GeneratedCluster>> = Object.freeze(
+  Object.fromEntries(Object.entries(clusters).filter(([, c]) => c.urn === MANAGER_CLUSTER_URN)),
+);
+
 /** Every Manager cluster document this build packages, for display and support checks. */
 export const PACKAGED_MANAGER_CLUSTERS: readonly PackagedCluster[] = Object.freeze(
-  Object.entries(clusters).map(([clusterDigest, c]) => Object.freeze({
+  Object.entries(managerClusters).map(([clusterDigest, c]) => Object.freeze({
     clusterDigest, sources: Object.freeze([...c.sources]), urn: c.urn, revision: c.revision,
     commands: Object.freeze(c.commands.map((cmd) => cmd.name)),
+  })),
+);
+
+/** One packaged cluster document with each command's declared shape. */
+export interface PackagedClusterDocument {
+  readonly clusterDigest: string;
+  readonly sources: readonly string[];
+  readonly urn: string;
+  readonly revision: number;
+  readonly commands: ReadonlyArray<{
+    readonly name: string; readonly class: string; readonly targeted: boolean; readonly modes: readonly string[];
+    readonly capability: string; readonly inputDigest: string; readonly outputDigest: string;
+  }>;
+}
+
+/** The `tool-results` cluster documents this build packages (SPEC 13.6, "Private tool results"). */
+export const PACKAGED_TOOL_RESULT_CLUSTERS: readonly PackagedClusterDocument[] = Object.freeze(
+  Object.entries(clusters).filter(([, c]) => c.urn === TOOL_RESULT_CLUSTER_URN).map(([clusterDigest, c]) => Object.freeze({
+    clusterDigest, sources: Object.freeze([...c.sources]), urn: c.urn, revision: c.revision,
+    commands: Object.freeze(c.commands.map((cmd) => Object.freeze({ ...cmd, modes: Object.freeze([...(cmd.modes ?? [])]) }))),
   })),
 );
 
@@ -98,7 +128,7 @@ export function packagedServiceSurface(descriptor: { clusters: ReadonlyArray<{ d
   const visible = new Set(descriptor.clusters.flatMap((cl) => cl.commands));
   const surface = new Map<string, PackagedCommand>();
   for (const cl of descriptor.clusters) {
-    const doc = Object.hasOwn(clusters, cl.digest) ? clusters[cl.digest] : undefined;
+    const doc = Object.hasOwn(managerClusters, cl.digest) ? managerClusters[cl.digest] : undefined;
     if (!doc)
       throw new EpEnvelopeError("unsupported-version", `cluster document ${cl.digest} is not one this browser build packages; supported Manager releases: ${PACKAGED_MANAGER_CLUSTERS.flatMap((c) => c.sources).join(", ")}`);
     for (const cmd of doc.commands) {
@@ -117,3 +147,8 @@ export function packagedServiceSurface(descriptor: { clusters: ReadonlyArray<{ d
 }
 
 export { openBrowserManagerCaller, verifyGoalResultFact, type BrowserManagerAuthority, type BrowserManagerCaller, type BrowserManagerCallerOptions, type BrowserInvokeOptions } from "./browser-caller.js";
+export {
+  openBrowserToolResultCaller, packagedToolResultSurface, toolResultCallerBinding,
+  type BrowserToolResultAuthority, type BrowserToolResultCaller, type BrowserToolResultCallerOptions, type BrowserToolResultCallOptions, type ToolResultPrincipal,
+} from "./browser-tool-result-caller.js";
+export type { ToolResultAnswer } from "./tool-result-contract.js";

@@ -2,10 +2,12 @@
  * Builds the contracts the browser entry (`@cotal-ai/core/browser`) can enforce without runtime code
  * generation. Two steps, both deterministic:
  *
- *   extract <contract module> <label> <out.json>
- *     Reads one released or source Manager contract module (`managerClusterDocument`,
- *     `managerContractArtifactValues`, `managerClusterArtifacts`) and writes its cluster document
- *     and schema roots as data. Run it against a published package's own dist to add a release.
+ *   extract <contract module> <label> <out.json> [manager|tool-results]
+ *     Reads one released or source contract module and writes its cluster document and schema roots
+ *     as data. `manager` (the default) reads `managerClusterDocument`, `managerContractArtifactValues`
+ *     and `managerClusterArtifacts`; `tool-results` reads `toolResultClusterArtifacts` and
+ *     `toolResultContractArtifactValues` (SPEC 13.6). Run it against the module that registers the
+ *     cluster, so the packaged document is the registered one.
  *
  *   generate
  *     Reads every `browser-contracts/*.json`, recomputes each cluster and closure digest with THIS
@@ -32,11 +34,13 @@ interface ContractSource {
   roots: unknown[];
 }
 
-async function extract(modulePath: string, label: string, out: string): Promise<void> {
+async function extract(modulePath: string, label: string, out: string, kind = "manager"): Promise<void> {
   const mod = await import(pathToFileURL(resolve(modulePath)).href);
-  const document = mod.managerClusterDocument();
-  const { closureDigest } = mod.managerClusterArtifacts();
-  const artifactValues = mod.managerContractArtifactValues;
+  if (kind !== "manager" && kind !== "tool-results") throw new Error(`extract: unknown contract kind ${kind}`);
+  const cluster = kind === "manager" ? { ...mod.managerClusterArtifacts(), document: mod.managerClusterDocument() } : mod.toolResultClusterArtifacts();
+  const document = cluster.document;
+  const { closureDigest } = cluster;
+  const artifactValues = kind === "manager" ? mod.managerContractArtifactValues : mod.toolResultContractArtifactValues;
   const values: unknown[] = [...(typeof artifactValues === "function" ? artifactValues() : artifactValues)];
   // Keep only the schema roots a command names: the closure manifests are rebuilt from them.
   const byClosure = new Map(values.map((value) => [singleDocumentClosure(value).closureDigest, value]));
@@ -121,6 +125,6 @@ function generate(): void {
 }
 
 const [verb, ...rest] = process.argv.slice(2);
-if (verb === "extract" && rest.length === 3) await extract(rest[0]!, rest[1]!, rest[2]!);
+if (verb === "extract" && (rest.length === 3 || rest.length === 4)) await extract(rest[0]!, rest[1]!, rest[2]!, rest[3]);
 else if (verb === "generate" && rest.length === 0) generate();
-else throw new Error("usage: gen-browser-contracts.ts extract <module> <label> <out.json> | generate");
+else throw new Error("usage: gen-browser-contracts.ts extract <module> <label> <out.json> [manager|tool-results] | generate");
