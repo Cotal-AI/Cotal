@@ -318,12 +318,14 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
   // no answer from that mesh's exchange can change what this install does. Peek the mode the same
   // way the control resolver's own peek does (offline-swept when no space is named, `--space`
   // unfiltered) and skip the mint entirely for a remote entry, before it ever reaches the exchange.
+  // The control resolve below reads the same sweep, so the whole chain sees one liveness verdict.
+  let offline: readonly string[] | undefined;
   if (typeof flags.creds !== "string") {
     const space = typeof flags.space === "string" ? flags.space : undefined;
     const server = typeof flags.server === "string" ? flags.server : undefined;
     let peek: MeshTarget | undefined;
     try {
-      const offline = space ? [] : (await pruneStaleMeshes()).offline;
+      offline = space ? [] : (await pruneStaleMeshes()).offline;
       peek = resolveMeshTarget(process.cwd(), { server, space, offline });
     } catch (e) {
       if (!isWorkspaceTargetError(e) || (e.code !== "unknown-space" && e.code !== "no-meshes")) throw e;
@@ -346,6 +348,7 @@ export async function readManagerContinuity(flags: Record<string, unknown>): Pro
       ...(typeof flags.space === "string" ? { space: flags.space } : {}),
       ...(typeof flags.server === "string" ? { server: flags.server } : {}),
       ...(typeof flags.creds === "string" ? { creds: flags.creds } : {}),
+      offline,
     }, "control-caller-admin", undefined, { onRefusal: "throw" });
   } catch (e) {
     // No running manager means no custody to preserve and nothing this update could interrupt. Only

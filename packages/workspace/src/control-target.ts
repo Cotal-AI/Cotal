@@ -80,9 +80,12 @@ export async function resolveControlTarget(
   opts: { onRefusal?: "exit" | "throw"; endpoint?: string } = {},
 ): Promise<ControlTarget> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
+  // A credential-less resolve sweeps once when no space is named, unless the caller already swept
+  // for these flags, and the peek and the connect helper both resolve against that `offline` set,
+  // so they see one world and a kept dead record is a live candidate for neither.
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
-    : flags;
+    : { ...flags, offline: flags.offline ?? (flags.space ? [] : (await pruneStaleMeshes()).offline) };
   // USER MODE: manager calls exchange the current ledger authority for a concrete instance view.
   // `connectOrExit` refuses control-caller-* on a user mesh (those profiles carry freeze rows the
   // bearer does not hold), so the mode is peeked here and the user path taken explicitly.
@@ -93,16 +96,12 @@ export async function resolveControlTarget(
   // so absorbing it would let an explicit `--server` take the raw-open arm and connect a
   // misconfigured AUTH mesh with no credentials. Those codes rethrow and the command dies loud.
   if (!withSpace.creds) {
-    // Sweep first when no space is named, as the connect helper does before ITS resolve, so the
-    // peek and the connect see one world. The sweep's `offline` set is the liveness verdict:
-    // pass it through so a kept dead record is not a live candidate.
-    const offline = withSpace.space ? [] : (await pruneStaleMeshes()).offline;
     let mode: MeshTarget["mode"] | undefined;
     try {
       mode = resolveMeshTarget(process.cwd(), {
         server: withSpace.server,
         space: withSpace.space,
-        offline,
+        offline: withSpace.offline,
       }).mode;
     } catch (e) {
       if (!isWorkspaceTargetError(e) || !TARGET_ABSENT_CODES.has(e.code)) throw e;
