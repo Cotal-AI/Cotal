@@ -3874,8 +3874,9 @@ pins no exchange URL is refused before the grant is requested, so no credential 
 machine. With no sign-in the spawn is refused with `AUTH_REQUIRED` (exit 2) before any request is
 sent. Any provisioning failure after the request, an endpoint 401 or 403 included, is reported as
 `OPERATION_UNKNOWN` (exit 3): the endpoint belongs to the deployment, and nothing says what its
-refusal left behind. A foreground `--share-tools` selection that names a server the config does not declare is
-refused before anything is provisioned. A managed spawn is an
+refusal left behind. A `--share-tools` selection that names a server the config does not declare is
+refused before anything is provisioned; on a managed spawn the manager refuses it before accepting.
+A managed spawn is an
 **action**: the manager accepts it and allocates the identity, and the CLI waits for a real outcome
 (the agent joins, exits, or about 30 seconds pass) before it reports or attaches (see
 [the control surface](control-surface.md)). On a user-auth mesh the manager enrolls the agent with
@@ -3885,6 +3886,16 @@ with the host's reason and `PERMISSION_DENIED` (exit 2). A host that fails or do
 `OPERATION_UNKNOWN`. See [Connect Claude Code](connect-claude.md) and
 [Agent files](agent-files.md). (`cotal start` was merged into `cotal spawn --detach`.)
 A managed spawn onto a manager from another Cotal release is refused before any request is sent
+=======
+machine. A `--share-tools` selection that names a server the config does not declare is refused
+before anything is provisioned; on a `--detach` spawn the manager refuses it before accepting.
+A `--detach` spawn is an
+**action**: the manager accepts it and returns the allocated identity at once, then the launch
+follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
+See [Connect Claude Code](connect-claude.md) and [Agent files](agent-files.md); `-f` is a
+[manifest deploy](#manifest-deploys). (`cotal start` was merged into `cotal spawn --detach`.)
+A `--detach` spawn onto a manager from another Cotal release is refused before any request is sent
+>>>>>>> e1a960467 (fix(manager): refuse an undeclared shareTools selection before accepting the spawn)
 when the manager's contract does not declare a field this CLI sends. The refusal names the field,
 calls it version skew, and gives this CLI's version. A field you leave unset is not sent, so it
 never causes that refusal.
