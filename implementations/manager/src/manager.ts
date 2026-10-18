@@ -103,6 +103,17 @@ import { RunHosting } from "./run-hosting.js";
 import { controlSession } from "./control-session.js";
 import { MAX_AGENTS, parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 import { TranscriptReceiver, type TranscriptClaim, type TranscriptReceiveInput } from "./transcript-receive.js";
+import {
+  captureProcessIdentity,
+  listUserSlotSuffixes,
+  parseUserSlotSuffix,
+  probeRecordedProcess,
+  readLocalSlotSuffixes,
+  readUserSlot,
+  writeUserSlot,
+  type ManagerSlotRecord,
+  type UserReconcileMarkers,
+} from "./user-slot-custody.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
@@ -892,6 +903,9 @@ interface ProvisionUserAgentOpts {
    *  alone reads the retirement tombstones), and the returned `lifecycleUid` is that value. */
   lifecycleUid: string;
   delegatedIntent?: StartAgentOpts["delegatedIntent"];
+  delegated?: true;
+  delegatedIntentId?: string;
+  runtime?: RuntimeReference;
   /** Called once the host's enrollment answer passed the owner, actor and uid checks, before any
    *  later step, so a caller that must hold the enrolled uid holds it whatever fails after. */
   onEnrolled?: (enrolled: Pick<ProvisionedUserAgent, "owner" | "lifecycleUid" | "files">) => void;
@@ -1506,6 +1520,17 @@ export class Manager {
   private readonly remoteAuthority?: NonNullable<ManagerOptions["remoteAuthority"]>;
   private remoteExecutorCreds?: string;
   private remoteSupervisorCreds?: string;
+  private userReconcileReady = true;
+  private readonly userReconcileMarkers: UserReconcileMarkers = {
+    adoptedReleasedCount: 0,
+    deferredForResumeCount: 0,
+    adoptedResumeSkipCount: 0,
+    heldDelegatedSlotCount: 0,
+  };
+
+  userReconcileDiagnostics(): UserReconcileMarkers {
+    return { ...this.userReconcileMarkers };
+  }
   private remoteBundleRenewal?: Promise<void>;
   /** A refused or failed standing candidate is cleanup debt, never a silent loss: the last-good
    * family stays live and this records what the host may have signed but the manager never adopted. */
@@ -2006,8 +2031,15 @@ export class Manager {
     // an open mesh runs the same gate/registration ceremony over bare connections and never mints
     // (there is no credential system - the broker enforces nothing, matching the old open-mesh ctl
     // trust). Fail-loud: a manager that cannot register does not start half-registered.
+    if (this.userMode && (this.auth || this.remoteAuthority)) {
+      this.userReconcileReady = false;
+    }
     await this.registerManagerService();
     if (this.staticReconcileStopping) return;
+    if (this.userMode && (this.auth || this.remoteAuthority)) {
+      await this.reconcileUserLifecycles();
+      if (this.staticReconcileStopping) return;
+    }
     // Stand up the standing goal-writer connection for spawn-as-action — AFTER
     // registration (it writes this endpoint's goal facts/records), disjoint from the serve cred.
     await this.startGoalWriter();
@@ -2789,7 +2821,8 @@ export class Manager {
 
   private async runPreservation(attemptId: string): Promise<ManagerPreserveResult> {
     const failures: ManagerPreserveFailure[] = [];
-    for (const a of [...this.agents.values()]) a.suppressCleanup = true;
+    const preservedAgents = [...this.agents.values()];
+    for (const a of preservedAgents) a.suppressCleanup = true;
     await Promise.all(
       [...this.agents.values()].map(async (a) => {
         try {
@@ -2808,7 +2841,10 @@ export class Manager {
       }),
     );
 
-    if (failures.length === 0) this.maintenanceState = "preserved";
+    if (failures.length === 0) {
+      await this.recordPreservedUserSlots(preservedAgents, attemptId);
+      this.maintenanceState = "preserved";
+    }
     return {
       ok: failures.length === 0,
       attemptId,
@@ -3092,6 +3128,8 @@ export class Manager {
           // An in-process seat cannot be detached from the process that is exiting, so the default
           // stop stops and deprovisions it as `withAgents` does instead of orphaning its footprint.
           const inProcess = [...this.agents.values()].filter((a) => a.handle.kind === "pty" && typeof a.handle.release !== "function");
+          const detachable = [...this.agents.values()].filter((a) => !(a.handle.kind === "pty" && typeof a.handle.release !== "function"));
+          await this.recordReleasedUserSlots(detachable);
           releaseFailures = this.releaseManagedAgents();
           await this.teardownManagedAgents(inProcess);
         }
@@ -3385,6 +3423,8 @@ export class Manager {
       // not fail the finalize (the next non-resume boot re-drives it), but it is never swallowed.
       if (this.auth && !this.userMode)
         await this.reconcileStaticLifecycles(true).catch((e) => console.error(`! post-resume static reconcile: ${rejectionText(e)} - no per-alias retry could be planned; a later manager start re-reads unfinished durable terminals`));
+      if (this.userMode && (this.auth || this.remoteAuthority))
+        await this.reconcileUserLifecycles(true).catch((e) => console.error(`! post-resume user reconcile: ${rejectionText(e)} - a later manager start re-reads unfinished durable terminals`));
       this.resumeFinalized = true;
       this.resumeRequired = false;
       return { ok: true, data: { attemptId: args.attemptId, state: "active" } };
@@ -4103,7 +4143,7 @@ export class Manager {
       const { intentId, owner } = opts.delegatedIntent;
       // The hosted arm with the intent's execution in place of the holder's own enrollment: the
       // spawning owner is the intent's, so its existing owner check refuses any other.
-      return this.enrollUserAgent(name, { ...opts, specOwner: owner }, async ({ target }) => {
+      return this.enrollUserAgent(name, { ...opts, specOwner: owner, delegated: true, delegatedIntentId: intentId }, async ({ target }) => {
         const result = await execute({ intentId, operation: "launch", target: { actor: target.actor, tokenHash: target.tokenHash } });
         if (result.operation !== "launch" || result.intentId !== intentId)
           throw new Error(`the host answered delegated intent ${intentId} with another execution`);
@@ -4165,6 +4205,19 @@ export class Manager {
           role: opts.role,
         }),
       );
+      await this.writeUserSlotRow({
+        v: 1,
+        space: this.space,
+        managerOwner: owner,
+        targetOwner: owner,
+        actor: name,
+        lifecycleUid: opts.lifecycleUid,
+        managerInstanceId: this.managerInstanceId,
+        managerLifecycleUid: this.managerLifecycleUid,
+        phase: "provisioning",
+        ...(opts.runtime ? { runtime: opts.runtime } : {}),
+        updatedAt: new Date().toISOString(),
+      });
       // The store holds the source of truth; the bearer re-exec (`--token-file`) and the launch's
       // sentinel handoff read FILES, so materialize both at the canonical paths (under the local
       // FS composition, a byte-identical rewrite of the keys' own locations).
@@ -4249,9 +4302,38 @@ export class Manager {
     const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, opts.lifecycleUid);
     let files = staged;
     let material: Awaited<ReturnType<typeof enroll>> | undefined;
+    const managerOwner = this.remoteAuthority?.owner;
+    const preSpecOwner = opts.specOwner ?? (opts.spawner ? parsePrincipalKey(opts.spawner)?.owner : undefined);
+    const preTargetOwner = preSpecOwner && preSpecOwner.startsWith("u_") ? preSpecOwner : managerOwner;
     try {
       await secrets.put(agentSecretKeyForFile(staged.actorToken, this.space), actorToken);
       await materializeSecretToFile(secrets, agentSecretKeyForFile(staged.actorToken, this.space), staged.actorToken);
+      if (managerOwner && preTargetOwner && preTargetOwner.startsWith("u_")) {
+        await this.writeUserSlotRow({
+          v: 1,
+          space: this.space,
+          managerOwner,
+          targetOwner: preTargetOwner,
+          actor: name,
+          provisionalUid: opts.lifecycleUid,
+          tokenHash,
+          enrollSpec: {
+            ...(opts.role !== undefined ? { role: opts.role } : {}),
+            label: opts.label,
+            ...(opts.capabilities !== undefined ? { capabilities: opts.capabilities } : {}),
+            ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
+            allowSubscribe: opts.allowSubscribe,
+            ...(opts.allowPublish !== undefined ? { allowPublish: opts.allowPublish } : {}),
+          },
+          managerInstanceId: this.managerInstanceId,
+          managerLifecycleUid: this.managerLifecycleUid,
+          phase: "enrolling",
+          ...(opts.delegated ? { delegated: true as const } : {}),
+          ...(opts.delegatedIntentId ? { delegatedIntentId: opts.delegatedIntentId } : {}),
+          ...(opts.runtime ? { runtime: opts.runtime } : {}),
+          updatedAt: new Date().toISOString(),
+        });
+      }
       material = await enroll({
         target: {
           actor: name,
@@ -4270,6 +4352,23 @@ export class Manager {
       if (specOwner !== undefined && specOwner.startsWith("u_") && material.owner !== specOwner)
         throw new Error(`the host enrolled the agent under owner ${material.owner}, not the spawning owner ${specOwner}`);
       assertLifecycleToken(material.lifecycleUid, "host-enrolled managed agent lifecycleUid");
+      if (managerOwner) {
+        await this.writeUserSlotRow({
+          v: 1,
+          space: this.space,
+          managerOwner,
+          targetOwner: material.owner,
+          actor: name,
+          lifecycleUid: material.lifecycleUid,
+          managerInstanceId: this.managerInstanceId,
+          managerLifecycleUid: this.managerLifecycleUid,
+          phase: "provisioning",
+          ...(opts.delegated ? { delegated: true as const } : {}),
+          ...(opts.delegatedIntentId ? { delegatedIntentId: opts.delegatedIntentId } : {}),
+          ...(opts.runtime ? { runtime: opts.runtime } : {}),
+          updatedAt: new Date().toISOString(),
+        });
+      }
       // Re-key the family onto the HOST's uid (SPEC 13.1 name-disjointness on the FS): the child's
       // credential paths must embed the uid its broker footprint carries, never the provisional one.
       files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, name, material.lifecycleUid);
@@ -4312,8 +4411,10 @@ export class Manager {
       // A failed removal joins the refusal instead of throwing, so every removal is attempted and
       // the refusal still reaches the caller.
       const unshredded: string[] = [];
-      for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
-        await this.shredUserSecrets(unshredded, family);
+      if (material !== undefined || !managerOwner || !preTargetOwner?.startsWith("u_")) {
+        for (const family of files.actorToken === staged.actorToken ? [staged] : [staged, files])
+          await this.shredUserSecrets(unshredded, family);
+      }
       const leftover = unshredded.length ? `; cleanup failed: ${unshredded.join("; ")}` : "";
       return { error: `agent auth preflight failed for "${name}": ${rejectionText(e)}${leftover}` };
     }
@@ -4534,10 +4635,12 @@ export class Manager {
       // state until the host decides terminal retirement, never map deprovisioning to suspension.
       const target = parsePrincipalKey(a.id);
       if (!target) throw new Error(`hosted retirement cannot derive the managed principal ${a.id}`);
+      await this.markUserSlotReleasing(target.owner, target.actor, a.lifecycleUid, false);
       await this.remoteAuthority.prepareAgentRetirement({
         target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid },
         opId: retireOpId(a.lifecycleUid),
       });
+      await this.markUserSlotReleasing(target.owner, target.actor, a.lifecycleUid, true);
       // A delegated seat's fenced close runs only now, after the grant is revoked so its child can
       // obtain no fresh bearer, and before the barrier, which must never run ahead of a create that
       // could still land. A close that cannot prove that yet throws here and keeps the alias held.
@@ -4732,6 +4835,9 @@ export class Manager {
         const r = attributed.reply;
         if (r.ok) {
           this.confirmRetirement(a);
+          if (!this.retiring.has(a.name)) {
+            await this.markUserSlotRetired(target.owner, target.actor, a.lifecycleUid);
+          }
         } else if (r.error?.code === "expired") {
           // A stale-epoch refusal: the responder answered, but at another epoch than this resolve
           // bound (a plane restart mid-despawn landed on the new epoch) - the retry copy, never a
@@ -5961,6 +6067,8 @@ export class Manager {
     // alone) so a retry re-drives the standing-authority revoke (INT-2) AND the broker cleanup before
     // any hold-clear (C): the alias must not free while the durable teardown or the revoke is still
     // outstanding. All the teardown ops are idempotent, and the rail request is single-flighted.
+    if (!this.userReconcileReady)
+      return { ok: false, error: `manager startup reconciliation is still scanning durable slot records for "${identityName}"; retry shortly.` };
     if (this.reconcilingAliases.has(identityName))
       return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
@@ -6144,6 +6252,7 @@ export class Manager {
           label: ref,
           lifecycleUid,
           delegatedIntent: opts.delegatedIntent,
+          ...(custody ? { runtime: custody } : {}),
           // Hold the name at the UID the host enrolled for the intent's user before any later local
           // step runs, so no later failure, its refusal included, releases a lifecycle that only that
           // user's retirement intent retires.
@@ -6381,6 +6490,9 @@ export class Manager {
           // an active slot a successor can reap by reference, never a live seat nobody addresses.
           await casStaticSlot(t, { ...slot.row, phase: "active", ...(handle.reference ? { runtime: handle.reference } : {}) }, slot.revision);
         });
+      }
+      if (this.userMode && userOwner) {
+        await this.recordActiveUserSlot(managed, custody);
       }
       this.agents.set(name, managed);
       this.reservedLive.add(name);
@@ -7452,6 +7564,7 @@ export class Manager {
         return { ok: false, error };
       }
       this.confirmRetirement({ id: principalKey(target.owner, target.actor).key, name, lifecycleUid: target.lifecycleUid });
+      await this.markUserSlotRetired(target.owner, target.actor, target.lifecycleUid);
       return { ok: true, data: { name, lifecycleUid: target.lifecycleUid, retired: true } };
     } finally {
       release();
@@ -9329,6 +9442,10 @@ export class Manager {
    *  reap must address the live one. Static auth only; a runtime without durable custody records
    *  nothing (there is nothing to reap by reference). */
   private async recordSlotRuntime(a: ManagedAgent): Promise<void> {
+    if (this.userMode && a.userOwner) {
+      await this.recordActiveUserSlot(a);
+      return;
+    }
     if (a.handle.reference === undefined) return;
     await this.recordSlotCustody(a, a.handle.reference);
   }
@@ -9947,6 +10064,382 @@ export class Manager {
         for (const row of terminalRows) this.reconcilingAliases.delete(row.alias);
       }
     } finally {
+      this.releaseStaticReconcileSweep();
+    }
+  }
+
+  private async withUserSlotKv<T>(fn: (kv: KV) => Promise<T>): Promise<T> {
+    if (this.remoteAuthority) {
+      if (
+        (!this.remoteSupervisorCreds || inspectCredHealth(this.remoteSupervisorCreds).state !== "healthy") &&
+        this.remoteAuthority.renewStandingBundle
+      ) {
+        await this.renewRemoteStandingBundle(true);
+      }
+      const creds = this.remoteSupervisorCreds;
+      if (!creds) throw new Error("withUserSlotKv: no remote supervisor credential");
+      const nc = await this.dial({ ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+      try {
+        const kv = await new Kvm(nc).open(recordsBucket(this.space), { allow_direct: true } as never);
+        return await fn(kv);
+      } finally {
+        await nc.drain().catch(() => nc.close());
+      }
+    }
+    if (!this.auth) throw new Error("withUserSlotKv: no space auth or remoteAuthority");
+    const creds = await mintCreds(this.auth, newIdentity(), "provisioner");
+    const nc = await this.dial({ ...standaloneConnectOpts({ creds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const kv = await new Kvm(nc).open(recordsBucket(this.space), { allow_direct: true } as never);
+      return await fn(kv);
+    } finally {
+      await nc.drain().catch(() => nc.close());
+    }
+  }
+
+  private hasUserSlotStore(): boolean {
+    return this.userMode && this.ep !== undefined && (this.auth !== undefined || this.remoteAuthority?.supervisorCreds !== undefined);
+  }
+
+  private async writeUserSlotRow(row: ManagerSlotRecord, expectedRevision?: number): Promise<void> {
+    if (!this.hasUserSlotStore()) return;
+    await this.withUserSlotKv(async (kv) => {
+      await writeUserSlot(kv, this.workspaceRoot, this.space, row, expectedRevision);
+    });
+  }
+
+  private async recordActiveUserSlot(a: ManagedAgent, reservedRuntime?: RuntimeReference): Promise<void> {
+    if (!this.hasUserSlotStore() || !a.userOwner) return;
+    const managerOwner = this.remoteAuthority?.owner ?? a.userOwner;
+    const targetOwner = a.userOwner;
+    const seatRec = (a.handle as { record?: { custodianPid?: number; custodianStart?: string; childPid?: number; childStart?: string; bootId?: string } }).record;
+    const proc = captureProcessIdentity(a.handle.pid, seatRec);
+    await this.withUserSlotKv(async (kv) => {
+      const existing = await readUserSlot(kv, this.space, managerOwner, targetOwner, a.name);
+      const runtime = a.handle.reference ?? reservedRuntime ?? existing?.row.runtime;
+      const next: ManagerSlotRecord = {
+        v: 1,
+        space: this.space,
+        managerOwner,
+        targetOwner,
+        actor: a.name,
+        lifecycleUid: a.lifecycleUid,
+        managerInstanceId: this.managerInstanceId,
+        managerLifecycleUid: this.managerLifecycleUid,
+        phase: "active",
+        released: false,
+        ...(a.delegated || existing?.row.delegated ? { delegated: true as const } : {}),
+        ...(existing?.row.delegatedIntentId ? { delegatedIntentId: existing.row.delegatedIntentId } : {}),
+        ...(runtime ? { runtime } : {}),
+        ...(proc ?? existing?.row.process ? { process: proc ?? existing?.row.process } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      await writeUserSlot(kv, this.workspaceRoot, this.space, next, existing?.revision);
+    });
+  }
+
+  private async recordReleasedUserSlots(agents: ManagedAgent[]): Promise<void> {
+    const userAgents = agents.filter((a) => this.hasUserSlotStore() && a.userOwner !== undefined);
+    if (userAgents.length === 0) return;
+    await this.withUserSlotKv(async (kv) => {
+      for (const a of userAgents) {
+        const managerOwner = this.remoteAuthority?.owner ?? a.userOwner!;
+        const targetOwner = a.userOwner!;
+        const existing = await readUserSlot(kv, this.space, managerOwner, targetOwner, a.name);
+        const seatRec = (a.handle as { record?: { custodianPid?: number; custodianStart?: string; childPid?: number; childStart?: string; bootId?: string } }).record;
+        const proc = captureProcessIdentity(a.handle.pid, seatRec) ?? existing?.row.process;
+        const runtime = a.handle.reference ?? existing?.row.runtime;
+        const next: ManagerSlotRecord = {
+          v: 1,
+          space: this.space,
+          managerOwner,
+          targetOwner,
+          actor: a.name,
+          lifecycleUid: a.lifecycleUid,
+          managerInstanceId: this.managerInstanceId,
+          managerLifecycleUid: this.managerLifecycleUid,
+          phase: "active",
+          released: true,
+          ...(a.delegated || existing?.row.delegated ? { delegated: true as const } : {}),
+          ...(existing?.row.delegatedIntentId ? { delegatedIntentId: existing.row.delegatedIntentId } : {}),
+          ...(runtime ? { runtime } : {}),
+          ...(proc ? { process: proc } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        await writeUserSlot(kv, this.workspaceRoot, this.space, next, existing?.revision);
+      }
+    });
+  }
+
+  private async recordPreservedUserSlots(agents: ManagedAgent[], attemptId: string): Promise<void> {
+    const userAgents = agents.filter((a) => this.hasUserSlotStore() && a.userOwner !== undefined);
+    if (userAgents.length === 0) return;
+    await this.withUserSlotKv(async (kv) => {
+      for (const a of userAgents) {
+        const managerOwner = this.remoteAuthority?.owner ?? a.userOwner!;
+        const targetOwner = a.userOwner!;
+        const existing = await readUserSlot(kv, this.space, managerOwner, targetOwner, a.name);
+        const seatRec = (a.handle as { record?: { custodianPid?: number; custodianStart?: string; childPid?: number; childStart?: string; bootId?: string } }).record;
+        const proc = captureProcessIdentity(a.handle.pid, seatRec) ?? existing?.row.process;
+        const runtime = a.handle.reference ?? existing?.row.runtime;
+        const next: ManagerSlotRecord = {
+          v: 1,
+          space: this.space,
+          managerOwner,
+          targetOwner,
+          actor: a.name,
+          lifecycleUid: a.lifecycleUid,
+          managerInstanceId: this.managerInstanceId,
+          managerLifecycleUid: this.managerLifecycleUid,
+          phase: "preserved",
+          preserveAttemptId: attemptId,
+          released: false,
+          ...(a.delegated || existing?.row.delegated ? { delegated: true as const } : {}),
+          ...(existing?.row.delegatedIntentId ? { delegatedIntentId: existing.row.delegatedIntentId } : {}),
+          ...(runtime ? { runtime } : {}),
+          ...(proc ? { process: proc } : {}),
+          updatedAt: new Date().toISOString(),
+        };
+        await writeUserSlot(kv, this.workspaceRoot, this.space, next, existing?.revision);
+      }
+    });
+  }
+
+  private async markUserSlotReleasing(
+    targetOwner: string,
+    actor: string,
+    lifecycleUid: string,
+    cleanupComplete: boolean,
+  ): Promise<void> {
+    if (!this.hasUserSlotStore() || !targetOwner.startsWith("u_")) return;
+    const managerOwner = this.remoteAuthority?.owner ?? targetOwner;
+    await this.withUserSlotKv(async (kv) => {
+      const existing = await readUserSlot(kv, this.space, managerOwner, targetOwner, actor);
+      if (existing && existing.row.phase === "retired" && existing.row.lifecycleUid === lifecycleUid) return;
+      const next: ManagerSlotRecord = {
+        v: 1,
+        space: this.space,
+        managerOwner,
+        targetOwner,
+        actor,
+        lifecycleUid,
+        managerInstanceId: this.managerInstanceId,
+        managerLifecycleUid: this.managerLifecycleUid,
+        phase: "releasing",
+        opId: retireOpId(lifecycleUid),
+        cleanupComplete,
+        released: false,
+        ...(existing?.row.delegated ? { delegated: true as const } : {}),
+        ...(existing?.row.delegatedIntentId ? { delegatedIntentId: existing.row.delegatedIntentId } : {}),
+        ...(existing?.row.runtime ? { runtime: existing.row.runtime } : {}),
+        ...(existing?.row.process ? { process: existing.row.process } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      await writeUserSlot(kv, this.workspaceRoot, this.space, next, existing?.revision);
+    });
+  }
+
+  private async markUserSlotRetired(targetOwner: string, actor: string, lifecycleUid: string): Promise<void> {
+    if (!this.hasUserSlotStore() || !targetOwner.startsWith("u_")) return;
+    const managerOwner = this.remoteAuthority?.owner ?? targetOwner;
+    await this.withUserSlotKv(async (kv) => {
+      const existing = await readUserSlot(kv, this.space, managerOwner, targetOwner, actor);
+      if (existing && existing.row.phase === "retired" && existing.row.lifecycleUid === lifecycleUid) return;
+      const next: ManagerSlotRecord = {
+        v: 1,
+        space: this.space,
+        managerOwner,
+        targetOwner,
+        actor,
+        lifecycleUid,
+        managerInstanceId: this.managerInstanceId,
+        managerLifecycleUid: this.managerLifecycleUid,
+        phase: "retired",
+        opId: retireOpId(lifecycleUid),
+        cleanupComplete: true,
+        released: false,
+        ...(existing?.row.delegated ? { delegated: true as const } : {}),
+        ...(existing?.row.delegatedIntentId ? { delegatedIntentId: existing.row.delegatedIntentId } : {}),
+        ...(existing?.row.runtime ? { runtime: existing.row.runtime } : {}),
+        ...(existing?.row.process ? { process: existing.row.process } : {}),
+        updatedAt: new Date().toISOString(),
+      };
+      await writeUserSlot(kv, this.workspaceRoot, this.space, next, existing?.revision);
+    });
+  }
+
+  private async reconcileUserLifecycles(postAdoption = false): Promise<void> {
+    if (!this.userMode || (!this.auth && !this.remoteAuthority) || this.staticReconcileStopping) {
+      this.userReconcileReady = true;
+      return;
+    }
+    this.staticReconcileSweepsInFlight++;
+    try {
+      const slotRows: ManagerSlotRecord[] = [];
+      try {
+        await this.withUserSlotKv(async (kv) => {
+          if (this.remoteAuthority) {
+            const managerOwner = this.remoteAuthority.owner;
+            const suffixes = await listUserSlotSuffixes(kv, this.workspaceRoot, this.space, managerOwner);
+            for (const suffix of suffixes) {
+              const { targetOwner, actor } = parseUserSlotSuffix(suffix);
+              const got = await readUserSlot(kv, this.space, managerOwner, targetOwner, actor);
+              if (got) slotRows.push(got.row);
+            }
+          } else {
+            const suffixes = readLocalSlotSuffixes(this.workspaceRoot, this.space);
+            for (const suffix of suffixes) {
+              const { targetOwner, actor } = parseUserSlotSuffix(suffix);
+              const got = await readUserSlot(kv, this.space, targetOwner, targetOwner, actor);
+              if (got) slotRows.push(got.row);
+            }
+          }
+        });
+      } catch (e) {
+        console.error(`! user slot reconciliation scan failed: ${rejectionText(e)}`);
+        return;
+      }
+
+      const terminalRows: ManagerSlotRecord[] = [];
+      for (const row of slotRows) {
+        if (row.phase === "retired") continue;
+        const live = this.agents.get(row.actor);
+        const adopted = live !== undefined && live.lifecycleUid === row.lifecycleUid;
+        if (adopted) {
+          this.userReconcileMarkers.adoptedResumeSkipCount++;
+          continue;
+        }
+        if (!postAdoption && (row.phase === "active" || row.phase === "preserved") && !adopted && this.resumeRequired) {
+          this.userReconcileMarkers.deferredForResumeCount++;
+          continue;
+        }
+        if (row.delegated) {
+          this.userReconcileMarkers.heldDelegatedSlotCount++;
+          if (row.lifecycleUid) {
+            const id = principalKey(row.targetOwner, row.actor).key;
+            const files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, row.actor, row.lifecycleUid);
+            const target: TeardownTarget = {
+              id,
+              name: row.actor,
+              lifecycleUid: row.lifecycleUid,
+              userOwner: row.targetOwner,
+              delegated: true,
+              secretPaths: files,
+              ...(row.runtime ? { runtime: row.runtime } : {}),
+            };
+            this.retiring.set(row.actor, {
+              opId: retireOpId(row.lifecycleUid),
+              owner: row.targetOwner,
+              actor: row.actor,
+              target,
+              startedAt: Date.now(),
+              lastError: `"${row.actor}" was launched under a delegated user intent and retires only through its user's retirement intent`,
+            });
+          }
+          continue;
+        }
+        if (row.phase === "active" && row.released) {
+          const probe = probeRecordedProcess(row.process);
+          if (probe.state === "live") {
+            if (row.runtime && row.runtime.kind === this.requiredRuntime.kind && typeof this.requiredRuntime.adopt === "function") {
+              const handle = requireRuntimeAdopt(this.requiredRuntime, row.runtime);
+              handle.release?.();
+            }
+            this.userReconcileMarkers.adoptedReleasedCount++;
+            continue;
+          }
+          if (probe.state === "unknown") {
+            if (row.lifecycleUid) {
+              const id = principalKey(row.targetOwner, row.actor).key;
+              const target: TeardownTarget = {
+                id,
+                name: row.actor,
+                lifecycleUid: row.lifecycleUid,
+                userOwner: row.targetOwner,
+                ...(row.runtime ? { runtime: row.runtime } : {}),
+              };
+              this.retiring.set(row.actor, {
+                opId: retireOpId(row.lifecycleUid),
+                owner: row.targetOwner,
+                actor: row.actor,
+                target,
+                startedAt: Date.now(),
+                lastError: `seat liveness is unknown (${probe.reason}); keeping custody`,
+              });
+            }
+            continue;
+          }
+        }
+        terminalRows.push(row);
+        this.reconcilingAliases.add(row.actor);
+      }
+
+      this.userReconcileReady = true;
+      for (const row of terminalRows) {
+        if (this.staticReconcileStopping) break;
+        try {
+          if (row.phase === "enrolling") {
+            if (!this.remoteAuthority?.enrollManagedAgent || !row.tokenHash || !row.enrollSpec) {
+              continue;
+            }
+            const material = await this.remoteAuthority.enrollManagedAgent({
+              target: {
+                actor: row.actor,
+                tokenHash: row.tokenHash,
+                ...row.enrollSpec,
+              },
+            });
+            row.lifecycleUid = material.lifecycleUid;
+          }
+          const uid = row.lifecycleUid;
+          if (!uid) continue;
+          const id = principalKey(row.targetOwner, row.actor).key;
+          const files = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, row.actor, uid);
+          const target: TeardownTarget = {
+            id,
+            name: row.actor,
+            lifecycleUid: uid,
+            userOwner: row.targetOwner,
+            secretPaths: files,
+            ...(row.runtime ? { runtime: row.runtime } : {}),
+          };
+          this.retiring.set(row.actor, {
+            opId: retireOpId(uid),
+            owner: row.targetOwner,
+            actor: row.actor,
+            target,
+            startedAt: Date.now(),
+          });
+          if (row.runtime && isCustodialRuntime(this.requiredRuntime) && row.runtime.kind === this.requiredRuntime.kind) {
+            if (row.process !== undefined || row.phase === "active" || row.phase === "preserved" || row.phase === "releasing") {
+              await this.reapOrphanSeat({ name: row.actor, runtime: row.runtime });
+            }
+          } else if (row.process !== undefined) {
+            const probe = probeRecordedProcess(row.process);
+            if (probe.state !== "proved-dead") {
+              const held = this.retiring.get(row.actor);
+              if (held) held.lastError = probe.state === "unknown" ? probe.reason : "process is still alive";
+              continue;
+            }
+          }
+          await this.deprovision(target);
+          if (!this.retiring.has(row.actor)) {
+            const unshredded: string[] = [];
+            if (row.provisionalUid && row.provisionalUid !== uid) {
+              const staged = agentLifecycleSecretFilePaths(this.workspaceRoot, this.space, row.actor, row.provisionalUid);
+              await this.shredUserSecrets(unshredded, staged);
+            }
+            await this.shredUserSecrets(unshredded, files);
+            await this.markUserSlotRetired(row.targetOwner, row.actor, uid);
+          }
+        } catch (e) {
+          console.error(`! user slot reconcile ${row.actor}: ${rejectionText(e)}`);
+        } finally {
+          this.reconcilingAliases.delete(row.actor);
+        }
+      }
+    } finally {
+      this.userReconcileReady = true;
       this.releaseStaticReconcileSweep();
     }
   }

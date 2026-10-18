@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname } from "node:path";
 import { discardSeatArtifacts } from "./artifacts.js";
-import { bootToken, exitPath, isSeatId, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
+import { bootToken, exitPath, inspectProcessStart, isSeatId, processStartToken, readRecord, recordPath, type SeatRecord } from "./record.js";
 import { RUN_MARKER_FLAG } from "./launcher.js";
 import { unsupportedTransport, type SeatExit } from "./protocol.js";
 
@@ -36,8 +36,10 @@ function recordedExit(file: string): { exit?: SeatExit; unreadable?: string } {
 /** A pid's standing against a recorded start identity. `live` only when the process exists AND
  *  carries the recorded start token; a different token means the pid was reused by an unrelated
  *  process, which is never signalled. */
-export function identityVerdict(pid: number, start: string): "live" | "gone" {
-  const now = processStartToken(pid);
+export function identityVerdict(pid: number, start: string): "live" | "gone" | "unknown" {
+  const inspected = inspectProcessStart(pid);
+  if (inspected.state === "unknown") return "unknown";
+  const now = inspected.state === "present" ? inspected.token : undefined;
   return now !== undefined && now === start ? "live" : "gone";
 }
 
@@ -45,11 +47,14 @@ function processGroupOf(pid: number): number | undefined {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
     const after = stat.lastIndexOf(") ");
-    if (after < 0) return undefined;
+    if (after < 0) throw new Error(`malformed /proc/${pid}/stat`);
     const pgrp = Number(stat.slice(after + 2).split(" ")[2]);
-    return Number.isInteger(pgrp) ? pgrp : undefined;
-  } catch {
-    return undefined;
+    if (!Number.isInteger(pgrp)) throw new Error(`malformed pgrp in /proc/${pid}/stat`);
+    return pgrp;
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ESRCH") return undefined;
+    throw new Error(`cannot read process group for pid ${pid}: ${(e as Error).message}`);
   }
 }
 
@@ -196,9 +201,15 @@ export async function reapSeat(root: string, id: string, opts: { graceMs?: numbe
   // Read before anything is signalled, so a SIGKILL sent below is never reported as how the child ended.
   const recorded = recordedExit(exitPath(path));
   const exit = recorded.exit;
+  const requireKnownVerdict = (pid: number, start: string, role: "custodian" | "child"): "live" | "gone" => {
+    const v = identityVerdict(pid, start);
+    if (v === "unknown")
+      throw new Error(`seat ${id}: ${role} ${pid} process liveness is unknown (unreadable /proc stat); refusing to claim reaped`);
+    return v;
+  };
   // A pinned record without a child identity means the child was gone before custody began.
-  const childLive = (): boolean => !earlierBoot && rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live";
-  const custodianLive = (): boolean => !earlierBoot && identityVerdict(rec.custodianPid, custodianStart) === "live";
+  const childLive = (): boolean => !earlierBoot && rec.childStart !== undefined && requireKnownVerdict(rec.childPid, rec.childStart, "child") === "live";
+  const custodianLive = (): boolean => !earlierBoot && requireKnownVerdict(rec.custodianPid, custodianStart, "custodian") === "live";
 
   // The child first: node-pty made it a session and process-group leader, so signalling the group
   // takes its descendants (a connector host's TUI and bridges) with it. A child that is no longer a
@@ -322,12 +333,18 @@ export async function drainSeats(root: string, opts: { drain?: boolean; graceMs?
       continue;
     }
     const earlierBoot = fromEarlierBoot(rec, boot!);
-    if (!earlierBoot && rec.childStart !== undefined && identityVerdict(rec.childPid, rec.childStart) === "live") {
+    const childVerdict = !earlierBoot && rec.childStart !== undefined ? identityVerdict(rec.childPid, rec.childStart) : "gone";
+    const custodianVerdict = !earlierBoot && rec.custodianStart !== undefined ? identityVerdict(rec.custodianPid, rec.custodianStart) : "gone";
+    if (childVerdict === "unknown" || custodianVerdict === "unknown") {
+      out.push({ ...seen, state: "refused", detail: `seat ${id}: process liveness is unknown (unreadable /proc stat); kept` });
+      continue;
+    }
+    if (childVerdict === "live") {
       out.push({ ...seen, state: "live-child", detail: `child ${rec.childPid} is running; kept` });
       continue;
     }
     if (!opts.drain) {
-      const custodian = !earlierBoot && rec.custodianStart !== undefined && identityVerdict(rec.custodianPid, rec.custodianStart) === "live" ? "running" : "gone";
+      const custodian = custodianVerdict === "live" ? "running" : "gone";
       out.push({ ...seen, state: "childless", detail: `child ${rec.childPid} is gone; custodian ${rec.custodianPid} ${custodian}${earlierBoot ? ` with boot ${rec.bootId}` : ""}` });
       continue;
     }

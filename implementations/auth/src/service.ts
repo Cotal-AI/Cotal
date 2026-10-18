@@ -1328,6 +1328,12 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           tokenHash: t.tokenHash,
         });
         try {
+          await activateLifecycleAtUid(registry, {
+            owner,
+            actor: t.actor,
+            lifecycleUid,
+            managerInstance: `auth-service:${space}`,
+          });
           const identity = newIdentity();
           const provisioner = new CotalEndpoint({
             space,

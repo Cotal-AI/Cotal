@@ -4628,7 +4628,15 @@ parent, through the same writer, managed-agent envelope walk, lifecycle-keyed du
 membership the host uses for that user's own managed-agent enrollment, with the host selecting the
 lifecycle UID. It MUST NOT be enrolled under a platform owner token or any owner other than the
 record's, and the manager MUST refuse material naming another owner. The holder is not on the
-agent's delegation chain and gains no ledger row, scope or grant from the launch.
+agent's delegation chain and gains no ledger row, scope or grant from the launch. When the holder
+records durable slot custody in `KV_cotal_records_<space>`, it writes under its own holder prefix
+`mgrslot.<holderOwner>.<targetOwner>-<actor>` (and its index key `mgrslot.<holderOwner>._index`),
+validated with `assertPrincipalOwnerToken` for `<holderOwner>`, `assertDerivedOwnerToken` for
+`<targetOwner>`, and `assertValidOwnerToken` for `<actor>` so `-` is the sole separator; the remote
+supervisor credential grants only `$KV.<REC>.mgrslot.<holderOwner>.*` and
+`$JS.API.DIRECT.GET.KV_<REC>.$KV.<REC>.mgrslot.<holderOwner>.*` (never `CONSUMER.CREATE` on
+`KV_<REC>` or a cross-owner `mgrslot.<targetOwner>.*` grant), and manager startup reconciliation
+leaves a delegated slot held until a user retirement intent confirms retirement.
 
 **Retirement.** A delegated retirement runs in order: revoke the managed grant at the target
 lifecycle UID only and complete the resumable release with that UID unchanged; close the provider

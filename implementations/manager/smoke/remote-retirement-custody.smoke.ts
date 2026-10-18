@@ -105,6 +105,7 @@ import { Kvm } from "@nats-io/kv";
 import {
   CotalEndpoint,
   createSpaceAuth,
+  credsClaims,
   dlvDurable,
   dlvStream,
   dmDurable,
@@ -161,7 +162,8 @@ import {
   type AuthServiceHandle,
   type DelegatedUserIntentRecord,
 } from "@cotal-ai/auth";
-import { bootToken, processStartToken, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "@cotal-ai/seat";
+import { bootToken, drainSeats, processStartToken, readRecord, recordPath, seatId, socketPath, type SeatRecord } from "@cotal-ai/seat";
+import { probeRecordedProcess } from "../src/user-slot-custody.js";
 import { Manager, type ManagerOptions } from "../src/manager.js";
 import { requireRuntimeReap } from "../src/runtime/index.js";
 import { CustodialPtyRuntime } from "../src/runtime/custodial-pty.js";
@@ -1011,11 +1013,14 @@ Seat ${seatName}.
     return { mgr, state, remoteAuthority };
   }
 
+  const onlyCell = process.env.U4005_ONLY_CELL;
+  const shouldRunCell = (c: string) => !onlyCell || onlyCell === c;
+
   // =========================================================================
   // Control (a-inproc): stop() without withAgents on built-in in-process pty
   // =========================================================================
   console.log("\n=== Cell (a-inproc): stop() without withAgents on in-process pty (LegacyPtyRuntime) ===");
-  {
+  if (shouldRunCell("cell-a-inproc-pty")) {
     const cell = "cell-a-inproc-pty";
     const seatName = "seat_a_inproc";
     const ws = createWorkspaceRoot("a-inproc", [seatName]);
@@ -1054,7 +1059,7 @@ Seat ${seatName}.
   // and the seat later exits
   // =========================================================================
   console.log("\n=== Cell (a): stop() without withAgents releases custody (releaseManagedAgents), and seat later exits ===");
-  {
+  if (shouldRunCell("cell-a-release-custody")) {
     const cell = "cell-a-release-custody";
     const seatName = "seat_a";
     const ws = createWorkspaceRoot("a-release", [seatName]);
@@ -1121,7 +1126,7 @@ Seat ${seatName}.
   // Cell (b): signal / stop() after a partial preservation (stopRetainedAgentsOnExit)
   // =========================================================================
   console.log("\n=== Cell (b): signal after partial preservation (stopRetainedAgentsOnExit) ===");
-  {
+  if (shouldRunCell("cell-b-partial-preservation-signal")) {
     const cell = "cell-b-partial-preservation-signal";
     const seatName = "seat_b";
     const ws = createWorkspaceRoot("b-partial", [seatName]);
@@ -1181,7 +1186,7 @@ Seat ${seatName}.
   // Cell (c1): manager killed hard (SIGKILL) with a live pty seat
   // =========================================================================
   console.log("\n=== Cell (c1): manager killed hard (SIGKILL) with a live pty seat ===");
-  {
+  if (shouldRunCell("cell-c1-sigkill-active-pty")) {
     const cell = "cell-c1-sigkill-active-pty";
     const seatName = "seat_c1";
     const ws = createWorkspaceRoot("c1-sigkill", [seatName]);
@@ -1270,7 +1275,7 @@ Seat ${seatName}.
   // Cell (c2): manager killed hard (SIGKILL) while in-memory `retiring` map holds seat
   // =========================================================================
   console.log("\n=== Cell (c2): manager killed hard (SIGKILL) while in-memory retiring map holds pty seat ===");
-  {
+  if (shouldRunCell("cell-c2-sigkill-retiring-map-lost")) {
     const cell = "cell-c2-sigkill-retiring-map-lost";
     const seatName = "seat_c2";
     const ws = createWorkspaceRoot("c2-sigkill-retiring", [seatName]);
@@ -1358,7 +1363,7 @@ Seat ${seatName}.
   // Cell (d): preserved inventory never resumed while a new manager starts
   // =========================================================================
   console.log("\n=== Cell (d): preserved inventory never resumed while a new manager starts ===");
-  {
+  if (shouldRunCell("cell-d-unresumed-inventory")) {
     const cell = "cell-d-unresumed-inventory";
     const seatName = "seat_d";
     const ws = createWorkspaceRoot("d-unresumed", [seatName]);
@@ -1383,26 +1388,27 @@ Seat ${seatName}.
       preserved,
     );
     await mgr1.stop();
+    const afterPreserveStop = await inspectLifecycleState(seatName, uid);
+
+    checkRepro(cell, "after unresumed preservation stop (before manager2): lifecycle head is still active", afterPreserveStop.headState === "active", afterPreserveStop);
+    checkRepro(cell, "after unresumed preservation stop (before manager2): grant is still unrevoked", afterPreserveStop.grantUnrevoked === true, afterPreserveStop);
+    checkRepro(
+      cell,
+      "after unresumed preservation stop (before manager2): dm_ and dlv_ durables are still present",
+      afterPreserveStop.dmPresent === true && afterPreserveStop.dlvPresent === true,
+      afterPreserveStop,
+    );
+    checkRepro(
+      cell,
+      "after unresumed preservation stop (before manager2): no retirement was requested (prepare=0, retire=0)",
+      afterPreserveStop.prepareRetirementCalls === 0 && afterPreserveStop.retireCalls === 0,
+      afterPreserveStop,
+    );
 
     // Start a new manager on the same root without resuming the preserved inventory
     const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "pty");
     const afterNewManager = await inspectLifecycleState(seatName, uid);
     await mgr2.stop();
-
-    checkRepro(cell, "after unresumed preservation + new manager start: lifecycle head is still active", afterNewManager.headState === "active", afterNewManager);
-    checkRepro(cell, "after unresumed preservation + new manager start: grant is still unrevoked", afterNewManager.grantUnrevoked === true, afterNewManager);
-    checkRepro(
-      cell,
-      "after unresumed preservation + new manager start: dm_ and dlv_ durables are still present",
-      afterNewManager.dmPresent === true && afterNewManager.dlvPresent === true,
-      afterNewManager,
-    );
-    checkRepro(
-      cell,
-      "after unresumed preservation + new manager start: no retirement was requested (prepare=0, retire=0)",
-      afterNewManager.prepareRetirementCalls === 0 && afterNewManager.retireCalls === 0,
-      afterNewManager,
-    );
 
     checkContract(cell, "after unresumed preservation + new manager start: lifecycle head reaches retired", afterNewManager.headState === "retired", afterNewManager);
     checkContract(cell, "after unresumed preservation + new manager start: managed grant is revoked", !afterNewManager.grantUnrevoked, afterNewManager);
@@ -1424,7 +1430,7 @@ Seat ${seatName}.
   // Cell (e): enrollment reply lost after host committed grant and durables
   // =========================================================================
   console.log("\n=== Cell (e): enrollment reply lost after host committed grant and durables ===");
-  {
+  if (shouldRunCell("cell-e-enrollment-reply-loss")) {
     const cell = "cell-e-enrollment-reply-loss";
     const seatName = "seat_e_reply_loss";
     const ws = createWorkspaceRoot("e-reply-loss", [seatName]);
@@ -1499,7 +1505,7 @@ Seat ${seatName}.
   // Cell (f): owned live same-start process under injected EACCES on /proc/<pid>/stat
   // =========================================================================
   console.log("\n=== Cell (f): owned live process under injected EACCES on /proc/<pid>/stat during requireRuntimeReap ===");
-  {
+  if (shouldRunCell("cell-f-unreadable-reap")) {
     const cell = "cell-f-unreadable-reap";
     const unreadableRoot = mkdtempSync(join(tmpdir(), "u4005-unreadable-"));
     const sleeper = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
@@ -1538,6 +1544,9 @@ Seat ${seatName}.
 
       const targetStatPath = `/proc/${pid}/stat`;
       let injectedReads = 0;
+      let unfixedTokenDuringEacces: string | undefined = "not-checked";
+      let probeUnderEacces: ReturnType<typeof probeRecordedProcess> | undefined;
+      let drainUnderEacces: Awaited<ReturnType<typeof drainSeats>> = [];
       let reapOutcome: string | undefined;
       let reapError: string | undefined;
       try {
@@ -1552,6 +1561,9 @@ Seat ${seatName}.
           return (realReadFileSync as (...a: unknown[]) => unknown)(path, ...rest);
         }) as typeof realReadFileSync;
         syncBuiltinESMExports();
+        unfixedTokenDuringEacces = processStartToken(pid);
+        probeUnderEacces = probeRecordedProcess({ pid, startToken: startToken ?? "", bootId: boot ?? "" });
+        drainUnderEacces = await drainSeats(unreadableRoot);
         try {
           const result = await requireRuntimeReap(new CustodialPtyRuntime(unreadableRoot), { kind: "pty", id });
           reapOutcome = result.outcome;
@@ -1573,14 +1585,26 @@ Seat ${seatName}.
       );
       checkRepro(
         cell,
-        "unfixed requireRuntimeReap/reapSeat treats EACCES as gone, deletes custody record, and reports reaped",
-        reapOutcome === "reaped" && recordAfter === undefined,
-        { reapOutcome, reapError, recordExistsAfter: recordAfter !== undefined },
+        "two-valued processStartToken(pid) collapses EACCES to undefined even while owned process is alive",
+        unfixedTokenDuringEacces === undefined && recordBefore !== undefined,
+        { unfixedTokenDuringEacces, recordBeforeChildStart: recordBefore?.childStart },
       );
       checkContract(
         cell,
-        "under EACCES on /proc/<pid>/stat: requireRuntimeReap refuses to report reaped while process is alive",
-        reapOutcome !== "reaped" && reapError !== undefined,
+        "under EACCES on /proc/<pid>/stat: probeRecordedProcess returns unknown rather than proved-dead",
+        probeUnderEacces?.state === "unknown",
+        probeUnderEacces,
+      );
+      checkContract(
+        cell,
+        "under EACCES on /proc/<pid>/stat: drainSeats reports state refused rather than childless or drained",
+        drainUnderEacces.length === 1 && drainUnderEacces[0]?.state === "refused",
+        drainUnderEacces,
+      );
+      checkContract(
+        cell,
+        "under EACCES on /proc/<pid>/stat: requireRuntimeReap refuses on unknown process liveness while process is alive",
+        reapOutcome !== "reaped" && reapError !== undefined && /process liveness is unknown/.test(reapError),
         { reapOutcome, reapError, aliveAfter },
       );
       checkContract(
@@ -1606,7 +1630,7 @@ Seat ${seatName}.
   // Guard (g1): successor manager starts while released custodial seat is STILL ALIVE
   // =========================================================================
   console.log("\n=== Guard (g1): successor manager starts while released custodial seat is still alive ===");
-  {
+  if (shouldRunCell("cell-g1-released-live-kept")) {
     const cell = "cell-g1-released-live-kept";
     const seatName = "seat_g1";
     const ws = createWorkspaceRoot("g1-released-live", [seatName]);
@@ -1622,8 +1646,15 @@ Seat ${seatName}.
 
     // Start successor manager2 while seat_g1 is still alive
     const { mgr: mgr2 } = await bootRemoteManagerOnRoot(ws, "custodial-pty");
+    const mgr2Diag = mgr2.userReconcileDiagnostics();
     const whileLive = await inspectLifecycleState(seatName, uid);
 
+    checkGuard(
+      cell,
+      "while released seat_g1 is alive: startup reconciliation entered released-live adoption guard (adoptedReleasedCount>=1)",
+      mgr2Diag.adoptedReleasedCount >= 1,
+      mgr2Diag,
+    );
     checkGuard(cell, "while released seat_g1 is alive: process is still running after manager2.start()", pidAlive(seatPid), { seatPid });
     checkGuard(cell, "while released seat_g1 is alive: lifecycle head stays active", whileLive.headState === "active" && whileLive.headUid === uid, whileLive);
     checkGuard(cell, "while released seat_g1 is alive: managed grant stays unrevoked", whileLive.grantUnrevoked === true, whileLive);
@@ -1650,7 +1681,7 @@ Seat ${seatName}.
   // Guard (g2): resumePreserved adoption keeps active head, grant, and durables
   // =========================================================================
   console.log("\n=== Guard (g2): resumePreserved adoption keeps active head, grant, and durables ===");
-  {
+  if (shouldRunCell("cell-g2-resume-preserved-adopted")) {
     const cell = "cell-g2-resume-preserved-adopted";
     const seatName = "seat_g2";
     const ws = createWorkspaceRoot("g2-resume-adopted", [seatName]);
@@ -1706,7 +1737,14 @@ Seat ${seatName}.
       resumedUid = parsed.uid;
     }
 
+    const mgr2Diag = mgr2.userReconcileDiagnostics();
     const afterAdopt = await inspectLifecycleState(seatName, uid);
+    checkGuard(
+      cell,
+      "after resumePreserved adoption: startup deferral and post-adoption skip guards both fired (deferred>=1, adoptedSkip>=1)",
+      mgr2Diag.deferredForResumeCount >= 1 && mgr2Diag.adoptedResumeSkipCount >= 1,
+      mgr2Diag,
+    );
     checkGuard(
       cell,
       "resumePreserved -> commitResume -> finalizeResume succeeds and launches replacement process at retained uid",
@@ -1736,7 +1774,7 @@ Seat ${seatName}.
   // Guard (g3): cross-owner delegated launch (p_... holder, u_... user owner) stays held
   // =========================================================================
   console.log("\n=== Guard (g3): cross-owner delegated launch (p_... holder, u_... user owner) stays held ===");
-  {
+  if (shouldRunCell("cell-g3-delegated-launch-held")) {
     const cell = "cell-g3-delegated-launch-held";
     const seatName = "seat_g3_delegated";
     const ws = createWorkspaceRoot("g3-delegated", [seatName]);
@@ -1809,9 +1847,28 @@ Seat ${seatName}.
       "pty",
       () => admittedIntent,
     );
+    const mgr2Diag = mgr2.userReconcileDiagnostics();
     const afterRestart = await inspectLifecycleState(seatName, uid, owner);
     await mgr2.stop();
+    const supClaims = credsClaims(mgr2Auth.supervisorCreds) as { nats?: { pub?: { allow?: string[] } } };
+    const supPubAllow = supClaims.nats?.pub?.allow ?? [];
+    const mgrslotGrants = supPubAllow.filter((r) => r.includes("mgrslot"));
+    const recordsConsumerGrants = supPubAllow.filter((r) => r.includes("CONSUMER.") && r.includes(`KV_${recordsBucket(space)}`));
 
+    checkGuard(
+      cell,
+      "platform supervisor credential confines mgrslot KV grants to mgrslot.<platformOwner>.* and carries no records-stream consumer grant",
+      mgrslotGrants.length === 2 &&
+        mgrslotGrants.every((r) => r.endsWith(`.mgrslot.${platformOwner}.*`)) &&
+        recordsConsumerGrants.length === 0,
+      { mgrslotGrants, recordsConsumerGrants },
+    );
+    checkGuard(
+      cell,
+      "after cross-owner delegated seat exit + platform manager2 start: startup reconciliation entered delegated-hold guard (heldDelegatedSlotCount>=1)",
+      mgr2Diag.heldDelegatedSlotCount >= 1,
+      mgr2Diag,
+    );
     checkGuard(
       cell,
       "after cross-owner delegated seat exit + platform manager2 start: lifecycle head under user owner stays active",
