@@ -681,14 +681,16 @@ export async function registerServiceInstance(
   }
 
   // PHASE 4 — reopen at the successor, TOKEN-pinned: only this barrier (still holding its freeze)
-  // may reopen; a lost CAS means a reconciler/newer barrier superseded us → leave frozen.
+  // may reopen; a lost CAS means a reconciler/newer barrier superseded us and moved the gate.
   const processEpoch = successorProcessEpoch(obs);
+  let reopened: boolean;
   try {
-    if (!(await args.barrier.reopen(token, successorAt(newRev, processEpoch))))
-      throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
+    reopened = await args.barrier.reopen(token, successorAt(newRev, processEpoch));
   } catch (err) {
-    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen did not complete; the gate is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
+    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
+  if (!reopened)
+    throw new EpEnvelopeError("unavailable", `re-registration wrote the spec at revision ${newRev} but the reopen lost its freeze token (a reconciler or newer barrier superseded this one), so this registration reopened nothing; re-read the gate and re-decide (SPEC 13.1)`);
   await releaseHeldGovernance(kv, spec.endpoint, args.instanceId, obs.generation);
   if (args.barrier.progress && progressRevision !== null) {
     try { await args.barrier.progress.clear(progressRevision); }
@@ -975,18 +977,19 @@ async function releaseHeldGovernance(kv: KV, endpoint: string, instanceId: strin
 }
 
 /** Reopen a barrier-frozen gate (token-pinned) after a registration aborted before any spec write
- *  or revoke — the gate returns to `open` at the given successor. A lost or failed reopen leaves
- *  the gate frozen for reconciliation and is surfaced with the aborting cause attached (§13.1:
- *  fail closed, never a silently stuck gate). */
+ *  or revoke — the gate returns to `open` at the given successor. A lost CAS means a newer barrier
+ *  moved the gate and nothing was reopened; a reopen that throws may have committed. Either is
+ *  surfaced with the aborting cause attached (§13.1: fail closed, never a silently stuck gate). */
 async function reopenGateAfterAbort(barrier: EpIssuanceBarrier, token: number, successor: EpGateSuccessor, cause: unknown): Promise<void> {
+  let e: EpEnvelopeError;
   try {
     if (await barrier.reopen(token, successor)) return;
-    throw new Error("the reopen CAS lost its freeze token");
+    e = new EpEnvelopeError("unavailable", "registration aborted and the reopen lost its freeze token (a reconciler or newer barrier superseded this one), so this registration reopened nothing; re-read the gate and re-decide (SPEC 13.1)");
   } catch (err) {
-    const e = new EpEnvelopeError("unavailable", `registration aborted and the issuance gate could not be reopened; it is left frozen for reconciliation (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
-    (e as Error & { cause?: unknown }).cause = cause;
-    throw e;
+    e = new EpEnvelopeError("unavailable", `registration aborted and the reopen's outcome is unknown: it may have committed, or the gate is still frozen for reconciliation; re-read the gate before retrying (SPEC 13.1): ${(err as Error)?.message ?? String(err)}`);
   }
+  (e as Error & { cause?: unknown }).cause = cause;
+  throw e;
 }
 
 function decodeJson(value: Uint8Array, key: string): unknown {

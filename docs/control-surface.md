@@ -394,6 +394,11 @@ Once that reopen commits, the registration has completed: a governance slot it t
 is left behind the live generation, as on a normal registration, and does not fail the restart.
 It does not invent a TTL and it does not start a new freeze over a still-held one.
 
+A registration's own reopen fails in one of two ways, and its `unavailable` error says which. A
+reopen that lost its compare-and-set wrote nothing: a reconciler or newer barrier moved the gate. A
+reopen that threw, such as one whose acknowledgement was lost, has an unknown outcome and may have
+committed. Either way, re-read the gate before retrying.
+
 That residue has a second half, and it is the endpoint governance slot rather than the gate. Every
 registration takes the endpoint-wide slot before it publishes its spec and holds it until its own
 gate reopens, which is what serializes registration for the endpoint. An instance that stopped
