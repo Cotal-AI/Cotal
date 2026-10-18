@@ -9,6 +9,8 @@
  *  • preflightTarget — probe a DEAD port and assert it classifies unreachable + prunes by source,
  *    WITHOUT mutating the registry (it returns the decision; the caller mutates).
  *  • pruneStaleMeshes — a registered entry whose broker is gone is kept as offline; an explicit call only.
+ *  • resolveControlTarget — a space-less control resolve sweeps once, and the sweep it reads is the
+ *    one the caller handed in when there is one (#3872).
  *
  * Run: pnpm smoke:preflight
  */
@@ -37,6 +39,8 @@ const {
   renderWorkspaceError,
   reachableOrThrow,
   ConnectRefusal,
+  resolveControlTarget,
+  setCurrent,
 } = await import("@cotal-ai/workspace");
 
 // The canonical preflight copy now comes from the renderer (workspace's optional, command-agnostic
@@ -452,6 +456,65 @@ check("stale-auth-root copy claims a removal only when one happened", (() => {
     s12cElapsed < 2_000,
     { s12cElapsed },
   );
+}
+
+// ── One sweep per control resolve (#3872) ────────────────────────────────────────────────────────
+// `beta` is a bystander that only a registry sweep dials, so its dial count is the sweep count. The
+// mode peek and the connect read one sweep, a named `--space` reads none, and a sweep the caller
+// already took is the verdict the whole chain reads. The cwd is `/` so the walk-up can never select
+// a real project once `current` is skipped.
+{
+  const { createServer } = await import("node:net");
+  const greeter = () => new Promise<{ server: string; dials: () => number; close: () => void }>((resolve) => {
+    let dials = 0;
+    const srv = createServer((sock) => {
+      dials++;
+      sock.on("error", () => { /* client tears down after its probe; not a test failure */ });
+      sock.write('INFO {"server_id":"s3872","version":"2.10.0","proto":1,"headers":true,"max_payload":1048576}\r\n');
+      sock.on("data", (d) => {
+        if (d.toString().includes("PING")) sock.write("PONG\r\n");
+      });
+    });
+    srv.listen(0, "127.0.0.1", () => {
+      const port = (srv.address() as { port: number }).port;
+      resolve({ server: `nats://127.0.0.1:${port}`, dials: () => dials, close: () => srv.close() });
+    });
+  });
+  const alpha = await greeter();
+  const beta = await greeter();
+  for (const m of loadMeshes()) removeMesh(m.space);
+  for (const [space, peer] of [["alpha", alpha], ["beta", beta]] as const)
+    recordMesh({ space, server: peer.server, root: `/tmp/s3872-${space}`, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  setCurrent("alpha");
+  const cwd = process.cwd();
+  process.chdir("/");
+  const control = (flags: { space?: string; offline?: string[] }) =>
+    resolveControlTarget(flags, "control-caller-privileged", undefined, { onRefusal: "throw" });
+
+  let before = beta.dials();
+  const spaceless = await control({});
+  check(
+    "a space-less control resolve sweeps the registry once: its mode peek and its connect read one sweep (#3872)",
+    spaceless.space === "alpha" && beta.dials() - before === 1,
+    { space: spaceless.space, sweeps: beta.dials() - before },
+  );
+  before = beta.dials();
+  const named = await control({ space: "alpha" });
+  check(
+    "a named --space control resolve sweeps nothing",
+    named.space === "alpha" && beta.dials() - before === 0,
+    { space: named.space, sweeps: beta.dials() - before },
+  );
+  before = alpha.dials();
+  const handed = await control({ offline: ["alpha"] });
+  check(
+    "a control resolve reads the sweep its caller handed in: the current mesh it marks offline is skipped and never dialed",
+    handed.space === "beta" && alpha.dials() - before === 0,
+    { space: handed.space, alphaDials: alpha.dials() - before },
+  );
+  process.chdir(cwd);
+  alpha.close();
+  beta.close();
 }
 
 rmSync(home, { recursive: true, force: true });
