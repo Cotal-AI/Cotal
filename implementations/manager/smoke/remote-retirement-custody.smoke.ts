@@ -1677,7 +1677,10 @@ Seat ${seatName}.
     // Once released seat_g1 exits, manager2's released-seat watcher retires its lifecycle without waiting for a restart
     writeFileSync(ctl.exitFile, "exit");
     await until(() => !pidAlive(seatPid), "seat_g1 exit cleanup");
-    await until(async () => (await inspectLifecycleState(seatName, uid)).headState === "retired", "seat_g1 retired by manager2 released-seat watch after exit");
+    const watchDeadline = Date.now() + 3_000;
+    while (Date.now() < watchDeadline && (await inspectLifecycleState(seatName, uid)).headState !== "retired") {
+      await new Promise((r) => setTimeout(r, 100));
+    }
     const afterWatchedExit = await inspectLifecycleState(seatName, uid);
     checkContract(
       cell,
