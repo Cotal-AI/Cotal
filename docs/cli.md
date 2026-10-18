@@ -166,7 +166,7 @@ apply before changing the installation.
 
 Without `--self`, `update` keeps the installed first-party surfaces coherent with the running
 binary: it force-reconciles the four built-in connectors, brings what a connector installed in its
-harness to this release (the `cotal` plugin in each Claude Code project that has it), then reinstalls other `@cotal-ai/*`
+harness to this release (the `cotal` plugin copy Claude Code sessions load, and its Claude Desktop entry), then reinstalls other `@cotal-ai/*`
 operator extensions at the binary's exact version. Each extension runs in an isolated child, so one
 failure cannot poison later replays. It then checks npm; a newer binary is an informational notice
 with `cotal update --self` as the next command, not an automatic install.

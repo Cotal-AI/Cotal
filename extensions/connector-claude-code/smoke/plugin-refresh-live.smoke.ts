@@ -1,8 +1,8 @@
 /**
- * The `cotal` plugin a plain Claude Code session loads stays current. Claude Code serves an installed
- * plugin from a cache keyed by its version, so this drives the real setup provider against the real
- * `claude` CLI, with Claude's config and Cotal's home in a scratch directory, and reads what Claude
- * Code would load: each install's version and the files in its cache directory.
+ * The `cotal` plugin a plain Claude Code session loads stays current. Claude Code runs a plugin from a
+ * local-directory marketplace in place, from its folder, so the folder setup materializes is what every
+ * install runs. This drives the real setup provider against the real `claude` CLI, with Claude's config
+ * and Cotal's home in a scratch directory, and asks Claude Code what it would start in each project.
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -23,6 +23,7 @@ if (spawnSync("claude", ["--version"]).status !== 0) throw new Error("this suite
 const { claudeSetupProvider } = await import("../src/setup.js");
 const PACKAGE = fileURLToPath(new URL("..", import.meta.url));
 const RELEASE = (JSON.parse(readFileSync(join(PACKAGE, "package.json"), "utf8")) as { version: string }).version;
+const FOLDER = join(process.env.COTAL_HOME, "claude-plugin", "cotal");
 const connector = claudeSetupProvider.connector!;
 const refresh = claudeSetupProvider.refresh!;
 
@@ -33,24 +34,32 @@ function ok(label: string, fn: () => void): void {
   console.log(`  ✓ ${label}`);
 }
 
-interface Install {
-  version: string;
-  projectPath?: string;
-  installPath: string;
-}
-
-/** The cotal installs Claude Code reports, by project (`user` for a user-scope one). */
-function installs(): Map<string, Install> {
+/** The projects with a local install of the cotal plugin, as Claude Code records them. */
+function installedIn(): string[] {
   const out = spawnSync("claude", ["plugin", "list", "--json"], { encoding: "utf8" });
   assert.equal(out.status, 0, out.stderr);
-  const map = new Map<string, Install>();
-  for (const e of JSON.parse(out.stdout) as (Install & { id: string; scope: string })[])
-    if (e.id === "cotal@cotal-mesh") map.set(e.scope === "local" ? e.projectPath! : e.scope, e);
-  return map;
+  return (JSON.parse(out.stdout) as { id: string; scope: string; projectPath?: string }[])
+    .filter((e) => e.id === "cotal@cotal-mesh" && e.scope === "local")
+    .map((e) => e.projectPath!)
+    .sort();
 }
 
-/** The CLI argv the cached copy at `install` records, which is what its server runs. */
-const cachedCli = (install: Install) => (JSON.parse(readFileSync(join(install.installPath, "dist", "cli.json"), "utf8")) as { argv: string[] }).argv;
+/** A user's terminal: no Cotal launch identity and no enclosing Claude Code session, which a suite run
+ *  from inside a launched session would otherwise hand to the server Claude Code starts. */
+const TERMINAL: NodeJS.ProcessEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => k === "COTAL_HOME" || !(k.startsWith("COTAL_") || k.startsWith("CLAUDE_CODE_") || k === "CLAUDECODE" || k === "CLAUDE_PID")),
+);
+
+/** The cotal server Claude Code would start in `dir`, as `claude mcp list` resolves and connects it. */
+function startedIn(dir: string): string {
+  const out = spawnSync("claude", ["mcp", "list"], { cwd: dir, encoding: "utf8", timeout: 120_000, env: TERMINAL });
+  const line = `${out.stdout}${out.stderr}`.split("\n").find((l) => l.startsWith("plugin:cotal:cotal:"));
+  assert.ok(line, `claude mcp list in ${dir} names the cotal plugin's server:\n${out.stdout}${out.stderr}`);
+  return line;
+}
+
+const folderVersion = () => (JSON.parse(readFileSync(join(FOLDER, ".claude-plugin", "plugin.json"), "utf8")) as { version: string }).version;
+const folderCli = () => (JSON.parse(readFileSync(join(FOLDER, "dist", "cli.json"), "utf8")) as { argv: string[] }).argv;
 const sha = (path: string) => createHash("sha256").update(readFileSync(path)).digest("hex");
 const cli = (name: string) => [process.execPath, `/opt/cotal-${name}/cotal.js`];
 const inProject = <T>(dir: string, fn: () => T): T => {
@@ -68,72 +77,53 @@ try {
   console.log("plugin-refresh-live.smoke:");
   ok("refresh with nothing installed installs nothing", () => {
     assert.equal(refresh.run({ cotal: cli("one") }), "not installed");
-    assert.equal(installs().size, 0);
+    assert.deepEqual(installedIn(), []);
   });
 
-  await inProject(PROJECT_A, () => connector.run({ cotal: cli("one") }));
-  const first = installs().get(PROJECT_A)!;
+  inProject(PROJECT_A, () => connector.run({ cotal: cli("one") }));
   ok("setup installs the plugin in its project, stamped with this release and a digest", () => {
-    assert.ok(first, "project a has the plugin");
-    assert.match(first.version, new RegExp(`^${RELEASE.replace(/\./g, "\\.")}\\+[0-9a-f]{12}$`));
+    assert.deepEqual(installedIn(), [PROJECT_A]);
+    assert.match(folderVersion(), new RegExp(`^${RELEASE.replace(/\./g, "\\.")}\\+[0-9a-f]{12}$`));
   });
-  ok("the cached copy is this package's build and runs the CLI setup was given", () => {
-    assert.equal(sha(join(first.installPath, "dist", "mcp.cjs")), sha(join(PACKAGE, "dist", "mcp.cjs")));
-    assert.equal(sha(join(first.installPath, "dist", "monitor.cjs")), sha(join(PACKAGE, "dist", "monitor.cjs")));
-    assert.deepEqual(cachedCli(first), cli("one"));
+  ok("the copy setup wrote is this package's build and records the CLI setup was given", () => {
+    assert.equal(sha(join(FOLDER, "dist", "mcp.cjs")), sha(join(PACKAGE, "dist", "mcp.cjs")));
+    assert.equal(sha(join(FOLDER, "dist", "monitor.cjs")), sha(join(PACKAGE, "dist", "monitor.cjs")));
+    assert.deepEqual(folderCli(), cli("one"));
+  });
+  ok("Claude Code starts that copy's server in place, and it answers", () => {
+    const line = startedIn(PROJECT_A);
+    assert.ok(line.includes(join(FOLDER, "dist", "mcp.cjs")), line);
+    assert.match(line, /Connected/);
   });
 
-  await inProject(PROJECT_B, () => connector.run({ cotal: cli("one") }));
-  ok("the same content gives the same version in a second project", () => {
-    const now = installs();
-    assert.equal(now.size, 2);
-    assert.equal(now.get(PROJECT_B)!.version, first.version);
-    assert.equal(now.get(PROJECT_A)!.version, first.version);
+  inProject(PROJECT_B, () => connector.run({ cotal: cli("one") }));
+  const first = folderVersion();
+  ok("a second project runs the same copy", () => {
+    assert.deepEqual(installedIn(), [PROJECT_A, PROJECT_B]);
+    assert.ok(startedIn(PROJECT_B).includes(join(FOLDER, "dist", "mcp.cjs")));
   });
-  ok("status calls both installs current", () => {
+  ok("status calls the copy current", () => {
     assert.deepEqual(status(RELEASE), { label: "Claude plugin", state: "ok", text: "current (2 installs)" });
   });
-  ok("status after an upgrade, before setup runs again, calls the plugin stale", () => {
-    const row = status("999.0.0");
-    assert.equal(row.state, "warn");
-    assert.match(row.text, /stale · run `cotal setup`/);
+  ok("status after an upgrade, before setup runs again, calls the copy stale", () => {
+    assert.deepEqual(status("999.0.0"), { label: "Claude plugin", state: "warn", text: "stale · run `cotal setup`" });
   });
 
-  // A repeat setup in project a with a CLI at another path: the plugin's content changed.
-  await inProject(PROJECT_A, () => connector.run({ cotal: cli("two") }));
-  ok("a repeat setup replaces the cached copy with the new content", () => {
-    const a = installs().get(PROJECT_A)!;
-    assert.notEqual(a.version, first.version);
-    assert.deepEqual(cachedCli(a), cli("two"));
+  // What `cotal update` and a repeat `cotal setup` run, from a directory with no install, after the CLI moved.
+  const text = inProject(ROOT, () => refresh.run({ cotal: cli("two") })) as string;
+  ok("refresh rewrites the copy every project runs, and installs nothing new", () => {
+    assert.notEqual(folderVersion(), first);
+    assert.deepEqual(folderCli(), cli("two"));
+    assert.equal(text, `cotal@cotal-mesh ${folderVersion()}; each Claude Code session loads it when it starts`);
+    assert.deepEqual(installedIn(), [PROJECT_A, PROJECT_B]);
   });
-  ok("a repeat setup in one project moves the other project's install too", () => {
-    const now = installs();
-    assert.equal(now.get(PROJECT_B)!.version, now.get(PROJECT_A)!.version);
-    assert.deepEqual(cachedCli(now.get(PROJECT_B)!), cli("two"));
+  ok("after the refresh both projects still start the rewritten copy", () => {
+    for (const dir of [PROJECT_A, PROJECT_B]) assert.ok(startedIn(dir).includes(join(FOLDER, "dist", "mcp.cjs")));
   });
-
-  // What `cotal update` and a repeat `cotal setup` run, from a directory with no install.
-  let text = inProject(ROOT, () => refresh.run({ cotal: cli("three") })) as string;
-  ok("refresh from outside every project brings each install to the new content", () => {
-    const now = installs();
-    const version = now.get(PROJECT_A)!.version;
-    assert.equal(now.get(PROJECT_B)!.version, version);
-    for (const p of [PROJECT_A, PROJECT_B]) assert.deepEqual(cachedCli(now.get(p)!), cli("three"));
-    assert.equal(text, `cotal@cotal-mesh ${version} in 2 installs`);
-    assert.equal(now.has(ROOT), false, "refresh installs nothing where there was no install");
-  });
-  ok("a second refresh with the same CLI changes nothing", () => {
-    const before = installs().get(PROJECT_A)!.version;
-    text = refresh.run({ cotal: cli("three") }) as string;
-    assert.equal(installs().get(PROJECT_A)!.version, before);
-    assert.equal(text, `cotal@cotal-mesh ${before} in 2 installs`);
-  });
-
-  rmSync(PROJECT_B, { recursive: true, force: true });
-  text = refresh.run({ cotal: cli("four") }) as string;
-  ok("an install whose project is gone is named and left alone", () => {
-    assert.match(text, /in 1 install; left alone, project gone: .*\/b$/);
-    assert.deepEqual(cachedCli(installs().get(PROJECT_A)!), cli("four"));
+  ok("a second refresh with the same CLI writes the same version", () => {
+    const before = folderVersion();
+    refresh.run({ cotal: cli("two") });
+    assert.equal(folderVersion(), before);
   });
 
   console.log(`plugin-refresh-live.smoke: ${checks} checks passed`);
