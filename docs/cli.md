@@ -1196,7 +1196,8 @@ remote spawn (an enrollment or the advertised provisioning endpoint) removes onl
 credential files; its grant stays until the mesh operator revokes it, and the launch line says
 which arm you are on. A spawn through the advertised provisioning endpoint against a record that
 pins no exchange URL is refused before the grant is requested, so no credential lands on this
-machine. A foreground `--share-tools` selection that names a server the config does not declare is
+machine. A successful provisioning answer whose body is not JSON is refused as unreadable, with its
+HTTP status. A foreground `--share-tools` selection that names a server the config does not declare is
 refused before anything is provisioned. A `--detach` spawn is an
 **action**: the manager accepts it and returns the allocated identity at once, then the launch
 follows to a terminal outcome rather than blocking (see [the control surface](control-surface.md)).
@@ -2708,7 +2709,9 @@ spawn-time secret; you never run it directly either. Its local arm uses `--dir` 
 capability-gated loopback service. A remotely enrolled, already-granted agent instead receives
 `--exchange-url <https://base>` in its launch argv: that arm sends `{owner, actor, actorToken}` to the
 pinned public exchange with no local capability, follows no redirects, and refuses every non-HTTPS
-URL because the actor token is the credential in the request body. Because a seat execs it on every
+URL because the actor token is the credential in the request body. A successful exchange answer
+whose body is not JSON is refused as unreadable, with its HTTP status, and is never reported as a
+missing token. Because a seat execs it on every
 bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
 exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
 a newer store generation cannot refuse a live seat's refresh. `--manager-call` asks for the

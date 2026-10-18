@@ -393,7 +393,10 @@ async function runAgentBearer(args: ParsedArgs): Promise<void> {
       const body = (await res.json().catch(() => ({}))) as { error?: string };
       throw new Error(`agent-bearer: exchange refused: ${body.error ?? `HTTP ${res.status}`}`);
     }
-    const out = (await res.json().catch(() => ({}))) as { token?: string };
+    // A stand-in object would turn an unreadable answer into the stale-build diagnosis below.
+    const out = (await res.json().catch(() => {
+      throw new Error(`agent-bearer: the exchange answered HTTP ${res.status} with a body that could not be read as JSON`);
+    })) as { token?: string };
     if (typeof out.token !== "string" || !out.token)
       throw new Error("agent-bearer: the auth service's exchange returned no token - its build may be stale; restart it with `cotal up`");
     health("ok");

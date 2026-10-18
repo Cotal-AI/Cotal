@@ -1,7 +1,8 @@
 {
   "suite": [
     "implementations/auth/smoke/remote-agent-bearer.smoke.ts",
-    "implementations/auth/smoke/remote-exchange.smoke.ts"
+    "implementations/auth/smoke/remote-exchange.smoke.ts",
+    "implementations/auth/smoke/login.smoke.ts"
   ],
   "guard": "the fixture waits on the auth service's own readiness signal (discovery file, pid alive, /health on the recorded URL) and an exhausted budget throws naming the auth service instead of falling through into a misattributed 502",
   "command": "pnpm smoke:remote-agent-bearer:live",
@@ -75,6 +76,26 @@
       "completionMarker": "remote-exchange smoke:",
       "note": "Cloud #210 item 2: an owner whose managers have all exited must be told to start one; naming an instance cannot help.",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "an agent-bearer exchange answer that is not JSON is read as an empty object again",
+      "file": "implementations/auth/src/commands.ts",
+      "find": "    const out = (await res.json().catch(() => {\n      throw new Error(`agent-bearer: the exchange answered HTTP ${res.status} with a body that could not be read as JSON`);\n    })) as { token?: string };",
+      "replace": "    const out = (await res.json().catch(() => ({}))) as { token?: string };",
+      "expectRed": "a 200 exchange answer that is not JSON is refused as unreadable, apart from a JSON answer with no token",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
+      "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:remote-agent-bearer:live",
+      "note": "#4039: a gateway page answered with HTTP 200 was reported as a stale auth-service build."
+    },
+    {
+      "name": "an agent-provisioning answer that is not JSON resolves as an empty object again",
+      "file": "implementations/auth/src/provider.ts",
+      "find": "    return await res.json().catch(() => {\n      throw new Error(`the mesh's agent-provisioning endpoint at ${url} answered HTTP ${res.status} with a body that could not be read as JSON`);\n    });",
+      "replace": "    return await res.json().catch(() => ({}));",
+      "expectRed": "a 200 answer that is not JSON is refused as unreadable, naming the status",
+      "command": "pnpm smoke:auth-login",
+      "completionMarker": "login smoke:",
+      "note": "#4039: a gateway page answered with HTTP 200 reached the spawn as provisioning material the endpoint never sent."
     }
   ]
 }

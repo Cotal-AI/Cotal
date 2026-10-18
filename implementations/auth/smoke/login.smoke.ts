@@ -125,6 +125,44 @@ console.log("A) one-shot remote enrollment client");
   if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
 }
 
+// ---------- remote agent provisioning ----------
+console.log("A2) remote agent-provisioning client reads the answer it was sent");
+{
+  const provisioningHome = mkdtempSync(join(tmpdir(), "cotal-provisioning-home-"));
+  const priorHome = process.env.COTAL_HOME;
+  process.env.COTAL_HOME = provisioningHome;
+  const page = "<html><body>gateway page</body></html>";
+  const answers: Record<string, [number, string, string]> = {
+    "/html200": [200, "text/html", page],
+    "/empty200": [200, "application/json", "{}"],
+    "/material200": [200, "application/json", JSON.stringify({ actor: "probe-agent", actorToken: "at_probe" })],
+    "/html500": [500, "text/html", page],
+    "/error500": [500, "application/json", JSON.stringify({ error: "provisioning quota reached" })],
+  };
+  const provisioning = createServer((req, res) => {
+    req.resume();
+    const [status, type, body] = answers[req.url ?? ""] ?? [404, "text/plain", "no route"];
+    res.writeHead(status, { "content-type": type });
+    res.end(body);
+  });
+  await new Promise<void>((r) => provisioning.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(provisioning.address() as AddressInfo).port}`;
+  const idpUrl = `${base}/idp`;
+  saveIdpSession(provisioningHome, idpUrl, { token: "cached-login", expiresAt: Date.now() / 1000 + 600 });
+  const provision = (path: string) => cotalAuthProvider.postAgentProvisioning!({ url: `${base}${path}`, idpUrl, actor: "probe-agent" });
+  let unreadable = "";
+  try { await provision("/html200"); } catch (e) { unreadable = e instanceof Error ? e.message : String(e); }
+  check("a 200 answer that is not JSON is refused as unreadable, naming the status", unreadable.includes("answered HTTP 200 with a body that could not be read as JSON"), unreadable);
+  check("the unreadable refusal does not quote the response body", unreadable !== "" && !unreadable.includes("gateway"), unreadable);
+  check("a 200 answer of an empty JSON object still reaches the caller unchanged", JSON.stringify(await provision("/empty200")) === "{}");
+  check("a 200 answer of provisioning material reaches the caller unchanged", (await provision("/material200") as { actorToken?: string }).actorToken === "at_probe");
+  await rejects("a 500 answer that is not JSON is still refused by its status", () => provision("/html500"), `the mesh refused to provision agent "probe-agent": HTTP 500`);
+  await rejects("a 500 answer with an error still carries the mesh's reason", () => provision("/error500"), "provisioning quota reached");
+  provisioning.close();
+  delete process.env.COTAL_HOME;
+  if (priorHome !== undefined) process.env.COTAL_HOME = priorHome;
+}
+
 // ---------- the real Better Auth IdP ----------
 console.log("B) real Better Auth (jwt + deviceAuthorization + bearer), the happy chain");
 

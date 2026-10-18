@@ -325,8 +325,8 @@ export const cotalAuthProvider: AuthProvider = {
       throw new Error(
         `the mesh's agent-provisioning endpoint answered ${res.status} with redirect Location ${JSON.stringify(res.headers.get("location") ?? "")} - redirects are refused so the login proof cannot be walked onto another host`,
       );
-    const body: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
+      const body: unknown = await res.json().catch(() => ({}));
       const reason = (body as { error?: string }).error ?? `HTTP ${res.status}`;
       // 401 is the one refusal with a local remedy; everything else is the mesh's own word.
       throw new Error(
@@ -335,7 +335,10 @@ export const cotalAuthProvider: AuthProvider = {
           : `the mesh refused to provision agent "${actor}": ${reason}`,
       );
     }
-    return body;
+    // A stand-in object would reach the caller as provisioning material the endpoint never sent.
+    return await res.json().catch(() => {
+      throw new Error(`the mesh's agent-provisioning endpoint at ${url} answered HTTP ${res.status} with a body that could not be read as JSON`);
+    });
   },
 
   /** Redeem one pre-minted remote enrollment. The URL itself carries the one-time secret, so this

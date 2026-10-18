@@ -105,6 +105,7 @@ let witness: CotalEndpoint | undefined;
 let proxy: ReturnType<typeof createHttpsServer> | undefined;
 let redirector: ReturnType<typeof createHttpsServer> | undefined;
 let plaintextTarget: ReturnType<typeof createHttpServer> | undefined;
+let nonJsonExchange: ReturnType<typeof createHttpServer> | undefined;
 let emptyJwks: ReturnType<typeof createHttpsServer> | undefined;
 const exchangeRequests: Array<{ method?: string; url?: string; authorization?: string; body: unknown }> = [];
 let plaintextHits = 0;
@@ -415,6 +416,24 @@ try {
     }
   });
 
+  const gatewayPage = "<html><body>gateway page</body></html>";
+  nonJsonExchange = createHttpServer((req, res) => {
+    req.resume();
+    if (req.url === "/html/exchange") { res.writeHead(200, { "content-type": "text/html" }); res.end(gatewayPage); return; }
+    res.writeHead(200, { "content-type": "application/json" }); res.end("{}");
+  });
+  await new Promise<void>((r) => nonJsonExchange!.listen(0, "127.0.0.1", r));
+  const nonJsonBase = `http://127.0.0.1:${(nonJsonExchange.address() as AddressInfo).port}`;
+  cell("a 200 exchange answer that is not JSON is refused as unreadable, apart from a JSON answer with no token", async () => {
+    const html = await execBearer(bearerArgv(`${nonJsonBase}/html`)); assert.notEqual(html.code, 0);
+    assert.match(html.stderr, /answered HTTP 200 with a body that could not be read as JSON/);
+    assert.doesNotMatch(html.stderr, /returned no token|gateway/);
+    assert.equal(JSON.parse(readFileSync(healthPath, "utf8")).state, "failed");
+    assert.doesNotMatch(readFileSync(healthPath, "utf8"), /gateway/);
+    const empty = await execBearer(bearerArgv(`${nonJsonBase}/empty`)); assert.notEqual(empty.code, 0);
+    assert.match(empty.stderr, /returned no token/);
+  });
+
   plaintextTarget = createHttpServer((_req, res) => { plaintextHits++; res.end("stolen"); });
   await new Promise<void>((r) => plaintextTarget!.listen(0, "127.0.0.1", r));
   const plainLocation = `http://127.0.0.1:${(plaintextTarget.address() as AddressInfo).port}/exchange`;
@@ -440,7 +459,7 @@ try {
   idp.close(); rmSync(jsDir, { recursive: true, force: true });
 } finally {
   await agent?.stop().catch(() => {}); await witness?.stop().catch(() => {}); await witnessNc?.close().catch(() => {});
-  proxy?.close(); redirector?.close(); plaintextTarget?.close(); emptyJwks?.close();
+  proxy?.close(); redirector?.close(); plaintextTarget?.close(); nonJsonExchange?.close(); emptyJwks?.close();
   authService?.kill("SIGKILL"); broker?.kill("SIGKILL"); await wait(200);
   rmSync(home, { recursive: true, force: true }); rmSync(serverRoot, { recursive: true, force: true }); rmSync(clientRoot, { recursive: true, force: true });
 }
