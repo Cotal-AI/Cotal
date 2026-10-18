@@ -55,3 +55,16 @@ The broker-free authority policy suite should prove:
 - prepare, activate, renew, and session behavior remains unchanged.
 
 A manager synthetic regression should prove remote teardown asks its injected terminal-authority callback, uses the current `serveGrant.epoch`, retains the stable UID-derived operation ID, and does not clear its held alias on refusal or uncertainty.
+
+## Durable manager slot custody and consumer-free recovery (#4005)
+
+A user-mode or remotely supervised manager records per-seat lifecycle custody in `KV_cotal_records_<space>` under its own holder prefix:
+
+- Key format: `mgrslot.<managerOwner>.<targetOwner>-<actor>`, plus the holder-scoped index key `mgrslot.<managerOwner>._index`.
+- `<managerOwner>` is validated with `assertPrincipalOwnerToken(managerOwner, { allowPlatform: true })` (`u_…` for a human manager or `p_…` for a platform-control manager).
+- `<targetOwner>` is validated with `assertDerivedOwnerToken(targetOwner)` (`u_…`). When `delegated !== true`, `targetOwner` must equal `managerOwner`.
+- `<actor>` is validated with `assertValidOwnerToken(actor)` (`[A-Za-z0-9_]+`, no `-`), so the hyphen in `<targetOwner>-<actor>` is the sole separator and `_index` (containing no `-`) is disjoint from every slot key.
+- `remoteManagerPermissions` grants the supervisor credential (`manager_<iid>`) only the two subject-confined `pub.allow` entries `$KV.<REC>.mgrslot.<pr.owner>.*` and `$JS.API.DIRECT.GET.KV_<REC>.$KV.<REC>.mgrslot.<pr.owner>.*`. It never grants `CONSUMER.CREATE` on `KV_<REC>`, because consumer filter subjects live in the request body and are not subject-ACL confinable (`nats-server#8274`).
+- Key enumeration reads `mgrslot.<managerOwner>._index` via `DIRECT.GET` (unioned with the local mirror `<workspaceRoot>/.cotal/space.<space-hex>/mgrslots.json`) and point-reads each `mgrslot.<managerOwner>.<targetOwner>-<actor>` via `DIRECT.GET`.
+- Before calling `enroll(...)`, `enrollUserAgent` writes `phase: "enrolling"` with `provisionalUid`, `tokenHash`, `enrollSpec`, and reserved `runtime`, retaining the staged token and row on any non-definitive enrollment error so a retry or successor converges on `tokenHash` via idempotent `enrollManagedAgent` and drives `prepareAgentRetirement` + `retireManagedAgent` to `phase: "retired"`.
+- Kernel process inspection (`inspectProcessStart`, `identityVerdict`, `processGroupOf`, `groupMembers`, `reapSeat`, `drainSeats`, `requireRuntimeReap`) is three-valued (`"live" | "gone" | "unknown"`): only `ENOENT`/`ESRCH` or a differing readable `starttime` is `"gone"`, while any other `/proc` read failure (`EACCES`, etc.) is `"unknown"` and fails closed without signalling, deleting `record.json`, or retiring the lifecycle.
