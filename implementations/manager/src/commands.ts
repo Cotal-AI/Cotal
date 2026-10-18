@@ -531,8 +531,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       shutdown();
     })
     : undefined;
+  // Listen before start: start() acquires the liveness lease early, and a signal that took Node's
+  // default action there would strand the row for its whole TTL. stop() waits for start to settle.
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
   try { await mgr.start(); }
   catch (error) { disposeLocalStop?.(); throw error; }
+  // A stop that arrived during start owns the exit; this process never announces itself ready.
+  if (shuttingDown) return;
   // The control capability precedes the pid record, so a stop cannot observe a ready manager
   // before its cooperative endpoint exists. A failed start still publishes no pid record.
   releasePidRecord = recordManagerPid(managerRoot, space);
@@ -543,8 +549,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       `\n  console: ${mgr.consoleUrl}` +
       c.dim("\n  spawn: cotal spawn --detach <persona>   ·   stop: cotal stop --name <n>   (Ctrl-C to shut down)"),
   );
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
   // Declarative boot: bring up each rostered agent through the same spawn path as a detached spawn.
   // A failed entry is logged but non-fatal — healthy agents stay up and the operator can
   // fix the roster without the supervisor crash-looping.
