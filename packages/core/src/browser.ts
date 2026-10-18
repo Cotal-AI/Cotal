@@ -9,9 +9,9 @@
  * packaged validator for a digest IS that closure's validator. A cluster or closure digest this
  * build did not package is refused as `unsupported-version`, never compiled, guessed or skipped.
  *
- * This module only names and enforces contracts. It opens no connection and acquires no authority:
- * describing, invoking and following a Manager still need the caller's own authorized connection
- * (docs/embedding.md, "Manager command contracts in a browser").
+ * `openBrowserManagerCaller` (browser-caller.ts) composes these contracts with the stock describe and
+ * invoke path over the signed-in person's own connection (docs/embedding.md, "Manager command
+ * contracts in a browser").
  */
 import { EpEnvelopeError } from "./endpoint-error.js";
 import { PACKAGED_CLUSTERS, PACKAGED_VALIDATORS } from "./browser-contracts.generated.js";
@@ -73,6 +73,12 @@ export function packagedContract(closureDigest: string): PackagedContract {
   return contract;
 }
 
+/** The generated validator for one packaged closure, for callers that hand it to `invokeCommand`. */
+export function packagedValidatorFor(closureDigest: string): GeneratedValidator {
+  packagedContract(closureDigest); // the same refusal for an unpackaged digest
+  return validators[closureDigest]!;
+}
+
 /** Every Manager cluster document this build packages, for display and support checks. */
 export const PACKAGED_MANAGER_CLUSTERS: readonly PackagedCluster[] = Object.freeze(
   Object.entries(clusters).map(([clusterDigest, c]) => Object.freeze({
@@ -109,3 +115,5 @@ export function packagedServiceSurface(descriptor: { clusters: ReadonlyArray<{ d
   }
   return surface;
 }
+
+export { openBrowserManagerCaller, type BrowserManagerAuthority, type BrowserManagerCaller, type BrowserManagerCallerOptions, type BrowserInvokeOptions } from "./browser-caller.js";

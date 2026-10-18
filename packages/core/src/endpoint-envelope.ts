@@ -13,9 +13,9 @@
  * registration-time `contract-invalid`).
  */
 import type { ValidateFunction } from "ajv/dist/2020.js";
-import { rawDigest, isContractDigest, isWellFormedUnicode } from "./canonical.js";
+import { isContractDigest, isWellFormedUnicode } from "./canonical-json.js";
 import { assertCommandToken, assertIdToken, assertLifecycleToken, endpointToken, type ParsedEpRequest } from "./endpoint-subjects.js";
-import { SCHEMA_PROFILE } from "./schema-profile.js";
+import { SCHEMA_PROFILE } from "./schema-bounds.js";
 import type { ControlReply, EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
@@ -175,16 +175,6 @@ export interface EndpointEvent {
 
 // ---- signed-artifact binding (§13.3/§13.7) --------------------------------------------------
 
-/** `authDigest`: `sha256:<hex>` over the UTF-8 bytes of the `auth` slot EXACTLY as carried. The
- *  slot is already a canonical signed artifact, so it is digested as bytes, never
- *  re-canonicalized; absent from the §13.4 fingerprint iff `auth` is absent. A malformed-UTF-16
- *  slot is refused (`bad-request`): a lone surrogate has no UTF-8 encoding, so its "digest"
- *  would be over a substituted value and two distinct slots could share one fingerprint. */
-export function authDigest(auth: string): string {
-  if (typeof auth !== "string" || !isWellFormedUnicode(auth))
-    throw new EpEnvelopeError("bad-request", "auth slot is not a well-formed Unicode string");
-  return rawDigest(auth);
-}
 
 // ---- consuming-boundary validators ----------------------------------------------------------
 
@@ -554,7 +544,11 @@ export function parseEndpointEvent(raw: unknown): EndpointEvent {
  * registered contract is costing more than the profile intended. Treat it as a hint to go look at
  * the contract, never as a verdict about this request.
  */
-function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsage, startedMs: number): void {
+/** Process CPU where the host has a process (Node). A browser has none, so it skips the report. */
+const cpuNow = (): NodeJS.CpuUsage | undefined => (typeof process === "undefined" ? undefined : process.cpuUsage());
+
+function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsage | undefined, startedMs: number): void {
+  if (startedCpu === undefined) return;
   const cpu = process.cpuUsage(startedCpu);
   const cpuMs = Math.round((cpu.user + cpu.system) / 1000);
   if (cpuMs <= SCHEMA_PROFILE.validateBudgetMs) return;
@@ -591,7 +585,7 @@ function firstErrorDetail(first: { instancePath?: string; message?: string; para
  *  a false positive fails loudly instead of lying to a caller. */
 export function assertArgsValid(validate: ValidateFunction, args: Record<string, unknown> | null | undefined): unknown {
   const value = args === undefined ? null : args;
-  const startedCpu = process.cpuUsage();
+  const startedCpu = cpuNow();
   const started = Date.now();
   const okValid = validate(value);
   reportValidateBudget("args", startedCpu, started);
@@ -612,7 +606,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
  *  void schema, mirroring the args side. */
 export function assertOutputValid(validate: ValidateFunction, data: unknown): void {
   const value = data === undefined ? null : data;
-  const startedCpu = process.cpuUsage();
+  const startedCpu = cpuNow();
   const started = Date.now();
   const okValid = validate(value);
   reportValidateBudget("output", startedCpu, started);

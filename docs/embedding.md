@@ -343,12 +343,35 @@ pnpm gen:browser-contracts
 The generator recomputes every digest with the current profile and refuses one that differs from
 what the release recorded.
 
-The entry opens no connection and holds no authority. Describing, invoking and following a goal
-still need the signed-in person's own authorized connection, and that connection is not part of
-this entry yet. The stock exchange serves no browser-origin request. An embedding obtains that
-person's own `manager-caller` view through its own identity bridge, from that person's current
-proof and with the Manager instance named explicitly. It never uses a service or administrator
-credential, and it never forwards Manager commands for the page.
+`openBrowserManagerCaller(options)` opens a caller for one explicitly named Manager instance over
+the signed-in person's own connection. It composes the stock caller path: the `manager-caller`
+binding check, the callout-shaped user-mode connect over `wsconnect`, the issued caller read
+(SPEC 13.15, its token derived with Web Crypto), `describeEndpoint` pinned to the instance rail, and
+`invokeCommand`. The surface comes from the packaged contracts above.
+
+| Concern | What the browser caller does |
+| --- | --- |
+| Authority | `acquire()` returns that person's own stock-issued `manager-caller` bearer for the instance and the space's deny-all sentinel. Both stay in memory for one connection. |
+| Pins | The bearer must name the configured space, principal, lifecycle and instance, or the open refuses before any connect. A describe answered by another instance refuses. |
+| Reconnect | None. `reopen()` closes the connection and calls `acquire()` again under the same pins, so a refresh cannot switch account, principal, lifecycle or Manager. |
+| Repeats | A refusal before effect re-resolves and invokes once more, as the stock connector does. Nothing else repeats. |
+| Goals | `submitGoal()` needs the caller's own envelope `id` and refuses up front when the Manager serves no `goal-result`. An accepted or unknown goal is never resubmitted; `reconcileGoal()` reads it back through `goal-result`. |
+| Contracts | Only packaged digests. Any other cluster or closure refuses with `unsupported-version`. |
+
+Browser memory is not durable. Before `submitGoal()`, persist the envelope `id` with the instance
+id in storage your application controls. After a reload, reopen the caller for that same instance
+and call `reconcileGoal()`. A manual resubmission must reuse the persisted `id`, and outside the
+idempotency horizon even that is a new submission.
+
+The stock exchange serves no browser-origin request. An embedding obtains the person's own
+`manager-caller` view through its own identity bridge, from that person's current proof and with
+the Manager instance named explicitly. It never uses a service or administrator credential, and it
+never forwards Manager commands for the page.
+
+The Manager surface has no command that lists the instances a person may call, and the issuer's
+`manager-caller` exchange selects or refuses one instance without listing the others. The caller
+therefore starts from an instance the embedding already knows to be authorized. An authorized list
+needs a separate issuer-served, read-only catalog of that person's Manager instances.
 
 ### Long-lived endpoints take a bearer function
 

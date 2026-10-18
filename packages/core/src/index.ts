@@ -3,6 +3,8 @@ export * from "./advisory-lock.js";
 export * from "./local-consumer-custody.js";
 export * from "./subjects.js";
 export * from "./endpoint-subjects.js";
+export * from "./digest-id.js";
+export * from "./endpoint-auth-digest.js";
 export * from "./endpoint-grants.js";
 export * from "./endpoint-envelope.js";
 export * from "./endpoint-records.js";

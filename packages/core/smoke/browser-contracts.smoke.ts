@@ -121,7 +121,11 @@ check("the browser bundle reaches no Node built-in and no transport-node",
   inputs.length > 0 && !inputs.some((p) => p.startsWith("node:") || p.includes("transport-node")), inputs.filter((p) => p.startsWith("node:") || p.includes("transport-node")));
 check("the browser bundle does not include the runtime compiler", !inputs.some((p) => /ajv\/dist\/(2020|core|compile)/.test(p)), inputs.filter((p) => /ajv\/dist\/(2020|core|compile)/.test(p)));
 const code = bundle.outputFiles[0].text as string;
-const sandbox = vm.createContext({}, { codeGeneration: { strings: false, wasm: false } });
+// The web globals a page has (the bundled nats-core reads some at load); code generation stays off.
+const sandbox = vm.createContext({
+  TextEncoder, TextDecoder, URL, crypto: globalThis.crypto, console, queueMicrotask,
+  setTimeout, clearTimeout, setInterval, clearInterval, atob, btoa,
+}, { codeGeneration: { strings: false, wasm: false } });
 check("CONTROL: the sandbox refuses eval and new Function", (() => {
   let refused = 0;
   for (const probe of ["eval('1')", "new Function('return 1')()"]) { try { vm.runInContext(probe, sandbox); } catch { refused++; } }
@@ -131,9 +135,9 @@ vm.runInContext(code, sandbox);
 const verdicts = vm.runInContext(`(() => {
   const c = CotalBrowser.packagedContract(${JSON.stringify(VOID_SCHEMA_DIGEST)});
   const s = CotalBrowser.packagedServiceSurface({ clusters: [{ digest: ${JSON.stringify(cluster.clusterDigest)}, commands: ["status"] }] });
-  return [c.check(null).ok, c.check(1).ok, s.size];
-})()`, sandbox) as [boolean, boolean, number];
-check("the bundled entry validates without code generation", verdicts[0] === true && verdicts[1] === false && verdicts[2] === 1, verdicts);
+  return [c.check(null).ok, c.check(1).ok, s.size, typeof CotalBrowser.openBrowserManagerCaller];
+})()`, sandbox) as [boolean, boolean, number, string];
+check("the bundled entry validates without code generation and exports the caller", verdicts[0] === true && verdicts[1] === false && verdicts[2] === 1 && verdicts[3] === "function", verdicts);
 
 console.log(`\nBROWSER CONTRACTS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
 process.exit(fail === 0 ? 0 : 1);

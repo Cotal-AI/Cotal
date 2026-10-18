@@ -15,7 +15,6 @@
  * colliding token parses to `null`, never to a confused identity. A subject matching no defined
  * shape returns `null` and MUST NOT be handled.
  */
-import { createHash } from "node:crypto";
 import { ROOT, spacePrefix, assertValidOwnerToken, assertLifecycleToken } from "./subjects.js";
 
 // One grammar bounds both `lifecycleUid` and `instanceId` (§13.1) — the definition lives in
@@ -88,11 +87,6 @@ export function assertIdToken(v: string, what = "id"): string {
   return v;
 }
 
-/** An id derived from `input`: its base64url sha256, 43 characters, so it fits {@link ID} and the
- *  same input re-derives the same id in every module that needs it. */
-export function digestIdToken(input: string): string {
-  return createHash("sha256").update(input, "utf8").digest("base64url");
-}
 
 /** The provisioner-assigned grant id `<gid>` (§13.9). Deliberately SEPARATOR-FREE ([a-z0-9]):
  *  the `eve_<uid>-<e>-<gid>-<n>` and `rec_<uid>-<gid>-<n>` reader-durable names carry it adjacent
