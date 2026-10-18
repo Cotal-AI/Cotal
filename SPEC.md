@@ -3011,9 +3011,19 @@ kept as first observed, so a replayed transcript cannot rewrite it; content past
 on a code-point boundary. Retiring the lifecycle or revoking sharing discards every held result.
 Results never ride an event, chat or DM channel, and the `events.<owner>.<actor>` egress fence is
 unchanged. The journal is not redaction or complete history: content is the tool's own bytes, held only
-in the serving process, and a consumer renders it as inert text. Registering the commands and issuing the
-agent's serve grant, the host's human route that signs a consent, and the redemption that mints the
-holder's handle are hosting-authority work not defined here.
+in the serving process, and a consumer renders it as inert text. The connector serves these commands
+with `instanceId` equal to the target's `lifecycleUid`, so a holder's rows bind the one incarnation its
+consent names. **Redemption** is a user-mode exchange: the holder's signed-in human exchange asks for
+the `tool-result-caller` view with the consent; the auth plane leader-reads the target's lifecycle head
+(it MUST be `active` at the consent's incarnation), re-verifies the consent against the host's
+`consents` anchors, and requires the consent's holder to be the exchanging principal. The bearer and
+the connection it opens expire no later than the consent; the callout repeats the same checks at the
+mint and grants exactly the handle-mode request rows for the three commands on that incarnation plus
+the holder's own reply rail. An agent-secret exchange cannot request the view. The human proof time is
+the IdP token's own signed OIDC `auth_time` claim; a token without it is refused and the time is never
+synthesized, so a host that signs consents needs an IdP that issues `auth_time`. Registering the
+commands and issuing the agent's serve grant, and registering the host's `consents` anchor, are
+hosting-authority work not defined here.
 
 ### 13.7 Contracts and discovery
 

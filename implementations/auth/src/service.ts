@@ -60,7 +60,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, mintToolResultConsent, TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS, type ToolResultConsent } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, mintToolResultConsent, TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS, type AnchorResolver, type ToolResultConsent } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -72,8 +72,9 @@ import { startAuthCallout } from "./callout.js";
 import { createIdpBridge, verifyIdpToken, type IdpBridge } from "./idp.js";
 import { PUBLIC_EXCHANGE_VIEWS, assertTransferWriterClaim, type UserTokenSession, type UserTokenView, type ValidatedUserToken } from "./token.js";
 import { grantCoordinates, verifySessionRedemption } from "./session-redemption.js";
+import { verifyToolResultRedemption } from "./tool-result-redemption.js";
 import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
-import { calloutPermissions, type UserCallerIssuer } from "./permissions.js";
+import { calloutPermissions, type ToolResultVerifier, type UserCallerIssuer } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
@@ -202,6 +203,10 @@ export interface AuthAuthorityPlane {
     principal: { owner: string; actor: string; lifecycleUid?: string },
     claim: { endpoint: string; sessionId: string; epoch: number; grantSig?: string },
   ) => Promise<UserTokenSession>;
+  /** May this holder redeem this signed tool-result consent? Leader-reads the target's lifecycle
+   *  head (it must be active at the consent's incarnation) and re-verifies the artifact against the
+   *  host's `consents` anchors; returns the verified consent or throws (SPEC 13.6). */
+  verifyToolResult: ToolResultVerifier;
   retireInteractiveLifecycle: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<{
     retired: boolean;
     lifecycleUid: string;
@@ -423,6 +428,9 @@ export interface OpenAuthAuthorityPlaneOptions {
   localManager?: () => ManagerInstanceIdentity | undefined;
   /** Bounded trusted-host-only standing renewable credential TTL option for rehearsal (default 24h). */
   standingRenewableTtlSeconds?: number;
+  /** Trusted-host only: the registered `consents` anchors a tool-result consent must verify
+   *  against. Absent (the default): every tool-result redemption refuses `unimplemented`. */
+  toolResultConsentAnchors?: AnchorResolver;
 }
 
 /**
@@ -831,6 +839,14 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
           return { verdict, ...(gate ? { processEpoch: gate.processEpoch } : {}) };
         },
       }, principal, claim);
+    },
+    verifyToolResult: async (holder, raw) => {
+      refuseIfFenced();
+      return verifyToolResultRedemption({
+        space,
+        resolveAnchor: opts.toolResultConsentAnchors,
+        readHead: async (owner, actor) => (await readLifecycleHeadForOperation(barrierReg, owner, actor))?.mapping,
+      }, holder, raw);
     },
     retireInteractiveLifecycle: async (args) => {
       refuseIfFenced();
@@ -2080,6 +2096,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     log: (l) => console.error(l),
     localManager: o.localManager,
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
+    ...(o.toolResultConsentSigner ? { toolResultConsentAnchors: o.toolResultConsentSigner.resolveAnchor } : {}),
   }, onConnection);
   let nc: NatsConnection | undefined;
   let http: ReturnType<typeof createServer> | undefined;
@@ -2110,7 +2127,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       space,
       token: { key: issuer.localKeySet(), issuer: issuer.issuer },
       authorizeActor: plane.authorizeConnect,
-      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller),
+      permissionsFor: calloutPermissions(ledgerAclResolver(dir), plane.authorizeManagerCaller, plane.verifySession, plane.issueUserCaller, plane.verifyToolResult),
       log: (l) => console.error(l),
     });
     // The subscription must be ON the broker before readiness is signaled — an `up` that recorded a
@@ -2167,6 +2184,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       mintConnectCredential: plane.mintConnectCredential,
       selectManagerInstance: plane.selectManagerInstance,
       verifySession: plane.verifySession,
+      verifyToolResult: plane.verifyToolResult,
     };
     const loopback = createServer((req, res) => void handle(req, res, ctx));
     http = loopback;
@@ -2406,6 +2424,9 @@ type HumanHolder = Extract<ManagerAuthorityHolder, { scope: string[] }>;
 export interface ToolResultConsentSigner {
   keyId: string;
   keyPair: { sign(input: Uint8Array): Uint8Array };
+  /** The host's registered `consents` anchors (its current key and any still-valid predecessor),
+   *  which every redemption re-verifies against. An unknown key id resolves to nothing. */
+  resolveAnchor: AnchorResolver;
 }
 
 interface HandlerCtx {
@@ -2442,6 +2463,7 @@ interface HandlerCtx {
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
   selectManagerInstance: AuthAuthorityPlane["selectManagerInstance"];
   verifySession: AuthAuthorityPlane["verifySession"];
+  verifyToolResult: AuthAuthorityPlane["verifyToolResult"];
 }
 
 type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
@@ -2890,7 +2912,7 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
-  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter } = body as {
+  const { idpToken, actor, actorToken, owner, ttlSec, view, managerInstanceId, sessionGrant, transferWriter, toolResultConsent } = body as {
     idpToken?: unknown;
     actor?: unknown;
     actorToken?: unknown;
@@ -2900,11 +2922,14 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
     managerInstanceId?: unknown;
     sessionGrant?: unknown;
     transferWriter?: unknown;
+    toolResultConsent?: unknown;
   };
   if ((view === "session-caller") !== (sessionGrant !== undefined))
     return send(res, 400, { error: 'view "session-caller" and sessionGrant come together or not at all' });
   if ((view === "transfer-writer") !== (transferWriter !== undefined))
     return send(res, 400, { error: 'view "transfer-writer" and transferWriter come together or not at all' });
+  if ((view === "tool-result-caller") !== (toolResultConsent !== undefined))
+    return send(res, 400, { error: 'view "tool-result-caller" and toolResultConsent come together or not at all' });
   if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
   if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
   if (managerInstanceId !== undefined && typeof managerInstanceId !== "string") return send(res, 400, { error: "managerInstanceId must be a string when present" });
@@ -2994,6 +3019,9 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       managerInstanceId: selectedManagerInstanceId,
       ...(session ? { verifySession: (p: { owner: string; actor: string; lifecycleUid: string }) => ctx.verifySession(p, session) } : {}),
       ...(transferWriter !== undefined ? { transferWriter } : {}),
+      // A tool-result-caller bearer is signed only once the identity plane has verified that THIS
+      // holder is the one the signed consent names, on the target's current incarnation.
+      ...(toolResultConsent !== undefined ? { verifyToolResult: (p: { owner: string; actor: string; lifecycleUid: string }) => ctx.verifyToolResult(p, toolResultConsent) } : {}),
     });
     return send(res, 200, r);
   } catch (e) {

@@ -104,7 +104,8 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
     const required = VIEW_REQUIRED_SCOPE[view];
     const scope = required === undefined ? ["spawn", "run", "admin"] : [required];
     const sessionClaim = { endpoint: "manager", sessionId: session, epoch: 1, exp: 2_000_000_000 };
-    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}) } };
+    const consentClaim = { v: 1 as const, id: "c".repeat(22), space, scope: "tool-results" as const, target: { owner, actor: "census-target", lifecycleUid: instance }, holder: { id: `${owner}.census` }, proofAt: 1_999_999_000_000, iat: 1_999_999_000_000, exp: 2_000_000_000_000, issuer: { keyId: "host" }, sig: "x" };
+    const token = { owner, space, scope, ver: USER_TOKEN_VER, exp: 2_000_000_000, act: { owner, actor: "census", scope, lifecycleUid: uid, view, ...(view === "manager-caller" ? { managerInstanceId: instance } : {}), ...(view === "session-caller" ? { session: sessionClaim } : {}), ...(view === "transfer-writer" ? { transferWriter: { instanceId: instance, hex: "a".repeat(64) } } : {}), ...(view === "tool-result-caller" ? { toolResult: consentClaim } : {}) } };
     // This fixture authorizes one coordinate to construct the shipped grant surface. Real gate
     // ownership and registration validation are graded by the live exchange suites, not this census.
     const produce = calloutPermissions(
@@ -117,6 +118,12 @@ export async function profileFixtures(space: string): Promise<ProfileFixture[]> 
         assert.deepEqual(selectedPrincipal, { owner, actor: "census", lifecycleUid: uid });
         assert.deepEqual(claim, { endpoint: sessionClaim.endpoint, sessionId: sessionClaim.sessionId, epoch: sessionClaim.epoch });
         return sessionClaim;
+      },
+      undefined,
+      async (holder, claim) => {
+        assert.deepEqual(holder, { owner, actor: "census", lifecycleUid: uid });
+        assert.deepEqual(claim, consentClaim);
+        return consentClaim;
       },
     );
     if (view === "manager-service") {

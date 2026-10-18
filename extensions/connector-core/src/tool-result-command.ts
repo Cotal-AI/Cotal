@@ -141,6 +141,10 @@ export function serveToolResults(
   self: ToolResultTarget,
   resolveAnchor: AnchorResolver,
 ): EpServeHandle {
+  // A holder's redeemed rows name the target's lifecycle UID as the serving instance (SPEC 13.6),
+  // so serving under any other instance id would answer nobody, or the wrong incarnation's holders.
+  if (grant.instanceId !== self.lifecycleUid)
+    throw new EpEnvelopeError("failed-precondition", "tool-results must be served with instanceId equal to the target's lifecycleUid");
   return serveEndpoint(nc, space, grant, [
     toolResultCommandDef(journal, self),
     toolResultConsentCommandDef(journal, self, { space, resolveAnchor }),
