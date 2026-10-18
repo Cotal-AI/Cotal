@@ -2456,6 +2456,8 @@ providers are lazy-loaded by commands such as `supervise`; local process provide
 canonical command/process example. Installed packages and their location are described in
 [config](config.md). When a package needs an export its linked `@cotal-ai/*` peer does not have,
 `add` rolls back and names which install is behind, as a later load of an installed one does.
+If the package's `package.json` is corrupt or unreadable by then, the error names that file and keeps the
+original import error instead of ranking the pair without its declared peer range.
 
 Bare `cotal ext` lists the inventory, headed by the install prefix. That prefix is a cotal-owned npm
 root kept **separate** from npm's own global tree. These packages never show up in `npm list -g`,

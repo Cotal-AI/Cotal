@@ -22,15 +22,21 @@ import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
  * name→package hint used to phrase a not-found error.
  */
 
-/** The range the installed extension declares for a shared peer (undefined when it declares none). */
-function declaredPeerRange(pkg: string, peer: string): string | undefined {
+/**
+ * The range the installed extension declares for a shared peer (`range` undefined when it declares
+ * none). A package.json that cannot be read or parsed is reported as unreadable, never as declaring
+ * nothing: an absent declaration would drop the declared floor and let the diagnosis name a ranking
+ * the extension's own file never made. Non-throwing, since it runs while an import error is formatted.
+ */
+function declaredPeerRange(pkg: string, peer: string): { range: string | undefined } | { path: string; unreadable: string } {
+  const path = join(extensionPackageDir(pkg), "package.json");
   try {
-    const meta = JSON.parse(readFileSync(join(extensionPackageDir(pkg), "package.json"), "utf8")) as {
+    const meta = JSON.parse(readFileSync(path, "utf8")) as {
       peerDependencies?: Record<string, string>;
     };
-    return meta.peerDependencies?.[peer];
-  } catch {
-    return undefined;
+    return { range: meta.peerDependencies?.[peer] };
+  } catch (e) {
+    return { path, unreadable: e instanceof Error ? e.message : String(e) };
   }
 }
 
@@ -50,7 +56,15 @@ function importFailure(pkg: string, version: string, e: unknown, remedy: string)
 
   const [, peer, symbol] = missing;
   const head = `extension ${pkg}@${version} failed to import: it needs \`${symbol}\` from ${peer}`;
-  const skew = diagnosePeerSkew(pkg, version, peer, declaredPeerRange(pkg, peer));
+  const declared = declaredPeerRange(pkg, peer);
+  if ("unreadable" in declared) {
+    return new Error(
+      `${head}, and its package.json ${declared.path} is corrupt or unreadable (${declared.unreadable}), so the ${peer} ` +
+        `range it declares is unknown and neither side can be named as behind. The import error was: ${message} - ` +
+        `${remedy}`,
+    );
+  }
+  const skew = diagnosePeerSkew(pkg, version, peer, declared.range);
   if (!skew) {
     return new Error(
       `${head}, which the linked ${peer} does not export. This cotal cannot locate its own ${peer} to compare against, ` +
