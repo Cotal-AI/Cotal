@@ -29,6 +29,7 @@ import { resolveNatsServer } from "./nats-bin.js";
 
 const LOOPBACK = "127.0.0.1";
 const BOOT_TIMEOUT_MS = 15_000;
+const RELOAD_TIMEOUT_MS = 15_000;
 
 export interface PrivateAttemptsDirectory {
   path: string;
@@ -451,13 +452,20 @@ export async function startIsolatedBroker(options: {
           } catch {
             throw new Error(`${options.label} broker is not running for its maintenance-login reload`);
           }
-          await delay(100);
-          const reloadDiagnostics = readLogTail();
-          if (/Failed to reload server configuration/.test(reloadDiagnostics))
-            throw new Error(`${options.label} broker rejected its maintenance-login reload: ${reloadDiagnostics.trim()}`);
-          if (!/Reloaded server configuration/.test(reloadDiagnostics))
-            throw new Error(`${options.label} broker did not confirm its maintenance-login reload`);
-          return login;
+          // SIGHUP returns before the broker reloads, and its log line is the only acknowledgement.
+          const reloadDeadline = Math.min(options.deadline.getTime(), Date.now() + RELOAD_TIMEOUT_MS);
+          let reloadDiagnostics = "";
+          for (;;) {
+            await delay(50);
+            reloadDiagnostics += readLogTail();
+            if (/Failed to reload server configuration/.test(reloadDiagnostics))
+              throw new Error(`${options.label} broker rejected its maintenance-login reload: ${reloadDiagnostics.trim()}`);
+            if (/Reloaded server configuration/.test(reloadDiagnostics)) return login;
+            if (!alive(brokerOwner!.pid))
+              throw new Error(`${options.label} broker exited during its maintenance-login reload: ${reloadDiagnostics.trim()}`);
+            if (Date.now() >= reloadDeadline)
+              throw new Error(`${options.label} broker did not confirm its maintenance-login reload`);
+          }
         },
         async stop() {
           await stopByPid(brokerOwner!.pid, 8_000);

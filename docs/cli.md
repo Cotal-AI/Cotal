@@ -794,7 +794,9 @@ Same-path restores atomically retain the old
 source at the journaled fallback path; alternate targets retain it in place; a missing canonical
 source needs explicit `--accept-missing-source`. Quarantine and target restores use current canonical
 configs on isolated random-loopback brokers, never expose native snapshot consumers, and publish a
-commit-intent immediately before the normal listener starts. Archive bytes never instantiate the real
+commit-intent immediately before the normal listener starts. Each backup and restore phase swaps the
+isolated broker's one maintenance login by config reload and waits up to 15 seconds for the broker's
+own reload result; a rejected reload, a broker exit, or no result by then fails the attempt. Archive bytes never instantiate the real
 target: after quarantine validation, every stream is re-snapshotted from the validated quarantine
 state into attempt-owned sanitized files, and the target is restored solely from those. Before that boundary, failure rolls back
 the attempt-owned target; after it, ambiguity preserves both stores and records forward-repair
