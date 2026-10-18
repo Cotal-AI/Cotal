@@ -4131,14 +4131,6 @@ export class Manager {
       .finally(() => this.releaseLifecycle());
   }
 
-  /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
-   *  OWNER (ctl caller's principal, or the manifest's stamped owner — never a payload field),
-   *  pre-create the principal-keyed durables + ACL row on the ephemeral provisioner, author the
-   *  ledger grant (the upsert ROTATES the per-agent secret on every start — a non-running agent
-   *  never holds a standing mint secret), materialize the 0600 secret/sentinel files, and
-   *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
-   *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
-   *  rolled back. */
   /** The incarnation's 0600 serving file, beside its own secret family and keyed by its lifecycle,
    *  so a resumed launch of the same lifecycle finds the same path and no successor shares it. */
   private toolResultServingFilePath(actor: string, lifecycleUid: string): string {
@@ -4256,6 +4248,14 @@ export class Manager {
     await attemptCleanup(unshredded, `file ${entry.file}`, () => rmSync(entry.file, { force: true }));
   }
 
+  /** USER-MODE spawn provisioning (the gate-1 counterpart to the static mint block): resolve the
+   *  OWNER (ctl caller's principal, or the manifest's stamped owner — never a payload field),
+   *  pre-create the principal-keyed durables + ACL row on the ephemeral provisioner, author the
+   *  ledger grant (the upsert ROTATES the per-agent secret on every start — a non-running agent
+   *  never holds a standing mint secret), materialize the 0600 secret/sentinel files, and
+   *  PREFLIGHT the bearer chain once — the spawned agent must never be the first to discover a
+   *  dead auth plane. Every failure is returned as the refusal sentence, with the grant + files
+   *  rolled back. */
   private async provisionUserAgent(name: string, opts: ProvisionUserAgentOpts): Promise<ProvisionedUserAgent | { error: string }> {
     if (opts.delegatedIntent) {
       // startAgentActive refused a delegated launch on a manager without this callback.

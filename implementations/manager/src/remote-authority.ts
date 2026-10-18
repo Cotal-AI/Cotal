@@ -608,9 +608,6 @@ export function expectedRemoteManagerActors(state: RemoteManagerIdentityState) {
   return remoteManagerActors(state.instanceId);
 }
 
-/** Build one host-owned managed-agent enrollment request (#1972). The request carries the DIGEST of
- *  the standing actor token, never the token: the participant has already written the plaintext at
- *  0600, and the host's copy is a hash it can only compare against. */
 /** The tool-results serve request: the Manager's intent inside the same manager-authority envelope
  *  enrollment carries, so the host verifies the one current registration proof for both. */
 export function remoteToolResultServeRequest(
@@ -632,6 +629,9 @@ export function remoteToolResultServeRequest(
   };
 }
 
+/** Build one host-owned managed-agent enrollment request (#1972). The request carries the DIGEST of
+ *  the standing actor token, never the token: the participant has already written the plaintext at
+ *  0600, and the host's copy is a hash it can only compare against. */
 export function remoteManagedAgentEnrollmentRequest(
   state: RemoteManagerIdentityState,
   actor: string,
