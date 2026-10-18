@@ -438,7 +438,8 @@ is named. A component stop and `--dry-run` stay pidfile-only and do not probe.
 Whole-stack shutdown keeps delivery credentials until every required component has stopped.
 A refused stop preserves both the space-scoped credential and its legacy copy. A selective
 delivery stop still removes its credentials after that daemon stops. Credential removal errors
-remain failures.
+remain failures. `down` removes the manager's delivery-aware marker, shutdown intent and spare
+capability only after every selected component has stopped, so a refused stop keeps them too.
 
 **Teardown verifies pinned process identity before signalling.** PIDs are recycled by every OS,
 so a recorded pid alone is not a durable target identity. `up` and `cotal web` record each
@@ -2711,7 +2712,8 @@ URL because the actor token is the credential in the request body. Because a sea
 bearer refresh, it skips the connector-seed boot gate entirely: it reads one 0600 token file,
 exchanges it and prints the bearer without consulting or writing the operator-global seed store, so
 a newer store generation cannot refuse a live seat's refresh. `--manager-call` asks for the
-instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate.
+instance-bound `manager-caller` view; `--manager-instance <id>` selects an explicit live candidate,
+and an owner with more than one live candidate is refused with their ids until it names one.
 That mode still prints only the raw token and does not update `--health-file`. A spawn runs it once as the agent auth
 preflight. When it fails there without printing a sentence of its own, the refusal names the cause: the 30 second
 timeout, the signal that killed it, or its exit code. (`cotal start` is a removed tombstone: it

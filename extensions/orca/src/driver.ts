@@ -93,6 +93,19 @@ function errorText(err: unknown): string {
   return (stderr?.trim() || stdout?.trim() || e.message || String(err)).replace(/\s+/g, " ");
 }
 
+function execOptions(opts: { cwd?: string; timeoutMs?: number }) {
+  return {
+    cwd: opts.cwd,
+    env: localCliEnv(),
+    encoding: "utf8" as const,
+    maxBuffer: MAX_BUFFER,
+    timeout: opts.timeoutMs,
+    // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM
+    // would outlast the timeout.
+    killSignal: "SIGKILL" as const,
+  };
+}
+
 function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {}): string {
   const tried: string[] = [];
   const explicit = !!process.env.COTAL_ORCA_BIN?.trim();
@@ -100,17 +113,7 @@ function execOrca(args: string[], opts: { cwd?: string; timeoutMs?: number } = {
   for (const bin of bins) {
     tried.push(bin);
     try {
-      const out = execFileSync(bin, args, {
-        cwd: opts.cwd,
-        env: localCliEnv(),
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "pipe"],
-        maxBuffer: MAX_BUFFER,
-        timeout: opts.timeoutMs,
-        // SIGKILL, because Node waits for a timed-out child to exit, and one that handles SIGTERM
-        // would outlast the timeout.
-        killSignal: "SIGKILL",
-      });
+      const out = execFileSync(bin, args, { ...execOptions(opts), stdio: ["ignore", "pipe", "pipe"] });
       if (!explicit) selectedBin = bin;
       return out;
     } catch (err) {
@@ -146,13 +149,7 @@ function execOrcaAsync(args: string[], opts: { cwd?: string; timeoutMs?: number 
       execFile(
         bin,
         args,
-        {
-          cwd: opts.cwd,
-          env: localCliEnv(),
-          encoding: "utf8",
-          maxBuffer: MAX_BUFFER,
-          timeout: opts.timeoutMs,
-        },
+        execOptions(opts),
         (err, stdout, stderr) => {
           if (!err) {
             if (!explicit) selectedBin = bin;

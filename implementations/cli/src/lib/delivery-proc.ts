@@ -12,7 +12,7 @@ import { DELIVERY_CREDS_KIND, DELIVERY_LOGFILE, DELIVERY_PIDFILE, authDir, canon
 import { selfArgv, displayCmd } from "./self-exec.js";
 import { resolveRuntimeSpace } from "./status.js";
 import { cotalRoot } from "./paths.js";
-import { ensureManager, managerHasDeliveryMarker, managerRecordState, stopManager } from "./manager-proc.js";
+import { clearManagerArtifacts, ensureManager, managerHasDeliveryMarker, managerRecordState, stopManager } from "./manager-proc.js";
 import { stopLocalProcess } from "./local-process-stop.js";
 import { RESPONDER_UNBOUND_CONSEQUENCE } from "./delivery-responder.js";
 
@@ -150,8 +150,8 @@ export async function stopOldHostingManagerIfPresent(
     // whose death it could not confirm). Letting that throw propagate is the point: the daemon must not
     // start beside a manager still bound to Plane 3. The stop is bound to the judged pid because a record
     // a successor published since names a process this verdict never judged; ensureDelivery's own
-    // verdict reads that record.
-    await stopManager(space, { pid: record.pid });
+    // verdict reads that record, and the artifacts beside it are that successor's.
+    if (await stopManager(space, { pid: record.pid })) clearManagerArtifacts(space);
   }
 }
 

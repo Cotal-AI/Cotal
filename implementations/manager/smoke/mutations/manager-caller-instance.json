@@ -14,7 +14,9 @@
     "remote managers, and `cotal models`, the hosted `cotal run` verbs and MCP `cotal_run` and",
     "`cotal_personas` had no way to name one. Each mutation drops one forwarded instance, or the",
     "seat's spawner default, or the per-caller remedy, and the cell for that surface goes red.",
-    "The command rebuilds every package a mutation edits, so one green baseline covers all six."
+    "#4037: `cotal agent-bearer --manager-call` is told its own `--manager-instance`, and the connector",
+    "renames it to the `instance` argument for a tool; each of the last two mutations undoes one side.",
+    "The command rebuilds every package a mutation edits, so one green baseline covers all eight."
   ],
   "mutations": [
     {
@@ -70,6 +72,24 @@
       "expectRed": "#3959 unpinned `cotal models` refuses two live managers, lists both and names --on",
       "cell": "#3959 unpinned `cotal models` refuses two live managers, lists both and names --on",
       "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "cotal agent-bearer is told the tools' instance argument",
+      "file": "implementations/auth/src/service.ts",
+      "find": "  agent: \"name one with --manager-instance <instanceId>\",",
+      "replace": "  agent: \"name one with the instance argument\",",
+      "expectRed": "#4037 an unbound seat's `cotal agent-bearer --manager-call` refuses, lists both and names --manager-instance",
+      "cell": "#4037 an unbound seat's `cotal agent-bearer --manager-call` refuses, lists both and names --manager-instance",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    },
+    {
+      "name": "the connector passes the bearer command's remedy through to a tool",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "        ], signal).catch((e: unknown) => {\n          throw e instanceof Error ? new Error(e.message.replace(\"--manager-instance <instanceId>\", \"the instance argument\")) : e;\n        });",
+      "replace": "        ], signal);",
+      "expectRed": "#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument",
+      "cell": "#3959 an unbound seat's cotal_run ps refuses, lists both and names the instance argument",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-core build"
     }
   ]
 }

@@ -42,8 +42,9 @@ function hasLoneSurrogate(s: string): boolean {
   return false;
 }
 
-/** Walk a JSON value and throw on anything that cannot canonicalize EXACTLY (D28: verification
- *  and digesting must never run over a normalizing projection):
+/** Walk a JSON value once and return a plain copy of what the walk read, throwing on anything
+ *  that cannot canonicalize EXACTLY (D28: verification and digesting must never run over a
+ *  normalizing projection):
  *   - strings that are not well-formed UTF-16 (a lone surrogate violates I-JSON; canonicalizing
  *     it would mint a digest for text that cannot interchange), in values AND keys;
  *   - `undefined` anywhere and non-finite numbers (RFC 8785 cannot represent them);
@@ -54,44 +55,55 @@ function hasLoneSurrogate(s: string): boolean {
  *     carrying state its signature never covered must refuse, not launder through the
  *     projection). Objects must be ordinary with a `null`/`Object.prototype` prototype and only
  *     enumerable string-keyed own DATA properties; arrays must be ordinary `Array.prototype`
- *     arrays with no holes and no extra own properties. */
-function assertInterchangeable(v: unknown, path: string): void {
-  if (v === null) return;
+ *     arrays with no holes and no extra own properties.
+ *  The serializer gets the copy, never the input, and each copied value is the one in the
+ *  descriptor the check inspected: a Proxy can answer a second read, or `toJSON`, differently,
+ *  and the text must encode only data that was checked. */
+function interchangeableCopy(v: unknown, path: string): unknown {
+  if (v === null) return null;
   switch (typeof v) {
     case "string":
       if (hasLoneSurrogate(v)) throw new Error(`canonicalJson: lone surrogate in string at ${path} (I-JSON violation)`);
-      return;
+      return v;
     case "number":
       if (!Number.isFinite(v)) throw new Error(`canonicalJson: non-finite number at ${path}`);
-      return;
+      return v;
     case "boolean":
-      return;
+      return v;
     case "undefined":
       throw new Error(`canonicalJson: undefined at ${path} (strict mode never coerces to null)`);
     case "object": {
       if (Array.isArray(v)) {
         if (Object.getPrototypeOf(v) !== Array.prototype)
           throw new Error(`canonicalJson: non-ordinary array at ${path} (a subclassed/exotic array canonicalizes through projections)`);
+        // One read of `length`, from its descriptor, bounds both the index check and the copy. A
+        // second read could add an element no index check covered or drop one the check accepted.
+        const length: unknown = Object.getOwnPropertyDescriptor(v, "length")?.value;
+        if (typeof length !== "number" || !Number.isInteger(length) || length < 0)
+          throw new Error(`canonicalJson: invalid array length at ${path} (refusing the projection)`);
         for (const k of Reflect.ownKeys(v)) {
           if (typeof k !== "string")
             throw new Error(`canonicalJson: symbol-keyed own property on array at ${path} (invisible to canonicalization; refusing the projection)`);
           if (k === "length") continue;
-          if (!/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= v.length)
+          if (!/^(0|[1-9][0-9]*)$/.test(k) || Number(k) >= length)
             throw new Error(`canonicalJson: non-index own property "${k}" on array at ${path} (invisible to canonicalization; refusing the projection)`);
         }
-        for (let i = 0; i < v.length; i++) {
+        const copy: unknown[] = [];
+        for (let i = 0; i < length; i++) {
           const d = Object.getOwnPropertyDescriptor(v, i);
           if (d === undefined)
             throw new Error(`canonicalJson: hole at ${path}[${i}] (a hole would be coerced to null; refusing the projection)`);
           if (!d.enumerable || d.get !== undefined || d.set !== undefined)
             throw new Error(`canonicalJson: non-enumerable or accessor element at ${path}[${i}] (refusing the projection)`);
-          assertInterchangeable(v[i], `${path}[${i}]`);
+          copy.push(interchangeableCopy(d.value, `${path}[${i}]`));
         }
-        return;
+        return copy;
       }
       const proto = Object.getPrototypeOf(v);
       if (proto !== Object.prototype && proto !== null)
         throw new Error(`canonicalJson: non-plain object at ${path} (a class/exotic instance canonicalizes through projections like toJSON; only plain data objects are interchangeable)`);
+      // A null prototype keeps an own `__proto__` key a key instead of a prototype assignment.
+      const copy: Record<string, unknown> = Object.create(null);
       for (const k of Reflect.ownKeys(v)) {
         if (typeof k !== "string")
           throw new Error(`canonicalJson: symbol-keyed own property at ${path} (invisible to canonicalization; refusing the projection)`);
@@ -101,9 +113,9 @@ function assertInterchangeable(v: unknown, path: string): void {
           throw new Error(`canonicalJson: non-enumerable own property "${k}" at ${path} (invisible to canonicalization; refusing the projection)`);
         if (d.get !== undefined || d.set !== undefined)
           throw new Error(`canonicalJson: accessor property "${k}" at ${path} (a getter is code, not data; refusing the projection)`);
-        assertInterchangeable((v as Record<string, unknown>)[k], `${path}.${k}`);
+        copy[k] = interchangeableCopy(d.value, `${path}.${k}`);
       }
-      return;
+      return copy;
     }
     default:
       throw new Error(`canonicalJson: unsupported ${typeof v} at ${path}`);
@@ -112,8 +124,7 @@ function assertInterchangeable(v: unknown, path: string): void {
 
 /** RFC 8785 canonical JSON text of a value (strict: I-JSON enforced, no undefined→null). */
 export function canonicalJson(value: unknown): string {
-  assertInterchangeable(value, "$");
-  return canonicalizeEx(value, { undefinedInArrayToNull: false });
+  return canonicalizeEx(interchangeableCopy(value, "$"), { undefinedInArrayToNull: false });
 }
 
 /** Content address of a contract artifact: `sha256:<hex>` over its RFC 8785 form (SPEC §13.7). */
