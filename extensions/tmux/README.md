@@ -11,10 +11,10 @@ import.
 ## What it does
 
 - **`Runtime` (`tmux`)** — each agent gets its own window in a shared per-space tmux session
-  (`cotal-<space>`). Spawned unfocused; `tmux select-window -t <pane-id>` watches it wherever
-  its pane moves. Env is isolated (`env -i`) so the tmux server's environment doesn't reach
-  agents. That env is written to an owner-only launch script, which keeps it off tmux's command
-  line, and the script removes its
+  (`cotal-<space>`). Spawned unfocused; `tmux select-window -t <pane-id> \; select-pane -t <pane-id>`
+  shows it wherever its pane moves, even into a window zoomed on another pane. Env is isolated
+  (`env -i`) so the tmux server's environment doesn't reach agents. That env is written to an
+  owner-only launch script, which keeps it off tmux's command line, and the script removes its
   directory before it starts the agent. When it cannot remove the directory, the agent does not start.
   Graceful stop types `/exit`
   then kills the window; hard stop kills immediately. A close reads a window as already closed only

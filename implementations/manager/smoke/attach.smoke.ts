@@ -97,7 +97,7 @@ const cwd = process.cwd();
   else process.env.COTAL_DETACH_KEY = prev;
 }
 
-// tmux — watched natively: attach() points you at `tmux attach-session -t <session>` + `select-window -t %N`.
+// tmux — watched natively: attach() points you at `tmux attach-session -t <session>` + `select-window -t %N \; select-pane -t %N`.
 {
   let rt: ReturnType<typeof createRuntime> | null = null;
   try {

@@ -122,11 +122,13 @@ export class TmuxRuntime implements Runtime {
         tmux.sendKey("C-c", windowId);
       },
       // A pane id as a window target selects whichever window holds the pane now; the spawn window
-      // and its name go stale when the pane moves or the window is renamed.
+      // and its name go stale when the pane moves or the window is renamed. Selecting the window
+      // alone leaves another pane active there, and a zoomed one hides the seat, so the pane is
+      // selected too, which unzooms that window.
       attach: () => {
         throw new Error(
           `tmux runtime: attach natively — \`tmux attach-session -t ${this.session}\`, then ` +
-            `\`tmux select-window -t ${paneId}\``,
+            `\`tmux select-window -t ${paneId} \\; select-pane -t ${paneId}\``,
         );
       },
     };
