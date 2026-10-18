@@ -24,12 +24,13 @@
  *     and absent keys are idempotent no-ops.
  *  8. IDP PIN — the first pin is stored normalized, the same IdP is accepted again and a different
  *     one refused; two PROCESSES that both read no pin and then race the first pin leave one
- *     winner, and the loser adopts it (same IdP) or is refused (different IdP).
+ *     winner, and the loser adopts it (same IdP) or is refused (different IdP). A name that
+ *     exists but holds no readable pin (a dangling link) is refused, never retried.
  *
  * Run: pnpm smoke:auth-store
  */
 import { spawn } from "node:child_process";
-import fs, { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -286,6 +287,14 @@ try {
   check("the same IdP again returns the pin", ensurePinnedIdp(seqDir, IDP_A).url === IDP_A);
   await rejects("a different IdP is refused", async () => ensurePinnedIdp(seqDir, IDP_B),
     `this space's IdP is pinned to ${IDP_A}; --idp ${IDP_B} would re-key every derived owner.`);
+  if (process.platform !== "win32") {
+    const danglingDir = join(root, "idp-dangling");
+    mkdirSync(danglingDir);
+    symlinkSync(join(danglingDir, "absent.json"), join(danglingDir, "idp.json"));
+    await rejects("a dangling idp.json link is refused by name, not retried", async () => ensurePinnedIdp(danglingDir, IDP_A),
+      `idp-pin-create-lost: ${join(danglingDir, "idp.json")} exists but holds no readable IdP pin`);
+    check("…and the link is left in place", lstatSync(join(danglingDir, "idp.json")).isSymbolicLink());
+  }
   const tsx = join(fileURLToPath(new URL("../../../", import.meta.url)), "node_modules", ".bin", "tsx");
   const race = async (name: string, urls: [string, string]) => {
     const dir = join(root, `idp-race-${name}`);

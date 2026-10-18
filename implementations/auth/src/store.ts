@@ -294,14 +294,7 @@ export function loadPinnedIdp(dir: string): PinnedIdp | undefined {
  *  migration this refuses to do as a flag side-effect. */
 export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   const existing = loadPinnedIdp(dir);
-  if (existing) {
-    if (idpUrl !== undefined && normalizeIdpUrl(idpUrl) !== existing.url)
-      throw new Error(
-        `this space's IdP is pinned to ${existing.url}; --idp ${idpUrl} would re-key every derived owner. ` +
-          `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
-      );
-    return existing;
-  }
+  if (existing) return verifyPinnedIdp(dir, existing, idpUrl);
   if (!idpUrl)
     throw new Error("user auth needs an IdP on first enable - run with --idp <auth base URL> (Better Auth: <origin>/api/auth)");
   // Same normalization + scheme guard as `cotal login` (https, or http on a loopback IP literal; no
@@ -313,11 +306,22 @@ export function ensurePinnedIdp(dir: string, idpUrl?: string): PinnedIdp {
   try {
     writeSecretFileCreateOnly(join(dir, IDP_FILE), JSON.stringify({ ver: STORE_VER, ...pin } satisfies IdpFile, null, 2));
   } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     // Another process pinned between our read and this create: its pin decides, as for a later call.
-    if ((e as NodeJS.ErrnoException).code === "EEXIST") return ensurePinnedIdp(dir, idpUrl);
-    throw e;
+    const winner = loadPinnedIdp(dir);
+    if (!winner) throw new Error(`idp-pin-create-lost: ${join(dir, IDP_FILE)} exists but holds no readable IdP pin - remove it deliberately, then re-pin`);
+    return verifyPinnedIdp(dir, winner, idpUrl);
   }
   return pin;
+}
+
+function verifyPinnedIdp(dir: string, pinned: PinnedIdp, idpUrl: string | undefined): PinnedIdp {
+  if (idpUrl !== undefined && normalizeIdpUrl(idpUrl) !== pinned.url)
+    throw new Error(
+      `this space's IdP is pinned to ${pinned.url}; --idp ${idpUrl} would re-key every derived owner. ` +
+        `Re-pointing an IdP is a migration - remove ${join(dir, IDP_FILE)} deliberately if you mean it.`,
+    );
+  return pinned;
 }
 
 // ---- the auth service's own key projection ----
