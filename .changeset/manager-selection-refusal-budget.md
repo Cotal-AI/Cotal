@@ -1,0 +1,5 @@
+---
+"@cotal-ai/auth": patch
+---
+
+On both `/exchange` faces, verify the interactive actor grant before `manager-caller` instance selection on the human arm and run `manager-caller` selection before ensuring the root connect credential on the agent arm (so a refused agent selection no longer ensures a root connect credential). On the public `/exchange` face, keep authenticated selection refusals (after IdP JWT + interactive actor grant or managed actor secret + ledger row verification) out of the per-peer probing budget and enforce two per-principal selection-refusal windows (`30/min` each in a 1024-key LRU, keyed by principal and request class `pinned` vs `unpinned`, never by the requested instance id): each class counts only its own verified-principal selection refusals and, once full, sheds `selectManagerInstance` for that class (refusing requests of that class, including ones that would have succeeded, with `429` and that class's remedy while leaving the other class open), while the loopback face keeps selection refusals in its shared refused-exchange window.

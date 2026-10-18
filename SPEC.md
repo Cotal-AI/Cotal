@@ -905,6 +905,18 @@ every manager request to one exact live registered instance and is valid with no
 exchange selects from read-only observations of manager issuance gates and service registrations.
 It refuses zero or ambiguous candidates and refuses an unavailable owner-specific remote manager
 rather than falling through to a co-located manager. An explicit selector must name a live candidate.
+On the public exchange face, once the caller's credential and ledger actor grant have verified
+(for a human exchange, the IdP JWT and the interactive actor grant; for an agent exchange, the
+managed actor secret and its ledger row), a `manager-caller` request that fails only manager
+selection MUST return its selection refusal reason on 401 without spending the per-peer probing
+budget. The public face tracks those authenticated selection refusals in two rolling windows per
+principal (derived owner for human exchanges, `owner.actor` for agent exchanges) keyed by
+principal and request class (`pinned` when the request names `managerInstanceId`, `unpinned` when
+it does not, never by the requested instance id): each class counts only its own selection
+refusals and, once its window is full, refuses requests of that class (including ones that would
+have succeeded) with 429 and that class's remedy before running manager selection, while leaving
+the other class open. The loopback exchange face keeps selection refusals in its shared
+refused-exchange window.
 The `session-caller` view carries a required `act.session` claim `{endpoint, sessionId, epoch, exp}`
 (exp in unix seconds) and is valid with no other view; `act.session` is valid only with it. It needs no
 ledger scope: the redeemed §13.6 session grant is the authority. The human exchange accepts it only

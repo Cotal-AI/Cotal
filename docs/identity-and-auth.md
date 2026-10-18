@@ -289,7 +289,24 @@ more than 1024 trusted-proxy last hops can evict earlier 429 state. It is not a 
 credential is still required, so use upstream reverse-proxy rate limiting when that throttle-escape
 matters to the deployment. A refusal at `POST /manager-service-authority` counts against the same
 budget as one at `/exchange` on that face, so after 30 refusals in a minute either route answers a
-further refusal with 429.
+further refusal with 429. On the public face, a `manager-caller` `/exchange` request whose
+credential and ledger actor grant have already verified (IdP JWT plus interactive actor grant on the
+human arm, actor secret plus managed ledger row on the agent arm) checks two per-principal
+selection-refusal windows (`30/min` each, keyed by principal (derived owner for human exchanges,
+`owner.actor` for agent exchanges) and request class: `pinned` when `managerInstanceId` is named,
+`unpinned` when it is omitted, never by the requested instance id) before running manager
+selection. While under its class limit, a selection failure returns `401` with its actionable
+reason without spending the per-peer probing budget or being masked by a peer's `429`. Once a
+principal's `unpinned` or `pinned` window is full, the public face sheds manager selection for that
+class (refusing requests of that class, including ones that would have succeeded, while leaving the
+other class open) and returns `429` with that class's remedy (`--on` / `--manager-instance` /
+`cotal supervise` for `unpinned`; checking that the pinned manager instance is live and registered
+to the caller for `pinned`) until the window drains. Those principal-class windows share one bounded
+1024-key LRU of the same kind as the peer buckets: because one principal owns both its `pinned` and
+`unpinned` class keys, rotating 512 other verified principals (1024 keys, where each principal
+requires its own verified credential and ledger grant, and one owner's managed agent rows count as
+separate `${owner}.${actor}` principals) can evict an earlier full window and reopen it. On the loopback face, selection refusals still record into the
+shared loopback refused-exchange window and are masked at `30/min`.
 
 ### Enrollment redeem
 

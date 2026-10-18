@@ -153,10 +153,23 @@ const FAILED_EXCHANGE_PER_MIN = 30;
 const BAD_CAP_PER_MIN = 30;
 
 /** PUBLIC-face budgets — their own pools entirely, so public probing can never consume the
- *  loopback face's windows (and vice versa). Successes stay unthrottled, matching the loopback
- *  stance. */
+ *  loopback face's windows (and vice versa). A full per-peer probing bucket never refuses a
+ *  request that would have succeeded, matching the loopback stance. */
 const PUBLIC_FAILED_PER_MIN = 30; // per-PEER refused-exchange window (rolling minute)
 const PUBLIC_PEER_BUCKETS_MAX = 1024; // bounded LRU of per-peer failure buckets
+/** PUBLIC-face per-principal authenticated manager-selection refusal budget (#3959): once a
+ *  caller's credential and actor grant verify, manager-selection refusals are tracked in two
+ *  rolling windows per authenticated principal keyed by principal and request class (`pinned`
+ *  when the request names a manager instance, `unpinned` when it does not, never by the requested
+ *  instance id) in a 1024-key LRU. Each class counts only its own selection refusals and, once
+ *  full, sheds `selectManagerInstance` for that class (refusing requests of that class, including
+ *  ones that would have succeeded, with its class remedy while leaving the other class open). */
+const PUBLIC_SELECTION_FAILED_PER_MIN = 30; // per-principal-class selection-refusal window (rolling minute)
+const PUBLIC_SELECTION_BUCKETS_MAX = 1024; // bounded LRU of per-principal-class selection-refusal buckets
+const PUBLIC_UNPINNED_SELECTION_THROTTLED_REASON =
+  "too many manager-caller selection refusals - name a manager instance (--on <id> or --manager-instance <id>) or start one with `cotal supervise`, then wait a minute and retry";
+const PUBLIC_PINNED_SELECTION_THROTTLED_REASON =
+  "too many pinned manager-caller selection refusals - check that the pinned manager instance is live and registered to you, then wait a minute and retry";
 const PUBLIC_MAX_IN_FLIGHT = 64; // global concurrent-admission cap on the public listener
 const PUBLIC_DEADLINE_MS = 10_000; // hard wall-clock deadline per public request
 const HOST_FENCE_POLL_MS = 1_000; // how often awaitHostFence re-reads the host gate
@@ -2113,12 +2126,13 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
 
     // ---- Plane 1: the exchange + JWKS, loopback HTTP ----
     const bridgeIdp = { issuer: idp.issuer, audience: idp.audience, key: pinnedJwksResolver(idp.jwksUri) };
+    const authorizeActor = ledgerAuthorizeGrant(dir);
     const bridge = createIdpBridge({
       idp: bridgeIdp,
       space,
       spaceSecret: ownerSecret,
       issuer,
-      authorizeActor: ledgerAuthorizeGrant(dir),
+      authorizeActor,
       mintConnectCredential: plane.mintConnectCredential,
     });
     const cap = randomBytes(32).toString("hex"); // per-start exchange capability (rotates with the daemon)
@@ -2132,6 +2146,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
       bridge,
       bridgeIdp,
       ownerSecret,
+      authorizeActor,
       managerServiceAuthority: plane.issueManagerServiceAuthority,
       maintainRemoteManager: plane.maintainRemoteManager,
       validateRetainedAgent: plane.validateRetainedAgent,
@@ -2415,6 +2430,7 @@ interface HandlerCtx {
   secrets: SecretStore;
   retireInteractiveLifecycle: AuthAuthorityPlane["retireInteractiveLifecycle"];
   retireManagedLifecycle: AuthAuthorityPlane["retireManagedLifecycle"];
+  authorizeActor: ReturnType<typeof ledgerAuthorizeGrant>;
   cap: string;
   failures: number[];
   badCaps: number[];
@@ -2506,6 +2522,10 @@ interface ExchangePolicy {
   throttled(ctx: Pick<HandlerCtx, "failures">, peer: string): boolean;
   /** Record a refused exchange against this face's budget (for `peer`). */
   recordFailure(ctx: Pick<HandlerCtx, "failures">, peer: string): void;
+  /** Public face only: rolling window of authenticated manager-selection refusals for `key`
+   *  (`${principal}:pinned` or `${principal}:unpinned`). Absent on loopback, where selection
+   *  refusals stay in the shared `failures` window. */
+  selectionWindow?(key: string): number[];
 }
 
 /** The loopback face: capability-gated; peers keyed by socket remote address; one shared
@@ -2522,6 +2542,28 @@ const LOOPBACK_POLICY: ExchangePolicy = {
   recordFailure: (ctx) => ctx.failures.push(Date.now()),
 };
 
+/** Bounded LRU of 60-second rolling timestamp windows, shared by per-peer public throttling and
+ *  per-principal public selection throttling. */
+function makeRollingBuckets(max: number): (key: string) => number[] {
+  const buckets = new Map<string, number[]>(); // insertion order = recency (touched keys re-insert)
+  return (key: string): number[] => {
+    const existing = buckets.get(key);
+    let b: number[];
+    if (existing !== undefined) {
+      buckets.delete(key); // re-insert → most-recently-used
+      buckets.set(key, existing);
+      b = existing;
+    } else {
+      if (buckets.size >= max) buckets.delete(buckets.keys().next().value as string);
+      b = [];
+      buckets.set(key, b);
+    }
+    const now = Date.now();
+    while (b.length && now - b[0] > 60_000) b.shift();
+    return b;
+  };
+}
+
 /** The public face's policy: no capability, views other than {@link PUBLIC_EXCHANGE_VIEWS}
  *  refused, and failures bucketed per peer in a
  *  bounded LRU — peer A's refusal flood throttles peer A, not peer B, and never the loopback
@@ -2529,19 +2571,8 @@ const LOOPBACK_POLICY: ExchangePolicy = {
  *  operator's own reverse proxy appended — earlier hops are attacker-writable); without it the
  *  header is ignored entirely and the socket remote address attributes the peer. */
 function makePublicPolicy(trustedProxy: boolean): ExchangePolicy {
-  const buckets = new Map<string, number[]>(); // insertion order = recency (touched keys re-insert)
-  const bucket = (peer: string): number[] => {
-    const existing = buckets.get(peer);
-    if (existing !== undefined) {
-      buckets.delete(peer); // re-insert → most-recently-used
-      buckets.set(peer, existing);
-      return existing;
-    }
-    if (buckets.size >= PUBLIC_PEER_BUCKETS_MAX) buckets.delete(buckets.keys().next().value as string);
-    const fresh: number[] = [];
-    buckets.set(peer, fresh);
-    return fresh;
-  };
+  const bucket = makeRollingBuckets(PUBLIC_PEER_BUCKETS_MAX);
+  const selectionBucket = makeRollingBuckets(PUBLIC_SELECTION_BUCKETS_MAX);
   return {
     requireCapability: false,
     refuseViews: true,
@@ -2555,11 +2586,10 @@ function makePublicPolicy(trustedProxy: boolean): ExchangePolicy {
     },
     throttled: (_ctx, peer) => {
       const b = bucket(peer);
-      const now = Date.now();
-      while (b.length && now - b[0] > 60_000) b.shift();
       return b.length >= PUBLIC_FAILED_PER_MIN;
     },
     recordFailure: (_ctx, peer) => bucket(peer).push(Date.now()),
+    selectionWindow: (principal) => selectionBucket(principal),
   };
 }
 
@@ -2799,8 +2829,52 @@ function refuseCapability(res: ServerResponse, ctx: Pick<HandlerCtx, "badCaps">,
   send(res, 401, { error: reason });
 }
 
+/** Public-face authenticated manager-selection (#3959): called ONLY after the caller's
+ *  credential (IdP JWT or actor secret) and ledger actor grant have verified. On loopback
+ *  (`policy.selectionWindow === undefined`), selection runs directly inside the caller's try so
+ *  any refusal records into `ctx.failures` and is masked by the loopback 429 as before. On the
+ *  public face, each verified principal has two selection-refusal windows keyed by principal and
+ *  request class (`pinned` when `requested !== undefined`, `unpinned` when `requested === undefined`,
+ *  never by the requested instance id): each class checks its own window BEFORE
+ *  `selectManagerInstance` runs, sheds only its own selection work with its class remedy when
+ *  full (refusing requests of that class that would have succeeded while leaving the other class
+ *  open), and records in-budget selection refusals into that class window without touching the
+ *  per-peer probing budget. */
+async function selectExchangeManagerInstance(
+  res: ServerResponse,
+  ctx: Pick<HandlerCtx, "selectManagerInstance">,
+  policy: ExchangePolicy,
+  principal: string,
+  owner: string,
+  requested: string | undefined,
+  caller: ManagerCaller,
+  logLabel: string,
+): Promise<string | undefined> {
+  if (!policy.selectionWindow) return ctx.selectManagerInstance(owner, requested, caller);
+  const selectionClass = requested !== undefined ? "pinned" : "unpinned";
+  const window = policy.selectionWindow(`${principal}:${selectionClass}`);
+  if (window.length >= PUBLIC_SELECTION_FAILED_PER_MIN) {
+    const throttledReason =
+      selectionClass === "pinned" ? PUBLIC_PINNED_SELECTION_THROTTLED_REASON : PUBLIC_UNPINNED_SELECTION_THROTTLED_REASON;
+    console.error(`auth-service: ${logLabel}: ${throttledReason}`);
+    send(res, 429, { error: throttledReason });
+    return undefined;
+  }
+  try {
+    return await ctx.selectManagerInstance(owner, requested, caller);
+  } catch (e) {
+    window.push(Date.now());
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`auth-service: ${logLabel}: ${reason}`);
+    send(res, 401, { error: reason });
+    return undefined;
+  }
+}
+
 /** The exchange body, shared by every face; `policy` says how this face proves and attributes the
- *  caller. Behavior on the loopback face is unchanged from the pre-route-table handler. */
+ *  caller, and whether authenticated manager-selection refusals use the public face's two
+ *  per-principal class windows (`pinned` and `unpinned`) or the loopback face's shared
+ *  refused-exchange window. */
 async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
   if (req.method !== "POST") return send(res, 405, { error: "POST only" });
   // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
@@ -2824,11 +2898,14 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   // reverse-proxy topology `run-a-mesh.md` recommends, every client shares one bucket. Thirty
   // unauthenticated garbage POSTs then denied the public mint path for a rolling minute (#802).
   //
-  // Throttling exists to slow PROBING, and a valid credential is not probing. So a throttled peer
-  // still gets its credential evaluated: if it is good, it mints; if it is bad, the refusal arms
-  // below answer 429 instead of the specific reason, because the reason is what makes probing
-  // cheap and withholding it is the whole point of the budget. Nothing that would have succeeded
-  // is refused.
+  // Peer throttling exists to slow PROBING, and a valid credential is not probing. So a throttled
+  // peer still gets its credential evaluated: if it is good, it mints; if it is bad, the refusal
+  // arms below answer 429 instead of the specific reason, because the reason is what makes probing
+  // cheap and withholding it is the whole point of the peer budget. A full peer bucket never
+  // refuses a request that would have succeeded; on the public face, only a principal's own full
+  // `pinned` or `unpinned` selection-refusal window sheds `selectManagerInstance` for that class
+  // (refusing requests of that class before selection, including ones that would have succeeded,
+  // while leaving the other class open).
   const peer = policy.peerKey(req);
   const peerThrottled = policy.throttled(ctx, peer);
   const body = await readJsonBody(req);
@@ -2879,13 +2956,24 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
       const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
       if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
         throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
+      let selectedManagerInstanceId: string | undefined;
+      if (view === "manager-caller") {
+        selectedManagerInstanceId = await selectExchangeManagerInstance(
+          res,
+          ctx,
+          policy,
+          `${owner}.${actor}`,
+          owner,
+          managerInstanceId as string | undefined,
+          "agent",
+          "refused an agent exchange",
+        );
+        if (selectedManagerInstanceId === undefined) return;
+      }
       // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
       // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
       // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
       const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
-      const selectedManagerInstanceId = view === "manager-caller"
-        ? await ctx.selectManagerInstance(owner, managerInstanceId as string | undefined, "agent")
-        : undefined;
       const token = await ctx.issuer.issue({
         owner,
         space: ctx.space,
@@ -2917,13 +3005,27 @@ async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: Ha
   try {
     // The bridge validates `view` against the closed enum and the fresh ledger grant — an
     // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
-    const selectedManagerInstanceId = view === "manager-caller"
-      ? await ctx.selectManagerInstance(
-          deriveOwnerForIdpSubject(ctx.ownerSecret, ctx.bridgeIdp.issuer, (await verifyIdpToken(idpToken, ctx.bridgeIdp)).sub),
-          managerInstanceId as string | undefined,
-          "human",
-        )
-      : undefined;
+    let selectedManagerInstanceId: string | undefined;
+    if (view === "manager-caller") {
+      assertValidOwnerToken(actor);
+      const derivedOwner = deriveOwnerForIdpSubject(
+        ctx.ownerSecret,
+        ctx.bridgeIdp.issuer,
+        (await verifyIdpToken(idpToken, ctx.bridgeIdp)).sub,
+      );
+      ctx.authorizeActor(derivedOwner, actor);
+      selectedManagerInstanceId = await selectExchangeManagerInstance(
+        res,
+        ctx,
+        policy,
+        derivedOwner,
+        derivedOwner,
+        managerInstanceId as string | undefined,
+        "human",
+        "refused an exchange",
+      );
+      if (selectedManagerInstanceId === undefined) return;
+    }
     // #2312: a session-caller bearer is signed only once the identity plane has decided that THIS
     // principal holds THAT redeemed session. The bridge's `verifySession` hook runs the decision on
     // the principal it derived, before signing; the callout re-runs it at the mint.
