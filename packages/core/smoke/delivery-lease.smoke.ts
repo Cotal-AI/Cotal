@@ -3,7 +3,8 @@
  * delivery, so the daemon CAS-acquires a per-shard lease BEFORE binding and refuses (loud exit) if a live
  * lease exists. Asserts: a second acquire on the same shard THROWS; the lease flips ready only after a
  * mark; a ready lease held by ANOTHER daemon does not satisfy a wait for the daemon we launched
- * (#837); release frees it so a fresh acquire succeeds.
+ * (#837); release frees it so a fresh acquire succeeds. A lease-watch bind still in flight at stop or
+ * reconnect deletes its consumer instead of installing a watch for the retired connection (#3966).
  *
  * Run: pnpm smoke:delivery-lease:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
@@ -14,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, isReachable, createSpaceAuth, mintCreds, provisionAgent, mintLifecycleUid, serverConfig, newIdentity, setupSpaceStreams, waitForDeliveryLease, chatStream, standaloneConnectOpts, deliveryBucket, leaseKey, fanoutDurableConfig, FANOUT_DURABLE, idFromCreds, deliveryLeaseHolderFor, controlServiceSubject, CONTROL_DELIVERY, DEV_OWNER } from "../src/index.js";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
-import { Kvm } from "@nats-io/kv";
+import { Kvm, type KV } from "@nats-io/kv";
 import { jetstreamManager, AckPolicy } from "@nats-io/jetstream";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -269,6 +270,116 @@ try {
    check("W4 the stop handle deletes the watch's consumer instead of leaving it to the inactive threshold", retired === watching - 1, { watching, retired });
    await w1.releaseDeliveryLease(3, (await w1.readDeliveryLeaseEntry(3))?.revision);
  } finally { await w1.stop(); }
+
+ // ---- L: A LEASE-WATCH BIND STILL IN FLIGHT WHEN THE ENDPOINT STOPS OR REBUILDS (#3966) ----
+ // A bind creates the watch's ordered consumer before it can install the iterator. A stop or a live
+ // reconnect landing in that window retires the epoch the bind belongs to, so the late bind must
+ // stop its watch and delete the consumer instead of installing it, and the stop or the rebuild must
+ // wait for that before it closes the connection the delete rides on. The window is held open at the
+ // endpoint's own KV watch: the first watch is gated AFTER it returned, so its consumer exists on the
+ // broker and the bind has not seen it. The gate opens once the stop or reconnect resolves, or after
+ // a second if it is waiting for the bind, so a stop that does not wait lands its bind late every run.
+ console.log("\nL. a lease-watch bind in flight at stop or reconnect deletes its consumer instead of installing it");
+ {
+  const lNc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: await mintCreds(auth, newIdentity(), "delivery"), tls: false }) });
+  const lJsm = await jetstreamManager(lNc);
+  const lConsumers = async () => (await lJsm.streams.info(`KV_${deliveryBucket(space)}`)).state.consumer_count;
+  const until = async (done: () => boolean) => { for (let i = 0; i < 50 && !done(); i++) await wait(100); };
+  const holdFirstWatch = (ep: CotalEndpoint) => {
+    const reg = ep as unknown as { deliveryRegistry: () => Promise<KV> };
+    const real = reg.deliveryRegistry.bind(ep);
+    const wrapped = new WeakSet<KV>();
+    const held = { created: false };
+    let claimed = false;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => { open = resolve; });
+    reg.deliveryRegistry = async () => {
+      const kv = await real();
+      if (!wrapped.has(kv)) {
+        wrapped.add(kv);
+        const watch = kv.watch.bind(kv);
+        kv.watch = async (opts) => {
+          const first = !claimed;
+          claimed = true;
+          const iter = await watch(opts);
+          if (first) { held.created = true; await gate; }
+          return iter;
+        };
+      }
+      return kv;
+    };
+    return { held, openAfter: async (settled: Promise<unknown>) => { await Promise.race([settled, wait(1000)]); open(); } };
+  };
+  const lw = await mkDaemon(); lw.on("error", () => {}); await lw.start();
+  try {
+   const base = await lConsumers();
+
+   // CONTROLS: an INSTALLED watch is retired by an endpoint stop, and a live reconnect leaves only
+   // the rebound watch, which still delivers.
+   const ci = await mkDaemon(); ci.on("error", () => {}); await ci.start();
+   await ci.watchDeliveryLease(7, () => {});
+   const ciWatching = await lConsumers();
+   await ci.stop();
+   const ciAfter = await lConsumers();
+   check("L1 CONTROL: endpoint stop deletes an INSTALLED lease watch's consumer", ciWatching === base + 1 && ciAfter === base, { base, ciWatching, ciAfter });
+   const cr = await mkDaemon(); cr.on("error", () => {}); await cr.start();
+   const crEvents: unknown[] = [];
+   await cr.watchDeliveryLease(7, (info) => { crEvents.push(info); });
+   await cr.reconnect();
+   const crAfter = await lConsumers();
+   const crSeen = crEvents.length;
+   const crRev = await lw.acquireDeliveryLease(7);
+   await until(() => crEvents.length > crSeen);
+   check("L2 CONTROL: a live reconnect of an INSTALLED watch leaves only the rebound watch, and it delivers", crAfter === base + 1 && crEvents.length > crSeen, { base, crAfter, crSeen, events: crEvents.length });
+   await lw.releaseDeliveryLease(7, crRev);
+   await cr.stop();
+
+   // A bind in flight at stop(). The row exists, so a watch that were installed would replay it at once.
+   const sRev = await lw.acquireDeliveryLease(8);
+   const ls = await mkDaemon(); ls.on("error", () => {}); await ls.start();
+   const hs = holdFirstWatch(ls);
+   let stopping = false, afterStop = 0;
+   const sBind = ls.watchDeliveryLease(8, () => { if (stopping) afterStop++; });
+   await until(() => hs.held.created);
+   const sHeld = await lConsumers();
+   stopping = true;
+   const sStop = ls.stop();
+   await hs.openAfter(sStop);
+   await sBind.catch(() => {});
+   await sStop;
+   await wait(300);
+   const sAfter = await lConsumers();
+   check("L3 CONTROL: the held bind created its consumer before the stop", sHeld === base + 1, { base, sHeld });
+   check("L4 a bind that lands after stop() deletes its consumer instead of leaving it to the inactive threshold", sAfter === base, { base, sAfter });
+   check("L5 a bind that lands after stop() delivers no lease event to the stopped endpoint", afterStop === 0, { afterStop });
+   await lw.releaseDeliveryLease(8, sRev);
+
+   // A bind in flight at a live reconnect.
+   const lr = await mkDaemon(); lr.on("error", () => {}); await lr.start();
+   const hr = holdFirstWatch(lr);
+   const rEvents: unknown[] = [];
+   const rBind = lr.watchDeliveryLease(9, (info) => { rEvents.push(info); });
+   await until(() => hr.held.created);
+   const rHeld = await lConsumers();
+   const rRebuild = lr.reconnect();
+   await hr.openAfter(rRebuild);
+   await rBind.catch(() => {});
+   await rRebuild;
+   const rAfter = await lConsumers();
+   const rSeen = rEvents.length;
+   const rRev = await lw.acquireDeliveryLease(9);
+   await until(() => rEvents.length > rSeen);
+   check("L6 a bind that lands during a live reconnect deletes its consumer, leaving only the rebound watch", rHeld === base + 1 && rAfter === base + 1, { base, rHeld, rAfter });
+   check("L7 CONTROL: the rebound watch still delivers after the late bind retired", rEvents.length > rSeen, { rSeen, events: rEvents.length });
+   await lw.releaseDeliveryLease(9, rRev);
+   await lr.stop();
+   const rStopped = await lConsumers();
+   check("L8 stop after that reconnect leaves no lease-watch consumer", rStopped === base, { base, rStopped });
+  } finally {
+   await lw.stop();
+   await lNc.close();
+  }
+ }
 
  // ---- Q: A REARM THAT FAILS PART-WAY MUST LEAVE THE ENDPOINT QUIESCED (found in review) ----
   // `armPlane3` binds in four stages, so it can fail with some of them up. The first version of

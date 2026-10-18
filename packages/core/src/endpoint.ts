@@ -499,6 +499,10 @@ export class CotalEndpoint extends EventEmitter {
    *  delete, so {@link stop} and a live-epoch rebuild await these before they close the connection
    *  that carries them (#3966). */
   private readonly leaseWatchDeletes = new Set<Promise<void>>();
+  /** Lease-watch binds still awaiting the broker. One that lands after {@link stop} or a rebuild
+   *  moved the epoch retires its watch and starts that delete itself, so the same two paths wait for
+   *  these first. Each is bounded by the JetStream request timeout. */
+  private readonly leaseWatchBinds = new Set<Promise<void>>();
   /** Plane-3 durable-membership registry KV — lazily opened by the privileged delivery daemon (or a
    *  short-lived provisioner). */
   private membersKv?: KV;
@@ -648,9 +652,10 @@ export class CotalEndpoint extends EventEmitter {
   private presenceViewState: PresenceView["state"] = "unpopulated";
   /** A presence-watch rebind in flight (see {@link rebindStalePresenceWatch}); one at a time. */
   private presenceRebind?: Promise<void>;
-  /** Bumped by every connection-scoped teardown and by {@link stop}. A presence bind that was
-   *  awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
-   *  iterator it got and installs nothing (see {@link startPresenceWatch}). */
+  /** Bumped by every connection-scoped teardown and by {@link stop}. A presence or lease-watch bind
+   *  that was awaiting the broker when the epoch moved belongs to a retired epoch: it releases the
+   *  iterator it got and installs nothing (see {@link startPresenceWatch} and
+   *  {@link bindDeliveryLeaseWatch}). */
   private presenceEpoch = 0;
   /** The current watch was bound onto a bucket with NO keys (see {@link markPresenceBucketEmpty}).
    *  Such a watch cannot deliver until someone writes, so its silence is not staleness. */
@@ -1464,9 +1469,9 @@ export class CotalEndpoint extends EventEmitter {
     }
 
     // Rebind the daemon's lease-loss watch onto the fresh connection (#1596). The intent survived
-    // clearConnectionScoped; a bind that completes after a stop or another rebuild found no intent
-    // and released itself. The replay re-delivers the row's current state, so a change that landed
-    // in the null window still reaches the trigger.
+    // clearConnectionScoped; a bind that completes after a stop or another rebuild finds the epoch
+    // moved and retires itself. The replay re-delivers the row's current state, so a change that
+    // landed in the null window still reaches the trigger.
     if (this.leaseWatchIntent) await this.bindDeliveryLeaseWatch();
 
     // FAIL BEFORE PRESENCE (SPEC 13.1): an AUTHED endpoint that will register on the roster or
@@ -1799,7 +1804,7 @@ export class CotalEndpoint extends EventEmitter {
       // Manual reconnect still has a live old epoch: complete broker-consumer cleanup before close.
       // Terminal self-heal has an already-closed epoch: disarm retains stream/name for fresh cleanup.
       if (oldNc && !oldNc.isClosed())
-        await Promise.all([...[...this.membershipFeedWatches].map((watch) => watch.arm), ...this.leaseWatchDeletes]);
+        await Promise.all([...[...this.membershipFeedWatches].map((watch) => watch.arm), this.settleDeliveryLeaseWatches()]);
       this.nc = undefined;
       this.js = undefined;
       this.jsm = undefined;
@@ -1981,7 +1986,7 @@ export class CotalEndpoint extends EventEmitter {
     } catch {
       /* best-effort graceful leave */
     }
-    await Promise.all(this.leaseWatchDeletes);
+    await this.settleDeliveryLeaseWatches();
     await this.closeWithoutLibraryReconnect(this.nc);
     // #1356: stop() does its own teardown and never runs clearConnectionScoped, so clear here too —
     // AFTER the best-effort offline publish above, which would otherwise re-record a refusal on its
@@ -4185,10 +4190,30 @@ export class CotalEndpoint extends EventEmitter {
     void deleting.then(() => this.leaseWatchDeletes.delete(deleting));
   }
 
-  private async bindDeliveryLeaseWatch(): Promise<void> {
+  /** Wait for the lease-watch binds still in flight, then for every retired watch's consumer delete.
+   *  {@link stop} and a live-epoch rebuild run this before they close the connection those deletes
+   *  need (#3966). */
+  private async settleDeliveryLeaseWatches(): Promise<void> {
+    await Promise.allSettled(this.leaseWatchBinds);
+    await Promise.all(this.leaseWatchDeletes);
+  }
+
+  /** Bind the lease watch on the current connection. A bind that lands after a newer watch replaced
+   *  its intent, or after a stop or connection teardown moved the epoch, retires its watch instead of
+   *  installing it: the epoch it was bound for is gone, and a rebuilt one binds its own. */
+  private bindDeliveryLeaseWatch(): Promise<void> {
+    const binding = this.bindDeliveryLeaseWatchOnce();
+    const settled = () => { this.leaseWatchBinds.delete(binding); };
+    this.leaseWatchBinds.add(binding);
+    void binding.then(settled, settled);
+    return binding;
+  }
+
+  private async bindDeliveryLeaseWatchOnce(): Promise<void> {
     const intent = this.leaseWatchIntent!;
+    const epoch = this.presenceEpoch;
     const iter = await (await this.deliveryRegistry()).watch({ key: leaseKey(intent.shardIndex) });
-    if (this.leaseWatchIntent !== intent) {
+    if (this.leaseWatchIntent !== intent || epoch !== this.presenceEpoch) {
       this.retireDeliveryLeaseWatch(iter);
       return;
     }

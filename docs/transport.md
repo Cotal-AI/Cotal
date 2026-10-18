@@ -73,8 +73,10 @@ terminal delivery raises an incomplete-scan error.
 
 The delivery daemon's lease watch deletes its ordered consumer when its stop handle runs, when the
 endpoint stops, when a manual reconnect retires a live connection, and when a newer lease watch
-replaces it mid-bind. The lease watch of a connection that closed on its own is left to the broker's
-five-minute inactive threshold.
+replaces it mid-bind. A lease-watch bind still in flight when the endpoint stops or reconnects is not
+installed: the stop or reconnect waits for it, within the JetStream request timeout, and deletes its
+consumer before closing the connection. The lease watch of a connection that closed on its own is
+left to the broker's five-minute inactive threshold.
 
 The v0.4 endpoint control surface pins this binding to **nats-server >= 2.12**: it relies on
 native message schedules (durable timers) and per-message TTLs, with no degraded fallback
