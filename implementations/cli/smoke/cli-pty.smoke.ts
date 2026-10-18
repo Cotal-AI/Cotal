@@ -12,6 +12,7 @@
  * Run: pnpm smoke:cli-pty
  */
 import { mkdtempSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -24,12 +25,38 @@ for (const [key, value] of Object.entries(process.env)) if (value !== undefined 
 Object.assign(env, { COTAL_HOME: home, XDG_CONFIG_HOME: join(home, "xdg"), COTAL_SKIP_CONNECTOR_SEED: "1", TERM: "xterm-256color" });
 const { version } = JSON.parse(readFileSync(join(repoRoot, "bin", "package.json"), "utf8")) as { version: string };
 const { check, finish } = createSuite();
+const managerRequire = createRequire(join(repoRoot, "implementations", "manager", "package.json"));
+const { Terminal } = managerRequire("@xterm/headless") as {
+  Terminal: new (options: { cols: number; rows: number; scrollback: number; allowProposedApi: boolean }) => {
+    write(data: string, done: () => void): void;
+    buffer: { active: { length: number; getLine(index: number): { isWrapped: boolean; translateToString(trim: boolean): string } | undefined } };
+    dispose(): void;
+  };
+};
+
+/** ConPTY can encode padding as cursor moves. Read the display, not a CSI-stripped byte stream. */
+async function screen(raw: string, cols: number, rows: number): Promise<string> {
+  const terminal = new Terminal({ cols, rows, scrollback: 1000, allowProposedApi: true });
+  try {
+    await new Promise<void>((done) => terminal.write(raw, done));
+    const lines: string[] = [];
+    for (let i = 0; i < terminal.buffer.active.length; i++) {
+      const line = terminal.buffer.active.getLine(i);
+      const text = line?.translateToString(!terminal.buffer.active.getLine(i + 1)?.isWrapped) ?? "";
+      if (line?.isWrapped && lines.length) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines.join("\n").trimEnd();
+  } finally { terminal.dispose(); }
+}
+
+const exited = new WeakSet<Pty>();
 
 /** One pty child: its cumulative output with escape sequences removed, and its exit code. */
 function session(pty: Pty) {
   const s = { raw: "", exitCode: undefined as number | undefined, text: () => clean(s.raw) };
   pty.onData((d) => { s.raw += d; });
-  pty.onExit((e) => { s.exitCode = e.exitCode; });
+  pty.onExit((e) => { s.exitCode = e.exitCode; exited.add(pty); });
   return s;
 }
 
@@ -74,12 +101,19 @@ try {
   echoPty.write("\x04");
   check("it exits 0 when it reads 0x04", (await until(() => e.exitCode !== undefined)) && e.exitCode === 0, e.exitCode);
 
+  const positionedPty = nodePty(["-e", 'process.stdout.write("NAME\\x1b[4CSTATE\\r\\n")'], { cwd: repoRoot, env, cols: 100, rows: 20 });
+  ptys.push(positionedPty);
+  const positioned = session(positionedPty);
+  await until(() => positioned.exitCode !== undefined);
+  const positionedText = await screen(positioned.raw, 100, 20);
+  check("the terminal oracle preserves cursor-positioned padding", positioned.exitCode === 0 && /NAME +STATE/.test(positionedText), positionedText);
+
   for (const [cols, records] of [[100, false], [20, true]] as const) {
     const pty = nodePty(["--input-type=module", "-e", REPORT], { cwd: repoRoot, env, cols, rows: 20 });
     ptys.push(pty);
     const r = session(pty);
     await until(() => r.exitCode !== undefined);
-    const text = r.text();
+    const text = await screen(r.raw, cols, 20);
     check(
       `a report on a ${cols}-column terminal is ${records ? "one labeled record" : "a table"}`,
       r.exitCode === 0 && text.includes("古い席-long-name") && (records ? /NAME: +古い席-long-name/.test(text) && /STATE: +\* working/.test(text) : /NAME +STATE/.test(text)),
@@ -109,7 +143,14 @@ try {
     const forced = session(forcedPty);
     const forcedDrawn = await until(() => forced.text().includes("Register a mesh"));
     check("meshes add --no-color draws no ANSI color even under FORCE_COLOR", forcedDrawn && !color.test(forced.raw), JSON.stringify(forced.raw.slice(0, 300)));
+    for (const [pty, state] of [[plainPty, plain], [forcedPty, forced]] as const) {
+      pty.write("\x03");
+      check("the color-check prompt exits when cancelled", await until(() => state.exitCode !== undefined), state.exitCode);
+    }
   }
+  wizardPty.write("\x03");
+  check("the guided prompt exits when cancelled", await until(() => w.exitCode !== undefined), w.exitCode);
+
   for (const argv of [["meshes", "add", "--no-input"], ["--no-input", "meshes", "add"]]) {
     const pty = cotalPty(argv, { cwd: home, env });
     ptys.push(pty);
@@ -122,6 +163,7 @@ try {
   check(`suite ran without throwing: ${err instanceof Error ? err.message : String(err)}`, false, err instanceof Error ? err.stack : err);
 } finally {
   for (const pty of ptys) {
+    if (exited.has(pty)) continue;
     try { pty.kill(); } catch {}
   }
   finish();
