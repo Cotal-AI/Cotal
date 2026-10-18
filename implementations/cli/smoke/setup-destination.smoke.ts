@@ -1,7 +1,8 @@
 /**
- * `cotal setup` asks four things: the destination, the application, the project folder and the
+ * `cotal setup` asks for the destination, the application, the runtimes, the project folder and the
  * space. This suite drives the built binary in a sandboxed home whose connectors are seeded once,
- * with a PATH that holds `codex` (a stand-in) and not `claude`.
+ * with a PATH that holds `codex` and `tmux` (stand-ins) and not `claude` or `cmux`. A stand-in npm
+ * registry serves the tmux and herdr runtimes packed from this checkout.
  *
  * Scripted: every input is a flag, a missing one is refused before anything is written, Cloud is
  * refused as in development, and a refusal leaves the sandbox as it was. A local space is prepared
@@ -9,11 +10,15 @@
  * and the application becomes the space's `harness` preference. A rerun changes nothing. A harness
  * whose host tool is missing leaves the rest saved and the result partial. A self-hosted space is
  * one registered here, whose root is the project, or one registered from a connection file; either
- * way the persona lands in the catalog `cotal spawn` reads for that space.
+ * way the persona lands in the catalog `cotal spawn` reads for that space. Without `--runtime` no
+ * runtime beyond `pty` is set up. A named runtime is installed at this cotal's version and its
+ * provider is asked whether it answers; an unknown name or a missing host tool is refused before
+ * anything is written, and a runtime left unnamed is never removed.
  *
  * On a terminal: Cloud is shown and cannot be chosen, every answer is shown before the save,
  * Change asks again with the answers kept, Cancel saves nothing, and a missing project folder is
- * created only after the operator agrees.
+ * created only after the operator agrees. Installed runtimes and those whose host tool is found
+ * start selected, and a selected runtime whose host tool is missing is reported and not installed.
  *
  * Needs `nats-server` on PATH. Linux and macOS run the terminal cells under a pty.
  *
@@ -39,24 +44,44 @@ process.env.COTAL_HOME = join(home, ".cotal");
 const xdg = join(home, ".config");
 process.env.XDG_CONFIG_HOME = xdg;
 mkdirSync(process.env.COTAL_HOME, { recursive: true });
-const { findMesh, findPreparedSpace, loadMeshes, readPreferences, recordMesh, resolveMeshTarget, resolveOnPath } = await import("@cotal-ai/workspace");
+const { findMesh, findPreparedSpace, loadExtensionsManifest, loadMeshes, readPreferences, recordMesh, resolveMeshTarget, resolveOnPath } = await import("@cotal-ai/workspace");
 const { loadAgentFile } = await import("@cotal-ai/core");
 const { userExchangeIssuer } = await import("../src/commands/meshes-add.js");
 const { check, finish } = createSuite();
 
-// A PATH with node, nats-server and a stand-in `codex`, and no `claude`.
+// A PATH with node, nats-server and stand-ins for `codex` and `tmux`, and no `claude` or `cmux`.
+// `herdr` 0.7.0, older than the runtime drives, and `orca`, which the registry does not serve, are
+// put on PATH only for the cells that name them.
 const bin = join(home, "bin");
+const more = join(home, "bin-more");
 mkdirSync(bin);
+mkdirSync(more);
 const natsServer = resolveOnPath("nats-server");
 if (!natsServer) {
   console.error("needs nats-server on PATH");
   process.exit(1);
 }
 symlinkSync(natsServer, join(bin, process.platform === "win32" ? "nats-server.exe" : "nats-server"));
-writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 0\n");
-chmodSync(join(bin, "codex"), 0o755);
-writeFileSync(join(bin, "codex.cmd"), "@exit /b 0\r\n");
-const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && k !== "FORCE_COLOR" && k !== "NO_COLOR" && k !== "PATH"));
+// Do not expose ambient POSIX tools: `/usr/bin/orca` can be the GNOME screen reader.
+if (process.platform !== "win32") {
+  symlinkSync(process.execPath, join(bin, "node"));
+  for (const name of ["npm", "sh", "ps"]) {
+    const executable = resolveOnPath(name);
+    if (!executable) throw new Error(`setup fixture requires ${name} on the host PATH`);
+    symlinkSync(executable, join(bin, name));
+  }
+}
+function tool(dir: string, name: string, out = ""): void {
+  writeFileSync(join(dir, name), `#!/bin/sh\n${out ? `echo ${out}\n` : ""}exit 0\n`);
+  chmodSync(join(dir, name), 0o755);
+  writeFileSync(join(dir, `${name}.cmd`), `@${out ? `echo ${out}` : "exit /b 0"}\r\n`);
+}
+tool(bin, "codex");
+tool(bin, "tmux");
+tool(more, "herdr", "herdr 0.7.0");
+tool(more, "orca");
+// CMUX_BUNDLED_CLI_PATH names the cmux tool inside a cmux terminal, so it is dropped with the rest.
+const HOST_ENV = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !["FORCE_COLOR", "NO_COLOR", "PATH", "CMUX_BUNDLED_CLI_PATH"].includes(k)));
 const env: Record<string, string> = {
   ...(HOST_ENV as Record<string, string>),
   HOME: home,
@@ -65,9 +90,15 @@ const env: Record<string, string> = {
   COTAL_HOME: process.env.COTAL_HOME,
   COTAL_SKIP_CONNECTOR_SEED: "1",
   COTAL_SKIP_ASSIST: "1",
-  PATH: [bin, ...(process.platform === "win32" ? [join(process.execPath, "..")] : ["/usr/bin", "/bin"])].join(delimiter),
+  PATH: [bin, ...(process.platform === "win32" ? [join(process.execPath, "..")] : [])].join(delimiter),
   TERM: "xterm-256color",
 };
+const commandPrefix = resolveOnPath("cotal", env) ? "cotal" : "pnpm cotal";
+if (process.platform !== "win32") {
+  check("the baseline PATH exposes the real node/npm and only the declared harness/runtime tools",
+    resolveOnPath("node", env) !== undefined && resolveOnPath("npm", env) !== undefined &&
+      ["orca", "orca-ide", "herdr", "claude", "cmux"].every((name) => resolveOnPath(name, env) === undefined));
+}
 
 // An open broker, one that refuses a bare connect, and a stand-in exchange for a bundle's pins.
 const brokers: ReturnType<typeof spawn>[] = [];
@@ -106,8 +137,8 @@ const run = (args: string[], cwd = home, extraEnv: Record<string, string> = {}) 
     child.stderr.on("data", (d) => (stderr += d));
     child.on("close", (status) => done({ status, stdout, stderr }));
   });
-const json = async (args: string[], cwd = home) => {
-  const r = await run([...args, "--json"], cwd);
+const json = async (args: string[], cwd = home, extraEnv: Record<string, string> = {}) => {
+  const r = await run([...args, "--json"], cwd, extraEnv);
   let envelope: Record<string, any> | undefined;
   try {
     envelope = JSON.parse(r.stdout);
@@ -145,11 +176,63 @@ if (seeded.status !== 0) {
   process.exit(1);
 }
 
+// A stand-in npm registry serving the official tmux and herdr runtimes, packed from this checkout,
+// at this cotal's version, beside a newer `latest` that has no tarball, so an install that resolves
+// to the newest fails. Every other package is not found. Set after the seed, so only the runtime
+// installs read it.
+const REPO = join(import.meta.dirname, "..", "..", "..");
+const VERSION = (JSON.parse(readFileSync(join(REPO, "bin", "package.json"), "utf8")) as { version: string }).version;
+const NEWER = "99.0.0";
+const packed = mkdtempSync(join(tmpdir(), "cotal-setup-runtimes-"));
+const served = new Map<string, { manifest: Record<string, unknown>; file: string; integrity: string; shasum: string }>();
+for (const name of ["tmux", "herdr"]) {
+  const dir = join(REPO, "extensions", name);
+  const pack = spawnSync("npm", ["pack", "--json", "--ignore-scripts", "--pack-destination", packed, dir], { encoding: "utf8", shell: process.platform === "win32" });
+  if (pack.status !== 0) {
+    console.error(`✗ packing ${dir} failed: ${pack.stderr.slice(-800)}`);
+    process.exit(1);
+  }
+  const [info] = JSON.parse(pack.stdout) as { name: string; version: string; filename: string; integrity: string; shasum: string }[];
+  if (info!.version !== VERSION) {
+    console.error(`✗ ${info!.name} is ${info!.version} and this cotal is ${VERSION}`);
+    process.exit(1);
+  }
+  served.set(info!.name, { manifest: JSON.parse(readFileSync(join(dir, "package.json"), "utf8")), file: info!.filename, integrity: info!.integrity, shasum: info!.shasum });
+}
+const registryServer = createServer((req, res) => {
+  const path = decodeURIComponent((req.url ?? "").split("?")[0]!.slice(1));
+  const tarball = [...served.values()].find((p) => path === `tarballs/${p.file}`);
+  if (tarball) return void res.end(readFileSync(join(packed, tarball.file)));
+  const pkg = served.get(path);
+  if (!pkg) {
+    res.statusCode = 404;
+    return void res.end(JSON.stringify({ error: "not found" }));
+  }
+  res.setHeader("content-type", "application/json");
+  res.end(JSON.stringify({
+    _id: path,
+    name: path,
+    "dist-tags": { latest: NEWER },
+    versions: {
+      [VERSION]: { ...pkg.manifest, _id: `${path}@${VERSION}`, dist: { tarball: `${registry}/tarballs/${pkg.file}`, integrity: pkg.integrity, shasum: pkg.shasum } },
+      [NEWER]: { ...pkg.manifest, version: NEWER, _id: `${path}@${NEWER}`, dist: { tarball: `${registry}/tarballs/missing-${NEWER}.tgz`, integrity: pkg.integrity, shasum: pkg.shasum } },
+    },
+  }));
+});
+const registry = `http://127.0.0.1:${await listenOn(registryServer, await freePort())}`;
+Object.assign(env, { npm_config_registry: `${registry}/`, npm_config_cache: join(packed, "cache"), npm_config_update_notifier: "false" });
+process.on("exit", () => {
+  registryServer.close();
+  rmSync(packed, { recursive: true, force: true });
+});
+const withMore = { PATH: [more, env.PATH].join(delimiter) };
+const installed = (pkg: string) => loadExtensionsManifest().extensions.find((e) => e.pkg === pkg);
+
 const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--destination", "local", "--harness", harness, "--project", dir, "--space", space];
 
 // ── A script names every input, and a refusal writes nothing ──────────────────────────────────────
 {
-  const dirs = { cloud: project("p-cloud"), mars: project("p-mars"), harness: project("p-harness"), name: project("p-name"), file: project("p-file") };
+  const dirs = { cloud: project("p-cloud"), mars: project("p-mars"), harness: project("p-harness"), name: project("p-name"), file: project("p-file"), runtime: project("p-runtime") };
   const before = files();
   const missing = await json(["setup", "--destination", "local"]);
   check("a script missing inputs is USAGE_INVALID, exit 1, naming each missing flag",
@@ -172,6 +255,12 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("the home folder is no project: CONFLICT naming --project", refused(homeProject, 2, "CONFLICT") && /--project <dir>/.test(homeProject.env?.error?.remedy ?? ""), shown(homeProject));
   const fileLocal = await json([...FULL("f1", dirs.file), "--connection-file", join(home, "x.json")]);
   check("--connection-file with a local destination is USAGE_INVALID", refused(fileLocal, 1, "USAGE_INVALID"), shown(fileLocal));
+  const runtime = await json([...FULL("r1", dirs.runtime), "--runtime", "bogus"]);
+  check("an unknown --runtime is USAGE_INVALID, naming the runtimes setup offers",
+    refused(runtime, 1, "USAGE_INVALID") && /--runtime bogus is not a runtime: pass pty, orca, tmux, cmux, herdr/.test(runtime.env?.error?.message ?? ""), shown(runtime));
+  const noTool = await json([...FULL("r2", dirs.runtime), "--runtime", "cmux"]);
+  check("a --runtime whose host tool is not on PATH is DEPENDENCY_UNAVAILABLE, naming the tool",
+    refused(noTool, 2, "DEPENDENCY_UNAVAILABLE") && /the cmux runtime drives cmux, which is not on PATH/.test(noTool.env?.error?.message ?? "") && installed("@cotal-ai/cmux") === undefined, shown(noTool));
   check("no refusal wrote anything", JSON.stringify(files()) === JSON.stringify(before), { before, after: files() });
 }
 
@@ -185,10 +274,14 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
     first.status === 0 && first.env?.outcome === "ok" && r?.spaceState === "created" && findPreparedSpace("research")?.root === dir && existsSync(join(dir, ".cotal")), shown(first));
   check("it lists what it wrote: the prepared space, the default persona and the harness preference",
     ["prepared space", "default persona", "harness preference of research"].every((w) => written.includes(w)), written);
+  const runtimes = (r?.runtimes ?? []) as { name: string; state: string; selected: boolean; tool: { found: string | null } | null }[];
+  check("without --runtime only pty is set up, and each official runtime is listed with its host tool",
+    runtimes.map((x) => `${x.name}:${x.state}:${x.selected}`).join() === "pty:built-in:true,orca:left-out:false,tmux:left-out:false,cmux:left-out:false,herdr:left-out:false"
+      && runtimes.find((x) => x.name === "tmux")?.tool?.found === "tmux" && runtimes.find((x) => x.name === "cmux")?.tool?.found === null && installed("@cotal-ai/tmux") === undefined, runtimes);
   const persona = join(dir, ".cotal", "agents", "default.md");
   check("the default persona lands in the project's .cotal/agents and parses", existsSync(persona) && loadAgentFile(persona).name === "default_agent");
   check("the application is the space's harness preference", harnessOf("research") === "codex", readPreferences().spaces);
-  check("the next command is cotal up in the project", r?.next?.command === "cotal up" && r.next.cwd === dir, r?.next);
+  check("the next command is cotal up in the project", r?.next?.command === `${commandPrefix} up` && r.next.cwd === dir, r?.next);
   const space = await json(["space"]);
   check("cotal space lists it as prepared in the project", space.env?.result?.prepared?.some((p: { space: string; root: string }) => p.space === "research" && p.root === dir), shown(space));
 
@@ -203,7 +296,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   recordMesh({ space: "startedspace", server: "nats://127.0.0.1:4997", root: startedRoot, mode: "open", origin: "up", ts: new Date(0).toISOString() });
   const started = await json(FULL("startedspace", startedRoot));
   check("a space started here before is reported as started, and its next command is spawn",
-    started.status === 0 && started.env?.result.spaceState === "started" && started.env.result.next.command === "cotal spawn --space startedspace" && findPreparedSpace("startedspace") === undefined, shown(started));
+    started.status === 0 && started.env?.result.spaceState === "started" && started.env.result.next.command === `${commandPrefix} spawn --space startedspace` && findPreparedSpace("startedspace") === undefined, shown(started));
 
   const other = await json(FULL("research2", dir));
   check("a second space in the same project is CONFLICT", refused(other, 2, "CONFLICT") && /already the root of "research"/.test(other.env?.error?.message ?? ""), shown(other));
@@ -242,7 +335,7 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   const target = resolveMeshTarget(home, { space: "team" });
   check("a registered space is set up where spawn reads its personas",
     ok.status === 0 && ok.env?.result.spaceState === "registered" && existsSync(join(target.personaRoot, "default.md")) && target.root === teamRoot, { run: shown(ok), personaRoot: target.personaRoot });
-  check("its next command is spawn in that space", ok.env?.result.next.command === "cotal spawn --space team" && ok.env.result.next.cwd === null, ok.env?.result.next);
+  check("its next command is spawn in that space", ok.env?.result.next.command === `${commandPrefix} spawn --space team` && ok.env.result.next.cwd === null, ok.env?.result.next);
 
   const userRoot = project("hosted-root");
   const bundle = {
@@ -267,16 +360,50 @@ const FULL = (space: string, dir: string, harness = "codex") => ["setup", "--des
   check("a connection file naming another broker for a registered space is CONFLICT", refused(moved, 2, "CONFLICT") && /cotal space forget hosted/.test(moved.env?.error?.remedy ?? ""), shown(moved));
 }
 
+// ── Runtimes ──────────────────────────────────────────────────────────────────────────────────────
+type Row = { name: string; state: string; selected: boolean; reachable: boolean | null; package: string | null; tool: { names: string[]; found: string | null } | null };
+const rows = (r: Awaited<ReturnType<typeof json>>): Row[] => r.env?.result?.runtimes ?? [];
+const row = (r: Awaited<ReturnType<typeof json>>, name: string) => rows(r).find((x) => x.name === name);
+{
+  const dir = project("rt");
+  const added = await json([...FULL("rt", dir), "--runtime", "tmux"]);
+  check("a named runtime is added at this cotal's version and its provider answers",
+    added.status === 0 && added.env?.outcome === "ok" && row(added, "tmux")?.state === "added" && row(added, "tmux")?.reachable === true && row(added, "tmux")?.package === "@cotal-ai/tmux"
+      && installed("@cotal-ai/tmux")?.version === VERSION && installed("@cotal-ai/tmux")?.spec === `@cotal-ai/tmux@${VERSION}`, { run: shown(added), installed: installed("@cotal-ai/tmux") });
+  check("the install is listed among the writes, and its progress goes to stderr",
+    added.env?.result.written.some((w: { what: string }) => w.what === "tmux runtime") && /added @cotal-ai\/tmux/.test(added.stderr), shown(added));
+  const listed = await json(["runtimes"]);
+  check("cotal runtimes reports it installed and reachable", listed.env?.result?.items?.some((x: { name: string; state: string; reachable: boolean }) => x.name === "tmux" && x.state === "installed" && x.reachable === true), shown(listed));
+  const again = await json([...FULL("rt", dir), "--runtime", "tmux"]);
+  check("naming it again is a no-op that finds it set up", again.status === 0 && again.env?.outcome === "no-op" && row(again, "tmux")?.state === "set-up" && row(again, "tmux")?.reachable === true, shown(again));
+  const bare = await run(["ext", "add", "@cotal-ai/tmux"]);
+  check("ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
+    bare.status === 0 && installed("@cotal-ai/tmux")?.version === VERSION && installed("@cotal-ai/tmux")?.spec === `@cotal-ai/tmux@${VERSION}`, { run: shown(bare), installed: installed("@cotal-ai/tmux") });
+
+  const orca = await json([...FULL("rt", dir), "--runtime", "orca"], home, withMore);
+  check("a runtime that does not install is left out, the result is partial, and the others stay",
+    orca.status === 4 && row(orca, "orca")?.state === "left-out" && row(orca, "orca")?.selected === true && /the orca runtime did not install/.test(orca.env?.error?.message ?? "")
+      && installed("@cotal-ai/orca") === undefined && installed("@cotal-ai/tmux") !== undefined, shown(orca));
+  const bundled = await json([...FULL("rt", dir), "--runtime", "cmux"], home, { CMUX_BUNDLED_CLI_PATH: join(more, "orca") });
+  check("the variable a driver reads for its tool counts as the tool",
+    bundled.status === 4 && row(bundled, "cmux")?.tool?.found === join(more, "orca") && /the cmux runtime did not install/.test(bundled.env?.error?.message ?? ""), shown(bundled));
+  const none = await json(FULL("rt", dir));
+  check("setup without --runtime removes none", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux" && installed("@cotal-ai/tmux") !== undefined, shown(none));
+}
+
 // ── On a terminal ─────────────────────────────────────────────────────────────────────────────────
-function terminal(cwd: string, args: string[] = []) {
-  const pty = nodePty([BIN, "setup", ...args], { cwd, env, cols: 140, rows: 40 });
+function terminal(cwd: string, args: string[] = [], extraEnv: Record<string, string> = {}) {
+  const pty = nodePty([BIN, "setup", ...args], { cwd, env: { ...env, ...extraEnv }, cols: 140, rows: 40 });
   ptys.push(pty);
   const s = { raw: "", code: undefined as number | undefined, text: () => clean(s.raw) };
   pty.onData((d) => (s.raw += d));
   pty.onExit((e) => (s.code = e.exitCode));
+  // A session that missed a question is off script: its later questions would only time out one by
+  // one, so they are not waited for, and the session is stopped instead of awaited.
+  let lost = false;
   const at = async (marker: string, from = 0): Promise<boolean> => {
-    for (const t0 = Date.now(); Date.now() - t0 < 90_000; await wait(100)) if (s.text().indexOf(marker, from) >= 0) return true;
-    return false;
+    for (const t0 = Date.now(); Date.now() - t0 < (lost ? 0 : 90_000); await wait(100)) if (s.text().indexOf(marker, from) >= 0) return true;
+    return s.text().indexOf(marker, from) >= 0;
   };
   // Output already answered: a question asked again is looked for after it.
   let cursor = 0;
@@ -284,12 +411,14 @@ function terminal(cwd: string, args: string[] = []) {
   const answer = async (marker: string, keys: string): Promise<boolean> => {
     const found = await at(marker, cursor);
     if (found) cursor = s.text().indexOf(marker, cursor) + marker.length;
+    else lost = true;
     await wait(250);
     pty.write(keys);
     return found;
   };
   const exited = async (): Promise<boolean> => {
-    for (const t0 = Date.now(); Date.now() - t0 < 120_000; await wait(100)) if (s.code !== undefined) return true;
+    if (lost && s.code === undefined) pty.kill();
+    for (const t0 = Date.now(); Date.now() - t0 < 120_000; await wait(100)) if (s.code !== undefined) return !lost;
     return false;
   };
   return { s, at, answer, exited, write: (keys: string) => pty.write(keys), cursor: () => cursor };
@@ -298,6 +427,7 @@ const ENTER = "\r";
 const DOWN = "\x1b[B";
 const DESTINATION = "Where does your space run?";
 const APPLICATION = "Which application do your agents run in?";
+const RUNTIMES = "Which runtimes do your agents run in?";
 const PROJECT = "Project folder";
 const SPACE_NAME = "Space name";
 const SAVE = "Save it?";
@@ -323,11 +453,13 @@ if (process.platform !== "win32") {
     const asked = [
       await t.answer(DESTINATION, ENTER),
       await t.answer(APPLICATION, ENTER),
+      await t.answer(RUNTIMES, ENTER),
       await t.answer(PROJECT, ENTER),
       await t.answer(SPACE_NAME, ENTER),
     ];
-    check("the terminal asks destination, application, project and space in turn", asked.every(Boolean), t.s.text().slice(-900));
-    check("the answers are shown before the save", (await t.at(SAVE)) && t.s.text().includes(`project      ${dir}`) && /space\s+pty-local/.test(t.s.text()) && /application\s+codex/.test(t.s.text()), t.s.text().slice(-900));
+    check("the terminal asks destination, application, runtimes, project and space in turn", asked.every(Boolean), t.s.text().slice(-900));
+    check("the answers are shown before the save",
+      (await t.at(SAVE)) && t.s.text().includes(`project      ${dir}`) && /space\s+pty-local/.test(t.s.text()) && /application\s+codex/.test(t.s.text()) && /runtimes\s+pty, tmux/.test(t.s.text()), t.s.text().slice(-900));
     check("nothing is written before the save", findPreparedSpace("pty-local") === undefined);
     await t.answer(SAVE, ENTER);
     check("saving prepares the space and records the application", (await t.exited()) && t.s.code === 0 && findPreparedSpace("pty-local")?.root === dir && harnessOf("pty-local") === "codex" && existsSync(join(dir, ".cotal", "agents", "default.md")), { code: t.s.code, out: t.s.text().slice(-900) });
@@ -338,10 +470,11 @@ if (process.platform !== "win32") {
     const t = terminal(dir, ["--space", "kept"]);
     await t.answer(DESTINATION, ENTER);
     await t.answer(APPLICATION, ENTER);
+    await t.answer(RUNTIMES, ENTER);
     await t.answer(PROJECT, ENTER);
     check("a space given as a flag is not asked", (await t.at(SAVE)) && !t.s.text().includes(SPACE_NAME) && /space\s+kept/.test(t.s.text()), t.s.text().slice(-700));
     await t.answer(SAVE, DOWN + ENTER);
-    const asked = [await t.answer(DESTINATION, ENTER), await t.answer(APPLICATION, ENTER), await t.answer(PROJECT, ENTER), await t.answer(SPACE_NAME, ENTER)];
+    const asked = [await t.answer(DESTINATION, ENTER), await t.answer(APPLICATION, ENTER), await t.answer(RUNTIMES, ENTER), await t.answer(PROJECT, ENTER), await t.answer(SPACE_NAME, ENTER)];
     const reviewed = await t.at(SAVE, t.cursor());
     const second = t.s.text().slice(t.cursor());
     check("Change asks every question again, with the answers so far as the defaults", asked.every(Boolean) && reviewed && /space\s+kept/.test(second) && /application\s+codex/.test(second), second.slice(-700));
@@ -354,6 +487,7 @@ if (process.platform !== "win32") {
     const t = terminal(work);
     await t.answer(DESTINATION, ENTER);
     await t.answer(APPLICATION, ENTER);
+    await t.answer(RUNTIMES, ENTER);
     await t.answer(PROJECT, "\x7f".repeat(work.length + 2) + fresh + ENTER);
     check("a project folder that does not exist is offered for creation", (await t.at("does not exist. Create it?")) && !existsSync(fresh), t.s.text().slice(-600));
     await t.answer("Create it?", ENTER);
@@ -366,6 +500,7 @@ if (process.platform !== "win32") {
     const t = terminal(project("pty-hosted"));
     await t.answer(DESTINATION, DOWN + ENTER);
     await t.answer(APPLICATION, ENTER);
+    await t.answer(RUNTIMES, ENTER);
     check("self-hosted offers the registered spaces and a connection file", (await t.at("Which space?")) && /team/.test(t.s.text()) && /Register one from a connection file/.test(t.s.text()), t.s.text().slice(-700));
     const registered = loadMeshes().filter((m) => m.origin === "manual" || m.origin === "catalog").map((m) => m.space);
     await t.answer("Which space?", DOWN.repeat(registered.indexOf("team")) + ENTER);
@@ -373,6 +508,45 @@ if (process.platform !== "win32") {
     await t.answer(SAVE, ENTER);
     check("and saving sets it up", (await t.exited()) && t.s.code === 0, { code: t.s.code, out: t.s.text().slice(-500) });
   }
+  {
+    const dir = project("pty-runtimes");
+    // herdr and orca are on PATH here and not installed; tmux is installed; cmux is neither.
+    const t = terminal(dir, ["--destination", "local", "--harness", "codex", "--project", dir, "--space", "pty-rt"], withMore);
+    const asked = await t.at(RUNTIMES);
+    await wait(500);
+    const listed = t.s.text().slice(t.s.text().lastIndexOf("Runtimes"));
+    const frame = t.s.text().slice(t.s.text().lastIndexOf(RUNTIMES));
+    check("before the question every runtime is listed with its state and host tool, pty as built in",
+      asked && /pty\s+built in, always set up/.test(listed) && /orca\s+not set up · orca found/.test(listed) && /tmux\s+set up · tmux found/.test(listed) && /cmux\s+not set up · cmux not on PATH/.test(listed) && /herdr\s+not set up · herdr found/.test(listed), listed.slice(0, 900));
+    check("installed runtimes and those whose tool was found start selected",
+      /◼ orca\b/.test(frame) && /◼ tmux\b/.test(frame) && /◼ herdr\b/.test(frame) && /◻ cmux\b/.test(frame), frame.slice(0, 900));
+    // The cursor starts on orca: leave orca, tmux and herdr, choose cmux.
+    await t.answer(RUNTIMES, " " + DOWN + " " + DOWN + " " + DOWN + " " + ENTER);
+    const reviewed = await t.at(SAVE, t.cursor());
+    const text = t.s.text();
+    const at = text.lastIndexOf(`◇  ${RUNTIMES}`);
+    const answer = at < 0 ? "" : text.slice(at + RUNTIMES.length + 3, text.indexOf("Your setup", at));
+    check("the answer names the runtimes chosen, and the review lists them",
+      reviewed && /\bcmux\b/.test(answer) && !/found|PATH|set up/.test(answer) && /runtimes\s+pty, cmux/.test(text.slice(t.cursor())), { answer, tail: text.slice(-700) });
+    await t.answer(SAVE, ENTER);
+    check("a chosen runtime whose host tool is missing is reported and not installed, and those left out are kept",
+      (await t.exited()) && t.s.code === 4 && /the cmux runtime is not ready/.test(t.s.text()) && /the cmux runtime needs cmux on PATH/.test(t.s.text()) && !/installing @cotal-ai\/cmux/.test(t.s.text())
+        && installed("@cotal-ai/cmux") === undefined && installed("@cotal-ai/tmux") !== undefined, { code: t.s.code, out: t.s.text().slice(-900) });
+  }
+}
+
+// ── A runtime whose provider does not answer, after the terminal cells so it is not preselected there
+{
+  const dir = join(home, "rt");
+  const herdr = await json([...FULL("rt", dir), "--runtime", "herdr"], home, withMore);
+  check("a runtime whose provider does not answer is added, and the result is partial, exit 4",
+    herdr.status === 4 && herdr.env?.outcome === "partial" && row(herdr, "herdr")?.state === "added" && row(herdr, "herdr")?.reachable === false
+      && /the herdr runtime is set up but does not answer here/.test(herdr.env.error?.message ?? "") && installed("@cotal-ai/herdr")?.version === VERSION, shown(herdr));
+  check("a runtime left unnamed stays set up", row(herdr, "tmux")?.state === "set-up" && row(herdr, "tmux")?.selected === false && installed("@cotal-ai/tmux") !== undefined, rows(herdr));
+  const plain = await run([...FULL("rt", dir), "--runtime", "herdr", "--plain"], home, withMore);
+  check("its report names the runtime that is not ready", plain.status === 4 && /set up rt for codex; the herdr runtime is not ready/.test(plain.stdout) && /herdr - already set up - does not answer/.test(plain.stdout), shown(plain));
+  const none = await json(FULL("rt", dir));
+  check("a rerun without --runtime removes neither", none.status === 0 && rows(none).filter((x) => x.state === "set-up").map((x) => x.name).join() === "tmux,herdr" && installed("@cotal-ai/herdr") !== undefined, shown(none));
 }
 
 finish();

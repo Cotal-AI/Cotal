@@ -9,7 +9,7 @@ import { resolveSpace } from "../lib/status.js";
 import { claimExtensionMutation, extensionUpdatePassOwnedBy } from "../lib/ext-mutation.js";
 import { runSeed } from "../seed/reconcile.js";
 import { isAuthenticSeedChild, markSeedChildLive, clearChildMarker } from "../seed/lock.js";
-import { seedStoreDir } from "../seed/paths.js";
+import { cliVersion, seedStoreDir } from "../seed/paths.js";
 
 export const extFlags = [
   jsonFlag,
@@ -31,6 +31,13 @@ export const EXT_UPDATE_PARENT_ENV = "COTAL_EXT_UPDATE_PARENT";
  *  absolute). `absolute` is injectable so the classification is unit-testable for both platforms. */
 export function isPathSpec(spec: string, absolute: (p: string) => boolean = isAbsolute): boolean {
   return spec.startsWith(".") || absolute(spec);
+}
+
+/** A first-party package named without a version installs this cotal's own version, as setup and
+ *  `update` install it: the official packages release in lockstep with the core they link to, so the
+ *  registry's newest may be a release this binary does not match. A version or tag given is kept. */
+function atThisVersion(spec: string): string {
+  return /^@cotal-ai\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;
 }
 
 /**
@@ -58,7 +65,7 @@ export async function ext(args: ParsedArgs): Promise<void> {
   if (sub === undefined || (sub === "list" && !rest.length)) return list(presentationOf(v));
   // `ext root` stays a raw path for `$(cotal ext root)`; a structured form of one path adds nothing.
   if (v.json || v.plain) throw usage(sub === "root" ? "ext root prints its path raw and has no --json or --plain" : `ext ${sub}: --json and --plain are taken by the listing only`);
-  if (sub === "add" && rest[0]) return addExtension(rest[0]);
+  if (sub === "add" && rest[0]) return addExtension(atThisVersion(rest[0]));
   if (sub === "__update-add" && rest[0] && rest[1]) {
     if (Number(process.env[EXT_UPDATE_PARENT_ENV]) !== process.ppid)
       throw new Error("internal update extension replay must be launched by its recorded parent");
@@ -132,7 +139,10 @@ function linkExtensionPeers(packages: string[], operationPkg: string): void {
     provenance.wrote(`${link.peer} link (${link.owner} → this CLI's copy)`, link.destination);
 }
 
-export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false): Promise<void> {
+/** `cotal ext add <spec>`: install one extension into the operator prefix and record what it provides.
+ *  `announce` takes the closing `✓ added` line; `cotal setup` sends it to stderr when stdout carries
+ *  a result. */
+export async function addExtension(spec: string, expectedPkg?: string, borrowMutation = false, announce: (line: string) => void = console.log): Promise<void> {
   const dir = extensionsDir();
   // A file:/path spec is resolved to an absolute path so the prefix install works from any cwd.
   const isPath = isPathSpec(spec);
@@ -328,7 +338,7 @@ export async function addExtension(spec: string, expectedPkg?: string, borrowMut
     fail(pkg, `could not update the extensions manifest: ${(e as Error).message}`);
   }
   provenance.wrote(`extensions manifest (+${pkg}@${version})`, extensionsManifestPath());
-  console.log(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
+  announce(c.green(`✓ added ${pkg}@${version}`) + c.dim(` - provides: ${contributed.map((ext) => `${ext.kind}:${ext.name}`).join(", ")}`));
   }
 
   function fail(p: string, why: string): never {

@@ -399,6 +399,7 @@
   "cli:setup--json": "current:setup --json",
   "cli:setup--plain": "current:setup --plain",
   "cli:setup--project": "current:setup --project",
+  "cli:setup--runtime": "current:setup --runtime",
   "cli:setup--skills": "current:setup --skills",
   "cli:setup--space": "current:setup --space",
   "cli:setup--yes": "current:setup --yes",

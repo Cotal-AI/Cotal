@@ -17,11 +17,14 @@ dashboard is `cotal web`. Every file it writes is announced (`→ wrote …` via
 on stderr, or on stdout with the error when a stderr write fails. Each announcement is one line: a
 control character or Unicode line separator in a path, such as a newline in `HOME`, is printed as
 a `\uXXXX` escape.
-Every run takes the same four inputs: destination, application, project and space. With a
+Every run takes the same inputs: destination, application, runtimes, project and space. With a
 terminal, `askInputs` asks for each one no flag gave and shows the answers before anything is
 written; Change asks again with the answers kept and Cancel saves nothing. Without one, or with
 `--yes`, `--no-input` or `--json`, `scriptedInputs` takes them from the flags and refuses a missing
-one. `--destination cloud` is refused as in development before anything else.
+one. `--destination cloud` is refused as in development before anything else. `runtimeChoices`
+lists `pty`, the official runtimes with the host tools in `OFFICIAL_RUNTIME_TOOLS`, and each
+installed third-party runtime. A script's runtimes are the `--runtime` names, which `runtimeFlags`
+checks before any write: an unknown name or an official one whose tool is not on PATH is refused.
 
 `planSetup` makes every check before a write: the space name, the application against the setup
 connector surface, and the space at its destination. A local space goes through `checkLocalSpace`
@@ -34,7 +37,11 @@ a connection file `addFromBundle` will register.
 `prepare` then writes, in order: the prepared space or the registration, the `default` persona in
 `<project>/.cotal/agents` (plus the demo personas with `--demo`), the space's `harness`
 preference, the application's `connector` and `mcpServers` actions, every present connector's
-`skills` action, `~/.agents/skills` when it is not current, and the onboarded stamp. Each write is
+`skills` action, `~/.agents/skills` when it is not current, the chosen runtimes, and the onboarded
+stamp. `setUpRuntimes` adds a chosen official runtime that is not installed through `addExtension`
+at the CLI's version, the spec `cotal update` replays, then asks every chosen provider's
+`available()`; a missing tool, a failed install or a provider that does not answer makes the result
+`partial`. It never removes a runtime. Each write is
 recorded in the result's `written` list, so a rerun that changes nothing is a `no-op`. An
 application whose `requires` is not on PATH runs none of its actions, and the result is `partial`
 with the rest saved. The rich presentation narrates actions through `runSteps`; `--json` and

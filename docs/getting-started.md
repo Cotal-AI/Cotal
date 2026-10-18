@@ -65,7 +65,7 @@ to your shell rc can be deleted.
 ## First run
 
 `cotal setup` is configure-only: it prepares a space for your agents and starts nothing. It asks
-four questions and shows your answers before it writes anything:
+five questions and shows your answers before it writes anything:
 
 1. **Where your space runs.** Local is a space this machine starts. Self-hosted is a space that
    runs on a server and is registered here, with `cotal space add` or from a connection file the
@@ -74,9 +74,14 @@ four questions and shows your answers before it writes anything:
    comes from the connector itself: one that declares its own setup runs it (Claude installs its
    plugin that way), and one whose executable is not on PATH is named. Setup records your choice
    as the space's `harness` preference, so a bare `cotal spawn` in that space launches it.
-3. **The project folder.** The space's root. Its `.cotal/agents` holds the space's personas.
+3. **Which runtimes your agents run in.** `pty` is built in and always set up. Each other runtime
+   (`tmux`, `cmux`, `orca`, `herdr`, and any third-party one you installed) shows whether it is set
+   up and whether its tool is on PATH. Installed ones and ones whose tool was found start selected.
+   Setup installs the ones you keep and checks that each answers; it never removes one you leave
+   out.
+4. **The project folder.** The space's root. Its `.cotal/agents` holds the space's personas.
    Setup offers to create a folder that does not exist yet.
-4. **The space name.** For a local space it defaults to the folder's name.
+5. **The space name.** For a local space it defaults to the folder's name.
 
 Save writes the answers, Change asks again with your answers kept, and Cancel saves nothing.
 Setup then seeds one agent: the generic `default` persona that a bare `cotal spawn` launches,
@@ -197,8 +202,9 @@ npx cotal-ai up --detach     # start the mesh + delivery daemon + manager
 ```
 
 Without a terminal, setup asks nothing, so every input is a flag; a missing one is refused before
-anything is written. `--json` prints one result that lists every file setup wrote, and an
-application whose executable is not on PATH exits 4 with the rest saved, so an agent or a CI job
+anything is written. A script sets up a runtime only when `--runtime <name>` names it. `--json`
+prints one result that lists every file setup wrote, and an application whose executable is not on
+PATH exits 4 with the rest saved, so an agent or a CI job
 can check the result (add `--demo` for the guided team). `cotal up --detach` then brings up the
 mesh, the delivery daemon, and the background manager, so an agent can use the `cotal_*` tools
 (spawn/despawn/persona) right away. `cotal down` stops the background processes.

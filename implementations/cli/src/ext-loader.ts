@@ -34,6 +34,17 @@ export const OFFICIAL_RUNTIMES: Readonly<Record<string, string>> = {
   herdr: "@cotal-ai/herdr",
 };
 
+/** The host tool each official runtime drives, for `cotal setup` to show before the package is
+ *  installed: any one of `names` on PATH counts, and the driver's `override` variable, when set,
+ *  names the tool instead. Kept beside {@link OFFICIAL_RUNTIMES} because an uninstalled provider
+ *  cannot be asked. */
+export const OFFICIAL_RUNTIME_TOOLS: Readonly<Record<string, { readonly names: readonly string[]; readonly override?: string }>> = {
+  orca: { names: ["orca-ide", "orca"], override: "COTAL_ORCA_BIN" },
+  tmux: { names: ["tmux"] },
+  cmux: { names: ["cmux"], override: "CMUX_BUNDLED_CLI_PATH" },
+  herdr: { names: ["herdr"] },
+};
+
 /** Every runtime name the CLI knows about without importing anything: `pty` (built in) + the officials. */
 export function knownRuntimeNames(): string[] {
   return ["pty", ...Object.keys(OFFICIAL_RUNTIMES)];

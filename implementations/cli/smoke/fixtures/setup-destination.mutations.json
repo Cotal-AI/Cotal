@@ -2,12 +2,12 @@
   "suite": [
     "implementations/cli/smoke/setup-destination.smoke.ts"
   ],
-  "guard": "setup takes its four inputs from a terminal or from flags, refuses a missing one and Cloud before any write, prepares or registers the space at the project, seeds the default persona where spawn reads it, records the application as the space's harness preference, and changes nothing on a rerun",
-  "command": "pnpm --filter cotal-ai... build && pnpm exec tsx implementations/cli/smoke/setup-destination.smoke.ts",
+  "guard": "setup takes its inputs from a terminal or from flags, refuses a missing one and Cloud before any write, prepares or registers the space at the project, seeds the default persona where spawn reads it, records the application as the space's harness preference, sets up only the runtimes chosen and never removes one, and changes nothing on a rerun",
+  "command": "pnpm --filter cotal-ai... --filter @cotal-ai/tmux --filter @cotal-ai/herdr build && pnpm exec tsx implementations/cli/smoke/setup-destination.smoke.ts",
   "completionMarker": "COTAL_SMOKE_SENTINEL",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/setup-destination.mutations.json",
   "why": [
-    "Each mutation removes one refusal setup makes before it writes, one place the preparation lands, or one terminal behavior. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
+    "Each mutation removes one refusal setup makes before it writes, one place the preparation lands, one runtime rule, or one terminal behavior. The suite drives the built binary, so each mutation rebuilds it and the restore rebuilds it back."
   ],
   "mutations": [
     {
@@ -85,8 +85,8 @@
     {
       "name": "a harness missing its tool is not partial",
       "file": "implementations/cli/src/commands/setup.ts",
-      "find": "  const partial = candidate.missing.length > 0\n",
-      "replace": "  const partial = candidate.missing.length > 99\n",
+      "find": "    ...(candidate.missing.length > 0\n",
+      "replace": "    ...(candidate.missing.length > 99\n",
       "expectRed": "a harness not on PATH is partial, exit 4, naming the tool",
       "cell": "a harness not on PATH is partial, exit 4, naming the tool",
       "afterRestore": "pnpm --filter cotal-ai... build"
@@ -161,6 +161,150 @@
       "replace": "      if (project.length > 0) {\n",
       "expectRed": "a project folder that does not exist is offered for creation",
       "cell": "a project folder that does not exist is offered for creation",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unknown --runtime is accepted",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    if (!choice) throw usage(`--runtime ${name} is not a runtime",
+      "replace": "    if (!choice) continue;\n    if (name === \"\") throw usage(`--runtime ${name} is not a runtime",
+      "expectRed": "an unknown --runtime is USAGE_INVALID, naming the runtimes setup offers",
+      "cell": "an unknown --runtime is USAGE_INVALID, naming the runtimes setup offers",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a --runtime whose host tool is missing is accepted",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    if (choice.tools.length > 0 && choice.found === null)\n",
+      "replace": "    if (choice.tools.length > 99 && choice.found === null)\n",
+      "expectRed": "a --runtime whose host tool is not on PATH is DEPENDENCY_UNAVAILABLE, naming the tool",
+      "cell": "a --runtime whose host tool is not on PATH is DEPENDENCY_UNAVAILABLE, naming the tool",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a script infers runtimes from the tools on PATH",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "runtimes: runtimeFlags(v.runtime ?? [], choices)",
+      "replace": "runtimes: runtimeFlags(v.runtime ?? choices.filter((r) => r.found !== null).map((r) => r.name), choices)",
+      "expectRed": "without --runtime only pty is set up, and each official runtime is listed with its host tool",
+      "cell": "without --runtime only pty is set up, and each official runtime is listed with its host tool",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a runtime is added at the latest version",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "await addExtension(`${r.package}@${cliVersion()}`, ",
+      "replace": "await addExtension(r.package, ",
+      "expectRed": "a named runtime is added at this cotal's version and its provider answers",
+      "cell": "a named runtime is added at this cotal's version and its provider answers",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the install progress goes to stdout",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "narrate ? console.log : (line) => console.error(line)",
+      "replace": "console.log",
+      "expectRed": "a named runtime is added at this cotal's version and its provider answers",
+      "cell": "a named runtime is added at this cotal's version and its provider answers",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an added runtime is not among the writes",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "      wrote(`${r.name} runtime`, extensionPackageDir(r.package));\n",
+      "replace": "",
+      "expectRed": "the install is listed among the writes, and its progress goes to stderr",
+      "cell": "the install is listed among the writes, and its progress goes to stderr",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the provider is not asked",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "{ kind: \"runtime\", name: r.name })).available();",
+      "replace": "{ kind: \"runtime\", name: r.name })) !== undefined;",
+      "expectRed": "a runtime whose provider does not answer is added, and the result is partial, exit 4",
+      "cell": "a runtime whose provider does not answer is added, and the result is partial, exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a provider that does not answer is not partial",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "      if (!reachable)\n",
+      "replace": "      if (reachable && !reachable)\n",
+      "expectRed": "a runtime whose provider does not answer is added, and the result is partial, exit 4",
+      "cell": "a runtime whose provider does not answer is added, and the result is partial, exit 4",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the report does not name a runtime that is not ready",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    : unready.length > 0\n",
+      "replace": "    : unready.length > 99\n",
+      "expectRed": "its report names the runtime that is not ready",
+      "cell": "its report names the runtime that is not ready",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a failed install is not partial",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "        problems.push({ message: `the ${r.name} runtime did not install",
+      "replace": "        if (r.name === \"\") problems.push({ message: `the ${r.name} runtime did not install",
+      "expectRed": "a runtime that does not install is left out, the result is partial, and the others stay",
+      "cell": "a runtime that does not install is left out, the result is partial, and the others stay",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "an unchosen installed runtime reads as left out",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "state: r.installed ? \"set-up\" : \"left-out\"",
+      "replace": "state: \"left-out\"",
+      "expectRed": "setup without --runtime removes none",
+      "cell": "setup without --runtime removes none",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a chosen runtime with no host tool is installed anyway",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "      if (r.found === null) {\n",
+      "replace": "      if (r.found === \"\") {\n",
+      "expectRed": "a chosen runtime whose host tool is missing is reported and not installed, and those left out are kept",
+      "cell": "a chosen runtime whose host tool is missing is reported and not installed, and those left out are kept",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a runtime whose tool was found does not start selected",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "offered.filter((r) => r.installed || r.found !== null)",
+      "replace": "offered.filter((r) => r.installed)",
+      "expectRed": "installed runtimes and those whose tool was found start selected",
+      "cell": "installed runtimes and those whose tool was found start selected",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "the runtimes question is not asked",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "    const runtimes = ask(\"runtimes\") ? await askRuntimes(choices, given.runtimes) : given.runtimes!;",
+      "replace": "    const runtimes = given.runtimes ?? [];",
+      "expectRed": "the terminal asks destination, application, runtimes, project and space in turn",
+      "cell": "the terminal asks destination, application, runtimes, project and space in turn",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "a driver's tool variable is ignored",
+      "file": "implementations/cli/src/commands/setup.ts",
+      "find": "found: override || (tool.names.find((bin) => resolveOnPath(bin)) ?? null)",
+      "replace": "found: tool.names.find((bin) => resolveOnPath(bin)) ?? null",
+      "expectRed": "the variable a driver reads for its tool counts as the tool",
+      "cell": "the variable a driver reads for its tool counts as the tool",
+      "afterRestore": "pnpm --filter cotal-ai... build"
+    },
+    {
+      "name": "ext add installs the registry's newest first-party release",
+      "file": "implementations/cli/src/commands/ext.ts",
+      "find": "  return /^@cotal-ai\\/[^/@]+$/.test(spec) ? `${spec}@${cliVersion()}` : spec;",
+      "replace": "  return spec;",
+      "expectRed": "ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
+      "cell": "ext add of a first-party name with no version installs this cotal's version, not the registry's newest",
       "afterRestore": "pnpm --filter cotal-ai... build"
     }
   ]
