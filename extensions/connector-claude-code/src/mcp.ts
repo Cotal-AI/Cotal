@@ -31,7 +31,9 @@ import {
   ensureEventWalDir,
   resolveEventsStateRoot,
   controlFromEnv,
+  GATEWAY_CONNECTING,
   GATEWAY_INSTRUCTIONS,
+  GATEWAY_LISTENING,
   serveGatewayStdio,
   JsonlFileSource,
   type DurableSource,
@@ -45,13 +47,21 @@ import { createClaudeMapper, type ClaudeEntry, type ClaudeMapper } from "./agui-
 import { createBoundClaudeTranscriptSource } from "./agui-source.js";
 import { createAppHost } from "./app-host.js";
 import { readCliRecord } from "./cli-record.js";
+import { openWakeFeed } from "./wake-feed.js";
 
 /** What a plain session's local server tells the model ahead of the gateway's own steps. */
-const LOCAL_INSTRUCTIONS =
+const LOCAL =
   "This is the Cotal server on this computer. It joins the person's local Cotal mesh. If a hosted " +
   "Cotal connector is also available, use this one unless the person asks for the hosted one: a " +
-  "conversation uses one Cotal path. " +
-  GATEWAY_INSTRUCTIONS;
+  "conversation uses one Cotal path. ";
+
+/** How a Claude Code conversation hears messages: the plugin's monitor wakes it, where it runs. */
+const CODE_LISTENING =
+  "In Claude Code this plugin's monitor starts a turn when a message arrives: the event begins with " +
+  '"Cotal:" and names the connection_id, and you read the message with cotal_inbox. cotal_connect says ' +
+  "whether the monitor runs in this session. Where it does not: " +
+  GATEWAY_LISTENING;
+
 
 /** A plain session, one the launcher did not start: a Claude Code session, or Claude Desktop through
  *  its extension (`--desktop`). It serves the gateway surface over stdio with a local host, so a
@@ -65,13 +75,34 @@ async function serveLocal(desktop: boolean): Promise<void> {
     cwd: desktop ? parse(homedir()).root : process.cwd(),
     env: process.env,
   });
-  const served = await serveGatewayStdio(host, { instructions: LOCAL_INSTRUCTIONS, source: "claude-local" });
+  // Claude Desktop runs no plugin monitor, so only a Claude Code session gets the feed. Claude Code
+  // starts this server itself, so its parent is the Claude Code process the monitor names.
+  const feed = desktop ? undefined : await openWakeFeed(process.ppid);
+  const served = await serveGatewayStdio(host, {
+    source: "claude-local",
+    ...(feed
+      ? {
+          instructions: `${LOCAL}${GATEWAY_CONNECTING} ${CODE_LISTENING}`,
+          wake: {
+            signal: (c) => feed.send(c.id),
+            attach: (rewake) => feed.onReader(rewake),
+            listening: () =>
+              feed.watched()
+                ? "The Cotal monitor runs in this session: a new message starts a turn, so you do not need cotal_wait to hear it."
+                : "No Cotal monitor runs in this session, so messages reach you only when you call a tool: call cotal_wait to listen.",
+          },
+        }
+      : { instructions: `${LOCAL}${GATEWAY_INSTRUCTIONS}` }),
+  });
   let ending: Promise<void> | undefined;
   const end = () =>
     (ending ??= host
       .closeAll()
       .then(() => served.close())
-      .finally(() => process.exit(0)));
+      .finally(() => {
+        feed?.close();
+        process.exit(0);
+      }));
   process.stdin.on("end", end);
   process.on("SIGINT", end);
   process.on("SIGTERM", end);

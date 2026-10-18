@@ -1,0 +1,7 @@
+[
+  {
+    "name": "cotal",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/monitor.cjs\"",
+    "description": "Cotal messages"
+  }
+]

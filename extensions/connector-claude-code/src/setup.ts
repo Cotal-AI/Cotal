@@ -220,11 +220,11 @@ export const claudeSetupProvider: ConnectorSetupProvider = {
     explain: "Lets a Claude Code session join the web and wake on peer messages.",
     context: [DOCS_URL],
     run({ cotal }) {
-      for (const asset of ["dist/mcp.cjs", "dist/hook.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json"])
+      for (const asset of ["dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs", ".claude-plugin/plugin.json", ".mcp.json", "hooks/hooks.json", "monitors/monitors.json"])
         if (!existsSync(join(PACKAGE_ROOT, asset))) throw new Error(`plugin asset missing: ${join(PACKAGE_ROOT, asset)}`);
       // How the plugin's server runs the CLI for a plain session's `cotal_connect`, by absolute path:
       // Claude Desktop starts a server with a minimal PATH.
-      materialize("cotal", PACKAGE_ROOT, [".claude-plugin", ".mcp.json", "hooks", "dist/mcp.cjs", "dist/hook.cjs"], undefined, {
+      materialize("cotal", PACKAGE_ROOT, [".claude-plugin", ".mcp.json", "hooks", "monitors", "dist/mcp.cjs", "dist/hook.cjs", "dist/monitor.cjs"], undefined, {
         [`dist/${CLI_RECORD}`]: `${JSON.stringify({ argv: cotal })}\n`,
       });
       install("cotal", "local");
