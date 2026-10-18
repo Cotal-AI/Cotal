@@ -246,7 +246,7 @@ auth plane takes the claim. An absent or inconclusive oracle refuses the reclaim
 
 ### Remote MCP gateway
 
-`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, source?)` for
+`@cotal-ai/connector-core` exports `registerCotalGatewayTools(server, host, source?, options?)` for
 a service that serves Cotal to a hosted MCP client over HTTP. A hosted client can send many
 conversations through one bearer and one MCP session, so a request does not say which conversation
 sent it. Each conversation calls `cotal_connect` and passes the `connection_id` it returns on every
@@ -272,13 +272,25 @@ advertised text names one connection's channels. Each call runs against that con
 configuration. Authentication, credential issuance and revocation and durable connection records
 stay with the host.
 
-`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions? })` serves one HTTP
-request to the endpoint with the package's own MCP server, so the embedding service never imports an
-MCP SDK or a zod version of its own. The service authenticates the request, answers 401 itself when
-that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
+A remote MCP client gives the server no way to start a turn, so the gateway adds `cotal_wait`. It
+returns at once when a message that should wake the agent is buffered, and otherwise as soon as one
+arrives, with the same reply `cotal_inbox` gives. Wake-worthy follows the agent's attention: direct
+messages, role requests and @mentions always, other channel traffic only in `open`. With none, it
+returns after `options.waitSeconds`, which defaults to `GATEWAY_WAIT_SECONDS` (50). Keep it under
+every proxy and client timeout in front of the service. The reply is one JSON body, so nothing is
+sent until the wait ends: Claude Code gives a remote server 60 seconds to the first byte, Cloudflare
+ends an origin response after about 100 seconds and claude.ai ends a tool call after 240. A wait
+whose client closes the request stops listening, so it does not take a message it cannot deliver.
+Every other routed tool except `cotal_inbox` adds a line to its result when wake-worthy messages are
+buffered.
+
+`handleGatewayRequest(host, { req, res, body?, auth?, source?, instructions?, waitSeconds? })`
+serves one HTTP request to the endpoint with the package's own MCP server, so the embedding service
+never imports an MCP SDK or a zod version of its own. The service authenticates the request, answers
+401 itself when that fails, and passes the result as `auth`. A framework that already parsed the JSON body passes it
 as `body`. The endpoint is stateless: each POST gets a fresh server and a JSON response, and every
-other method answers 405. `GATEWAY_INSTRUCTIONS` is the server instructions text sent when
-`instructions` is omitted.
+other method answers 405. A `cotal_wait` call holds its POST open for up to `waitSeconds`.
+`GATEWAY_INSTRUCTIONS` is the server instructions text sent when `instructions` is omitted.
 
 ### Remote manager client composition
 

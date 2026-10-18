@@ -1672,7 +1672,14 @@ export class MeshAgent extends EventEmitter {
     // An unsurfaced run turn is directed-strength: it wakes regardless of attention, exactly like
     // a DM — a run is waiting on this seat, and holding it costs the run its deadline.
     const turns = [...this.activeTurns.values()].filter((t) => !t.surfaced).length;
-    return turns + this.inbox.filter((p) => {
+    return turns + this.inboxWake(skip);
+  }
+
+  /** The inbox half of {@link pendingWake}: buffered items that should wake the agent, without run
+   *  turns. A surface that cannot surface a run turn, such as the remote gateway, waits on this, so
+   *  a turn it can never clear does not end every wait at once. */
+  inboxWake(skip?: (item: InboxItem) => boolean): number {
+    return this.inbox.filter((p) => {
       const it = p.item;
       if (p.pullOnly || skip?.(it)) return false;
       if (it.kind !== "channel" || it.mentionsMe) return true;

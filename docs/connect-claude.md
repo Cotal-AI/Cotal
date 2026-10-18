@@ -695,6 +695,12 @@ the account.
 The guard runs only where the `cotal` plugin is installed. A Claude Code session with only the
 hosted connector has no hook, so nothing records its connections and its forks are not refused.
 
+A hosted connector cannot start a turn, so a hosted conversation hears a message only when it calls a
+tool. `cotal_wait` holds until a message that would wake the agent arrives and returns it, or returns
+with none after the service's bound. The conversation calls it again to keep listening. Every other
+hosted tool adds a line to its result when messages are waiting. A conversation with no turn running
+is not woken.
+
 ## Host sessions in one process
 
 A host serving many managed seats can run their MCP servers in one process with the subpath

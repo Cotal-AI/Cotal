@@ -2,7 +2,7 @@
   "suite": [
     "extensions/connector-core/smoke/gateway.smoke.ts"
   ],
-  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method",
+  "guard": "a remote conversation renames only on an authoritative collision of a valid name, an unauthenticated, missing or foreign call runs nothing, each call runs on its own connection's configuration, and the gateway offers and reports only its remote tool subset, and its own request handler serves POST as stateless JSON with the caller's authentication and refuses every other method, and cotal_wait returns a waiting or arriving message at once, follows attention, ignores a run turn it cannot surface, honors the embedder's bound and cleans up, while every other routed tool says when messages are waiting",
   "command": "pnpm smoke:gateway",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/gateway.json",
   "why": [
@@ -24,8 +24,8 @@
     {
       "name": "an unknown connection_id reports success instead of refusing",
       "file": "extensions/connector-core/src/gateway.ts",
-      "find": "if (!c) return refuse(CONNECTION_REQUIRED);",
-      "replace": "if (!c) return toContent({ text: \"ok\" });",
+      "find": "        if (!c) return refuse(CONNECTION_REQUIRED);",
+      "replace": "        if (!c) return toContent({ text: \"ok\" });",
       "expectRed": "an unknown connection_id is refused",
       "cell": "an unknown connection_id is refused"
     },
@@ -129,6 +129,102 @@
       "expectRed": "the handler sends the default instructions",
       "cell": "the handler sends the default instructions",
       "note": "A client would then get no instruction to connect once per conversation and keep its connection_id."
+    },
+    {
+      "name": "cotal_wait never hears an arrival, so it ends only at its bound",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"incoming\", check);\n",
+      "replace": "",
+      "expectRed": "a direct message ends the wait and comes back with it",
+      "cell": "a direct message ends the wait and comes back with it"
+    },
+    {
+      "name": "cotal_wait ends on any arrival, ignoring attention",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (agent.inboxWake() > 0) finish(true);",
+      "replace": "      finish(true);",
+      "expectRed": "in dnd attention, channel chatter does not end the wait",
+      "cell": "in dnd attention, channel chatter does not end the wait"
+    },
+    {
+      "name": "a message already waiting does not end the wait",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (agent.inboxWake() > 0) return Promise.resolve(true);\n",
+      "replace": "",
+      "expectRed": "a message already waiting is returned at once",
+      "cell": "a message already waiting is returned at once"
+    },
+    {
+      "name": "cotal_wait counts run turns the gateway cannot surface",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (agent.inboxWake() > 0) return Promise.resolve(true);",
+      "replace": "  if (agent.pendingWake() > 0) return Promise.resolve(true);",
+      "expectRed": "a run turn the gateway cannot surface does not end the wait",
+      "cell": "a run turn the gateway cannot surface does not end the wait"
+    },
+    {
+      "name": "a focus @mention does not end the wait",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    agent.on(\"mention-wake\", mentioned);\n",
+      "replace": "",
+      "expectRed": "in focus attention, an @mention ends the wait and comes back with it",
+      "cell": "in focus attention, an @mention ends the wait and comes back with it"
+    },
+    {
+      "name": "cotal_wait reports an arrival without returning it",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        return toContent(await inbox.run(c.agent, c.config, parseToolArgs(inbox, {})));",
+      "replace": "        return toContent({ text: \"A message arrived. Read it with cotal_inbox.\" });",
+      "expectRed": "a direct message ends the wait and comes back with it",
+      "cell": "a direct message ends the wait and comes back with it"
+    },
+    {
+      "name": "a finished wait keeps its listener",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      agent.off(\"incoming\", check);\n",
+      "replace": "",
+      "expectRed": "a finished wait leaves no listener on the agent",
+      "cell": "a finished wait leaves no listener on the agent"
+    },
+    {
+      "name": "routed tools no longer say messages are waiting",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "        const notice = spec.name === \"cotal_inbox\" ? undefined : waitingNotice(c.agent);",
+      "replace": "        const notice = undefined as { type: \"text\"; text: string } | undefined;",
+      "expectRed": "another tool's result says a message is waiting",
+      "cell": "another tool's result says a message is waiting"
+    },
+    {
+      "name": "the embedder's bound is ignored",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  const waitSeconds = options.waitSeconds ?? GATEWAY_WAIT_SECONDS;",
+      "replace": "  const waitSeconds = GATEWAY_WAIT_SECONDS;",
+      "expectRed": "cotal_wait is offered, needs connection_id and is bounded by the embedder",
+      "cell": "cotal_wait is offered, needs connection_id and is bounded by the embedder"
+    },
+    {
+      "name": "an embedder's bound below one second is accepted",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "  if (!Number.isInteger(waitSeconds) || waitSeconds < 1) {",
+      "replace": "  if (false) {",
+      "expectRed": "an embedder's bound below one second is refused",
+      "cell": "an embedder's bound below one second is refused"
+    },
+    {
+      "name": "cotal_wait waits on an unknown connection_id instead of refusing",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "      if (!c) return refuse(CONNECTION_REQUIRED);\n      const inbox",
+      "replace": "      if (!c) return toContent({ text: \"ok\" });\n      const inbox",
+      "expectRed": "a wait on an unknown connection_id is refused",
+      "cell": "a wait on an unknown connection_id is refused"
+    },
+    {
+      "name": "a wait its client dropped keeps listening",
+      "file": "extensions/connector-core/src/gateway.ts",
+      "find": "    signal?.addEventListener(\"abort\", abort, { once: true });\n",
+      "replace": "",
+      "expectRed": "a wait its client dropped does not take the next message",
+      "cell": "a wait its client dropped does not take the next message"
     }
   ]
 }
