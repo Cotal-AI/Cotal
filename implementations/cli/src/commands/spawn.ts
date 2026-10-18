@@ -71,6 +71,7 @@ import {
   parseLaunchOptions,
   preflightOrThrow,
   provenance,
+  pruneStaleMeshes,
   resolveAgentType,
   resolveMeshTarget,
   resolveTargetOrThrow,
@@ -480,10 +481,12 @@ async function spawnDetached(
   const on = onInstanceOrExit(values.on, "cotal spawn <persona> --detach");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
-  // `--on` keeps the pin on that path too.
+  // `--on` keeps the pin on that path too. The seat resolve and the operator fallback read one
+  // sweep, so the fallback cannot pick a target from a different liveness verdict than the seat's.
   const flags = { space: values.space, server: values.server, creds: values.creds };
-  const t = (values.creds === undefined ? await resolveSeatControlTarget(flags, on) : undefined)
-    ?? await resolveControlTarget(flags, "control-caller-privileged", on);
+  const swept = !values.creds && !values.space ? { ...flags, offline: (await pruneStaleMeshes()).offline } : flags;
+  const t = (values.creds === undefined ? await resolveSeatControlTarget(swept, on) : undefined)
+    ?? await resolveControlTarget(swept, "control-caller-privileged", on);
   let policy: typeof t.policy;
   try {
     policy = await refreshRegistrationPolicy(t);

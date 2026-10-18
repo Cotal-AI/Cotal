@@ -965,7 +965,8 @@ unreachable broker is listed `offline` and stays, whether `cotal up` or `cotal m
 wrote the record; a foreground `up` whose broker exits unexpectedly keeps its record the same way.
 A bare command does not treat that offline record as a running mesh;
 name it with `--space` to restart it. When a bare control command resolves its target, it probes the
-recorded brokers once, and its mode check and its connect both read that one result. `cotal down` / `cotal clean all` still drop an `up` record for the project
+recorded brokers once, and its mode check and its connect both read that one result. From a
+managed seat's shell, the check that decides whether the command acts as the seat reads it too. `cotal down` / `cotal clean all` still drop an `up` record for the project
 they tear down; a hand-added one they leave alone even when it shares a root, because nothing
 on this machine could write it back.
 

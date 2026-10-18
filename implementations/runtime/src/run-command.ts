@@ -62,7 +62,7 @@ import {
   type RunDriverGrantArgs,
 } from "@cotal-ai/core";
 import { RunHeld, type JournalEntry, type RunPins } from "@cotal-ai/lang";
-import { connectOrExit, controlCaller, endpointAuth, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
+import { connectOrExit, controlCaller, endpointAuth, pruneStaleMeshes, resolveControlTarget, resolveSeatControlTarget, type ConnectOpts, type Connection, type ControlAuth, type ControlTarget } from "@cotal-ai/workspace";
 import { startRun, driveRun, type DriveOutcome } from "./run-driver.js";
 import { migrateRun, type MigrateReport } from "./migrate.js";
 import { cotalLangRunHost as runHost, journalRows } from "./run-host.js";
@@ -654,8 +654,11 @@ async function askHost(values: RunValues, command: string, args: Record<string, 
  *  call addresses; a user-mode view already carries the instance its issuer bound. */
 async function resolveRunControlTarget(values: RunValues): Promise<ControlTarget> {
   const on = onInstanceOrExit(values.on);
-  const seat = values.creds === undefined ? await resolveSeatControlTarget(values, on) : undefined;
-  const t = seat?.mode === "auth" ? seat : await resolveControlTarget(values, "control-caller-privileged", on);
+  // The seat resolve and the operator resolve read one sweep, so a discarded seat target and the
+  // target that replaces it come from the same liveness verdict.
+  const flags = !values.creds && !values.space ? { ...values, offline: (await pruneStaleMeshes()).offline } : values;
+  const seat = values.creds === undefined ? await resolveSeatControlTarget(flags, on) : undefined;
+  const t = seat?.mode === "auth" ? seat : await resolveControlTarget(flags, "control-caller-privileged", on);
   if (on === undefined) return t;
   if (t.auth.managerInstanceId !== undefined && t.auth.managerInstanceId !== on) {
     console.error("run: the manager pin differs from this credential's instance authority");
