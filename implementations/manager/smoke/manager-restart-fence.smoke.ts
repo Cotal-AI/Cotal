@@ -23,13 +23,19 @@
  * through the §13.1 gate — which this suite still asserts, because id persistence and epoch advance
  * are 3a's own subject matter.
  *
+ * LEASE RELEASE ACROSS A RECONNECT (#3916). The last cells cut a manager's connection for real,
+ * through a TCP relay in front of the same broker, just before a clean stop: the release must
+ * survive its lease reads timing out, and its two documented limits (a lost conditional delete is
+ * not retried, and retries stop after one lease TTL) are held as controls.
+ *
  * Run: pnpm smoke:manager-restart-fence   (needs nats-server + node on PATH; boots its own broker)
  */
 import { spawn as spawnProc, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { createServer, connect as tcpConnect, type Server, type Socket } from "node:net";
+import { connect, TimeoutError, type NatsConnection } from "@nats-io/transport-node";
 import type { ActionContext, EpAttributedReply, EpCaller, EpEnvelopeError as EpEnvelopeErrorType, ParsedEpRequest, Connector, LaunchSpec } from "@cotal-ai/core";
 import type { CotalEndpoint as SourceCotalEndpoint } from "../../../packages/core/src/index.js";
 // `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
@@ -46,6 +52,7 @@ process.env.COTAL_HOME = home;
 const {
   probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf, registry, MANAGER_LEASE_TTL_MS,
+  MANAGER_LEASE_ATTEMPT_MS,
 } = await import("@cotal-ai/core");
 const { CotalEndpoint } = await import("../../../packages/core/src/index.js");
 const { recordMesh, loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
@@ -80,8 +87,8 @@ registry.register({
   kind: "connector", name: "mrf-stub", requires: ["node"],
   buildLaunch: (): LaunchSpec => ({ command: process.execPath, args: ["-e", ""], env: {} }),
 } as Connector);
-const bootManager = async (): Promise<InstanceType<typeof Manager>> => {
-  const m = new Manager({ space: SPACE, servers: SERVER, runtime: "pty", workspaceRoot });
+const bootManager = async (root = workspaceRoot, servers = SERVER): Promise<InstanceType<typeof Manager>> => {
+  const m = new Manager({ space: SPACE, servers, runtime: "pty", workspaceRoot: root });
   await m.start();
   return m;
 };
@@ -91,9 +98,55 @@ const caller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintL
 const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
+// A TCP relay in front of the broker. `outage` drops every piped socket and holds new dials until it
+// ends, which is what a reconnecting client meets. `loseNextDelete` arms one more outage at the
+// conditional delete of `key`, started in place of forwarding it, so the delete never lands.
+class Relay {
+  private readonly socks = new Set<Socket>();
+  private readonly held: Socket[] = [];
+  private server?: Server;
+  private down = false;
+  key = "";
+  loseNextDelete = 0;
+  deletesLost = 0;
+  deletesForwarded = 0;
+  async listen(): Promise<string> {
+    const server = createServer((c) => { c.on("error", () => {}); if (this.down) { c.pause(); this.held.push(c); } else this.pipe(c); });
+    this.server = server;
+    await new Promise<void>((res) => server.listen(0, "127.0.0.1", res));
+    return `nats://127.0.0.1:${(server.address() as { port: number }).port}`;
+  }
+  private pipe(c: Socket): void {
+    const u = tcpConnect(PORT, "127.0.0.1");
+    u.on("error", () => {});
+    this.socks.add(c); this.socks.add(u);
+    c.on("data", (d) => {
+      const text = d.toString("latin1");
+      if (this.key && text.includes(`.${this.key} `) && /^HPUB \$KV\./m.test(text) && /KV-Operation:\s*DEL/i.test(text)) {
+        if (this.loseNextDelete) { const ms = this.loseNextDelete; this.loseNextDelete = 0; this.deletesLost++; this.outage(ms); return; }
+        this.deletesForwarded++;
+      }
+      u.write(d);
+    });
+    u.on("data", (d) => c.write(d));
+    c.on("close", () => { u.destroy(); this.socks.delete(c); });
+    u.on("close", () => { c.destroy(); this.socks.delete(u); });
+    c.resume();
+  }
+  outage(ms: number): void {
+    this.down = true;
+    for (const s of this.socks) s.destroy();
+    this.socks.clear();
+    setTimeout(() => { this.down = false; for (const c of this.held.splice(0)) if (!c.destroyed) this.pipe(c); }, ms);
+  }
+  close(): void { for (const s of [...this.socks, ...this.held]) s.destroy(); this.server?.close(); }
+}
+
 let mgr: InstanceType<typeof Manager> | undefined;
 let client: SourceCotalEndpoint | undefined;
 let reader: SourceCotalEndpoint | undefined;
+const relays: Relay[] = [];
+const relayed: Array<InstanceType<typeof Manager>> = [];
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}mrf-js-`))], { stdio: "ignore" });
   teardownOnSignal(broker);
@@ -363,7 +416,81 @@ try {
   const after = await readGoalResult(gw2, ref1);
   check("...and the durable terminal is still the pre-restart one, not the successor's",
     after?.state === "failed" && (after?.data as { by?: string })?.by === "pre-restart", after);
+
+  // ── lease release across a reconnect (#3916) ──
+  // Each cell boots its own instance (its own root) through a relay, cuts the relay just before a
+  // clean stop, and reads the row over the direct client. The release step and each lease read in
+  // it are timed on their way through; every call still runs the manager's own code.
+  console.log("\n-- lease release when the stop's connection reconnects --");
+  await mgr.stop({ withAgents: true });
+  mgr = undefined;
+  const stopAcrossOutage = async (label: string, outageMs: number, loseDeleteMs = 0) => {
+    const relay = new Relay();
+    relays.push(relay);
+    const servers = await relay.listen();
+    const root = mkdtempSync(join(tmpdir(), `cotal-mrf-${label}-`));
+    mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+    recordMesh({ space: SPACE, server: servers, root, mode: "open", ts: new Date().toISOString() });
+    const m = await bootManager(root, servers);
+    relayed.push(m);
+    const priv = m as unknown as MgrPriv & { releaseOwnManagerLease: () => Promise<void> };
+    relay.key = `lease.${priv.managerInstanceId}`;
+    const ep = priv.ep as unknown as { readOwnManagerLease: (id: string) => Promise<unknown> };
+    const realRead = ep.readOwnManagerLease.bind(ep);
+    const reads: Array<{ at: number; timedOut: boolean }> = [];
+    ep.readOwnManagerLease = async (id) => {
+      const at = Date.now();
+      try { const r = await realRead(id); reads.push({ at, timedOut: false }); return r; }
+      catch (e) { reads.push({ at, timedOut: e instanceof TimeoutError }); throw e; }
+    };
+    const realRelease = priv.releaseOwnManagerLease.bind(m);
+    const release = { start: 0, end: 0 };
+    priv.releaseOwnManagerLease = async () => { release.start = Date.now(); try { await realRelease(); } finally { release.end = Date.now(); } };
+    await wait(700);
+    relay.loseNextDelete = loseDeleteMs;
+    if (outageMs) relay.outage(outageMs);
+    await wait(50);
+    const t0 = Date.now();
+    await m.stop({ withAgents: true });
+    const stopMs = Date.now() - t0;
+    const row = await client!.readOwnManagerLease(priv.managerInstanceId) as { info: { pid: number } } | undefined;
+    return { relay, root, servers, release, reads: reads.filter((r) => r.at >= release.start && r.at <= release.end), stopMs, row };
+  };
+
+  // A 4500 ms outage spends two attempt deadlines before the broker can answer, so the release
+  // only completes if it asks again after a timeout.
+  const healed = await stopAcrossOutage("heal", 4_500);
+  check("...(d) prelude: the stop's lease reads timed out before one was answered",
+    healed.reads[0]?.timedOut === true && healed.reads.some((r) => !r.timedOut), healed.reads.map((r) => r.timedOut));
+  check("(d) a clean stop whose lease reads time out across a reconnect still releases the key",
+    healed.row === undefined && healed.relay.deletesForwarded === 1, { row: healed.row, deletes: healed.relay.deletesForwarded, stopMs: healed.stopMs });
+  let healedRestart: unknown;
+  try { relayed.push(await bootManager(healed.root, healed.servers)); } catch (e) { healedRestart = e; }
+  check("...and a same-root restart of that instance starts at once",
+    healedRestart === undefined, healedRestart instanceof Error ? healedRestart.message.slice(0, 160) : healedRestart);
+
+  // Control: the conditional delete is sent once. Lost to a disconnect, the key stays for its TTL
+  // and a same-root restart is refused until then, which is what the docs promise and no more.
+  const lost = await stopAcrossOutage("lost-delete", 0, 2_500);
+  check("(e) control: a conditional delete lost to a disconnect is not sent again, and the key stays",
+    lost.relay.deletesLost === 1 && lost.relay.deletesForwarded === 0 && lost.row?.info.pid === process.pid,
+    { lost: lost.relay.deletesLost, forwarded: lost.relay.deletesForwarded, row: lost.row, stopMs: lost.stopMs });
+  let lostRestart: unknown;
+  try { relayed.push(await bootManager(lost.root, lost.servers)); } catch (e) { lostRestart = e; }
+  check("...and a same-root restart inside that TTL is refused",
+    lostRestart instanceof Error && /already serves space/.test(lostRestart.message), lostRestart instanceof Error ? lostRestart.message.slice(0, 160) : lostRestart);
+
+  // Control: an outage longer than one TTL. Only the start of a retry is bounded: none starts once
+  // one TTL has passed since the first read, so the one read that may start later is the
+  // confirming read, and an attempt already in flight still runs to its own deadline.
+  const blackout = await stopAcrossOutage("blackout", MANAGER_LEASE_TTL_MS + 3 * MANAGER_LEASE_ATTEMPT_MS);
+  const lateReads = blackout.reads.filter((r) => r.at >= blackout.reads[0].at + MANAGER_LEASE_TTL_MS).length;
+  check("(f) control: under an outage longer than one lease TTL no retry starts after that TTL, and no delete is sent",
+    blackout.reads.length > 1 && blackout.reads.every((r) => r.timedOut) && lateReads <= 1 && blackout.relay.deletesForwarded === 0,
+    { reads: blackout.reads.length, lateReads, timedOut: blackout.reads.filter((r) => r.timedOut).length, deletes: blackout.relay.deletesForwarded, stopMs: blackout.stopMs });
 } finally {
+  for (const m of relayed) await m.stop({ withAgents: true }).catch(() => {});
+  for (const r of relays) r.close();
   await reader?.stop().catch(() => {});
   await client?.stop().catch(() => {});
   await mgr?.stop({ withAgents: true }).catch(() => {});
