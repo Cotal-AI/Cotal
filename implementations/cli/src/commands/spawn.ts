@@ -57,10 +57,9 @@ import {
   agentSecretFilePaths,
   agentSentinelCredsKey,
   authDir,
+  cachedPreferences,
   credsFlag,
-  defaultAgentOverride,
-  defaultPersonaOverride,
-  defaultPersonaRef,
+  describeLayer,
   launchFlags,
   loadMeshes,
   findMesh,
@@ -72,6 +71,7 @@ import {
   provenance,
   resolveAgentType,
   resolveMeshTarget,
+  resolvePreference,
   resolveTargetOrThrow,
   serverFlag,
   spaceAccountPath,
@@ -88,6 +88,7 @@ import {
   type ControlAuth,
   type ControlTarget,
   type MeshTarget,
+  type PreferenceContext,
   type SpaceMaterialComposition,
 } from "@cotal-ai/workspace";
 import { c } from "../ui.js";
@@ -327,9 +328,23 @@ function declaredFrom(argv: string[], list: (root: string) => string[]): string[
   }
 }
 
-/** Persona selection precedence shared by foreground and detached spawn. */
-export function spawnPersonaRef(configFlag: string | undefined, positionals: readonly string[], env: NodeJS.ProcessEnv = process.env): string {
-  return configFlag ?? positionals[0] ?? defaultPersonaRef("default", env);
+/** Persona selection shared by foreground and detached spawn: `--config`, then the positional, then
+ *  the `persona` preference (`COTAL_DEFAULT_PERSONA`, the space's saved value, the user's, then
+ *  `default`). `from` names where an implicit choice came from; it is absent for an explicit one and
+ *  for the product default. */
+export function spawnPersona(configFlag: string | undefined, positionals: readonly string[], ctx: PreferenceContext = {}): { ref: string; from?: string } {
+  const explicit = configFlag ?? positionals[0];
+  if (explicit !== undefined) return { ref: explicit };
+  const winner = resolvePreference("persona", ctx).winner!;
+  return winner.source === "default" ? { ref: winner.value } : { ref: winner.value, from: describeLayer(winner) };
+}
+
+/** The harness a launch falls back to when neither `--agent` nor the persona names one, as this
+ *  caller sets it: `COTAL_DEFAULT_AGENT`, then the space's saved value, then the user's. Undefined
+ *  when none is set, so a manager applies its own default before the product's. */
+function callerHarness(space: string): string | undefined {
+  const winner = resolvePreference("harness", { space, preferences: cachedPreferences() }).winner;
+  return winner && winner.source !== "default" ? winner.value : undefined;
 }
 
 /**
@@ -453,9 +468,6 @@ async function spawnDetached(
   // `COTAL_DEFAULT_PERSONA` > `default`). Identity is separate:
   // when `--name` is given it OVERRIDES the file's `name:` (foreground's `requested`), threaded
   // as the op's `identity` so it is never silently dropped in detached mode.
-  const defaultPersona = defaultPersonaOverride();
-  const ref = spawnPersonaRef(values.config, positionals);
-  const managerConfigRef = values.config ?? (!positionals[0] && defaultPersona ? ref : undefined);
   const on = onInstanceOrExit(values.on, "cotal spawn <persona> --detach");
   // From a managed seat's own shell the launch is the SEAT's, as its `cotal_spawn` tool is: the
   // manager records the seat as the spawner, so the seat can stop the child it asked for (#718).
@@ -480,12 +492,15 @@ async function spawnDetached(
     process.exit(1);
   }
   provenance.read("mesh", `${t.space} (${t.server})`);
+  const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space: t.space, preferences: cachedPreferences() });
+  const managerConfigRef = values.config ?? (personaFrom !== undefined ? ref : undefined);
+  const defaultAgent = callerHarness(t.space);
   let resumeAgent: string | undefined;
   let resumeClaim: string | undefined;
   if (values.resume !== undefined) {
     // Without a flag the harness is the persona pin or a default, which only the target manager
     // can read: ask it, so the carry looks with the connector the launch runs (#2899).
-    resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent: defaultAgentOverride() });
+    resumeAgent = values.agent ?? await launchAgentOrExit(t, on, { name: ref, config: managerConfigRef, defaultAgent });
     resumeClaim = await carryTranscriptOrExit(flags, on, values.resume, resumeAgent);
   }
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
@@ -493,12 +508,13 @@ async function spawnDetached(
     name: ref,
     identity: values.name,
     role: values.role,
-    // #869: keep an explicit `--agent` and the invoking operator's COTAL_DEFAULT_AGENT in separate
-    // fields. Collapsing them made the env default indistinguishable from a flag, so it beat the
-    // persona pin; dropping the env instead changed detached semantics whenever the manager's own
-    // environment differed. The manager applies flag > file > caller default > manager default.
+    // #869: keep an explicit `--agent` and the invoking operator's default (COTAL_DEFAULT_AGENT or a
+    // saved harness preference) in separate fields. Collapsing them made the default
+    // indistinguishable from a flag, so it beat the persona pin; dropping it instead changed detached
+    // semantics whenever the manager's own environment differed. The manager applies flag > file >
+    // caller default > manager default.
     agent: values.agent,
-    defaultAgent: defaultAgentOverride(),
+    defaultAgent,
     config: managerConfigRef,
     model: values.model,
     variant: values.variant,
@@ -840,18 +856,17 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   const { space, server, auth } = target;
   const composition = { injected: false as const, root: target.root };
 
-  const defaultPersona = defaultPersonaOverride();
-  // Where the config lives: --config, else the positional <persona>, else COTAL_DEFAULT_PERSONA
+  // Where the config lives: --config, else the positional <persona>, else the persona preference
   // (.cotal/agents/<name>.md under the TARGET mesh's root). With none, fall back to its `default`
   // persona — `cotal spawn` with no args launches `<root>/.cotal/agents/default.md`.
-  const ref = spawnPersonaRef(values.config, positionals);
+  const { ref, from: personaFrom } = spawnPersona(values.config, positionals, { space, preferences: cachedPreferences() });
   const path = redeemedEnrollment && values.config ? resolvePath(values.config) : agentFilePath(target.root, ref);
   let def: AgentDef;
   try {
     def = loadAgentFile(path);
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
-    const fromEnv = !values.config && !positionals[0] && defaultPersona ? " from COTAL_DEFAULT_PERSONA" : "";
+    const fromEnv = personaFrom === undefined ? "" : ` from ${personaFrom}`;
     // The not-found text names the mesh's space and server, which for a handoff are its values.
     if (handoffText !== undefined) {
       console.error(c.red(`✗ cannot load the managed handoff persona: ${(e as Error).message}`));
@@ -868,7 +883,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       const where = `${target.personaRoot} (mesh "${target.space}" at ${target.server}${target.source === "current" ? ", your current mesh" : target.source === "registry" ? ", the only mesh running" : ""})`;
       console.error(
         c.red(
-          ref === "default" && !defaultPersona
+          ref === "default" && personaFrom === undefined
             ? `✗ no default persona in ${where} - run \`cotal setup\` here to seed one into that directory, or name a persona: \`cotal spawn <name>\``
             : `✗ no persona "${ref}"${fromEnv} in ${where} - pass a catalog name, or use \`--config <path>\` for a file elsewhere`,
         ),
@@ -879,7 +894,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     process.exit(1);
   }
 
-  // Provenance: say which persona file WON resolution (--config > positional > COTAL_DEFAULT_PERSONA > default)
+  // Provenance: say which persona file WON resolution (--config > positional > preference > default)
   // — the user must never wonder which directory their agent's definition came from.
   provenance.read("persona", path);
 
@@ -947,7 +962,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   if (target.source === "registry" || target.source === "current")
     console.error(c.dim(`→ joining mesh ${space} (${server}) as ${name}`));
 
-  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent });
+  const agentType = resolveAgentType({ flag: values.agent, pin: def.agent, callerDefault: callerHarness(space) });
   // Materialize the connector HERE, after the authoritative persona load (#869): the harness choice
   // (flag > persona pin > env > default) is only final once the target root has supplied the file.
   // On the published binary nothing static-imports connectors, so this import-from-manifest is what

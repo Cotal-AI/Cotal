@@ -18,6 +18,7 @@ import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
 import { completion, completionComplete, completionFlags, complete } from "./commands/completion.js";
+import { config, configFlags } from "./commands/config.js";
 import { mint } from "./commands/mint.js";
 import { channels } from "./commands/channels.js";
 import { history, historyFlags } from "./commands/history.js";
@@ -96,6 +97,23 @@ const baseCommands: Command[] = [
     outputs: ["json", "plain"],
     examples: ["cotal ext", "cotal ext --json", "cotal ext add @cotal-ai/orca", "cotal ext root"],
     run: ext,
+  },
+  {
+    kind: "command",
+    name: "config",
+    group: "Setup",
+    summary: "your preferences - the defaults your commands use, and where each value comes from",
+    usage: "cotal config [--user | --space <name>] [--json|--plain] | config get <key> | config set <key> <value> | config unset <key>",
+    positionals: "[get <key> | set <key> <value> | unset <key>]",
+    subcommands: [
+      { name: "get", summary: "show one key's value, where it comes from and what it outranks", usage: "cotal config get <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "set", summary: "save a value for you, or for one space with --space", usage: "cotal config set <key> <value> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+      { name: "unset", summary: "remove a saved value", usage: "cotal config unset <key> [--user | --space <name>] [--json|--plain]", outputs: ["json", "plain"] },
+    ],
+    flags: configFlags,
+    outputs: ["json", "plain"],
+    examples: ["cotal config", "cotal config get harness", "cotal config set harness opencode", "cotal config set persona reviewer --space demo", "cotal config unset color"],
+    run: config,
   },
   {
     kind: "command",

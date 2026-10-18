@@ -86,7 +86,7 @@ runtimes ship this way.
 A command whose help has a `structured output` line naming `json` takes `--json` (`-j`) and writes
 one JSON document on stdout. In this release those are `cotal version`, `cotal completion`,
 `cotal status`, `cotal ps`, `cotal who`, `cotal whoami`, `cotal history`, `cotal models`,
-`cotal runtimes`, bare `cotal ext` and `cotal docs`. `cotal version --json` writes:
+`cotal runtimes`, bare `cotal ext`, `cotal docs` and `cotal config`. `cotal version --json` writes:
 
 ```json
 {"schemaVersion":1,"command":"version","target":null,"outcome":"ok","completeness":"complete","result":{"version":"<version>","extensions":[{"package":"@cotal-ai/web","version":"<version>"}]},"warnings":[]}
@@ -195,6 +195,7 @@ failure.
 | Manifest | [`topology`](#manifest-deploys) | Validate and view a mesh manifest's access graph (read-only) |
 | Extensions & misc | [`ext`](#ext) | List, install and remove operator CLI extensions |
 | Extensions & misc | [`docs`](#docs) | Read this version's protocol and CLI docs, offline |
+| Extensions & misc | [`config`](#config) | Show and set your preferences: the defaults your commands use |
 | Extensions & misc | [`completion`](#completion) | Report, print or install shell completion |
 | Extensions & misc | [`feedback`](#feedback) | Send feedback to the Cotal developers |
 | Extensions & misc | [`deliver`](#server-daemons) | Run the server-side Plane-3 delivery daemon |
@@ -1222,7 +1223,7 @@ there it runs the enrollment consumer above without redeeming anything. See
 | `--creds <path>` | none | Control-caller creds for an off-registry manager (`--detach` only) |
 | `--name <n>` | persona's `name:` | Presence-name override (does not choose the persona) |
 | `--config <persona-or-path>` | none | Persona catalog name or file path; wins over the positional |
-| `--agent <a>` | persona's `agent:`, else `COTAL_DEFAULT_AGENT`, else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on) |
+| `--agent <a>` | persona's `agent:`, else the [`harness` preference](config.md#preferences), else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, and so on) |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
@@ -1257,8 +1258,8 @@ The launch decision and the grant are separate on purpose. Holding publish right
 not a request to publish to it, so writing an event channel into an agent file's `allowPublish`
 does not override `--no-events`.
 
-The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
-target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or
+The persona (`--config` > positional > the [`persona` preference](config.md#preferences) >
+`default`) is loaded from the target mesh's `.cotal/agents/` when it is a bare name. A reference that contains a path separator or
 ends in `.md` is loaded from that file. A relative path resolves against the mesh root, except that
 an enrollment or a managed handoff resolves `--config` against the working directory. A missing
 persona is refused with the catalog directory or the file that was checked. The launch flags
@@ -1596,9 +1597,9 @@ concludes nothing.
   reach `ps` at all; `spawn` alone is refused by the broker (the ep tier boundary).
 
 `attach` streams and drives an agent's terminal on the `pty` runtime; detach with the escape key
-(Ctrl-] by default; see [`COTAL_DETACH_KEY`](config.md)). The key is recognised as the legacy
-control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of the same
-press, so a terminal with either protocol enabled detaches too. It does so over a one-use, holder-bound
+(Ctrl-] by default; see the [`detach-key` preference](config.md#preferences)). The key is recognised
+as the legacy control byte and as the kitty keyboard protocol and xterm modifyOtherKeys encodings of
+the same press, so a terminal with either protocol enabled detaches too. It does so over a one-use, holder-bound
 mesh session ([SPEC](../SPEC.md) §13.6): the manager replies with a signed session grant (never a
 `127.0.0.1` URL), the CLI redeems it once over the broker, and the browser console (`cotal console`)
 drives the same session. `stop` and `attach` need a running manager to talk to. On a static mesh
@@ -2744,8 +2745,8 @@ pointing `$XDG_CONFIG_HOME` at a scratch dir; that override is documented here, 
 line. An opt-in write still records the checkout path in `seed/stamp.json` as `writtenBy`.
 
 The default connector for a bare `cotal spawn` (no `--agent`) is the persona's `agent:` pin if it
-has one, else `claude`; set `COTAL_DEFAULT_AGENT` (e.g. `opencode`) to change the fallback. It is
-a default, so a persona that pins its harness still wins over it. An `--agent` naming a removed
+has one, else `claude`; set `COTAL_DEFAULT_AGENT` or `cotal config set harness` (e.g. `opencode`)
+to change the fallback. It is a default, so a persona that pins its harness still wins over it. An `--agent` naming a removed
 connector fails loud with the exact
 `cotal ext add` to restore it. Set `COTAL_SKIP_CONNECTOR_SEED=1` to turn off the automatic first-run
 seed/refresh entirely (for a controlled or offline setup that manages connectors by hand); `cotal ext
@@ -2783,6 +2784,40 @@ what the fetch did: `served`, `not-published` (the path has no copy) or `unreach
 copy is served whenever the fetch does not succeed. `--refresh` applies only to a page.
 
 `--search` ranks sections by the words of the query. A search with no match is an empty result.
+
+## config
+
+```bash
+cotal config [--user | --space <name>] [--json | --plain]
+cotal config get <key> [--user | --space <name>] [--json | --plain]
+cotal config set <key> <value> [--user | --space <name>] [--json | --plain]
+cotal config unset <key> [--user | --space <name>] [--json | --plain]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--user` | your defaults for a write | Your own values, with no space's values |
+| `--space <name>` | the selected space for a read | Your values for one space |
+| `--json` / `-j` | off | One JSON document |
+| `--plain` | off | The same report without color |
+
+Your [preferences](config.md#preferences): `harness`, `persona`, `detach-key`, `color` and `editor`.
+Bare `config` lists every key with the value a command uses, where it came from (a variable, your
+value for the space, your own value, or the default) and the values it outranks. `get` shows one
+key. A read looks through `--space`, else the space selected with `cotal use`, else your defaults;
+`--user` reads your defaults alone.
+
+`set` and `unset` change your defaults, or your values for one space with `--space`. Only `harness`
+and `persona` have per-space values. A write that a variable outranks in this shell is still saved,
+with a `PREFERENCE_SHADOWED` warning naming the variable. Setting a value that is already saved, or
+unsetting one that is not, is a `no-op` and exits 0. An unknown key or an invalid value is refused
+with `USAGE_INVALID` and the valid choices, and a write that lost a race with another writer is
+refused with `CONFLICT`.
+
+`result.settings` (or `result.setting` for `get`) holds each key's `value`, its `winner`
+(`{source, name, value}`, where `source` is `environment`, `space`, `user` or `default`) and the
+`shadowed` layers below it. A write's result has the `previous` and new `value`, the file's new
+`revision`, and `effective`, the key as a command there now resolves it.
 
 ## completion
 
