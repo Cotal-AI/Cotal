@@ -80,7 +80,7 @@ import {
   readToolResultConsentAnchorFile,
   toolResultServingFromMaterial,
   writeToolResultServingFile,
-  type ToolResultServeAuthorityRequest,
+  type ToolResultServeIntent,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, claimIdentityRecord, claimManagerSiblingIdentities, connectorInstallHint, DELIVERY_CREDS_KIND, extensionConnectors, findCotalRoot, getSpaceAuth, hasUserAuthState, loadExtensionsManifest, loadManagerInstanceIdentity, loadMeshes, localTrustOfSpace, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KIND, mergeLaunchOptions, remintDaemonCreds, resolveAgentType, resolveOnPath, createManagerInstanceIdentity, spaceKey, spaceMaterialKey, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type MeshEntry, type RenewalRecord, type UserAuthInfo } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, DaemonStoreAnswer, DeliveryLeaseInfo, EpCaller, LaunchOpts, LaunchSpec, ManagedLifecycleHandoff, ManagerLeaseInfo, MeshLaunchAgent, Presence, RuntimeReference, SecretStore, SecretStoreIdentity, SpaceAuth } from "@cotal-ai/core";
@@ -528,7 +528,7 @@ export interface ManagerOptions {
      * grant for exactly that agent's tool-results endpoint instance; `renew` re-issues at the same
      * epoch with a ceiling never wider than the agent's own standing authority. Absent: a user-mode
      * spawn with tool-results serving enabled refuses. */
-    issueToolResultServe?: (request: import("@cotal-ai/core").ToolResultServeAuthorityRequest) => Promise<unknown>;
+    issueToolResultServe?: (intent: import("@cotal-ai/core").ToolResultServeIntent) => Promise<unknown>;
     /** Host-owned enrollment of a FRESH managed agent (#1972). The participant generates the standing
      * actorToken, writes it at 0600, and passes only its digest. The HOST picks the lifecycle UID —
      * it alone can see the retirement tombstones that make a UID unusable — so there is deliberately
@@ -4148,18 +4148,17 @@ export class Manager {
     if (this.toolResultServes.has(lifecycleUid)) throw new Error(`tool-results serving for ${lifecycleUid} is already running`);
     const identity = newIdentity();
     const file = join(agentCredsDir(this.workspaceRoot, this.space), `${actor}.${lifecycleUid}.tool-results.json`);
-    const request = (operation: "issue" | "renew", epoch?: number): ToolResultServeAuthorityRequest => ({
+    const request = (operation: "issue" | "renew", epoch?: number): ToolResultServeIntent => ({
       v: 1,
       kind: "tool-result-serve-authority",
       operation,
       space: this.space,
       target: { actor, lifecycleUid },
-      managerInstanceId: this.managerInstanceId,
       serve: { id: identity.id },
       ...(epoch !== undefined ? { epoch } : {}),
-      requestId: randomBytes(18).toString("base64url"),
+      requestId: `toolresult${mintLifecycleUid()}`,
     });
-    const obtain = async (req: ToolResultServeAuthorityRequest) => {
+    const obtain = async (req: ToolResultServeIntent) => {
       const serving = toolResultServingFromMaterial(await issue(req), req, identity);
       if (serving.grant.owner !== owner) throw new Error(`the host's tool-results serve grant names owner ${serving.grant.owner}, not ${owner}`);
       return serving;

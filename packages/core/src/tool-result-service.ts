@@ -22,7 +22,7 @@ import { contractArtifactCanonicalBytes, contractStoreContext, publishContractAr
 import { epAuthBucket } from "./endpoint-binding.js";
 import { recordsBucket } from "./endpoint-records.js";
 import { endpointRegistrationBarrier, provisionEndpointGateOpen, readEndpointGateGeneration, serveIssuanceGateKv } from "./endpoint-serve-kv.js";
-import { authorizeServeGrant, deregisterServiceInstance, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpServeGrant, type ServiceDeregistration, type ServiceNameAuthority } from "./endpoint-service.js";
+import { authorizeServeGrant, deregisterServiceInstance, registerServiceInstance, SERVICE_READY, writeServiceStatus, type EpIssuanceGate, type EpServeGrant, type ServiceDeregistration, type ServiceNameAuthority } from "./endpoint-service.js";
 import { dialerFor } from "./endpoint.js";
 import { newIdentity, type Identity } from "./identity.js";
 import { mintCreds, type SpaceAuth } from "./provision.js";
@@ -106,15 +106,33 @@ export async function registerToolResultServing(opts: ServingTarget & {
   /** Unix seconds; the serve credential's expiry. */
   expiresAt: number;
 }): Promise<ToolResultServing> {
-  const { auth, space, identity, lifecycleUid: instanceId } = opts;
+  const { grant, minted } = await registerToolResultServeInstance({
+    ...opts,
+    owner: DEV_OWNER,
+    principal: principalKey(DEV_OWNER, opts.identity.id).key,
+    mint: (fence, grant) => mintCreds(opts.auth, opts.identity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant, expiresAt: opts.expiresAt }),
+  });
+  return { grant, creds: minted };
+}
+
+/** Register ONE incarnation's `tool-results` instance for `owner`, authorize its serve grant, mark
+ *  it ready and hand the fence and grant to `mint`, which signs the serving credential (the static
+ *  launcher for its own identity, a user-mode host for the participant's public key). The name is
+ *  authorized for `owner` alone. From the registration on, any later failure takes the record
+ *  back down before reporting, so a refused issue leaves nothing this call created. */
+export async function registerToolResultServeInstance<T>(opts: ServingTarget & {
+  owner: string;
+  /** The serving connection's principal key; the issuance gate opens for it alone. */
+  principal: string;
+  mint: (fence: EpIssuanceGate, grant: EpServeGrant) => Promise<T>;
+}): Promise<{ grant: EpServeGrant; minted: T }> {
+  const { space, owner, lifecycleUid: instanceId } = opts;
   const endpoint = TOOL_RESULT_ENDPOINT;
   const opId = mintLifecycleUid();
   const artifacts = toolResultClusterArtifacts();
   const store = new Map<string, unknown>([[artifacts.rootDigest, artifacts.document], [artifacts.closureDigest, artifacts.manifest]]);
   const readClusterArtifact = (digest: string): unknown => store.get(digest);
-  // The single-label core name, for the local operator owner, and nothing else.
-  const authority: ServiceNameAuthority = { authorize: (name, owner) => ({ authorized: name === endpoint && owner === DEV_OWNER, revision: 0 }) };
-
+  const authority: ServiceNameAuthority = { authorize: (name, o) => ({ authorized: name === endpoint && o === owner, revision: 0 }) };
   const fenceOf = (authKv: KV) => serveIssuanceGateKv(authKv, space, { endpoint, instanceId });
   const epochOf = (authKv: KV) => async (): Promise<number> => {
     const g = await fenceOf(authKv).observe();
@@ -125,12 +143,12 @@ export async function registerToolResultServing(opts: ServingTarget & {
     const storeCtx = await contractStoreContext(nc, space);
     for (const value of [...toolResultContractArtifactValues(), artifacts.document, artifacts.manifest])
       await publishContractArtifact(storeCtx, contractArtifactCanonicalBytes(value));
-    await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: principalKey(DEV_OWNER, identity.id).key });
+    await provisionEndpointGateOpen(authKv, { endpoint, instanceId, principal: opts.principal });
     // A fresh incarnation has an empty credential family, so the barrier has nothing to evict.
     const barrier = endpointRegistrationBarrier(authKv, space, { endpoint, instanceId, opId });
-    const spec = { endpoint, owner: DEV_OWNER, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
+    const spec = { endpoint, owner, clusterDigests: [artifacts.closureDigest], protocol: { v: 1 as const } };
     const { registrationRevision } = await registerServiceInstance(recordsKv, {
-      space, spec, instanceId, registrant: { owner: DEV_OWNER }, authority, barrier, readClusterArtifact,
+      space, spec, instanceId, registrant: { owner }, authority, barrier, readClusterArtifact,
       observeHolderGeneration: (holder) => readEndpointGateGeneration(authKv, { endpoint, instanceId: holder }),
     });
     // From here the record exists; any later failure takes it back down before reporting.
@@ -139,7 +157,7 @@ export async function registerToolResultServing(opts: ServingTarget & {
       const observed = await fence.observe();
       if (observed === null) throw new Error(`the issuance gate for ${endpoint}/${instanceId} vanished after registration`);
       const grant = await authorizeServeGrant(recordsKv, {
-        space, endpoint, instanceId, epoch: observed.processEpoch, holder: { owner: DEV_OWNER }, authority, readClusterArtifact,
+        space, endpoint, instanceId, epoch: observed.processEpoch, holder: { owner }, authority, readClusterArtifact,
         readProcessEpoch: epochOf(authKv),
       });
       await writeServiceStatus(recordsKv, {
@@ -147,8 +165,7 @@ export async function registerToolResultServing(opts: ServingTarget & {
         status: { state: SERVICE_READY, epoch: observed.processEpoch, observedSpecRevision: registrationRevision },
         readProcessEpoch: epochOf(authKv),
       });
-      const creds = await mintCreds(auth, identity, "endpoint-serve", { serveIssuance: fence, endpointServe: grant, expiresAt: opts.expiresAt });
-      return { grant, creds };
+      return { grant, minted: await opts.mint(fence, grant) };
     } catch (e) {
       const why = (e as Error).message;
       try {
@@ -158,5 +175,35 @@ export async function registerToolResultServing(opts: ServingTarget & {
       }
       throw new Error(`${why}; the tool-results record for ${instanceId} was removed again`);
     }
+  });
+}
+
+/** Re-authorize the SAME registration at the SAME serve epoch and hand the fence and grant to
+ *  `mint`. A moved epoch, a closed or missing gate, or a superseded registration refuses: renewal
+ *  never re-registers, so it can never widen what the issue authorized. Nothing is written. */
+export async function renewToolResultServeGrant<T>(opts: ServingTarget & {
+  owner: string;
+  epoch: number;
+  mint: (fence: EpIssuanceGate, grant: EpServeGrant) => Promise<T>;
+}): Promise<{ grant: EpServeGrant; minted: T }> {
+  const { space, owner, lifecycleUid: instanceId } = opts;
+  const endpoint = TOOL_RESULT_ENDPOINT;
+  const artifacts = toolResultClusterArtifacts();
+  const store = new Map<string, unknown>([[artifacts.rootDigest, artifacts.document], [artifacts.closureDigest, artifacts.manifest]]);
+  const authority: ServiceNameAuthority = { authorize: (name, o) => ({ authorized: name === endpoint && o === owner, revision: 0 }) };
+  return withExecutor(opts, async ({ recordsKv, authKv }) => {
+    const fence = serveIssuanceGateKv(authKv, space, { endpoint, instanceId });
+    const observed = await fence.observe();
+    if (observed === null || observed.processEpoch !== opts.epoch)
+      throw new Error(`the ${endpoint}/${instanceId} serve epoch moved (${observed === null ? "no gate" : observed.processEpoch}); renewal is for epoch ${opts.epoch} only`);
+    const grant = await authorizeServeGrant(recordsKv, {
+      space, endpoint, instanceId, epoch: opts.epoch, holder: { owner }, authority, readClusterArtifact: (d) => store.get(d),
+      readProcessEpoch: async () => {
+        const g = await fence.observe();
+        if (g === null) throw new Error(`no issuance gate for ${endpoint}/${instanceId}`);
+        return g.processEpoch;
+      },
+    });
+    return { grant, minted: await opts.mint(fence, grant) };
   });
 }

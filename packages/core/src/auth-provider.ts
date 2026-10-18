@@ -190,7 +190,8 @@ export interface AuthProvider extends Extension {
   }): Promise<RemoteManagedAgentEnrollmentResult>;
   /**
    * Ask the host to issue or renew one admitted managed incarnation's tool-results serve credential
-   * and grant (SPEC 13.9), proved by this manager's current registration. The host checks the
+   * and grant (SPEC 13.9), proved by this manager's current registration (the request's own
+   * manager-authority envelope). The host checks the
    * ledger row, enrollment, parent manager, space and lifecycle at every call, registers the
    * agent's `tool-results` endpoint instance when absent (undoing a partial registration), and
    * answers with {@link import("./tool-result-serve-authority.js").ToolResultServeAuthorityMaterial}.
@@ -199,7 +200,6 @@ export interface AuthProvider extends Extension {
   issueRemoteToolResultServe?(opts: {
     store: SecretStore;
     dir: string;
-    registrationProof: string;
     request: import("./tool-result-serve-authority.js").ToolResultServeAuthorityRequest;
   }): Promise<unknown>;
   /**

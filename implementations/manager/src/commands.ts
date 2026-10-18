@@ -39,7 +39,7 @@ import { loadLaunchSpec, materializePersona, launchAgentToStartOpts } from "./la
 import { type RuntimeMode } from "./runtime/index.js";
 import { custodyRoot } from "./runtime/custodial-pty.js";
 import { drainSeats } from "@cotal-ai/seat";
-import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting } from "./remote-authority.js";
+import { currentRegistrationProof, loadOrCreateRemoteManagerIdentity, materialCredential, remoteStandingBundleRenewal, remoteManagedAgentEnrollmentMaterial, remoteManagedAgentEnrollmentRequest, remoteManagedAgentPrepareRetirementRequest, remoteManagedAgentRetirementPrepared, remoteManagerAdminAuthorizationRequest, remoteManagerAdminAuthorized, remoteManagerAuthorityRequest, remoteManagerGoalIndexEntries, remoteManagerGoalIndexScanRequest, remoteManagerMaintenanceRequest, remoteManagerMaintenanceResult, remoteRetainedAgentValidationRequest, retainedAgentAuthority, remoteRunHosting, remoteToolResultServeRequest } from "./remote-authority.js";
 import { registerRemoteManagerAuthority } from "./remote-register.js";
 import { managerClusterArtifacts } from "./manager-service-contract.js";
 
@@ -377,8 +377,11 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
           : {}),
         ...(provider.issueRemoteToolResultServe
           ? {
-              issueToolResultServe: (request) =>
-                provider.issueRemoteToolResultServe!({ ...providerCall, registrationProof: retainedRegistrationProof, request }),
+              issueToolResultServe: (intent) =>
+                provider.issueRemoteToolResultServe!({
+                  ...providerCall,
+                  request: remoteToolResultServeRequest(state, "cli", retainedRegistrationProof, registered.processEpoch, intent),
+                }),
             }
           : {}),
         prepareAgentRetirement: async ({ target: retirementTarget, opId }) => {

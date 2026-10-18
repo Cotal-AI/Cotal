@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createUser } from "@nats-io/nkeys";
 import { newIdentity } from "../src/identity.js";
+import { REMOTE_MANAGER_IDENTITY_NAMES } from "../src/remote-manager-authority.js";
 import { TOOL_RESULT_ENDPOINT } from "../src/tool-result-contract.js";
 import {
   parseToolResultServeAuthorityRequest,
@@ -36,9 +37,11 @@ const OWNER = "u_" + "a".repeat(26);
 const UID = "a".repeat(26);
 const identity = newIdentity();
 const host = createUser();
+const identities = Object.fromEntries(REMOTE_MANAGER_IDENTITY_NAMES.map((n) => [n, { id: createUser().getPublicKey() }])) as ToolResultServeAuthorityRequest["identities"];
 const request = (over: Partial<ToolResultServeAuthorityRequest> = {}): ToolResultServeAuthorityRequest => ({
   v: 1, kind: "tool-result-serve-authority", operation: "issue", space: SPACE, target: { actor: "seat", lifecycleUid: UID },
-  managerInstanceId: "mgr-1", serve: { id: identity.id }, requestId: "r".repeat(24), ...over,
+  actor: "cli", instanceId: "c".repeat(26), managerLifecycleUid: "d".repeat(26), registrationProof: `sha256:${"0".repeat(64)}`, serveEpoch: 1, identities,
+  serve: { id: identity.id }, requestId: "r".repeat(24), ...over,
 });
 const jwt = (sub: string, exp: number) => `e30.${Buffer.from(JSON.stringify({ sub, exp })).toString("base64url")}.sig`;
 const anchor = { keyId: "host-1", publicKey: host.getPublicKey(), owner: "host.example", validFrom: NOW - 60_000, validTo: NOW + 3_600_000 };
@@ -58,6 +61,9 @@ throws(() => parseToolResultServeAuthorityRequest(request({ epoch: 3 })), "an is
 throws(() => parseToolResultServeAuthorityRequest({ ...request(), registry: "*" }), "an extra field (a registry-wide read) is refused");
 throws(() => parseToolResultServeAuthorityRequest(request({ requestId: "short" })), "a short request id is refused");
 throws(() => parseToolResultServeAuthorityRequest(request({ serve: { id: "A".repeat(56) } })), "a serve key that is not a user nkey is refused");
+throws(() => parseToolResultServeAuthorityRequest(request({ target: { actor: "cli", lifecycleUid: UID } })), "the manager's authorizing actor cannot be the served target");
+throws(() => parseToolResultServeAuthorityRequest(request({ registrationProof: "trust-me" })), "a request without a sha256 registration proof is refused");
+throws(() => parseToolResultServeAuthorityRequest({ ...request(), managerInstanceId: "c".repeat(26) }), "the retired free managerInstanceId field is refused");
 
 // ---- the host's answer must be this request's -------------------------------------------------
 const issued = toolResultServingFromMaterial(material(request()), request(), identity);

@@ -35,6 +35,8 @@ import {
   type RemoteRunAttemptResult,
   type RunAdmission,
   type RetainedAgentAuthority,
+  type ToolResultServeAuthorityRequest,
+  type ToolResultServeIntent,
 } from "@cotal-ai/core";
 import { claimIdentityRecord, identityOf, spaceKey } from "@cotal-ai/workspace";
 import type { RunHostingContext } from "./run-hosting.js";
@@ -609,6 +611,27 @@ export function expectedRemoteManagerActors(state: RemoteManagerIdentityState) {
 /** Build one host-owned managed-agent enrollment request (#1972). The request carries the DIGEST of
  *  the standing actor token, never the token: the participant has already written the plaintext at
  *  0600, and the host's copy is a hash it can only compare against. */
+/** The tool-results serve request: the Manager's intent inside the same manager-authority envelope
+ *  enrollment carries, so the host verifies the one current registration proof for both. */
+export function remoteToolResultServeRequest(
+  state: RemoteManagerIdentityState,
+  actor: string,
+  registrationProof: string,
+  serveEpoch: number,
+  intent: ToolResultServeIntent,
+): ToolResultServeAuthorityRequest {
+  if (intent.space !== state.space) throw new Error(`tool-results serve intent names space ${intent.space}, not ${state.space}`);
+  return {
+    ...intent,
+    actor,
+    instanceId: state.instanceId,
+    managerLifecycleUid: state.lifecycleUid,
+    registrationProof,
+    serveEpoch,
+    identities: publicIdentities(state),
+  };
+}
+
 export function remoteManagedAgentEnrollmentRequest(
   state: RemoteManagerIdentityState,
   actor: string,

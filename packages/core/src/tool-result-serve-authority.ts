@@ -25,18 +25,34 @@ import { writeSecretFile } from "./secret-fs.js";
 import { assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken } from "./subjects.js";
 import { parseToolResultConsentAnchors, type ToolResultConsentAnchorRecord } from "./tool-result-anchors.js";
 import { TOOL_RESULT_ENDPOINT } from "./tool-result-contract.js";
+import { parseManagedAgentAuthorityEnvelope, type RemoteManagerEnvelope } from "./remote-manager-authority.js";
 
-export interface ToolResultServeAuthorityRequest {
+/** One issue/renew request. The manager-authority envelope (`actor`, `instanceId`,
+ *  `managerLifecycleUid`, `requestId`, `registrationProof`, `identities`, `serveEpoch`) is the one
+ *  every host-routed managed-agent request carries, and the host verifies it the same way: an open
+ *  manager gate at that serve epoch, held by this owner's manager serve principal, and a
+ *  registration proof keyed by the host over all of it. `actor` is the manager's AUTHORIZING
+ *  principal (whose `supervise` grant governs it and who is every managed child's ledger parent),
+ *  never the target. */
+export interface ToolResultServeAuthorityRequest extends ToolResultServeIntent {
+  actor: string;
+  instanceId: string;
+  managerLifecycleUid: string;
+  registrationProof: string;
+  serveEpoch: number;
+  identities: RemoteManagerEnvelope["identities"];
+}
+
+/** What the Manager itself decides: which incarnation, which serving key, issue or renew. The
+ *  manager-authority envelope is added by the client that holds the current registration. */
+export interface ToolResultServeIntent {
   v: 1;
   kind: "tool-result-serve-authority";
-  /** `issue` registers the incarnation's instance; `renew` re-mints on the SAME registration. */
   operation: "issue" | "renew";
   space: string;
-  /** The managed agent, re-read by the host from its ledger row and lifecycle head. */
+  /** The managed incarnation whose `tool-results` instance this serves. */
   target: { actor: string; lifecycleUid: string };
-  /** The participant manager instance that launched it; the host checks it is the row's parent. */
-  managerInstanceId: string;
-  /** The caller-generated serving nkey (public id only). */
+  /** The serving nkey's public id; the seed never leaves the manager. */
   serve: { id: string };
   /** Renew only: the serve epoch the current grant names; a moved gate refuses. */
   epoch?: number;
@@ -68,25 +84,33 @@ const REQUEST_ID = /^[A-Za-z0-9_-]{16,64}$/;
 export function parseToolResultServeAuthorityRequest(raw: unknown): ToolResultServeAuthorityRequest {
   const what = "tool-result serve authority request";
   if (!isRec(raw)) throw new Error(`${what}: not an object`);
-  closed(raw, ["v", "kind", "operation", "space", "target", "managerInstanceId", "serve", "epoch", "requestId"], what);
-  if (raw.v !== 1 || raw.kind !== "tool-result-serve-authority") throw new Error(`${what}: not a v1 tool-result-serve-authority request`);
+  closed(raw, ["v", "kind", "operation", "space", "actor", "instanceId", "managerLifecycleUid", "requestId", "registrationProof", "serveEpoch", "identities", "target", "serve", "epoch"], what);
+  const envelope = parseManagedAgentAuthorityEnvelope(raw, what, "tool-result-serve-authority");
   if (raw.operation !== "issue" && raw.operation !== "renew") throw new Error(`${what}: operation must be issue or renew`);
-  if (typeof raw.space !== "string" || raw.space.length === 0) throw new Error(`${what}: space is not a string`);
   if (!isRec(raw.target)) throw new Error(`${what}: target is not an object`);
   closed(raw.target, ["actor", "lifecycleUid"], `${what} target`);
   if (typeof raw.target.actor !== "string" || typeof raw.target.lifecycleUid !== "string") throw new Error(`${what}: target needs actor and lifecycleUid`);
   assertValidOwnerToken(raw.target.actor);
   assertLifecycleToken(raw.target.lifecycleUid, "target.lifecycleUid");
-  if (typeof raw.managerInstanceId !== "string") throw new Error(`${what}: managerInstanceId is not a string`);
-  assertLifecycleToken(raw.managerInstanceId, "managerInstanceId");
+  if (raw.target.actor === envelope.actor) throw new Error(`${what}: the target cannot be the manager's authorizing actor`);
   if (!isRec(raw.serve)) throw new Error(`${what}: serve is not an object`);
   closed(raw.serve, ["id"], `${what} serve`);
   if (!isUserNkey(raw.serve.id)) throw new Error(`${what}: serve.id is not a user nkey`);
+  let epoch: number | undefined;
   if (raw.operation === "renew") {
     if (typeof raw.epoch !== "number" || !Number.isSafeInteger(raw.epoch) || raw.epoch < 0) throw new Error(`${what}: renew needs the current serve epoch`);
+    epoch = raw.epoch;
   } else if (raw.epoch !== undefined) throw new Error(`${what}: issue must not carry an epoch`);
-  if (typeof raw.requestId !== "string" || !REQUEST_ID.test(raw.requestId)) throw new Error(`${what}: requestId is not a bounded token`);
-  return raw as unknown as ToolResultServeAuthorityRequest;
+  if (!REQUEST_ID.test(envelope.requestId)) throw new Error(`${what}: requestId is not a bounded token`);
+  return {
+    v: 1,
+    kind: "tool-result-serve-authority",
+    operation: raw.operation,
+    ...envelope,
+    target: { actor: raw.target.actor, lifecycleUid: raw.target.lifecycleUid },
+    serve: { id: raw.serve.id },
+    ...(epoch !== undefined ? { epoch } : {}),
+  };
 }
 
 /** What a session's serving file holds. `notAfter` (ms) is the credential's expiry: the latest
@@ -101,7 +125,7 @@ export interface ToolResultServingFile {
 /** The participant's check of the host's answer, then the file content. Refuses material that does
  *  not echo the request, a grant for any other endpoint/space/incarnation (or, on renew, epoch),
  *  a JWT for any other key, or malformed anchors. */
-export function toolResultServingFromMaterial(raw: unknown, request: ToolResultServeAuthorityRequest, identity: Identity): ToolResultServingFile {
+export function toolResultServingFromMaterial(raw: unknown, request: ToolResultServeIntent, identity: Identity): ToolResultServingFile {
   const what = "tool-result serve authority material";
   if (!isRec(raw)) throw new Error(`${what}: not an object`);
   const m = raw as unknown as ToolResultServeAuthorityMaterial;

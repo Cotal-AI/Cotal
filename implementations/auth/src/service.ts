@@ -60,7 +60,7 @@ import { resolve } from "node:path";
 import { connect, credsAuthenticator, type NatsConnection } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager, type JetStreamManager } from "@nats-io/jetstream";
 import { Kvm, type KV } from "@nats-io/kv";
-import { CotalEndpoint, deprovisionAgent, deprovisionRecipientDurables, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, mintToolResultConsent, TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS, type AnchorResolver, type ToolResultConsent } from "@cotal-ai/core";
+import { CotalEndpoint, deprovisionAgent, deprovisionRecipientDurables, isConcreteChannel, provisionAgentDurables, contractDigest, contractRefToHex, contractStoreContext, endpointToken, fetchContractArtifact, verifyClusterManifest, verifyClusterRoot, admissionBucket, admissionMediatorGrants, assertDerivedOwnerToken, assertLifecycleToken, assertValidOwnerToken, authorizeTrustedServeSnapshot, commitSiblingIssuance, credsClaims, EpEnvelopeError, ensureAuthorityStores, epAuthBucket, isReachable, jwtFromCreds, managedRetirementOpId, mintCreds, mintPublicUserJwt, newIdentity, newTakeoverId, observeHostedRunAttempt, openRecordsBucket, parseEndpointGate, parseServiceSpec, parseServiceStatus, rawDigest, parseSecretStoreIdentity, readCheckpointStatus, readRunAdmission, readRunRevocation, readRunRecord, readSvcRecordLeader, reconcileEndpointGate, replayRunJournal, sameSecretStoreIdentity, recordSpecKey, recordStatusKey, RECORD_KINDS, recordsBucket, remoteManagerActors, retirementFrontierStreams, runDriverCaller, serveIssuanceGateKv, standaloneConnectOpts, STANDING_RENEWABLE_TTL_SEC, withIssuerSession, acceptedReadGrant, actorLedgerSource, connectionAcceptedToken, importNativeSubjectPermissions, mintGeneration, parseActorLedgerSource, writeAcceptedRow, type IssuedAuthorityRef, type IssuedSourceRef, type IssuerSession, invokeCommand, resolveService, contractArtifactCanonicalBytes, DEV_OWNER, endpointRegistrationBarrier, mintLifecycleUid, principalKey, provisionEndpointGateOpen, publishContractArtifact, registerServiceInstance, registerServingInstance, type EpAttributedReply, type EpCaller, type EpGateState, type ParsedArgs, type PlatformControlAssignment, type PlatformControlAuthorityRequest, type PlatformControlAuthorityResult, type PlatformControlInnerRequest, type RemoteManagedAgentEnrollmentRequest, type RemoteManagedAgentEnrollmentResult, type RemoteManagedAgentPrepareRetirementRequest, type RemoteManagedAgentPrepareRetirementResult, type RemoteManagerAdminAuthorizationRequest, type RemoteManagerAuthorityRequest, type RemoteManagerMaintenanceRequest, type RemoteRetainedAgentValidationRequest, type SecretStore, type SpaceAuth, type EpServeGrant, type ServiceNameAuthority, epgateKey, isCasLoss, mintToolResultConsent, TOOL_RESULT_CONSENT_PROOF_MAX_AGE_MS, type AnchorResolver, type ToolResultConsent, type ToolResultServeAuthorityMaterial } from "@cotal-ai/core";
 import { findCotalRoot, loadManagerInstanceIdentity, userAuthStateDir, workspaceSecretStore, createAuthInstanceIdentity, loadAuthInstanceIdentity, type HostedContextInputs, type HostedContextKey, type HostedServiceHandle, type HostedServiceState, type ManagerInstanceIdentity } from "@cotal-ai/workspace";
 import type { JournalEntry } from "@cotal-ai/lang";
 import { decodeJwt } from "jose";
@@ -78,6 +78,7 @@ import { pinnedJwksResolver, type UserTokenIssuer } from "./issuer.js";
 import { calloutPermissions, type RecipientVerifier, type ToolResultVerifier, type UserCallerIssuer } from "./permissions.js";
 import { admitRemoteRun, authorizeRemoteManagerRenewal, authorizeRemoteRunAttempt, holdsRunFence, issueRemoteManagerAuthority, observedRunRequest, parseRemoteRunAdmissionRequest, parseRemoteRunAttemptRequest, parseRemoteRunRevokeRequest, revokeRemoteRun, type ObservedRunRequest } from "./manager-authority.js";
 import { authorizeRemoteRetainedAgentValidation, completeRemoteRetainedAgentValidation, remoteManagerCurrentRegistrationProof } from "./retained-manager-validation.js";
+import { authorizeToolResultServe, currentToolResultConsentAnchors, issueToolResultServe, retireToolResultServe } from "./tool-result-serving.js";
 import { authorizeRemoteManagedAgentEnrollment, authorizeRemoteManagedAgentPrepareRetirement, authorizeRemoteManagedAgentRuntimeCreate, authorizeRemoteManagedAgentRuntimeStatus, type ObserveManagerGate, type RemoteManagedAgentRuntimeDecision } from "./managed-agent-enrollment.js";
 import { authorizeRemoteManagerGoalIndexScan, completeRemoteManagerGoalIndexScan } from "./manager-goal-index.js";
 import { authorizeRemoteManagerAdmin } from "./manager-admin-authorization.js";
@@ -256,6 +257,10 @@ export interface AuthAuthorityPlane {
     sentinelCreds: string;
     agentBearerExchangeUrl: string;
   }) => Promise<RemoteManagedAgentEnrollmentResult>;
+  /** Host-owned user-mode tool-results serve issuance (tool-result-serving.ts): every fence, then
+   *  the incarnation's registration and a short serve credential for the participant's public key.
+   *  Absent on a plane that does not serve it; the route then refuses. */
+  issueToolResultServe?: (args: { owner: string; scope: string[]; request: unknown }) => Promise<ToolResultServeAuthorityMaterial>;
   /** Host-owned retirement preparation (#1972): the prepare decision, then the target uid's broker
    *  footprint and grant are released, so the participant's terminal rail finds the grant gone. */
   prepareManagedAgentRetirement: (args: {
@@ -439,6 +444,9 @@ export interface OpenAuthAuthorityPlaneOptions {
   /** Trusted-host only: the registered `consents` anchors a tool-result consent must verify
    *  against. Absent (the default): every tool-result redemption refuses `unimplemented`. */
   toolResultConsentAnchors?: AnchorResolver;
+  /** Trusted-host only: the key id of the host's own consent signer, whose current public anchor a
+   *  tool-results serve issuance hands the serving session. Absent: no anchors are handed over. */
+  toolResultConsentSignerKeyId?: string;
 }
 
 /**
@@ -1441,6 +1449,26 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         },
       };
     },
+    issueToolResultServe: async ({ owner, scope, request }) => {
+      refuseIfFenced();
+      const target = (request as { target?: { actor?: unknown } } | null)?.target;
+      if (typeof target?.actor !== "string") throw new EpEnvelopeError("contract-invalid", "tool-results serve request needs target.actor");
+      // Serialized with enrollment and retirement preparation for this alias, so a retirement can
+      // never interleave between this call's fences and its registration.
+      return serializedForAlias(opts.dir, owner, target.actor, async () => {
+        const r = await authorizeToolResultServe({
+          request, space, owner, scope, dir: opts.dir,
+          proofSecret: dataAccount.signingSeed,
+          observeManagerGate: observeLegacyManagerGate,
+          readHead: async (o, a) => (await readLifecycleHeadForOperation(barrierReg, o, a))?.mapping,
+        });
+        const signer = opts.toolResultConsentAnchors && opts.toolResultConsentSignerKeyId !== undefined
+          ? { keyId: opts.toolResultConsentSignerKeyId, resolveAnchor: opts.toolResultConsentAnchors }
+          : undefined;
+        const consentAnchors = await currentToolResultConsentAnchors(signer, Date.now());
+        return issueToolResultServe(r, { owner, space, auth: issuerAuth(), servers: server, ...(consentAnchors ? { consentAnchors } : {}) });
+      });
+    },
     prepareManagedAgentRetirement: async ({ owner, scope, request }) => {
       refuseIfFenced();
       const r = await authorizeRemoteManagedAgentPrepareRetirement({ owner, scope, proofSecret: dataAccount.signingSeed, space, request, observeManagerGate: observeLegacyManagerGate });
@@ -1450,6 +1478,9 @@ async function buildAuthAuthorityPlane(opts: OpenAuthAuthorityPlaneOptions, unwi
         // successor, and an absent row means an earlier attempt already released both halves.
         const row = findManagedActor(opts.dir, owner, actor);
         if (row?.lifecycleUid === lifecycleUid) {
+          // The incarnation's tool-results record first, while the grant still names it. An absent
+          // record (serving never issued, or an earlier attempt removed it) is a no-op.
+          await retireToolResultServe({ auth: issuerAuth(), servers: server, space, lifecycleUid });
           // Footprint before grant: while the row stands, a retry still knows which channels to purge.
           await deprovisionManagedFootprint(owner, actor, lifecycleUid, row.allowSubscribe.filter(isConcreteChannel));
           revokeManagedActorAt(opts.dir, owner, actor, lifecycleUid);
@@ -2126,7 +2157,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
     log: (l) => console.error(l),
     localManager: o.localManager,
     ...(o.standingRenewableTtlSeconds !== undefined ? { standingRenewableTtlSeconds: o.standingRenewableTtlSeconds } : {}),
-    ...(o.toolResultConsentSigner ? { toolResultConsentAnchors: o.toolResultConsentSigner.resolveAnchor } : {}),
+    ...(o.toolResultConsentSigner ? { toolResultConsentAnchors: o.toolResultConsentSigner.resolveAnchor, toolResultConsentSignerKeyId: o.toolResultConsentSigner.keyId } : {}),
   }, onConnection);
   let nc: NatsConnection | undefined;
   let http: ReturnType<typeof createServer> | undefined;
@@ -2198,6 +2229,7 @@ async function startAuthContext(o: AuthContextOptions): Promise<{ handle: Omit<A
         return plane.enrollManagedAgent({ ...args, sentinelCreds: callout.sentinelCreds, agentBearerExchangeUrl: publicUrl });
       },
       prepareManagedAgentRetirement: plane.prepareManagedAgentRetirement,
+      ...(plane.issueToolResultServe ? { issueToolResultServe: plane.issueToolResultServe } : {}),
       scanManagerGoalIndex: plane.scanManagerGoalIndex,
       authorizeManagerAdmin: plane.authorizeManagerAdmin,
       admitManagerRun: plane.admitManagerRun,
@@ -2475,6 +2507,7 @@ interface HandlerCtx {
   verifyManagedAgentRuntime: AuthAuthorityPlane["verifyManagedAgentRuntime"];
   enrollManagedAgent: (args: HumanHolder & { request: RemoteManagedAgentEnrollmentRequest }) => Promise<RemoteManagedAgentEnrollmentResult>;
   prepareManagedAgentRetirement: AuthAuthorityPlane["prepareManagedAgentRetirement"];
+  issueToolResultServe?: AuthAuthorityPlane["issueToolResultServe"];
   scanManagerGoalIndex: (args: HumanHolder & { request: import("@cotal-ai/core").RemoteManagerGoalIndexScanRequest }) => ReturnType<AuthAuthorityPlane["scanManagerGoalIndex"]>;
   authorizeManagerAdmin: (args: HumanHolder & { request: RemoteManagerAdminAuthorizationRequest }) => ReturnType<AuthAuthorityPlane["authorizeManagerAdmin"]>;
   admitManagerRun: (args: HumanHolder & { request: unknown }) => ReturnType<AuthAuthorityPlane["admitManagerRun"]>;
@@ -2499,7 +2532,7 @@ interface HandlerCtx {
   recipientGrants?: AuthAuthorityPlane["recipientGrants"];
 }
 
-type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "recipientGrants" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
+type ManagerAuthorityDispatchCtx = Pick<HandlerCtx, "toolResultConsentSigner" | "recipientGrants" | "space" | "dir" | "secrets" | "managerServiceAuthority" | "maintainRemoteManager" | "validateRetainedAgent" | "enrollManagedAgent" | "prepareManagedAgentRetirement" | "issueToolResultServe" | "scanManagerGoalIndex" | "authorizeManagerAdmin" | "admitManagerRun" | "issueManagerRunAttempt" | "revokeManagerRun">;
 
 /**
  * Sign one tool-result consent for the signed-in human (SPEC 13.6). The caller has already verified
@@ -2558,6 +2591,12 @@ export async function dispatchManagerAuthorityRequest(
     return ctx.enrollManagedAgent({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentEnrollmentRequest });
   if (request.kind === "manager-managed-agent-prepare-retirement")
     return ctx.prepareManagedAgentRetirement({ owner, scope: row.scope ?? [], request: body.request as RemoteManagedAgentPrepareRetirementRequest });
+  // `actor` is the Manager's authorizing principal (its row's scope is read above), never the
+  // served target; the handler re-verifies it against the current registration proof.
+  if (request.kind === "tool-result-serve-authority") {
+    if (!ctx.issueToolResultServe) throw new EpEnvelopeError("unimplemented", "this host does not issue tool-results serving");
+    return ctx.issueToolResultServe({ owner, scope: row.scope ?? [], request: body.request });
+  }
   // The hosted runtime kinds read and drive host-owned intent state that stock does not hold.
   if (request.kind === "manager-managed-agent-runtime-create" || request.kind === "manager-managed-agent-runtime-status")
     throw new EpEnvelopeError("unimplemented", "managed agent runtime create and status must be handled by host platform interception");
