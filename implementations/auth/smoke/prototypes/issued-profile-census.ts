@@ -14,8 +14,12 @@ import { calloutPermissions } from "../../src/permissions.js";
 import { USER_TOKEN_VER, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE } from "../../src/token.js";
 import { deriveOwnerToken } from "../../src/derive.js";
 
+/** Every issued credential the census classifies: core's mint profiles plus the one callout view
+ *  whose rows are not a core profile (`tool-result-caller`, minted from toolResultRedemptionRows). */
+export type CensusProfile = Profile | "tool-result-caller";
+
 export interface ProfileFixture {
-  profile: Profile;
+  profile: CensusProfile;
   variant: string;
   permissions: Record<string, unknown>;
   producer: "permissionsFor" | "epServeGrantRows" | "calloutPermissions";
@@ -244,7 +248,7 @@ function subjectCoveredBy(streamPattern: string, grantRow: string): boolean {
  * pairing is expected in the trusted infrastructure profiles (they ARE the trusted plane), and is the
  * condition the issued rail's origin assumption cannot survive in a peer-held credential.
  */
-export const PEER_HELD_PROFILES: readonly Profile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller"]);
+export const PEER_HELD_PROFILES: readonly CensusProfile[] = Object.freeze(["agent", "observer", "session-caller", "run-driver", "manager-caller", "tool-result-caller"]);
 
 /**
  * The rest, classified as trusted infrastructure or operator credentials. Peer-heldness is a
