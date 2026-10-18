@@ -8,7 +8,7 @@
   "why": [
     "Claude Code loads connected-account connectors in a launched session by default, so a hosted Cotal connector beside the local plugin let one session join twice. Reproduced live: a launched seat joined its local mesh as probe and the hosted gateway as hosted_probe.",
     "The suite runs dist/hook.cjs, the file hooks.json runs, so every mutation rebuilds before the run and after the restore.",
-    "O1 and O2 cut the two wires (the relay ignoring the answer, the hook not passing it). O3 inverts the server test. O4 is the liveness arm: refusing the local server too. O5 opens the identity gate, so a plain session would lose the hosted connector."
+    "O1 and O2 cut the two wires (the relay ignoring the answer, the hook not passing it). O3 inverts the server test. O4 is the liveness arm: refusing the local server too. O5 opens the identity gate, so a plain session would lose the hosted connector. O6 and O7 pin the tool-name test at both ends of its tool part."
   ],
   "mutations": [
     {
@@ -60,6 +60,26 @@
       "cell": "a session Cotal did not launch keeps the hosted connector",
       "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
       "note": "The answer itself does not read the environment; the relay's identity gate is what keeps a plain session's hosted connector working."
+    },
+    {
+      "name": "O6 the tool match loses its end anchor",
+      "file": "extensions/connector-claude-code/src/one-path.ts",
+      "find": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*$/;",
+      "replace": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*/;",
+      "expectRed": "a launched session passes mcp__company__cotal_proxy__status through",
+      "cell": "a launched session passes mcp__company__cotal_proxy__status through",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "Without the anchor, a server named company__cotal_proxy is split inside its own name and its status tool is refused."
+    },
+    {
+      "name": "O7 the tool part admits no underscore",
+      "file": "extensions/connector-claude-code/src/one-path.ts",
+      "find": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*$/;",
+      "replace": "const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+$/;",
+      "expectRed": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_channel_info",
+      "cell": "a launched session refuses the hosted mcp__claude_ai_Cotal__cotal_channel_info",
+      "afterRestore": "pnpm --filter @cotal-ai/connector-claude-code... build",
+      "note": "A reviewer's surviving mutation on the first head: every multi-word gateway tool (cotal_channel_info, cotal_connection_status, cotal_channel_mode) would pass the hosted path."
     }
   ]
 }

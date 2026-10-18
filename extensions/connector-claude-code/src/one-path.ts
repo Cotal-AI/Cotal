@@ -12,8 +12,9 @@ import type { LocalHookAnswer } from "@cotal-ai/connector-core/relay";
 /** The local mesh server's names: the launch's `--mcp-config` entry and the plugin's own `.mcp.json`. */
 const LOCAL_SERVERS: ReadonlySet<string> = new Set(["cotal", "plugin_cotal_cotal"]);
 
-/** A Cotal tool of any MCP server, as Claude Code names it: `mcp__<server>__cotal_<tool>`. */
-const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z_]+$/;
+/** A Cotal tool of any MCP server, as Claude Code names it: `mcp__<server>__cotal_<tool>`. The tool
+ *  part never holds `__`, so a server whose own name contains `__cotal_` is not split inside it. */
+const COTAL_TOOL = /^mcp__(.+)__cotal_[a-z0-9]+(?:_[a-z0-9]+)*$/;
 
 export const ONE_PATH_REASON =
   "This session is already on a Cotal mesh through its local Cotal plugin, and a session uses one " +

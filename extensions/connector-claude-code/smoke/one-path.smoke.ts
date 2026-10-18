@@ -9,7 +9,7 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,16 +67,24 @@ const denied = (stdout: string): boolean => {
 
 try {
   console.log("one-path smoke:");
-  for (const tool of ["mcp__claude_ai_Cotal__cotal_connect", "mcp__claude_ai_Cotal__cotal_send", "mcp__cotal-hosted__cotal_inbox"]) {
+  for (const tool of ["mcp__claude_ai_Cotal__cotal_connect", "mcp__claude_ai_Cotal__cotal_send", "mcp__claude_ai_Cotal__cotal_channel_info", "mcp__cotal-hosted__cotal_inbox"]) {
     const r = await runHook(MANAGED, preToolUse(tool));
     check(`a launched session refuses the hosted ${tool}`, r.code === 0 && denied(r.stdout), r);
   }
   const dead = await runHook(DEAD_SOCKET, preToolUse("mcp__claude_ai_Cotal__cotal_connect"));
   check("the refusal holds with a dead control socket and does not wait on it", dead.code === 0 && denied(dead.stdout) && dead.ms < 1500, dead);
 
-  for (const tool of ["mcp__cotal__cotal_send", "mcp__plugin_cotal_cotal__cotal_how_to_join", "Bash", "mcp__github__create_issue"]) {
+  for (const tool of ["mcp__cotal__cotal_send", "mcp__plugin_cotal_cotal__cotal_how_to_join", "Bash", "mcp__github__create_issue", "mcp__company__cotal_proxy__status"]) {
     const r = await runHook(MANAGED, preToolUse(tool));
     check(`a launched session passes ${tool} through`, r.code === 0 && r.stdout === "", r);
+  }
+  // Claude Code scopes a plugin's server as plugin_<plugin name>_<.mcp.json key>; renaming either
+  // would make the plugin's own server look like another path.
+  const plugin = (JSON.parse(readFileSync(join(here, "..", ".claude-plugin", "plugin.json"), "utf8")) as { name: string }).name;
+  const servers = Object.keys((JSON.parse(readFileSync(join(here, "..", ".mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> }).mcpServers);
+  for (const key of servers) {
+    const r = await runHook(MANAGED, preToolUse(`mcp__plugin_${plugin}_${key}__cotal_send`));
+    check(`the plugin's own server (plugin_${plugin}_${key}) is treated as local`, r.code === 0 && r.stdout === "", r);
   }
   const post = await runHook(MANAGED, { ...preToolUse("mcp__claude_ai_Cotal__cotal_connect"), hook_event_name: "PostToolUse" });
   check("only PreToolUse is refused, not another event naming the hosted tool", post.code === 0 && post.stdout === "", post);
